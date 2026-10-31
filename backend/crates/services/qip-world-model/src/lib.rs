@@ -44,6 +44,7 @@ pub mod relationship;
 pub mod resolution_source;
 pub mod spawning;
 pub mod state;
+pub mod synthesis;
 pub mod vocabulary;
 pub mod world;
 

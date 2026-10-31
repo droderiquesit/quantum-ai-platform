@@ -153,6 +153,7 @@ pub mod margin;
 pub mod recall;
 pub mod reservation;
 pub mod shadow;
+pub mod society;
 pub mod survival;
 pub mod treasury;
 

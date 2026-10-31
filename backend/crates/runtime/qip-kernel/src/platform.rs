@@ -635,6 +635,11 @@ pub struct Platform {
     /// Where each released strategy's divergence evidence starts again: the
     /// instant of the re-promotion that released it. Resumed with the holds.
     replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
+    /// The latest concluded microstructure delta per venue, re-admitted
+    /// through its contract (ADR 0226). Read only by the release of a
+    /// replay-divergence hold, which it may keep and never lift.
+    microstructure_deltas:
+        BTreeMap<(String, String), qip_contracts::microstructure_delta::MicrostructureDelta>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -1066,6 +1071,9 @@ pub struct Platform {
     /// The mandates whose subscription is in the log, by the operation id's
     /// mandate part, so a second funding of one mandate queues nothing.
     subscribed_mandates: BTreeSet<String>,
+    /// Physical-inventory operations queued from the commerce plane, for the
+    /// sequence each carries (R12-COMMERCE-5096).
+    commerce_inventory_operations: u64,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -6369,6 +6377,7 @@ impl Platform {
             tactical: None,
             replay_divergence_holds: replay_divergence_resumed.0,
             replay_divergence_windows: replay_divergence_resumed.1,
+            microstructure_deltas: BTreeMap::new(),
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -6445,6 +6454,7 @@ impl Platform {
             capital_grant_fundings: BTreeMap::new(),
             capital_grant_operations: 0,
             subscribed_mandates: BTreeSet::new(),
+            commerce_inventory_operations: 0,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -7978,6 +7988,57 @@ impl Platform {
             now,
         )?;
         self.subscribe_mandate(user, currency, amount, now)
+    }
+
+    /// Queue each physical movement the commerce plane recorded as a
+    /// `PhysicalInventory` operation for the desk ledger (R12-COMMERCE-5096).
+    ///
+    /// The commerce ledger is event-sourced and replayable on its own, and
+    /// until this it was a ledger nothing else could see: its units, their
+    /// location and their sale were invisible to the platform's books. Each
+    /// receipt, sale and return now books one unit between the venue or
+    /// buyer and the warehouse, keyed on the unit and the stage, so the desk
+    /// ledger's inventory account at the warehouse replays to the units the
+    /// commerce ledger holds there. A movement the contract refuses is
+    /// reported and skipped, as a mandate subscription's is.
+    pub(crate) fn queue_inventory_moves(
+        &mut self,
+        moves: Vec<crate::commerce_research::InventoryMove>,
+        now: Timestamp,
+    ) -> Vec<String> {
+        use qip_contracts::ledger_operation::{LedgerOperationFields, OperationKind};
+        let mut problems = Vec::new();
+        let chain = self.desk_ledger.chain().to_string();
+        for movement in moves {
+            let sequence = self.commerce_inventory_operations + 1;
+            let built = qip_contracts::validated::Validated::new(LedgerOperationFields {
+                schema_version: 1,
+                operation_id: format!("{chain}:commerce-{}:{}", movement.stage, movement.unit),
+                origin: chain.clone(),
+                sequence,
+                recorded_at: now,
+                settlement: qip_contracts::ledger::Settlement::Simulated,
+                kind: OperationKind::PhysicalInventory {
+                    from: movement.from,
+                    to: movement.to,
+                    unit: movement.sku,
+                    amount: Decimal::ONE,
+                },
+            });
+            match built {
+                Ok(operation) => {
+                    self.commerce_inventory_operations = sequence;
+                    self.desk_operations.push(operation);
+                }
+                Err(error) => problems.push(format!(
+                    "commerce unit {} {} was not booked at the ledger: {}",
+                    movement.unit,
+                    movement.stage,
+                    error.message()
+                )),
+            }
+        }
+        problems
     }
 
     /// Queue the ledger's record that this user's mandate subscribed capital
@@ -14964,6 +15025,80 @@ impl Platform {
         parents
     }
 
+    /// The paper book's funding state for the federation's capital member
+    /// (R12-WORLD-3048, ADR 0194). Money crosses to `f64` here, as
+    /// statistics: the member forecasts whether the next pass holds less
+    /// cash, and no amount comes back out of it. `None` where equity is not
+    /// positive or any figure is not finite — a share of nothing is not a
+    /// number, and the member is silent rather than reading that book as one
+    /// that draws nothing.
+    fn capital_view(&self) -> Option<crate::federation_stage::CapitalView> {
+        let equity = self.equity().to_f64();
+        if !equity.is_finite() || equity <= 0.0 {
+            return None;
+        }
+        let cash = self.capital.cash.to_f64();
+        let (mut gross, mut net) = (0.0, 0.0);
+        for lot in self.capital.positions.values() {
+            let notional = (lot.quantity * lot.average_price).to_f64();
+            gross += notional.abs();
+            net += notional;
+        }
+        let view = crate::federation_stage::CapitalView {
+            cash,
+            cash_share: cash / equity,
+            leverage: gross / equity,
+            net_share: net / equity,
+            pending_theses: self.pending_theses.len(),
+        };
+        [view.cash, view.cash_share, view.leverage, view.net_share]
+            .iter()
+            .all(|x| x.is_finite())
+            .then_some(view)
+    }
+
+    /// Each venue the platform routes to, as the counterparty member reads it
+    /// (R12-WORLD-3049): the desk's broker, which is always a counterparty,
+    /// and every venue the feasibility window names, with the refusals the
+    /// window holds at each. The window is only read here; its one writer
+    /// stays `record_feasibility_refusal`.
+    ///
+    /// Only [`RefusalStanding::Evidence`] entries count. An echo is a
+    /// withdrawn venue refusing because it is withdrawn, and a pardoned entry
+    /// is one two operators signed away; neither is the venue refusing, and
+    /// counting them inflated a withdrawn or reinstated venue's forecast and
+    /// resolved its proposition on refusals that were not its own.
+    fn counterparty_views(&self) -> Vec<crate::federation_stage::CounterpartyView> {
+        let mut by_venue: BTreeMap<String, Vec<Timestamp>> = BTreeMap::new();
+        by_venue.insert(self.broker.name().to_string(), Vec::new());
+        let evidence: Vec<&FeasibilityRefusal> = self
+            .feasibility_refusals
+            .iter()
+            .filter(|refusal| refusal.standing == RefusalStanding::Evidence)
+            .collect();
+        for refusal in &evidence {
+            by_venue
+                .entry(refusal.venue.clone())
+                .or_default()
+                .push(refusal.at);
+        }
+        let total = evidence.len();
+        by_venue
+            .into_iter()
+            .map(
+                |(venue, refused_at)| crate::federation_stage::CounterpartyView {
+                    share: if total == 0 {
+                        0.0
+                    } else {
+                        refused_at.len() as f64 / total as f64
+                    },
+                    venue,
+                    refused_at,
+                },
+            )
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15016,6 +15151,8 @@ impl Platform {
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
             }),
+            capital: self.capital_view(),
+            counterparties: self.counterparty_views(),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
         // so a material disagreement on a held name issues the contract
@@ -26033,6 +26170,64 @@ impl Platform {
         Ok(decision)
     }
 
+    /// Admit a concluded microstructure delta (ADR 0226, R12-CONTRACT-7074).
+    ///
+    /// Re-admitted through [`qip_contracts::microstructure_delta::MicrostructureDelta`]'s
+    /// contract, because the fields arrive from another process's journal
+    /// and a delta that does not validate is not evidence. Refused for a
+    /// venue no registered strategy trades at, so a venue string nobody
+    /// configured cannot take a slot. Kept per venue and cell, and only if it
+    /// is that pair's latest by window end, so one cell's campaign cannot
+    /// displace another's and an older one read late cannot overwrite a
+    /// newer one. Refused past [`crate::replay_divergence::MAX_DELTA_VENUES`]
+    /// pairs. Returns whether it became the pair's latest.
+    pub fn admit_microstructure_delta(
+        &mut self,
+        fields: qip_contracts::microstructure_delta::MicrostructureDeltaFields,
+    ) -> Result<bool> {
+        let delta = qip_contracts::microstructure_delta::MicrostructureDelta::new(fields)?;
+        let venue = delta.venue.as_str().to_string();
+        if !self
+            .central
+            .factory()
+            .candidates()
+            .any(|candidate| candidate.venue().as_str() == venue)
+        {
+            return Err(Error::denied(format!(
+                "no registered strategy trades at {venue}; a delta for it holds nothing and is \
+                 refused rather than taking a slot"
+            )));
+        }
+        let key = (venue, delta.cell.clone());
+        match self.microstructure_deltas.get(&key) {
+            Some(held) if held.window_end >= delta.window_end => return Ok(false),
+            None if self.microstructure_deltas.len()
+                >= crate::replay_divergence::MAX_DELTA_VENUES =>
+            {
+                return Err(Error::denied(format!(
+                    "the platform holds deltas for {} venue-cell pairs; a delta for {} from {} is \
+                     refused rather than growing the set",
+                    crate::replay_divergence::MAX_DELTA_VENUES,
+                    key.0,
+                    key.1
+                )));
+            }
+            _ => {}
+        }
+        self.microstructure_deltas.insert(key, delta);
+        Ok(true)
+    }
+
+    /// The latest concluded microstructure delta for `venue` from `cell`.
+    pub fn microstructure_delta(
+        &self,
+        venue: &str,
+        cell: &str,
+    ) -> Option<&qip_contracts::microstructure_delta::MicrostructureDelta> {
+        self.microstructure_deltas
+            .get(&(venue.to_string(), cell.to_string()))
+    }
+
     /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
     /// has answered, then hold every registered strategy whose venue the
     /// twin now diverges from. Each change is journaled before the state
@@ -26050,6 +26245,7 @@ impl Platform {
         let mut problems = Vec::new();
         let mut restored = 0usize;
         let mut reduced = 0usize;
+        let mut kept: Vec<String> = Vec::new();
 
         let held: Vec<DivergenceHold> = self.replay_divergence_holds.values().cloned().collect();
         for hold in held {
@@ -26060,6 +26256,22 @@ impl Platform {
             .cloned() else {
                 continue;
             };
+            // Any cell's latest delta at the venue that is past the
+            // threshold, or silent at a full sample, keeps the hold
+            // (ADR 0226): the re-promotion was argued on the model the
+            // venue's own residuals say is still wrong, or have not cleared.
+            if let Some(reason) = self
+                .microstructure_deltas
+                .iter()
+                .filter(|((venue, _), _)| *venue == hold.venue)
+                .find_map(|(_, delta)| crate::replay_divergence::residual_keeps_hold(delta))
+            {
+                kept.push(format!(
+                    "{}'s hold stands past its re-promotion: {reason}",
+                    hold.strategy
+                ));
+                continue;
+            }
             let entry = ReplayDivergenceEntry::restored(&hold, &repromotion, now);
             if let Err(error) = self.journal_record(entry, REPLAY_DIVERGENCE_ORIGIN, now) {
                 problems.push(format!(
@@ -26135,14 +26347,15 @@ impl Platform {
         if reduced == 0 && restored == 0 && self.replay_divergence_holds.is_empty() {
             return (None, problems);
         }
-        (
-            Some(format!(
-                "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
-                 re-promotion, {} held",
-                self.replay_divergence_holds.len()
-            )),
-            problems,
-        )
+        let mut summary = format!(
+            "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
+             re-promotion, {} held",
+            self.replay_divergence_holds.len()
+        );
+        if !kept.is_empty() {
+            summary.push_str(&format!("; {}", kept.join("; ")));
+        }
+        (Some(summary), problems)
     }
 
     /// The last Lane 2 refresh, `None` before the first cycle
@@ -28795,6 +29008,129 @@ mod decide_tests {
                 .count(),
             3,
             "a reaction was applied twice or not at all"
+        );
+    }
+
+    /// R12-WORLD-3049: the counterparty member reads only the venue's own
+    /// refusals. An echo is a withdrawn venue refusing because it is
+    /// withdrawn and a pardoned entry was signed away by two operators;
+    /// counting either inflated that venue's share and resolved its
+    /// proposition on refusals that were not its own. The desk's broker is
+    /// always a counterparty, with no refusals.
+    ///
+    /// Mutation: count every standing in `counterparty_views`.
+    #[test]
+    fn the_counterparty_views_count_only_a_venues_own_refusals_and_always_name_the_desk_broker() {
+        use crate::venue_review::{FeasibilityRefusal, FeasibilitySeam, RefusalStanding};
+        let mut platform = small_book_platform();
+        let at = Timestamp::from_secs(1_760_000_000);
+        let refusal = |venue: &str, standing: RefusalStanding| FeasibilityRefusal {
+            venue: venue.to_string(),
+            constraint: "feasibility_lot_size".to_string(),
+            seam: FeasibilitySeam::Edge,
+            cell: Some("cell-a".to_string()),
+            at,
+            standing,
+        };
+        platform.feasibility_refusals = vec![
+            refusal("XWITHDRAWN", RefusalStanding::Evidence),
+            refusal("XWITHDRAWN", RefusalStanding::Echo),
+            refusal("XWITHDRAWN", RefusalStanding::Echo),
+            refusal("XWITHDRAWN", RefusalStanding::Echo),
+            refusal("XWITHDRAWN", RefusalStanding::Pardoned),
+            refusal("XWITHDRAWN", RefusalStanding::Pardoned),
+            refusal("YVENUE", RefusalStanding::Evidence),
+            refusal("YVENUE", RefusalStanding::Evidence),
+        ];
+        let views = platform.counterparty_views();
+        let of = |name: &str| {
+            views
+                .iter()
+                .find(|v| v.venue == name)
+                .unwrap_or_else(|| panic!("no view of {name}: {views:?}"))
+        };
+        let broker = platform.broker.name().to_string();
+        assert!(
+            of(&broker).refused_at.is_empty(),
+            "the desk broker is named"
+        );
+        assert_eq!(
+            of("XWITHDRAWN").refused_at.len(),
+            1,
+            "echoes or pardons counted"
+        );
+        assert_eq!(of("YVENUE").refused_at.len(), 2);
+        assert!(
+            (of("XWITHDRAWN").share - 1.0 / 3.0).abs() < 1e-12,
+            "{views:?}"
+        );
+        assert!((of("YVENUE").share - 2.0 / 3.0).abs() < 1e-12, "{views:?}");
+    }
+
+    /// R12-QUANT-4018: a promotion restored from the log passes the workload
+    /// check a live one does. A quantum-informed record naming a family the
+    /// foundry holds as not built is the record the live seam would refuse,
+    /// and a restart that put it back would serve a model nobody could have
+    /// promoted. The same record naming the built family restores, which
+    /// keeps the check from refusing every quantum-informed record.
+    ///
+    /// Mutation: drop the `require_restorable` call in
+    /// `resume_model_promotions` — the unbuilt record is restored.
+    #[test]
+    fn a_restored_quantum_informed_promotion_naming_an_unbuilt_family_is_refused_at_restart() {
+        use crate::model_serving::{
+            MODEL_PROMOTION_ORIGIN, ModelProducer, ModelPromotion, resume_model_promotions,
+        };
+        let record = |reference: &str, workload: &str| ModelPromotion {
+            reference: reference.to_string(),
+            name: reference.to_string(),
+            format: qip_ai::serving::ModelFormat::TeacherLinear,
+            artifact_digest: "0".repeat(64),
+            arity: 2,
+            distilled: None,
+            displaced: Vec::new(),
+            producer: ModelProducer::QuantumInformed {
+                baseline: "bar-baseline@0.1.0".to_string(),
+                workload: Some(workload.to_string()),
+            },
+            moved_by: None,
+            evidence: None,
+            permitted_locations: None,
+            stages: Vec::new(),
+            rollback_parent: None,
+            signature: None,
+            at: Timestamp::from_secs(1_760_000_000),
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut built = small_book_platform();
+        built
+            .journal_record(
+                record("qi-built@0.1.0", "PortfolioAllocation"),
+                MODEL_PROMOTION_ORIGIN,
+                now,
+            )
+            .expect("journaled");
+        let restored = resume_model_promotions(built.event_log()).expect("a built family restores");
+        assert!(
+            restored.contains_key("qi-built@0.1.0"),
+            "premise: {restored:?}"
+        );
+
+        let mut unbuilt = small_book_platform();
+        unbuilt
+            .journal_record(
+                record("qi-unbuilt@0.1.0", "GraphSearch"),
+                MODEL_PROMOTION_ORIGIN,
+                now,
+            )
+            .expect("journaled");
+        let refused = resume_model_promotions(unbuilt.event_log())
+            .expect_err("an unbuilt family was restored");
+        assert!(
+            refused.message().contains("qi-unbuilt@0.1.0")
+                && refused.message().contains("not built"),
+            "{}",
+            refused.message()
         );
     }
 

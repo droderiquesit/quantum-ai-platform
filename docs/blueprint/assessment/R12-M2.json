@@ -9,7 +9,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:16827 assess_sources",
       "backend/crates/apps/qip-deepbrain/src/discovery.rs:454 test a_forecast_error_spike_on_an_uncovered_entity_is_the_pass_s_target_and_its_candidate_goes_first"
     ],
-    "gap": "No component generates candidates the operator did not list (no crawl/search adapter); discovery is off by default and not configured in any tfvars.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. ADR 0157 decision 5 stands, and I do not supersede it: candidates are written by an operator or not at all. A stage that manufactures candidates nobody reviewed a route for is a control assessing its own inputs, and whether crawling a publisher is lawful is a reading of that publisher's terms and robots policy that nobody has made. The requirement text stands and is not restated to the operator list, so the row stays PARTIAL. Closes on: Write into the gap: 'ADR 0157 d5 stands (2026-10-31); the triage's supersession proposal is refused. No crawl or search stage exists.' The row reopens only through an ADR written after one of two things: a terms-and-robots reading of each publisher a crawler would touch, or a search vendor contracted under an ADR 0157 record, in either case with a reviewed egress route per host. Then build a generator whose output passes the same record, route and registration gates. Test it with 'a discovery pass with an empty operator list yields generated candidates, and each is refused until it holds a record and a route'. Earlier: No component generates candidates the operator did not list (no crawl/search adapter); discovery is off by default and not configured in any tfvars.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -20,7 +20,7 @@
     "verification": "cargo test -p qip-deepbrain discovery",
     "work_item": "",
     "size": "L",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): ADR 0157 decision 5 stands, and I do not supersede it: candidates are written by an operator or not at all. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2002",
@@ -108,7 +108,7 @@
       "backend/crates/services/qip-market-ingestion/src/depth.rs order-book depth adapter (used only by qip-cli demo)",
       "backend/crates/libs/qip-market/src/volatility.rs vol surface type, no ingestion"
     ],
-    "gap": "No options-chain, funding, borrow or venue-status acquisition; depth adapter not wired into a deployed binary.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party for each uncovered §6.1 market class: a publisher whose terms are read into an ADR 0157 licence record, or a refusal quoting the refusing clause. No vendor is chosen now and no refusal is invented. Covered today: exchange feeds (coinbase-spot-ticker), options surfaces (the four quoted refusals) and rates (ECB, NY Fed, frankfurter). Uncovered: order books, trades, quotes, funding, borrow and venue status; the coinbase ticker emits a Tick and no trade or quote, and Kalshi and Alpaca are named in KNOWN_SOURCES but not admitted. The depth adapter stays unwired and the edge feed stays simulated. A lane may add a shrink-only qip-acceptance inspection mapping each §6.1 class to a source admission::admit admits or a refusals() RefusedSource. Closes on: each uncovered class holding an ADR 0157 record with its connector, manifest, KNOWN_SOURCES entry and route, or a quoted RefusedSource. (Skeptic's correction; the decider had counted a KNOWN_SOURCES entry as coverage.) Earlier: No options-chain, funding, borrow or venue-status acquisition; depth adapter not wired into a deployed binary.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -119,7 +119,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "L",
-    "notes": "Partially BLOCKED for licensed exchange feeds (external contract)."
+    "notes": "Partially BLOCKED for licensed exchange feeds (external contract). Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): No vendor yet and no invented refusal for the uncovered market classes; per the skeptic coverage means a source admission::admit admits or a quoted RefusedSource, not a KNOWN_SOURCES entry, so trades and quotes join order books, funding, borrow and venue status as uncovered. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2006",
@@ -153,7 +153,7 @@
       "backend/crates/services/qip-data-finder/src/tier.rs SourceTier::classify, DeepWebAdapter::admissible",
       "backend/crates/services/qip-data-finder/tests/tiers.rs"
     ],
-    "gap": "No social/community or deep-web database connector; no deployed news vendor.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. No news, press, expert, public-web, deep-web database, social or community source is admitted, and no refusal is written without a clause read. Each class enters through its own ADR 0157 record, and a social source also follows decision 7's rule, so the row stays PARTIAL. The dark web stays refused in every mode. Closes on: A lane may add an inspection modelled on qip-data-finder/tests/commerce_sources.rs as a shrink-only ratchet. It lists news, press releases, expert publications, public web, deep-web databases, public social and communities as uncovered, and fails if a class leaves the list without a record or a quoted RefusedSource. Each class closes on an ADR 0157 licence record with its connector, manifest, KNOWN_SOURCES entry and egress route, or on a refusal quoting the publisher's clause. A social source also passes decision 7's identifier-dropping rule. Earlier: No social/community or deep-web database connector; no deployed news vendor.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -164,7 +164,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): No news, press, expert, public-web, deep-web database, social or community source is admitted, and no refusal is written without a clause read. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2008",
@@ -198,7 +198,7 @@
       "backend/crates/services/qip-market-ingestion/src/connectors/geospatial_satellite.rs:7 'Status: BLOCKED'",
       "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:186-225 dispatch lists none of the physical-flow modules"
     ],
-    "gap": "Owner decision O03 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Decide the licence for each alternative-data provider (satellite, AIS, flight, port, traffic, commodity, energy grid, IoT) under ADR 0034. Enables: Seven connector modules join connector_feed.rs dispatch. Costs: Vendor contracts and fees, and an external account per provider.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. O03 is decided: no paid alternative-data provider is licensed now. Satellite, flight, port, traffic and commodity-flow data are subscriptions I am not buying before the deploy. AIS, energy-grid and public IoT publishers enter only when someone reads their terms, and no agent reads them in my name. NWS stays the admitted weather source, and the row stays PARTIAL. Closes on: Record O03 as decided on 2026-10-31 in the gap and in design-decisions-2026-10-18.json: no paid provider, and free publishers wait on a terms reading. A lane may add the shrink-only inspection ratchet now. Weather maps to NWS, and satellite, AIS, flight, port, traffic, commodity flows, energy grid and IoT are listed as uncovered. Each closes on an ADR 0157 record with its connector, manifest, KNOWN_SOURCES entry and egress route, or on a quoted RefusedSource. Earlier: Owner decision O03 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Decide the licence for each alternative-data provider (satellite, AIS, flight, port, traffic, commodity, energy grid, IoT) under ADR 0034. Enables: Seven connector modules join connector_feed.rs dispatch. Costs: Vendor contracts and fees, and an external account per provider.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -209,7 +209,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "L",
-    "notes": "Licensing for several is an external decision. ADR lane 2026-10-18: gap re-graded against decision O03; gap before it: Seven of eight physical-source modules are not reachable from the connector dispatch."
+    "notes": "Licensing for several is an external decision. ADR lane 2026-10-18: gap re-graded against decision O03; gap before it: Seven of eight physical-source modules are not reachable from the connector dispatch. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): O03 is decided: no paid alternative-data provider is licensed now. Satellite, flight, port, traffic and commodity-flow data are subscriptions I am not buying before the deploy. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2010",
@@ -221,7 +221,7 @@
       "backend/crates/services/qip-data-finder/tests/commerce_sources.rs::all_seven_commerce_source_kinds_are_catalogued_and_refused_until_a_licence_record_exists",
       "backend/crates/services/qip-data-finder/src/category.rs"
     ],
-    "gap": "No commerce connector. Which commerce source to license is the owner's decision and is billed (ADR 0157): a source enters only as a committed licence record quoting the terms it was read from. Until one exists the seven stay Undetermined and refused.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. No commerce vendor now, and the row is not promoted to COMPLETE. ADR 0157 decision 6 deferred the choice; it did not refuse the class. I will not refuse commerce for good just to close the row, because a refusal by preference passes the inspection by decree. The seven kinds stay catalogued, Undetermined and refused, and the row stays PARTIAL. Closes on: Keep the status PARTIAL. Write into the gap: 'No commerce vendor (2026-10-31); ADR 0157 d6 is a deferral; the class is not refused by preference.' The commerce_sources tests stay as they are. The row closes only on an owner-chosen commerce source entering as an ADR 0157 licence record, with a spend approval if it charges, plus its connector, manifest, KNOWN_SOURCES entry and egress route; or on a RefusedSource quoting each publisher's refusing clause. Earlier: No commerce connector. Which commerce source to license is the owner's decision and is billed (ADR 0157): a source enters only as a committed licence record quoting the terms it was read from. Until one exists the seven stay Undetermined and refused.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -232,7 +232,7 @@
     "verification": "cargo test -p qip-data-finder --test commerce_sources",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 N2-FABRIC-DATA: the seven placeholders carried Declared licences nobody evaluated and invented fees; they are now Undetermined (ADR 0157). Mutation: restore one placeholder's posture to declared - both commerce_sources tests fail naming it; restored byte for byte. Status stays PARTIAL: the acquisition adapter is billed."
+    "notes": "2026-10-24 N2-FABRIC-DATA: the seven placeholders carried Declared licences nobody evaluated and invented fees; they are now Undetermined (ADR 0157). Mutation: restore one placeholder's posture to declared - both commerce_sources tests fail naming it; restored byte for byte. Status stays PARTIAL: the acquisition adapter is billed. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): No commerce vendor now, and the row is not promoted to COMPLETE. ADR 0157 decision 6 deferred the choice; it did not refuse the class. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2011",
@@ -268,7 +268,7 @@
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence",
       "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs:575 an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and_weighs_nothing"
     ],
-    "gap": "2026-10-24: the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The pipeline is built as the contract says, on all three production callers. Every poll is gated through the admitted set before the world model sees it, and a claim batch leaves one knowledge delta. Nothing is left to code, and the row stays PARTIAL until a deployed connector poll is seen producing a delta. Like R12-DATA-1033, that waits on a connector arm in a zone allowed to reach a source, not on a NAT. Closes on: Correct depends_on: R12-EVID-2031's gating exists at the three admit_world_records callers. Replace the gap's NAT premise with the zone-policy and deployment fact. Close the row when a deployed scout or arm polls a catalogued connector and the deployed log shows the admitted records, evidence.admitted, and one KnowledgeDelta on Topic::WorldModelUpdated for the batch. Earlier: 2026-10-24: the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -281,7 +281,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_runtime && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": "Regraded 2026-10-24 to the ADR 0152 d8 wording after running both verification commands (45 and 10 passed). Mutation on the production caller: taking zero deltas in the journalling loop of Platform::absorb_evidence fails a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys (knowledge_deltas 0, expected 2). AUDIT-2 2026-10-24: regraded, the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta"
+    "notes": "Regraded 2026-10-24 to the ADR 0152 d8 wording after running both verification commands (45 and 10 passed). Mutation on the production caller: taking zero deltas in the journalling loop of Platform::absorb_evidence fails a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys (knowledge_deltas 0, expected 2). AUDIT-2 2026-10-24: regraded, the connector acquisition path is not enabled in any committed deployment (deepbrain_connector / market_data_connector null in every environment tfvars), so no deployed process fetches, checks and distils a source into a knowledge delta Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The pipeline is built as the contract says, on all three production callers. Every poll is gated through the admitted set before the world model sees it, and a claim batch leaves one knowledge delta. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2013",
@@ -413,7 +413,7 @@
       "backend/crates/services/qip-data-finder/src/quality.rs:87 SourceCost",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:492 a_registered_source_records_a_finding_for_every_inspection_attribute_in_its_trail"
     ],
-    "gap": "2026-10-24: The finder is real and mutation-checked, but a deployed deep brain inspects no candidate until an operator commits source-candidates.json and sets source_candidates_file. Closing: a committed environment names a candidate catalogue so a deployed process runs the inspections, or the row is narrowed to the DataFinder library.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The finder inspects every candidate from probe evidence before registration, and the unit check holds. I do not make the deep brain probe a committed catalogue by default. Naming a candidate file and a cadence is the reviewed protected switch ADR 0157 left to me, and a binary default would take it around that review and point every deployment's probe at a host its zone cannot reach. The row is not narrowed to the library, and it stays PARTIAL until a deployed pass records a trail. Closes on: Rewrite the gap: 'Library and unit check met; no deployed process assesses a candidate. Closing needs a committed environment naming a candidate file of recorded sources only, plus a discovery cadence, for a workload whose zone holds a reviewed information-source egress route (today only ingestion-discovery; R12-DATA-8112's scout). That is a protected tfvars change made after dev serves.' Close the row when a deployed pass's log shows a registered source whose trail records a finding for access, terms, schema, freshness, cost, uniqueness and manipulation. Earlier: 2026-10-24: The finder is real and mutation-checked, but a deployed deep brain inspects no candidate until an operator commits source-candidates.json and sets source_candidates_file. Closing: a committed environment names a candidate catalogue so a deployed process runs the inspections, or the row is narrowed to the DataFinder library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -424,7 +424,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. AUDIT-4: 2026-10-24 regraded, DataFinder inspects candidates only from QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH, rendered from source_candidates_file, commented out in dev and absent elsewhere, so a deployed deep brain inspects nothing."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. AUDIT-4: 2026-10-24 regraded, DataFinder inspects candidates only from QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH, rendered from source_candidates_file, commented out in dev and absent elsewhere, so a deployed deep brain inspects nothing. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The finder inspects every candidate from probe evidence before registration, and the unit check holds. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2019",
@@ -502,14 +502,17 @@
   {
     "id": "R12-DATA-2022",
     "status": "PARTIAL",
-    "current": "A source is scored over every series the deep brain already holds: SourceAlphaDesk::score passes the own stream's change and every other arm's change on the same subject, aligned by sense number, to SourceAlphaHistory::score_over, which computes incremental_information_gain_over as 1 - R² of the candidate regressed on all of them by OLS (qip_numerics::stats::ols), leaving out an incumbent an earlier one already explains exactly so the fit stays non-singular. Two connectors duplicating each other now both earn no gain while an independent third still does. An arm that did not print at every sense of the candidate's window is left out rather than interpolated.",
+    "current": "A source is scored over every series the deep brain already holds: SourceAlphaDesk::score passes the own stream's change and every other arm's change on the same subject, aligned by sense number, to SourceAlphaHistory::score_over, which computes incremental_information_gain_over as 1 - R² of the candidate regressed on all of them by OLS (qip_numerics::stats::ols), leaving out an incumbent an earlier one already explains exactly so the fit stays non-singular. Two connectors duplicating each other now both earn no gain while an independent third still does. An arm that did not print at every sense of the candidate's window is left out rather than interpolated. The desk is default-on: qip-deepbrain src/source_alpha.rs DEFAULT_SOURCE_ALPHA_EVERY = 1, which source_alpha_every returns when QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is unset, and EvolutionEngine::maybe_score_sources (evolution.rs) journals every scored round on Topic::SourceAlphaScored through Platform::journal_source_alpha_round.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/source_alpha.rs incremental_information_gain_over, SourceAlphaHistory::score_over",
       "backend/crates/apps/qip-deepbrain/src/source_alpha.rs SourceAlphaDesk::score, aligned_changes",
       "backend/crates/apps/qip-deepbrain/src/source_alpha.rs tests::two_connectors_duplicating_each_other_both_earn_no_gain_over_the_sources_already_held",
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs::the_gain_over_every_held_series_matches_the_pairwise_one_and_survives_a_duplicate_incumbent"
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs::the_gain_over_every_held_series_matches_the_pairwise_one_and_survives_a_duplicate_incumbent",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs:57 DEFAULT_SOURCE_ALPHA_EVERY = 1, source_alpha_every",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs maybe_score_sources, tests::the_deep_brain_scores_every_connector_on_its_cadence_and_a_replay_of_the_log_reproduces_the_round",
+      "backend/crates/runtime/qip-kernel/src/source_alpha_record.rs:55 Platform::journal_source_alpha_round"
     ],
-    "gap": "The desk runs in no deployed process: QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is unset in catalogue.tf by a recorded decision (qip-acceptance manifest_wiring.rs THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON) because deepbrain_connector is null in every infrastructure/environments/*/terraform.tfvars, a protected path a lane may not edit; the score also feeds no routing or SourceScores.",
+    "gap": "2026-10-31 owner ruling, second pass (REGRADE_TEXT): the score is built as the requirement says and its unit check holds. The earlier gap's 'deliberately unset' is older than the code: the desk scores every cycle by default and journals each round (R12-EVID-8108). The only open item is that no committed environment gives the deep brain a connector arm. deepbrain_connector stays the reviewed, protected environment switch (commented out in dev's tfvars), no default vendor arm is chosen for the binary, and the arm waits on R12-DATA-8112's scout and the deploy, as R12-WORLD-3043 keeps it. The requirement does not ask that the score feed routing, and none is added. The manifest_wiring.rs reason correction is left to the R12-DATA-1105 and R12-EVID-8108 lane. Status stays PARTIAL until a deployed node holds an arm to score. Earlier: The desk runs in no deployed process: QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is unset in catalogue.tf by a recorded decision (qip-acceptance manifest_wiring.rs THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON) because deepbrain_connector is null in every infrastructure/environments/*/terraform.tfvars, a protected path a lane may not edit; the score also feeds no routing or SourceScores.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -520,7 +523,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-data-finder --test source_alpha && cargo +1.94.1 test -p qip-deepbrain --lib source_alpha",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L04: the own-stream-only incumbent is replaced by the union of held series. Mutations fired: taking no other arm into the incumbents (`.take(0)` on the extend) scores both copies a gain of 0.988; keeping every incumbent (the collinear check bypassed) makes the three-incumbent fit fail 'matrix is singular at column 2'. Restored byte-identical; both pass. Kept PARTIAL only because nothing deployed runs the desk."
+    "notes": "Re-graded 2026-10-18 by lane L04: the own-stream-only incumbent is replaced by the union of held series. Mutations fired: taking no other arm into the incumbents (`.take(0)` on the extend) scores both copies a gain of 0.988; keeping every incumbent (the collinear check bypassed) makes the three-incumbent fit fail 'matrix is singular at column 2'. Restored byte-identical; both pass. Kept PARTIAL only because nothing deployed runs the desk. Owner ruling 2026-10-31, second pass (REGRADE_TEXT): The score is built as the requirement says, and its unit check holds. The gap's 'deliberately unset' is older than the code: the desk now scores every cycle by default and journals each round (R12-EVID-8108). Corrected on 2026-10-31: current gains the default-on cadence and the journaled round; evidence gains DEFAULT_SOURCE_ALPHA_EVERY, maybe_score_sources with its replay test, and journal_source_alpha_round; status unchanged. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-2023",
@@ -837,7 +840,7 @@
     "verification": "cargo test -p qip-world-model --test evidence_fabric ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. AUDIT-3 2026-10-24: regraded, the origin-discount arithmetic is real and mutation-checked, but EvidenceFabric::admit runs in a deployed process only through the connector arm, which no committed environment enables"
+    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. AUDIT-3 2026-10-24: regraded, the origin-discount arithmetic is real and mutation-checked, but EvidenceFabric::admit runs in a deployed process only through the connector arm, which no committed environment enables Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Copies of one origin count once wherever evidence is weighed and the fabric's two-origin cap stands; per the skeptic the fold is tighten-only, never moving a posterior further from the prior than today's update would, because the red-team approval gate and the tournament vote read effective_confidence, and the ADR's reader list names both. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Copies of one origin count once wherever evidence is weighed: the reasoning engine's update folds each origin's items into one before applying them, and the fabric's two-origin corroboration cap stands.. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVID-2036",
@@ -877,7 +880,7 @@
       "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::evidence_of",
       "backend/crates/services/qip-market-ingestion/tests/connector_contract.rs::a_weather_reading_carries_the_stations_published_coordinates_as_its_claim_location_and_a_rate_reading_carries_none"
     ],
-    "gap": "2026-10-24: the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. ADR 0157 decision 9 stands: no coordinate is read out of free text. Routing, shipping and jurisdiction evidence carry a location only when a licensed source states one, and none is contracted (R12-DATA-1153). The weather half bites only once a deployed deep brain polls NWS through egress that decision 5 keeps closed. The row stays PARTIAL on both halves. Closes on: No code now. The gap names both halves. Weather: an ADR opens a cognition-zone route with its NAT cost named, the NWS listener is added to infrastructure/egress/envoy.yaml, the owner sets deepbrain_connector with nws-station-observations in dev tfvars, and a running node records one geographic inconsistency. Routing, shipping and jurisdiction: each needs a licensed source whose payload states coordinates (ADR 0157 record) before it can disagree with anything. Keep the ADR 0157 d9 residue named. Earlier: 2026-10-24: the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -890,7 +893,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract a_weather_reading_carries_the_stations_published_coordinates",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0157 d9. Mutations fired: restoring with_location(region string) fails the rate-reading absence assertion (left: Some(\"region:NorthAmerica\")); writing a None location in the NWS decode fails the weather assertion (left: None). Only sources whose payload states coordinates can make the check bite; no free-text extractor is built or wanted. AUDIT-2 2026-10-24: regraded, the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location"
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0157 d9. Mutations fired: restoring with_location(region string) fails the rate-reading absence assertion (left: Some(\"region:NorthAmerica\")); writing a None location in the NWS decode fails the weather assertion (left: None). Only sources whose payload states coordinates can make the check bite; no free-text extractor is built or wanted. AUDIT-2 2026-10-24: regraded, the geographic consistency check can only bite on the NWS station source, and no committed deployment polls it (connector arm null in every tfvars); no other source carries a location Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): ADR 0157 decision 9 stands: no coordinate is read out of free text. Routing, shipping and jurisdiction evidence carry a location only when a licensed source states one, and none is contracted (R12-DATA-1153). Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVID-2038",
@@ -1088,7 +1091,7 @@
       "backend/crates/libs/qip-market/src/curve.rs",
       "backend/crates/libs/qip-market/tests/volatility.rs"
     ],
-    "gap": "2026-10-24 (ADR 0157, BILLED): no acquisition for options chains, futures curves, borrow or funding. Which licensed vendor supplies them is the owner's and billed; the volatility and curve types stay without an acquirer until a recorded licence and a reviewed route exist (public-record publishers are the first terms to read). Options are refused under ADR 0050. This lane fetched from no new source.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. No vendor is chosen now for options chains, Greeks, futures curves, basis, borrow or funding. Each enters only as an ADR 0157 licence record, and options stay refused under ADR 0050. A free public-record curve enters the same way, as a record that quotes its terms, never by an agent reading the terms in my name. I ruled the same on R12-TICK-1175 and R12-TICK-2046, and it holds here. The row stays PARTIAL. Closes on: Now: replace the verification with an inspection test that maps each named type to its typed record and capture path. It carries a named pending list of the unlicensed types and fails when the list and the tree disagree, so it never lands red (the R12-TICK-1175 skeptic's form). After the owner commits a licence record per source under ADR 0157: an adapter in qip-market-ingestion behind the licence gate fills VolatilitySurface or Curve, with a capture test per type. Earlier: 2026-10-24 (ADR 0157, BILLED): no acquisition for options chains, futures curves, borrow or funding. Which licensed vendor supplies them is the owner's and billed; the volatility and curve types stay without an acquirer until a recorded licence and a reviewed route exist (public-record publishers are the first terms to read). Options are refused under ADR 0050. This lane fetched from no new source.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1099,7 +1102,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: classified BILLED, no code changed."
+    "notes": "2026-10-24 M2-DATA-AGENTS: classified BILLED, no code changed. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): No vendor is chosen now for options chains, Greeks, futures curves, basis, borrow or funding. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-2046",
@@ -1325,7 +1328,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes applied market events",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)"
     ],
-    "gap": "Durable store enabled: enable_cloud_storage is false in every environment, an owner switch.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence of a durable Cloud Storage lake, $0.30 to $6 a month (billed-plan-2026-10-19.md item 2), switched on by the owner (enable_cloud_storage = true in dev's tfvars) after the dev deploy, in the change that lands its first writer, because the archive's seven-year lock cannot be undone (R12-DATA-8125). Immutability is built and tested. In that switch change only market-class lake partitions reach R12-TICK-2056's bucket, through the class routing the corrected R12-TICK-2056 builds; internal-class partitions and every other namespace stay on the locked archive, because qip-storage maps a process's namespaces into one bucket and one lake holds both classes. Closes on: deployed evidence of a second seal refused against the real bucket (412 read as already there), a manifest re-materialised to matching checksums, and an internal segment sealed in the archive. (Skeptic's correction; the decider would have pointed the whole lake, internal history included, at the unlocked market bucket.) Earlier: Durable store enabled: enable_cloud_storage is false in every environment, an owner switch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1336,7 +1339,7 @@
     "verification": "cargo test -p qip-storage --test lake --test gcp --test outcome_lake",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - sealing with put reported as created ('both writers sealed one segment id'); file create published by write_atomic's rename (the second create reported true); ifGenerationMatch dropped ('the create was not conditional'); 412 read as created. outcome_lake's Faulty store now refuses on put_if_absent as on put, since the seal moved to that seam."
+    "notes": "2026-10-18 lane L23: mutations fired - sealing with put reported as created ('both writers sealed one segment id'); file create published by write_atomic's rename (the second create reported true); ifGenerationMatch dropped ('the create was not conditional'); 412 read as created. outcome_lake's Faulty store now refuses on put_if_absent as on put, since the seal moved to that seam. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Lake immutability is built and the row waits on a durable store, off until its first writer after the dev deploy at $0.30 to $6 a month; per the skeptic only market-class lake partitions ever reach R12-TICK-2056's bucket, while internal-class partitions and every other namespace stay on the locked archive. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-2056",
@@ -1359,7 +1362,7 @@
     "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class PROTECTED_PATCH and BILLED."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class PROTECTED_PATCH and BILLED. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Market-class lake partitions get their own bucket without a locked retention so their 90-day delete fires; per the skeptic qip-storage also routes each lake partition by RecordClass, market to the market store and internal to the archive, and the guard compares every Delete age against any retention period, locked or not. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Market-class lake partitions live in their own bucket with no locked retention so their ninety-day delete fires, and the locked event archive holds only classes that never delete.. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-2057",
@@ -1709,7 +1712,7 @@
     "verification": "cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): No automatic channel carries a deep-brain promotion to the policy issuer. A distillate the deep brain promotes reaches qip-api's trained_models slot only through the two-person release. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A deep-brain distillate reaches the policy issuer only inside its two-person signed pack, and the issuer names no model a verified pack has not released.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-2071",
@@ -2045,7 +2048,7 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18: grep for mismatch in qip-kernel falsification.rs finds nothing, so routing a mismatch to an open investigation needs a new intake there first."
+    "notes": "Checked 2026-10-18: grep for mismatch in qip-kernel falsification.rs finds nothing, so routing a mismatch to an open investigation needs a new intake there first. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Each kind of mismatch gets one paper-only consumer, named before anything carries it (ADR 0151 decision 1). Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A world/market mismatch has one paper-only consumer per kind: an investigation opens a research question, an evidence challenge asks discovery for a better source and may only lower that evidence's weight, and a relative-value hypothesis enters falsification as proposed and sizes nothing.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-2085",
@@ -2072,7 +2075,7 @@
     "verification": "cargo test -p qip-kernel --test foundry && cargo test -p qip-deepbrain --lib evolution::tests::a_fused",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutations fired: search_with_prior ignoring its prior fails the kernel test (the moving and quiet subjects propose the same ten); the engine passing the neutral prior fails the deepbrain test on the high-prior comparison."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutations fired: search_with_prior ignoring its prior fails the kernel test (the moving and quiet subjects propose the same ten); the engine passing the neutral prior fails the deepbrain test on the high-prior comparison. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The Asset, Capital and Risk brains are not new components. The Asset brain is the foundry's per-subject search, and a posterior may change only how many candidates a round proposes, each one charged to the trial ledger. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The fused posterior's Asset and Risk consumers are the foundry's per-subject search and REASON's narrowing seam, and Capital and the specialist brains do not read it while nothing new is sized.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-TICK-2086",

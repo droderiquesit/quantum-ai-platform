@@ -183,6 +183,25 @@ impl CompiledStrategy {
     pub fn warnings(&self) -> &[Warning] {
         &self.warnings
     }
+
+    /// The opportunity definitions this strategy carries (ADR 0149 decision
+    /// 7): each `Enter` rule, keyed `{strategy}/{rule}`, to the structural
+    /// digest of its compiled predicate in `program`. What a produced
+    /// `OpportunityManifest` names and a node checks before activating.
+    pub fn opportunities(&self, program: &Program) -> Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        for rule in self
+            .rules
+            .iter()
+            .filter(|rule| rule.kind == SignalKind::Enter)
+        {
+            out.insert(
+                format!("{}/{}", self.id, rule.name),
+                program.structural_digest(rule.condition)?,
+            );
+        }
+        Ok(out)
+    }
 }
 
 /// How much sharing the compiler achieved.

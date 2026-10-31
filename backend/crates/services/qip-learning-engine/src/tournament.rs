@@ -961,6 +961,27 @@ impl Tournament {
         Ok(Self::pooled(open, &weights))
     }
 
+    /// [`Self::aggregate`]'s pooling with every forecaster weighed alike —
+    /// identical distributions still one cluster — so the two differ only
+    /// by the earned weights. ADR 0149 decision 13's "unweighted" baseline
+    /// (R12-MODEL-6022): a plain mean of the forecasts would also count a
+    /// duplicated model twice, and the gap between the two would then mix
+    /// the deduplication with the influence it is meant to measure. `None`
+    /// where nobody stated probabilities.
+    pub fn equal_weight_aggregate(&self, question: &str) -> Result<Option<BTreeMap<String, f64>>> {
+        let open = self
+            .questions
+            .get(question)
+            .ok_or_else(|| Error::not_found(format!("no open question {question}")))?;
+        let weights: BTreeMap<String, f64> = open
+            .forecasts
+            .values()
+            .filter(|f| f.probabilities_bp.is_some())
+            .map(|f| (f.forecaster.clone(), 1.0))
+            .collect();
+        Ok(Self::pooled(open, &weights))
+    }
+
     /// The weight each forecaster on an open question carries in
     /// [`Self::aggregate`], and whether any of it was earned — `false` where
     /// no forecaster had earned influence and every one weighs equally
@@ -1673,6 +1694,34 @@ mod tests {
             realised_value: Some(move_bps),
             observed_at: at(day),
         }
+    }
+
+    /// R12-MODEL-6022: the equal-weight baseline pools as the aggregate does
+    /// — two forecasters stating one distribution are one cluster — and
+    /// differs from it only in the weights. A plain mean would count the
+    /// copy twice, so a comparison against it would credit the earned weights
+    /// with the deduplication too. Mutation: give every forecaster its own
+    /// cluster in `equal_weight_aggregate` (sum over forecasts, not
+    /// `Self::pooled`) — the duplicate pulls the baseline to 0.6 and the
+    /// assertion fails.
+    #[test]
+    fn the_equal_weight_baseline_counts_a_duplicated_distribution_once() -> Result<()> {
+        let mut t = Tournament::new();
+        for name in ["a", "b", "c"] {
+            t.admit(spec(name), at(0))?;
+        }
+        t.open(question("q", "calm", 0), at(0))?;
+        t.submit("q", forecast("a", "q", 8_000, 0), at(0))?;
+        t.submit("q", forecast("b", "q", 8_000, 0), at(0))?;
+        t.submit("q", forecast("c", "q", 2_000, 0), at(0))?;
+        let up = t
+            .equal_weight_aggregate("q")?
+            .and_then(|p| p.get("up").copied())
+            .expect("three stated forecasts pool");
+        // Two clusters, 0.8 and 0.2, weighed alike: 0.5 — not the plain mean
+        // of three, 0.6.
+        assert!((up - 0.5).abs() < 1e-12, "{up}");
+        Ok(())
     }
 
     /// Run `rounds` questions in `regime`, with each forecaster's up

@@ -22,6 +22,7 @@
 use qip_agents::tools::{ToolKind, ToolName, ToolPermission};
 use qip_contracts::expansion::OntologyTypeFamily;
 use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp};
+use qip_deepbrain::ambient_journal::{AmbientJournal, AmbientRecord, JournalDestination, records};
 use qip_deepbrain::discovery::{DiscoveryConfig, DiscoveryDesk};
 use qip_deepbrain::research::{FillObservation, ResearchConfig, ResearchLoop, registered_tools};
 use qip_expansion::curriculum::{State, TaskKind};
@@ -1327,6 +1328,49 @@ fn the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds() {
     );
 }
 
+/// R12-EXPAND-6056: the two coverage dimensions that are not asset classes
+/// are named too — a venue as a `Market` type, a geography as an `Entity`
+/// type — so a venue coverage gap is a gap in a type the registry holds, and
+/// a value seen twice is registered once. Mutation: skip the dimension
+/// registration loop in `sweep_ontology_over` — the first assertion fires.
+#[test]
+fn the_ontology_a_node_builds_names_every_venue_and_geography_the_coverage_map_holds() {
+    use qip_contracts::expansion::OntologyTypeFamily::{Asset, Entity, Market};
+    let map = BTreeMap::from([
+        ("Equity".to_string(), BTreeSet::from(["a".to_string()])),
+        ("venue:XSIM".to_string(), BTreeSet::from(["a".to_string()])),
+        ("venue:XNYS".to_string(), BTreeSet::from(["b".to_string()])),
+        (
+            "geography:US".to_string(),
+            BTreeSet::from(["a".to_string(), "b".to_string()]),
+        ),
+    ]);
+    assert_eq!(map.len(), 4, "premise: three dimensions, four keys");
+    let ontology = qip_deepbrain::research::sweep_ontology_over(&map).unwrap();
+    for venue in ["XSIM", "XNYS"] {
+        let latest = ontology
+            .get_latest(Market, venue)
+            .unwrap_or_else(|| panic!("{venue} is not a Market type"));
+        assert_eq!(latest.version, 1);
+        assert_eq!(
+            latest.schema,
+            format!("qip-deepbrain/research:venue:{venue}")
+        );
+    }
+    let us = ontology
+        .get_latest(Entity, "US")
+        .expect("US is an Entity type");
+    assert_eq!(us.schema, "qip-deepbrain/research:geography:US");
+    assert!(
+        ontology.get_latest(Asset, "XSIM").is_none() && ontology.get_latest(Market, "US").is_none(),
+        "a dimension's value landed in another dimension's family"
+    );
+    assert!(
+        ontology.get_latest(Asset, "Equity").is_some(),
+        "the asset class is still named"
+    );
+}
+
 /// R12-EXPAND-6056: the sweep consults the registry for the asset classes the
 /// coverage detector reads. Handed a registry that does not name one, it
 /// stops by name instead of raising a coverage gap about a class nobody
@@ -1519,5 +1563,67 @@ fn one_fill_residual_past_its_threshold_raises_exactly_one_unexplained_pnl_gap()
     assert!(
         !residual_items[0].contains("`XQUIET`"),
         "the quiet venue raised the gap: {residual_items:?}"
+    );
+}
+
+/// R12-EXPAND-6035 on the deployed loop: the campaign the sweep runs leaves
+/// one validated experiment pack on the round, naming the backtest it was
+/// fitted on, and the ambient journal writes it as a record a reviewer can
+/// reopen. Mutation: delete the `round.experiment_packs.push(pack)` arm in
+/// `sweep_over` — the round holds no pack and the `len() == 1` assertion
+/// fails; delete the `self.append(..)` in
+/// `AmbientJournal::record_experiment_packs` — the journaled count is 0.
+#[test]
+fn a_campaign_the_sweep_runs_leaves_a_validated_experiment_pack_that_the_journal_records() {
+    let mut research = deployed(BTreeMap::new());
+    let round = two_sweeps(&mut research, &fills(40.0, 0, 0.0), &fills(40.0, 8, 40.0));
+    assert_eq!(
+        round.campaigns.get("promoted"),
+        Some(&1),
+        "premise: the campaign ran to a verdict"
+    );
+    assert_eq!(
+        round.experiment_packs.len(),
+        1,
+        "{:?}",
+        round.experiment_packs
+    );
+    assert!(
+        round.experiment_packs_refused.is_empty(),
+        "{:?}",
+        round.experiment_packs_refused
+    );
+    let pack = &round.experiment_packs[0];
+    pack.validate().unwrap();
+    assert_eq!(pack.backtest_digest.len(), 64);
+    assert!(pack.backtest_samples > 0);
+    assert_eq!(pack.findings.len(), 9);
+    assert!(pack.proposal.starts_with("install"), "{}", pack.proposal);
+    assert!(
+        round.describe().contains("(1 pack(s), 0 refused)"),
+        "{}",
+        round.describe()
+    );
+
+    let mut journal = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
+    assert!(
+        records(journal.log()).unwrap().is_empty(),
+        "premise: an empty journal"
+    );
+    let written = journal.record_experiment_packs(7, &round, t0()).unwrap();
+    assert_eq!(written, 1);
+    let held = records(journal.log()).unwrap();
+    let packs: Vec<_> = held
+        .iter()
+        .filter_map(|r| match r {
+            AmbientRecord::ExperimentPack { cycle, pack } => Some((*cycle, pack)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(packs.len(), 1, "{held:?}");
+    assert_eq!(packs[0].0, 7);
+    assert_eq!(
+        packs[0].1, pack,
+        "the record is the round's pack, field for field"
     );
 }

@@ -149,11 +149,14 @@ fn names_any(crates: &Path, dirs: &[PathBuf], tokens: &[&str]) -> (usize, Vec<(S
 /// as it would appear in an app crate's production source: a socket the
 /// crate opens itself, or the mesh's raw publisher, which only
 /// `qip_mesh::spine` may drive.
-const RAW_SEND_TOKENS: [&str; 4] = [
+const RAW_SEND_TOKENS: [&str; 7] = [
     "TcpStream::connect",
+    "TcpStream::connect_timeout",
     "UdpSocket",
     "UnixStream",
+    "tokio::net",
     "MeshPublisher",
+    "MeshTransport",
 ];
 
 /// The four admitted seams, by symbol (ADR 0128 decision 4): a new
@@ -165,36 +168,91 @@ const ADMITTED_SEND_SEAMS: [&str; 4] = [
     "HttpClient",
 ];
 
-/// A process that connects to its own listener to unblock `accept` so the
-/// listener thread can see the shutdown flag. A loopback poke of the
-/// process's own socket, not a send to another process; named here so the
-/// scan stays blind to nothing else.
-const SELF_POKES: [(&str, &str); 2] = [
-    ("apps/qip-ledgerd/src/lib.rs", "TcpStream::connect"),
-    ("apps/qip-fabricd/src/lib.rs", "TcpStream::connect"),
+/// Every `(file, token)` a raw send is admitted at, and why — the whole
+/// allow-list, by file, so a new one fails the scan by name:
+///
+/// * the two self-pokes: a process connecting to its own listener to
+///   unblock `accept` so the listener thread can see the shutdown flag, a
+///   loopback poke of its own socket and not a send to another process;
+/// * the mesh spine's own publisher, which is the first admitted path
+///   (ADR 0128 decision 1), in the service that is the spine and in the
+///   cell's delta uplink, the spine's upward half;
+/// * the peer link's wire, the third admitted path, which opens its own
+///   socket because it is the one edge crate licensed to (ADR 0116);
+/// * `qip-streaming`'s `MeshTransport`, the bus registry's wrapper of the
+///   raw publisher: admitted in its own file and the registry that builds
+///   it, and nowhere else. No shipped binary selects it today — nothing
+///   outside `qip-streaming` names `TransportKind` or its registry — and
+///   that is a fact of the tree, not a guarantee of this scan: an app that
+///   asked the registry for a transport by a configured name would publish
+///   over the raw mesh without naming either type. ADR 0128 does not name
+///   this wrapper as an admitted path; whether it is deleted or amended in
+///   is the ADR's owner's call, and until then it is listed here so that a
+///   reader sees it rather than a scan that found nothing.
+///
+/// The third element is the number of recording lines a socket-opening
+/// token may have in the file, so that a second `connect` added beside an
+/// admitted one is a finding and not hidden by the first. A type name
+/// (`MeshPublisher`, `MeshTransport`) carries `None`: the count of lines
+/// naming a type moves with every refactor and a change in it is not a new
+/// send.
+const ADMITTED_RAW_SENDS: [(&str, &str, Option<usize>); 8] = [
+    ("apps/qip-ledgerd/src/lib.rs", "TcpStream::connect", Some(1)),
+    ("apps/qip-fabricd/src/lib.rs", "TcpStream::connect", Some(1)),
+    ("services/qip-mesh/src/spine.rs", "MeshPublisher", None),
+    ("edge/qip-edge/src/mesh.rs", "MeshPublisher", None),
+    (
+        "edge/qip-peer-link/src/wire.rs",
+        "TcpStream::connect_timeout",
+        Some(1),
+    ),
+    ("services/qip-streaming/src/mesh.rs", "MeshPublisher", None),
+    ("services/qip-streaming/src/mesh.rs", "MeshTransport", None),
+    (
+        "services/qip-streaming/src/registry.rs",
+        "MeshTransport",
+        None,
+    ),
 ];
 
-/// ADR 0128 decision 4 (R12-FABRIC-10177): no app crate sends across a
-/// process except through the mesh spine, the fabric producer, the peer link
-/// or a request through the transport's HTTP client to a named synchronous
-/// route. Every other way out of a process — a socket the crate opens, the
-/// mesh's raw publisher — is refused by name, in production source only
-/// (`#[cfg(test)]` modules are stripped), with the two self-pokes above as
-/// the whole allow-list.
+/// The crate groups the scan walks: every crate that is not a library.
+/// `libs/` is left to `only_the_named_libraries_open_sockets`, which holds
+/// the two libraries licensed to own sockets (ADR 0100, the redis module)
+/// to their names.
+const SCANNED_GROUPS: [&str; 4] = ["apps", "services", "runtime", "edge"];
+
+/// ADR 0128 decision 4 (R12-FABRIC-10177): no crate outside the libraries
+/// sends across a process except through the mesh spine, the fabric
+/// producer, the peer link or a request through the transport's HTTP client
+/// to a named synchronous route. Every other way out of a process — a socket
+/// the crate opens, a `tokio` socket, the mesh's raw publisher or its
+/// registry wrapper — is refused by name, in production source only
+/// (`#[cfg(test)]` modules are stripped), with `ADMITTED_RAW_SENDS` as the
+/// whole allow-list. Until 2026-10-31 the scan walked `apps/` only and
+/// missed `connect_timeout`; a service or runtime crate that sent, which an
+/// app then called through a typed API, put no token where the scan looked.
 ///
 /// Mutation: add `let _ = std::net::TcpStream::connect("127.0.0.1:1");` to
-/// any `fn` in `crates/apps/qip-api/src/main.rs` — fails naming that file.
-/// Mutation: drop a self-poke from `SELF_POKES` — fails at the premise that
-/// the scan sees it.
+/// a production `fn` in `crates/apps/qip-api/src/main.rs`, or to one in
+/// `crates/runtime/qip-kernel/src/platform.rs` — fails at the offenders
+/// assertion naming that file. Mutation: add the same line a second time
+/// inside `crates/apps/qip-ledgerd/src/lib.rs` — fails at the site count,
+/// not hidden by the admitted self-poke. Mutation: remove the peer link's
+/// entry from `ADMITTED_RAW_SENDS` (and the array length) — fails at the
+/// offenders assertion naming `edge/qip-peer-link/src/wire.rs`. Mutation:
+/// set `SCANNED_GROUPS` back to `["apps"]` — fails at the premise that the
+/// scan sees `services/qip-mesh/src/spine.rs`.
 #[test]
-fn no_app_crate_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route()
+fn no_crate_outside_the_libraries_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route()
  {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let apps = crates.join("apps");
     let mut files = Vec::new();
-    rust_files(&apps, &mut files);
+    for group in SCANNED_GROUPS {
+        rust_files(&crates.join(group), &mut files);
+    }
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
-    let mut found: Vec<(String, String)> = Vec::new();
+    // `(file, token, recording lines)`.
+    let mut found: Vec<(String, String, usize)> = Vec::new();
     let mut seams_used: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     let mut walked = 0usize;
     for file in &files {
@@ -217,48 +275,65 @@ fn no_app_crate_sends_across_a_process_except_through_the_spine_the_fabric_produ
             }
         }
         for token in RAW_SEND_TOKENS {
-            let named = source
+            let sites = source
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
-                .any(|line| {
+                .filter(|line| {
                     line.match_indices(token).any(|(i, _)| {
                         !line[..i].ends_with(is_ident)
                             && !line[i + token.len()..].starts_with(is_ident)
                     })
-                });
-            if named {
-                found.push((name.clone(), token.to_string()));
+                })
+                .count();
+            if sites > 0 {
+                found.push((name.clone(), token.to_string(), sites));
             }
         }
     }
     assert!(
         walked > 0,
         "walked no production files under {}",
-        apps.display()
+        crates.display()
     );
-    // Premise: the admitted seams are live in the apps, so the list is the
-    // platform's and not an aspiration; and the scan sees the self-pokes,
-    // so a green below is a scan that looked.
+    // Premise: the admitted seams are live in the scanned crates, so the
+    // list is the platform's and not an aspiration; and the scan sees every
+    // admitted site, so a green below is a scan that looked.
     for seam in ADMITTED_SEND_SEAMS {
         assert!(
             seams_used.contains(seam),
-            "no app names the admitted seam {seam}; the list is stale"
+            "no scanned crate names the admitted seam {seam}; the list is stale"
         );
     }
-    for (file, token) in SELF_POKES {
+    for (file, token, sites) in ADMITTED_RAW_SENDS {
+        let seen = found
+            .iter()
+            .find(|(f, t, _)| f == file && t == token)
+            .map(|(_, _, n)| *n);
         assert!(
-            found.iter().any(|(f, t)| f == file && t == token),
-            "the scan did not see {file}'s {token}; it is blind"
+            seen.is_some(),
+            "the scan did not see {file}'s {token}; it is blind, or the allow-list is stale"
         );
+        if let (Some(admitted), Some(seen)) = (sites, seen) {
+            assert_eq!(
+                seen, admitted,
+                "{file} names {token} on {seen} lines and {admitted} are admitted: a socket \
+                 was added beside the admitted one, or one was removed and the list is stale"
+            );
+        }
     }
     let offenders: Vec<_> = found
         .iter()
-        .filter(|(file, token)| !SELF_POKES.iter().any(|(f, t)| f == file && t == token))
+        .filter(|(file, token, _)| {
+            !ADMITTED_RAW_SENDS
+                .iter()
+                .any(|(f, t, _)| f == file && t == token)
+        })
+        .map(|(file, token, _)| (file, token))
         .collect();
     assert!(
         offenders.is_empty(),
-        "an app crate sends across a process outside the spine, the fabric producer, the peer \
-         link and the HTTP client: {offenders:?}"
+        "a crate outside the libraries sends across a process outside the spine, the fabric \
+         producer, the peer link and the HTTP client: {offenders:?}"
     );
 }
 

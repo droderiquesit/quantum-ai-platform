@@ -309,7 +309,7 @@
       "infrastructure/gitops/envs/dev/fastbrain.yaml",
       "infrastructure/gitops/envs/dev/deepbrain.yaml"
     ],
-    "gap": "Owner decision O24 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue). Enables: Independent scaling and a strategic service whose outage only backs up research. Costs: More services, images, identities and minimum instances.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. O24 is declined before the deploy, as ADR 0191 already decided for the world model. The three central brains, qip-api, qip-fastbrain and qip-deepbrain, stay the decomposition, each with its own RunService and scaling block. No cognitive library is split into its own Cloud Run service now. Each new service is an image, an identity and a bill, so the split takes its own ADR naming the services and their monthly cost once dev runs. The row stays PARTIAL. Closes on: After the dev deploy: an ADR names each cognitive service to split, its min and max instances and its monthly ceiling. For each one, a lane then adds an apps/* binary, a catalogue.tf entry, a RunService manifest and a workload-register entry. It adds a qip-acceptance test that each named cognitive service has its own binary and scaling block, with the mutation of folding one back into qip-kernel. Earlier: Owner decision O24 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue). Enables: Independent scaling and a strategic service whose outage only backs up research. Costs: More services, images, identities and minimum instances.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -320,7 +320,7 @@
     "verification": "inspection of infrastructure/gitops/envs/*/ RunService manifests",
     "work_item": "",
     "size": "XL",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: Split cognitive services into their own binaries/Run services if independent scaling is wanted (an architecture decision; ADR 0024's catalogue)."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: Split cognitive services into their own binaries/Run services if independent scaling is wanted (an architecture decision; ADR 0024's catalogue). Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): O24 is declined before the deploy, as ADR 0191 already decided for the world model. The three central brains, qip-api, qip-fastbrain and qip-deepbrain, stay the decomposition, each with its own RunService and scaling block. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CONTRACT-9013",
@@ -628,7 +628,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The backlog semantics are right; the service separation is simulated by a flag. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: No separate strategic service: forecasts run inside the same run_cycle; a real separate-process outage is neither built nor tested."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The backlog semantics are right; the service separation is simulated by a flag. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: No separate strategic service: forecasts run inside the same run_cycle; a real separate-process outage is neither built nor tested. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): O24 is decided without a new service. The deep brain, already its own Cloud Run service, is the strategic forecast service. Handed to lane L2 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The deep brain is the strategic forecast service: only it serves the weeks-to-years lattice rows, the fast brain never asks one, and no separate strategic service is deployed (decides O24, under ADR 0191 and ADR 0214).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-WORLD-9026",
@@ -697,7 +697,7 @@
     "verification": "cargo test -p qip-agents",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O25; gap before it: A runtime field in the manifest and a second adapter."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O25; gap before it: A runtime field in the manifest and a second adapter. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Vertex AI Agent Engine is not admitted. It is a paid managed runtime that holds agent sessions and memory outside the event log, and decision 5 keeps new billed services out. Handed to lane L2 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: An agent manifest names its runtime, the in-process host is the only runtime admitted, and Vertex AI Agent Engine waits on a funded record.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-AMBIENT-9029",
@@ -989,7 +989,7 @@
     "verification": "cargo test -p qip-acceptance --test architecture --test stress",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): IBM Quantum is reached by one identity only: a gateway workload of its own in the optimisation zone. Handed to lane L4 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: IBM Quantum is reached only by one optimisation-zone gateway identity, which alone may hold a connected hosted provider, the quantum token and ibm-quantum egress; the deep brain submits through QuantumGateway and holds none of the three.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-QUANT-9041",
@@ -1001,7 +1001,7 @@
       "services/qip-optimization-engine/tests/learning.rs::a_replayed_router_holds_the_live_routers_learning_and_a_losing_substrate_stays_stopped",
       "services/qip-optimization-engine/tests/learning.rs::every_solve_records_quality_cost_and_latency_per_run_and_the_registry_standing_moves"
     ],
-    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The router's learning and its replay stand: per substrate and size, and a losing substrate stays stopped. It cannot learn which of the five named substrates wins while GPU and TPU are unbought (decision 5), so the row stays PARTIAL. The class key is not widened ahead of a second problem class. The router compiles one class today, and ADR 0150 keeps a new family out until a sizing note exists. Closes on: No build now. Start the gap with this ruling and record that the class is instance size because one task class reaches the router. When an accelerator arm is funded under its ADR, or a second task class is admitted under ADR 0150, key RoutingLearning on (Substrate, TaskClass, size). Test: recorded_verified_outcomes_per_problem_class_change_the_routers_substrate_choice. Mutation: drop the class from the key and the test fails. Replay of the old key is kept by a migration test. Earlier: Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1012,7 +1012,7 @@
     "verification": "cargo test -p qip-kernel --test solver_routing",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap (learning from SolverBenchmarked history) is closed. Held at PARTIAL on the missing substrates, taking the lower grade. ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: The learning can only choose among CPU, quantum-inspired and a simulated QPU; GPU, TPU and hardware QPU arms do not exist, so the router cannot learn which of the listed substrates wins. Problem class is the instance size only."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap (learning from SolverBenchmarked history) is closed. Held at PARTIAL on the missing substrates, taking the lower grade. ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: The learning can only choose among CPU, quantum-inspired and a simulated QPU; GPU, TPU and hardware QPU arms do not exist, so the router cannot learn which of the listed substrates wins. Problem class is the instance size only. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The router's learning and its replay stand: per substrate and size, and a losing substrate stays stopped. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-QUANT-9042",
@@ -1254,7 +1254,7 @@
       "infrastructure/terraform/modules/data/main.tf:380-392",
       "infrastructure/environments/dev/terraform.tfvars:284"
     ],
-    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence, then a Spanner Graph ADR stating a measured need and a monthly ceiling (a separate Spanner instance, unpriced; the ledger's configuration is $2,705 to $8,140 a month) and a Spanner client admitted under ADR 0109. Spanner Graph stays declined under decision 5, as the R12-AMBIENT-9001 ADR names this row. qip-mesh's GraphStore port already exists (MemoryGraph and FileGraph, with MeshPort::Graph mapped to MeshTarget::SpannerGraph, which is refused) and has no production caller; it stays caller-less, and no agent writes the world graph today. A promotion status on the mesh Edge is a contract change, so the promoted-only write gate on GraphStore::add_edge comes with the Spanner Graph ADR, with a unit test whose mutation 'admit a scratchpad write' must fail it. No lane work now. (Skeptic's correction; the decider said no graph-store port exists.) Earlier: Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1265,7 +1265,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner graph adapter with promoted-only writes."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner graph adapter with promoted-only writes. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Spanner Graph stays declined under decision 5; per the skeptic qip-mesh's GraphStore port (MemoryGraph, FileGraph, MeshPort::Graph mapped to the refused MeshTarget::SpannerGraph) already exists with no production caller and stays caller-less, and the promoted-only write gate comes with the Spanner Graph ADR. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-9053",
@@ -1373,7 +1373,7 @@
       "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl",
       "infrastructure/environments/dev/terraform.tfvars:514 (commented)"
     ],
-    "gap": "2026-10-24 (owner decision, billed): enabling public_edge means a global address, a forwarding rule on 443 and a hostname the owner controls; environments/dev/terraform.tfvars:572 leaves it absent on purpose (the 2026-10-06 placeholder hostname was removed 2026-10-07) and qip-acceptance terraform_plan::no_environment_opens_a_public_address records the decision. A patch with an invented hostname would publish a surface nobody chose. Needs: the owner's hostname and approval; then a plan, which this lane may not run against a real project. The module's refusals are already proven by modules/public-edge/tests/public-edge.tftest.hcl.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. No public edge until I name a hostname on a domain I own and have delegated to Cloud DNS. No lane invents one, because a hostname in a tfvars file is the switch that allocates a global address and opens 443. The module and its refusals stay as built, and the row stays PARTIAL, as R12-API-8054 already decided for the same chain. Closes on: The owner delegates a domain they own to Cloud DNS and approves the LB, Cloud Armor and CDN monthly cost in a priced ADR. A protected patch then sets public_edge.hostnames in infrastructure/environments/dev/terraform.tfvars. It narrows no_environment_opens_a_public_address to test, stage and prod and adds a dev plan assertion that the LB, the security policy, the CDN backend and the certificate map are created. The owner dispatches the plan. Earlier: 2026-10-24 (owner decision, billed): enabling public_edge means a global address, a forwarding rule on 443 and a hostname the owner controls; environments/dev/terraform.tfvars:572 leaves it absent on purpose (the 2026-10-06 placeholder hostname was removed 2026-10-07) and qip-acceptance terraform_plan::no_environment_opens_a_public_address records the decision. A patch with an invented hostname would publish a surface nobody chose. Needs: the owner's hostname and approval; then a plan, which this lane may not run against a real project. The module's refusals are already proven by modules/public-edge/tests/public-edge.tftest.hcl.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1384,7 +1384,7 @@
     "verification": "terraform -chdir=infrastructure/terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-24 M2-DATA-AGENTS: classified PROTECTED_PATCH then downgraded to owner decision; no patch written. No code changed."
+    "notes": "2026-10-24 M2-DATA-AGENTS: classified PROTECTED_PATCH then downgraded to owner decision; no patch written. No code changed. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): No public edge until I name a hostname on a domain I own and have delegated to Cloud DNS. No lane invents one, because a hostname in a tfvars file is the switch that allocates a global address and opens 443. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-API-9058",
@@ -1417,7 +1417,7 @@
       "infrastructure/terraform/modules/identity/variables.tf:29-32 default ENABLED",
       "infrastructure/environments/dev/terraform.tfvars:478"
     ],
-    "gap": "Owner decision O23 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable passkeys on the Identity Platform tenant: raise the provider pin or set it in the console and record it. Enables: Passkeys for operators. Costs: A provider pin change or a manual tenant change outside Terraform.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party, Google publishing the passkey methods in the Identity Toolkit v2 discovery document. MFA is already mandatory: infrastructure/terraform/modules/identity/variables.tf::mfa_state defaults to MANDATORY and admits nothing else, root variables.tf identity_mfa_state validates the same, and modules/identity/tests/mfa.tftest.hcl runs mfa_is_mandatory_by_default_with_a_factor_that_is_not_sms, optional_mfa_is_refused and mfa_off_is_refused; the row's text saying ENABLED is older than the code. Passkeys follow ADR 0038 as it stands since 2026-09-19: the methods are routed but absent from the v2 discovery document, the REST reference and the release notes, so the ADR selects its table's row three, stay on the password path, and the keyed probe can no longer select Shape A. No provider pin is raised and no tenant change is made in the console. Closes on: an uncredentialed read of identitytoolkit $discovery/rest?version=v2 that lists the passkey methods, with its revision string quoted; then ADR 0038's table is followed. (Skeptic's correction; the decider had read ADR 0038's superseded 2026-09-05 status and asked for a keyed probe on a running dev project.) Earlier: Owner decision O23 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable passkeys on the Identity Platform tenant: raise the provider pin or set it in the console and record it. Enables: Passkeys for operators. Costs: A provider pin change or a manual tenant change outside Terraform.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1428,7 +1428,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O23; gap before it: Mandatory MFA plan and passkeys."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O23; gap before it: Mandatory MFA plan and passkeys. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): MFA is already mandatory, and passkeys stay on ADR 0038's accepted row-three outcome, the password path, with no provider-pin raise and no console change, until Google's Identity Toolkit v2 discovery document lists the passkey methods; the skeptic moved the row from STAY_PARTIAL_DEPLOY because the blocker is a vendor publishing event, not a dev deploy. The skeptic overturned the decider (who ruled STAY_PARTIAL_DEPLOY); the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-9060",
@@ -1543,7 +1543,7 @@
     "verification": "cargo test -p qip-acceptance --test egress --test security_controls",
     "work_item": "",
     "size": "M",
-    "notes": "ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required. Lane N1-KERNEL-ACCEPT 2026-10-24: re-read, still owner decision O17 (design-decisions-2026-10-18.json); classed DESIGN_OPEN, no agent writes the ADR and no code changed."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required. Lane N1-KERNEL-ACCEPT 2026-10-24: re-read, still owner decision O17 (design-decisions-2026-10-18.json); classed DESIGN_OPEN, no agent writes the ADR and no code changed. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0113 §4 stands: the scouts' own project comes with the second region, not before, and node pools stay refused under ADR 0114 D4. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The scout zone gets its own VPC network with no peering or route to any other network, and its own project waits for the second region.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-9065",
@@ -1649,7 +1649,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based. ADR lane 2026-10-18: gap re-graded against decision O18; gap before it: The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued."
+    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based. ADR lane 2026-10-18: gap re-graded against decision O18; gap before it: The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued. Owner ruling 2026-10-31, second pass (WRITE_PATCH): O18 is decided once, under R12-SEC-10201's record: no agent identity pool and no per-run cloud credential. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-sec-9068-credential-workflows-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-9069",
@@ -1740,7 +1740,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L23: patch developed in a scratch worktree, 38 agent-guard tests pass; mutations fired - the shared-model refusal and the unnamed-model refusal each removed (the new test failed)."
+    "notes": "2026-10-18 lane L23: patch developed in a scratch worktree, 38 agent-guard tests pass; mutations fired - the shared-model refusal and the unnamed-model refusal each removed (the new test failed). Owner ruling 2026-10-31, second pass (WRITE_PATCH): Every agent commit names its role and its model from the instant R12-CICD-9083's lane trailer becomes required, a commit missing either is refused, and no reviewer agent shares a model with a coder agent; per the skeptic, code-reviewer moves to the one listed model that neither the coders nor security-engineer use, so code_reviewer_and_security_engineer_have_distinct_models stays unchanged and the new reviewer-against-coder test sits beside it. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-cicd-9072-role-model-trailers-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Its .claude/agents hunk stays the owner's to git apply, because the permission layer refuses that path to an agent (decision 3). Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-9073",
@@ -1819,7 +1819,7 @@
       ".github/workflows/agent-sandbox.yml",
       ".github/workflows/fleet.yml"
     ],
-    "gap": "Identity is one shared fleet-worker account, not task-scoped; the fleet worker runs a single model call rather than an agent task; agent tasks themselves do not run in these workers; no plan or apply shows the Job exists.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence (the fleet funded at ADR 0102's ceiling of at most $25 a day after dev serves, and infrastructure/fleet planned and applied), and beyond it a task-scoped identity, which needs a later ADR. ADR 0102 is not amended (R12-CICD-10168), and no development-agent task moves into a fleet worker. A fleet task runs as an ephemeral Cloud Run Job task under the keyless fleet-worker account, which IAM conditions hold to reading packets/ and HALT and writing output/ and ledger/; that shared account is unmet against the requirement's 'task-scoped'. Development-agent tasks run in the owner's sessions under the owner's identity (ADR 0098), with no ephemeral, task-scoped identity; only their acceptance commands run in agent-sandbox.yml's job, and that job's token is not their worker identity. No per-task credential is minted in the dispatcher. Closes on: a task-scoped identity under a later ADR, shown on a recorded plan and apply. (Skeptic's correction; the decider had named the sandbox job's token as the development agents' worker identity.) Earlier: Identity is one shared fleet-worker account, not task-scoped; the fleet worker runs a single model call rather than an agent task; agent tasks themselves do not run in these workers; no plan or apply shows the Job exists.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1830,7 +1830,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): ADR 0102 is not amended and no development-agent task moves into a fleet worker; per the skeptic the gap names the shared fleet-worker account as unmet against 'task-scoped' and states that development-agent tasks run in the owner's sessions with no ephemeral, task-scoped identity, only their acceptance running in agent-sandbox.yml, so the row stays PARTIAL until a task-scoped identity exists under a later ADR. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-9077",
@@ -1879,7 +1879,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old MISSING missed an existing gateway; the git history shows it predates this wave. It is dev tooling and covers worker agents, not every agent."
+    "notes": "Round-2 independent audit, 2026-10-11: Old MISSING missed an existing gateway; the git history shows it predates this wave. It is dev tooling and covers worker agents, not every agent. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Agents reach models only through the gateway, and only models on a committed approved list. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Agents reach a model only through a gateway that holds the only model grant under its own identity, admits only a committed model list, and writes a ledger the worker cannot touch.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GOV-9079",
@@ -1970,7 +1970,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (budget.usd never metered, no manifest committed) was stale. Nothing implemented; no protected path touched."
+    "notes": "2026-10-18 lane L23: register text corrected against the code; the earlier gap (budget.usd never metered, no manifest committed) was stale. Nothing implemented; no protected path touched. Owner ruling 2026-10-31, second pass (WRITE_PATCH): Every lane's sandbox run reads the lane's own committed spend ledger with the trusted agent-lanes.mjs spend and fails on a budget overrun, an unreadable line, a missing ledger or, per the skeptic, a ledger with no billed line for the lane; the session's own model spend stays unmetered and is named in the gap, so the row stays PARTIAL after a metered run until that spend is read. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-cicd-9082-lane-spend-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-9083",
@@ -2388,7 +2388,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O22; gap before it: A fuzz job (cargo-fuzz is a tool, not a crate dependency)."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O22; gap before it: A fuzz job (cargo-fuzz is a tool, not a crate dependency). Owner ruling 2026-10-31, second pass (IMPLEMENT): O22 is declined: no libfuzzer-sys and no nightly toolchain enter the build. A second toolchain and a new crate would be a standing cost and an exception to ADR 0109, for a gate the in-tree generator can carry. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-9102",
@@ -2532,7 +2532,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": "Gap corrected 2026-10-18 after reading the module and the waiver suite; status unchanged. Proposed test for either branch: infrastructure.rs::every_registry_repository_has_a_workflow_that_publishes_to_it."
+    "notes": "Gap corrected 2026-10-18 after reading the module and the waiver suite; status unchanged. Proposed test for either branch: infrastructure.rs::every_registry_repository_has_a_workflow_that_publishes_to_it. Owner ruling 2026-10-31, second pass (WRITE_PATCH): Publish to the two repositories; do not remove them. Deleting them would be a destructive apply and would rewrite the waiver test, and the requirement names both. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-cicd-9107-publish-packages-and-bundles-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-9108",
@@ -2712,7 +2712,7 @@
     "verification": "cargo test -p qip-kernel --test self_observation",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O21; gap before it: Wire into promotion and rollback."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O21; gap before it: Wire into promotion and rollback. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): O21 is admitted narrowly: a person-dispatched deploy.yml run moves traffic back to the previous promoted revision when the release decision refuses or cannot be read, and drafts the incident for a person; per the skeptic the ADR names the decision's source as the series pushed under ADR 0121 over a stated soak window, an unobserved window reads as unreadable, and the row closes only on a dev run in which an induced regression moved traffic back. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A dispatched deploy reverts its own release to the previous promoted revision when the plane's release decision refuses or cannot be read, drafts the incident for a person, and no controller or agent rolls back.. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Its protected part is written as docs/blueprint/lanes/l6-cicd-9115-post-deploy-revert-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-9116",
@@ -2991,7 +2991,7 @@
       "infrastructure/terraform/tests/security.tftest.hcl:234",
       "backend/crates/libs/qip-transport/src/tls.rs:1-42"
     ],
-    "gap": "CAS is off in every environment (no tfvars sets certificate_authority), so nothing issues a certificate. No path delivers a CAS leaf to a Fabric/VM workload: the execution-node startup template has no cert fetch and its test runs QIP_TLS_MODE=plaintext. No fabric link is configured for mTLS in any deployment.",
+    "gap": "2026-10-31 owner ruling, second pass (FUND_THEN_DEPLOY): missing: a funded resource already decided, the CA Service pool at $200 to $250 a month (cost_usd_month 250), funded under R12-SEC-10054 and not counted again, then deployment evidence. This is the CA Service pool I funded under R12-SEC-10054 at $200-$250 a month. It is the same pool, not a second one. It goes on with dev's billing, with the organisation string that ruling names rather than the placeholder in dev's tfvars. The row stays PARTIAL until a deployed fabric or node link runs mutual TLS on a leaf the pool issued. Closes on: Regrade the gap's delivery clause now. Once dev billing is on, the owner uncomments certificate_authority in dev tfvars (protected), with location us-east4 and the organisation string R12-SEC-10054 names. The owner dispatches infra.yml plan, then apply. Then the owner deploys fabricd and one execution node with QIP_TLS_MODE=cas and commits the issued-leaf evidence. Earlier: CAS is off in every environment (no tfvars sets certificate_authority), so nothing issues a certificate. No path delivers a CAS leaf to a Fabric/VM workload: the execution-node startup template has no cert fetch and its test runs QIP_TLS_MODE=plaintext. No fabric link is configured for mTLS in any deployment.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3002,7 +3002,7 @@
     "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Doc defect: security.tf:104-108 says 'no Fabric link presents a certificate yet... wiring it is the transport's work'. That is stale, since qip-transport/src/tls.rs and fabricd/ledgerd mTLS now exist; the gap is issuance and delivery, not transport."
+    "notes": "Round-2 independent audit, 2026-10-11: Doc defect: security.tf:104-108 says 'no Fabric link presents a certificate yet... wiring it is the transport's work'. That is stale, since qip-transport/src/tls.rs and fabricd/ledgerd mTLS now exist; the gap is issuance and delivery, not transport. Owner ruling 2026-10-31, second pass (FUND_THEN_DEPLOY): This is the CA Service pool I funded under R12-SEC-10054 at $200-$250 a month. It is the same pool, not a second one. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-9129",
@@ -3032,7 +3032,7 @@
       "infrastructure/terraform/modules/public-edge/main.tf:68,98,109,130",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:27,453"
     ],
-    "gap": "Enable and deploy. Corrected 2026-10-24: Cloud Armor tests pass (security_controls 12 passed); no public edge is enabled and enabling is a protected-path tfvars change plus a deployment.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. Every Cloud Armor policy in Terraform carries WAF, adaptive protection and a per-address rate ban, and that stays tested. The one internet-facing surface, the console on run.app, has no policy. It stays on IAP under ADR 0095 until I own and delegate a domain (R12-API-8054). The load balancer and Cloud Armor are billed and unpriced, and the project's Cloud Armor quota is zero. So the row stays PARTIAL, and no other service may go public meanwhile. Closes on: Correct the gap to name qip-dev-portal as the uncovered surface. The row closes after all of these: the owner delegates a domain, obtains Cloud Armor quota, and names the LB and Armor monthly cost. Then a protected tfvars change sets gitops_portal_hostname (or public_edge) in dev, so the portal sits behind a Cloud Armor policy, and portal.yaml ingress becomes INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER. A real plan must show this. Earlier: Enable and deploy. Corrected 2026-10-24: Cloud Armor tests pass (security_controls 12 passed); no public edge is enabled and enabling is a protected-path tfvars change plus a deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3043,7 +3043,7 @@
     "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): Every Cloud Armor policy in Terraform carries WAF, adaptive protection and a per-address rate ban, and that stays tested. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-9131",
@@ -3090,7 +3090,7 @@
     "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (IMPLEMENT): I do not buy the Security Command Center tier. Premium or Enterprise is a billed activation made at the organisation, and it stays declined under decision 5 of 2026-10-25, as R12-GCP-9086 already ruled. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-9133",
@@ -3120,7 +3120,7 @@
     "evidence": [
       "infrastructure/terraform/security.tf:291 inspect template; :334 discovery_config count = sdp_on"
     ],
-    "gap": "Enable over the lake/analytics with a plan. sensitive_data_protection is null in every environment tfvars (protected path infrastructure/environments/**) and a real plan against a project is needed to show the templates render; no in-repo code change closes it.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. R12-SEC-10056 already decided this. The stores are scanned only once a monthly discovery cost is named and funded, after the dev deploy, and today nothing names that cost. The templates and the discovery config stay declared and off, and the row stays PARTIAL. Closes on: Correct the evidence to security.tf:420, :442 and :463 and to the security.tftest.hcl runs, and mark the plan check as asserted. The gap opens with three things still missing: a monthly DLP-discovery cost, to be named; the owner setting sensitive_data_protection in the protected dev tfvars after dev is deployed and holds a lake bucket or analytics dataset to profile; and deployment evidence of one discovery run. No code is needed. Earlier: Enable over the lake/analytics with a plan. sensitive_data_protection is null in every environment tfvars (protected path infrastructure/environments/**) and a real plan against a project is needed to show the templates render; no in-repo code change closes it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3131,7 +3131,7 @@
     "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: outside the lane territory (Terraform, protected paths, GCP plan); left PARTIAL."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: outside the lane territory (Terraform, protected paths, GCP plan); left PARTIAL. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): R12-SEC-10056 already decided this. The stores are scanned only once a monthly discovery cost is named and funded, after the dev deploy, and today nothing names that cost. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-9135",
@@ -3270,7 +3270,7 @@
     "verification": "cargo test -p qip-telemetry-drain; cargo test -p qip-api --test openobserve; cargo test -p qip-acceptance --test manifest_wiring the_otlp_exporter",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from the three existing openobserve.rs copies, manifest_wiring.rs and the egress bootstrap; nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §5.1-5.4. Mutation: a second pub fn export_once restored in one app fails the single-definition scan (fired and restored). Changed expectations: the byte-identical copy pins in qip-fastbrain and qip-deepbrain tests/openobserve.rs are removed, as ADR 0156 5.3 directs, replaced by the structural single-definition check; two acceptance tests that read the apps' openobserve.rs for the trace-export premise and the endpoint set now read the shared crate's file (the same properties, one home), and each app's thin module is held to build on it. The unit test that wrote a credential file moved to the crate's tests/ directory (library sources may not name std::env) and now reads the Authorization header off a real socket."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the three existing openobserve.rs copies, manifest_wiring.rs and the egress bootstrap; nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §5.1-5.4. Mutation: a second pub fn export_once restored in one app fails the single-definition scan (fired and restored). Changed expectations: the byte-identical copy pins in qip-fastbrain and qip-deepbrain tests/openobserve.rs are removed, as ADR 0156 5.3 directs, replaced by the structural single-definition check; two acceptance tests that read the apps' openobserve.rs for the trace-export premise and the endpoint set now read the shared crate's file (the same properties, one home), and each app's thin module is held to build on it. The unit test that wrote a credential file moved to the crate's tests/ directory (library sources may not name std::env) and now reads the Authorization header off a real socket. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): qip-ledgerd adopts the shared drain now, as ADR 0156 §5.5 directs. The reflex node does not. qip-telemetry-drain is a Lane 1 crate, and ADR 0116 says a second hosted Lane 1 crate reopens the sidecar rather than widening the hosted set, so the node's OTLP export waits on that record. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: qip-ledgerd adopts the shared OTLP drain, the reflex node links no exporter until a sidecar record under ADR 0116, and every binary without an exporter is named on a committed list that holds the row open.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-OBS-9141",
@@ -3437,23 +3437,28 @@
   },
   {
     "id": "R12-OBS-9148",
-    "status": "MISSING",
-    "current": "Mirroring refused by ADR 0100 §3; no mirror-lag metric.",
+    "status": "PARTIAL",
+    "current": "qip_fabricd::mirror::Mirror drives plan_copy from one in-process Broker to another, copying committed source batches into <source-region>.<stream> and advancing its checkpoint only on the target's acknowledgement. Each pass records, for every stream whose partitions it could measure, qip_fabric_mirror_lag_records (source committed bound minus checkpoint, summed over partitions) and qip_fabric_mirror_lag_seconds (age by the injected clock of the oldest uncopied committed record) labelled {source_region, stream}, bounded structurally: only Mirror::new mints a MirrorLabel, after checking MirrorConfig's region list and committed stream set.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:136"
+      "backend/crates/apps/qip-fabricd/src/mirror.rs",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs FabricdTelemetry::mirror_lag",
+      "backend/crates/libs/qip-observability/src/metrics.rs names::FABRIC_MIRROR_LAG_RECORDS, names::FABRIC_MIRROR_LAG_SECONDS",
+      "backend/crates/apps/qip-fabricd/tests/mirror.rs::while_the_link_is_cut_the_source_keeps_acknowledging_and_both_mirror_lag_series_grow",
+      "backend/crates/apps/qip-fabricd/tests/mirror.rs::a_mirror_naming_a_region_or_stream_outside_its_configuration_is_refused_at_construction",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_wire_format.rs PINNED_MIRROR_ROLE"
     ],
-    "gap": "qip_fabric_mirror_lag_records and qip_fabric_mirror_lag_seconds from the fabric mirror (ADR 0120), labels bounded by region list and committed stream set, with a test.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-31 lane L6-platform, under the owner's ruling (ADR 0119 §3; second region parked, decision 4): the role and both series are built and proven on two brokers on one host, and the row rises to PARTIAL and no further. No environment starts the role (main.rs untouched, no env var), and StreamPolicy still refuses every mirroring policy (C8, 'fabric-mirror is not built'), so the series reach no deployed process. Not built: the ADR 0119 Gap record journal (the role refuses to copy past a gap), a durable checkpoint (in memory; restart re-sends and relies on the target's producer dedup, untested), the mTLS MirrorSource, the managed committed bound. Previous gap: qip_fabric_mirror_lag_records and qip_fabric_mirror_lag_seconds from the fabric mirror (ADR 0120), labels bounded by region list and committed stream set, with a test. Skeptic 2026-10-31 (HOLDS, one correction applied): a stream with a partition that fails to measure (an unreachable source, a source clock ahead of the mirror's) is skipped for that pass, so its gauges keep their last value rather than reading as stale; that path, multi-partition streams and restart dedup are not tested.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-fabricd --test mirror; cargo test -p qip-acceptance --test event_fabric_wire_format",
     "work_item": "",
     "size": "S",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): ADR 0119 §3 already decided this: the mirror and its lag series are built and proven now on one host and deployed only at a second region, which stays parked (decision 4). Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): ADR 0119 §3 already decided this: the mirror and its lag series are built and proven now on one host and deployed only at a second region, which stays parked (decision 4). Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. 2026-10-31 lane L6-platform: mutation-verified. Deleting the mirror_lag call in Mirror::pass fails the link-cut test (records gauge 'left: None right: Some(0.0)'); deleting the seconds gauge alone fails it at the seconds assert; advancing the checkpoint without an acknowledgement fails 'a copy crossed a cut link'; disabling the region or stream bound fails the construction test; an .encode( in the role fails event_fabric_wire_format (FABRIC-038)."
   },
   {
     "id": "R12-OBS-9149",
@@ -3640,7 +3645,7 @@
     "verification": "cargo test -p qip-kernel --test self_observation",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: a qip-cli release-gate reading a snapshot nothing serves would be a gate that never blocks (an objective nothing fed never blocks, by design). Needs, in order: an API route serving the ObjectiveLedger snapshot, a qip-cli release-gate subcommand reading it, then the deploy.yml step (protected; patch for the owner). Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: a qip-cli release-gate reading a snapshot nothing serves would be a gate that never blocks (an objective nothing fed never blocks, by design). Needs, in order: an API route serving the ObjectiveLedger snapshot, a qip-cli release-gate subcommand reading it, then the deploy.yml step (protected; patch for the owner). Kept PARTIAL. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A spent budget refuses promotion of that plane and no other. The check runs at the Kargo promotion out of a stage, where ADR 0036 puts promotion, beside the paper-ceiling step. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A spent error budget refuses promotion of its own plane only: qip-api serves each plane's release standing read-only, the Kargo promotion out of a stage reads it, and a standing that cannot be read refuses.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-OBS-9157",
@@ -3811,7 +3816,7 @@
     "verification": "cargo test -p qip-deepbrain --lib a_referenced_extent_is_refetched_on_cadence_and_a_withdrawn_one_is_marked_unretrievable",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L22: refetch-health recording added and the lineage recording found already in place (the row said neither had a site). Mutations that fired: delete the record call in ConnectorArm::refetch; invert the served share. DATA_REFETCH_HEALTH doc now says the gauge is the served share (it said 0/1 per attempt)."
+    "notes": "2026-10-18 L22: refetch-health recording added and the lineage recording found already in place (the row said neither had a site). Mutations that fired: delete the record call in ConnectorArm::refetch; invert the served share. DATA_REFETCH_HEALTH doc now says the gauge is the served share (it said 0/1 per attempt). Owner ruling 2026-10-31, second pass (IMPLEMENT): All six data objectives are declared with targets. Each one is bound to a series recorded where its fact happens, so a deleted recording site reads unmeasured. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-OBS-9164",
@@ -3909,7 +3914,7 @@
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:320"
     ],
-    "gap": "Replication and lease promotion exist for P0/P1 (ADR 0111). Needs the game day on a deployed multi-instance fabric and the Reflex standby promotion drill.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. This row takes R12-RES-8038's ruling. Zone loss is proven on a standby in a second zone, with a lease store it can trust, and on RF3 replicas. None of that is bought before the first node is up. The quorum is the regional Spanner commit (R12-FABRIC-8091), and decision 5 still declines it. The standby's promotion waits on ADR 0137's GCS lease and a second node. The row stays PARTIAL until a zone-loss drill keeps every quorum-acked record and promotes the standby. Closes on: No new lane work; the GcsLeaseStore slice is already 9114 and 8069's. The row closes when an ADR prices the managed log and the owner funds it, and the first execution node and a standby in another zone are deployed. A zone-loss game day must then show that every quorum-acked P0/P1 record survives and that the standby promotes over the GCS lease after the old holder's fence lands. Commit that record. Earlier: Replication and lease promotion exist for P0/P1 (ADR 0111). Needs the game day on a deployed multi-instance fabric and the Reflex standby promotion drill.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3920,7 +3925,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): This row takes R12-RES-8038's ruling. Zone loss is proven on a standby in a second zone, with a lease store it can trust, and on RF3 replicas. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-RES-9169",
@@ -4168,7 +4173,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:331",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:373"
     ],
-    "gap": "Shard assignment is ADR 0136's centre-signed book ownership (a books slot in the policy payload, the cell's refusal at the pass gate, the centre's one-owner check): none of it is in code (grep -rn 'BookOwnership' backend/crates finds nothing). Terraform shard keying of execution_nodes needs infrastructure/terraform/variables.tf, a protected path, and execution_nodes is {} in every tfvars. Corrected 2026-10-24.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. A shard is a node, and Terraform does not record which books a node owns. ADR 0136 makes that the centre's signed assignment. The execution_nodes key is the shard, and each node already carries its own specific reservation. So I add no shard key to the protected variables. A second node is a second billed reservation that ADR 0035 and decision 5 do not fund, so the row stays PARTIAL. The ownership slot, the cell's refusal and the centre's one-owner check are built under R12-EXEC-1067, the row ADR 0136 names. Closes on: This row gets no shard work. EXEC-1067's lane builds ADR 0136's slot, the cell refusal and the kernel's one-owner check, each mutation-tested. The row closes when four things hold. A record superseding ADR 0035 (R12-GCP-8035) funds a second node and names its monthly cost. The owner declares that node in tfvars, a protected path. A plan shows two nodes, each consuming its own specific reservation. The centre's signed payloads give the two nodes disjoint books. Earlier: Shard assignment is ADR 0136's centre-signed book ownership (a books slot in the policy payload, the cell's refusal at the pass gate, the centre's one-owner check): none of it is in code (grep -rn 'BookOwnership' backend/crates finds nothing). Terraform shard keying of execution_nodes needs infrastructure/terraform/variables.tf, a protected path, and execution_nodes is {} in every tfvars. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4179,7 +4184,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; slices: (1) BookOwnership slot and Cell gate in qip-edge/qip-contracts, (2) the centre's overlap refusal in the kernel, (3) a protected patch keying execution_nodes by owned books. None started."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE; slices: (1) BookOwnership slot and Cell gate in qip-edge/qip-contracts, (2) the centre's overlap refusal in the kernel, (3) a protected patch keying execution_nodes by owned books. None started. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): A shard is a node, and Terraform does not record which books a node owns. ADR 0136 makes that the centre's signed assignment. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-MESH-9181",
@@ -4256,7 +4261,7 @@
       "backend/crates/libs/qip-storage/tests/archive_and_rowkey.rs:20 no_generated_row_key_begins_with_a_time_component_and_keys_sort_by_entity_first",
       "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:24"
     ],
-    "gap": "enable_bigtable is false in every committed environment, so no committed plan renders the profiles; enabling it is an owner (paid-resource) switch and no Rust adapter reaches Bigtable.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Bigtable stays declined under decision 5, as I ruled on R12-RES-9174. Autoscaling, hotspot-safe row keys and the per-workload profiles exist in code. The check is a plan, and no committed environment plans an instance nobody pays for. The row stays PARTIAL, on the same precedent as R12-LEDGER-8132. Closes on: Write decision 5 and the $950-$1,300 a month floor into the gap. Trigger: a Bigtable ADR with a measured need and a ceiling, after the dev deploy. Then the owner sets enable_bigtable in a committed environment, a real plan renders the autoscaled clusters and profiles, and the row is re-graded. No lane work now. Earlier: enable_bigtable is false in every committed environment, so no committed plan renders the profiles; enabling it is an owner (paid-resource) switch and no Rust adapter reaches Bigtable.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4267,18 +4272,21 @@
     "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/scaling.tftest.hcl; cargo test -p qip-storage --test archive_and_rowkey",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 (lane L13): app profiles added; terraform test 12 passed, 0 failed. Mutation: ingest profile set to multi-cluster routing failed the run; restored byte-for-byte. Kept PARTIAL on the same precedent as R12-LEDGER-8132 (lane L02): the check is a plan and nothing committed plans the instance."
+    "notes": "2026-10-18 (lane L13): app profiles added; terraform test 12 passed, 0 failed. Mutation: ingest profile set to multi-cluster routing failed the run; restored byte-for-byte. Kept PARTIAL on the same precedent as R12-LEDGER-8132 (lane L02): the check is a plan and nothing committed plans the instance. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Bigtable stays declined under decision 5, as I ruled on R12-RES-9174. Autoscaling, hotspot-safe row keys and the per-workload profiles exist in code. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-9185",
     "status": "PARTIAL",
-    "current": "google_spanner_instance.global autoscales (autoscaling_limits min var.spanner_min_processing_units default 1000, max default 3000; targets 65% high-priority CPU, 90% storage) instead of a fixed 100 processing units; the floor variable refuses anything below one node or not a whole node, and the ceiling below the floor. Gated on enable_spanner, false everywhere; no schema.",
+    "current": "google_spanner_instance.global autoscales (autoscaling_limits min var.spanner_min_processing_units default 1000, max default 3000; targets 65% high-priority CPU, 90% storage) instead of a fixed 100 processing units; the floor variable refuses anything below one node or not a whole node, and the ceiling below the floor. Gated on enable_spanner, false everywhere. The ledger's key design exists: qip-storage src/gcp/spanner.rs declares ledger_kv (k, v) PRIMARY KEY (k), and qip-ledgerd src/store.rs prefixes the journal/ and watermark/ sequence keys with a splitmix shard over KEY_SHARDS = 16 (sharded_key, shard_of; abb587ce, R12-LEDGER-8137). The chain/<cell>/<session>/<first> family (chain_key) stays monotonic within a cell and is spread only by cell, and tail/<cell> (tail_key) is rewritten on every commit, one hot row per cell; neither is hash-sharded. No Key Visualizer reading exists.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:579 google_spanner_instance.global (autoscaling_limits :603)",
       "infrastructure/terraform/modules/data/variables.tf:131 spanner_min_processing_units",
-      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:84 spanner_autoscales_from_the_floor, :108 refused, :136 admitted"
+      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:84 spanner_autoscales_from_the_floor, :108 refused, :136 admitted",
+      "backend/crates/apps/qip-ledgerd/src/store.rs:140 KEY_SHARDS = 16, :145 shard_of, :154 sharded_key (journal/ and watermark/ only); :1731 chain_key and :1735 tail_key unsharded",
+      "backend/crates/apps/qip-ledgerd/tests/operations_on_the_stream.rs:203 consecutive_commits_never_write_sequence_keys_that_sort_in_write_order (journal/ only; mutation: write journal/<sequence> without the shard prefix)",
+      "backend/crates/libs/qip-storage/src/gcp/spanner.rs:45 ledger_kv (k, v) PRIMARY KEY (k)"
     ],
-    "gap": "No schema or key design exists to eliminate hotspots (the ledger adapter is R12-LEDGER-8132/8137), the floor of one node is a minimum rather than a size measured against the close, and enable_spanner is false in every committed environment (owner switch).",
+    "gap": "2026-10-31 owner ruling, second pass (REGRADE_TEXT): enable_spanner stays false under decision 5, at $2,705 to $8,140 a month (billed-plan-2026-10-19.md item 7; consistent with R12-LEDGER-7009), and the 1000-unit floor is a minimum not yet measured against a close. The earlier 'no schema or key design exists' is older than the code: the journal and watermark families are hash-sharded and the journal family is tested. The schema does not yet eliminate hotspots: chain/<cell>/... is monotonic per cell and tail/<cell> is one hot row per cell, neither sharded, so that clause is not met, and no Key Visualizer reading exists until an instance runs. Status stays PARTIAL. Earlier: No schema or key design exists to eliminate hotspots (the ledger adapter is R12-LEDGER-8132/8137), the floor of one node is a minimum rather than a size measured against the close, and enable_spanner is false in every committed environment (owner switch).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4289,7 +4297,7 @@
     "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/scaling.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 (lane L13): autoscaling_config replaces processing_units = 100; google_kms_crypto_key.records now also counts on enable_spanner, because enabling Spanner alone indexed an empty tuple and failed the plan. Mutations: restoring processing_units = 100 failed 'must autoscale'; deleting the floor clause failed spanner_floor_below_one_node_is_refused ('Missing expected failure') once the refused value was 0 (with 100 the whole-node clause also refused it and the mutation survived, so the value was changed); restored byte-for-byte."
+    "notes": "2026-10-18 (lane L13): autoscaling_config replaces processing_units = 100; google_kms_crypto_key.records now also counts on enable_spanner, because enabling Spanner alone indexed an empty tuple and failed the plan. Mutations: restoring processing_units = 100 failed 'must autoscale'; deleting the floor clause failed spanner_floor_below_one_node_is_refused ('Missing expected failure') once the refused value was 0 (with 100 the whole-node clause also refused it and the mutation survived, so the value was changed); restored byte-for-byte. Owner ruling 2026-10-31, second pass (REGRADE_TEXT): The ledger's journal/ and watermark/ keys are hash-sharded over KEY_SHARDS = 16 and the journal family is tested, but per the skeptic chain/<cell>/... stays monotonic per cell and tail/<cell> is one hot row per cell, so 'schema eliminates hotspots' is not met; enable_spanner stays false under decision 5 and the row stays PARTIAL. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Corrected on 2026-10-31: current and evidence gain the ledger_kv schema and the sharded journal/watermark keys, with the skeptic's finding that the chain and tail families are not sharded; the gap no longer says no key design exists; status unchanged. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FINOPS-9186",
@@ -4344,7 +4352,7 @@
       "backend/crates/services/qip-training/tests/training.rs a_job_spec_carries_its_queue_and_capacity_and_a_critical_spot_job_or_a_full_queue_is_refused",
       "backend/crates/services/qip-training/tests/vertex.rs a_submit_beyond_its_queue_quota_is_refused_before_any_request"
     ],
-    "gap": "Quota-aware scheduling has no production caller: no binary submits through a TrainingProvider (the deep brain fits with LocalTrainer in process; Vertex is disabled), so no queue quota is declared in any deployment and no job is ever placed on Spot.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Job specs carry a queue, a capacity and a priority, and a critical job on Spot is refused; that stands. I will not label an in-process fit as Spot, and I will not route it through a quota that a sequential desk can never fill, because neither is a placement. Spot and queue quotas arrive with a managed trainer, and Vertex stays off under decision 5 and R12-MODEL-9002. The row stays PARTIAL until that trainer is funded. Closes on: Nothing is built now. When an ADR funds Vertex with a measured need and a monthly ceiling (decision 5), R12-MODEL-9002's trainer setting submits the deep brain's fits through VertexAiProvider with declared QueueQuotas. On that path, challenger fits run on Spot at Standard priority and baseline fits run OnDemand. The row closes on a test that a submit beyond its queue's quota is refused on that path, mutation-checked by removing the quotas. Earlier: Quota-aware scheduling has no production caller: no binary submits through a TrainingProvider (the deep brain fits with LocalTrainer in process; Vertex is disabled), so no queue quota is declared in any deployment and no job is ever placed on Spot.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4355,7 +4363,7 @@
     "verification": "cargo test -p qip-training --test training --test vertex",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18. Mutations: removing the Spot-and-critical refusal lets LocalTrainer fit a critical Spot job; counting only Running jobs against the local quota admits a second queued job. Closing needs a production scheduler that submits through a provider with declared quotas."
+    "notes": "Lane L21 2026-10-18. Mutations: removing the Spot-and-critical refusal lets LocalTrainer fit a critical Spot job; counting only Running jobs against the local quota admits a second queued job. Closing needs a production scheduler that submits through a provider with declared quotas. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Job specs carry a queue, a capacity and a priority, and a critical job on Spot is refused; that stands. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FINOPS-9189",

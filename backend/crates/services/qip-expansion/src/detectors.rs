@@ -16,7 +16,7 @@
 //! socket or the environment, so a sweep replays from the readings alone.
 
 use crate::gap::{GapTrigger, Observation, Wanting};
-use qip_contracts::expansion::TheoryDelta;
+use qip_contracts::expansion::{CrossDomainHypothesis, TheoryDelta};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,6 +58,9 @@ pub enum Origin {
     /// A rule the symbolic pack refused a thesis on, where the thesis then
     /// resolved as a call the grader credited.
     TheoryContradiction,
+    /// A chain of recorded relationships crossing three or more domains
+    /// that the causal graph does not yet claim end to end.
+    CrossDomainSynthesis,
 }
 
 impl Origin {
@@ -77,6 +80,7 @@ impl Origin {
             Self::ContestedEvidence => "detector:contested_evidence",
             Self::MissingCausalLink => "detector:missing_causal_link",
             Self::TheoryContradiction => "detector:theory_contradiction",
+            Self::CrossDomainSynthesis => "detector:cross_domain_synthesis",
         }
     }
 }
@@ -243,6 +247,35 @@ pub fn model_drift(drifted: &[String]) -> Vec<Observation> {
                 format!("model `{reference}` drifted past its threshold"),
                 "models",
                 vec![format!("model:{reference}")],
+                1.0,
+            )
+        })
+        .collect()
+}
+
+/// One gap per world-model partition whose `WorldModelState` passed its
+/// expiry with no successor (ADR 0227, R12-CONTRACT-7075): `expired` names
+/// the partition's scope and the model that last stated it. An expired
+/// state is a model that stopped describing its data — the same want as a
+/// drifted one, a re-estimation — so it raises the same trigger. The gap
+/// queues work; it moves no size and chooses no action.
+pub fn world_state_expired(expired: &[(String, String)]) -> Vec<Observation> {
+    let distinct: BTreeSet<(&str, &str)> = expired
+        .iter()
+        .map(|(scope, model)| (scope.as_str(), model.as_str()))
+        .collect();
+    distinct
+        .into_iter()
+        .map(|(scope, model)| {
+            observe(
+                Origin::ModelDrift,
+                GapTrigger::ModelDrift,
+                Wanting::Model,
+                format!(
+                    "the world-model state of `{scope}` from `{model}` expired with no newer state"
+                ),
+                "models",
+                vec![format!("world_state:{scope}"), format!("model:{model}")],
                 1.0,
             )
         })
@@ -712,6 +745,47 @@ pub fn theory_contradictions(deltas: &[TheoryDelta]) -> Vec<Observation> {
                 "reasoning",
                 evidence,
                 (deltas.len() as f64 / THEORY_CONTRADICTIONS_FOR_FULL_SEVERITY as f64).min(1.0),
+            )
+        })
+        .collect()
+}
+
+/// Cross-domain hypotheses the world model synthesised, read as causal gaps
+/// (R12-EXPAND-6031): one observation per chain the causal graph does not
+/// claim end to end, citing every node, hop and source so the gap carries
+/// the lineage of the facts it rests on. A chain every hop of which is
+/// already claimed is not raised — the platform believes it, and there is
+/// nothing wanting. Severity is the share of hops unclaimed, so a chain the
+/// graph half believes ranks below one it has only recorded.
+pub fn cross_domain_links(hypotheses: &[CrossDomainHypothesis]) -> Vec<Observation> {
+    hypotheses
+        .iter()
+        .filter(|h| h.unclaimed_hops() > 0 && !h.edges.is_empty())
+        .map(|h| {
+            let mut evidence = vec![
+                format!("path:{}", h.path.join(">")),
+                format!("edges:{}", h.edges.join(",")),
+                format!("domains:{}", h.domains.join(",")),
+            ];
+            evidence.extend(h.sources.iter().map(|s| format!("source:{s}")));
+            observe(
+                Origin::CrossDomainSynthesis,
+                GapTrigger::LowConfidence,
+                Wanting::CausalLink,
+                format!(
+                    "`{}` reaches `{}` across {} domains ({}) in {} hop(s) the graph records, of \
+                     which the causal graph claims {}; a shock at one end may transmit to the \
+                     other and the platform has not said so",
+                    h.subject,
+                    h.path.last().map(String::as_str).unwrap_or(""),
+                    h.domains.len(),
+                    h.domains.join(" -> "),
+                    h.edges.len(),
+                    h.causally_claimed_hops
+                ),
+                "cross-domain",
+                evidence,
+                h.unclaimed_hops() as f64 / h.edges.len() as f64,
             )
         })
         .collect()

@@ -514,14 +514,16 @@
   {
     "id": "R12-MODEL-6022",
     "status": "PARTIAL",
-    "current": "ForecastMarket/SyntheticCredits (services/qip-learning-engine/src/forecast_market.rs) is the internal synthetic-capital ledger. Market share is the first influence factor, and Tournament::compute_allocation splits a budget by influence (tournament.rs:1407). The kernel computes both per regime each LEARN and journals them in the TournamentReview (runtime/qip-kernel/src/model_tournament.rs:715-724).",
+    "current": "ForecastMarket/SyntheticCredits (services/qip-learning-engine/src/forecast_market.rs) is the internal synthetic-capital ledger. Market share is the first influence factor, and Tournament::compute_allocation splits a budget by influence (tournament.rs, Tournament::compute_allocation). The kernel computes both per regime each LEARN and journals them in the TournamentReview (runtime/qip-kernel/src/model_tournament.rs (TournamentStage::learn, compute_allocation)).",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs TournamentStage::learn compute_allocation",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::a_measurement_is_journaled_and_reads_nothing_back",
       "backend/crates/services/qip-learning-engine/src/forecast_market.rs:1",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs:1407",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:720",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs Tournament::compute_allocation",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::the_equal_weight_baseline_counts_a_duplicated_distribution_once",
       "services/qip-learning-engine/src/tournament.rs::tests::a_forecaster_whose_synthetic_capital_falls_loses_weight_and_compute"
     ],
-    "gap": "Make the allocation govern something. Nothing reads the compute allocation to spend compute: it is a record (model_tournament.rs:51-56, 'Advisory'). The influence-weighted aggregate is not an input to any decision, so 'loses weight in the next decision' holds only for the tournament's own aggregate.",
+    "gap": "2026-10-31 (lane L2-INTEL), under decision 10 of docs/blueprint/lanes/wave1031-owner-rulings-2026-10-31.json (the owner-delegated rulings): ADR 0149 decision 13 stands — the influence weights and the compute allocation stay journaled records that govern nothing. The measurement d13 names is built: every LEARN that scores a question whose aggregate weights were earned journals TournamentReview.aggregate_measurement, the cumulative mean two-outcome Brier of the influence-weighted aggregate and of the same pooling with every forecaster weighed alike (Tournament::equal_weight_aggregate), both taken when the question opened and so out of sample. A LEARN that scores none journals no restatement, and the tally resets on restart (TournamentStage is not persisted). Tests: qip-kernel model_tournament.rs::a_measurement_is_journaled_and_reads_nothing_back (mutations: same weights, no earned filter, a read of the tally) and qip-learning-engine tournament.rs::the_equal_weight_baseline_counts_a_duplicated_distribution_once (mutation: a plain mean) — each fails. Remaining by ruling: only once the measurement shows the aggregate ahead may an amendment let the allocation narrow the deep brain's fit budget, never widen it; until then the allocation governs nothing, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -721,23 +723,31 @@
   },
   {
     "id": "R12-EXPAND-6031",
-    "status": "MISSING",
-    "current": "No CrossDomainHypothesis type or cross-domain search; kernel shared_cause.rs buckets exposure by causal driver from a Granger graph over the platform's own tape, which is not cross-domain synthesis.",
+    "status": "PARTIAL",
+    "current": "CrossDomainHypothesis exists (qip_contracts::expansion::CrossDomainHypothesis: subject, path, edges, domains, strength, sources, causally_claimed_hops, synthesised_at; validate/decode, MIN_DOMAINS=3). qip_world_model::synthesis::cross_domain_hypotheses walks the knowledge graph's facts holding at now (forward, no revisit, at most MAX_HOPS=4) through world-domain nodes (domain_of: entity kinds and node kinds folded onto companies/industry/commodities/fx/economy/policy/markets/shipping/weather/events/factors; platform bookkeeping nodes are not walked) and emits every chain crossing three or more distinct domains with its edge lineage and the count of hops the causal graph already claims, strongest first, at most MAX_HYPOTHESES=64. The deep brain's sweep calls it every pass and raises each chain the causal graph does not claim end to end as a GapTrigger::LowConfidence / Wanting::CausalLink gap (detectors::cross_domain_links, Origin::CrossDomainSynthesis, severity = unclaimed hops / hops). Platform::absorb_knowledge is the one intake door for extracted nodes and relationships.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/shared_cause.rs:12-20 causal driver from own price history only"
+      "backend/crates/libs/qip-contracts/src/expansion.rs CrossDomainHypothesis",
+      "backend/crates/services/qip-world-model/src/synthesis.rs cross_domain_hypotheses, domain_of",
+      "backend/crates/services/qip-expansion/src/detectors.rs cross_domain_links",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over (cross-domain block)",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs absorb_knowledge, KnowledgeRelation",
+      "backend/crates/services/qip-world-model/tests/synthesis.rs a_company_to_industry_to_commodity_path_yields_a_validated_hypothesis_with_edge_lineage",
+      "backend/crates/apps/qip-deepbrain/tests/cross_domain.rs a_recorded_cross_domain_chain_reaches_the_sweep_as_a_causal_gap_and_a_claimed_one_does_not",
+      "backend/crates/services/qip-expansion/tests/loop.rs a_cross_domain_chain_is_a_causal_gap_severe_by_its_unclaimed_hops_and_a_claimed_chain_is_not",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs chain fixture in both decoder tests"
     ],
-    "gap": "Synthesis layer and artifact.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "Audit-5 part 2 refuted by the lane's own reading, no skeptic convened: in a deployed process the knowledge graph holds only the FinancialObject nodes the kernel adds for its instruments (Platform::ensure_world_object) and no entity and no relationship, because nothing in production calls WorldModel::relate or Platform::absorb_knowledge (seed_demo_world has no production caller either), so the synthesis walks a graph with no cross-domain edge and emits nothing until a connector's extraction is wired to the door. The search is over recorded relationships only; the requirement's weather -> shipping -> basis chain needs entity kinds (Weather, Logistics) nothing yet populates.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing CrossDomainHypothesis)",
+    "verification": "cargo test -p qip-world-model --test synthesis; cargo test -p qip-deepbrain --test cross_domain; cargo test -p qip-expansion --test loop; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: triage closure landed (contract, world-model synthesis, sweep raises each chain as a gap). Mutations: commodities folded into industry in domain_of fails the synthesis test; thesis node given a domain fails the bookkeeping test; chains counted but not raised fails the deep-brain hop; claimed chain raised fails the detector test; sources unchecked fails the contract blank-field test."
   },
   {
     "id": "R12-EXPAND-6032",
@@ -805,17 +815,24 @@
     "verification": "cargo test (crate producing ModelPack lineage)",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6035",
     "status": "PARTIAL",
-    "current": "Fill-bias ResearchCampaign runs in deepbrain.",
+    "current": "Fill-bias ResearchCampaign runs in deepbrain, and every campaign that reaches a verdict now leaves an ExperimentPack (qip_contracts::expansion::ExperimentPack: campaign_id, hypothesis, feature, backtest_digest, backtest_samples, backtest_improvement_bps, findings (one per criterion), experiments, proposal, produced_at; validate/decode). CampaignResult::experiment_pack builds it from the campaign's Historical stage (the dataset the correction was fitted on, by digest and count), the Shadow window's forward improvement, the evaluation's nine findings, the experiment references and the installation or withdrawal; the sweep pushes it on the round (ResearchRound.experiment_packs, refusals counted) and the ambient journal writes one record per pack (AmbientRecord::ExperimentPack, AmbientJournal::record_experiment_packs, called from the deep brain's cycle after the sweep's own record).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:71 StrategyGenerator",
-      "backend/crates/services/qip-evolution/src/generate.rs"
+      "backend/crates/libs/qip-contracts/src/expansion.rs ExperimentPack",
+      "backend/crates/services/qip-expansion/src/executor.rs CampaignResult::experiment_pack",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over (experiment_pack arm), ResearchRound.experiment_packs",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs record_experiment_packs",
+      "backend/crates/apps/qip-deepbrain/src/node.rs research_pass (experiment-pack journal)",
+      "backend/crates/services/qip-expansion/tests/loop.rs a_campaign_produces_a_validated_experiment_pack_with_its_backtest_result",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_campaign_the_sweep_runs_leaves_a_validated_experiment_pack_that_the_journal_records",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs pack fixture in both decoder tests",
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs StrategyGenerator"
     ],
-    "gap": "No agents writing experiments/features/backtests; no ExperimentPack.",
+    "gap": "The only campaign kind is the fill-bias correction, so the only feature built is an entry-bias correction and the only backtest is its Historical fit plus bootstrap; no agent writes an experiment, builds a feature or proposes a strategy or model from a gap, and the pack's backtest is the campaign's own stages rather than the evolution engine's strategy backtest the triage closure named. The pack reaches the journal only where the deep brain's research pass runs with an ambient journal configured.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -823,10 +840,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing ResearchCampaign / ExperimentPack)",
+    "verification": "cargo test -p qip-expansion --test loop; cargo test -p qip-deepbrain --test expansion_rows; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4b-expand: ExperimentPack landed (contract, campaign constructor, round, journal). Mutations: backtest samples taken from ops not the fitted count fails the loop test; pack built and dropped in sweep_over fails the deep-brain test; journal skipping the pack fails the record assertion; findings unchecked fails the contract blank-field test. Audit-5 part 4 (agents write experiments, build features, run backtests, inspect failures, propose strategies or models) holds for the record clause only; no skeptic convened."
   },
   {
     "id": "R12-EXPAND-6036",
@@ -1010,7 +1027,7 @@
     "verification": "cargo test (crate producing WorldModelSpec / WorldModelBranch)",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): No branch is spawned from an unmeasured residual; per the skeptic a spawn caller already exists in model_tournament.rs's observe_outcome (R12-MODEL-7198), so the ADR amends ADR 0149 decision 12 to ratify or remove that one caller, no second caller is added, and each spawned branch's out-of-sample Brier is journaled beside its parent's, gating nothing. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A world-model branch is spawned only from the federation's measured forecast residual on a licensed subject, enters as ADR 0149's temporary entrant triple, is scored against its parent and gates nothing (amends ADR 0149 decision 12's residual clause).. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6044",
@@ -1228,7 +1245,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant."
+    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0149 decision 6 already decided this, and I keep it. A promoted result's lane is read from its compiled form, and no latency-budget field is added. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6053",
@@ -1260,7 +1277,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8958"
     ],
-    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open.",
+    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open. Decided 2026-10-31 under the delegation (no ADR; nothing is built): the triage's 'Now' clause, routing resolved declined theses into a belief, is declined as specified, because a pre-trade veto is deterministic and carries no probability a calibration could score, so a belief moved by it would be a number nobody computed; the regret a veto's DeclinedScore records already narrows sizing through counterfactual_sizing_multiplier and proposes rule recalibration through review_rules, which are the two beliefs the platform honestly holds about a gate. Source scores now exist (R12-EXPAND-6027, journaled); cell episodes (R12-EXPAND-6038) stay open and are not this lane's.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1273,7 +1290,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural."
+    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural. 2026-10-31 L4b-expand: 'Now' clause declined with the reason in the gap; row unchanged otherwise."
   },
   {
     "id": "R12-EXPAND-6055",
@@ -1302,16 +1319,18 @@
   {
     "id": "R12-EXPAND-6056",
     "status": "PARTIAL",
-    "current": "The registry is built in qip-deepbrain main.rs by research::sweep_ontology_over from the coverage map the detector reads - the five types every detector reads, an Asset type per asset class the universe holds, and the coverage_gap Event type - and handed to ResearchLoop::with_ontology. Every sweep_over consults it: check_ontology stops the sweep if a detector's type is missing and check_coverage_registered stops it, naming the class, if the coverage map holds an asset class the registry does not. Each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology.",
+    "current": "The registry is built in qip-deepbrain main.rs by research::sweep_ontology_over from the coverage map the detector reads - the five types every detector reads, an Asset type per asset class the universe holds, and the coverage_gap Event type - and handed to ResearchLoop::with_ontology. Every sweep_over consults it: check_ontology stops the sweep if a detector's type is missing and check_coverage_registered stops it, naming the class, if the coverage map holds an asset class the registry does not. Each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology. Since 2026-10-31 sweep_ontology_over also names every venue the coverage map holds as a Market type and every geography as an Entity type (coverage_dimension_type), so a venue or geography coverage gap is a gap in a type the registry holds.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/registries.rs OntologyRegistry::extend",
       "backend/crates/apps/qip-deepbrain/src/research.rs sweep_ontology_over, with_ontology, check_coverage_registered, extend_ontology",
       "backend/crates/apps/qip-deepbrain/src/main.rs sweep_ontology_over, with_ontology",
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versions_the_type",
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name",
-      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds"
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds",
+      "backend/crates/apps/qip-deepbrain/src/research.rs coverage_dimension_type, sweep_ontology_over",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_venue_and_geography_the_coverage_map_holds"
     ],
-    "gap": "Governed extension is not reached by the running binary (2026-10-18): nothing calls extend_ontology outside tests, because the only item the desk concludes is a fill-bias campaign, so no Ontology-class item (GapClass::Ontology, raised from Wanting::Type) ever finishes with a passing EvaluationRecord to cite. The registry is therefore seeded once at start and never versioned in a running process. Only the Asset and coverage-gap Event families are seeded from the coverage map; venue and geography coverage keys are not registered as types, and the Entity, Relationship, Product and CausalDriver families hold nothing the sweep reads.",
+    "gap": "Governed extension is not reached by the running binary (2026-10-18): nothing calls extend_ontology outside tests, because the only item the desk concludes is a fill-bias campaign, so no Ontology-class item (GapClass::Ontology, raised from Wanting::Type) ever finishes with a passing EvaluationRecord to cite. The registry is therefore seeded once at start and never versioned in a running process. The Asset, Market (venues), Entity (geographies) and coverage-gap Event families are seeded from the coverage map; the Relationship, Product and CausalDriver families hold nothing the sweep reads. The triage's second clause (an ExtendOntology executor applying a validated OntologyPatch on a passing EvaluationRecord) is not built: R12-EXPAND-6029's propose_type registers a candidate's version one directly and no Ontology-class item concludes with an EvaluationRecord, so extend_ontology still has no production caller.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1322,7 +1341,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Mutations (2026-10-18): deleting the check_coverage_registered call in sweep_over fails a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name; skipping the Asset registration loop in sweep_ontology_over fails the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds and four sweep tests. Earlier: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the extension test. The expected ontology_types in a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted rose by two (the Equity Asset type and the coverage-gap Event type the seeded registry now holds). Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology."
+    "notes": "Mutations (2026-10-18): deleting the check_coverage_registered call in sweep_over fails a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name; skipping the Asset registration loop in sweep_ontology_over fails the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds and four sweep tests. Earlier: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the extension test. The expected ontology_types in a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted rose by two (the Equity Asset type and the coverage-gap Event type the seeded registry now holds). Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology. 2026-10-31 L4b-expand: venue and geography types seeded (triage 'Now' clause); mutation skipping the dimension loop fails the new test. Stays PARTIAL: governed extension unreached in a running binary."
   },
   {
     "id": "R12-EXPAND-6057",
@@ -1443,7 +1462,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-expansion --test executor",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent"
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The requirement stands, and the three missing kinds are recorded, not dropped. Open questions are the registry's Open entries. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The research registry declares six record kinds: open questions are its Open entries, a concluded verdict cites its class's ADR 0192 benchmark, and an unresolved contradiction is a record keyed by campaign id that only a concluded campaign closes, with no variable-to-subject map (amends ADR 0152 decision 11).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6062",
@@ -2743,7 +2762,7 @@
     "verification": "cargo test -p qip-kernel --test central -- a_family_cleared a_promotion_naming",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 ADR 0155 lane: mechanism built, PARTIAL kept. Mutations fired: skipping the register check in promote, and reading a missing record as eligible (qip-compliance check), each failed both new tests (premise: the seeded family and venue promote first)."
+    "notes": "2026-10-24 ADR 0155 lane: mechanism built, PARTIAL kept. Mutations fired: skipping the register check in promote, and reading a missing record as eligible (qip-compliance check), each failed both new tests (premise: the seeded family and venue promote first). Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): I do not grant foundry lineages one by one. A lineage is evo-{subject}, minted per sweep at run time, and a register entry per lineage would be written to pass whatever the roots happen to run. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Promotion is judged against the compliance register by the sweep's declared alpha family, a sweep that declares none is refused, and every root that promotes arms the register from the committed paper seed baked into its image.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GOV-6117",

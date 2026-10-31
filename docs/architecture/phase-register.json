@@ -189,7 +189,12 @@
       "title": "Autonomous development",
       "exit_capability": "The planner/coder/test/security/reviewer/release/SRE agent loop runs through normal CI and GitOps inside a sandbox with budgets.",
       "state": "not_entered",
-      "exit_tests": [],
+      "exit_tests": [
+        {
+          "file": "backend/crates/tests/qip-acceptance/tests/development_roles.rs",
+          "test": "phase_9_roles_are_development_agents_that_act_only_through_ci"
+        }
+      ],
       "ahead_of_phase": [
         {
           "capability": "agent-guard, agent-lanes, the sandbox workflow and the model gateway",

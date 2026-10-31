@@ -1905,3 +1905,42 @@ fn every_issued_envelope_carries_a_drawdown_stop_and_a_share_outside_its_range_i
     }
     Ok(())
 }
+
+/// R12-CAPITAL-4085 (ADR 0229): a plan that proposes more than the
+/// allocator's line is clipped to the allocator's line, and an abstention
+/// changes nothing.
+///
+/// Mutation: make `society::settle` keep the larger figure, and the line
+/// rises to the agent's proposal.
+#[test]
+fn a_capital_agent_plan_above_the_allocators_line_is_clipped_to_it() -> Result<()> {
+    use qip_capital::society::{CapitalAgent, CapitalPlan, Proposal, settle};
+    use std::collections::BTreeMap;
+    let plan = allocator()?.allocate(
+        &[proposal("society-a", "cell-a", 1.5, 0.2, 10_000_000)?],
+        0.0,
+        start(),
+    )?;
+    let line = plan.allocations.first().expect("premise: one line").clone();
+    assert!(line.notional.is_positive(), "premise: the line is sized");
+    let above = CapitalPlan {
+        agent: CapitalAgent::Liquidity,
+        proposal: Proposal::Lines(BTreeMap::from([(
+            line.strategy.as_str().to_string(),
+            line.notional + Decimal::from_int(1_000_000),
+        )])),
+    };
+    let silent = CapitalPlan {
+        agent: CapitalAgent::TaxAware,
+        proposal: Proposal::Abstain {
+            missing: "a tax input".to_string(),
+        },
+    };
+    let settled = settle(&plan, &[above, silent]);
+    assert_eq!(
+        settled.allocations[0].notional, line.notional,
+        "an agent widened a line"
+    );
+    assert_eq!(settled.allocated(), plan.allocated());
+    Ok(())
+}

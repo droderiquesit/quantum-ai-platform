@@ -54,7 +54,7 @@
       "backend/crates/services/qip-mesh/src/peer.rs",
       "backend/crates/libs/qip-transport/tests/mesh.rs"
     ],
-    "gap": "Owner decision O07 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement. Enables: QUIC for the fabric hop and the peer link. Costs: A new transport crate and its closure; the measurement needs a second region.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. O07 is decided as in R12-MESH-10075: ADR 0112 §4 stands, with no QUIC now and no quinn admitted. The gate is a committed cross-region TCP+TLS against QUIC measurement on the peer-mesh hop, and that needs a second region, which ADR 0035 does not run. The requirement names a direct peer QUIC mesh and the text stands, so the row stays PARTIAL until a second region is decided and measured. Closes on: No code and no new ADR, because affirming ADR 0112 §4 changes no record. Rewrite blocked_by to 'O07 decided 2026-10-31: ADR 0112 §4 stands; the measurement needs a second region'. The gap opens with this ruling, and the evidence adds libs/qip-peer and edge/qip-peer-link. It reopens when a record supersedes ADR 0035 with a second region and its cost. Then commit the measurement. Only if it shows a cost, admit quinn through ADR 0109's allow-list and carry qip-peer-link over QUIC. Its test: a two-cell multi-leg proposal crosses within a bounded deadline, and a durable relay or a dropped bound fails it. Earlier: Owner decision O07 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement. Enables: QUIC for the fabric hop and the peer link. Costs: A new transport crate and its closure; the measurement needs a second region.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -65,7 +65,7 @@
     "verification": "cargo test -p qip-transport --test mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: QUIC transport; deployed/default-on peer link; cross-region proof."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: QUIC transport; deployed/default-on peer link; cross-region proof. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): O07 is decided as in R12-MESH-10075: ADR 0112 §4 stands, with no QUIC now and no quinn admitted. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8004",
@@ -79,7 +79,7 @@
       "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure.rs::fabric_106_the_broker_template_has_no_external_address_and_the_module_is_instantiated_but_off_in_every_environment",
       "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 broker_count"
     ],
-    "gap": "2026-10-24: the module block exists and an acceptance test (fabric_106) pins its gate, so 'instantiate the module' is done; the row's evidence naming main.tf was stale. Left: (1) a committed event_fabric_broker value per environment under infrastructure/environments/*/terraform.tfvars (protected path, and each broker VM is billed: compute pricing was not read in the 2026-10-19 plan); (2) a qip-fabricd entry in the deploy image matrix (.github/workflows, protected; lib.rs and ADR 0010 keep it out until placement is decided); (3) multi-broker replication, which is ADR 0111's Spanner-backed managed log and needs the Spanner database applied (R12-FABRIC-10027, R12-FABRIC-7035, owned by T3-FABRIC).",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. No environment gets broker machines yet. The broker has no boot image, the machines have no price, and ADR 0156 lists prod brokers as billed, which decision 5 still declines. The module and its acceptance test stand. The first broker goes into dev beside the first execution node, as ADR 0111 Amendment 1 item 4 orders, and prod follows only once a record prices the brokers. Closes on: No code now. Trigger, in order: bake a broker boot image; name the broker machines' monthly cost in the runbook or an ADR; deploy fabricd in dev beside the first execution node (ADR 0111 Amendment 1 item 4). Then a lane writes the protected patches: event_fabric_broker in prod terraform.tfvars, and qip-fabricd in deploy.yml's image matrix. The owner applies them, and the prod plan showing broker instances closes the row. Cost today: not priced (billed-plan #11). Earlier: 2026-10-24: the module block exists and an acceptance test (fabric_106) pins its gate, so 'instantiate the module' is done; the row's evidence naming main.tf was stale. Left: (1) a committed event_fabric_broker value per environment under infrastructure/environments/*/terraform.tfvars (protected path, and each broker VM is billed: compute pricing was not read in the 2026-10-19 plan); (2) a qip-fabricd entry in the deploy image matrix (.github/workflows, protected; lib.rs and ADR 0010 keep it out until placement is decided); (3) multi-broker replication, which is ADR 0111's Spanner-backed managed log and needs the Spanner database applied (R12-FABRIC-10027, R12-FABRIC-7035, owned by T3-FABRIC).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -93,7 +93,7 @@
     "verification": "cargo test -p qip-fabricd --test broker; cargo test -p qip-acceptance --test event_fabric_infrastructure; terraform plan showing broker instances (not run: no environment sets event_fabric_broker)",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 N2-FABRIC-DATA: no code change. Gap restated against fabric.tf and fabric_106; nothing here is closable without a protected tfvars edit and billed resources."
+    "notes": "2026-10-24 N2-FABRIC-DATA: no code change. Gap restated against fabric.tf and fabric_106; nothing here is closable without a protected tfvars edit and billed resources. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): No environment gets broker machines yet. The broker has no boot image, the machines have no price, and ADR 0156 lists prod brokers as billed, which decision 5 still declines. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GCP-8005",
@@ -127,7 +127,7 @@
       "backend/crates/libs/qip-storage/src/provider.rs:379,441 refusal of unimplemented targets",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs:388 CloudStorageBlobStore"
     ],
-    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. O02 stays decided narrowly, as I ruled on R12-AMBIENT-9001. BigQuery is the one store switched on, and Cloud Storage waits for its first writer. Bigtable, Spanner Graph, Knowledge Catalog and Vertex stay declined under decision 5 until an ADR for each states a measured need and a monthly ceiling, after the dev deploy. The requirement text stands and is not read down to the stores I fund. The row stays PARTIAL. Closes on: Write into the gap the 2026-10-31 ruling, decision 5, and the named costs: Bigtable $950-$1,300 a month, Spanner $2,705-$8,140, Cloud Storage $0.30-$6, Knowledge Catalog and Vertex unpriced. Trigger: after the dev deploy, one ADR per store states a measured need and a ceiling. Bigtable also needs a gRPC client ADR under ADR 0109. Then the owner's tfvars flip, an adapter that replaces each provider.rs refusal with an integration test, and a real plan. No lane work now. Earlier: Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -138,7 +138,7 @@
     "verification": "terraform plan with enable_* true plus adapter integration tests",
     "work_item": "",
     "size": "XL",
-    "notes": "qip_transport::http has no TLS; provider.rs states https to Google APIs is refused, so GCS/BigQuery adapters need the egress proxy. ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner Graph, Bigtable and AlloyDB adapters (blocked on no TLS client without a new ADR), Knowledge Catalog, enable flags with evidence an adapter uses them."
+    "notes": "qip_transport::http has no TLS; provider.rs states https to Google APIs is refused, so GCS/BigQuery adapters need the egress proxy. ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner Graph, Bigtable and AlloyDB adapters (blocked on no TLS client without a new ADR), Knowledge Catalog, enable flags with evidence an adapter uses them. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): O02 stays decided narrowly, as I ruled on R12-AMBIENT-9001. BigQuery is the one store switched on, and Cloud Storage waits for its first writer. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-8007",
@@ -153,7 +153,7 @@
       "apps/qip-ledgerd/tests/spanner.rs::a_second_writer_claiming_the_spanner_ledger_fences_the_first_out",
       "apps/qip-ledgerd/tests/spanner.rs::a_deployed_ledger_starts_only_on_a_spanner_database_it_can_reach"
     ],
-    "gap": "(1) ENTERPRISE_PLUS edition on the instance. (2) Spanner enabled where the ledger runs. (3) Positions, obligations and capital grants as Spanner-held financial truth; capital grants and positions still live in the kernel and cell. (4) A deployed qip-ledgerd: variables.tf says null in every environment.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Financial truth goes to Spanner Enterprise Plus, but only after the deploy runs and an ADR states a measured need and a ceiling against $2,705 to $8,140 a month. Decision 5 stands, as in R12-LEDGER-7009. Positions, obligations and grants become Spanner truth as the ledger's own postings, read through R12-LEDGER-5004's authority path, not as new tables. The edition clause of the gap is closed and is struck. Closes on: Now: strike gap (1) and cite main.tf:633. After dev runs: an ADR with the measured need and ceiling; R12-LEDGER-8136's nam3 change; the owner's protected tfvars patch for enable_spanner and a ledgerd boot image; then record ledgerd committing through the real instance and refusing a non-Spanner store when deployed. Positions and grants close through R12-LEDGER-5004's read path. The row stays PARTIAL until then. Earlier: (1) ENTERPRISE_PLUS edition on the instance. (2) Spanner enabled where the ledger runs. (3) Positions, obligations and capital grants as Spanner-held financial truth; capital grants and positions still live in the kernel and cell. (4) A deployed qip-ledgerd: variables.tf says null in every environment.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -166,7 +166,7 @@
     "verification": "integration test against Spanner emulator or instance",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Adapter, single-transaction commit and the production refusal are real and tested against a fake Spanner REST server."
+    "notes": "Round-2 independent audit, 2026-10-11: Adapter, single-transaction commit and the production refusal are real and tested against a fake Spanner REST server. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Financial truth goes to Spanner Enterprise Plus, but only after the deploy runs and an ADR states a measured need and a ceiling against $2,705 to $8,140 a month. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-8008",
@@ -309,12 +309,14 @@
   },
   {
     "id": "R12-DATA-8014",
-    "status": "MISSING",
-    "current": "Manifests exist only embedded in NewsItem events; no registry type or store. Spanner/AlloyDB adapters are refused.",
+    "status": "PARTIAL",
+    "current": "qip_storage::gcp::manifest_registry::SourceManifestRegistry holds SourceManifest records over SpannerKv (ADR 0113), keyed by canonical URI (source length, source, locator) under a source-manifest/ prefix: register (idempotent for the same manifest, refusing a changed original naming both hashes, in one read-write transaction), lookup by canonical URI, and listing by source.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner/AlloyDB refused"
+      "backend/crates/libs/qip-storage/src/gcp/manifest_registry.rs",
+      "backend/crates/libs/qip-storage/tests/manifest_registry.rs (a_registry_write_and_lookup_by_canonical_uri_round_trip_through_spanner; a_changed_original_is_refused_naming_both_hashes_and_the_first_manifest_stands)",
+      "backend/crates/libs/qip-storage/tests/support/spanner_double.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No Source Manifest Registry type or store exists: qip_financial::manifest::SourceManifest lives only inside NewsItem/intelligence records, and nothing writes or looks it up by canonical URI or provider ID. ADR 0113 unblocks Spanner and qip_storage::gcp::spanner::SpannerKv (proven in qip-ledgerd/tests/spanner.rs against an in-process double) could back it, so the code needs no ADR or crate. It does not meet the bar alone: enable_spanner=false in every env, so it also needs a tfvar flip, a deploy, and a shipped binary writing the registry on its default path.",
+    "gap": "2026-10-31 (owner-delegated ruling of 2026-10-31, decision 10): the registry round-trips by canonical URI through SpannerKv against the in-process REST double. It is not on a default path: enable_spanner is false in every environment until the ledger's Spanner is funded (decision 5), no shipped binary constructs the registry, and the double does not prove Google answers the same way. Remaining: wire a binary that registers the manifests it ingests once enable_spanner is flipped (protected, billed), and run the round-trip against a real instance.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -324,10 +326,10 @@
       "R12-DATA-8013"
     ],
     "blocked_by": "",
-    "verification": "integration test of the registry against an emulator",
+    "verification": "integration: qip-storage tests/manifest_registry.rs over SpannerKv against an in-process Spanner REST double; mutations: keying register by manifest.sha256() fails the round-trip (store not keyed by canonical URI); treating any held row as idempotent fails the changed-original refusal; both restored with cp and cmp.",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113). Owner ruling 2026-10-31 (IMPLEMENT): Build the Source Manifest Registry on the store ADR 0113 already admitted. It is a registry over SpannerKv, keyed by canonical URI, proven now against the in-process double. enable_spanner stays false until the ledger's Spanner is funded (decision 5), so the row stays PARTIAL. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113). Owner ruling 2026-10-31 (IMPLEMENT): Build the Source Manifest Registry on the store ADR 0113 already admitted. It is a registry over SpannerKv, keyed by canonical URI, proven now against the in-process double. enable_spanner stays false until the ledger's Spanner is funded (decision 5), so the row stays PARTIAL. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. | 2026-10-31 lane L3-DATA: built the registry the ruling named (decision 10); status PARTIAL by the ruling, pending enable_spanner."
   },
   {
     "id": "R12-DATA-8015",
@@ -338,7 +340,7 @@
       "backend/crates/runtime/qip-kernel/src/central/causal.rs",
       "backend/crates/runtime/qip-kernel/src/central/belief.rs"
     ],
-    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Spanner Graph stays declined under decision 5, as the ADR I ordered on R12-AMBIENT-9001 says by name for this row. Promoted knowledge stays in the central brains, rebuilt from the event log (R12-WORLD-10042). A graph store needs its own instance, never one beside the ledger, so it reopens only through an ADR that states measured graph load and a monthly ceiling. The in-memory graph does not stand in for K1, and the row stays PARTIAL. Closes on: Write the ruling and the cost into the gap: a separate Spanner instance, with the ledger's configuration at $2,705-$8,140 a month and a graph instance unpriced. Trigger: after the dev deploy, an ADR states measured graph load and a ceiling and admits a Spanner client under ADR 0109. Then a separate instance module, a Spanner Graph adapter whose node and edge schema has no document-body field, and an integration test that refuses a copied-document write. No lane work now. Earlier: Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -349,7 +351,7 @@
     "verification": "integration test against Spanner Graph",
     "work_item": "",
     "size": "XL",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Durable graph store (Spanner Graph adapter), schema with contradiction/confidence fields, test refusing document bodies."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Durable graph store (Spanner Graph adapter), schema with contradiction/confidence fields, test refusing document bodies. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Spanner Graph stays declined under decision 5, as the ADR I ordered on R12-AMBIENT-9001 says by name for this row. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-8016",
@@ -359,7 +361,7 @@
       "infrastructure/terraform/modules/data/main.tf:322 google_bigtable_instance (enable_bigtable=false)",
       "backend/crates/libs/qip-storage/src/provider.rs:441 Bigtable refused"
     ],
-    "gap": "2026-10-24: not closable in-tree. Bigtable's data plane is gRPC only (ReadRows, MutateRows), so an adapter needs HTTP/2 framing, HPACK and a protobuf codec, and scripts/dependency-allowlist.txt admits none of tonic, prost or h2 (qip-storage/src/provider.rs StorageTarget::Bigtable refusal says the same). Adding a gRPC stack is a dependency decision that needs its own ADR (ADR 0109), the instance is billed (enable_bigtable=false in every environment), and the emulator the verification names is an outside download. Left undone with it: a schema for features and deltas, and a sink from the fabric (R12-FABRIC-8080).",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Bigtable stays declined under decision 5, as I ruled on R12-DATA-9053 and R12-DATA-10035. Derived features stay in memory in qip-feature-dag. I do not admit a gRPC stack for a store nobody pays for. The row reopens only through a Bigtable store ADR with a measured need and a ceiling, and a client ADR under ADR 0109. It stays MISSING. Closes on: Write decision 5 and the $950-$1,300 a month floor into the gap. Trigger: after the dev deploy, a Bigtable store ADR with a measured need and a ceiling, plus a gRPC client ADR under ADR 0109. Then a qip-storage Bigtable adapter keyed by rowkey::row_key, with an emulator test that writes feature and state deltas and reads them back by time index, and the owner's enable_bigtable flip. No lane work now. Earlier: 2026-10-24: not closable in-tree. Bigtable's data plane is gRPC only (ReadRows, MutateRows), so an adapter needs HTTP/2 framing, HPACK and a protobuf codec, and scripts/dependency-allowlist.txt admits none of tonic, prost or h2 (qip-storage/src/provider.rs StorageTarget::Bigtable refusal says the same). Adding a gRPC stack is a dependency decision that needs its own ADR (ADR 0109), the instance is billed (enable_bigtable=false in every environment), and the emulator the verification names is an outside download. Left undone with it: a schema for features and deltas, and a sink from the fabric (R12-FABRIC-8080).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -370,7 +372,7 @@
     "verification": "integration test against Bigtable emulator",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 N2-FABRIC-DATA: classified EXTERNAL_BLOCKED/BILLED. No code change. Route high-throughput series through Cloud Storage or BigQuery until a gRPC stack is admitted by ADR."
+    "notes": "2026-10-24 N2-FABRIC-DATA: classified EXTERNAL_BLOCKED/BILLED. No code change. Route high-throughput series through Cloud Storage or BigQuery until a gRPC stack is admitted by ADR. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Bigtable stays declined under decision 5, as I ruled on R12-DATA-9053 and R12-DATA-10035. Derived features stay in memory in qip-feature-dag. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-8017",
@@ -667,7 +669,7 @@
       "backend/crates/apps/qip-ledgerd/src/store.rs:352",
       "backend/crates/libs/qip-storage/src/provider.rs:379"
     ],
-    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The requirement stands as written: Spanner owns financial truth and Bigtable owns hot features. I will not map the fact classes onto today's local stores so the row passes. Both stores stay declined under decision 5 until the deploy has run and a store record states the measured need and a monthly ceiling, as R12-LEDGER-7009 and R12-DATA-9053 already decided. The row stays PARTIAL. Closes on: Trigger: R12-LEDGER-7009's Spanner ledger and R12-DATA-9053's Bigtable are funded by their ADRs and deployed. A lane then writes the fact-class-to-store map in code (financial truth to Spanner, event history and offsets to the fabric, archives to GCS, hot features to Bigtable). It adds a qip-acceptance architecture test that fails when a second writer of any class exists, with the mutation of a second ledger-class writer. Earlier: Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -680,7 +682,7 @@
     "verification": "inspection + architecture test",
     "work_item": "",
     "size": "XL",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner ledger, GCS archive, Bigtable features, plus a single-owner check."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner ledger, GCS archive, Bigtable features, plus a single-owner check. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The requirement stands as written: Spanner owns financial truth and Bigtable owns hot features. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-8030",
@@ -727,7 +729,7 @@
     "verification": "cargo test -p qip-acceptance --test pipeline_scripts && ./scripts/check-secrets.sh && ./scripts/check-secrets.sh --history",
     "work_item": "",
     "size": "S",
-    "notes": " AUDIT-4: 2026-10-24 regraded, the named checks (a scan that prints 'nothing found' on a clean tree, and a Terraform-only test) pass with the scanner's AKIA pattern deleted; only pipeline_scripts.rs and security.rs, which plant a key fixture and which the row does not name, fail.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
+    "notes": " AUDIT-4: 2026-10-24 regraded, the named checks (a scan that prints 'nothing found' on a clean tree, and a Terraform-only test) pass with the scanner's AKIA pattern deleted; only pipeline_scripts.rs and security.rs, which plant a key fixture and which the row does not name, fail.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL Owner ruling 2026-10-31, second pass (WRITE_PATCH): The tests/ directory exclusion goes. A fixture passes only if its path and its exact matched text are both on a list in a protected file, which only a person can lengthen. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-cicd-8031-secrets-fixtures-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-CICD-8032",
@@ -825,7 +827,7 @@
       "infrastructure/terraform/modules/network/tests/three-networks.tftest.hcl",
       "infrastructure/terraform/modules/execution-node/main.tf:172 router_nat"
     ],
-    "gap": "Per-region instantiation, regional landing bucket, regional collectors for Cloud Run.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence, after R12-GCP-8035's ADR names the regions and a monthly ceiling. ADR 0035 stands: one execution region, and no second region declared or funded before the record that supersedes it. In that region the three networks and the controlled egress are built. The segments landing bucket waits on enable_cloud_storage, false in all four tfvars, and on its first writer. OpenObserve is the one-region observability backend under ADR 0028, declared in dev (dev's tfvars sets vendored_openobserve_image_digest and infrastructure/gitops/envs/dev/openobserve.yaml deploys it; test, stage and prod leave it null), and ADR 0121's in-process push is the metrics path. Whether a per-region backend or the push meets 'regional observability collectors' is graded by R12-GCP-8035's second-region record, and the row is not reworded to pass on either. Closes on: modules/network, the regional segments bucket and the NAT instantiated per execution region from one regions map, with a tftest per region. (Skeptic's correction; the decider said OpenObserve's digest was null.) Earlier: Per-region instantiation, regional landing bucket, regional collectors for Cloud Run.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -836,7 +838,7 @@
     "verification": "terraform test in modules/network",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): ADR 0035 stands with one execution region, in which the three networks and the controlled egress are built; per the skeptic OpenObserve is declared in dev as the one-region backend under ADR 0028, ADR 0121's push is the metrics path, and R12-GCP-8035's second-region record grades the collector clause. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GCP-8037",
@@ -917,7 +919,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:331-372 reservation + affinity",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:373 every_machine_group_the_repository_defines_consumes_a_specific_reservation_sized_to_its_target"
     ],
-    "gap": "Declare a node (execution_nodes is {} in dev/stage/test/prod tfvars, protected path infrastructure/environments/**) and decide on a committed-use commitment (a billed owner decision). Neither is closable from qip-kernel/qip-edge code.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The reservation half is done and guarded: each execution group consumes a specific reservation sized to its target, and removing the affinity fails the scan. No node is declared, and none will be until dev serves and the node's prerequisites and monthly cost are named (R12-GCP-7002, R12-QUANT-9042). No commitment is bought before a sizing record measured on a node exists (R12-FINOPS-10137). The row closes on a plan that renders the reserved node group. Closes on: Follow the order in docs/ops/runbooks/owner-switches.md. The owner bakes the c4-highcpu-8 image, writes boot_image and region_allocation, and sets execution_nodes_enabled = true in dev in one reviewed protected diff, after the trust bundle, the Google roots and the CA pool exist. An infra.yml plan then shows the node group consuming its specific reservation, and that closes the row. A commitment comes only after R12-FINOPS-10137's sizing record. Earlier: Declare a node (execution_nodes is {} in dev/stage/test/prod tfvars, protected path infrastructure/environments/**) and decide on a committed-use commitment (a billed owner decision). Neither is closable from qip-kernel/qip-edge code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -928,7 +930,7 @@
     "verification": "cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "S",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and owner-decision gap; left PARTIAL."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and owner-decision gap; left PARTIAL. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The reservation half is done and guarded: each execution group consumes a specific reservation sized to its target, and removing the affinity fails the scan. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FINOPS-8041",
@@ -951,7 +953,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L24 2026-10-18: not closed. terraform 1.9.8 fetched and checksum-verified for the session; no HCL changed because the remaining clause needs an owner cost choice. Cloud Run evidence corrected from modules/cloudrun/main.tf to the gitops RunService manifests."
+    "notes": "Lane L24 2026-10-18: not closed. terraform 1.9.8 fetched and checksum-verified for the session; no HCL changed because the remaining clause needs an owner cost choice. Cloud Run evidence corrected from modules/cloudrun/main.tf to the gitops RunService manifests. Owner ruling 2026-10-31, second pass (IMPLEMENT): Spanner's autoscaling is plan-proven but Bigtable's is not, so per the skeptic a lane first adds an autoscaling_config assertion to scaling.tftest.hcl's Bigtable run (mutation: delete one cluster's block) and only then regrades the text, striking 'processing_units = 100'; the row stays PARTIAL while both stores are off. The skeptic overturned the decider (who ruled REGRADE_TEXT); the skeptic's text governs. Handed to lane L1b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GCP-8042",
@@ -962,7 +964,7 @@
       "infrastructure/terraform/modules/scc/main.tf:41",
       "infrastructure/terraform/modules/observability/budget.tf"
     ],
-    "gap": "Organisation/folder-level policies, audit log sinks, PAM entitlements, billing export.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. The foundation root is the guardrails boundary, and its folder policies and the PAM resource are already built. Under the delegation I build no audit sink, locked log bucket or billing-export dataset. Each bills storage nobody has priced, a locked bucket cannot be undone, and the folder they would hang from exists only under an organisation I have not supplied. I also invent no PAM entitlement: an entitlement names people, and only I name them. Closes on: Now: correct current and evidence to cite foundation/main.tf:107/123/137 (folder policies, org mode only) and security.tf:100 with tests/pam.tftest.hcl (PAM resource, no entitlement set). Later, the owner supplies org_id to scripts/bootstrap-foundation.sh and names the audit bucket's retention and monthly cost. A lane then adds an org-mode google_logging_folder_sink to foundation/main.tf (include_children = true, filter on logName:\"cloudaudit.googleapis.com\") writing to an UNLOCKED google_logging_project_bucket_config in the seed project. foundation.tftest.hcl gets two runs: 'org mode plans one folder sink carrying the audit filter into the seed bucket' and 'no-org mode plans none and controls_not_applied names it'. Mutation: drop include_children. Locking the bucket is a separate owner decision. The PAM entitlement goes into the owner's protected tfvars with named requesters and approvers. Billing export closes with R12-FINOPS-10135's console step and a dataset-presence check. The row stays PARTIAL. Earlier: Organisation/folder-level policies, audit log sinks, PAM entitlements, billing export.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -973,7 +975,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): The foundation root is the guardrails boundary, and its folder policies and the PAM resource are already built. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GCP-8043",
@@ -1152,7 +1154,7 @@
       "infrastructure/terraform/modules/binaryauthorization/main.tf",
       "infrastructure/terraform/modules/gitops-control-plane/main.tf"
     ],
-    "gap": "Owner decision O17 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split scouts and engineering into their own projects before the second region (ADR 0113 §4, ADR 0118). Enables: Project-level isolation for scouts and engineering. Costs: More projects, budgets and IAM; ADR 0118 bootstrap re-run.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence, after the record that supersedes ADR 0035 names a second region, under an organisation the owner holds (R12-GCP-10001). O17's 'before the second region' is declined: ADR 0113 §4 stands, one project per environment now, and the engineering project arrives with the second region. Nothing is built now. At the trigger, the ADR amending ADR 0118 extends infrastructure/terraform/modules/resource-hierarchy with engineering and security planes, wires that module into foundation, and uses moved blocks to put the registry and gitops-control-plane in engineering and the Binary Authorization attestor in security, inside each environment's folder. A tftest asserts each project's parent folder and contents; mutation: plan the attestor in the engineering project. Closes on: a reviewed plan showing that split. (Skeptic's correction; the decider would have hand-written one engineering project under google_folder.platform that also held the attestor.) Earlier: Owner decision O17 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split scouts and engineering into their own projects before the second region (ADR 0113 §4, ADR 0118). Enables: Project-level isolation for scouts and engineering. Costs: More projects, budgets and IAM; ADR 0118 bootstrap re-run.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1163,7 +1165,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Separate engineering project; Cloud Build private pool."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Separate engineering project; Cloud Build private pool. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): O17's 'before the second region' is declined and ADR 0113 §4 stands; per the skeptic, at the trigger the ADR amending ADR 0118 extends modules/resource-hierarchy with engineering and security planes inside each environment's folder, the registry and GitOps cluster going to engineering and the attestor to security, with no hand-written project in foundation/main.tf. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GCP-8052",
@@ -1264,7 +1266,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs::no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region"
     ],
-    "gap": "2026-10-24: ADR 0035 runs one execution node in one region, so there is nothing to join; the guard in gcp_placement.rs refuses a hub even gated off. Needs a new ADR superseding 0035 (hub is billed, owner's decision); then modules/ncc can be declared.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Decision 4 of 2026-10-25 covers VPC spokes just as it covers the hubs (R12-GCP-8057, R12-GCP-8058). No google_network_connectivity_* resource is declared, and l6-ncc-hubs-parked.patch stays parked. The three VPCs in modules/network stay unjoined, which is the isolation they exist for. The spokes and their route filters land with the record that supersedes ADR 0035 for a second region and names the hub's monthly cost. The gcp_placement guard changes only with that record. The row stays MISSING, not PARTIAL. Closes on: Nothing is built now. The gap opens with this ruling, and the status stays MISSING. Once R12-GCP-8035's measurement-based ADR supersedes ADR 0035 with a second region and states the hub's monthly cost, git apply docs/blueprint/lanes/l6-ncc-hubs-parked.patch. Its VPC spokes export only the narrow prefixes ADR 0156 §6(c) admits, with include/exclude filters asserted by its tftest. The gcp_placement guard is replaced by the rule check that ADR names, in the same change. A reviewed plan shows the hub and spokes with their filters. Earlier: 2026-10-24: ADR 0035 runs one execution node in one region, so there is nothing to join; the guard in gcp_placement.rs refuses a hub even gated off. Needs a new ADR superseding 0035 (hub is billed, owner's decision); then modules/ncc can be declared.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1275,7 +1277,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 (T5-MESH-INFRA): a gated-off modules/ncc was written, then reverted in the commit after 44e43380 when the guard failed PR 239; the guard is not edited."
+    "notes": "2026-10-24 (T5-MESH-INFRA): a gated-off modules/ncc was written, then reverted in the commit after 44e43380 when the guard failed PR 239; the guard is not edited. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Decision 4 of 2026-10-25 covers VPC spokes just as it covers the hubs (R12-GCP-8057, R12-GCP-8058). Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GCP-8057",
@@ -1348,24 +1350,26 @@
   {
     "id": "R12-GCP-8060",
     "status": "PARTIAL",
-    "current": "Restricted-VIP private DNS zones on the networks; subnets set private_ip_google_access; PSC endpoint for Google APIs exists but gated off.",
+    "current": "Private Google Access is the private route (owner ruling 2026-10-31): every subnet sets private_ip_google_access, and every googleapis.com zone (the shared VPC's, the Data VPC's and the Engineering VPC's) sends *.googleapis.com to restricted.googleapis.com at the restricted VIP 199.36.153.4/30, the one range the egress firewalls admit. The PSC endpoint for Google APIs exists and stays gated off.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:213-241 restricted VIP zone",
-      "infrastructure/terraform/modules/execution-node/main.tf:122 subnet",
-      "infrastructure/terraform/modules/connectivity/main.tf:133-149 PSC google_apis"
+      "infrastructure/terraform/modules/network/main.tf google_dns_record_set.restricted_vip, data_restricted_vip, engineering_restricted_vip and the three *_googleapis_wildcard records",
+      "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl::every_googleapis_zone_resolves_to_the_restricted_vip",
+      "infrastructure/terraform/modules/trust-zones/tests/zone-model.tftest.hcl::every_zone_subnet_has_private_google_access",
+      "infrastructure/terraform/modules/execution-node/main.tf google_compute_subnetwork.node",
+      "infrastructure/terraform/modules/connectivity/main.tf PSC google_apis (gated off)"
     ],
-    "gap": "Enable PSC; prove archiver/fabric reach GCS privately once wired.",
+    "gap": "2026-10-31 lane L6-platform, regraded under the owner's ruling: the PSC endpoint is needed only once an interconnect exists (decision 4 declined the hubs), so 'Enable PSC' is no longer a gap. What remains: no dev plan has been recorded showing every subnet with private_ip_google_access and the googleapis zones resolving to restricted.googleapis.com. Billing is paused and no lane may plan against a real project, so the owner dispatches infra.yml (action plan, environment dev) or drift.yml for dev and the row cites that run. Archiver and fabric GCS calls reaching 199.36.153.4/30 are proven only once those are wired and deployed. Previous gap: Enable PSC; prove archiver/fabric reach GCS privately once wired.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "terraform test in modules/network and modules/trust-zones (mocked provider, scratch copy); then an owner-dispatched dev plan",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): Private Google Access, with googleapis.com resolved to the restricted VIP, is the private route, and it meets 'where supported'. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): Private Google Access, with googleapis.com resolved to the restricted VIP, is the private route, and it meets 'where supported'. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 lane L6-platform: fixed a defect found while asserting the route. The Data and Engineering VPC zones answered restricted.googleapis.com with 199.36.153.8-11, the private VIP, which no egress firewall admits, so a workload there would have resolved Google APIs to addresses it could not reach. They now answer 199.36.153.4-7. Mutation-verified in a scratch copy: putting the Data record back on the private VIP fails every_googleapis_zone_resolves_to_the_restricted_vip; pointing a wildcard at private.googleapis.com fails it; setting private_ip_google_access = false on the zone subnet fails every_zone_subnet_has_private_google_access. Status unchanged: PARTIAL."
   },
   {
     "id": "R12-GCP-8061",
@@ -1464,7 +1468,7 @@
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:67,74,84 refusals",
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:352,367 CPUAffinity, LimitMEMLOCK"
     ],
-    "gap": "Owner decision O13 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit libc for mlockall/busy-poll and a local-SSD machine shape. Enables: Memory locking and busy polling on the node. Costs: libc on the allow-list (syscall surface under unsafe_code=forbid); local SSD billing.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The requirement stands as written, and the row stays PARTIAL on three clauses. First, the binary locks no memory: I decline O13, ADR 0082 stands, and the boot refusal of swap narrows that gap meanwhile without filling it. Second, local scratch SSD needs a billed -lssd shape. ADR 0211's allow-list refuses that shape, decision 5 declines it, and nobody has named its cost. Third, IRQ, RPS and XPS steering is a host tuning. R12-REFLEX-8066 requires every tuning to pass a replay before it is adopted, so this one is written and measured with that replay on the funded node, not before. Closes on: Nothing lands before R12-REFLEX-8066's run on the first funded node. For that run, a lane adds a step to startup.sh.tftpl. It moves every IRQ's smp_affinity_list to housekeeping cores 0-1, sets RPS and XPS masks on the same cores, and refuses to boot if the masks do not read back. infrastructure.rs gains an acceptance assertion for the step, and the step ships only if the tuned-against-untuned replay favours it. mlockall reopens only through an ADR amending ADR 0082. Local SSD reopens only through an ADR that names its monthly cost. Until then, gap opens with this ruling. Earlier: Owner decision O13 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit libc for mlockall/busy-poll and a local-SSD machine shape. Enables: Memory locking and busy polling on the node. Costs: libc on the allow-list (syscall surface under unsafe_code=forbid); local SSD billing.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1475,7 +1479,7 @@
     "verification": "inspection of startup template + node boot log",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O13; gap before it: mlockall (needs a syscall path: libc is a new dependency, or an ADR), IRQ/RPS/XPS, scratch SSD."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O13; gap before it: mlockall (needs a syscall path: libc is a new dependency, or an ADR), IRQ/RPS/XPS, scratch SSD. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The requirement stands as written, and the row stays PARTIAL on three clauses. First, the binary locks no memory: I decline O13, ADR 0082 stands, and the boot refusal of swap narrows that gap meanwhile without filling it. The ruling's wording was corrected as the skeptic asked before it was written into the gap. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-REFLEX-8066",
@@ -1555,7 +1559,7 @@
       "apps/qip-edge-node/tests/standby.rs::a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places_nothing_after",
       "infrastructure/terraform/modules/execution-node/main.tf:724-731"
     ],
-    "gap": "Decided by ADR 0137 (corrected 2026-10-24): GcsLeaseStore over one object whose generation is the version, lease scheme selection in the node, the bucket and IAM in the execution-node module, and a two-keeper test; still unbuilt, FileLeaseStore is the only store (standby.rs) and a deployed node is needed to exercise the bucket.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. ADR 0137 stands, and this row closes the way I ruled R12-REFLEX-9114: only on a fenced standby deployed in a second zone. That standby is a second billed node. No environment enables it, and decision 5 keeps it unbought. The GCS lease store, the node's scheme selection and the module's lease bucket may be built now. The root passthrough comes to me as the one protected patch 9114 already asked for, with standby_enabled false. One lane builds this once for both rows. Closes on: This is lane L5's slice, shared with R12-REFLEX-9114 and built once. (1) Build GcsLeaseStore under ADR 0137 decision 1. load returns the object's generation. swap(None) writes with ifGenerationMatch=0 and swap(Some(g)) with ifGenerationMatch=g. A 412 is Ok(false), and any other failure is an error. A generation-match write added to qip-storage cites ADR 0137. (2) main.rs selects the store by gs:// or file path and refuses an unknown scheme. (3) variables.tf:567 admits gs:// only beside the module's lease bucket. That bucket gets object IAM for the two node accounts only, is gated on execution_nodes_enabled, and is covered by a tftest. Test: two keepers sharing one object through an in-process GCS double never both hold the fence. Mutation: treat a 412 as a won race, and the test fails. Write the root passthrough as 9114's lanes patch, with standby_enabled defaulting to false. Correct current's lease-variable text. The row closes only on a deployed pair. Earlier: Decided by ADR 0137 (corrected 2026-10-24): GcsLeaseStore over one object whose generation is the version, lease scheme selection in the node, the bucket and IAM in the execution-node module, and a two-keeper test; still unbuilt, FileLeaseStore is the only store (standby.rs) and a deployed node is needed to exercise the bucket.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1566,7 +1570,7 @@
     "verification": "property test over takeover interleavings",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no code implements a fencing token' is no longer true. Latent defect: setting standby_enabled=true today boots the standby with the primary's startup template and no lease variable, so it would run unfenced as a second primary; the 'monitors the primary's liveness via a fencing token' comment at modules/execution-node/main.tf:726-727 is still not what the infrastructure does. ADR lane 2026-10-18: gap re-graded against decision D20; gap before it: A cross-zone lease store with a conditional write (ADR 0111/0113); Terraform passing the lease, role and name to primary and standby; a real venue-session check. ADR lane 2026-10-18: gap re-graded against ADR 0137; gap before it: Delegable decision D20 (design-decisions-2026-10-18.json), ADR not yet written: A cross-zone execution lease as a GCS object written under a generation precondition through the existing REST adapter. Needs that ADR, then the code. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
+    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no code implements a fencing token' is no longer true. Latent defect: setting standby_enabled=true today boots the standby with the primary's startup template and no lease variable, so it would run unfenced as a second primary; the 'monitors the primary's liveness via a fencing token' comment at modules/execution-node/main.tf:726-727 is still not what the infrastructure does. ADR lane 2026-10-18: gap re-graded against decision D20; gap before it: A cross-zone lease store with a conditional write (ADR 0111/0113); Terraform passing the lease, role and name to primary and standby; a real venue-session check. ADR lane 2026-10-18: gap re-graded against ADR 0137; gap before it: Delegable decision D20 (design-decisions-2026-10-18.json), ADR not yet written: A cross-zone execution lease as a GCS object written under a generation precondition through the existing REST adapter. Needs that ADR, then the code. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): ADR 0137 stands, and this row closes the way I ruled R12-REFLEX-9114: only on a fenced standby deployed in a second zone. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-REFLEX-8070",
@@ -1730,14 +1734,17 @@
   {
     "id": "R12-FABRIC-8077",
     "status": "PARTIAL",
-    "current": "SchemaId is a content fingerprint of a type's shape; compatibility test refuses unbumped changes; broker refuses unregistered schemas; CI runs the schema-gate lock diff.",
+    "current": "SchemaId is a content fingerprint of a type's shape; compatibility test refuses unbumped changes; broker refuses unregistered schemas; CI runs the schema-gate lock diff. O08 declined 2026-10-31: prost stays unadmitted (ADR 0109, ADR 0112 Amendment 1 item 4) and no in-tree generator is built, because schema_id.rs::Shape names only JSON kinds (Null, Bool, Number, String, Array, Object), so Rust generated from the lock would be weaker than the hand-written qip-contracts types; the Rust types stay the one source the lock is computed from (ADR 0156 §1).",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/schema_id.rs:124 SchemaId",
       "backend/crates/libs/qip-events/tests/schema_compat.rs:54 removing_renaming_or_retyping_a_field_without_a_version_bump_is_refused_and_a_defaulted_addition_is_admitted",
-      ".github/workflows/ci.yml:94 event-fabric schema-gate",
-      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:318"
+      ".github/workflows/ci.yml:220 event-fabric schema-gate",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:318",
+      "backend/crates/libs/qip-events/src/event_fabric/schema_id.rs:41 Shape (JSON kinds only)",
+      "backend/crates/libs/qip-events/schemas.lock.json (ADR 0156 §1, the one descriptor source)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs"
     ],
-    "gap": "Owner decision O08 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit prost/protobuf codegen for generated fabric bindings. Enables: Versioned Protobuf descriptors and generated types. Costs: A codegen dependency and build-time tool on the allow-list.",
+    "gap": "2026-10-31 owner ruling, second pass (REGRADE_TEXT): O08 declined 2026-10-31. prost stays unadmitted (ADR 0109, ADR 0112 Amendment 1 item 4), and no generator is built, because Shape cannot carry the contract types. Immutable IDs and the compatibility gate are met; generation is not, and the row stays PARTIAL on 'generating typed Rust bindings'. Earlier: Owner decision O08 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit prost/protobuf codegen for generated fabric bindings. Enables: Versioned Protobuf descriptors and generated types. Costs: A codegen dependency and build-time tool on the allow-list.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1748,7 +1755,7 @@
     "verification": "cargo test -p qip-events --test schema_compat",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O08; gap before it: Protobuf wire schema (blocked) — otherwise registry is per-broker and per-batch class, not per topic body."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O08; gap before it: Protobuf wire schema (blocked) — otherwise registry is per-broker and per-batch class, not per topic body. Owner ruling 2026-10-31, second pass (REGRADE_TEXT): O08 is declined. prost stays unadmitted, and I do not commission an in-tree generator either. Corrected on 2026-10-31: current gains the decline of O08 and why no generator is built; evidence corrected from ci.yml:94 to :220 and gains Shape, the lock and its acceptance test; the ruling also asks that O08 be cleared from blocked_by, which this pass leaves to the grader; status unchanged. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8078",
@@ -1832,7 +1839,7 @@
       "backend/crates/apps/qip-fabricd/tests/broker.rs an_operator_isolates_one_partition_and_only_that_partition_refuses_produce_until_released",
       "backend/crates/apps/qip-cli/src/event_fabric/admin.rs"
     ],
-    "gap": "Remaining admin verbs (quota or retention change, partition move, drain), each its own slice with its own refusal test (ADR 0156 4d). An operator certificate template (a CA Service template naming the operator identity: infrastructure, billed, the owner's) and a workload-certificate source in the CLI, so an operator can reach a deployed broker from somewhere other than its own host; until then incident access is on the broker's own host over plaintext loopback with the bearer token. Not deployed. (Corrected 2026-10-19: the mTLS identity binding itself is built and tested; the earlier 'mTLS blocked' reason is stale.)",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. No runtime verb creates a topic or changes a quota or a retention. A topic is a reviewed code change naming its retention class, and a stream's policy is the committed catalogue's. The broker keeps refusing to redeclare a stream under a different policy. Drain and partition move act on leases that exist only on the Spanner managed log, so they are built with that log once it is funded, with R12-RES-8103's caught-up refusal. The requirement text stands, and the row stays PARTIAL. Closes on: No code now. Open the gap with the ruling: create topic, set quota and set retention are refused as runtime verbs, so the row stays PARTIAL on them. Trigger: the managed log is funded (Spanner $2,705-$8,140 a month, billed-plan #7, declined under decision 5). Then a lane adds attributed drain and partition-move routes and CLI verbs. Each gets a qip-fabricd mTLS test: the action is recorded under the certificate name and refused to an identity without the admin grant. Mutation: skip the admin-grant check. The CLI gets a workload-certificate source only with the CA Service operator template (R12-SEC-10054's pool). Earlier: Remaining admin verbs (quota or retention change, partition move, drain), each its own slice with its own refusal test (ADR 0156 4d). An operator certificate template (a CA Service template naming the operator identity: infrastructure, billed, the owner's) and a workload-certificate source in the CLI, so an operator can reach a deployed broker from somewhere other than its own host; until then incident access is on the broker's own host over plaintext loopback with the bearer token. Not deployed. (Corrected 2026-10-19: the mTLS identity binding itself is built and tested; the earlier 'mTLS blocked' reason is stale.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1843,7 +1850,7 @@
     "verification": "cargo test -p qip-fabricd --test broker; cargo test -p qip-cli --test event_fabric_admin",
     "work_item": "",
     "size": "M",
-    "notes": "Lane W8-156, 2026-10-19 (ADR 0156) §4d. Mutations fired and restored: the operator name taken from the request body instead of the header (the spoofing request is authorised as operator and accepted); the peer identity ignored (the certificate-attributed request fails). The CLI's admin.rs module doc, which said mutual TLS was BLOCKED(C2), is corrected."
+    "notes": "Lane W8-156, 2026-10-19 (ADR 0156) §4d. Mutations fired and restored: the operator name taken from the request body instead of the header (the spoofing request is authorised as operator and accepted); the peer identity ignored (the certificate-attributed request fails). The CLI's admin.rs module doc, which said mutual TLS was BLOCKED(C2), is corrected. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): No runtime verb creates a topic or changes a quota or a retention. A topic is a reviewed code change naming its retention class, and a stream's policy is the committed catalogue's. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-OBS-8082",
@@ -1866,7 +1873,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L17 from fabricd's telemetry.rs and main.rs; nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §5.5. Mutations fired and restored: the partition key added as a span attribute (the exact-attributes assertion fails); the span never started (the span-exists premise fails). fabricd's telemetry is now built with Telemetry::foreground."
+    "notes": "Gap corrected 2026-10-18 by lane L17 from fabricd's telemetry.rs and main.rs; nothing in the code changed. Lane W8-156, 2026-10-19 (ADR 0156) §5.5. Mutations fired and restored: the partition key added as a span attribute (the exact-attributes assertion fails); the span never started (the span-exists premise fails). fabricd's telemetry is now built with Telemetry::foreground. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0156 §5.5 stands: fabricd's spans leave the process only through the shared drain when it is configured. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8083",
@@ -1876,7 +1883,7 @@
       "backend/crates/libs/qip-transport/src/event_fabric/transport.rs:1-10 HttpTransport is the only implementation",
       "backend/crates/libs/qip-transport/src/event_fabric/auth.rs:11 'The fabric runs over plaintext TCP'"
     ],
-    "gap": "Owner decision O07 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement. Enables: QUIC for the fabric hop and the peer link. Costs: A new transport crate and its closure; the measurement needs a second region.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. This takes the same ruling as R12-FABRIC-7046. I do not supersede ADR 0112 §4, and a local netem run does not stand in for the committed cross-region measurement. QUIC by default waits on a second region, and the row stays PARTIAL. The plaintext refusal and certificate identity in the row's check are met. gVNIC goes on the broker template together with the broker image, which must declare it. Closes on: Register: correct the evidence to cite config.rs::a_broker_serves_plaintext_only_where_a_local_deployment_chose_it and mtls.rs. Strike auth.rs:11 as stale text. Open the gap with the ruling. Trigger: a second region priced under a record superseding ADR 0035, then the committed cross-region measurement, then quinn by its own protected allow-list record only if the measurement shows a needed cost. When the broker image is baked, it declares GVNIC and the template sets nic_type = \"GVNIC\". Test: a machine.tftest.hcl assertion on nic_type; mutation: drop it. Cost today: not priced (billed-plan #13). Earlier: Owner decision O07 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement. Enables: QUIC for the fabric hop and the peer link. Costs: A new transport crate and its closure; the measurement needs a second region.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1887,7 +1894,7 @@
     "verification": "integration test refusing plaintext",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: TLS behind the FabricTransport seam exists (mTLS, FABRIC-7046). QUIC is admitted only on a committed TCP+TLS vs QUIC measurement on the cross-region peer-mesh hop (ADR 0112 §4, Amendment 1); commit that measurement and an integration test refusing plaintext."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: TLS behind the FabricTransport seam exists (mTLS, FABRIC-7046). QUIC is admitted only on a committed TCP+TLS vs QUIC measurement on the cross-region peer-mesh hop (ADR 0112 §4, Amendment 1); commit that measurement and an integration test refusing plaintext. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): This takes the same ruling as R12-FABRIC-7046. I do not supersede ADR 0112 §4, and a local netem run does not stand in for the committed cross-region measurement. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8084",
@@ -1928,7 +1935,7 @@
       "backend/crates/apps/qip-fabricd/src/lib.rs with_placement",
       "backend/crates/services/qip-streaming/tests/event_fabric_managed.rs a_non_preferred_instance_waits_the_grace_before_contending_a_live_lease"
     ],
-    "gap": "No committed deployment sets QIP_EVENT_FABRIC_INSTANCES: the event-fabric-broker module deploys one instance in one zone and refuses a second address, and fabricd is outside the image matrix and null in every environment, so rendezvous placement runs only in tests. The Spanner graced statement (SELECT_LEASE_AFTER_GRACE) is compiled but has not run against a Spanner database or emulator. P2-P4 stay RF1 by ADR 0111 section 2.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The ordering key and rendezvous placement stand as built. 'Followers in other zones' means, for P0/P1, the Spanner managed log on two or three seated brokers. Decision 5 still declines that bill, and P2-P4 stay without followers until ADR 0111 §2's measurement. When the bill is taken, the emulator proof of SELECT_LEASE_AFTER_GRACE comes before any instance, not before the funding decision. The row stays PARTIAL. Closes on: No code now. Trigger: an ADR states the managed log's measured need and ceiling after the base deploy (decision 5). Then prove qip-fabricd spanner.rs against the Spanner emulator, deploy two or three seated fabricd instances across zones with QIP_EVENT_FABRIC_INSTANCES set, and record that a follower holds every committed batch. Cost: Spanner $2,705-$8,140 a month (billed-plan #7); broker machines not priced (#11). Earlier: No committed deployment sets QIP_EVENT_FABRIC_INSTANCES: the event-fabric-broker module deploys one instance in one zone and refuses a second address, and fabricd is outside the image matrix and null in every environment, so rendezvous placement runs only in tests. The Spanner graced statement (SELECT_LEASE_AFTER_GRACE) is compiled but has not run against a Spanner database or emulator. P2-P4 stay RF1 by ADR 0111 section 2.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1941,7 +1948,7 @@
     "verification": "cargo test -p qip-streaming --test event_fabric_managed && cargo test -p qip-fabricd --lib",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: passing a zero grace to the log lets the non-preferred instance take a lease expired for 1 ms (a_non_preferred_instance_waits... fails); skipping the settling branch lets the instance that asks first lead a vacant partition; applying the deferral to every instance makes the preferred one wait (two tests fail); dropping the config refusal of a set that omits this instance loads it (config test fails). The closure named qip-fabricd/tests/managed.rs; the test is at the Broker seam in qip-streaming/tests because it needs a manual clock, which the served-process tests cannot advance. Kept PARTIAL: wiring is done, deployment is not."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: passing a zero grace to the log lets the non-preferred instance take a lease expired for 1 ms (a_non_preferred_instance_waits... fails); skipping the settling branch lets the instance that asks first lead a vacant partition; applying the deferral to every instance makes the preferred one wait (two tests fail); dropping the config refusal of a set that omits this instance loads it (config test fails). The closure named qip-fabricd/tests/managed.rs; the test is at the Broker seam in qip-streaming/tests because it needs a manual clock, which the served-process tests cannot advance. Kept PARTIAL: wiring is done, deployment is not. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The ordering key and rendezvous placement stand as built. 'Followers in other zones' means, for P0/P1, the Spanner managed log on two or three seated brokers. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8086",
@@ -1961,7 +1968,7 @@
       "apps/qip-fabricd/tests/chaos.rs::seeded_kills_and_partitions_lose_no_acknowledged_record_and_never_split_an_epoch",
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md"
     ],
-    "gap": "Steps still needed: (2) A deployed fabricd seated on Spanner with enable_spanner on and a managed-log database applied; fabricd is not deployed and enable_spanner=false in every tfvars. (3) Evidence that Spanner's majority commit stands in for 'RF3 across zones' (ADR 0111 leaves this to the register); the kill tests run on MemoryManagedLog and the Spanner adapter on a fake transport, so no Spanner replica was ever killed. (4) An asynchronous cross-region mirror, refused today (C8/ADR 0113, ADR 0120). Step (1) closed 2026-10-24: infrastructure/event-fabric/streams.managed.json declares the P0 and P1 streams managed_majority at RF3. Nothing selects that file in a deployment yet, because no deployment seats fabricd. Corrected 2026-10-24.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. I read this as R12-FABRIC-8091 and 8092 do. A regional Spanner commit, three read-write replicas one per zone, is the RF3 majority, but it counts only once a deployed fabricd seated on it acknowledges through it, and decision 5 has not taken that bill. Cross-region mirroring is ADR 0119's asynchronous consumer, deployed only at a second region (R12-COVERAGE-7192). The row stays PARTIAL. Closes on: No code now. Correct gap step (4) to cite ADR 0119 and R12-COVERAGE-7192. Trigger: decision 5's measured-need ADR funds the Spanner managed log. Then run the emulator proof of spanner.rs first (ADR 0111 Amendment 1 item 4), then seat fabricd on Spanner with streams.managed.json in one environment, and record a kill-the-leader drill losing no quorum-acked record. Cost: Spanner $2,705-$8,140 a month (billed-plan #7). Earlier: Steps still needed: (2) A deployed fabricd seated on Spanner with enable_spanner on and a managed-log database applied; fabricd is not deployed and enable_spanner=false in every tfvars. (3) Evidence that Spanner's majority commit stands in for 'RF3 across zones' (ADR 0111 leaves this to the register); the kill tests run on MemoryManagedLog and the Spanner adapter on a fake transport, so no Spanner replica was ever killed. (4) An asynchronous cross-region mirror, refused today (C8/ADR 0113, ADR 0120). Step (1) closed 2026-10-24: infrastructure/event-fabric/streams.managed.json declares the P0 and P1 streams managed_majority at RF3. Nothing selects that file in a deployment yet, because no deployment seats fabricd. Corrected 2026-10-24.",
     "implemented": false,
     "tested": true,
     "integrated": false,
@@ -1972,7 +1979,7 @@
     "verification": "property test killing replicas",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Prior INCORRECT finding is resolved: a committed config no longer says quorum while delivering one broker; a `quorum` declaration on RF1 is now refused. The tests run on an in-memory managed log, so 'killing a replica' kills a fabricd instance, not a Spanner replica. The Spanner-replica property is assumed from the vendor, not tested."
+    "notes": "Round-2 independent audit, 2026-10-11: Prior INCORRECT finding is resolved: a committed config no longer says quorum while delivering one broker; a `quorum` declaration on RF1 is now refused. The tests run on an in-memory managed log, so 'killing a replica' kills a fabricd instance, not a Spanner replica. The Spanner-replica property is assumed from the vendor, not tested. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): I read this as R12-FABRIC-8091 and 8092 do. A regional Spanner commit, three read-write replicas one per zone, is the RF3 majority, but it counts only once a deployed fabricd seated on it acknowledges through it, and decision 5 has not taken that bill. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8087",
@@ -2126,7 +2133,7 @@
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:30-31,82"
     ],
-    "gap": "Owner decision O11 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Raise P2/P3 replication above RF1 (ADR 0111 §2 waits on a measurement). Enables: RF2/3 for P2/P3, tiered retention, throttled mirroring. Costs: Spanner or Managed Kafka capacity for bulk classes.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. O11 is declined for P2 for now. The market journal stays RF1 under ADR 0111 §2 until a committed measurement of P2 volume and loss from a running broker says it must survive a zone. Its escalation is then Managed Kafka for P2 alone, under its own record with a monthly ceiling. Throttled mirroring waits for ADR 0119's mirror at a second region, and the requirement text stands. Closes on: No code now. Trigger: a deployed broker produces the committed P2 volume and loss measurement. If that measurement shows the journal must survive a zone, an ADR admits Managed Kafka for P2 with its client and a monthly ceiling (decision 5). The ADR 0119 mirror then gets a test showing mirror lag grows under pressure while local P2 ingest continues. Cost today: Managed Kafka for P2 not priced. Archive bucket $0.30-$6 a month (billed-plan #2). Earlier: Owner decision O11 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Raise P2/P3 replication above RF1 (ADR 0111 §2 waits on a measurement). Enables: RF2/3 for P2/P3, tiered retention, throttled mirroring. Costs: Spanner or Managed Kafka capacity for bulk classes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2139,7 +2146,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": "Blueprint asks RF3 regional quorum for P2; code floor is LeaderOnly. ADR lane 2026-10-18: gap re-graded against decision O11; gap before it: RF3, tiered retention, GCS archive, mirror throttling."
+    "notes": "Blueprint asks RF3 regional quorum for P2; code floor is LeaderOnly. ADR lane 2026-10-18: gap re-graded against decision O11; gap before it: RF3, tiered retention, GCS archive, mirror throttling. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): O11 is declined for P2 for now. The market journal stays RF1 under ADR 0111 §2 until a committed measurement of P2 volume and loss from a running broker says it must survive a zone. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8094",
@@ -2149,7 +2156,7 @@
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:32-33",
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1067-1074"
     ],
-    "gap": "Owner decision O11 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Raise P2/P3 replication above RF1 (ADR 0111 §2 waits on a measurement). Enables: RF2/3 for P2/P3, tiered retention, throttled mirroring. Costs: Spanner or Managed Kafka capacity for bulk classes.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. P3 stays RF1 and is replayable from the archive under ADR 0111 §2. A configurable RF2/3 that no mechanism delivers would be the false claim that record forbids, so StreamPolicy keeps refusing it. Its lag half already holds. RF2/3 for P3 reopens only through an ADR that names the mechanism, a measured P3 need and a monthly ceiling, after the deploy. The row stays PARTIAL. Closes on: No code now. Trigger: a running broker's committed P3 volume measurement, then an ADR amending ADR 0111 §2 that names the mechanism and its ceiling. Then add a policy test that RF2/3 is configurable for P3 only on that mechanism, and a fabricd test that a lagging P3 group on it is not refused. Mutation: let StreamPolicy::new admit P3 at RF3 without the mechanism, and the test must fail. Cost: Spanner floor $2,705 a month (billed-plan #7) before any P3 capacity; P3 capacity not priced. Earlier: Owner decision O11 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Raise P2/P3 replication above RF1 (ADR 0111 §2 waits on a measurement). Enables: RF2/3 for P2/P3, tiered retention, throttled mirroring. Costs: Spanner or Managed Kafka capacity for bulk classes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2160,7 +2167,7 @@
     "verification": "cargo test -p qip-streaming",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O11; gap before it: Configurable RF; consumer scaling."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O11; gap before it: Configurable RF; consumer scaling. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): P3 stays RF1 and is replayable from the archive under ADR 0111 §2. A configurable RF2/3 that no mechanism delivers would be the false claim that record forbids, so StreamPolicy keeps refusing it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8095",
@@ -2194,7 +2201,7 @@
       "infrastructure/terraform/modules/event-fabric-broker/variables.tf broker_internal_addresses (at most three)",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:527 fabric_084 (one per zone on a C4 shape, capped at three)"
     ],
-    "gap": "Whether prod sets event_fabric_broker is the owner's switch in a protected tfvars file (infrastructure/environments/prod/terraform.tfvars) and the instances bill, so no prod plan shows any broker; the module is reached by no environment. Five is a measured future that needs its own record. (Restated 2026-10-19; the earlier 'five per region' gap is withdrawn.)",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Three brokers per production region, one per zone, on C4 or C4D, stands as ADR 0111 Amendment 1 and ADR 0156 §6(a) set it. The module's cap of three is not raised: five comes only after a committed throughput measurement on running brokers and a record that resizes the lease. Prod brokers are billed, unpriced and behind the Spanner lease decision 5 declines, so the row stays PARTIAL. Closes on: No code now; the three-address cap and fabric_084 stay. Trigger: a broker image is baked, the brokers are priced, and the Spanner managed log is funded by decision 5's ADR. Then the owner sets three addresses in three zones in prod terraform.tfvars (protected; a lane writes that patch), and the prod plan shows them. Five waits on a committed throughput measurement and a lease record. Cost: Spanner $2,705-$8,140 a month (billed-plan #7); brokers not priced (#11). Earlier: Whether prod sets event_fabric_broker is the owner's switch in a protected tfvars file (infrastructure/environments/prod/terraform.tfvars) and the instances bill, so no prod plan shows any broker; the module is reached by no environment. Five is a measured future that needs its own record. (Restated 2026-10-19; the earlier 'five per region' gap is withdrawn.)",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2207,7 +2214,7 @@
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cd infrastructure/terraform && terraform test -filter=tests/fabric.tftest.hcl; cargo test -p qip-acceptance --test event_fabric_scaling",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L22, 2026-10-18: per-address zones, the one-per-zone refusal, the in-region refusal and the C4/C4D shape validation added; root wiring via the orchestrator's protected-path patch (additional_zones, c4-standard-4 default). Mutations: drop the one-per-zone precondition - two_brokers_in_one_zone_are_refused fails; put the instance back on var.zone - three_brokers_are_placed_in_three_zones and acceptance fabric_084/fabric_101 fail; remove the machine_type validation - a_c3_broker_shape_is_refused fails; default c3-standard-4 - fabric_084 fails; all restored. The root fabric harness had planned its brokers in us-east4-a under the root's default region europe-west2; the new in-region refusal caught it and the harness's broker zones now sit in europe-west2. Module terraform test 23 passed; root terraform test 103 passed. Lane W8-156, 2026-10-19 (ADR 0156) §6a. Restatement only; no code changed, and kept PARTIAL because the module runs on no default path (null in every environment) and terraform is not installed here to run its tests. fabric_084's name still says gap-pin; the ceiling of three it pins is now the requirement."
+    "notes": "Lane L22, 2026-10-18: per-address zones, the one-per-zone refusal, the in-region refusal and the C4/C4D shape validation added; root wiring via the orchestrator's protected-path patch (additional_zones, c4-standard-4 default). Mutations: drop the one-per-zone precondition - two_brokers_in_one_zone_are_refused fails; put the instance back on var.zone - three_brokers_are_placed_in_three_zones and acceptance fabric_084/fabric_101 fail; remove the machine_type validation - a_c3_broker_shape_is_refused fails; default c3-standard-4 - fabric_084 fails; all restored. The root fabric harness had planned its brokers in us-east4-a under the root's default region europe-west2; the new in-region refusal caught it and the harness's broker zones now sit in europe-west2. Module terraform test 23 passed; root terraform test 103 passed. Lane W8-156, 2026-10-19 (ADR 0156) §6a. Restatement only; no code changed, and kept PARTIAL because the module runs on no default path (null in every environment) and terraform is not installed here to run its tests. fabric_084's name still says gap-pin; the ceiling of three it pins is now the requirement. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Three brokers per production region, one per zone, on C4 or C4D, stands as ADR 0111 Amendment 1 and ADR 0156 §6(a) set it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8097",
@@ -2230,7 +2237,7 @@
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider. Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Re-graded after 2bf53e03 wired the two figures from the root: still PARTIAL, because nothing instantiates the module in a committed environment."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider. Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Re-graded after 2bf53e03 wired the two figures from the root: still PARTIAL, because nothing instantiates the module in a committed environment. Owner ruling 2026-10-31, second pass (IMPLEMENT): The journal is built as the text asks: a separate Hyperdisk with provisioned IOPS and throughput, and any other disk type is refused. Handed to lane L1b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8098",
@@ -2265,7 +2272,7 @@
       "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:987 fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs no_network_connectivity_hub_or_vpc_peering_is_declared_before_the_second_region"
     ],
-    "gap": "Cross-region mirror prefixes exported only through the latency NCC hub: nothing to export until a second region and the mirror's deployment exist (ADR 0113 section 4, ADR 0119 decision 3). Then only the control-fabric subnet is exported, and only to the other regions' control-fabric spokes (ADR 0156 6c). The hub, its attachments and its data transfer are billed and the owner's. Not deployed: event_fabric_broker is null in every environment. (Restated 2026-10-19.)",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The broker half stands as built: each broker has a reserved internal address, there is no access_config and no public forwarding rule. The export half waits with the hub. Decision 4 and R12-GCP-8057 stand, l6-ncc-hubs-parked.patch stays unapplied, and with one region there is no mirror prefix to export. The row stays PARTIAL until the second-region record names the hub's monthly cost and a broker runs in a committed environment. Closes on: First, the ADR superseding ADR 0035 must name a second region and the hub's monthly cost (R12-GCP-8035, R12-GCP-8057). Then git apply docs/blueprint/lanes/l6-ncc-hubs-parked.patch, with latency spokes that export only control-fabric prefixes of /24 or narrower. The gcp_placement guard moves only with that record. Separately, set event_fabric_broker in a committed environment once a broker image is baked. A plan showing reserved internal addresses and only the filtered export closes the row. Earlier: Cross-region mirror prefixes exported only through the latency NCC hub: nothing to export until a second region and the mirror's deployment exist (ADR 0113 section 4, ADR 0119 decision 3). Then only the control-fabric subnet is exported, and only to the other regions' control-fabric spokes (ADR 0156 6c). The hub, its attachments and its data transfer are billed and the owner's. Not deployed: event_fabric_broker is null in every environment. (Restated 2026-10-19.)",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2278,7 +2285,7 @@
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cargo test -p qip-acceptance --test event_fabric_scaling fabric_089; cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment. Lane W8-156, 2026-10-19 (ADR 0156) §6b-6c. The hub-absence scan is mutation-verified under GCP-8053. Kept PARTIAL: the requirement's export half is unbuilt by decision and the module is reached by no environment."
+    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment. Lane W8-156, 2026-10-19 (ADR 0156) §6b-6c. The hub-absence scan is mutation-verified under GCP-8053. Kept PARTIAL: the requirement's export half is unbuilt by decision and the module is reached by no environment. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The broker half stands as built: each broker has a reserved internal address, there is no access_config and no public forwarding rule. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-8100",
@@ -2305,7 +2312,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Old status MISSING undercounted the code: the mTLS refusal and the KMS signer are real and tested. The tests use in-test minted PKI, not CAS-issued certificates."
+    "notes": "Round-2 independent audit, 2026-10-11: Old status MISSING undercounted the code: the mTLS refusal and the KMS signer are real and tested. The tests use in-test minted PKI, not CAS-issued certificates. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0112 already decided this: on a Compute Engine hop, the certificate's SAN, mapped to the workload's service account, replaces the bearer token for authorisation. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-FABRIC-8101",
@@ -2470,9 +2477,11 @@
     "current": "Source quality/legal/freshness scoring lives in qip-data-finder and kernel source_lifecycle in-process; no Spanner Graph/BigQuery backing.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/freshness.rs",
-      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs"
+      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs",
+      "backend/crates/runtime/qip-kernel/src/source_alpha_record.rs (SourceAlphaScored, Platform::journal_source_alpha_round, source_alpha_rounds)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs (EvolutionEngine::maybe_score_sources journals each round that scored a pair; test the_deep_brain_scores_every_connector_on_its_cadence_and_a_replay_of_the_log_reproduces_the_round)"
     ],
-    "gap": "Continuous scoring as a scheduled stage of qip-deepbrain on Cloud Run; derived state reproducible from the event log and snapshotted to the archive, no Spanner Graph/BigQuery (ADR 0113, ADR 0114 Amendment 1).",
+    "gap": "2026-10-31 (after the owner-delegated ruling of 2026-10-31 decision 10, read with D4 of 2026-10-11 and ADR 0114 Amendment 1): scoring runs by default every cycle (R12-EXPAND-6027) and each round that scored a pair is journaled under Topic::SourceAlphaScored. Three steps remain, from an independent skeptic's REFUTED: (1) no committed environment attaches a connector arm (deepbrain_connector is null or commented out in every tfvars), so on the default path every round scores nothing; a default-sensed source must be scorable or an arm attached by default; (2) nothing reads source_alpha_rounds back on start, so the desk is not rebuilt from the log after a restart, and nothing snapshots it to the archive; (3) 'handle contradictions' has no code and no ruling withdrawing it.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2480,10 +2489,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of catalogue.tf and the binary's composition",
+    "verification": "unit: evolution.rs test drives the engine main.rs builds with the cadence read from an unset variable and asserts the log holds exactly the scored round and no empty round; mutations: unset cadence returning 0 (no round), dropping the journal call (log empty, left: []), dropping the empty-round filter (arm-less round journaled).",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. | 2026-10-31 lane L3-DATA: implemented the ruling's closure (default cadence already on via R12-EXPAND-6027; rounds journaled; named test). Skeptic REFUTED promotion on the three steps in the gap; it also found an empty round journaled every cycle, now fixed by journaling only rounds that scored a pair."
   },
   {
     "id": "R12-FABRIC-8109",
@@ -2513,7 +2522,7 @@
       "backend/crates/runtime/qip-kernel/src/session_replay.rs",
       "backend/crates/apps/qip-edge-node/src/replay.rs"
     ],
-    "gap": "Replay and counterfactual scoring exist in-process. Needs a Cloud Run Job launching replay shards over archived segments and comparing live vs counterfactual models, declared in Terraform (ADR 0114 Amendment 1).",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence, after dev runs and the owner funds R12-TICK-7020's replay job at about $105 a month (one job for both rows, behind enable_replay_pool, with the variables.tf and dev tfvars lines in one protected patch), with enable_cloud_storage on (R12-DATA-8125). Replay shards run as a Cloud Run Job (D4 of 2026-10-11, ADR 0114 Amendment 1), sharing no service or identity with serving, and re-score the declined and filled paths from the tape with the corrected twin, never against a regret journaled before decision 9's direction fix. Ruling cited session_replay's from_archive, not found on 2026-10-31: the only from_archive is qip-edge-node's RecordedSession::from_archive, qip-kernel's session_replay takes recorded sessions only, and qip-kernel does not depend on qip-storage. An architecture review first settles which crate reads qip-storage's segment ArchiveReader into the kernel's scoring inputs, and a public seam over Platform::score_declined and score_filled is added; only then does a lane land the shard entry point, with the test 'two shards over disjoint archived segments together reproduce the single-process replay's live-versus-counterfactual comparison' (mutation: drop one shard's segments). Closes on: a plan and an apply showing the job. (Skeptic's correction; the decider had told a lane to read archived segments through a symbol that does not exist.) Earlier: Replay and counterfactual scoring exist in-process. Needs a Cloud Run Job launching replay shards over archived segments and comparing live vs counterfactual models, declared in Terraform (ADR 0114 Amendment 1).",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2524,7 +2533,7 @@
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Replay shards run as the same Cloud Run Job R12-TICK-7020 funds, about $105 a month, after dev runs; per the skeptic qip-kernel has no session_replay from_archive, so an architecture review first settles which crate reads qip-storage's ArchiveReader into the kernel's scoring and adds a public seam over score_declined and score_filled. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-REASON-8111",
@@ -2678,7 +2687,7 @@
       "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names"
     ],
-    "gap": "2026-10-24: The requirement says Config Sync, Argo CD, Kargo and Argo Rollouts must each be installed and own its layer. The row withdraws two of the four by ADR 0114 (Config Connector instead of Config Sync; Cloud Run bounds instead of Argo Rollouts), and the requirement does not allow withdrawing a clause. Closing: install the two controllers, or an owner decision narrows R12-CICD-8117 to ADR 0114's controller set.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence, recorded as evidence only, and beyond it an ADR admitting Config Sync and Argo Rollouts, which this delegation does not write. ADR 0114 D4 stands and is not superseded, as R12-CICD-10160 and R12-CICD-8008 ruled: Config Sync and Argo Rollouts do not go on the control plane, and no fifth controller does. The requirement names Config Sync for the baseline, policy and CRD layer and Argo Rollouts for progressive rollout, and it is not narrowed to the controllers D4 admits; gitops.rs's guard test stays unchanged. A dev control plane on which Argo CD, Kargo and Config Connector each reconcile only their own layer, and a dev run of R12-CICD-9116's traffic-split canary, are recorded as evidence only and do not close the row. Closes on: an ADR that admits both mechanisms. (Skeptic's correction; the decider had let the row close on the equivalents, which restates the requirement so it passes.) Earlier: 2026-10-24: The requirement says Config Sync, Argo CD, Kargo and Argo Rollouts must each be installed and own its layer. The row withdraws two of the four by ADR 0114 (Config Connector instead of Config Sync; Cloud Run bounds instead of Argo Rollouts), and the requirement does not allow withdrawing a clause. Closing: install the two controllers, or an owner decision narrows R12-CICD-8117 to ADR 0114's controller set.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2689,7 +2698,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a Rollout document appended to bootstrap/kargo/upstream/install.yaml failed the test naming Argo Rollouts and ADR 0114. AUDIT-4: 2026-10-24 regraded, the requirement names four controllers (Config Sync, Argo CD, Kargo, Argo Rollouts) and the row withdraws two by ADR 0114; the requirement does not allow withdrawing a clause."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a Rollout document appended to bootstrap/kargo/upstream/install.yaml failed the test naming Argo Rollouts and ADR 0114. AUDIT-4: 2026-10-24 regraded, the requirement names four controllers (Config Sync, Argo CD, Kargo, Argo Rollouts) and the row withdraws two by ADR 0114; the requirement does not allow withdrawing a clause. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): ADR 0114 D4 stands and is not superseded: Config Sync and Argo Rollouts stay declined, no fifth controller joins the control plane, the requirement is not narrowed to the controllers ADR 0114 admits, and the row stays PARTIAL while D4 declines both, reopening only if an ADR admits them. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-SEC-8118",
@@ -2856,7 +2865,7 @@
     "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 (lane L13): regional segment bucket added. Mutation: location set to var.bucket_location failed 'must sit in the deployment's region'; deleting its retention_policy failed the acceptance test 'google_storage_bucket.segments sets no retention_policy'; both restored byte-for-byte. The closure's 'lifecycle rule into the archive bucket' is not something GCS lifecycle can do; the transfer is the missing piece."
+    "notes": "2026-10-18 (lane L13): regional segment bucket added. Mutation: location set to var.bucket_location failed 'must sit in the deployment's region'; deleting its retention_policy failed the acceptance test 'google_storage_bucket.segments sets no retention_policy'; both restored byte-for-byte. The closure's 'lifecycle rule into the archive bucket' is not something GCS lifecycle can do; the transfer is the missing piece. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): fabricd writes each sealed segment to the regional landing and writes the same local bytes a second time into the locked archive under one content address, with no server-side copy and no transfer service; a segment counts as archived only after an objects.get read-back, the start-up probe never deletes, and the row stays PARTIAL on enable_cloud_storage and event_fabric_broker (skeptic's corrected decision). The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: fabricd lands each sealed segment in the regional segment bucket and copies it into the locked archive itself, no transfer service is bought, and a segment counts as archived only once its archive copy is read back (reconciles R12-FABRIC-8101, R12-DATA-8124 and R12-DATA-8125).. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-8125",
@@ -2864,9 +2873,10 @@
     "current": "Archive and evidence buckets declare locked retention and versioning; archive gated off, evidence module instantiated.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:130-146 versioning + retention_policy is_locked",
-      "infrastructure/terraform/modules/evidence/main.tf:58"
+      "infrastructure/terraform/modules/evidence/main.tf:58",
+      "infrastructure/terraform/modules/data/tests/archive_retention.tftest.hcl (the_archive_holds_a_locked_retention_policy_and_keeps_every_version; no_archive_is_planned_while_storage_is_off)"
     ],
-    "gap": "2026-10-24 (re-read against the tree): The archive bucket (google_storage_bucket.archive, infrastructure/terraform/modules/data/main.tf) declares versioning and a locked retention_policy but sits behind enable_cloud_storage, which is false in all four infrastructure/environments/*/terraform.tfvars, so nothing is planned and the plan: clause cannot be met while billing is paused. Nothing moves data from a landing/segment bucket into the archive: the regional google_storage_bucket.segments deletes at 30 days and its own comment says object lifecycle cannot move objects between buckets, so 'receive data by lifecycle from landing' cannot be met as written. Needs: an owner decision restating that clause or a transfer step (Storage Transfer Service, a managed service, or an in-tree copy job); a tfvar flip of enable_cloud_storage in at least dev; a real plan/apply.",
+    "gap": "2026-10-31 (owner-delegated ruling of 2026-10-31, decision 10): the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket (object lifecycle cannot move objects between buckets, and no transfer service is bought). The module's plan harness now asserts, with enable_cloud_storage = true, that google_storage_bucket.archive[0] holds a locked retention policy of archive_retention_days and keeps every version, beside the single-region refusal. Remaining: dev's enable_cloud_storage flip (protected, billed, and the seven-year lock cannot be undone) and a real plan of an environment; reconciling the landing-to-archive copy with R12-FABRIC-8101 and R12-DATA-8124 under DATA-8019's ADR (fabricd writes the regional landing and a named copy step fills the locked archive).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2874,10 +2884,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "plan: terraform test in modules/data (mock provider), 23 passed across the module's harnesses; mutations: is_locked = false fails the lock assertion, versioning enabled = false fails the versioning assertion; both restored with cp and cmp. terraform fmt -check and validate clean.",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (IMPLEMENT): No transfer service is bought for the archive. Object lifecycle cannot move objects between buckets, so the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (IMPLEMENT): No transfer service is bought for the archive. Object lifecycle cannot move objects between buckets, so the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. | 2026-10-31 lane L3-DATA: added the ruling's plan run (enable_cloud_storage = true asserts locked retention and versioning on the archive) and recorded the restated landing clause; stays PARTIAL until the protected, billed enable_cloud_storage flip and a real plan."
   },
   {
     "id": "R12-DATA-8126",
@@ -2889,7 +2899,7 @@
       "infrastructure/terraform/modules/data/main.tf:519 google_bigtable_app_profile.timeseries",
       "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:24 bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload"
     ],
-    "gap": "fabric-sink-bigtable (R12-DATA-10035) does not exist, and enable_bigtable is false in every committed environment, so no committed plan renders the instance; enabling it is an owner switch and the Rust provider still refuses the Bigtable target (no gRPC adapter).",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Bigtable stays declined under decision 5, as I ruled on R12-RES-9174. The plan clause is met in code: two zonal clusters and one app profile per consistency need. Nothing more is built for a store nobody pays for. fabric-sink-bigtable waits with R12-DATA-10035 and R12-DATA-10080. The row stays PARTIAL. Closes on: Write decision 5 and the $950-$1,300 a month floor into the gap. Trigger: R12-DATA-10035's reopening ADR with a measured need and a ceiling, plus a gRPC client ADR under ADR 0109. Then fabric-sink-bigtable through the ingest profile, the owner's enable_bigtable flip and a committed environment's plan. No lane work now. Earlier: fabric-sink-bigtable (R12-DATA-10035) does not exist, and enable_bigtable is false in every committed environment, so no committed plan renders the instance; enabling it is an owner switch and the Rust provider still refuses the Bigtable target (no gRPC adapter).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2902,7 +2912,7 @@
     "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/scaling.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 (lane L13): second cluster and three app profiles added; terraform 1.9.8 test in modules/data: 12 passed, 0 failed. Mutations: deleting the secondary cluster failed 'must declare at least two clusters'; switching ingest to multi-cluster routing failed 'must route to a single cluster'; both restored byte-for-byte. Kept PARTIAL: the sink half of the clause is R12-DATA-10035 and the plan the check asks for is mocked, not a committed environment's."
+    "notes": "2026-10-18 (lane L13): second cluster and three app profiles added; terraform 1.9.8 test in modules/data: 12 passed, 0 failed. Mutations: deleting the secondary cluster failed 'must declare at least two clusters'; switching ingest to multi-cluster routing failed 'must route to a single cluster'; both restored byte-for-byte. Kept PARTIAL: the sink half of the clause is R12-DATA-10035 and the plan the check asks for is mocked, not a committed environment's. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Bigtable stays declined under decision 5, as I ruled on R12-RES-9174. The plan clause is met in code: two zonal clusters and one app profile per consistency need. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-8127",
@@ -2954,7 +2964,7 @@
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:758 (qip-world-model in READERS)",
       "backend/crates/services/qip-world-model/src"
     ],
-    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. Spanner Graph stays declined, as R12-AMBIENT-9001 already decided O02: BigQuery is the one evidence store agents read, and Bigtable, Spanner Graph and Knowledge Catalog wait for an ADR that states a measured need and a monthly ceiling. No graph writer is written against a store ADR 0113 does not admit. The edge-isolation half is already proven. The row stays PARTIAL until that record exists and a funded instance runs. Closes on: The row reopens only after dev runs, through an ADR under ADR 0113 §1 that admits Spanner Graph with a measured need and a monthly ceiling, superseding R12-AMBIENT-9001's decline for this store. Then: enable_spanner goes into the protected dev tfvars with a plan. A REST graph writer is built under ADR 0113 §2 behind qip-mesh's GraphStore port, written from the deep brain's world-model worker. architecture.rs is extended so the test refuses any edge crate reaching the writer (mutation: add the writer crate to an edge crate's dependencies). A deployed write is read back. Earlier: Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2967,7 +2977,7 @@
     "verification": "cargo test -p qip-acceptance --test architecture",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner Graph writer."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner Graph writer. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): Spanner Graph stays declined, as R12-AMBIENT-9001 already decided O02: BigQuery is the one evidence store agents read, and Bigtable, Spanner Graph and Knowledge Catalog wait for an ADR that states a measured need and a monthly ceiling. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-8130",
@@ -2977,7 +2987,7 @@
       "infrastructure/terraform/modules/data/main.tf:268-320",
       "backend/crates/libs/qip-storage/src/provider.rs:379"
     ],
-    "gap": "Owner decision O01 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a Postgres wire client (crate or in-tree) and an AlloyDB instance for workflow metadata, reversing ADR 0113's refusal of AlloyDB. Enables: AlloyDB adapter behind StorageTarget::AlloyDb and workflow state off the journal. Costs: A new crate or an in-tree wire protocol plus TLS; an AlloyDB cluster billed per vCPU-hour from creation.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. I decide O01 by declining it for now. I admit no PostgreSQL client and buy no AlloyDB before the deploy. ADR 0113's refusal stands. Operational metadata stays on the journal and the single-node engine store, and never in the ledger. AlloyDB reopens only through an ADR that states a measured need, a monthly ceiling and the client it uses. The row stays PARTIAL. Closes on: Write the ruling, decision 5 and the unpriced four-vCPU primary into the gap. Trigger: after the dev deploy, an ADR reversing ADR 0113 for AlloyDB states a measured need and a monthly ceiling, plus an ADR 0109 record for a PostgreSQL-wire-and-TLS client. Then an adapter behind StorageTarget::AlloyDb for workflow state, with an integration test that no ledger table exists in it, and the owner's enable_alloydb flip. No lane work now. Earlier: Owner decision O01 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a Postgres wire client (crate or in-tree) and an AlloyDB instance for workflow metadata, reversing ADR 0113's refusal of AlloyDB. Enables: AlloyDB adapter behind StorageTarget::AlloyDb and workflow state off the journal. Costs: A new crate or an in-tree wire protocol plus TLS; an AlloyDB cluster billed per vCPU-hour from creation.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2988,7 +2998,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O01; gap before it: Adapter (needs Postgres wire + TLS) and workflow schema."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O01; gap before it: Adapter (needs Postgres wire + TLS) and workflow schema. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): I decide O01 by declining it for now. I admit no PostgreSQL client and buy no AlloyDB before the deploy. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-DATA-8131",
@@ -3020,7 +3030,7 @@
       "infrastructure/terraform/modules/data/tests/spanner_edition.tftest.hcl",
       "infrastructure/terraform/modules/data/main.tf google_spanner_instance.global edition"
     ],
-    "gap": "2026-10-24: Closes when a committed environment sets enable_spanner = true so a real plan of that environment shows google_spanner_instance.global on ENTERPRISE_PLUS in nam-eur-asea, or the requirement is narrowed to the module's contract.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The requirement text stands: a plan of a committed environment must show the ledger instance on ENTERPRISE_PLUS in a multi-region configuration, and I do not narrow it to the module's contract or a mocked plan. That plan needs enable_spanner = true, which at $2,705 to $8,140 a month stays declined under decision 5 until the base deploy runs and an ADR states the measured need and a ceiling, as I ruled on R12-LEDGER-7009; the instance's config moves to nam3 first under R12-LEDGER-8136. Closes on: No code. The gap opens with this ruling dated 2026-10-31 and the evidence moves to main.tf:618-633. Trigger: after dev runs, the owner enables billing and an ADR states the measured need and a monthly ceiling within $2,705 to $8,140; R12-LEDGER-8136's nam3 change and its explicit multi-region guard land before it. Then the owner sets enable_spanner = true in infrastructure/environments/dev/terraform.tfvars (protected) and the row records that plan showing google_spanner_instance.global with edition ENTERPRISE_PLUS and config nam3. Earlier: 2026-10-24: Closes when a committed environment sets enable_spanner = true so a real plan of that environment shows google_spanner_instance.global on ENTERPRISE_PLUS in nam-eur-asea, or the requirement is narrowed to the module's contract.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3031,7 +3041,7 @@
     "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/spanner_edition.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18. The attribute and the acceptance text scan already existed; what was missing was a plan that reads it. A mocked-provider run with enable_spanner = true plans the instance on ENTERPRISE_PLUS (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`), and a second run proves no instance is planned while it is off, which is the state of every committed environment. Mutation, restored: edition set to ENTERPRISE failed the first run. AUDIT-3 2026-10-24: regraded, the requirement is a plan showing the authoritative ledger database on Enterprise Plus multi-region; every committed environment plans no Spanner instance (enable_spanner false), and the check passes only on a mocked plan with the flag forced on"
+    "notes": "2026-10-18. The attribute and the acceptance text scan already existed; what was missing was a plan that reads it. A mocked-provider run with enable_spanner = true plans the instance on ENTERPRISE_PLUS (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`), and a second run proves no instance is planned while it is off, which is the state of every committed environment. Mutation, restored: edition set to ENTERPRISE failed the first run. AUDIT-3 2026-10-24: regraded, the requirement is a plan showing the authoritative ledger database on Enterprise Plus multi-region; every committed environment plans no Spanner instance (enable_spanner false), and the check passes only on a mocked plan with the flag forced on Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The requirement text stands: a plan of a committed environment must show the ledger instance on ENTERPRISE_PLUS in a multi-region configuration, and I do not narrow it to the module's contract or a mocked plan. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-8133",

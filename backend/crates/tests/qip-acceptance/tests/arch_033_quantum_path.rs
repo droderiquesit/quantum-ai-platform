@@ -208,3 +208,181 @@ fn with_no_provider_configured_only_the_classical_baseline_runs_and_the_reason_i
     );
     Ok(())
 }
+
+// --- QUANT-4018 / ADR 0150 decision 5: no quantum-informed producer --------
+
+/// The one file allowed to name the quantum-informed producer: it declares
+/// the variant and holds the promotion seam's refusal arm.
+const PROMOTION_SEAM: &str = "runtime/qip-kernel/src/model_serving.rs";
+
+/// The production source of every crate: each `src/` tree and each crate's
+/// `build.rs`, with whole-line comments dropped and every `#[cfg(test)] mod`
+/// block skipped. Integration tests live outside `src/` and are not read.
+///
+/// Only a test *module* is skipped, by brace depth. A `#[cfg(test)]` on a
+/// single item is read like production code. The first version of this
+/// scan stopped at a file's first `#[cfg(test)]` and so never read
+/// `qip-deepbrain/src/learning.rs` past line 1016, where the only production
+/// `promote_model_from` call sits. Reading too much fails closed: a test
+/// item that names the producer is reported, never missed.
+fn production_lines(crates: &std::path::Path) -> Vec<(String, usize, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for group in std::fs::read_dir(crates).into_iter().flatten().flatten() {
+        for krate in std::fs::read_dir(group.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            walk(&krate.path().join("src"), &mut files);
+            let build = krate.path().join("build.rs");
+            if build.is_file() {
+                files.push(build);
+            }
+        }
+    }
+    files.sort();
+    let mut lines = Vec::new();
+    for file in files {
+        let source = std::fs::read_to_string(&file).unwrap_or_default();
+        let name = file
+            .strip_prefix(crates)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        // Brace depth inside a skipped test module; `None` outside one.
+        let mut skipping: Option<i64> = None;
+        let mut cfg_test = false;
+        for (number, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if let Some(depth) = skipping.as_mut() {
+                *depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+                if *depth <= 0 {
+                    skipping = None;
+                }
+                continue;
+            }
+            if trimmed.starts_with("#[cfg(test)]") {
+                cfg_test = true;
+                continue;
+            }
+            let opens_module = trimmed.starts_with("mod ") || trimmed.starts_with("pub mod ");
+            if cfg_test && opens_module && trimmed.ends_with('{') {
+                skipping = Some(1);
+                cfg_test = false;
+                continue;
+            }
+            if !trimmed.starts_with("#[") {
+                cfg_test = false;
+            }
+            if !trimmed.starts_with("//") {
+                lines.push((name.clone(), number + 1, line.to_string()));
+            }
+        }
+    }
+    lines
+}
+
+/// R12-QUANT-4018. ADR 0150 decision 5 keeps the quantum-informed producer
+/// unbuilt until a family has a benefit record against a non-simulated
+/// provider, and the promotion seam's refusal is necessary but not
+/// sufficient: a binary that constructed a `QuantumInformed` candidate would
+/// reach the seam with a claim nobody measured. This holds the "no binary
+/// may construct it" half. The variant is named, as a delimited token, only
+/// where it is declared and where the seam matches it; any other production
+/// mention fails — a construction, a `use` that would let one be written
+/// bare, or a second arm.
+///
+/// Mutation: construct a `ModelProducer::QuantumInformed` in
+/// `qip-deepbrain/src/main.rs`; the scan names that file.
+#[test]
+fn no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate() {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let token = "QuantumInformed";
+    // The variant's serde tag: a `ModelProducer` deserialized from a JSON
+    // literal names it without naming the variant.
+    let tag = "quantum_informed";
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let lines = production_lines(&crates);
+    // Premise: the walk read the tree, including the seam itself.
+    assert!(
+        lines
+            .iter()
+            .any(|(file, _, _)| file == "apps/qip-deepbrain/src/main.rs"),
+        "the walk did not read qip-deepbrain's main.rs; the scan is blind"
+    );
+    // Premise: the walk reads past a file's first `#[cfg(test)]` item.
+    // learning.rs has one on an early helper, and the only production
+    // `promote_model_from` call lies after it.
+    assert!(
+        lines.iter().any(|(file, _, line)| {
+            file == "apps/qip-deepbrain/src/learning.rs" && line.contains(".promote_model_from(")
+        }),
+        "the walk did not reach the production promote_model_from call in \
+         qip-deepbrain/src/learning.rs; the scan stops early"
+    );
+    let tagged: Vec<String> = lines
+        .iter()
+        .filter(|(_, _, line)| {
+            line.match_indices(tag).any(|(i, _)| {
+                !line[..i].ends_with(is_ident) && !line[i + tag.len()..].starts_with(is_ident)
+            })
+        })
+        .map(|(file, number, line)| format!("{file}:{number}: {}", line.trim()))
+        .collect();
+    assert!(
+        tagged.is_empty(),
+        "production code names the quantum-informed producer's serde tag, which builds one \
+         from JSON without naming the variant: {tagged:#?}"
+    );
+    let named: Vec<&(String, usize, String)> = lines
+        .iter()
+        .filter(|(_, _, line)| {
+            line.match_indices(token).any(|(i, _)| {
+                !line[..i].ends_with(is_ident) && !line[i + token.len()..].starts_with(is_ident)
+            })
+        })
+        .collect();
+    let is_arm = |file: &str, line: &str| {
+        file == PROMOTION_SEAM
+            && line.contains("ModelProducer::QuantumInformed")
+            && line.contains("=>")
+    };
+    let is_declaration =
+        |file: &str, line: &str| file == PROMOTION_SEAM && line.trim() == "QuantumInformed {";
+    // Premise: the seam's own arm is found, so a scan that matched nothing
+    // cannot pass by matching nothing anywhere.
+    assert!(
+        named.iter().any(|(file, _, line)| is_arm(file, line)),
+        "the promotion seam's QuantumInformed arm was not found in {PROMOTION_SEAM}; \
+         the scan is blind"
+    );
+    assert!(
+        named
+            .iter()
+            .any(|(file, _, line)| is_declaration(file, line)),
+        "the QuantumInformed variant declaration was not found in {PROMOTION_SEAM}"
+    );
+    let offenders: Vec<String> = named
+        .iter()
+        .filter(|(file, _, line)| !is_arm(file, line) && !is_declaration(file, line))
+        .map(|(file, number, line)| format!("{file}:{number}: {}", line.trim()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "production code names the quantum-informed producer outside the promotion seam, \
+         which ADR 0150 decision 5 forbids until a family has a benefit record on a \
+         non-simulated provider: {offenders:#?}"
+    );
+}

@@ -4086,13 +4086,20 @@ fn the_gcloud_beta_component_is_installed_because_the_iap_gates_update_fallback_
         .iter()
         .filter(|step| {
             step.lines()
-                .any(|line| line.trim() == "- uses: google-github-actions/setup-gcloud@v2")
+                // The ref is a pinned SHA (action_pins.rs holds that); the
+                // tag comment still names the major version, so a downgrade
+                // fails.
+                .any(|line| {
+                    let line = line.trim();
+                    line.starts_with("- uses: google-github-actions/setup-gcloud@")
+                        && line.ends_with("# v2")
+                })
         })
         .collect();
     assert_eq!(
         setup.len(),
         1,
-        "infra.yml has {} setup-gcloud@v2 step(s); one, or the install list below is \
+        "infra.yml has {} setup-gcloud step(s); one, or the install list below is \
          ambiguous",
         setup.len()
     );
@@ -13594,18 +13601,22 @@ fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
     // no `dest`, the runner's graphdriver daemon commits the layers itself
     // and ignores `rewrite-timestamp` — deploy run 266 had byte-identical
     // binaries, configs and histories and two sets of layer digests.
+    //
+    // Three builds, not two, since R12-CICD-10117: the first build, the
+    // workspace binaries' uncached rebuild, and the portal's uncached
+    // rebuild that is compared file by file. All three go the same way.
     assert_eq!(
         deploy.matches(".tar,rewrite-timestamp=true\"").count(),
-        2,
-        "deploy.yml's two builds do not both export through the tarball exporter with \
+        3,
+        "deploy.yml's three builds do not all export through the tarball exporter with \
          rewrite-timestamp; the daemon's own image store ignores it"
     );
     assert_eq!(
         deploy
             .matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}")
             .count(),
-        2,
-        "deploy.yml's two builds are not both loaded from their tarball"
+        3,
+        "deploy.yml's three builds are not all loaded from their tarball"
     );
     // And on a daemon that can do either: the hosted runner's graphdriver
     // daemon ignores `rewrite-timestamp` and refuses the tarball exporter, so
@@ -15079,5 +15090,37 @@ fn no_file_under_infrastructure_is_terraform_the_text_walkers_cannot_read() {
          Write the change as HCL in the reviewed .tf or the environment's terraform.tfvars \
          instead:\n{}",
         unread.join("\n")
+    );
+}
+
+/// R12-GOV-10005: every asset change feed publishes to the asset change
+/// topic. The plan harness asserts the two content types, but a feed's
+/// destination is the topic's computed id, unknown at plan, so the link is
+/// held here on the configuration: a feed pointed anywhere else would plan
+/// cleanly and publish its changes where no operator reads them.
+///
+/// Mutation: point `pubsub_destination.topic` at another topic. This fails.
+#[test]
+fn every_asset_change_feed_publishes_to_the_change_topic() {
+    let text = read("infrastructure/terraform/audit-logs.tf");
+    let at = text
+        .find("resource \"google_cloud_asset_project_feed\" \"changes\"")
+        .expect("premise: audit-logs.tf declares the asset change feed");
+    let body = &text[at..];
+    let end = body.find("\n}\n").expect("the feed block closes");
+    let feed = &body[..end];
+    assert!(
+        feed.contains("RESOURCE") && feed.contains("IAM_POLICY"),
+        "premise: the feed names both content types"
+    );
+    let destinations: Vec<&str> = feed
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("topic"))
+        .collect();
+    assert_eq!(
+        destinations,
+        vec!["topic = google_pubsub_topic.asset_changes.id"],
+        "the asset change feed publishes somewhere other than the asset change topic"
     );
 }

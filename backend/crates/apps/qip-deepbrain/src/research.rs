@@ -70,9 +70,10 @@ use qip_expansion::desk::{
 };
 use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contested_evidence, contradictions, coverage, incompetent_specialists, low_confidence,
-    missing_causal_links, model_drift, model_error_rate, refusal_clusters, repeated_vetoes_priced,
-    split_by_wanting, theory_contradictions, unexplained_residuals_priced,
+    contested_evidence, contradictions, coverage, cross_domain_links, incompetent_specialists,
+    low_confidence, missing_causal_links, model_drift, model_error_rate, refusal_clusters,
+    repeated_vetoes_priced, split_by_wanting, theory_contradictions, unexplained_residuals_priced,
+    world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -169,6 +170,10 @@ pub fn urgency_bp(now: Timestamp, deadline: Timestamp, horizon: Duration) -> u32
     let span = f64::from(scale - URGENCY_FLOOR_BP);
     URGENCY_FLOOR_BP + (consumed * span).round() as u32
 }
+/// World-model partitions whose latest state the research loop keeps for
+/// expiry (ADR 0227). The partitions are the NOW brain's own, so the bound is
+/// a guard against a log that names more than the brain could hold.
+pub const MAX_WORLD_STATE_PARTITIONS: usize = 4_096;
 /// The cost of the cheapest discriminating observation the loop has: reading
 /// the next sweep's prices again. Basis points of the decision's value.
 pub const RESWEEP_COST_BP: u32 = 500;
@@ -729,6 +734,11 @@ pub struct ResearchRound {
     /// they could not.
     pub theory_deltas: usize,
     pub theory_deltas_refused: Option<String>,
+    /// Chains across three or more domains the world model synthesised from
+    /// the knowledge graph this sweep (R12-EXPAND-6031), and how many of
+    /// them the causal graph does not claim end to end and so were raised.
+    pub cross_domain_hypotheses: usize,
+    pub cross_domain_raised: usize,
     /// Information requests a better-ranked request left no budget for.
     pub info_outranked: usize,
     /// DECIDE's uncertain decisions priced into an information request this
@@ -745,6 +755,11 @@ pub struct ResearchRound {
     pub acquisitions: BTreeMap<&'static str, usize>,
     /// Campaigns judged, by outcome.
     pub campaigns: BTreeMap<&'static str, usize>,
+    /// One experiment pack per campaign that ran to a verdict this sweep
+    /// (R12-EXPAND-6035): hypothesis, feature, backtest, findings, proposal,
+    /// validated; and why any could not be packed.
+    pub experiment_packs: Vec<qip_contracts::expansion::ExperimentPack>,
+    pub experiment_packs_refused: Vec<String>,
     /// Promotions the Capability Registry refused to record, with why
     /// (R12-EXPAND-6062): the campaign concluded and the verb did not move.
     pub capabilities_refused: Vec<String>,
@@ -923,15 +938,32 @@ fn coverage_asset_class(key: &str) -> Option<&str> {
     }
 }
 
+/// The ontology family and type name a non-class coverage key seeds
+/// (R12-EXPAND-6056): a venue is a `Market` type and a geography an `Entity`
+/// type, because that is what the detector's two other dimensions are
+/// dimensions *of*. `None` for an asset-class key, which
+/// [`coverage_asset_class`] owns, and for a dimension nothing here names.
+fn coverage_dimension_type(key: &str) -> Option<(OntologyTypeFamily, &str)> {
+    match key.split_once(':') {
+        Some(("venue", value)) => Some((OntologyTypeFamily::Market, value)),
+        Some(("geography", value)) => Some((OntologyTypeFamily::Entity, value)),
+        _ => None,
+    }
+}
+
 /// The event type the coverage detector's observations are filed under: a
 /// universe class with too little history to trade.
 pub const COVERAGE_GAP_EVENT: &str = "coverage_gap";
 
 /// [`sweep_ontology`] plus what the coverage detector reads of `coverage`:
-/// one `Asset` type per asset class the universe holds, and the `Event` type
-/// its observations are. The composition root builds this from the universe
-/// it is about to hand the platform, so an asset class cannot be swept for
-/// coverage that the ontology never named.
+/// one `Asset` type per asset class the universe holds, one `Market` type per
+/// venue and one `Entity` type per geography it covers (R12-EXPAND-6056;
+/// until 2026-10-31 the two other dimensions' values were swept and never
+/// named, so the registry could not say what a venue coverage gap was a gap
+/// in), and the `Event` type its observations are. The composition root
+/// builds this from the universe it is about to hand the platform, so a
+/// class, venue or geography cannot be swept for coverage that the ontology
+/// never named.
 pub fn sweep_ontology_over(
     coverage: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<OntologyRegistry> {
@@ -956,6 +988,25 @@ pub fn sweep_ontology_over(
             version: 1,
             schema: format!("qip-deepbrain/research:asset_class:{class}"),
             description: format!("the {class} asset class the coverage detector measures"),
+        })?;
+    }
+    for (family, value) in coverage
+        .keys()
+        .filter_map(|key| coverage_dimension_type(key))
+    {
+        if registry.get_latest(family, value).is_some() {
+            continue;
+        }
+        let dimension = match family {
+            OntologyTypeFamily::Market => "venue",
+            _ => "geography",
+        };
+        registry.register(OntologyTypeSpec {
+            family,
+            name: value.to_string(),
+            version: 1,
+            schema: format!("qip-deepbrain/research:{dimension}:{value}"),
+            description: format!("the {value} {dimension} the coverage detector measures"),
         })?;
     }
     Ok(registry)
@@ -1146,10 +1197,11 @@ impl ResearchRound {
              halted, {} outranked; {} tick campaign(s) opened; {} NOW surprise(s) woke {:?}; \
              evidence: {} claim(s) held, poisoning {:?}; market: {} unit(s) granted, declined \
              {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
-             acquisitions {:?}; campaigns {:?}; capability register refused {:?}; reflex \
+             acquisitions {:?}; campaigns {:?} ({} pack(s), {} refused); capability register \
+             refused {:?}; reflex \
              packages {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
-             conflicts), theory deltas {}; outputs advisory, none promoted; capabilities are \
-             paper and shadow only",
+             conflicts), theory deltas {}, cross-domain chains {} ({} raised); outputs \
+             advisory, none promoted; capabilities are paper and shadow only",
             self.anomalies,
             self.raised,
             self.unclassified,
@@ -1173,6 +1225,8 @@ impl ResearchRound {
             self.specialists_proposed,
             self.acquisitions,
             self.campaigns,
+            self.experiment_packs.len(),
+            self.experiment_packs_refused.len(),
             self.capabilities_refused,
             self.packages,
             self.contested_claims,
@@ -1180,6 +1234,8 @@ impl ResearchRound {
             self.knowledge_deltas,
             self.knowledge_conflicts,
             self.theory_deltas,
+            self.cross_domain_hypotheses,
+            self.cross_domain_raised,
         )
     }
 }
@@ -1265,6 +1321,15 @@ pub struct ResearchLoop {
     /// Model references the learning round found past their drift threshold
     /// since the last sweep, consumed by it (R12-EXPAND-6046).
     drifted_models: Vec<String>,
+    /// The latest `WorldModelState` per partition scope the platform's NOW
+    /// stage journaled, re-admitted through its contract, and whether its
+    /// expiry has already raised a gap (ADR 0227). Bounded by
+    /// [`MAX_WORLD_STATE_PARTITIONS`].
+    world_states: BTreeMap<String, (qip_contracts::world_model::WorldModelState, bool)>,
+    /// The log sequence of the last NOW review read, so a sweep reads each
+    /// review once. A sequence, not a cycle: a restarted platform numbers
+    /// its cycles from zero again over the log it inherited.
+    world_state_cursor: Option<u64>,
     /// The hosted model's reply tally, where one is installed (6040).
     replies: Option<(String, crate::language::ReplyTally)>,
     /// Assumption health by assumption, bounded by [`RETAINED`]: the entry
@@ -1473,6 +1538,8 @@ impl ResearchLoop {
             packages: VecDeque::new(),
             brains,
             drifted_models: Vec::new(),
+            world_states: BTreeMap::new(),
+            world_state_cursor: None,
             replies: None,
             assumptions: BTreeMap::new(),
             ontology,
@@ -1620,6 +1687,53 @@ impl ResearchLoop {
     pub fn with_package_signer(mut self, signer: Box<dyn PackageSigner + Send>) -> Self {
         self.signer = Some(signer);
         self
+    }
+
+    /// Read every NOW review the platform journaled since the last sweep (by
+    /// log sequence),
+    /// re-admit each `WorldModelState` it carries, keep the newest per
+    /// partition, and return the partitions whose state has expired with no
+    /// newer one and has not yet raised a gap (ADR 0227, R12-CONTRACT-7075).
+    ///
+    /// A state that does not re-admit is skipped, not believed: it arrived
+    /// through the log, and a projection the contract refuses is not a fact
+    /// about the partition. Each expiry is reported once; a newer state for
+    /// the partition clears it. Read-only on the platform: nothing here
+    /// moves a size or chooses an action.
+    fn expired_world_states(
+        &mut self,
+        platform: &Platform,
+        now: Timestamp,
+    ) -> Vec<(String, String)> {
+        let mut newest = self.world_state_cursor;
+        for (sequence, review) in qip_kernel::now_stage::reviews(platform.event_log()) {
+            if self.world_state_cursor.is_some_and(|read| sequence <= read) {
+                continue;
+            }
+            newest = newest.max(Some(sequence));
+            for fields in review.world_states {
+                let Ok(state) = qip_contracts::world_model::WorldModelState::new(fields) else {
+                    continue;
+                };
+                let scope = state.scope.clone();
+                match self.world_states.get(&scope) {
+                    Some((held, _)) if held.updated_at >= state.updated_at => continue,
+                    None if self.world_states.len() >= MAX_WORLD_STATE_PARTITIONS => continue,
+                    _ => {
+                        self.world_states.insert(scope, (state, false));
+                    }
+                }
+            }
+        }
+        self.world_state_cursor = newest;
+        self.world_states
+            .iter_mut()
+            .filter(|(_, (state, reported))| !*reported && state.expires_at <= now)
+            .map(|(scope, (state, reported))| {
+                *reported = true;
+                (scope.clone(), state.model.clone())
+            })
+            .collect()
     }
 
     /// Hand the next sweep the models the learning round found drifted, so
@@ -1873,6 +1987,9 @@ impl ResearchLoop {
             RESIDUAL_BPS,
         )?);
         observations.extend(model_drift(&std::mem::take(&mut self.drifted_models)));
+        observations.extend(world_state_expired(
+            &self.expired_world_states(platform, now),
+        ));
         if let Some((model, tally)) = &self.replies
             && let Some(counts) = tally.take_at_least(MODEL_REPLIES_MIN)
         {
@@ -2032,6 +2149,22 @@ impl ResearchLoop {
         };
         round.theory_deltas = theory.len();
         observations.extend(theory_contradictions(&theory));
+        // R12-EXPAND-6031: the knowledge graph holds typed relationships
+        // across domains and until this call nothing walked them. A chain
+        // crossing three or more domains that the causal graph does not
+        // claim end to end is a hypothesis the platform has recorded the
+        // facts for and never stated, so it is raised as a causal gap
+        // carrying the chain's lineage; a chain the graph already claims is
+        // not. Synthesis reads the graph as of `now` and proposes; no
+        // causal edge is claimed from it.
+        let synthesised = {
+            let world = platform.world();
+            qip_world_model::synthesis::cross_domain_hypotheses(&world, now)
+        };
+        round.cross_domain_hypotheses = synthesised.len();
+        let links = cross_domain_links(&synthesised);
+        round.cross_domain_raised = links.len();
+        observations.extend(links);
 
         // --- the market's specialist proposals -----------------------------
         if let Some(calibration) = platform.calibration()
@@ -3715,6 +3848,16 @@ impl ResearchLoop {
                 metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "waiting")]));
                 continue;
             };
+            // R12-EXPAND-6035: the campaign's pack, written whatever the
+            // verdict — a failed campaign's backtest and findings are the
+            // record a reviewer needs most. A pack the contract refuses is
+            // counted rather than failing the sweep: the campaign did run.
+            match result.experiment_pack(now) {
+                Ok(pack) => round.experiment_packs.push(pack),
+                Err(error) => round
+                    .experiment_packs_refused
+                    .push(format!("{question}: {}", error.message())),
+            }
             // ADR 0142 d5's two phases, on the round beside the verdict: an
             // installation is the moment the correction started acting in
             // the paper window, a withdrawal the moment paper refused it.

@@ -52,6 +52,14 @@ locals {
   # two attachments in one region share one, and an attachment in a region with
   # no router cannot be created at all.
   router_regions = toset([for attachment in values(local.attachments) : attachment.region])
+
+  # The BGP ASN Google requires on the Cloud Router a PARTNER attachment uses
+  # (R12-GCP-10010). The 2026-10-11 dev apply found a Partner attachment's
+  # router on the private ASN refused; Google's partner side peers only with
+  # 16550. A constant, not a variable: it is Google's number, not a choice,
+  # and cloud_router_asn's private-ASN validation stays for the router that
+  # is ours to number, the HA VPN fallback's.
+  partner_interconnect_asn = 16550
 }
 
 # --- The Cloud Router -------------------------------------------------------
@@ -67,11 +75,10 @@ resource "google_compute_router" "interconnect" {
   description = "BGP for the partner interconnect attachments terminating in ${each.value}."
 
   bgp {
-    # A private ASN. This side of the session is the VPC's; the colocated
-    # equipment uses its own, and the two must differ or the session never
-    # establishes — a failure that shows up as an attachment stuck in
-    # `PENDING_PARTNER` long after the partner says they are done.
-    asn = var.cloud_router_asn
+    # Google's required ASN for a router a PARTNER attachment uses; the
+    # partner's equipment sets its own. On the private ASN this router was
+    # refused at apply (2026-10-11), with the attachment never created.
+    asn = local.partner_interconnect_asn
 
     # `DEFAULT` advertises the VPC's own subnets and nothing else. Custom
     # advertisement is how a router ends up announcing a range it does not own
@@ -199,6 +206,26 @@ locals {
   } : {}
 }
 
+# The HA VPN fallback's own Cloud Router, on the private ASN this module
+# numbers (cloud_router_asn). Separate from the partner router because that
+# one must speak 16550 to Google's partner side, and a VPN peer on the far
+# end expects the VPC's private ASN; one router cannot hold both.
+resource "google_compute_router" "vpn" {
+  for_each = local.vpn_gateways_needed
+
+  project = var.project_id
+  name    = "${local.prefix}-vpn-router-${each.key}"
+  region  = each.key
+  network = var.network_id
+
+  description = "BGP for the HA VPN fallback in ${each.key}."
+
+  bgp {
+    asn            = var.cloud_router_asn
+    advertise_mode = "DEFAULT"
+  }
+}
+
 resource "google_compute_ha_vpn_gateway" "fallback" {
   for_each = local.vpn_gateways_needed
 
@@ -251,7 +278,7 @@ resource "google_compute_vpn_tunnel" "fallback" {
   # tunnel has its own.
   peer_external_gateway_interface = each.value.index % length(each.value.gw.peer_ip_addresses)
   shared_secret                   = each.value.gw.preshared_key
-  router                          = google_compute_router.interconnect[each.value.region].id
+  router                          = google_compute_router.vpn[each.value.region].id
 
   vpn_gateway_interface = each.value.index
 }
@@ -268,7 +295,7 @@ resource "google_compute_router_interface" "vpn_fallback" {
 
   project = var.project_id
   name    = "${local.prefix}-vpn-${each.value.region}-${each.value.index}"
-  router  = google_compute_router.interconnect[each.value.region].name
+  router  = google_compute_router.vpn[each.value.region].name
   region  = each.value.region
 
   ip_range   = "169.254.${100 + index(keys(local.vpn_gateways_needed), each.value.region)}.${5 + each.value.index}/30"
@@ -285,7 +312,7 @@ resource "google_compute_router_peer" "vpn_fallback" {
 
   project = var.project_id
   name    = "${local.prefix}-vpn-${each.value.region}-${each.value.index}"
-  router  = google_compute_router.interconnect[each.value.region].name
+  router  = google_compute_router.vpn[each.value.region].name
   region  = each.value.region
 
   peer_ip_address           = "169.254.${100 + index(keys(local.vpn_gateways_needed), each.value.region)}.${6 + each.value.index}"

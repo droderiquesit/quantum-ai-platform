@@ -149,11 +149,31 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    // Eleven members (the company member, R12-WORLD-3044, among them) plus
-    // the one domain member the platform now declares for
-    // the universe's single asset class (MODEL-4009): the composition names
-    // the classes itself, so a deployed cycle carries the member too.
-    assert_eq!(first.population.len(), 12, "{:?}", first.population);
+    // Thirteen members (the company member, R12-WORLD-3044, the capital
+    // member, R12-WORLD-3048, and the counterparty member, R12-WORLD-3049,
+    // among them) plus the one domain member the
+    // platform now declares for the universe's single asset class
+    // (MODEL-4009): the composition names the classes itself, so a deployed
+    // cycle carries the member too.
+    assert_eq!(first.population.len(), 14, "{:?}", first.population);
+    // The platform hands the capital member its paper book every cycle
+    // (ADR 0194): a funded book with positive equity is never silent.
+    // Mutation: build `FederationInputs` with `capital: None`.
+    assert!(
+        reviews
+            .iter()
+            .all(|r| !r.silent.contains(&federation_stage::CAPITAL.to_string())),
+        "the capital member was fed nothing on the platform's own cycle"
+    );
+    // The desk's broker is always a counterparty, so the counterparty member
+    // is fed on every cycle (R12-WORLD-3049). Mutation: build
+    // `FederationInputs` with `counterparties: Vec::new()`.
+    assert!(
+        reviews.iter().all(|r| !r
+            .silent
+            .contains(&federation_stage::COUNTERPARTY.to_string())),
+        "the counterparty member was fed nothing on the platform's own cycle"
+    );
     assert!(
         first
             .population
@@ -839,6 +859,38 @@ fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refu
         inputs.formed_at = inputs.formed_at.saturating_add(Duration::from_secs(1));
     }
     assert_refused_for(&platform, &moved, "temporal derivation");
+    Ok(())
+}
+
+/// R12-REASON-1133: a derivation whose timeline cannot be rebuilt is refused
+/// on replay by name, not passed over. A record with its `TemporalInputs`
+/// stripped — the shape one written before the field existed decodes to —
+/// was skipped by the timeline check, so replay called a derivation
+/// identical when nothing about its ordering had been checked. Mutation:
+/// restore `if let Some(inputs)` around the comparison in `verify` and the
+/// stripped record is accepted.
+#[test]
+fn a_derivation_with_no_timeline_inputs_is_refused_on_replay_by_name() -> Result<()> {
+    let (platform, derivation) = journaled_derivation()?;
+    assert!(
+        derivation.temporal.inputs.is_some(),
+        "premise: the cycle recorded the instants its timeline was built from"
+    );
+    let mut stripped = derivation;
+    stripped.temporal.inputs = None;
+    assert_refused_for(&platform, &stripped, "temporal derivation");
+    // By name: the hypothesis, and the reason — not the mismatch message a
+    // rebuilt timeline that disagreed would give.
+    let refusal = symbolic_stage::verify(&stripped, platform.world().causal())
+        .expect_err("a derivation with no timeline inputs was accepted");
+    assert!(
+        refusal.message().contains(&stripped.hypothesis_id)
+            && refusal
+                .message()
+                .contains("no instants to rebuild its timeline from"),
+        "{}",
+        refusal.message()
+    );
     Ok(())
 }
 

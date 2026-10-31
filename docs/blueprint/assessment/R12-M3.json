@@ -186,7 +186,7 @@
     "verification": "cargo test -p qip-kernel --test source_discovery && cargo +1.94.1 test -p qip-acceptance --test gitops every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call. Mutation: deleting the manifest line, or changing it to '6', fails the gitops test. Orchestrator 2026-10-18 18:10: withdrawn from dev; main's ci on ec1c81ce failed dev_declares_no_more_data_sources_than_any_later_environment with the cadence set."
+    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call. Mutation: deleting the manifest line, or changing it to '6', fails the gitops test. Orchestrator 2026-10-18 18:10: withdrawn from dev; main's ci on ec1c81ce failed dev_declares_no_more_data_sources_than_any_later_environment with the cadence set. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The deep brain names where it is blind or wrong on every research pass and journals those targets. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The deep brain names and journals its discovery targets on every research pass, and probing a publisher stays off behind its own reviewed switch (amends ADR 0180 decision 2).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-MODEL-3009",
@@ -464,7 +464,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0147 decision 8 stands: no capital specialist agent is added, because a second control over the same RiskState would be a correlated second finding from one origin. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-RISK-3021",
@@ -1099,12 +1099,15 @@
   {
     "id": "R12-WORLD-3048",
     "status": "PARTIAL",
-    "current": "Capital fabric demand forecast and pre-positioning integrated.",
+    "current": "Federation member portfolio.capital.global (domain portfolio/capital, ADR 0194) forecasts capital:funding-draw-next-pass on every shipped cycle from the paper book (cash, cash/equity, leverage, net/equity, waiting theses); the next pass's cash resolves it; it is silent where equity is not positive. portfolio/capital is in REQUIRED_FAMILIES, so an unfed member lapses and the family is named uncovered.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/forecast.rs:324 DemandForecaster",
-      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs"
+      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs",
+      "docs/adr/0194-the-federation-gains-a-capital-member-whose-proposition-is-a-funding-draw-on-the-next-pass-resolved-by-the-books-own-cash.md",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::a_book_with_a_thesis_waiting_gives_the_capital_member_a_funding_view_the_next_pass_resolves (mutants: resolver inverted, waiting term dropped, member unfed, family dropped from REQUIRED_FAMILIES, all killed)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations (capital member never silent on the platform cycle; mutant capital: None killed)"
     ],
-    "gap": "Not started. DemandForecaster output and pre_positioning exposure are per currency and per funding need, not per instrument proposition, and 'realised funding use' as the resolution has no instrument-level event the stage can wait on; the member needs its own proposition (next-pass funding draw) and a resolver, which is new federation vocabulary.",
+    "gap": "Skeptic 2026-10-31 PARTIAL: collateral, optionality and capital mobility are declined by ADR 0194 decision 6 and liquidity (in the requirement title) is not modelled, so bar part 4 fails. Leverage and net-exposure figures are carried but read by nothing. The waiting-thesis input reads zero on the shipped cycle because DECIDE drains pending_theses before the next UNDERSTAND, so the forecast there is 0.15 + 0.15 x cash share. FederationInputs is not journaled.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1115,25 +1118,30 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-10-31 L4-quant commit 60d63742 under ADR 0194 (owner-decisions-2026-10-31.md delegation); skeptic verdict PARTIAL; ADR corrected for the inert waiting term, the absent liquidity clause and the narrowing claim."
   },
   {
     "id": "R12-WORLD-3049",
-    "status": "MISSING",
-    "current": "No counterparty contagion model found.",
-    "evidence": [],
-    "gap": "Build.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "PARTIAL",
+    "current": "Federation member network.counterparty.global (domain counterparty/network) forecasts counterparty:<venue>:refuses-next-pass on every shipped cycle for the desk broker and every venue the feasibility window names, from the venue's share of the window's Evidence refusals (echoes and pardoned entries excluded); the next pass resolves it on Evidence refusals stamped at or after the forecast beyond those already held then. It only reads the window (record_feasibility_refusal stays its one writer) and reaches no decision: narrowings_of reads instrument propositions only. counterparty/network is in REQUIRED_FAMILIES.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::COUNTERPARTY, CounterpartyView, Pending::Counterparty",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::a_venue_whose_refusals_rose_gives_the_counterparty_member_a_view_resolved_next_pass (mutants: share term dropped, `already` ignored, member unfed, family dropped; all killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::counterparty_views, the_counterparty_views_count_only_a_venues_own_refusals_and_always_name_the_desk_broker (mutant: every standing counted, killed)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs (counterparty member never silent on the platform cycle; mutant counterparties: Vec::new() killed)"
+    ],
+    "gap": "Skeptic 2026-10-31 PARTIAL: brokers and exchanges are covered; bridges, custodians, settlement dependencies and contagion paths are not, because the member has no dependency graph between venues and is a per-venue rate prior, so bar part 4 fails. Resolver limits: a cell report stamped before the forecast but ingested after it is never counted; when the window is full, echo and pardoned arrivals are unseated and eviction (insertion order) can remove entries counted in `already`, each resolving false; and refusals from the forecasting cycle's own DECIDE, stamped at the forecast instant, resolve the next-pass proposition.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation; cargo test -p qip-kernel --lib the_counterparty_views_count_only; cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 L4-quant: built (ba96cd00), then echoes and pardoned entries excluded on the skeptic's finding; skeptic verdict PARTIAL."
   },
   {
     "id": "R12-WORLD-3050",
@@ -2004,7 +2012,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice the_seconds_row_holds_a_flow_member",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14): the member, its arithmetic and its refusal exist and are mutation-tested (ignoring the imbalance failed at forecast_lattice.rs:541); the signal has no producer, so PARTIAL."
+    "notes": "Re-graded 2026-10-18 (lane L14): the member, its arithmetic and its refusal exist and are mutation-tested (ignoring the imbalance failed at forecast_lattice.rs:541); the signal has no producer, so PARTIAL. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The seconds-minutes flow member reads the same signed aggressor flow R12-WORLD-3046's member reads: the paper feed's own trades, labelled simulated. Handed to lane L2 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The forecast lattice's row signals are set every UNDERSTAND pass from what the world model holds at the pass: a catalyst or a live causal claim may only widen its row, and the flow map reads only R12-WORLD-3046's signed aggressor flow labelled simulated (narrows ADR 0151 decision 6's uncalled clause).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-WORLD-3086",
@@ -2031,7 +2039,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice a_pending_catalyst && cargo +1.94.1 test -p qip-kernel --test lattice_specialists",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: ignoring the catalyst in project failed at forecast_lattice.rs:603; dropping the window filter in signals_from_world failed at lattice_specialists.rs:202."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: ignoring the catalyst in project failed at forecast_lattice.rs:603; dropping the window filter in signals_from_world failed at lattice_specialists.rs:202. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Wire the catalyst. Every UNDERSTAND pass hands the lattice the macro surprises the world model holds at that instant, so a recent release widens the hours-days row without moving its median. Handed to lane L2 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The forecast lattice's row signals are set every UNDERSTAND pass from what the world model holds at the pass: a catalyst or a live causal claim may only widen its row, and the flow map reads only R12-WORLD-3046's signed aggressor flow labelled simulated (narrows ADR 0151 decision 6's uncalled clause).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-WORLD-3087",
@@ -2084,7 +2092,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice a_retired_structural && cargo +1.94.1 test -p qip-kernel --test lattice_specialists a_claim_retired",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: ignoring the claims in project failed at forecast_lattice.rs:691; reading causal.edges() instead of incoming(subject, now) failed at lattice_specialists.rs:170."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: ignoring the claims in project failed at forecast_lattice.rs:691; reading causal.edges() instead of incoming(subject, now) failed at lattice_specialists.rs:170. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The same call wires the structural member. Every live causal claim into a subject reaches the quarters-years row at the pass, and a retired claim leaves it at the next pass. Handed to lane L2 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The forecast lattice's row signals are set every UNDERSTAND pass from what the world model holds at the pass: a catalyst or a live causal claim may only widen its row, and the flow map reads only R12-WORLD-3046's signed aggressor flow labelled simulated (narrows ADR 0151 decision 6's uncalled clause).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-MODEL-3089",

@@ -15,6 +15,10 @@ qip-events.workspace = true
 # `tick_capture` re-exports the captured-event types from here, so the edge
 # capture path can build them without linking this crate.
 qip-contracts.workspace = true
+# The Source Manifest Registry (R12-DATA-8014) stores the manifest type the
+# library defines; both are in-tree libraries and qip-financial does not
+# depend on this crate, so the edge adds no cycle and no third-party code.
+qip-financial.workspace = true
 # The Cloud Storage adapter in `gcp` — and the access `qip-mesh`'s BigQuery
 # client shares with it (DATA-058) — speak the GCP JSON APIs over
 # `qip_transport::HttpClient` — the platform's one reviewed HTTP/1.1 client,

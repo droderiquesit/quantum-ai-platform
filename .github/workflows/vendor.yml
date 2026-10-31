@@ -73,7 +73,7 @@ jobs:
       # branch cannot loosen it; the actor and whoever re-ran the run are
       # both judged. First, before anything authenticates.
       - name: no development agent starts this workflow
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .agent-guard
@@ -102,7 +102,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Identical derivation to deploy.yml, for the identical reason: every
       # value authentication and attestation need is a pure function of the
@@ -185,12 +185,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           install_components: beta
 
