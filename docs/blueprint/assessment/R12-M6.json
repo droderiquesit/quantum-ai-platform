@@ -1012,12 +1012,20 @@
   {
     "id": "R12-EXPAND-6044",
     "status": "PARTIAL",
-    "current": "RulePack exists and the kernel reviews rules in LEARN; no ConstraintPack/TheoryDelta or contradiction-driven revision task.",
+    "current": "RulePack exists and the kernel reviews rules in LEARN. TheoryDelta exists (qip_contracts::expansion::TheoryDelta: pack, version, rules, hypothesis_id, proposed_change, contradicting_evidence, proposed_at; validate/decode). REASON notes every symbolic veto under its hypothesis (Platform::note_symbolic_veto, bounded by SYMBOLIC_VETO_HISTORY) and LEARN, at the instant the thesis is graded, journals one TheoryDelta under kernel/theory-delta when the grader credits a thesis the pack refused (Platform::revise_theory, called from calibrate_resolved); the deep brain's sweep decodes the deltas (Platform::theory_deltas) and raises one GapTrigger::Contradiction gap per rule named (detectors::theory_contradictions, Origin::TheoryContradiction, Wanting::Model), which is the revision task. Nothing reads a delta to move a rule; symbolic_stage::rule_pack stays fixed at build time.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/rules.rs:133 RulePack",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18390 review_rules"
+      "backend/crates/libs/qip-contracts/src/expansion.rs TheoryDelta",
+      "backend/crates/runtime/qip-kernel/src/theory_revision.rs note_symbolic_veto, revise_theory, theory_deltas",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs SymbolicDerivation::veto_rules",
+      "backend/crates/runtime/qip-kernel/src/platform.rs calibrate_resolved (revise_theory call), the symbolic veto arm of stage_reason",
+      "backend/crates/services/qip-expansion/src/detectors.rs theory_contradictions",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over (theory_deltas block)",
+      "backend/crates/runtime/qip-kernel/tests/theory_revision.rs a_veto_the_outcome_contradicts_leaves_a_theory_delta_and_nothing_moves_a_rule",
+      "backend/crates/apps/qip-deepbrain/tests/theory_revision.rs a_journaled_theory_delta_reaches_the_sweep_as_a_contradiction_gap_naming_the_rule",
+      "backend/crates/services/qip-expansion/tests/loop.rs a_theory_delta_is_a_revision_task_naming_the_rule_and_wanting_the_model",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs delta fixture in both decoder tests"
     ],
-    "gap": "TheoryDelta and contradiction-to-task path.",
+    "gap": "No ConstraintPack; the only contradiction read is a credited grade against a hard-stop veto (lot budget, cash, live ceiling), so a rule that is wrong in the other direction (eligible and the thesis failed) raises no delta; validated patterns still do not become new rules, relations or invariants (the pack is fixed by design, ADR 0125 d2). The revision task reaches the deep brain only where qip-deepbrain runs its research pass against the same Platform that journaled the delta. Audit-5 part 2 refuted by the lane's own reading, no skeptic convened: the two end-to-end tests reach the veto under a 0.10 review floor (valuation_seam.rs's fixture), not the shipped 0.50, so the producer is shown on the seam and not on the shipped default path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1025,10 +1033,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing RulePack / ConstraintPack / TheoryDelta)",
+    "verification": "cargo test -p qip-kernel --test theory_revision; cargo test -p qip-deepbrain --test theory_revision; cargo test -p qip-expansion --test loop; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: triage closure landed (TheoryDelta contract, LEARN producer, Contradiction task); mutation of the revise_theory call fails the kernel test. Audit-5 part 4 (requirement text: RulePack / ConstraintPack / TheoryDelta from validated patterns) holds for the TheoryDelta clause only."
   },
   {
     "id": "R12-EXPAND-6045",

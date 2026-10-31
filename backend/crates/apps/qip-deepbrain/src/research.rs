@@ -72,7 +72,7 @@ use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
     contested_evidence, contradictions, coverage, incompetent_specialists, low_confidence,
     missing_causal_links, model_drift, model_error_rate, refusal_clusters, repeated_vetoes_priced,
-    split_by_wanting, unexplained_residuals_priced,
+    split_by_wanting, theory_contradictions, unexplained_residuals_priced,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -695,6 +695,13 @@ pub struct ResearchRound {
     /// causal graph holds no live claim into.
     pub contested_claims: usize,
     pub unexplained_subjects: usize,
+    /// Theory deltas the kernel journaled on a thesis the rule pack refused
+    /// and the grader credited (R12-EXPAND-6044), read off the log this
+    /// sweep; each is raised as a contradiction gap, which is the revision
+    /// task. `theory_deltas_refused` says why they could not be read, where
+    /// they could not.
+    pub theory_deltas: usize,
+    pub theory_deltas_refused: Option<String>,
     /// Information requests a better-ranked request left no budget for.
     pub info_outranked: usize,
     /// DECIDE's uncertain decisions priced into an information request this
@@ -1114,8 +1121,8 @@ impl ResearchRound {
              {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
              acquisitions {:?}; campaigns {:?}; capability register refused {:?}; reflex \
              packages {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
-             conflicts); outputs advisory, none promoted; capabilities are paper and shadow \
-             only",
+             conflicts), theory deltas {}; outputs advisory, none promoted; capabilities are \
+             paper and shadow only",
             self.anomalies,
             self.raised,
             self.unclassified,
@@ -1145,6 +1152,7 @@ impl ResearchRound {
             self.unexplained_subjects,
             self.knowledge_deltas,
             self.knowledge_conflicts,
+            self.theory_deltas,
         )
     }
 }
@@ -1975,6 +1983,22 @@ impl ResearchLoop {
         let missing = missing_causal_links(&contested, &explained);
         round.unexplained_subjects = missing.len();
         observations.extend(missing);
+        // R12-EXPAND-6044: a thesis the symbolic rule pack refused that LEARN
+        // then credited is a contradiction between the platform's theory and
+        // its evidence. The kernel journals it as a theory delta and this is
+        // the reader: each delta becomes a contradiction gap naming the rule,
+        // which is the revision task the requirement asks for. A delta that
+        // does not decode is counted and the sweep goes on, as with the
+        // knowledge deltas above.
+        let theory = match platform.theory_deltas() {
+            Ok(deltas) => deltas,
+            Err(error) => {
+                round.theory_deltas_refused = Some(error.message().to_string());
+                Vec::new()
+            }
+        };
+        round.theory_deltas = theory.len();
+        observations.extend(theory_contradictions(&theory));
 
         // --- the market's specialist proposals -----------------------------
         if let Some(calibration) = platform.calibration()

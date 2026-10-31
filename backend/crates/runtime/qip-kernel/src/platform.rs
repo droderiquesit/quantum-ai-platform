@@ -244,6 +244,10 @@ struct SymbolicReading {
     /// The derivation was computed and could not be journaled.
     problem: Option<String>,
     veto: Option<String>,
+    /// The rule and invariant ids whose firing made `veto`; empty without one.
+    veto_rules: Vec<String>,
+    /// The pack and version the derivation ran under.
+    pack: (String, u32),
     infeasible: Option<String>,
 }
 
@@ -578,6 +582,12 @@ pub struct Platform {
     /// Orders a control refused and the twin has not yet priced, oldest
     /// first, bounded by [`DECLINED_HISTORY`].
     declined: Vec<DeclinedPath>,
+    /// Hypotheses the symbolic rule pack refused and LEARN has not yet
+    /// graded, by hypothesis id, bounded by
+    /// [`crate::theory_revision::SYMBOLIC_VETO_HISTORY`]. Read back when the
+    /// thesis is graded, so a refusal the outcome contradicted leaves a
+    /// theory delta rather than nothing (R12-EXPAND-6044).
+    pub(crate) symbolic_vetoes: BTreeMap<String, crate::theory_revision::SymbolicVetoNote>,
     /// What each priced refusal would have earned, most recent last, bounded
     /// by [`DECLINED_HISTORY`].
     declined_scores: Vec<DeclinedScore>,
@@ -6337,6 +6347,7 @@ impl Platform {
             bar_history: BTreeMap::new(),
             publication_delays: BTreeMap::new(),
             declined: Vec::new(),
+            symbolic_vetoes: BTreeMap::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
             cell_fills_queued: CellFillsQueued::default(),
@@ -16355,6 +16366,8 @@ impl Platform {
                     detail: symbolic_detail,
                     problem: symbolic_problem,
                     veto: symbolic_veto,
+                    veto_rules: symbolic_veto_rules,
+                    pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                 } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
                 // ADR 0212: a derivation that contradicts itself is a
@@ -16431,6 +16444,7 @@ impl Platform {
                         }
                     ),
                 );
+                let claim_written = matches!(predicted, Ok(true));
                 if let Err(error) = predicted {
                     outcome = outcome.with_problem(format!(
                         "the hypothesis could not be written as a resolvable claim: {}",
@@ -16476,6 +16490,30 @@ impl Platform {
                     outcome = outcome.with_problem(format!(
                         "approved on review but vetoed by the symbolic rule pack: {veto}"
                     ));
+                    // R12-EXPAND-6044: the veto is held against the grade
+                    // LEARN gives this thesis, so a stop the outcome
+                    // contradicts leaves a theory delta. Only where a claim
+                    // was written above: a veto on a thesis that never
+                    // became a claim has no grade to be held against, and
+                    // its note would hold a slot in the window forever.
+                    if claim_written
+                        && let Some(problem) =
+                            self.note_symbolic_veto(crate::theory_revision::SymbolicVetoNote {
+                                hypothesis_id: reasoned
+                                    .hypothesis
+                                    .hypothesis_id
+                                    .as_str()
+                                    .to_string(),
+                                cycle: self.cycle,
+                                at: now,
+                                pack: symbolic_pack.0.clone(),
+                                version: symbolic_pack.1,
+                                rules: symbolic_veto_rules.clone(),
+                                veto: veto.clone(),
+                            })
+                    {
+                        outcome = outcome.with_problem(problem);
+                    }
                     DecisionTaken::NotSizeable
                 } else if !approved {
                     outcome = outcome
@@ -16884,6 +16922,11 @@ impl Platform {
         };
         let detail = derivation.detail();
         let veto = derivation.veto();
+        let veto_rules = derivation.veto_rules();
+        let pack = (
+            self.symbolic_rule_pack.name.clone(),
+            self.symbolic_rule_pack.version,
+        );
         let infeasible = derivation.infeasibility();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
@@ -16898,6 +16941,8 @@ impl Platform {
             detail,
             problem,
             veto,
+            veto_rules,
+            pack,
             infeasible,
         }
     }
@@ -21807,11 +21852,24 @@ impl Platform {
         // through the same drain every other LEARN-time problem reaches.
         self.capture_problems
             .extend(learned.problems.iter().cloned());
+        // R12-EXPAND-6044: a thesis the rule pack refused and the grader
+        // credited is a contradiction between the theory and the evidence,
+        // and it leaves a theory delta on the log here, at the instant the
+        // grade is known. A proposal only: see `crate::theory_revision`.
+        let revision = self.revise_theory(&learned.evaluations, self.cycle, now);
+        self.capture_problems
+            .extend(revision.problems.iter().cloned());
         let mut summary = format!(
             "{} thesis(es) resolved, {} graded",
             scored.len(),
             learned.evaluations.len()
         );
+        if revision.produced > 0 || revision.upheld > 0 {
+            summary.push_str(&format!(
+                ", {} theory delta(s) proposed, {} veto(es) upheld",
+                revision.produced, revision.upheld
+            ));
+        }
         if ungradeable > 0 {
             summary.push_str(&format!(", {ungradeable} ungradeable"));
         }

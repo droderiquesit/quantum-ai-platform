@@ -6,7 +6,7 @@
 
 use qip_contracts::expansion::{
     CurriculumItem, EffectAttribution, GapSignal, GoalSpec, InterventionPlan, OntologyPatch,
-    SourceScore,
+    SourceScore, TheoryDelta,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -80,6 +80,17 @@ fn score() -> Value {
     })
 }
 
+fn delta() -> Value {
+    json!({
+        "pack": "kernel-hypothesis-rules", "version": 3,
+        "rules": ["r61-cash-short-of-one-lot"],
+        "hypothesis_id": "HYP-1",
+        "proposed_change": "review r61: the thesis it refused resolved vindicated",
+        "contradicting_evidence": ["hypothesis:HYP-1", "verdict:vindicated"],
+        "proposed_at": json!(qip_core::Timestamp::from_secs(1_760_000_000))
+    })
+}
+
 fn item() -> Value {
     json!({
         "research_question": "does CPI lead rates", "expected_information_value": 1.5,
@@ -97,6 +108,7 @@ fn decoders() -> Vec<(&'static str, Value, Decode)> {
         ("gap", gap(), |b| GapSignal::decode(b).map(|_| ())),
         ("patch", patch(), |b| OntologyPatch::decode(b).map(|_| ())),
         ("score", score(), |b| SourceScore::decode(b).map(|_| ())),
+        ("delta", delta(), |b| TheoryDelta::decode(b).map(|_| ())),
         ("item", item(), |b| CurriculumItem::decode(b).map(|_| ())),
         ("attribution", attribution(), |b| {
             serde_json::from_slice::<EffectAttribution>(b)
@@ -221,6 +233,7 @@ fn a_blank_or_empty_listed_field_is_refused_naming_the_field() {
                 // A timestamp is refused by its own parser with its own
                 // message, as an enum is.
                 "scored_at",
+                "proposed_at",
             ]
             .contains(&key.as_str())
             {
@@ -453,6 +466,9 @@ fn every_decoded_record_encodes_back_to_the_same_document_field_for_field() {
         }),
         ("item", item(), |b| {
             serde_json::to_value(CurriculumItem::decode(b).expect("item decodes")).expect("e")
+        }),
+        ("delta", delta(), |b| {
+            serde_json::to_value(TheoryDelta::decode(b).expect("delta decodes")).expect("e")
         }),
         // CONTRACT-7083's own proof names the round trip beside the refusal,
         // and until 2026-10-24 the attribution was the one record this test
