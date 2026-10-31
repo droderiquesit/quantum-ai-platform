@@ -1165,6 +1165,10 @@ pub struct Platform {
     future_drivers: BTreeSet<String>,
     /// The bar close instant `future_tree` was last observed at.
     future_observed_at: Option<Timestamp>,
+    /// Each world-model domain's last journaled snapshot version and digest
+    /// (ADR 0191 decision 3), resumed from the log so the versions continue
+    /// across a restart. Read back for nothing else.
+    world_snapshots: BTreeMap<String, (u64, String)>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -6327,6 +6331,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            world_snapshots: crate::world_snapshot::resume(&event_log)?,
             journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
@@ -13375,6 +13380,49 @@ impl Platform {
         self.capture_problems.extend(problems);
     }
 
+    /// Journal a snapshot of each world-model domain whose content changed
+    /// since its last snapshot (ADR 0191 decision 3, R12-WORLD-7023): the
+    /// domain, its next version, its counts and a digest of its content as
+    /// true and known at `now`. A domain whose digest is unchanged adds
+    /// nothing to the log. A snapshot that cannot be read or journaled is a
+    /// capture problem, and its version is not advanced, so the next cycle
+    /// tries it again at the same number.
+    fn snapshot_world(&mut self, now: Timestamp) {
+        use crate::world_snapshot::{WORLD_SNAPSHOT_ORIGIN, domains_of, due};
+        let domains = match domains_of(&self.world.read(), now) {
+            Ok(domains) => domains,
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the world model could not be read for its snapshot: {}",
+                    error.message()
+                ));
+                return;
+            }
+        };
+        for snapshot in due(domains, &self.world_snapshots, now) {
+            let (domain, version, digest) = (
+                snapshot.domain.clone(),
+                snapshot.version,
+                snapshot.digest.clone(),
+            );
+            match self.journal_record(snapshot, WORLD_SNAPSHOT_ORIGIN, now) {
+                Ok(()) => {
+                    self.world_snapshots.insert(domain, (version, digest));
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "the {domain} snapshot at version {version} was not journaled: {}",
+                    error.message()
+                )),
+            }
+        }
+    }
+
+    /// Each world-model domain's last journaled snapshot version and
+    /// digest (ADR 0191 decision 3).
+    pub const fn world_snapshot_versions(&self) -> &BTreeMap<String, (u64, String)> {
+        &self.world_snapshots
+    }
+
     /// The synthetic future tree the cycle tends (R12-WORLD-9035), if the
     /// held world events have grown one.
     pub const fn future_tree(&self) -> Option<&qip_twin::futures::FutureTree> {
@@ -13495,6 +13543,7 @@ impl Platform {
         self.observe_own_health(now);
         self.react_to_world_events(now);
         self.tend_futures(now);
+        self.snapshot_world(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -29064,6 +29113,110 @@ mod decide_tests {
             3,
             "a reaction was applied twice or not at all"
         );
+    }
+
+    /// ADR 0191 decision 3 (R12-WORLD-7023): each cycle journals a snapshot
+    /// of each world-model domain whose content changed, at the next version
+    /// for that domain. An unchanged world adds nothing, and a restarted
+    /// process over the same log continues the versions rather than
+    /// beginning them again.
+    ///
+    /// Mutations: drop the `snapshot_world` call from `run_cycle`; journal a
+    /// snapshot whether or not the digest changed; resume no versions at
+    /// start-up.
+    #[test]
+    fn each_world_model_domain_is_snapshotted_at_a_version_that_rises_only_when_it_changes_across_restarts()
+     {
+        use crate::world_snapshot::{CAUSAL_GRAPH, KNOWLEDGE_GRAPH, WORLD_SNAPSHOT_ORIGIN};
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let directory = std::env::temp_dir().join(format!(
+            "qip-kernel-world-snapshot-{}-{}",
+            std::process::id(),
+            Timestamp::from_secs(1_760_000_000).as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let open = || {
+            let config = PlatformConfig::default()
+                .with_initial_equity(Decimal::from_int(200_000))
+                .with_event_log_file(&path);
+            let (context, _clock) =
+                qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                listed_test_universe(&["AAPL", "MSFT"]),
+                LimitSet::conservative_default(),
+            )
+            .expect("the platform assembles")
+        };
+        let snapshots = |platform: &Platform| -> usize {
+            platform
+                .event_log()
+                .events()
+                .filter(|e| {
+                    e.topic == qip_events::Topic::WorldModelSnapshot
+                        && e.lineage.producer == WORLD_SNAPSHOT_ORIGIN
+                })
+                .count()
+        };
+        let version = |platform: &Platform, domain: &str| {
+            platform.world_snapshot_versions().get(domain).cloned()
+        };
+        let relate = |platform: &Platform, to: &str, at: Timestamp| {
+            platform.world.update(|world| {
+                world
+                    .relate(
+                        Relationship::new("FOUNDRY", to, RelationshipKind::Supplies, 0.3, "filing"),
+                        at,
+                        at,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            });
+        };
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let day = |n: i64| t0.saturating_add(Duration::from_days(n));
+        {
+            let mut first = open();
+            relate(&first, "CHIPS", t0);
+            first.run_cycle(day(1));
+            let kg = version(&first, KNOWLEDGE_GRAPH).expect("the knowledge graph was snapshotted");
+            assert_eq!(kg.0, 1);
+            assert_eq!(version(&first, CAUSAL_GRAPH).map(|v| v.0), Some(1));
+            let journaled = snapshots(&first);
+            assert_eq!(journaled, 2, "one snapshot per domain on the first cycle");
+
+            // Nothing changed: nothing is journaled.
+            first.run_cycle(day(2));
+            assert_eq!(
+                snapshots(&first),
+                journaled,
+                "an unchanged world was snapshotted again"
+            );
+
+            // The knowledge graph changed and the causal graph did not.
+            relate(&first, "DEVICES", day(2));
+            first.run_cycle(day(3));
+            let kg2 = version(&first, KNOWLEDGE_GRAPH).expect("a snapshot");
+            assert_eq!(kg2.0, 2);
+            assert_ne!(kg2.1, kg.1, "a changed graph kept its digest");
+            assert_eq!(version(&first, CAUSAL_GRAPH).map(|v| v.0), Some(1));
+            assert_eq!(snapshots(&first), journaled + 1);
+        }
+
+        // A restart over the same log continues the versions.
+        let mut second = open();
+        assert_eq!(version(&second, KNOWLEDGE_GRAPH).map(|v| v.0), Some(2));
+        relate(&second, "SCREENS", day(4));
+        second.run_cycle(day(5));
+        assert_eq!(
+            version(&second, KNOWLEDGE_GRAPH).map(|v| v.0),
+            Some(3),
+            "a restarted process began the versions again"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// R12-WORLD-9037: the platform's company twin is built from the
