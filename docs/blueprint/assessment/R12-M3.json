@@ -1058,10 +1058,12 @@
     "status": "PARTIAL",
     "current": "World-model modules liquidity, order_flow, lead_lag, price_impact, arbitrage_state, execution_state.",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::signed_trade_flow_gives_the_order_flow_member_a_view",
       "backend/crates/services/qip-world-model/src/lib.rs:19-40 module list",
-      "backend/crates/services/qip-world-model/tests/liquidity.rs"
+      "backend/crates/services/qip-world-model/tests/liquidity.rs",
+      "docs/adr/0231-the-simulated-tapes-aggressor-side-feeds-an-order-flow-member-labelled-simulated-which-may-only-narrow-and-a-licensed-tape-replaces-the-source-and-not-the-member.md"
     ],
-    "gap": "Not started. The bar tape carries OHLCV and no buy/sell split, so an order-flow imbalance (qip_world_model::order_flow::FlowObservation) cannot be formed from it, and nothing in the kernel absorbs a FlowObservation or a price-impact observation; a microstructure member fed from bars would be the regional member again. Needs a producer of signed flow or trade-side data before the member has anything of its own to say.",
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0231 under decision 10 of the 2026-10-31 owner rulings, amending ADR 0151 decision 6): an order-flow member is built on the default cycle. Platform::record_order_flow sums each cycle's signed aggressor volume per instrument and venue from Trade::aggressor, skipping a print that names no side; UNDERSTAND passes it through FederationInputs (InstrumentView.order_flow) to markets.order-flow.global.micro, declared on sense:trade-aggressor:simulated, which answers the instrument's next-close proposition and may only narrow (qip-kernel tests/symbolic_federation.rs::signed_trade_flow_gives_the_order_flow_member_a_view; reading every print as a buy fails it). Open: the source is the platform's own simulated tape, so the member's record says nothing about a real market until a licensed tape with aggressor side is admitted under ADR 0157. Also open against the requirement text: of liquidity, order flow, venues, lead/lag, impact, arbitrage and execution state only order flow (and the existing markets.microstructure.home.micro spread member) has a member, and no required population family names the microstructure scope, so an absent order-flow member does not yet fail the population check.",
     "implemented": true,
     "tested": true,
     "integrated": true,

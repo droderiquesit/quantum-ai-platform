@@ -77,6 +77,21 @@ pub const MEMBER_LEASE: Duration = Duration::from_days(7);
 
 /// The members, by id. Fixed, so a replay of the log names the same models.
 pub const MOMENTUM: &str = "markets.momentum.global.micro";
+/// The order-flow member (ADR 0231, R12-WORLD-3046): signed aggressor
+/// volume per instrument per cycle, read from the paper feed's own
+/// aggressor side and labelled simulated by its source, so a licensed tape
+/// later replaces the source and not the member.
+pub const ORDER_FLOW: &str = "markets.order-flow.global.micro";
+
+/// The source the order-flow member declares: the simulated tape's
+/// aggressor side, named as simulated wherever the member is listed.
+pub const ORDER_FLOW_SOURCE: &str = "sense:trade-aggressor:simulated";
+
+/// How strongly a fully one-sided cycle of flow leans the member's view of
+/// the next close, on the logistic scale. Declared, not fitted: at 1.0 a
+/// cycle of pure buying reads as 0.73 up, short of the tape members' reach,
+/// because one cycle of one-sided prints is weak evidence of the next close.
+pub const ORDER_FLOW_SLOPE: f64 = 1.0;
 pub const REVERSION: &str = "markets.reversion.global.meso";
 pub const STRESS_SCENARIO: &str = "markets.stress-world.global.macro";
 pub const STANDING_ASIDE: &str = "markets.standing-aside.global.meso";
@@ -161,6 +176,10 @@ pub struct InstrumentView {
     pub causal: Option<CausalView>,
     /// Latest quoted spread over its own median, where one was measured.
     pub spread_ratio: Option<f64>,
+    /// This cycle's signed aggressor flow per venue (ADR 0231): trades
+    /// with no aggressor side contributed nothing. Empty where no trade
+    /// stated one, and the order-flow member is then silent on it.
+    pub order_flow: Vec<qip_world_model::order_flow::FlowObservation>,
     /// The instrument's issuer's latest reported fundamental surprise against
     /// consensus, as a fraction (R12-WORLD-3044); `None` where no issuer of it
     /// has reported one, which is what leaves the company member silent.
@@ -995,6 +1014,17 @@ impl FederationStage {
                 0.25,
             ),
             declare(
+                ORDER_FLOW.into(),
+                "markets",
+                "global",
+                1,
+                Abstraction::Micro,
+                "order-flow-imbalance",
+                ModelKind::Observational,
+                &[ORDER_FLOW_SOURCE],
+                0.25,
+            ),
+            declare(
                 REVERSION.into(),
                 "markets",
                 "global",
@@ -1289,12 +1319,41 @@ impl FederationStage {
                     0.6,
                 )
             });
+            // The order-flow member's view (ADR 0231): this cycle's signed
+            // aggressor volume summed across venues, as an imbalance in
+            // [-1, 1]. Its evidence grows with the prints that stated a side,
+            // up to twenty; with none it is silent rather than even, because
+            // a tape that named no aggressor told it nothing.
+            let flow_view = {
+                let (buy, sell, prints) =
+                    view.order_flow
+                        .iter()
+                        .fold((0.0_f64, 0.0_f64, 0_u64), |(b, s, n), o| {
+                            (
+                                b + o.buy_volume.to_f64(),
+                                s + o.sell_volume.to_f64(),
+                                n + o.buy_count + o.sell_count,
+                            )
+                        });
+                let total = buy + sell;
+                (total > 0.0 && total.is_finite()).then(|| {
+                    let imbalance = (buy - sell) / total;
+                    (
+                        ORDER_FLOW.to_string(),
+                        logistic(ORDER_FLOW_SLOPE * imbalance),
+                        (prints as f64 / 20.0).min(1.0),
+                        0.4,
+                        0.6,
+                    )
+                })
+            };
             let mut any = false;
             for (model, probability, evidence_fit, causal_coherence, uncertainty) in views
                 .into_iter()
                 .map(|(m, p, f, c, u)| (m.to_string(), p, f, c, u))
                 .chain(domain_view)
                 .chain(company_view)
+                .chain(flow_view)
                 .chain(std::iter::once(causal_view))
             {
                 let model = model.as_str();
@@ -1849,6 +1908,7 @@ mod tests {
                 spread_ratio: Some(1.2),
                 causal: None,
                 fundamental_surprise: None,
+                order_flow: Vec::new(),
             }],
             system: SystemView {
                 halted: false,
@@ -1887,12 +1947,23 @@ mod tests {
         // issuer has reported a surprise, so this one has (R12-WORLD-3044).
         let mut fed_inputs = inputs(1, 100.0, day(0), Some(3));
         fed_inputs.instruments[0].fundamental_surprise = Some(0.05);
+        // The order-flow member produces state only where a print stated its
+        // aggressor (ADR 0231), so this instrument has one cycle's flow.
+        fed_inputs.instruments[0].order_flow = vec![qip_world_model::order_flow::FlowObservation {
+            object_id: qip_core::ObjectId::from_string("AAA"),
+            venue: qip_contracts::venue::VenueId::new("XNYS"),
+            observed_at: day(0),
+            buy_volume: Decimal::from_int(300),
+            sell_volume: Decimal::from_int(100),
+            buy_count: 3,
+            sell_count: 1,
+        }];
         // The capital member produces state only for a book with positive
         // equity, so this one has one (R12-WORLD-3048).
         fed_inputs.capital = Some(book(1_000.0, 0));
         let review = stage.run(&fed_inputs, day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 12, "{review:?}");
+        assert_eq!(review.population.len(), 13, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -1902,11 +1973,12 @@ mod tests {
         assert_eq!(spanned.kinds.len(), 3);
         assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
         assert!(review.silent.is_empty(), "{:?}", review.silent);
-        // One instrument proposition with nine views (seven tape members, the
-        // company member and the causal model), plus self, capital and chain.
+        // One instrument proposition with ten views (seven tape members, the
+        // company member, the order-flow member and the causal model), plus
+        // self, capital and chain.
         assert_eq!(review.arbitrations.len(), 4);
         let instrument = &review.arbitrations[0];
-        assert_eq!(instrument.disagreement.views.len(), 9);
+        assert_eq!(instrument.disagreement.views.len(), 10);
         // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
         // members are in the population and each produced a view on the instrument.
         for member in [RARE_REGIME, ALTERNATE_FUTURE, CAUSAL_GLOBAL] {
@@ -2026,6 +2098,7 @@ mod tests {
                 spread_ratio: None,
                 causal: None,
                 fundamental_surprise: None,
+                order_flow: Vec::new(),
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -2105,6 +2178,7 @@ mod tests {
                 spread_ratio: None,
                 causal: None,
                 fundamental_surprise: None,
+                order_flow: Vec::new(),
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -2279,8 +2353,9 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: twelve members, no branch, and nothing scored yet to decide on.
-        assert_eq!(first.population.len(), 12);
+        // Premise: thirteen members (the order-flow member, ADR 0231, among
+        // them), no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 13);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -2288,7 +2363,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 13);
+        assert_eq!(second.population.len(), 14);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -2391,7 +2466,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 14);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 15);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -2400,20 +2475,20 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 14 live, two branches merged away, one result: 13, every root kept.
+        // 15 live, two branches merged away, one result: 14, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 13, "{live:?}");
+        assert_eq!(live.len(), 14, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 13);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 14);
     }
 
     #[test]

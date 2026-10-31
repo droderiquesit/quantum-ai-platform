@@ -149,12 +149,13 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    // Twelve members (the company member, R12-WORLD-3044, and the capital
-    // member, R12-WORLD-3048, among them) plus the one domain member the
+    // Thirteen members (the company member, R12-WORLD-3044, the capital
+    // member, R12-WORLD-3048, and the order-flow member, ADR 0231, among
+    // them) plus the one domain member the
     // platform now declares for the universe's single asset class
     // (MODEL-4009): the composition names the classes itself, so a deployed
     // cycle carries the member too.
-    assert_eq!(first.population.len(), 13, "{:?}", first.population);
+    assert_eq!(first.population.len(), 14, "{:?}", first.population);
     // The platform hands the capital member its paper book every cycle
     // (ADR 0194): a funded book with positive equity is never silent.
     // Mutation: build `FederationInputs` with `capital: None`.
@@ -178,12 +179,17 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
             "{family} uncovered"
         );
     }
-    // No chain was observed and no issuer reported a surprise, so the
-    // company and on-chain members are the silent ones — present, unexpired,
-    // and honest that they produced nothing (R12-WORLD-3044).
+    // No chain was observed, no issuer reported a surprise and no print
+    // stated an aggressor, so the company, on-chain and order-flow members
+    // are the silent ones — present, unexpired, and honest that they
+    // produced nothing (R12-WORLD-3044, ADR 0231).
     assert_eq!(
         first.silent,
-        vec![federation_stage::COMPANY.to_string(), ON_CHAIN.to_string()]
+        vec![
+            federation_stage::COMPANY.to_string(),
+            ON_CHAIN.to_string(),
+            federation_stage::ORDER_FLOW.to_string()
+        ]
     );
     let instrument: Vec<_> = first
         .arbitrations
@@ -1634,5 +1640,88 @@ fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_
             a.proposition
         );
     }
+    Ok(())
+}
+
+/// ADR 0231, R12-WORLD-3046: the paper feed's signed aggressor flow gives
+/// the order-flow member a view of the instrument it traded, leaning with
+/// the side that dominated, and a print that stated no aggressor gives it
+/// nothing. The member may only narrow, because the federation's one power
+/// over DECIDE is a narrowing.
+///
+/// The failure this prevents: each trade's aggressor side reached the
+/// market snapshot and nothing modelled it, so the population had no member
+/// that read who was crossing the spread. Mutation: ignore the aggressor in
+/// `Platform::record_order_flow`, reading every print as a buy. BBB's
+/// unattributed prints then give the member a view, and AAA's
+/// sell-dominated flow leans up; both assertions fail.
+#[test]
+fn signed_trade_flow_gives_the_order_flow_member_a_view() -> Result<()> {
+    use qip_market::book::Side;
+    use qip_market::quote::{Trade, TradeCondition};
+    let mut platform = platform()?;
+    let mut records = bars("AAA", 120);
+    records.extend(bars("BBB", 120));
+    platform.observe(records);
+    let print = |symbol: &str, n: i64, size: i64, aggressor: Option<Side>| {
+        let at = start().saturating_sub(Duration::from_mins(60 - n));
+        SensedRecord::Trade(Trade {
+            object_id: object(symbol),
+            venue: "XNYS".to_string(),
+            at,
+            capture_time: at,
+            sequence: Some(n as u64),
+            price: dec!("100"),
+            size: Decimal::from_int(size),
+            aggressor,
+            condition: TradeCondition::Regular,
+            trade_id: Some(format!("{symbol}-{n}")),
+            quality: DataQuality::default(),
+        })
+    };
+    // AAA: three times as much selling as buying. BBB: prints naming no side.
+    platform.observe(vec![
+        print("AAA", 1, 100, Some(Side::Buy)),
+        print("AAA", 2, 300, Some(Side::Sell)),
+        print("BBB", 3, 200, None),
+        print("BBB", 4, 200, None),
+    ]);
+    platform.run_cycle(start());
+    let reviews = federation_stage::replay(&platform)?;
+    let review = reviews
+        .last()
+        .expect("premise: the cycle journaled a federation review");
+    assert!(
+        !review
+            .silent
+            .contains(&federation_stage::ORDER_FLOW.to_string()),
+        "the order-flow member was silent on a cycle with signed prints: {:?}",
+        review.silent
+    );
+    let flow_views: Vec<(String, f64)> = review
+        .arbitrations
+        .iter()
+        .flat_map(|a| {
+            a.disagreement
+                .views
+                .iter()
+                .filter(|v| v.model == federation_stage::ORDER_FLOW)
+                .map(|v| (a.proposition.clone(), v.probability))
+        })
+        .collect();
+    assert_eq!(
+        flow_views.len(),
+        1,
+        "one view, on the instrument with signed prints and not on BBB: {flow_views:?}"
+    );
+    let (proposition, probability) = &flow_views[0];
+    assert!(
+        proposition.starts_with(object("AAA").as_str()),
+        "{proposition}"
+    );
+    assert!(
+        *probability < 0.5,
+        "sell-dominated flow leaned the next close up: {probability}"
+    );
     Ok(())
 }

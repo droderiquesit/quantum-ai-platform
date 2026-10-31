@@ -774,6 +774,10 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// Signed aggressor flow per (instrument, venue) since the last
+    /// UNDERSTAND (ADR 0231), taken by it. Bounded by the instruments and
+    /// venues one cycle's trades name.
+    cycle_order_flow: BTreeMap<(String, String), qip_world_model::order_flow::FlowObservation>,
     /// The active-sensing requests the latest federation pass issued, each
     /// with the disagreement spread behind it in basis points (ADR 0158
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
@@ -6404,6 +6408,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            cycle_order_flow: BTreeMap::new(),
             federation_requests: Vec::new(),
             decision_uncertainties: Vec::new(),
             cycle_second_order: None,
@@ -12762,6 +12767,7 @@ impl Platform {
                 }
                 SensedRecord::Trade(trade) => {
                     self.ensure_world_object(trade.object_id.as_str(), trade.at);
+                    self.record_order_flow(&trade);
                     // "Last traded price" is the feature store's own
                     // definition of `close`, and a trade is exactly that.
                     // Use capture_time for known_at to preserve bitemporal distinction:
@@ -15057,6 +15063,39 @@ impl Platform {
             .then_some(view)
     }
 
+    /// Add `trade`'s signed volume to this cycle's order flow (ADR 0231). A
+    /// trade whose venue stated no aggressor contributes nothing: guessing a
+    /// side from the quote would be the platform inventing the flow it then
+    /// forecasts from.
+    fn record_order_flow(&mut self, trade: &qip_market::quote::Trade) {
+        let Some(side) = trade.aggressor else {
+            return;
+        };
+        let key = (trade.object_id.as_str().to_string(), trade.venue.clone());
+        let flow = self.cycle_order_flow.entry(key).or_insert_with(|| {
+            qip_world_model::order_flow::FlowObservation {
+                object_id: trade.object_id.clone(),
+                venue: qip_contracts::venue::VenueId::new(&trade.venue),
+                observed_at: trade.at,
+                buy_volume: Decimal::ZERO,
+                sell_volume: Decimal::ZERO,
+                buy_count: 0,
+                sell_count: 0,
+            }
+        });
+        flow.observed_at = flow.observed_at.max(trade.at);
+        match side {
+            qip_market::book::Side::Buy => {
+                flow.buy_volume += trade.size;
+                flow.buy_count += 1;
+            }
+            qip_market::book::Side::Sell => {
+                flow.sell_volume += trade.size;
+                flow.sell_count += 1;
+            }
+        }
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15065,6 +15104,13 @@ impl Platform {
         let mut thin_subjects = 0;
         let causal_views = self.causal_views(now);
         let surprises = self.fundamental_surprises(now);
+        // This cycle's flow, taken so the next cycle starts empty: the
+        // member reads one cycle's prints, never an accumulating history.
+        let mut flows: BTreeMap<String, Vec<qip_world_model::order_flow::FlowObservation>> =
+            BTreeMap::new();
+        for ((subject, _), flow) in std::mem::take(&mut self.cycle_order_flow) {
+            flows.entry(subject).or_default().push(flow);
+        }
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -15085,6 +15131,7 @@ impl Platform {
                 spread_ratio: self.spread_ratio(subject),
                 causal: causal_views.get(subject).copied(),
                 fundamental_surprise: surprises.get(subject).copied(),
+                order_flow: flows.remove(subject).unwrap_or_default(),
             });
         }
         let level = self.autonomy.level();
