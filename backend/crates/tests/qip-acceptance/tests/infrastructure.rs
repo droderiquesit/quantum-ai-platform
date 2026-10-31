@@ -8741,8 +8741,10 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
     );
 
     // The module: the path the variable carries is
-    // /etc/qip/<hash>/<file_name>, the object's content is the input's
-    // content under that same hash-named directory, and the volume is a
+    // /etc/qip/<hash>/<file_name>, where the hash is that file's own (ADR
+    // 0245) and never one taken over every file, so a second file cannot
+    // move the first; the object's content is the input's content under that
+    // same hash-named directory, and the volume is a
     // read-only mount of the bucket, on both kinds. The hash is in the path
     // rather than in the mount because the GA provider has no `mount_options`
     // to select a directory with; either way the variable names exactly the
@@ -8751,7 +8753,7 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
     assert!(
         sets(&module, "config_root", "\"/etc/qip\"")
             && module.contains(
-                "key => \"${local.config_root}/${local.config_prefix}/${file.file_name}\""
+                "key => \"${local.config_root}/${local.config_prefixes[key]}/${file.file_name}\""
             )
             && module.contains("file.env_file_variable => local.config_files[key]"),
         "the module no longer writes /etc/qip/<hash>/<file_name> into the _PATH variable"
@@ -8766,9 +8768,22 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
             && sets(
                 object,
                 "name",
-                "\"${local.config_prefix}/${each.value.file_name}\""
+                "\"${local.config_prefixes[each.key]}/${each.value.file_name}\""
             ),
         "the config object's content or hash-named path is no longer the input's"
+    );
+    // Per file: each prefix hashes one file's digest, and no prefix is taken
+    // over the join of every file's, which is the form that moved the
+    // universe's path whenever a second file was added (ADR 0245).
+    assert!(
+        module.contains("key => substr(sha256(digest), 0, 16)")
+            && module.contains("for key, digest in local.config_file_hashes :"),
+        "the module no longer names each config file's directory by that file's own digest"
+    );
+    assert!(
+        !module.contains("join(\"\\n\", [for key in sort(keys(var.config_files))"),
+        "the module names a config directory by every file's digest again, so adding a file \
+         moves the universe's path"
     );
     assert!(
         module.contains("sha256(file.content)"),

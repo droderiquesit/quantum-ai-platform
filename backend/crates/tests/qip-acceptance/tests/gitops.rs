@@ -5809,10 +5809,11 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
     );
 
     // Premise: the universe is the only file in every workload's
-    // `config_files`. The module's prefix is the hash of every file's digest
-    // joined in key order, so one more file is a different prefix for that
-    // workload, and this test — which derives the prefix from the universe
-    // alone — would then be asserting the wrong name with confidence.
+    // `config_files`. Since ADR 0245 each file's prefix is its own, so a
+    // second file no longer moves the universe's; the premise is kept
+    // because this test names only the universe's path and the egress
+    // bootstrap's, and a second mounted file is a manifest literal it would
+    // not check. Extend the test with that file when the premise first fails.
     let optional = optional_config_file_variables();
     assert!(
         !optional.is_empty(),
@@ -5833,8 +5834,8 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
     }
 
     // modules/cloudrun/main.tf: `config_file_hashes[key] = sha256(content)`
-    // (lowercase hex) and `config_prefix = substr(sha256(join("\n", [hashes
-    // in key order])), 0, 16)`. One file, so the join is its digest alone.
+    // (lowercase hex) and `config_prefixes[key] = substr(sha256(digest), 0,
+    // 16)`, per file (ADR 0245).
     let universe_digest = qip_core::sha256_hex(&universe);
     let config_prefix = qip_core::sha256_hex(universe_digest.as_bytes())[..16].to_string();
     let universe_path = format!("/etc/qip/{config_prefix}/universe.json");
