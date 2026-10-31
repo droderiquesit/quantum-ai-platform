@@ -2161,6 +2161,54 @@ fn one_allocation_yields_at_least_one_alternate_size_and_one_rejected_opportunit
     Ok(())
 }
 
+// --- admission: received before it happened (ADR 0132, R12-TICK-2053) -----
+
+/// The centre holds every sensed record to the one admission rule by the
+/// times the record carries: a tick captured before the instant it says it
+/// happened was knowable before it was true, so it reaches no series and is
+/// reported as a capture problem rather than absorbed. The same tick with
+/// its capture at or after its instant is absorbed. Mutation: drop the
+/// `Admission::check_order` arm in `Platform::absorb_records` and the
+/// contaminated tick is absorbed, moving the close feature.
+#[test]
+fn a_tick_captured_before_it_happened_is_refused_at_admission_and_reported() -> Result<()> {
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+
+    let absorbed = platform.observe(vec![late_tick("AAA", at, Duration::from_secs(-5), "123")]);
+    assert_eq!(
+        absorbed, 0,
+        "a tick received before it happened was absorbed"
+    );
+    let report = platform.run_cycle(at);
+    let problems: Vec<&String> = report
+        .stages
+        .iter()
+        .flat_map(|stage| stage.problems.iter())
+        .collect();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("received before it happened")),
+        "the refusal was not reported as a capture problem: {problems:?}"
+    );
+
+    // The same tick, captured five seconds after it happened: absorbed.
+    let later = at.saturating_add(Duration::from_secs(120));
+    let absorbed = platform.observe(vec![late_tick("AAA", later, Duration::from_secs(5), "123")]);
+    assert_eq!(absorbed, 1, "an ordinary late tick was refused");
+    let report = platform.run_cycle(later.saturating_add(Duration::from_secs(10)));
+    assert!(
+        !report
+            .stages
+            .iter()
+            .flat_map(|stage| stage.problems.iter())
+            .any(|problem| problem.contains("received before it happened")),
+        "an ordinary tick was reported as received before it happened"
+    );
+    Ok(())
+}
+
 // --- publication delay and the decision-time read (R12-TICK-2087) ----------
 
 fn late_tick(symbol: &str, at: Timestamp, late_by: Duration, price: &str) -> SensedRecord {

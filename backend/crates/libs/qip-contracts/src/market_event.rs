@@ -16,6 +16,7 @@
 //! message and licensing it for use are one act instead of two acts that can
 //! silently fall out of step.
 
+use crate::admission::Admission;
 use crate::governance::Entitlement;
 use crate::message::MarketMessage;
 use crate::venue::Origin;
@@ -82,19 +83,6 @@ impl MarketEvent {
         source_hash: impl Into<String>,
         entitlement: Entitlement,
     ) -> Result<Self> {
-        if uncertainty.as_nanos() < 0 {
-            return Err(Error::invalid(
-                "market event uncertainty must not be negative; a negative value is not a \
-                 tighter bound, it is a subtraction that ran the wrong way",
-            ));
-        }
-        if !entitlement.is_granted(event_time) {
-            return Err(Error::denied(format!(
-                "{} carries no active entitlement at this event's time; a market event may not \
-                 be built from data this platform is not licensed to use",
-                entitlement.dataset()
-            )));
-        }
         let source_hash = source_hash.into();
         let recomputed = Self::hash_payload(&payload)?;
         if recomputed != source_hash {
@@ -103,16 +91,44 @@ impl MarketEvent {
                  {recomputed}; the payload was altered after the hash was taken"
             )));
         }
-        Ok(Self {
-            payload,
+        // ADR 0132 decision 1: the point-in-time refusals live in the one
+        // admission constructor, so an event received before it happened is
+        // refused here by the same line that refuses it for every other
+        // sensed record. The fields stay this type's own: the lake and the
+        // spool hold its wire form, and the header is derived from them by
+        // `admission` rather than stored twice.
+        let admission = Admission::new(
             event_time,
             receive_time,
             normalized_time,
             uncertainty,
-            source_hash: recomputed,
-            native_hash: None,
+            recomputed,
             entitlement,
+        )?;
+        Ok(Self {
+            payload,
+            event_time: admission.event_time(),
+            receive_time: admission.receive_time(),
+            normalized_time: admission.normalized_time(),
+            uncertainty: admission.uncertainty(),
+            source_hash: admission.source_hash().to_string(),
+            native_hash: None,
+            entitlement: admission.entitlement().clone(),
         })
+    }
+
+    /// The admission header this event was admitted under (ADR 0132): the
+    /// three times, the uncertainty, the source hash and the entitlement, as
+    /// one value a centre record can be compared with.
+    pub fn admission(&self) -> Admission {
+        Admission {
+            event_time: self.event_time,
+            receive_time: self.receive_time,
+            normalized_time: self.normalized_time,
+            uncertainty: self.uncertainty,
+            source_hash: self.source_hash.clone(),
+            entitlement: self.entitlement.clone(),
+        }
     }
 
     /// Record the venue's own bytes for this message, hashing them here so a

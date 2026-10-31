@@ -253,10 +253,13 @@ fn a_gap_in_source_sequence_is_detectable_between_consecutive_events() -> Result
     // advances by a single nanosecond — routine on a busy book, and exactly
     // what a time-based check would read as "no time has passed, so nothing
     // was lost".
+    // Received a nanosecond after it happened: a stamp ahead of receipt by
+    // more than the stated doubt is refused at admission (ADR 0132), and the
+    // gap under test is about sequence numbers, not instants.
     let after_gap = build(
         origin("itch-a", 0, 44),
-        t(100).saturating_add(Duration::from_nanos(1)),
         t(100),
+        t(100).saturating_add(Duration::from_nanos(1)),
     )?;
     assert_eq!(
         after_gap.sequence_gap(&earlier),

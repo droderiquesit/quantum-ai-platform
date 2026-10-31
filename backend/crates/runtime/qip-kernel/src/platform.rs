@@ -12018,6 +12018,29 @@ impl Platform {
             // the platform learns it, because nothing downstream keeps the
             // source beside the figure.
             self.source_leads.observe(&record);
+            // ADR 0132 decision 1: one admission rule for every sensed
+            // record. A record that states both the instant it happened and
+            // the instant it was captured is held to `Admission::check_order`
+            // — received before it happened is refused, not reconciled —
+            // with no clock doubt, because a centre record carries none. The
+            // refusal is a capture problem the cycle reports, and the record
+            // reaches no series: a feature computed from it would be knowable
+            // before it was true, the leak the bitemporal rules exist for.
+            {
+                use qip_contracts::admission::{Admissible, Admission};
+                let own = record.own_times();
+                if let (Some(event_time), Some(receive_time)) = (own.event_time, own.receive_time)
+                    && let Err(error) =
+                        Admission::check_order(event_time, receive_time, Duration::ZERO)
+                {
+                    self.capture_problems.push(format!(
+                        "a {} record was refused at admission: {}",
+                        record.topic(),
+                        error.message()
+                    ));
+                    continue;
+                }
+            }
             match record {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
