@@ -108,6 +108,7 @@ use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_portfolio_engine::proposal::Proposal;
 use qip_reasoning_engine::redteam::ReviewPolicy;
+use qip_reasoning_engine::rules::Value;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
 /// See the module note. Low enough that the panel's verdict on a synthetic
@@ -910,8 +911,19 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     assert_eq!(platform.sizing_confidence("obj-AAA", scoring)?, dec!("0.5"));
     assert_eq!(platform.sizing_cap_multiplier("obj-AAA"), dec!("0.5"));
 
-    // The compounding cycle.
-    let report = platform.run_cycle(scoring.saturating_add(Duration::from_days(1)));
+    // The compounding cycle, on the same kind of fresh move the reference
+    // reasoned on: the reference tape's last-bar drop, off the 110 plateau,
+    // on the first day after it. Since ADR 0170 the verifier society's
+    // refutation vetoes an approved thesis, and on the plateau itself it
+    // rightly did: the equity analyst read the risen price against the claim
+    // at 0.68 conviction and one detector carried over 80% of the support,
+    // so the cycle sized nothing for a reason unrelated to the two
+    // narrowings. Both narrowings are keyed on the instrument and are
+    // asserted active below, so moving the instant past the plateau changes
+    // nothing this test claims.
+    let compounding = start().saturating_add(Duration::from_days(8));
+    platform.observe(vec![bar("AAA", compounding, 110.0, 110.0 * (1.0 + DROP))]);
+    let report = platform.run_cycle(compounding);
     assert!(report.traversed_every_stage(), "{}", report.summarise());
     let compounded = platform
         .proposals()
@@ -1465,9 +1477,15 @@ fn a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_
 /// contested or low-confidence approval is sized small and not vetoed
 /// (ADR 0150 decision 14).
 ///
-/// Mutation: make `SymbolicDerivation::veto` return `None` — the vetoed
-/// platform queues the thesis ("sized on conviction") and the first assertion
-/// on the vetoed report fails.
+/// Since R12-REASON-3053 the derivation runs before approval is read (ADR 0125
+/// decision 2's placement), so the veto is an input to approval: the vetoed
+/// hypothesis is reported rejected, not approved-then-dropped, and the cycle
+/// proposes nothing where the control proposes.
+///
+/// Mutations: make `SymbolicDerivation::veto` return `None` — the vetoed
+/// platform queues the thesis ("sized on conviction") and reports it
+/// approved; drop the status demotion in `reason_about_the_queue` — the
+/// vetoed hypothesis is reported approved and the status assertion fails.
 #[test]
 fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_forms_no_proposal()
 -> Result<()> {
@@ -1518,12 +1536,32 @@ fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_f
     );
 
     // A million shares at 100 is a hundred million against a million of cash.
+    assert!(
+        controlled.proposals().iter().any(|p| !p.legs.is_empty()),
+        "premise: the control proposes a leg, so a legless vetoed book is the veto's doing"
+    );
     let (vetoed, report) = run(dec!("1000000"))?;
     let reason = report.stage(Stage::Reason).expect("reason ran");
+    let derivations = qip_kernel::symbolic_stage::replay(&vetoed)?;
+    assert_eq!(derivations.len(), 1, "the refusing derivation is journaled");
     assert!(
-        reason.detail.contains("hypothesis approved at confidence "),
-        "premise: review approved this hypothesis too: {}",
+        derivations[0]
+            .rules
+            .inputs
+            .iter()
+            .any(|(name, value)| name == "status" && *value == Value::Text("approved".into())),
+        "premise: review approved this hypothesis too, and the pack was asked about it: {:?}",
+        derivations[0].rules.inputs
+    );
+    assert!(
+        reason.detail.contains("hypothesis rejected at confidence "),
+        "the rule pack's verdict did not reach approval: {}",
         reason.detail
+    );
+    assert!(
+        vetoed.proposals().iter().all(|p| p.legs.is_empty()),
+        "a hypothesis the rule pack refused still produced a proposed leg: {:?}",
+        vetoed.proposals()
     );
     assert!(
         !reason.detail.contains("; sized on conviction"),
@@ -1539,8 +1577,6 @@ fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_f
         "the veto and its cause were not reported: {:?}",
         reason.problems
     );
-    let derivations = qip_kernel::symbolic_stage::replay(&vetoed)?;
-    assert_eq!(derivations.len(), 1, "the refusing derivation is journaled");
     assert!(!derivations[0].rules.agrees_with_review);
     Ok(())
 }
@@ -1592,4 +1628,71 @@ fn a_position_opened_on_a_thesis_is_that_thesis_classs_exposure_and_the_buckets_
     );
     assert_eq!(exposure.unattributed, Decimal::ZERO, "{exposure:?}");
     assert_eq!(exposure.total(), notional);
+}
+
+/// R12-REASON-3108, ADR 0170 decision 1: an approved hypothesis the verifier
+/// society refutes forms no proposal, and the cycle says the society refused
+/// it.
+///
+/// The failure this prevents: the society's refutation used to hold the
+/// question out of the tournament and nothing else, so a falsified leading
+/// explanation was sized and traded beside the clause saying it had been
+/// falsified. The case is the plateau the compounding test above moved off:
+/// a fresh drop, then a flat 110 for a week, then a cycle that reasons on the
+/// stale move. Review approves it, the equity analyst reads the risen price
+/// against the claim at well over the opposing-conviction bar, and one
+/// detector carries most of the support. Mutation: delete the
+/// `society_refutation` arm in `Platform::reason_about_the_queue` — the
+/// thesis is sized and the empty-proposal assertion fails.
+#[test]
+fn an_approved_hypothesis_the_verifier_society_refutes_forms_no_proposal() -> Result<()> {
+    let universe = {
+        let mut universe = Universe::new();
+        universe.insert(listed("AAA")?)?;
+        universe
+    };
+    let mut platform = platform_over(universe, leverage_only())?;
+    platform.observe(tape("AAA"));
+    platform.run_cycle(start());
+    platform.observe(flat_after("AAA", start(), 7, 110.0));
+
+    let report = platform.run_cycle(start().saturating_add(Duration::from_days(5)));
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let reason = report.stage(Stage::Reason).expect("reason ran");
+    // Premise: review approved it and the society attacked and refuted it,
+    // so an empty proposal below is the veto and not a quiet cycle.
+    assert!(
+        reason.detail.contains("hypothesis approved at confidence "),
+        "premise: review approved a hypothesis: {}",
+        reason.detail
+    );
+    assert!(
+        reason.detail.contains("verifier society: refuted by "),
+        "premise: the society refuted it: {}",
+        reason.detail
+    );
+    assert!(
+        reason
+            .problems
+            .iter()
+            .any(|problem| problem.starts_with("approved but refuted by the verifier society: ")),
+        "the cycle does not say the society refused the thesis: {:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.detail.contains("; sized on conviction"),
+        "a refuted thesis was sized: {}",
+        reason.detail
+    );
+    let proposal = platform
+        .proposals()
+        .last()
+        .cloned()
+        .expect("every cycle records a proposal");
+    assert!(
+        proposal.is_empty(),
+        "a refuted thesis reached a proposal: {}",
+        proposal.rationale
+    );
+    Ok(())
 }

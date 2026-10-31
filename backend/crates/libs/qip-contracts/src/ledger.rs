@@ -29,6 +29,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+mod obligations;
+
+pub use obligations::LedgerObligations;
+
 /// The settlement state a ledger event was booked under.
 ///
 /// **One variant, on purpose.** The platform is paper-trading only, and a

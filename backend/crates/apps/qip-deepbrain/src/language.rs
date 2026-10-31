@@ -38,13 +38,13 @@
 
 use crate::attestation::ATTESTATION_PATH_VARIABLE;
 use crate::config::{DeepBrainConfig, HostedLanguageModel, LANGUAGE_MODEL_VARIABLE};
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_ai::language::{DeterministicModel, FallbackChain, LanguageModel};
 /// The reply tally lives beside the port in `qip-ai`, so wrapping the hosted
 /// adapter adds no implementation of `LanguageModel` outside ADR 0117's list.
 pub use qip_ai::language::{ReplyCounts, ReplyTally};
 use qip_core::error::{Error, Result};
-use qip_reasoning_engine::providers::huggingface::{
+use qip_language_providers::huggingface::{
     DEFAULT_DEADLINE, DEFAULT_MAX_BODY_BYTES, HF_TOKEN_VARIABLE, HuggingFaceConfig,
     HuggingFaceModel,
 };
@@ -227,7 +227,8 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
     // evaluation -- here the attestation, the record that a named operator
     // read what the provider does with what it is sent.
     let mut tools = ToolRegistry::new();
-    tools.register(&hosted.model, ToolKind::ModelEndpoint)?;
+    let endpoint = ToolName::parse(&hosted.model)?;
+    tools.register(endpoint.clone(), ToolKind::ModelEndpoint)?;
 
     match precondition(hosted, &adapter_config) {
         Err(withheld) => Ok(AssembledModel {
@@ -237,7 +238,7 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
             replies: None,
         }),
         Ok(met) => {
-            tools.promote(&hosted.model, ToolPermission::LeaveSandbox, &met.attested)?;
+            tools.promote(&endpoint, ToolPermission::LeaveSandbox, &met.attested)?;
             let summary = HostedSummary {
                 model: hosted.model.clone(),
                 base_url: hosted.base_url.clone(),
@@ -273,7 +274,10 @@ fn hosted_adapter(
     adapter_config: HuggingFaceConfig,
     hosted: &HostedLanguageModel,
 ) -> Result<HuggingFaceModel> {
-    tools.authorise(&hosted.model, ToolPermission::LeaveSandbox)?;
+    tools.authorise(
+        &ToolName::parse(&hosted.model)?,
+        ToolPermission::LeaveSandbox,
+    )?;
     Ok(HuggingFaceModel::new(adapter_config, hosted.token.clone()))
 }
 

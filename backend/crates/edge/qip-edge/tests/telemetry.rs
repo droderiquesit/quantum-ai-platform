@@ -1563,3 +1563,227 @@ fn an_order_in_a_mode_not_enabled_at_its_venue_is_refused_before_an_order_number
     assert_eq!(work(&mut cell, t(50))?.orders.len(), 1);
     Ok(())
 }
+// --- the dependency rows the cell measures itself (R12-RES-8026) -------------
+//
+// `qip_edge_capability_freshness` carried only the three policy-fed rows, so
+// a cell whose venue feed had gone silent, whose venues were all quarantined
+// or whose venues' clocks had run ahead sized and refused accordingly while
+// the chart a desk watches said nothing had narrowed. Each test below drives
+// the cell through the event and asserts the specific `capability` series
+// moved, and that it was absent before the cell had measured anything — a
+// `2` charted for a row nobody measured is the number this series refuses.
+
+fn freshness(metrics: &Metrics, capability: Capability) -> Option<f64> {
+    metrics.snapshot().gauge(
+        names::EDGE_CAPABILITY_FRESHNESS,
+        &by("capability", capability.as_str()),
+    )
+}
+
+/// Mutation: drop `Capability::Feed` from the dependency-row loop in
+/// `CellMetrics::narrowing` — the series stays absent and the `Some(0.0)`
+/// assertion fires.
+#[test]
+fn a_venue_feed_going_silent_moves_the_feed_row_from_fresh_to_unavailable() -> Result<()> {
+    let (mut cell, metrics) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    work(&mut cell, t(10))?;
+    assert_eq!(
+        freshness(&metrics, Capability::Feed),
+        None,
+        "a feed row was charted before the cell had heard any venue"
+    );
+
+    cell.feed_heartbeat(&venue(), t(20));
+    work(&mut cell, t(21))?;
+    assert_eq!(
+        freshness(&metrics, Capability::Feed),
+        Some(0.0),
+        "a venue heard a second ago did not chart as fresh"
+    );
+
+    // Past the five-second bound, and the cell's only venue: no venue heard.
+    work(&mut cell, t(40))?;
+    assert_eq!(
+        freshness(&metrics, Capability::Feed),
+        Some(2.0),
+        "every venue silent past its bound did not chart as unavailable"
+    );
+    Ok(())
+}
+
+/// One level per call, stamped `lead` milliseconds (the bytes, as text) ahead
+/// of the cell's capture instant, so a test can run a venue's clock ahead.
+#[derive(Debug, Default)]
+struct LeadDecoder {
+    sequence: u64,
+    consumed: usize,
+    diagnostics: qip_protocols::decoder::Diagnostics,
+}
+
+impl qip_protocols::decoder::Decoder for LeadDecoder {
+    fn decode(&mut self, bytes: &[u8], captured_at: Timestamp) -> Result<Vec<MarketMessage>> {
+        let lead: i64 = std::str::from_utf8(bytes)
+            .map_err(|e| Error::invalid(e.to_string()))?
+            .trim()
+            .parse()
+            .map_err(|_| Error::invalid("a lead is a number of milliseconds"))?;
+        self.sequence += 1;
+        self.consumed = bytes.len();
+        Ok(vec![MarketMessage::new(
+            object(),
+            Origin::new(venue(), "feed-a", 0, self.sequence),
+            MessageBody::LevelSet {
+                side: BookSide::Bid,
+                price: d("99"),
+                quantity: d("500"),
+                order_count: None,
+            },
+            captured_at.saturating_add(Duration::from_millis(lead)),
+            captured_at,
+        )])
+    }
+
+    fn protocol(&self) -> &str {
+        "lead"
+    }
+
+    fn consumed(&self) -> usize {
+        self.consumed
+    }
+
+    fn diagnostics(&self) -> &qip_protocols::decoder::Diagnostics {
+        &self.diagnostics
+    }
+}
+
+/// Mutation: drop `Capability::Clock` from the dependency-row loop in
+/// `CellMetrics::narrowing` — the series stays absent and the `Some(0.0)`
+/// assertion fires.
+#[test]
+fn a_venue_clock_running_ahead_of_the_cell_moves_the_clock_row() -> Result<()> {
+    let (mut cell, metrics) = wired_cell()?;
+    cell.protocols_mut()
+        .register(venue(), "feed-a", Box::new(LeadDecoder::default()))?;
+    let feed = qip_protocols::FeedKey::new(venue(), "feed-a");
+    work(&mut cell, t(10))?;
+    assert_eq!(
+        freshness(&metrics, Capability::Clock),
+        None,
+        "a clock row was charted before any venue time had been measured"
+    );
+
+    cell.on_bytes(&feed, b"0", t(20))?;
+    work(&mut cell, t(20))?;
+    assert_eq!(
+        freshness(&metrics, Capability::Clock),
+        Some(0.0),
+        "a venue stamping at the cell's own instant did not chart as fresh"
+    );
+
+    // Two seconds ahead, past the 500 ms default bound, on the only venue.
+    cell.on_bytes(&feed, b"2000", t(21))?;
+    work(&mut cell, t(21))?;
+    assert_eq!(
+        freshness(&metrics, Capability::Clock),
+        Some(2.0),
+        "every measured venue skewed did not chart as unavailable"
+    );
+    Ok(())
+}
+
+/// A placer whose venue rejects every order, so venue health quarantines it.
+#[derive(Debug, Default)]
+struct RejectingGateway;
+
+impl Placer for RejectingGateway {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        _order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        _side: BookSide,
+        _quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<()> {
+        Err(Error::unavailable(format!(
+            "{} is not accepting orders",
+            venue.as_str()
+        )))
+    }
+}
+
+/// Mutation: drop `Capability::VenueSession` from the dependency-row loop in
+/// `CellMetrics::narrowing` — the series stays absent and the `Some(0.0)`
+/// assertion fires.
+#[test]
+fn a_venue_quarantined_for_rejecting_orders_moves_the_venue_session_row() -> Result<()> {
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue_health(qip_routing::health::HealthPolicy {
+            min_samples: 3,
+            quarantine_reject_rate_f64: 0.5,
+            quarantine_for: Duration::from_secs(60),
+            ..qip_routing::health::HealthPolicy::default()
+        });
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+    cell.track(book()?);
+    let (compiled, program) = firing_strategy("alpha", SignalKind::Enter, "100")?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        signed_envelope("alpha")?,
+        PricingPolicy::Marketable,
+    )?;
+
+    let mut gateway = RejectingGateway;
+    for now in [10, 11, 12] {
+        // Each pass's order is rejected; what the pass is for here is the
+        // rejection venue health records.
+        assert!(
+            cell.work(t(now), &mut gateway).is_err(),
+            "premise: the rejecting venue's order failed"
+        );
+        if now == 10 {
+            // Recorded before the first rejection was counted: one sample is
+            // under the three the quarantine waits for.
+            assert_eq!(
+                freshness(&metrics, Capability::VenueSession),
+                Some(0.0),
+                "a cell holding venue health and no quarantine did not chart its session row \
+                 as fresh"
+            );
+        }
+    }
+    work(&mut cell, t(13))?;
+    assert_eq!(
+        freshness(&metrics, Capability::VenueSession),
+        Some(2.0),
+        "the cell's only venue quarantined did not chart its session row as unavailable"
+    );
+    Ok(())
+}
+
+/// The session row is not charted on a cell with no venue health: it has no
+/// reading of it, and `unavailable` would be a default, not a measurement.
+///
+/// Mutation: publish the three dependency rows through
+/// `state.freshness(capability)` instead of `state.observed(capability)` —
+/// the session row appears as `2` and the assertion fires.
+#[test]
+fn a_cell_without_venue_health_charts_no_venue_session_row() -> Result<()> {
+    let (mut cell, metrics) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    work(&mut cell, t(10))?;
+    assert!(
+        freshness(&metrics, Capability::BeliefState).is_some(),
+        "premise: the pass recorded the narrowing at all"
+    );
+    assert_eq!(freshness(&metrics, Capability::VenueSession), None);
+    Ok(())
+}

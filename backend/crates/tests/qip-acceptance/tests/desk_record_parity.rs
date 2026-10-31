@@ -170,7 +170,20 @@ fn a_desk_fill_is_the_record_the_edge_writer_would_have_written() {
         assert_eq!(desk.recorded_at, theirs.recorded_at);
         assert_eq!(desk.sequence, theirs.sequence);
         assert_eq!(desk.lineage.causation_id, theirs.lineage.causation_id);
-        assert_eq!(desk.lineage.trace_id, theirs.lineage.trace_id);
+        // Each side's trace is the correlation it joins on (R12-CONTRACT-7089):
+        // the desk's chain at session 0, the edge writer's at its own session,
+        // which the premise above proves differ. One rule, both sides.
+        for event in [&desk, theirs] {
+            assert_eq!(
+                event
+                    .lineage
+                    .trace_id
+                    .as_ref()
+                    .map(qip_core::TraceId::as_str),
+                Some(event.lineage.correlation_id.as_str()),
+                "a fabric record's trace is not the correlation it joins on"
+            );
+        }
 
         // The id: one scheme, evaluated at each side's own session.
         assert_eq!(
@@ -237,7 +250,23 @@ fn a_desk_fill_is_the_record_the_edge_writer_would_have_written() {
         assert_eq!(body, outcome.record);
 
         // The wire record's header.
-        assert_eq!(desk_record.trace_id, edge_record_header(edge).trace_id);
+        // Each header carries its own event's trace (the correlation each
+        // side joins on, which differ by session as asserted above).
+        assert_eq!(
+            desk_record.trace_id.as_deref(),
+            desk.lineage
+                .trace_id
+                .as_ref()
+                .map(qip_core::TraceId::as_str)
+        );
+        assert_eq!(
+            edge_record_header(edge).trace_id.as_deref(),
+            theirs
+                .lineage
+                .trace_id
+                .as_ref()
+                .map(qip_core::TraceId::as_str)
+        );
         assert_eq!(
             desk_record.source_timestamp_ns,
             edge_record_header(edge).source_timestamp_ns
@@ -278,6 +307,16 @@ fn the_ledgers_decoder_accepts_the_desks_batch_as_it_accepts_a_cells() {
     );
     batch.producer_id = "desk".to_string();
     batch.base_offset = 0;
+    // As the broker that accepted it stamps it (ADR 0129): the ledger reads
+    // the producing region and principal off the batch, never its own.
+    qip_events::event_fabric::codec::stamp_broker_origin(
+        &mut batch,
+        qip_events::event_fabric::codec::BrokerOrigin {
+            region: "europe-west2".to_string(),
+            partition: 0,
+            principal: "desk".to_string(),
+        },
+    );
     let context = qip_ledgerd::consumer::fabric_context(OUTCOMES_STREAM, 0, "ledger");
     let decoded = qip_ledgerd::consumer::decode_batch("p0", &context, &batch, 0)
         .expect("the ledger's decoder takes the desk's records");

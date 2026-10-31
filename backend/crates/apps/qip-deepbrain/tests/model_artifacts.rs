@@ -54,7 +54,10 @@ fn learnable(count: usize) -> Vec<Bar> {
                 high: price(level * 1.001),
                 low: price(level * 0.999),
                 close: price(level),
-                volume: price(1_000.0 + i as f64),
+                // Stationary, so a later window of the series is not read as
+                // drifted by construction (R12-EXPAND-6070's shadow rounds
+                // are later windows).
+                volume: price(1_000.0 * (1.0 + rng.uniform(-0.2, 0.2))),
                 trade_count: 100,
                 vwap: Decimal::from_f64(level),
                 quality: DataQuality::default(),
@@ -113,10 +116,33 @@ fn a_learning_round_writes_one_trained_artifact_named_by_the_digest_its_promotio
         "premise: the fit cleared the skill bar"
     );
 
-    let outcome = desk
+    // R12-EXPAND-6070: a self-fitted model enters shadow first and is
+    // promoted only after it has won its shadow rounds, each one a later fit.
+    let mut outcome = desk
         .promote_candidate(&mut platform, at())
         .expect("the promote stage answers")
         .expect("the round left a candidate");
+    for round in 1..=u64::from(qip_kernel::model_serving::MIN_SHADOW_ROUNDS) {
+        if !matches!(outcome, PromotionOutcome::Shadowed { .. }) {
+            break;
+        }
+        let later = at().saturating_add(qip_core::Duration::from_mins(round as i64));
+        // Each round slides the window forward, so it holds rows after
+        // everything the shadowed model has read.
+        let step = 150 * round as usize;
+        desk.maybe_learn(
+            &subject(),
+            &learnable(400 + step)[step..],
+            "trending/calm",
+            1 + round,
+            later,
+        )
+        .expect("the shadow round's fit runs");
+        outcome = desk
+            .promote_candidate(&mut platform, later)
+            .expect("the promote stage answers")
+            .expect("the shadow round left a candidate");
+    }
     let PromotionOutcome::Promoted {
         reference,
         published,

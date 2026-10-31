@@ -33,7 +33,9 @@
 //! trial count still rises for every scored candidate, discarded or not —
 //! that is the whole point of the ledger.
 
-use crate::learning::{LearningConfig, LearningDesk, LearningRound, LearningStats};
+use crate::learning::{
+    ArtifactRestore, LearningConfig, LearningDesk, LearningRound, LearningStats,
+};
 use crate::succession::{ChallengeSummary, SuccessionDesk, SuccessionStats};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -569,6 +571,28 @@ impl EvolutionEngine {
     }
 
     /// What the learning desk has done across the node's lifetime.
+    /// Store every promoted model's bytes in `store` before its promotion
+    /// record (R12-MODEL-9003). See `LearningDesk::with_artifact_store`.
+    pub fn with_model_artifact_store(
+        mut self,
+        store: std::sync::Arc<dyn qip_storage::BlobStore>,
+    ) -> Self {
+        self.learning = self.learning.with_artifact_store(store);
+        self
+    }
+
+    /// Fetch every promoted and displaced model's artifact the platform's
+    /// log names, so the learning desk can rescore a restored incumbent and
+    /// reactivate a restored predecessor (R12-MODEL-9003). See
+    /// `LearningDesk::restore_artifacts`.
+    pub fn restore_model_artifacts(
+        &mut self,
+        platform: &Platform,
+        fetch: impl Fn(&str) -> Result<qip_ai::serving::ModelArtifact>,
+    ) -> Result<ArtifactRestore> {
+        self.learning.restore_artifacts(platform, fetch)
+    }
+
     pub const fn learning_stats(&self) -> LearningStats {
         self.learning.stats()
     }
@@ -599,6 +623,9 @@ impl EvolutionEngine {
         if !self.learning.due(cycle) {
             return Ok(None);
         }
+        // A restarted process's registry is empty; the log is not
+        // (R12-MODEL-9003). Refilled once, before anything reads it.
+        self.learning.restore_registry(platform);
         // The standing gate, re-asked at this round's instant and copied
         // into the platform before the door is resolved — and asked before
         // a subject is chosen, so a licence that has lapsed is withdrawn
@@ -683,6 +710,9 @@ impl EvolutionEngine {
         // one it displaced comes back (MODEL-045): after the promotion, so a
         // candidate that already displaced the degraded model is not undone.
         round.rolled_back = self.learning.roll_back_degraded(platform, now)?;
+        // Every card the round registered, evaluated, drifted, promoted or
+        // rolled back, on the log, so a restart rebuilds it (R12-MODEL-9003).
+        platform.journal_model_registry(self.learning.registry(), now)?;
         Ok(Some(round))
     }
 
@@ -2275,6 +2305,307 @@ mod tests {
             1,
             "one campaign closed, one manifest journaled"
         );
+        Ok(())
+    }
+
+    /// R12-REASON-3003. The Cognitive Core's research campaign, as the
+    /// shipped synthetic arm runs it (`main.rs` builds this engine through
+    /// `EvolutionEngine::over_synthetic` and calls `maybe_learn` on the node
+    /// loop): a learning round fetches the window into the campaign's TTL
+    /// cache, verifies it on the ledger, backtests the fit over it, and
+    /// emits results and a manifest — and the cache does not survive the
+    /// campaign. The seam is `campaign::assemble`, the one caller of
+    /// `FetchCampaign` outside tests.
+    ///
+    /// Three facts, each one a way this has failed or could: the manifest is
+    /// on the log (a campaign closed in memory and never journaled is a fit
+    /// nobody can be shown the inputs of); the manifest carries the fetch
+    /// and the sketched result, not only an id; and the journaled record
+    /// holds none of the window's bytes — the cache was deleted at close and
+    /// what persists is the manifest. The requirement names its own
+    /// mutation: removing the manifest emission. Mutated by replacing
+    /// `platform.journal_campaign(closed, now)?` in `campaign::assemble`
+    /// with `true` — the round still fits, the log holds no record, and
+    /// this fails on the count; restored byte for byte.
+    #[test]
+    fn a_learning_round_emits_a_campaign_manifest_and_deletes_its_ttl_cache() -> Result<()> {
+        use qip_events::Topic;
+        use qip_kernel::references::ResearchCampaignClosed;
+        use qip_streaming::envelope::StreamEnvelope;
+
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        // Premise: no campaign has closed before the round runs.
+        assert!(
+            platform
+                .event_log()
+                .by_topic(Topic::ResearchCampaignClosed)
+                .is_empty(),
+            "a campaign closed before any learning round ran"
+        );
+
+        let mut round = None;
+        for cycle in 1..=16u64 {
+            if let Some(produced) = engine.maybe_learn(&mut platform, cycle, now)? {
+                round = Some(produced);
+                break;
+            }
+        }
+        let round = round.ok_or_else(|| {
+            Error::not_found("a learning round within sixteen cycles of the default cadence")
+        })?;
+        let summary = round
+            .campaign
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the campaign the round was assembled through"))?;
+        assert!(
+            summary.bars >= engine.learning.minimum_bars(),
+            "{}",
+            summary.bars
+        );
+
+        // The manifest is emitted: one closed record on the log, under the
+        // campaign's own id, carrying the fetch and the result.
+        let frames = platform.event_log().by_topic(Topic::ResearchCampaignClosed);
+        assert_eq!(
+            frames.len(),
+            1,
+            "one campaign closed, one manifest journaled"
+        );
+        let closed: ResearchCampaignClosed = StreamEnvelope::from_frame(frames[0])?
+            .decode::<ResearchCampaignClosed>()?
+            .body;
+        assert_eq!(closed.campaign_id, summary.id);
+        assert_eq!(closed.subject, round.subject);
+        let entries = closed.manifest.entries();
+        assert_eq!(entries.len(), 1, "the one fetch the campaign made");
+        let history = engine
+            .history
+            .get(round.subject.as_str())
+            .ok_or_else(|| Error::not_found("the subject's history"))?;
+        let interval = history
+            .first()
+            .ok_or_else(|| Error::not_found("a bar in the subject's history"))?
+            .interval;
+        assert_eq!(
+            entries[0].reference().locator(),
+            crate::campaign::locator_for(
+                &summary.source_id,
+                &ObjectId::from_string(&round.subject),
+                interval
+            ),
+            "the manifest entry names the extent the round fitted on"
+        );
+        assert_eq!(
+            closed.manifest.statistics().len(),
+            1,
+            "the campaign's result — the sketched bar count — rides the manifest"
+        );
+        assert_eq!(
+            closed.manifest.statistics()[0].estimate(),
+            summary.bars as u64
+        );
+
+        // The backtest: the fit was scored out of sample on the held-out tail
+        // of the window read back from the cache, against the classical
+        // baseline, and that result is on the card the round registered —
+        // the research result the campaign exists to produce. A round that
+        // fetched, verified and journaled but fitted nothing would pass the
+        // manifest assertions above and fail here.
+        let registration = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the model the round fitted on the window"))?;
+        let card = engine
+            .learning
+            .registry()
+            .get(&registration.reference)
+            .ok_or_else(|| Error::not_found("the registered card"))?;
+        assert_eq!(
+            card.campaign_id.as_deref(),
+            Some(summary.id.as_str()),
+            "the fit was not scored on this campaign's window"
+        );
+        let evaluation = card
+            .evaluations
+            .last()
+            .ok_or_else(|| Error::not_found("the holdout evaluation on the card"))?;
+        let holdout_rows = evaluation
+            .metrics
+            .get("holdout_observations")
+            .copied()
+            .ok_or_else(|| Error::not_found("holdout_observations on the evaluation"))?;
+        assert!(
+            holdout_rows >= 1.0 && evaluation.metrics.contains_key("holdout_rmse"),
+            "the out-of-sample result is missing from the evaluation: {:?}",
+            evaluation.metrics
+        );
+        assert_eq!(evaluation.passed, registration.passed);
+
+        // The TTL cache is deleted: the record that persists is the manifest,
+        // and it holds none of the window the cache held. A record carrying
+        // the extract would be a second history beside the event log.
+        let persisted = serde_json::to_value(&closed)?;
+        assert!(
+            persisted.get("cache").is_none() && persisted["manifest"].get("cache").is_none(),
+            "the closed record must not carry the campaign's cache: {persisted}"
+        );
+        let persisted_bytes = serde_json::to_vec(&closed)?;
+        let window_bytes = serde_json::to_vec(history)?;
+        assert!(
+            persisted_bytes.len() < window_bytes.len() / 4,
+            "the manifest ({} bytes) is the size of the window it describes ({} bytes); the \
+             cache survived the campaign",
+            persisted_bytes.len(),
+            window_bytes.len()
+        );
+        Ok(())
+    }
+
+    /// R12-MODEL-9003. Every card a round registers — promoted or not, with
+    /// its evaluations — is on the log, and a restarted deep brain, whose
+    /// registry starts empty, gets it back from the log before its first
+    /// round. Before this a registered-but-unpromoted version and its
+    /// evaluation lived only in memory and a restart lost them, including
+    /// the record that a fit failed the skill bar.
+    ///
+    /// Mutations: delete the `journal_model_registry` call in `maybe_learn`
+    /// — the second process reads no card back; delete the
+    /// `restore_registry` call — the second process's registry stays empty.
+    #[test]
+    fn a_restarted_node_rebuilds_every_registered_card_and_its_evaluations_from_the_log()
+    -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-registry-durability-{}-{}",
+            std::process::id(),
+            start().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let file_platform = || -> Result<Platform> {
+            let config = PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = Context::deterministic(start(), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                Universe::new(),
+                LimitSet::conservative_default(),
+            )
+        };
+
+        let mut now = start();
+        let before: BTreeMap<String, qip_ai::registry::ModelCard>;
+        let last_cycle;
+        {
+            let mut platform = file_platform()?;
+            let mut engine = engine(1);
+            for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+                now = now.saturating_add(Duration::from_mins(1));
+                engine.sense(&mut platform, now)?;
+            }
+            let mut round = None;
+            let mut cycle = 0u64;
+            while round.is_none() && cycle < 16 {
+                cycle += 1;
+                round = engine.maybe_learn(&mut platform, cycle, now)?;
+            }
+            last_cycle = cycle;
+            assert!(
+                round.is_some_and(|r| r.registration.is_some()),
+                "premise: a round registered a fit"
+            );
+            before = engine
+                .learning
+                .registry()
+                .iter()
+                .map(|card| (card.reference(), card.clone()))
+                .collect();
+            assert!(!before.is_empty(), "premise: the round registered a card");
+            assert!(
+                before
+                    .values()
+                    .any(|card| card.latest_evaluation().is_some()),
+                "premise: the cards carry their evaluation"
+            );
+            assert!(
+                before
+                    .values()
+                    .any(|card| card.stage != qip_ai::registry::ModelStage::Production),
+                "premise: at least one card was never promoted"
+            );
+            // Nothing changed since, so a second journal writes nothing.
+            assert_eq!(
+                platform.journal_model_registry(engine.learning.registry(), now)?,
+                0
+            );
+        }
+
+        let mut platform = file_platform()?;
+        let mut engine = engine(1);
+        assert!(
+            engine.learning.registry().is_empty(),
+            "premise: a new process starts with an empty registry"
+        );
+        assert_eq!(
+            platform.registered_model_cards().count(),
+            before.len(),
+            "the log does not hold every registered card"
+        );
+        // The next due round's first act is the restore; it runs whether or
+        // not the round then fits anything.
+        let mut cycle = last_cycle;
+        while engine.learning.registry().is_empty() && cycle < last_cycle + 16 {
+            cycle += 1;
+            let _ = engine.maybe_learn(&mut platform, cycle, now)?;
+        }
+        for (reference, card) in &before {
+            let restored = engine.learning.registry().get(reference).ok_or_else(|| {
+                Error::not_found(format!("{reference} did not survive the restart"))
+            })?;
+            assert_eq!(
+                restored.evaluations, card.evaluations,
+                "{reference} came back without its evaluations"
+            );
+            assert_eq!(restored.version, card.version);
+            assert_eq!(restored.training_datasets, card.training_datasets);
+        }
+        // The restarted desk fits on, and its next version continues past
+        // the restored ones rather than reusing one and replacing that card.
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let mut fitted = None;
+        while fitted.is_none() && cycle < last_cycle + 64 {
+            cycle += 1;
+            fitted = engine
+                .maybe_learn(&mut platform, cycle, now)?
+                .and_then(|round| round.registration);
+        }
+        let fitted = fitted.ok_or_else(|| Error::not_found("a round after the restart"))?;
+        assert!(
+            !before.contains_key(&fitted.reference),
+            "the restarted desk reused {} and replaced the restored card",
+            fitted.reference
+        );
+        for (reference, card) in &before {
+            assert_eq!(
+                engine
+                    .learning
+                    .registry()
+                    .get(reference)
+                    .map(|c| &c.evaluations),
+                Some(&card.evaluations),
+                "{reference} was overwritten after the restart"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
 

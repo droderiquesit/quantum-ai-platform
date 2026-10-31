@@ -1916,14 +1916,37 @@ fn an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else
         "central_plane".to_string(),
         "google_apis".to_string(),
         "venue".to_string(),
+        "peer_mesh_egress".to_string(),
     ];
     expected.sort();
     egress_allows.sort();
     assert_eq!(
         egress_allows, expected,
         "the execution node may egress through {egress_allows:?}. Anything beyond Google APIs, \
-         the central plane and its own venues is a route out of the machine that holds the hot \
-         path."
+         the central plane, its own venues and its declared peers is a route out of the machine \
+         that holds the hot path."
+    );
+
+    // The peer rule (ADR 0116) is the fourth and the one with an operator-
+    // written destination, so it is held to two things the others are not:
+    // it does not exist unless a mesh is declared, and the module refuses a
+    // peer address outside the private ranges at plan, so the /32s it opens
+    // cannot name the internet. `egress.rs` admits the destination shape on
+    // the same check.
+    let (_, peer_egress) = rules
+        .iter()
+        .find(|(name, _)| name == "peer_mesh_egress")
+        .expect("the peer-mesh egress rule exists");
+    assert!(
+        peer_egress.contains("count = var.peer_mesh == null ? 0 : 1"),
+        "the peer-mesh egress rule is not gated on a declared mesh; a node with no peers has a route out"
+    );
+    let node_variables = without_comments(&read(
+        "infrastructure/terraform/modules/execution-node/variables.tf",
+    ));
+    assert!(
+        node_variables.contains("can(regex(\"^(10\\\\.|192\\\\.168\\\\.|172\\\\.(1[6-9]|2[0-9]|3[01])\\\\.)\", peer.address))"),
+        "the module no longer refuses a public peer address at plan, so the peer-mesh egress rule is a route to the internet"
     );
 
     // Shadow mode is structural: the venue rule does not exist until it is
@@ -14143,6 +14166,11 @@ fn no_principal_holds_a_grant_on_keys_of_two_classes() {
                 } else {
                     // Encryption keys are used by Google's own service agents
                     // on the platform's behalf, never by a workload directly.
+                    // Two agents are named by data source rather than by
+                    // address: Cloud Storage's, and BigQuery's per-project
+                    // encryption account (`bq-<number>@bigquery-encryption`),
+                    // which `modules/data` grants the warehouse key and whose
+                    // address its own precondition checks.
                     assert_eq!(
                         role, "\"roles/cloudkms.cryptoKeyEncrypterDecrypter\"",
                         "{at}: a CMEK key grants {role}"
@@ -14150,7 +14178,10 @@ fn no_principal_holds_a_grant_on_keys_of_two_classes() {
                     let service_agent = principal.contains(".iam.gserviceaccount.com")
                         && (principal.contains("@gcp-sa-")
                             || principal.contains("@container-engine-robot."))
-                        || principal.contains("google_storage_project_service_account.");
+                        || principal.contains("google_storage_project_service_account.")
+                        || principal.starts_with(
+                            "\"serviceAccount:${data.google_bigquery_default_service_account.",
+                        );
                     assert!(
                         service_agent,
                         "{at}: a CMEK key grants {principal}, which is not a Google service agent"

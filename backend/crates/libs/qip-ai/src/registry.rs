@@ -311,6 +311,42 @@ pub struct ModelCard {
     /// record (`qip-kernel <version> (<source commit>)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_version: Option<String>,
+    /// The shadow period a self-fitted model ran through before it could be
+    /// promoted (R12-EXPAND-6070). Written only by
+    /// [`ModelRegistry::enter_shadow`] and
+    /// [`ModelRegistry::record_shadow_round`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<ShadowRecord>,
+    /// Whether the platform fitted this model for itself (the deep brain's
+    /// learning desk). A self-fitted card reaches production only out of a
+    /// completed shadow stage, whichever caller asks: the guard is here in
+    /// [`ModelRegistry::promote`] rather than in a producer label a caller
+    /// chooses (R12-EXPAND-6070).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_fitted: bool,
+}
+
+/// Shadow rounds a self-fitted model must win before it may be promoted.
+/// Chosen, not measured: three windows of data that arrived after the fit is
+/// the least that distinguishes a model from one lucky window.
+pub const MIN_SHADOW_ROUNDS: u32 = 3;
+
+/// A model's shadow period: it ran beside production, scored on data that
+/// arrived after it was fitted, with its output acted on by nothing
+/// ([`ModelStage::Shadow`] allows no decision).
+///
+/// The failure it prevents (R12-EXPAND-6070): a model the platform fitted
+/// for itself went from its own holdout straight to production. A holdout
+/// is the tail of the data the fit chose; it says how the model did on the
+/// past it was handed, not how it does on a future nobody had yet seen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShadowRecord {
+    pub since: Timestamp,
+    /// Rounds in which the shadowed model beat production on fresh data.
+    pub rounds_won: u32,
+    pub last_round: Timestamp,
+    /// One line per round won: what it was scored on, and against whom.
+    pub evidence: Vec<String>,
 }
 
 /// Where one feature's values came from (R12-MODEL-4016): enough for a
@@ -419,6 +455,8 @@ impl ModelCard {
             feature_lineage: BTreeMap::new(),
             campaign_id: None,
             code_version: None,
+            shadow: None,
+            self_fitted: false,
         }
     }
 
@@ -876,6 +914,87 @@ impl ModelRegistry {
         Ok(card)
     }
 
+    /// Put a model into shadow: it runs beside production and nothing acts
+    /// on it (R12-EXPAND-6070). Refused, before the card changes, for a
+    /// model without a passing evaluation, one whose lineage shows a
+    /// look-ahead, and one already in production, shadow or retirement —
+    /// a shadow period restarted on a model that has one would erase the
+    /// rounds it lost.
+    pub fn enter_shadow(&mut self, reference: &str, at: Timestamp) -> Result<()> {
+        let card = self
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if matches!(
+            card.stage,
+            ModelStage::Production | ModelStage::Shadow | ModelStage::Retired
+        ) {
+            return Err(Error::denied(format!(
+                "{reference} is in {:?}; only a model not yet run may enter shadow",
+                card.stage
+            )));
+        }
+        if card.latest_evaluation().is_none_or(|e| !e.passed) {
+            return Err(Error::denied(format!(
+                "{reference} cannot enter shadow without a passing evaluation"
+            )));
+        }
+        let leaks = card.lineage_findings();
+        if !leaks.is_empty() {
+            return Err(Error::denied(format!(
+                "{reference} cannot enter shadow: {}",
+                leaks.join("; ")
+            )));
+        }
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        card.stage = ModelStage::Shadow;
+        card.shadow = Some(ShadowRecord {
+            since: at,
+            rounds_won: 0,
+            last_round: at,
+            evidence: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Record one shadow round the model won, with what it was scored on.
+    /// Returns the rounds won so far. Refused for a model not in shadow,
+    /// blank evidence, and a round not strictly after the last one (or after
+    /// entering shadow, for the first): a round is new data, and one round
+    /// counted twice is one round.
+    pub fn record_shadow_round(
+        &mut self,
+        reference: &str,
+        evidence: &str,
+        at: Timestamp,
+    ) -> Result<u32> {
+        if evidence.trim().is_empty() {
+            return Err(Error::invalid(
+                "a shadow round names what the model was scored on and against whom",
+            ));
+        }
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        let (ModelStage::Shadow, Some(shadow)) = (card.stage, card.shadow.as_mut()) else {
+            return Err(Error::denied(format!(
+                "{reference} is not in shadow; a round is recorded only for a shadowed model"
+            )));
+        };
+        if at <= shadow.last_round {
+            return Err(Error::denied(format!(
+                "{reference}'s last shadow round was at {}; a round at {} is not a new one",
+                shadow.last_round.as_secs(),
+                at.as_secs()
+            )));
+        }
+        shadow.rounds_won = shadow.rounds_won.saturating_add(1);
+        shadow.last_round = at;
+        shadow.evidence.push(evidence.trim().to_string());
+        Ok(shadow.rounds_won)
+    }
+
     /// Promote a model to production, recording when.
     pub fn promote(&mut self, reference: &str, at: Timestamp) -> Result<()> {
         let card = self
@@ -893,6 +1012,21 @@ impl ModelRegistry {
                  beautifully and cannot trade",
                 leaks.join("; ")
             )));
+        }
+        if card.self_fitted {
+            let completed = card.stage == ModelStage::Shadow
+                && card
+                    .shadow
+                    .as_ref()
+                    .is_some_and(|shadow| shadow.rounds_won >= MIN_SHADOW_ROUNDS);
+            if !completed {
+                return Err(Error::denied(format!(
+                    "{reference} cannot be promoted: a self-fitted model reaches production only \
+                     out of a completed shadow stage ({MIN_SHADOW_ROUNDS} round(s) won), and this \
+                     one is in {:?}",
+                    card.stage
+                )));
+            }
         }
         card.stage = ModelStage::Production;
         card.deployed_at = Some(at);

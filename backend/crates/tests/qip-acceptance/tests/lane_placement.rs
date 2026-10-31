@@ -619,3 +619,63 @@ fn qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_throu
         "qip-agency's registry is no longer the contracts' ToolRegistry"
     );
 }
+
+/// R12-MODEL-4002, ADR 0138 decision 3: the hosted language-model adapters
+/// are linked by the slow-lane composition root alone.
+///
+/// The failure this prevents: until ADR 0138 the adapter sat in
+/// `qip-reasoning-engine`, which `qip-kernel` links, so `qip-fastbrain`,
+/// `qip-api` and anything else over the kernel had `HuggingFaceModel` in its
+/// link graph and a one-line construction there compiled. A construction-site
+/// scan (`model_slow_lane_confinement.rs`) catches the line; only the closure
+/// makes it impossible to write. Mutation: add `qip-language-providers` to
+/// `qip-fastbrain`'s normal dependencies — both the linking set and its
+/// closure assertion fail.
+#[test]
+fn the_hosted_language_providers_are_linked_by_the_deep_brain_alone_and_reach_no_fast_lane() {
+    let register = register();
+    let graph = workspace();
+    // Premise: the crate exists and holds the adapter, so its absence from a
+    // closure below is a fact about the closure, not about a missing crate.
+    assert!(
+        graph.contains_key("qip-language-providers"),
+        "qip-language-providers is not a workspace crate"
+    );
+    assert!(
+        qip_acceptance::read("backend/crates/services/qip-language-providers/src/huggingface.rs")
+            .contains("impl LanguageModel for HuggingFaceModel"),
+        "the hosted adapter is not in qip-language-providers"
+    );
+    assert_eq!(
+        register
+            .get("qip-language-providers")
+            .map(|(lane, _)| *lane),
+        Some(3),
+        "qip-language-providers must be registered at the cognitive slow lane"
+    );
+
+    let linking: BTreeSet<&str> = graph
+        .iter()
+        .filter(|(_, deps)| deps.contains("qip-language-providers"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        linking,
+        BTreeSet::from(["qip-deepbrain"]),
+        "the crates that link the hosted language providers changed; ADR 0138 admits the deep \
+         brain alone"
+    );
+
+    for fast in ["qip-fastbrain", "qip-api", "qip-kernel", "qip-edge-node"] {
+        let reached = closure(fast, &graph);
+        assert!(
+            reached.contains("qip-contracts"),
+            "premise: the closure of {fast} was read: {reached:?}"
+        );
+        assert!(
+            !reached.contains("qip-language-providers"),
+            "{fast} can reach qip-language-providers, so a hosted generalist model could be \
+             built on a lane that serves the order path or a deterministic check"
+        );
+    }
+}

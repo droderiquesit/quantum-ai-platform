@@ -1064,6 +1064,7 @@ fn run() -> Result<()> {
     let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         config.storage.blobs(LAKE_NAMESPACE)?,
         &config.cell_id,
+        &config.region,
         retention,
         lake_codec,
     )?)];
@@ -1136,8 +1137,16 @@ fn run() -> Result<()> {
             std::time::Duration::from_secs(1),
             64,
         )?,
-    )?
-    .spawn()?;
+    )?;
+    // R12-REFLEX-9114: under a fencing lease the drain watches the cell's
+    // fence and drains the spool out the first time a held fence stops
+    // admitting, inside the margin before a promoted standby's producer
+    // epoch fences this one out. A node with no lease has no rollout to
+    // drain for, and drains as it always has.
+    let drain = match cell.fence().cloned() {
+        Some(fence) => drain.spawn_fenced(fence, Arc::clone(&clock))?,
+        None => drain.spawn()?,
+    };
     // The writer beats on its first loop. Waiting for that beat here is
     // what keeps the cell's first turn from reading a never-beaten gauge as
     // exhausted and journaling a halt nobody caused; a writer that cannot

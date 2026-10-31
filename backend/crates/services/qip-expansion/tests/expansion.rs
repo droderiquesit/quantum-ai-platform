@@ -4,7 +4,7 @@
 //! Generated cases come from a fixed-seed generator, so a failure replays.
 
 use qip_agents::research::{ResearchRegistry, Verdict};
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_contracts::expansion::{CurriculumItem, GapClass};
 use qip_core::Decimal;
 use qip_expansion::curriculum::{
@@ -50,7 +50,9 @@ struct World {
 impl World {
     fn new() -> Self {
         let mut tools = ToolRegistry::new();
-        tools.register("twin", ToolKind::Simulator).unwrap();
+        tools
+            .register(ToolName::parse("twin").unwrap(), ToolKind::Simulator)
+            .unwrap();
         Self {
             licensed: BTreeSet::from(["cpi-series".to_string()]),
             tools,
@@ -497,8 +499,13 @@ fn a_task_needing_an_unregistered_parser_is_blocked_on_it_and_a_tool_proposal_an
  {
     let world = World::new();
     // The premise: there is a registry, and the parser is not in it.
-    assert!(world.tools.get("twin").is_some());
-    assert!(world.tools.get("filing-parser").is_none());
+    assert!(world.tools.get(&ToolName::parse("twin").unwrap()).is_some());
+    assert!(
+        world
+            .tools
+            .get(&ToolName::parse("filing-parser").unwrap())
+            .is_none()
+    );
 
     let needs_parser = |question: &str| {
         let mut task = candidate(TaskKind::DataAcquisition, question, 600, 20);
@@ -527,7 +534,12 @@ fn a_task_needing_an_unregistered_parser_is_blocked_on_it_and_a_tool_proposal_an
     assert_eq!(proposal.name(), "filing-parser");
     assert_eq!(proposal.kind(), ToolKind::Parser);
     assert_eq!(proposal.scope(), &BTreeSet::from([ToolPermission::Read]));
-    assert!(world.tools.get("filing-parser").is_none());
+    assert!(
+        world
+            .tools
+            .get(&ToolName::parse("filing-parser").unwrap())
+            .is_none()
+    );
 
     let builds: Vec<_> = queue
         .ranked()
@@ -638,7 +650,9 @@ fn a_task_outside_licence_security_policy_or_jurisdiction_is_refused_before_anyt
 fn desk_holding(tools: &[(&str, ToolKind)]) -> qip_expansion::desk::ExpansionDesk {
     let mut registry = ToolRegistry::new();
     for (name, kind) in tools {
-        registry.register(name, *kind).unwrap();
+        registry
+            .register(ToolName::parse(name).unwrap(), *kind)
+            .unwrap();
     }
     qip_expansion::desk::ExpansionDesk::new(
         qip_expansion::desk::DeskConfig {
@@ -766,7 +780,12 @@ fn an_execution_gap_on_a_platform_with_no_venue_adapter_proposes_one_adapter_wit
 #[test]
 fn a_capability_pack_without_a_gap_or_without_a_tool_is_refused() {
     let tools = ToolRegistry::new();
-    let spec = tools.propose("classical-solver", ToolKind::Solver).unwrap();
+    let spec = tools
+        .propose(
+            ToolName::parse("classical-solver").unwrap(),
+            ToolKind::Solver,
+        )
+        .unwrap();
     assert!(qip_agents::tools::CapabilityPack::new("q", vec![spec.clone()]).is_ok());
     assert!(qip_agents::tools::CapabilityPack::new("  ", vec![spec]).is_err());
     assert!(qip_agents::tools::CapabilityPack::new("q", Vec::new()).is_err());

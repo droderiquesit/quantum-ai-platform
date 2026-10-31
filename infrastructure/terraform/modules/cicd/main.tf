@@ -304,3 +304,52 @@ resource "google_project_iam_member" "infra_storage" {
   role    = google_project_iam_custom_role.infra_storage.id
   member  = "serviceAccount:${google_service_account.infra.email}"
 }
+
+# The two services the configuration started using after the last apply
+# (run 118): modules/data's `research` dataset and its access list, and the
+# root's asset-change feeds in audit-logs.tf. Nothing above carries a
+# `bigquery.*` or `cloudasset.*` permission, so the next `up` would stop
+# mid-apply on the first of them — the curated-list price stated above.
+#
+# A custom role rather than `roles/bigquery.dataOwner` or
+# `roles/cloudasset.owner`: the first reads and writes every table's rows,
+# the second runs exports and queries over the project's whole inventory,
+# and Terraform needs neither. The set is the verbs the resources it manages
+# call — dataset create, read, update and delete, and its IAM policy read
+# and set; feed create, read, list, update and delete — and no table, job,
+# data or asset-search permission.
+#
+# Not checked against a live project (no apply has run since): a permission
+# missing here surfaces as a 403 naming it, which is the signal to add that
+# one permission and not a predefined role. The feed resource also sends its
+# `billing_project` as the quota project, which is `serviceusage.services.use`
+# and not a cloudasset permission; whether this account already holds it
+# through a role above is likewise unverified, and so is what
+# modules/data's `google_bigquery_default_service_account` read
+# (`projects.getServiceAccount`) asks of the caller.
+resource "google_project_iam_custom_role" "infra_warehouse_and_feeds" {
+  project     = var.project_id
+  role_id     = "qipInfraWarehouseFeeds_${var.environment}"
+  title       = "qip infrastructure warehouse and asset feeds (${var.environment})"
+  description = "Manage the research dataset, its access list and the asset-change feeds. No table data, jobs or inventory reads."
+
+  permissions = [
+    "bigquery.datasets.create",
+    "bigquery.datasets.delete",
+    "bigquery.datasets.get",
+    "bigquery.datasets.getIamPolicy",
+    "bigquery.datasets.setIamPolicy",
+    "bigquery.datasets.update",
+    "cloudasset.feeds.create",
+    "cloudasset.feeds.delete",
+    "cloudasset.feeds.get",
+    "cloudasset.feeds.list",
+    "cloudasset.feeds.update",
+  ]
+}
+
+resource "google_project_iam_member" "infra_warehouse_and_feeds" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.infra_warehouse_and_feeds.id
+  member  = "serviceAccount:${google_service_account.infra.email}"
+}

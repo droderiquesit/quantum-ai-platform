@@ -22,7 +22,7 @@
 
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::plan::ActingIdentity;
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_ai::registry::ModelRegistry;
 use qip_contracts::action::Method;
 use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation, Identification};
@@ -88,27 +88,26 @@ fn every_authority_widening_path_refuses_without_a_measured_value_record() {
 
     // Seam 2: a blank evaluation. The tool stays read-only afterwards.
     let mut tools = ToolRegistry::new();
+    let fetch = ToolName::parse("fetch").unwrap();
     tools
-        .register("fetch", ToolKind::Connector)
+        .register(fetch.clone(), ToolKind::Connector)
         .expect("a tool registers read-only");
     assert!(
-        tools.authorise("fetch", ToolPermission::Read).is_ok(),
+        tools.authorise(&fetch, ToolPermission::Read).is_ok(),
         "premise: a new tool holds read"
     );
     assert!(
-        tools.authorise("fetch", ToolPermission::Write).is_err(),
+        tools.authorise(&fetch, ToolPermission::Write).is_err(),
         "premise: a new tool holds no write"
     );
     for blank in ["", "   ", "\n\t"] {
         assert!(
-            tools
-                .promote("fetch", ToolPermission::Write, blank)
-                .is_err(),
+            tools.promote(&fetch, ToolPermission::Write, blank).is_err(),
             "a scope widened on a blank evaluation"
         );
     }
     assert!(
-        tools.authorise("fetch", ToolPermission::Write).is_err(),
+        tools.authorise(&fetch, ToolPermission::Write).is_err(),
         "a refused promotion still widened the scope"
     );
 
@@ -148,11 +147,11 @@ fn every_authority_widening_path_refuses_without_a_measured_value_record() {
     assert!(
         tools
             .promote(
-                "fetch",
+                &fetch,
                 ToolPermission::Write,
                 "eval-2026-10-18: reads and writes only its own cache"
             )
             .is_ok()
     );
-    assert!(tools.authorise("fetch", ToolPermission::Write).is_ok());
+    assert!(tools.authorise(&fetch, ToolPermission::Write).is_ok());
 }

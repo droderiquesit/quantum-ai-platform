@@ -590,15 +590,24 @@ impl ConnectorRuntime {
     ) -> PollReport {
         let mut report = PollReport::empty(PollOutcome::Delivered, self.heartbeat.liveness(at));
 
-        let payload: serde_json::Value = match serde_json::from_str(&response.body) {
+        // The one place a connector response's content becomes a value:
+        // `validate` over a JSON parse (R12-SEC-9065). The clone is of a body
+        // the transport's limits already bound, and keeps `response` whole
+        // for the excerpts and the digest below.
+        let parsed = response.body.clone().validate(|body| {
+            serde_json::from_str::<serde_json::Value>(&body)
+                .map_err(|error| qip_core::Error::schema(error.to_string()))
+        });
+        let payload: serde_json::Value = match parsed {
             Ok(payload) => payload,
             Err(error) => {
                 self.hold(
                     target,
                     QuarantineReason::DecodeFailure {
                         detail: format!(
-                            "{} sent a body this connector cannot read: {error}",
-                            self.manifest.source_id
+                            "{} sent a body this connector cannot read: {}",
+                            self.manifest.source_id,
+                            error.message()
                         ),
                     },
                     &response.body_excerpt(),
@@ -704,7 +713,7 @@ impl ConnectorRuntime {
         // digest further down hashes the same bytes for the reference
         // ledger; two SHA-256 passes over one bounded body is the price of
         // keeping the digest an observation that cannot gate the poll.
-        let body_hash = qip_core::sha256_hex(response.body.as_bytes());
+        let body_hash = response.body.sha256_hex();
         let version_before = self.evidence.lock().map_or(0, |fabric| fabric.version());
         let mut cursor_newest: Option<Timestamp> = None;
         let mut subjects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -747,7 +756,8 @@ impl ConnectorRuntime {
         report.digest = super::digest::FetchDigest::of(
             &self.manifest,
             target,
-            response.body.as_bytes(),
+            // Hashed and measured for the reference ledger: storage, not action.
+            response.body.inspect().as_bytes(),
             &events,
             subjects,
             at,

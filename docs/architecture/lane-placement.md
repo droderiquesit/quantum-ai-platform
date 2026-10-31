@@ -102,6 +102,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-learning-engine | 3 | calibration from resolved outcomes |
 | qip-prediction | 3 | prediction markets; reached only where a composition root wires it |
 | qip-reasoning-engine | 3 | hypotheses and confidence as arithmetic |
+| qip-language-providers | 3 | a hosted generalist model, linked by the deep brain alone (ADR 0138) |
 | qip-simulation-engine | 3 | scenario simulation; results reproducible from the log |
 | qip-training | 3 | training and validation off the order path |
 | qip-twin | 3 | replay and counterfactual scoring as of an instant |

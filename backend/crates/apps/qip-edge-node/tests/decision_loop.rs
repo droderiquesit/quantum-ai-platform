@@ -142,6 +142,10 @@ fn grant() -> Result<VerifiedEnvelope> {
         qip_core::Decimal::ONE,
         capital,
     )?)?;
+    let loss_limit = unsigned.loss_limit();
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(
+        loss_limit, None, None,
+    )?)?;
     let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
@@ -530,6 +534,7 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        REGION,
         qip_edge_node::event_fabric::drain::default_retention(),
         qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];
@@ -575,7 +580,7 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     let waited = std::time::Instant::now();
     let keys = loop {
         drain.step()?;
-        let keys = lake.list("lake/class=market/")?;
+        let keys = segment_keys(lake.as_ref())?;
         if !keys.is_empty() {
             break keys;
         }
@@ -1510,7 +1515,20 @@ fn a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_v
 
     let store = Arc::new(MemoryKeyValueStore::new());
     let rig = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
-    let mut decisions = rig.decisions.with_peers(london);
+    // The series the node's scrape serves, given the loop as `main.rs`
+    // gives it, so the lapse is proven to reach a counter an alert can read
+    // and not only the port's status.
+    let metrics = Arc::new(qip_observability::metrics::Metrics::new("qip-edge-node"));
+    let expired_key = qip_observability::metrics::labels([("cell", CELL), ("region", REGION)]);
+    let expired_series = |metrics: &qip_observability::metrics::Metrics| {
+        metrics.snapshot().counter(
+            qip_observability::metrics::names::EDGE_PEER_CYCLES_EXPIRED,
+            &expired_key,
+        )
+    };
+    let mut decisions = rig.decisions.with_peers(london).with_peer_series(
+        qip_edge_node::telemetry::PeerSeries::new(Arc::clone(&metrics), CELL, REGION),
+    );
     let status = |decisions: &DecisionLoop| -> PeerStatus {
         decisions.peers().expect("the loop holds the port").status()
     };
@@ -1571,6 +1589,16 @@ fn a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_v
         "a cycle whose peer was lost was fired: {after:?}"
     );
     assert_eq!(after.legs_sent, 0, "a leg was sent without FIRE: {after:?}");
+    // One more turn so the series has read the status that showed the lapse,
+    // then the series carries what the port counted (R12-RES-7095).
+    decisions.turn(clock.now())?;
+    let counted = expired_series(&metrics);
+    assert!(
+        counted >= 1 && counted <= status(&decisions).cycles_expired,
+        "a cycle that lapsed at its ttl did not move the peer cycles expired series: \
+         {counted} counted against {:?}",
+        status(&decisions)
+    );
 
     // The same passes traded locally: the strategy kept placing paper
     // orders at the simulated venue while the cycle waited and lapsed.
@@ -1828,6 +1856,7 @@ fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        REGION,
         qip_edge_node::event_fabric::drain::default_retention(),
         qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];
@@ -1868,7 +1897,7 @@ fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_
     while lines.len() < captured {
         drain.step()?;
         lines.clear();
-        for key in lake.list("lake/class=market/")? {
+        for key in segment_keys(lake.as_ref())? {
             let body = lake.get(&key)?.expect("a listed segment is readable");
             for line in String::from_utf8(body).expect("canonical JSON").lines() {
                 lines.push(serde_json::from_str(line)?);
@@ -1935,7 +1964,11 @@ fn permitting_to_seed(
     let venue = gateway.venue().to_string();
     let mut permissions = CreationPermissions::new();
     for object in objects {
-        for action in [CreationAction::List, CreationAction::Seed] {
+        for action in [
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ] {
             let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
             for authority in CreationAuthority::ALL {
                 permissions.record(authority, &request, "test fixture")?;
@@ -1943,4 +1976,453 @@ fn permitting_to_seed(
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
+}
+
+/// The node's default path for thirty turns, every applied tick drained
+/// through the production `LakeSink` into an in-memory lake: the touch moves
+/// every turn and a second level comes and goes, so the book a reader of the
+/// lake must rebuild is not the first one. Returns the rig, the lake and how
+/// many ticks the passes applied; returns only once every one of them is in
+/// a sealed segment, bounded by `PATIENCE`.
+fn session_drained_to_lake() -> Result<(Rig, Arc<MemoryBlobStore>, usize)> {
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        REGION,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+
+    let mut captured = 0usize;
+    for second in 10..40 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        let bid = dec!("99") - Decimal::from(second % 3);
+        simulated.seed_touch(&object(), Side::Buy, bid, dec!("500"), t(second))?;
+        if second % 4 == 0 {
+            simulated.seed_touch(&object(), Side::Sell, dec!("101"), dec!("300"), t(second))?;
+        }
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+    assert!(
+        captured > 10,
+        "premise: the passes applied ticks ({captured})"
+    );
+
+    let waited = std::time::Instant::now();
+    loop {
+        drain.step()?;
+        let lines: usize = segment_keys(lake.as_ref())?
+            .iter()
+            .map(|key| {
+                lake.get(key).ok().flatten().map_or(0, |body| {
+                    body.split(|byte| *byte == b'\n')
+                        .filter(|l| !l.is_empty())
+                        .count()
+                })
+            })
+            .sum();
+        if lines >= captured {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {lines} of {captured} ticks reached the lake"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok((rig, lake, captured))
+}
+
+/// The instrument's book rebuilt from `lake` alone: its segments pinned and
+/// read back through `qip_storage::lake_history` (the reader every replay
+/// job uses, checksums verified) and replayed with `qip_orderbook::replay`
+/// into a fresh aggregated book. Asserts the lake holds all `captured` ticks
+/// and that their sequence has no hole, so a rebuilt book is never compared
+/// on a partial history.
+fn book_rebuilt_from_lake(
+    lake: &MemoryBlobStore,
+    captured: usize,
+) -> Result<qip_orderbook::venue::VenueState> {
+    use qip_contracts::venue::VenueStatus;
+    use qip_orderbook::venue::VenueState;
+    use qip_storage::lake::Lake;
+    use qip_storage::lake_history::HistoryQuery;
+    use std::collections::BTreeSet;
+
+    let granted: BTreeSet<String> =
+        BTreeSet::from([qip_edge_node::feed::SIMULATED_DATASET.to_string()]);
+    let reader = Lake::new(lake);
+    let listing = reader.pin_market_history(
+        "tick-1201",
+        &HistoryQuery {
+            from_date: "2000-01-01".to_string(),
+            to_date: "2100-01-01".to_string(),
+            venues: BTreeSet::new(),
+            instruments: BTreeSet::new(),
+            granted: granted.clone(),
+            max_segments: 10_000,
+            max_ticks: 100_000,
+        },
+    )?;
+    assert!(
+        !listing.segments.is_empty(),
+        "premise: segments were pinned"
+    );
+    let history = reader.read_market_history("tick-1201", &granted, 100_000)?;
+    assert_eq!(history.unparsed, 0);
+    assert_eq!(
+        history.ticks.len(),
+        captured,
+        "the lake does not hold every tick the passes applied"
+    );
+
+    let mut messages: Vec<_> = history
+        .ticks
+        .into_iter()
+        .filter(|tick| tick.message.object_id == object())
+        .map(|tick| tick.message)
+        .collect();
+    messages.sort_by_key(|message| message.origin.sequence);
+    let mut rebuilt = VenueState::aggregated(object(), VenueId::new(VENUE), VenueStatus::Open);
+    let output = qip_orderbook::replay::replay(&mut rebuilt, &messages)?;
+    assert!(
+        output.is_clean(),
+        "the lake's sequence has a hole: {:?}",
+        output.periods
+    );
+    Ok(rebuilt)
+}
+
+/// R12-TICK-1201: what the node's passes applied goes through the drain's
+/// lake sink as sealed segments, and the lake alone is enough to rebuild the
+/// book the venue published. The segments are pinned and read back through
+/// `qip_storage::lake_history` (the reader every replay job uses, checksums
+/// verified), replayed with `qip_orderbook::replay`, and the rebuilt ladder
+/// must equal the simulated venue's own depth after the last pass: an
+/// independent truth, not a second copy of the feed.
+///
+/// Mutations: `LakeSink::deliver` skips every even-sequenced tick — the
+/// drain wait fails ("only 37 of 73 ticks reached the lake"), bounded by
+/// `PATIENCE`; the feed captures each level a tick above the price it
+/// published — the bids rebuilt from the lake differ from the venue's.
+#[test]
+fn the_lake_alone_rebuilds_the_book_the_venue_published() -> Result<()> {
+    let (mut rig, lake, captured) = session_drained_to_lake()?;
+    let rebuilt = book_rebuilt_from_lake(lake.as_ref(), captured)?;
+
+    let venue = rig
+        .decisions
+        .gateway_mut()
+        .simulated_mut()
+        .expect("the rig's gateway is simulated")
+        .quotes()
+        .into_iter()
+        .find(|depth| depth.object_id == object())
+        .expect("the venue quotes the instrument");
+    let book = rebuilt.snapshot().book;
+    let ladder = |levels: &[qip_orderbook::view::Level]| -> Vec<(Decimal, Decimal)> {
+        levels
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect()
+    };
+    assert!(!venue.bids.is_empty(), "premise: the venue holds bids");
+    assert_eq!(
+        ladder(&book.bids),
+        venue
+            .bids
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect::<Vec<_>>(),
+        "bids rebuilt from the lake"
+    );
+    assert_eq!(
+        ladder(&book.asks),
+        venue
+            .asks
+            .iter()
+            .map(|level| (level.price, level.size))
+            .collect::<Vec<_>>(),
+        "asks rebuilt from the lake"
+    );
+    Ok(())
+}
+
+/// R12-TICK-1201's other half: the book rebuilt from the lake equals the
+/// book the cell reconstructed from the bytes, compared by the cell's own
+/// `Cell::book_digest` — the state every gate of the pass priced against.
+///
+/// The test above compares the lake with the venue, and that comparison is
+/// blind to the decoder. The lake records what the venue's publisher wrote,
+/// so a `DepthDecoder` that misread one level would leave the venue and the
+/// lake in agreement while the cell traded off a third book that neither
+/// matched. Comparing the lake against the cell closes that: capture,
+/// decode, reconstruct and seal must all agree on one book.
+///
+/// Mutation: in `DepthDecoder::decode` (src/feed.rs) add one to the price
+/// of the first level of each frame the cell decodes — the cell's digest
+/// differs from the lake's and the digest assertion fails.
+#[test]
+fn the_book_rebuilt_from_the_lake_equals_the_book_the_cell_reconstructed_from_the_bytes()
+-> Result<()> {
+    let (rig, lake, captured) = session_drained_to_lake()?;
+    let rebuilt = book_rebuilt_from_lake(lake.as_ref(), captured)?
+        .snapshot()
+        .book;
+    assert!(
+        !rebuilt.bids.is_empty() && !rebuilt.asks.is_empty(),
+        "premise: the lake rebuilds a two-sided book, so equal digests are not two empty books"
+    );
+    let held = rig
+        .decisions
+        .cell()
+        .book_digest(&venue(), &object())
+        .expect("premise: the cell tracks the instrument the feed published");
+    assert_eq!(
+        held,
+        rebuilt.digest(),
+        "the cell holds a book the lake does not rebuild: the lake's is {rebuilt:?}"
+    );
+    // The accessor answers for a book the cell holds and for nothing else:
+    // an instrument nobody published has no digest rather than an empty
+    // book's.
+    assert_eq!(
+        rig.decisions
+            .cell()
+            .book_digest(&venue(), &ObjectId::from_string("obj-NOT-PUBLISHED")),
+        None
+    );
+    Ok(())
+}
+
+/// R12-TICK-2044: a circuit breaker the simulated venue declares reaches the
+/// cell as a typed status message on the feed's own wire, and the tick lake
+/// seals it as that typed record. The feed refuses a pass whose frame the
+/// cell decoded short (`decoded != tick.messages`), so the pass succeeding
+/// is the cell having decoded the status line; the lake line is what the
+/// capture path kept of it.
+///
+/// Mutation: in `SimulatedFeed::publish`, skip the status line
+/// (`wire.status(..)`) — no `StatusChange` reaches the lake and the first
+/// assertion fails.
+#[test]
+fn a_circuit_breaker_the_venue_declares_reaches_the_cell_as_a_typed_status_and_is_sealed_in_the_lake()
+-> Result<()> {
+    use qip_contracts::message::MessageBody;
+    use qip_contracts::venue::VenueStatus;
+
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        REGION,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+
+    let mut captured = 0usize;
+    for second in 10..16 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        simulated.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(second))?;
+        match second {
+            12 => simulated.declare_status(&object(), VenueStatus::CircuitBreaker)?,
+            14 => simulated.declare_status(&object(), VenueStatus::Open)?,
+            _ => {}
+        }
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+
+    let statuses = |lake: &MemoryBlobStore| -> Result<Vec<VenueStatus>> {
+        let mut found: Vec<(u64, VenueStatus)> = Vec::new();
+        for key in segment_keys(lake)? {
+            let body = lake.get(&key)?.expect("a listed segment is readable");
+            for line in String::from_utf8(body).expect("canonical JSON").lines() {
+                let value: serde_json::Value = serde_json::from_str(line)?;
+                let event: qip_contracts::market_event::MarketEvent =
+                    serde_json::from_value(value["event"].clone())?;
+                if let MessageBody::StatusChange { status } = event.payload().body {
+                    found.push((event.origin().sequence, status));
+                }
+            }
+        }
+        found.sort();
+        Ok(found.into_iter().map(|(_, status)| status).collect())
+    };
+    let waited = std::time::Instant::now();
+    let mut lines = 0usize;
+    while lines < captured {
+        drain.step()?;
+        lines = segment_keys(lake.as_ref())?
+            .iter()
+            .filter_map(|key| lake.get(key).ok().flatten())
+            .map(|body| {
+                body.split(|byte| *byte == b'\n')
+                    .filter(|l| !l.is_empty())
+                    .count()
+            })
+            .sum();
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {lines} of {captured} ticks reached the lake"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        statuses(&lake)?,
+        vec![VenueStatus::CircuitBreaker, VenueStatus::Open],
+        "the venue's breaker and its reopening are not sealed as typed statuses"
+    );
+    Ok(())
+}
+
+/// The lake's sealed market segments, without the raw slots beside them
+/// (`.raw`, ADR 0181): a segment holds canonical lines, a raw slot holds the
+/// venue's bytes, and a reader of lines must not parse bytes as JSON.
+fn segment_keys(lake: &MemoryBlobStore) -> Result<Vec<String>> {
+    Ok(lake
+        .list("lake/class=market/")?
+        .into_iter()
+        .filter(|key| !key.ends_with(".raw"))
+        .collect())
+}
+
+/// R12-TICK-2042 on the node's own path: the passes' ticks go through the
+/// spool and the drain thread's `LakeSink`, as on the default path, and
+/// every sealed segment carries a raw slot whose lines are, one for one and
+/// in order, the bytes the venue published for the segment's canonical
+/// lines — each hashing to the native hash the feed recorded at publication.
+///
+/// Mutation: in `LakeSink::deliver`, stop collecting raw bytes for the
+/// partition (`raw_by_partition` never filled) — no raw slot is sealed and
+/// the first assertion fails.
+#[test]
+fn every_drained_lake_segment_carries_the_venues_published_bytes_line_for_line() -> Result<()> {
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        REGION,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+    let mut captured = 0usize;
+    for second in 10..30 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        let bid = dec!("99") - Decimal::from(second % 3);
+        simulated.seed_touch(&object(), Side::Buy, bid, dec!("500"), t(second))?;
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+    assert!(
+        captured > 10,
+        "premise: the passes applied ticks ({captured})"
+    );
+    let waited = std::time::Instant::now();
+    loop {
+        drain.step()?;
+        let lines: usize = segment_keys(lake.as_ref())?
+            .iter()
+            .filter_map(|key| lake.get(key).ok().flatten())
+            .map(|body| {
+                body.split(|byte| *byte == b'\n')
+                    .filter(|l| !l.is_empty())
+                    .count()
+            })
+            .sum();
+        if lines >= captured {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {lines} of {captured} ticks reached the lake"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let mut checked = 0usize;
+    for key in segment_keys(lake.as_ref())? {
+        let raw_key = key.replace(".canonical", ".raw");
+        let raw = lake
+            .get(&raw_key)?
+            .unwrap_or_else(|| panic!("segment {key} was sealed without the venue's bytes"));
+        let raw = String::from_utf8(raw).expect("the simulated wire is text");
+        let body = String::from_utf8(lake.get(&key)?.expect("listed")).expect("canonical JSON");
+        let canonical: Vec<&str> = body.lines().collect();
+        let raw_lines: Vec<&str> = raw.split_inclusive('\n').collect();
+        assert_eq!(
+            raw_lines.len(),
+            canonical.len(),
+            "{key}: the raw slot does not hold one published line per sealed tick"
+        );
+        for (line, published) in canonical.iter().zip(&raw_lines) {
+            let value: serde_json::Value = serde_json::from_str(line)?;
+            let event: qip_contracts::market_event::MarketEvent =
+                serde_json::from_value(value["event"].clone())?;
+            assert_eq!(
+                Some(qip_core::hash::sha256_hex(published.as_bytes()).as_str()),
+                event.native_hash(),
+                "{key}: a raw line is not the bytes published for its tick"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked, captured,
+        "every applied tick's published bytes are in the lake"
+    );
+    Ok(())
 }

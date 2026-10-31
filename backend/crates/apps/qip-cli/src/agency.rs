@@ -65,17 +65,30 @@
 //! what is journaled. If the engine ever reports a step as executed this
 //! command refuses to print it.
 //!
+//! # What it records
+//!
+//! R12-OBS-7132: every channel-health dimension the guard judged in a pass —
+//! identity integrity, reach, provenance and disclosure, policy violations,
+//! coordination — per channel, as `qip_agency_channel_health_total
+//! {channel,dimension,outcome}` into the session's [`Metrics`] registry, and
+//! as one printed line each, so the operator reading the pass sees the same
+//! verdicts the series holds. They are the verdicts that decided the pass,
+//! carried out of the engine on [`Report::health`]; nothing here re-runs a
+//! check. `channel` is a channel the policy's tool registrations declare, or
+//! [`UNCONFIGURED_CHANNEL`] for a draft naming any other, so the label is
+//! bounded by the operator's file rather than by what a request writes.
+//!
 //! The exit code is the verdict, as for `registrations` and `replay`: zero
 //! when every pass cleared every gate, [`WITHHELD`] when any pass was
 //! declined or refused, and one when a document could not be read at all.
 
 use qip_agency::attribution::EffectAttribution;
-use qip_agency::autonomy::ActionPolicy;
+use qip_agency::autonomy::{ActionPolicy, Authority, Drill, WideningEvidence};
 use qip_agency::causal::Scenario;
 use qip_agency::conduct_brain::{EvidenceDecl, EvidenceManifest, HoldingsList};
 use qip_agency::engine::{
     Adapter, Governance, Learning, LearningOutcome, Outcome, Report, Request, learn_shadowed,
-    run_governed_with, widen,
+    run_governed_with, widen_to,
 };
 use qip_agency::estimate::EstimateInput;
 use qip_agency::generate::ScenarioSource;
@@ -89,6 +102,7 @@ use qip_contracts::action::Method;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, SystemClock, Timestamp};
 use qip_events::EventLog;
+use qip_observability::metrics::{Metrics, labels, names};
 use qip_twin::futures::{FutureTree, TreeConfig, TwinState, WorldDriver};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -106,6 +120,14 @@ pub const POLICY_VARIABLE: &str = "QIP_AGENCY_POLICY_FILE";
 
 /// The variable naming the journal when `--journal` is absent.
 pub const JOURNAL_VARIABLE: &str = "QIP_AGENCY_JOURNAL";
+
+/// The `channel` label a channel-health verdict is filed under when the
+/// draft named a channel no tool in the policy declares. A request writes its
+/// drafts' channels, and a label taken from the request verbatim would be a
+/// series per string anybody can type; the registry refuses such a step
+/// anyway, but the guard has judged its draft by then, and that judgement is
+/// kept, under this literal.
+pub const UNCONFIGURED_CHANNEL: &str = "unconfigured";
 
 /// How many learned outcomes one invocation keeps in its working set. The
 /// durable record is the journal; this bounds what `recommend` could read.
@@ -176,6 +198,16 @@ pub struct AgencyPolicy {
 }
 
 /// A request to widen one class's policy, with the data to check it on.
+///
+/// R12-EXPAND-6071: `target` names the level asked for, and the request is
+/// judged against that level's row of ADR 0141's schedule through
+/// `ActionPolicy::widen_to`. Before this the binary could ask only for the
+/// first step, so the schedule's stronger demands -- a clean period, a
+/// rehearsed compensation, a second approver -- were enforced in tests and
+/// on no shipped path. Omitted, `target` is narrow-reversible, the level
+/// every existing document asked for. Naming a higher level grants nothing
+/// ADR 0141 has not granted; it means a request short of that level's
+/// evidence is refused by name.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WideningDecl {
@@ -183,6 +215,28 @@ pub struct WideningDecl {
     pub approver: ActingIdentity,
     pub attribution: EffectAttribution,
     pub evidence: EstimateInput,
+    #[serde(default)]
+    pub target: Option<Authority>,
+    /// Approvers beyond the first, for a level whose row wants several.
+    #[serde(default)]
+    pub co_approvers: Vec<ActingIdentity>,
+    /// Days the policy has held its level without drift.
+    #[serde(default)]
+    pub clean_days: u32,
+    /// Per class, the compensating step and the drill that rehearsed it.
+    #[serde(default)]
+    pub compensations: Vec<CompensationDecl>,
+    /// The kill path returning every class to shadow, and its drill.
+    #[serde(default)]
+    pub kill_path: Option<Drill>,
+}
+
+/// One class's compensating step, as the drill that rehearsed it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompensationDecl {
+    pub class: Method,
+    pub drill: Drill,
 }
 
 /// R12-AGENCY-6088: a market digital twin the pass is simulated against, in
@@ -338,6 +392,15 @@ pub struct Session {
     memory: ActionOutcomeMemory,
     provenance: Provenance,
     next_pass: u64,
+    /// Post-release findings not yet journaled (R12-GOV-3030), bounded by
+    /// the guard's own voice retention times the rule count.
+    post_release: Vec<qip_agency::guard::PostReleaseFinding>,
+    /// Every channel the policy's tool registrations declare: the whole set
+    /// of values the channel-health `channel` label may take besides
+    /// [`UNCONFIGURED_CHANNEL`].
+    channels: BTreeSet<String>,
+    /// Where the channel-health verdicts are recorded (R12-OBS-7132).
+    metrics: Arc<Metrics>,
 }
 
 impl Session {
@@ -354,6 +417,12 @@ impl Session {
                  unregistered, so declare the tools the agency may use",
             ));
         }
+        let channels: BTreeSet<String> = policy
+            .guard
+            .tools
+            .iter()
+            .flat_map(|tool| tool.channels.iter().cloned())
+            .collect();
         let manifest = EvidenceManifest::new(policy.evidence)?;
         let holdings = HoldingsList::new(policy.holdings)?;
         let mut guard = ActionGuard::from_policy(policy.guard)?
@@ -378,6 +447,19 @@ impl Session {
         let resumed = journal::resume(journal)?;
         guard.resume(resumed.decisions)?;
         guard.resume_voices(resumed.voices)?;
+        // R12-GOV-3030: every message released on an earlier pass re-checked
+        // against the conduct rules this policy holds now, and the findings
+        // the journal does not already hold filed with the next pass.
+        let filed: std::collections::BTreeSet<(String, String)> = resumed
+            .findings
+            .iter()
+            .map(|finding| (finding.fingerprint.clone(), finding.rule.clone()))
+            .collect();
+        let post_release: Vec<_> = guard
+            .recheck_released()
+            .into_iter()
+            .filter(|finding| !filed.contains(&(finding.fingerprint.clone(), finding.rule.clone())))
+            .collect();
         for tool in &policy.revoked_tools {
             guard.revoke(tool).map_err(|error| {
                 Error::invalid(format!(
@@ -400,7 +482,78 @@ impl Session {
                 ),
             },
             next_pass: resumed.next_pass,
+            post_release,
+            channels,
+            metrics: Arc::new(Metrics::new("qip-cli")),
         })
+    }
+
+    /// Record into `metrics` rather than the session's own registry, so a
+    /// caller that serves or inspects a registry hands the session that one.
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// The registry the channel-health verdicts are recorded into.
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
+    }
+
+    /// The `channel` label for a verdict on `channel`: the policy's own
+    /// string when a tool declares it, [`UNCONFIGURED_CHANNEL`] otherwise.
+    fn channel_label<'a>(&'a self, channel: &str) -> &'a str {
+        self.channels
+            .get(channel)
+            .map_or(UNCONFIGURED_CHANNEL, String::as_str)
+    }
+
+    /// R12-OBS-7132: record each channel-health verdict the pass's act stage
+    /// decided, one count per channel, dimension and outcome, and return the
+    /// lines that tell the operator the same. Recorded where the report
+    /// arrives, before learning or journaling can stop the pass, because the
+    /// guard judged the drafts whether or not the pass is later refused.
+    fn record_channel_health(&self, report: &Report) -> Vec<String> {
+        let mut lines = Vec::new();
+        if report.health.is_empty() {
+            return lines;
+        }
+        self.metrics.describe(
+            names::AGENCY_CHANNEL_HEALTH,
+            "the action guard's verdict on each channel-health dimension of an agency pass, by \
+             channel, dimension and outcome",
+        );
+        for (channel, dimension, outcome) in report.health.verdicts() {
+            let label = self.channel_label(channel);
+            self.metrics.count(
+                names::AGENCY_CHANNEL_HEALTH,
+                labels([
+                    ("channel", label),
+                    ("dimension", dimension.as_str()),
+                    ("outcome", outcome.as_str()),
+                ]),
+            );
+            lines.push(if label == channel {
+                format!(
+                    "channel health: {label} {} {}",
+                    dimension.as_str(),
+                    outcome.as_str()
+                )
+            } else {
+                format!(
+                    "channel health: {label} {} {} (the draft names a channel no registered \
+                     tool declares)",
+                    dimension.as_str(),
+                    outcome.as_str()
+                )
+            });
+        }
+        lines
+    }
+
+    /// The post-release findings this session will file with its next pass.
+    pub fn pending_post_release(&self) -> &[qip_agency::guard::PostReleaseFinding] {
+        &self.post_release
     }
 
     /// The guard this session holds.
@@ -470,7 +623,22 @@ impl Session {
         if let Err(error) = estimate.supports(&decl.attribution) {
             return refused(error.message().to_string());
         }
-        match widen(policy, &decl.attribution, &decl.approver) {
+        let target = decl.target.unwrap_or(Authority::NarrowReversible);
+        let evidence = WideningEvidence {
+            attributions: vec![&decl.attribution],
+            classes: BTreeSet::new(),
+            clean_days: decl.clean_days,
+            compensations: decl
+                .compensations
+                .iter()
+                .map(|c| (c.class, c.drill.clone()))
+                .collect(),
+            kill_path: decl.kill_path.clone(),
+        };
+        let approvers: Vec<&ActingIdentity> = std::iter::once(&decl.approver)
+            .chain(&decl.co_approvers)
+            .collect();
+        match widen_to(policy, target, &evidence, &approvers) {
             Ok(widening) => WideningOutcome::Granted {
                 class: widening.class,
                 goal_id: widening.goal_id,
@@ -545,6 +713,7 @@ impl Session {
             twin.as_ref().map(|t| t as &dyn ScenarioSource),
             &mut Unwired,
         )?;
+        let health = self.record_channel_health(&report);
         let learning = self.learn(number, &report, &goal_target)?;
         journal::record_pass(
             journal,
@@ -557,9 +726,13 @@ impl Session {
                 goal_target: &goal_target,
                 acting_identity: &acting,
                 learning: Some(&learning),
+                post_release: &self.post_release,
                 at: now,
             },
         )?;
+        // Filed once: a later pass of this invocation re-files nothing, and
+        // a restart reads these back as already filed.
+        self.post_release.clear();
         self.next_pass += 1;
         // R12-OBS-7131: the pass is read back as one lineage before it is
         // reported. A journal that holds every record and cannot be folded
@@ -574,6 +747,7 @@ impl Session {
         })?;
         lineage.verify()?;
         let (mut lines, code) = render(number, &report, widening.as_ref(), &learning)?;
+        lines.extend(health);
         lines.push(format!(
             "lineage: pass {number} reads back as one connected chain (goal approval {}, plan \
              approval {}, execution {}, {} tool decision(s), {} voice(s) released)",

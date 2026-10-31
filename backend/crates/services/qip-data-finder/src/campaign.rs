@@ -732,7 +732,10 @@ mod tests {
                     // whose sample named nothing, so a body with no fields
                     // would make this fixture fail at registration for a
                     // reason that has nothing to do with what it tests.
-                    body: r#"{"symbol":"EU0001","level":41.0}"#.to_string(),
+                    body: qip_core::untrusted::Untrusted::new(
+                        "a scripted sample",
+                        r#"{"symbol":"EU0001","level":41.0}"#.to_string(),
+                    ),
                     media_type: "application/json".to_string(),
                     payload_at: Some(now()),
                     latency: Duration::from_millis(5),

@@ -363,6 +363,8 @@ fn config_with_a_second_venue_and_a_hedge() -> PlatformConfig {
             base: "AAA".to_string(),
             quote: "USD".to_string(),
             costs: None,
+            base_terms: None,
+            quote_terms: None,
         }],
         start_sizes: [("AAA".to_string(), dec!("100"))].into_iter().collect(),
     };

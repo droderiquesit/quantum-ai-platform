@@ -31,6 +31,7 @@ pub use embedding::{Embedder, Embedding, HashingEmbedder};
 pub use evaluation::{Calibration, DriftReport, PredictionOutcome};
 pub use language::{
     Completion, DeterministicModel, LanguageModel, ModelRequest, NumericGuard, OutputSchema,
+    UntrustedCompletion, UntrustedModelRequest,
 };
 pub use registry::{FeatureOrigin, ModelCard, ModelRegistry, ModelStage, ResourceBudget};
 pub use retrieval::{Document, RetrievalResult, SearchIndex};

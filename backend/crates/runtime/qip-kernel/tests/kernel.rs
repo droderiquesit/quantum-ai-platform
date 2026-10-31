@@ -1926,3 +1926,213 @@ fn lineage_completeness_counts_records_logged_under_a_lineage_against_records_ha
     );
     Ok(())
 }
+
+/// R12-GOV-6127: an order naming only blank hypotheses traces to nothing —
+/// the shape of an order justified by nothing but the trade — and is
+/// refused like one naming none. Mutation: in `Order::validate`, test
+/// `is_empty()` alone again and the blank order is admitted.
+#[test]
+fn an_order_naming_only_blank_hypotheses_is_refused_like_one_naming_none() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let blank = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-1",
+        vec!["  ".to_string(), String::new()],
+        start(),
+    );
+    let error = platform.submit_order(blank, start()).unwrap_err();
+    assert!(
+        error.message().contains("traces to no hypothesis"),
+        "{}",
+        error.message()
+    );
+    Ok(())
+}
+
+/// R12-WORLD-3036: the self-model holds the platform's operational health and
+/// its capability boundary, fed by the kernel, beside its record of graded
+/// forecasts. A halted kernel and a degraded table (on a fresh platform the
+/// self-model row reads unavailable, since nothing has been graded) appear in
+/// the health reading after the cycle. The reading clears once the halt does.
+/// The boundary is the classes the admitted universe holds an instrument in.
+/// The shipped registry registers every class, so "unregistered" here means
+/// outside what the platform can act on: a class this universe holds nothing
+/// in, and a name that is no class at all, both read outside, and the
+/// universe's own classes read inside.
+///
+/// Mutations: skip `observe_own_health` in `run_cycle` -- there is no
+/// reading after the cycle; read `halted` as `false` -- the halted cycle
+/// reads healthy on that count; declare every `AssetClass` as the boundary,
+/// as a registry-derived one would -- no class reads outside it.
+#[test]
+fn a_halted_kernel_and_a_stale_area_appear_in_the_self_models_health_and_an_unregistered_class_lies_outside_its_boundary()
+-> Result<()> {
+    use qip_contracts::degradation::{Capability, Freshness};
+    use qip_financial::asset_class::AssetClass;
+    use qip_learning_engine::self_model::BoundaryReading;
+
+    let mut platform = platform(PlatformConfig::default())?;
+    let readings: Vec<(AssetClass, BoundaryReading)> = AssetClass::ALL
+        .into_iter()
+        .map(|class| (class, platform.self_model().boundary_of(class.as_str())))
+        .collect();
+    assert!(
+        readings
+            .iter()
+            .all(|(_, r)| *r != BoundaryReading::Undeclared),
+        "the kernel declared no boundary: {readings:?}"
+    );
+    assert!(
+        readings.iter().any(|(_, r)| *r == BoundaryReading::Inside),
+        "no registered class reads inside the boundary: {readings:?}"
+    );
+    assert!(
+        readings.iter().any(|(_, r)| *r == BoundaryReading::Outside),
+        "every class reads inside the boundary, so it bounds nothing: {readings:?}"
+    );
+    assert_eq!(
+        platform.self_model().boundary_of("not-an-asset-class"),
+        BoundaryReading::Outside
+    );
+    assert!(
+        platform.self_model().health().is_none(),
+        "premise: no reading before the first cycle"
+    );
+
+    platform.autonomy_mut().kill_switch_mut().trip_global(
+        start(),
+        "operator",
+        "a halt the self-model must see".to_string(),
+    );
+    assert!(
+        platform.autonomy().kill_switch().is_globally_tripped(),
+        "premise"
+    );
+    let halted_at = start().saturating_add(Duration::from_mins(5));
+    platform.run_cycle(halted_at);
+    let health = platform
+        .self_model()
+        .health()
+        .expect("a cycle leaves a health reading")
+        .clone();
+    assert_eq!(health.observed_at, halted_at);
+    assert!(health.halted, "the halted kernel is not in the self-model");
+    assert_eq!(
+        health.degraded.get(&Capability::SelfModel),
+        Some(&Freshness::Unavailable),
+        "a self-model with nothing graded is a stale area the reading must name: {:?}",
+        health.degraded
+    );
+    assert!(!health.is_healthy());
+
+    let cleared_at = start().saturating_add(Duration::from_mins(10));
+    platform.autonomy_mut().kill_switch_mut().clear_global(
+        &OperatorIdentity::verified("operator-a", "desk", cleared_at),
+        cleared_at,
+    )?;
+    platform.run_cycle(start().saturating_add(Duration::from_mins(15)));
+    let after = platform.self_model().health().expect("a reading");
+    assert!(!after.halted, "the reading kept a halt that has cleared");
+    Ok(())
+}
+
+/// R12-AGENCY-10063 on the default cycle: when the agent runtime refuses
+/// every run — here a roster past its review interval, the outage an
+/// in-process runtime can actually have — the panel degrades to the
+/// organisation's bounded backlog, the cycle runs all eight stages, and an
+/// order the platform holds is still accepted and worked. Nothing in ACT
+/// waits on the organisation. Cycles under a lapse that lasts hold one
+/// backlog entry per agent, never one per cycle, and never more than the
+/// backlog's capacity.
+///
+/// Mutation: delete the `self.backlog.defer(..)` arm for `RunStatus::Refused`
+/// in `Organisation::dispatch` — the backlog stays empty and the per-agent
+/// assertion fails. Verified and restored.
+#[test]
+fn a_lapsed_panel_is_deferred_to_a_bounded_backlog_and_the_cycle_still_acts() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let roster = platform.organisation().roster().len();
+    assert!(roster > 1, "nothing to defer");
+    assert!(
+        platform.organisation().backlog().is_empty(),
+        "premise: nothing deferred at assembly"
+    );
+    platform.observe(bars("AAA", 120));
+    let later = start().saturating_add(Duration::from_days(91));
+
+    let report = platform.run_cycle(later);
+    let reason = report.stage(Stage::Reason).expect("REASON reports");
+    assert!(
+        !reason.detail.contains("nothing in the queue"),
+        "premise: the panel did not convene, so no run could be refused: {}",
+        reason.detail
+    );
+    assert!(!report.halted, "a refused panel halted the platform");
+    assert_eq!(
+        report.stages.len(),
+        8,
+        "a stage did not run: {:?}",
+        report.stages
+    );
+    assert!(report.stage(Stage::Act).is_some(), "ACT did not run");
+
+    // Every run the host refused is on the backlog, once. Counted from the
+    // audit trail rather than the roster: an agent that declines the brief
+    // as out of scope is never handed to the host and so is never refused.
+    let refused: std::collections::BTreeSet<&str> = platform
+        .organisation()
+        .audit()
+        .records()
+        .iter()
+        .filter(|run| matches!(run.status, qip_agents::runtime::RunStatus::Refused { .. }))
+        .map(|run| run.agent_id.as_str())
+        .collect();
+    assert!(
+        refused.len() >= roster / 2,
+        "premise: the lapsed roster was not refused: {} of {roster}",
+        refused.len()
+    );
+    let backlog = platform.organisation().backlog();
+    assert_eq!(
+        backlog.len(),
+        refused.len(),
+        "one deferred run per refused agent"
+    );
+    for agent in &refused {
+        let pending = backlog
+            .pending(agent)
+            .unwrap_or_else(|| panic!("{agent} is not on the backlog"));
+        assert_eq!(pending.attempts, 1, "{agent}");
+    }
+    assert!(backlog.len() <= backlog.capacity());
+
+    // Execution is unaffected: an order is accepted while the panel is down.
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-backlog",
+        vec!["hyp-backlog".to_string()],
+        later,
+    );
+    platform.submit_order(order, later).map_err(|error| {
+        qip_core::error::Error::invalid(format!(
+            "an order was refused while the panel was deferred: {}",
+            error.message()
+        ))
+    })?;
+
+    // A lapse that lasts does not grow the backlog past its bound.
+    let capacity = platform.organisation().backlog().capacity();
+    for day in 1..=6 {
+        platform.observe(bars("AAA", 120 + day));
+        let report = platform.run_cycle(later.saturating_add(Duration::from_days(day as i64)));
+        assert!(!report.halted);
+        assert!(platform.organisation().backlog().len() <= capacity);
+    }
+    Ok(())
+}

@@ -133,8 +133,10 @@
 //! statistic — an R², a residual, a correlation — and is `f64` for that reason
 //! and no other.
 
+pub mod adversarial;
 pub mod cadence;
 pub mod campaign;
+pub mod clock_precision;
 pub mod conformal;
 pub mod dataset;
 pub mod distill;

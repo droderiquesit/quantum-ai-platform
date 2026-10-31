@@ -43,7 +43,8 @@ use qip_storage::{DurableStore, EngineConfig, KeyValueStore};
 use serde::{Deserialize, Serialize};
 
 use qip_events::event_fabric::codec::{
-    Batch, ContentHash, DecodeOutcome, LogicalTimestamp, stamp_broker,
+    Batch, BrokerOrigin, ContentHash, DecodeOutcome, LogicalTimestamp, stamp_broker,
+    stamp_broker_origin, stamp_broker_partition,
 };
 use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
 use qip_events::event_fabric::policy::{QosClass, StreamPolicy};
@@ -491,6 +492,11 @@ pub struct Broker {
     /// an offset from once its local segment has been retained away, and
     /// what [`Self::retain_hot`] requires before it deletes anything.
     archive: Option<ArchiveReader>,
+    /// The region this broker serves, stamped into every batch it accepts
+    /// from an authenticated session (ADR 0129 §1). `None` stamps no origin:
+    /// a broker that does not know its region does not guess one, and its
+    /// consumers refuse what it serves rather than read a region into it.
+    region: Option<String>,
 }
 
 /// `(stream, producer)` to `(window_start_ns, bytes, messages)`.
@@ -543,7 +549,40 @@ impl Broker {
             quota_spent: Mutex::new(BTreeMap::new()),
             managed: None,
             archive: None,
+            region: None,
         })
+    }
+
+    /// The region this broker stamps into every batch an authenticated
+    /// session produces (ADR 0129 §1). Refuses a blank one.
+    pub fn with_region(mut self, region: &str) -> Result<Self> {
+        let region = region.trim();
+        if region.is_empty() {
+            return Err(Error::invalid(
+                "a broker's region must be named; a blank region would be stamped into every \
+                 batch as where it was produced",
+            ));
+        }
+        self.region = Some(region.to_string());
+        Ok(self)
+    }
+
+    /// The origin stamp for a batch produced by `principal` to `partition`,
+    /// when this broker knows its region and the session authenticated
+    /// someone; the partition alone otherwise, because every append names
+    /// the partition it landed in (R12-FABRIC-8084).
+    fn stamp_origin(&self, batch: &mut Batch, partition: u32, principal: Option<&str>) {
+        stamp_broker_partition(batch, partition);
+        if let (Some(region), Some(principal)) = (&self.region, principal) {
+            stamp_broker_origin(
+                batch,
+                BrokerOrigin {
+                    region: region.clone(),
+                    partition,
+                    principal: principal.to_string(),
+                },
+            );
+        }
     }
 
     /// Seat this broker at ADR 0111's managed consensus as `instance`.
@@ -861,7 +900,23 @@ impl Broker {
     /// a [`Refusal`]: the protocol's closed set has no code for it, and a
     /// transport-level failure is what makes the producer back off and try
     /// again once the group has caught up.
-    pub fn produce_to(&self, stream: &str, partition: u32, mut batch: Batch) -> Result<Produced> {
+    pub fn produce_to(&self, stream: &str, partition: u32, batch: Batch) -> Result<Produced> {
+        self.produce_from(stream, partition, batch, None)
+    }
+
+    /// [`Self::produce_to`] for a batch an authenticated session produced:
+    /// `principal` is the identity the session authenticated as, stamped
+    /// into the batch with this broker's region and the partition (ADR 0129
+    /// §1). The protocol service is the caller; an in-process producer with
+    /// no session has no principal to stamp, and [`Self::produce_to`] stamps
+    /// none for it.
+    pub fn produce_from(
+        &self,
+        stream: &str,
+        partition: u32,
+        mut batch: Batch,
+        principal: Option<&str>,
+    ) -> Result<Produced> {
         let partition_count = self.partition_count(stream)?;
         if partition >= partition_count {
             return Err(Error::invalid(format!(
@@ -892,12 +947,39 @@ impl Broker {
         if let Err(error) = self.require_admitted_topics(stream, &batch) {
             return Ok(Err(ProduceRefusal::new(Refusal::SchemaRefused, error)));
         }
+        // ADR 0129 §1: region, partition and principal are the broker's to
+        // stamp. A batch that arrives already carrying them is a producer
+        // asserting where it was produced, on a wire that authenticates
+        // nobody below the session; refused rather than overwritten, so the
+        // producer learns it sent something it may not.
+        if let Some(origin) = &batch.origin {
+            return Ok(Err(ProduceRefusal::new(
+                Refusal::SchemaRefused,
+                Error::denied(format!(
+                    "the batch arrived already stamped with region {} and principal {}; \
+                     those are stamped by the broker that accepts it, never by its producer",
+                    origin.region, origin.principal
+                )),
+            )));
+        }
+        // The partition alone (R12-FABRIC-8084) under the same rule: the
+        // broker stamps the partition it appends to, and a producer that
+        // states one is refused rather than overwritten.
+        if let Some(stated) = batch.partition {
+            return Ok(Err(ProduceRefusal::new(
+                Refusal::SchemaRefused,
+                Error::denied(format!(
+                    "the batch arrived already stamped with partition {stated}; the partition \
+                     is stamped by the broker that accepts it, never by its producer"
+                )),
+            )));
+        }
         self.refuse_when_a_group_lags(stream, partition)?;
         if let Err(refused) = self.charge_quota(stream, &batch)? {
             return Ok(Err(refused));
         }
         if self.stream_policy(stream)?.is_managed() {
-            return self.produce_managed(stream, partition, batch);
+            return self.produce_managed(stream, partition, batch, principal);
         }
 
         let record_count = u64::try_from(batch.records.len()).map_err(|_| {
@@ -936,6 +1018,7 @@ impl Broker {
                     let logical = cursor.clock.tick(now)?;
                     let logical_timestamp = to_logical_timestamp(logical)?;
                     let previous_hash = cursor.last_batch_hash.clone();
+                    self.stamp_origin(&mut batch, partition, principal);
                     stamp_broker(
                         &mut batch,
                         predicted_offset,
@@ -1019,7 +1102,13 @@ impl Broker {
     /// table is rewound, the partition is marked for catch-up, and the next
     /// produce reads the managed log first — finding the batch if it landed,
     /// so the producer's retry is answered as the duplicate it is.
-    fn produce_managed(&self, stream: &str, partition: u32, mut batch: Batch) -> Result<Produced> {
+    fn produce_managed(
+        &self,
+        stream: &str,
+        partition: u32,
+        mut batch: Batch,
+        principal: Option<&str>,
+    ) -> Result<Produced> {
         let seat = self.managed.as_ref().ok_or_else(|| {
             Error::denied(format!(
                 "stream '{stream}' is managed and this broker has no managed log; it should never \
@@ -1100,6 +1189,7 @@ impl Broker {
         let now = self.clock.now();
         let logical_timestamp = to_logical_timestamp(cursor.clock.tick(now)?)?;
         let previous_hash = cursor.last_batch_hash.clone();
+        self.stamp_origin(&mut batch, partition, principal);
         // A managed batch carries the lease epoch, not this process's local
         // leader epoch: the lease is what fences, and two instances' local
         // epochs are unrelated numbers.

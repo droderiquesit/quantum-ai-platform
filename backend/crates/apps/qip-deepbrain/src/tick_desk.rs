@@ -48,21 +48,22 @@
 
 use qip_ai::registry::ModelCard;
 use qip_core::error::{Error, Result};
-use qip_core::{Duration, ModelId, Timestamp};
+use qip_core::{Decimal, Duration, ModelId, Timestamp};
+use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_kernel::fusion::{FusionConfig, MarketTrace, OpportunityMap, TracePoint, fuse};
 use qip_kernel::platform::FillScore;
 use qip_simulation_engine::conditions::MessageBudget;
 use qip_simulation_engine::tick_replay::{
-    ExecutionModel, ReplayOrder, ReplayRun, ReplaySession, ReplayTick,
+    ExecutionModel, OrderSide, ReplayOrder, ReplayRun, ReplaySession, ReplayTick,
 };
 use qip_storage::BlobStore;
 use qip_storage::lake::Lake;
 use qip_storage::lake_codec::{CompressionReport, SegmentCodec, measure_partitions};
 use qip_storage::lake_history::{HistoryQuery, MARKET_PREFIX};
 use qip_training::microstructure::{
-    BenchmarkReport, BookObservation, FillModel, FillResidualObservation, LabelPlan, MicroExample,
-    ResidualExample, TradeObservation, VolatilityModel, benchmark_fill_model, build_examples,
-    join_fill_residuals, split_in_time, train_fill_model, train_volatility_model,
+    BenchmarkReport, BookObservation, FillModel, FillResidualObservation, LabelPlan, LabelledSet,
+    MicroExample, ResidualExample, TradeObservation, VolatilityModel, benchmark_fill_model,
+    build_examples, join_fill_residuals, split_in_time, train_fill_model, train_volatility_model,
 };
 use qip_twin::futures::{FutureTree, ObservedMoves, TreeConfig, TwinState, WorldDriver};
 use qip_world_model::graph::KnowledgeGraph;
@@ -310,6 +311,15 @@ pub struct TickRound {
     /// and only those: a row from the fitted portion would grade the model
     /// on data it saw.
     pub residual_benchmark: Option<BenchmarkReport>,
+    /// The platform's own orders the round replayed against the recorded
+    /// market, each beside what the venue actually filled it at
+    /// (R12-TICK-2073): the strategy judged against the market that existed,
+    /// not against bars built after the fact.
+    pub order_rows: Vec<OrderReplayRow>,
+    /// Orders in the window the replay cannot express (a scheduled
+    /// algorithm with no single limit), counted rather than replayed as a
+    /// market order nobody sent.
+    pub unreplayable_orders: usize,
     pub fill_model: Option<FillModel>,
     pub volatility_model: Option<VolatilityModel>,
     pub benchmark: Option<BenchmarkReport>,
@@ -485,6 +495,34 @@ impl TickDesk {
         self.tree.as_ref()
     }
 
+    /// Run a round if this cycle is on the cadence, replaying the platform's
+    /// own orders from the lookback window against the recorded market and
+    /// recording, per order, the replayed fill beside the venue's
+    /// (R12-TICK-2073).
+    ///
+    /// Until 2026-10-24 the desk's only caller handed the round no
+    /// decisions, so the replay rebuilt books and traded nothing of the
+    /// platform's: no strategy was ever evaluated against the market that
+    /// existed.
+    pub fn maybe_round_with_orders<'a>(
+        &mut self,
+        graph: &KnowledgeGraph,
+        cycle: u64,
+        now: Timestamp,
+        orders: impl IntoIterator<Item = &'a Order>,
+        fills: &[FillScore],
+    ) -> Result<Option<TickRound>> {
+        if !self.config.enabled() || !cycle.is_multiple_of(self.config.every_cycles) {
+            return Ok(None);
+        }
+        let from = now.saturating_sub(Duration::from_days(self.config.lookback_days));
+        let replayable = replay_orders_of(orders, from, now);
+        let mut round = self.round_with_fills(graph, now, replayable.decisions, fills)?;
+        round.unreplayable_orders = replayable.unreplayable;
+        round.order_rows = order_rows(round.replay.as_ref(), &replayable.actual);
+        Ok(Some(round))
+    }
+
     /// Run a round if this cycle is on the cadence.
     pub fn maybe_round(
         &mut self,
@@ -573,6 +611,15 @@ impl TickDesk {
         // its origin, so every training row can name it (R12-TICK-1051).
         let mut ticks: Vec<ReplayTick> = Vec::new();
         let mut lineage: BTreeMap<(String, String, u32, u64), String> = BTreeMap::new();
+        // Each present tick's capture-clock doubt, for the precision the
+        // labels below need (R12-RES-7103). Taken before the loop consumes
+        // the history, over the same ticks the loop keeps.
+        let precision_events: Vec<(Timestamp, Duration)> = history
+            .ticks
+            .iter()
+            .filter(|tick| tick.knowable_at <= now)
+            .map(|tick| (tick.knowable_at, tick.clock_uncertainty))
+            .collect();
         for tick in history.ticks {
             if tick.knowable_at > now {
                 continue;
@@ -662,7 +709,23 @@ impl TickDesk {
             trailing: 5,
             volatile_above_bps: 5.0,
         };
-        let labelled = build_examples(&observations, &trades, &plan)?;
+        // A window captured under a clock less precise than the shortest
+        // label horizon needs is not labelled at all (R12-RES-7103): an
+        // ordering the clock cannot vouch for would become a label a model
+        // learns from as if it were exact. Refused whole and recorded, so
+        // nothing below trains or promotes from it.
+        let labelled = match plan
+            .clock_precision()?
+            .admit(&round.manifest, precision_events)
+        {
+            Ok(_) => build_examples(&observations, &trades, &plan)?,
+            Err(imprecise) => {
+                round
+                    .training_refused
+                    .push(format!("labels: {}", Error::from(imprecise).message()));
+                LabelledSet::default()
+            }
+        };
         round.examples = labelled.examples.len();
         round.refused_unreliable = labelled.refused_unreliable;
         round.refused_uncovered = labelled.refused_uncovered;
@@ -915,4 +978,121 @@ fn origin_key(message: &qip_contracts::message::MarketMessage) -> (String, Strin
 /// The last mid the tree's twin state saw for `instrument`.
 fn previous_last_mid(tree: &FutureTree, instrument: &str) -> Option<f64> {
     tree.state().instruments.get(instrument).map(|d| d.last_mid)
+}
+
+/// The most orders one round replays: the newest in the window are kept.
+pub const MAX_REPLAY_ORDERS: usize = 1_024;
+
+/// One of the platform's orders replayed against the recorded market.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrderReplayRow {
+    pub order_id: String,
+    pub instrument: String,
+    /// Volume-weighted price the replay filled at, impact included; `None`
+    /// when the recorded market filled nothing.
+    pub replayed_price: Option<Decimal>,
+    /// Volume-weighted price the venue filled the order at; `None` when it
+    /// has no fill.
+    pub actual_price: Option<Decimal>,
+    /// `(replayed - actual) / actual` in basis points, where both exist. A
+    /// statistic: the money figures cross to `f64` here and nowhere else.
+    pub gap_bps: Option<f64>,
+}
+
+/// The platform's orders, as the replay can take them.
+#[derive(Debug, Default)]
+pub struct ReplayableOrders {
+    pub decisions: Vec<ReplayOrder>,
+    /// Each replayed order's actual volume-weighted fill price, if filled.
+    pub actual: BTreeMap<String, Decimal>,
+    pub unreplayable: usize,
+}
+
+/// The orders created in `[from, now]` as replay decisions, newest
+/// [`MAX_REPLAY_ORDERS`] kept. A market order replays as one; a limit order
+/// at its limit; a scheduled algorithm (time-, volume-weighted,
+/// participation) has no single instruction the replay can send and is
+/// counted, never replayed as a market order nobody sent.
+pub fn replay_orders_of<'a>(
+    orders: impl IntoIterator<Item = &'a Order>,
+    from: Timestamp,
+    now: Timestamp,
+) -> ReplayableOrders {
+    let mut window: Vec<&Order> = orders
+        .into_iter()
+        .filter(|order| order.created_at >= from && order.created_at <= now)
+        .collect();
+    window.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.order_id.as_str().cmp(b.order_id.as_str()))
+    });
+    let skip = window.len().saturating_sub(MAX_REPLAY_ORDERS);
+    let mut out = ReplayableOrders::default();
+    for order in window.into_iter().skip(skip) {
+        let limit = match order.order_type {
+            OrderType::Market => None,
+            OrderType::Limit { price } => Some(price),
+            OrderType::TimeWeighted { .. }
+            | OrderType::VolumeWeighted { .. }
+            | OrderType::Participation { .. } => {
+                out.unreplayable += 1;
+                continue;
+            }
+        };
+        let id = order.order_id.as_str().to_string();
+        let filled: Decimal = order.fills.iter().map(|fill| fill.quantity).sum();
+        let notional: Decimal = order
+            .fills
+            .iter()
+            .map(|fill| fill.price * fill.quantity)
+            .sum();
+        if let Some(price) = notional.checked_div(filled) {
+            out.actual.insert(id.clone(), price);
+        }
+        out.decisions.push(ReplayOrder {
+            id,
+            instrument: order.object_id.as_str().to_string(),
+            side: match order.side {
+                Side::Buy => OrderSide::Buy,
+                Side::Sell => OrderSide::Sell,
+            },
+            quantity: order.quantity,
+            limit,
+            decided_at: order.created_at,
+        });
+    }
+    out
+}
+
+/// One row per replayed order: what the recorded market gave it beside what
+/// the venue did.
+fn order_rows(
+    replay: Option<&ReplayRun>,
+    actual: &BTreeMap<String, Decimal>,
+) -> Vec<OrderReplayRow> {
+    let Some(replay) = replay else {
+        return Vec::new();
+    };
+    replay
+        .executions
+        .iter()
+        .map(|execution| {
+            let replayed = execution.average_price();
+            let real = actual.get(&execution.order_id).copied();
+            let gap_bps = match (replayed, real) {
+                (Some(r), Some(a)) if a.is_positive() => {
+                    Some((r.to_f64() - a.to_f64()) / a.to_f64() * 10_000.0)
+                }
+                _ => None,
+            };
+            OrderReplayRow {
+                order_id: execution.order_id.clone(),
+                instrument: execution.instrument.clone(),
+                replayed_price: replayed,
+                actual_price: real,
+                gap_bps,
+            }
+        })
+        .collect()
 }

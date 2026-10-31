@@ -106,7 +106,7 @@ use qip_contracts::{Entitlement, Usage};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
-use qip_core::time::Timestamp;
+use qip_core::time::{Duration, Timestamp};
 use qip_edge::cell::Cell;
 use qip_edge::settlement::SettlementTerms;
 use qip_orderbook::venue::VenueState;
@@ -223,6 +223,9 @@ pub struct FeedTick {
 struct Published {
     bids: BTreeMap<Decimal, Decimal>,
     asks: BTreeMap<Decimal, Decimal>,
+    /// The status last published; `None` until the venue declares one
+    /// other than open, which is what a book starts as.
+    status: Option<VenueStatus>,
 }
 
 /// The simulated venue's quote feed.
@@ -247,6 +250,10 @@ pub struct SimulatedFeed {
     /// rather than appended to on every publication, so a caller that never
     /// takes them holds one frame's worth and no more.
     captured: Vec<MarketEvent>,
+    /// The bytes the last publication put on the wire, kept until the
+    /// next: one frame, so bounded. What a replay or a test compares the
+    /// lake's raw slots against (ADR 0181).
+    last_frame: String,
     /// Lines the cell took that could not be built into a market event.
     /// Counted rather than fatal: the pass has already applied the frame,
     /// and failing it now would make recording a reason to stop trading.
@@ -263,6 +270,7 @@ impl SimulatedFeed {
             omitted_total: 0,
             sequence: 0,
             captured: Vec::new(),
+            last_frame: String::new(),
             capture_failures: 0,
         }
     }
@@ -304,6 +312,12 @@ impl SimulatedFeed {
         std::mem::take(&mut self.captured)
     }
 
+    /// The exact bytes the last publication put on the wire; empty when it
+    /// published nothing.
+    pub fn last_frame(&self) -> &str {
+        &self.last_frame
+    }
+
     /// Lines the cell took that could not be captured as market events.
     pub fn capture_failures(&self) -> u64 {
         self.capture_failures
@@ -311,35 +325,53 @@ impl SimulatedFeed {
 
     fn capture(
         &self,
-        (sequence, id, side, price, size): &(u64, String, BookSide, Decimal, Decimal),
+        line: &WireLine,
         venue_time: Timestamp,
         now: Timestamp,
+        uncertainty: Duration,
     ) -> Result<MarketEvent> {
+        let (sequence, id, body, native) = match line {
+            WireLine::Level {
+                sequence,
+                id,
+                side,
+                price,
+                size,
+            } => (
+                *sequence,
+                id,
+                MessageBody::LevelSet {
+                    side: *side,
+                    price: *price,
+                    quantity: *size,
+                    order_count: None,
+                },
+                // The line as the venue's publisher wrote it: the bytes the
+                // decoder read, which is what `source_hash`'s canonical
+                // re-encoding is not.
+                level_line(*sequence, venue_time, id, *side, *price, *size),
+            ),
+            WireLine::Status {
+                sequence,
+                id,
+                status,
+            } => (
+                *sequence,
+                id,
+                MessageBody::StatusChange { status: *status },
+                status_line(*sequence, venue_time, id, *status),
+            ),
+        };
         let payload = MarketMessage::new(
             ObjectId::from_string(id.clone()),
-            Origin::new(self.venue.clone(), FEED_NAME, 0, *sequence),
-            MessageBody::LevelSet {
-                side: *side,
-                price: *price,
-                quantity: *size,
-                order_count: None,
-            },
+            Origin::new(self.venue.clone(), FEED_NAME, 0, sequence),
+            body,
             venue_time,
             now,
         );
         let hash = MarketEvent::hash_payload(&payload)?;
-        // The line as the venue's publisher wrote it: the bytes the decoder
-        // read, which is what `source_hash`'s canonical re-encoding is not.
-        let native = level_line(*sequence, venue_time, id, *side, *price, *size);
-        // The half-width of the clock error this event is stored with. A
-        // message cannot be received before it was sent, so a venue stamp
-        // that leads this cell's receive instant by `lead` proves one of the
-        // two clocks is out by at least `lead`: the lead is a lower bound, not
-        // a guess, and `Cell::observe_clock_lead` is where the same lead
-        // drives the cell's clock row. Recording zero here stored a
-        // precision-sensitive label as exact beside a venue the cell had
-        // already stopped trading against for skew.
-        let uncertainty = venue_time.since(now).max(qip_core::time::Duration::ZERO);
+        // `uncertainty` is the cell's bound for the frame, taken in
+        // `publish` before the frame was decoded: see there for why.
         Ok(MarketEvent::new(
             payload,
             venue_time,
@@ -500,6 +532,16 @@ impl SimulatedFeed {
                 BookSide::Ask,
                 &mut wire,
             );
+            // The venue's declared status, published when it changes
+            // (R12-TICK-2044): a breaker or a halt reaches the cell as a
+            // typed status message on the same wire, sequenced with the
+            // depth, rather than as a book that simply stopped moving.
+            let status = gateway.status_of(&depth.object_id);
+            if published.status.unwrap_or(VenueStatus::Open) != status {
+                wire.status(id, status);
+                published.status = Some(status);
+                tick.messages += 1;
+            }
         }
         self.omitted_total = self
             .omitted_total
@@ -511,7 +553,39 @@ impl SimulatedFeed {
         let venue_time = wire.venue_time;
         let frame = wire.frame;
         self.captured.clear();
+        self.last_frame.clear();
         if tick.messages > 0 {
+            // The half-width of the clock error every event of this frame is
+            // stored with (R12-RES-7103), asked of the cell rather than worked
+            // out here.
+            //
+            // The frame's own `lead` is the floor. A message cannot be
+            // received before it was sent, so a venue stamp that leads this
+            // cell's receive instant proves one of the two clocks is out by
+            // at least that much; a stamp that trails proves nothing — it is
+            // latency on every healthy feed — and is floored at zero here,
+            // where the reason is visible, because the cell refuses a
+            // negative lead rather than flooring it.
+            //
+            // `Cell::clock_uncertainty` widens it with what the cell already
+            // knows about its clock: the lead this venue's previous batch
+            // showed, or — for a venue the cell has not measured, while some
+            // other venue has shown a skew past the bound — the widest lead
+            // any venue shows, because from one venue the cell cannot tell
+            // which clock is wrong and its own is then a suspect. Storing the
+            // frame's lead alone, as this feed did until the cell was threaded
+            // in here, wrote a precision-sensitive label down as exact beside
+            // a clock the cell had already stopped trading cross-venue
+            // against, and the deep brain's precision gate admitted it.
+            //
+            // Asked before `on_bytes`, deliberately: decoding measures this
+            // frame, which makes the venue "measured" by its own lead and
+            // leaves nothing to widen it with, so asked after it the call is
+            // the lead under another name. Before it, the answer is the
+            // cell's knowledge at the instant the frame arrived, never
+            // narrower than the frame's own proof.
+            let lead = venue_time.since(now).max(Duration::ZERO);
+            let bound = cell.clock_uncertainty(&self.venue, lead);
             let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
             if decoded != tick.messages {
                 // The decoder is this module's own; a frame it built that its
@@ -527,12 +601,180 @@ impl SimulatedFeed {
             // tick the cell did not take is not a tick this pass applied,
             // and the record of what a pass applied is what replay and the
             // lake read.
-            for line in wire.lines {
-                match self.capture(&line, venue_time, now) {
-                    Ok(event) => self.captured.push(event),
-                    Err(_) => self.capture_failures = self.capture_failures.saturating_add(1),
+            match bound {
+                Ok(uncertainty) => {
+                    for line in wire.lines {
+                        match self.capture(&line, venue_time, now, uncertainty) {
+                            Ok(event) => self.captured.push(event),
+                            Err(_) => {
+                                self.capture_failures = self.capture_failures.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+                // Unreachable with a floored lead, and still not stored as
+                // the lead alone: an event whose clock bound the cell would
+                // not give is an event this feed cannot honestly record, so
+                // every line of the frame is counted as a capture failure
+                // rather than written down narrower than the cell knows.
+                Err(_) => {
+                    self.capture_failures = self
+                        .capture_failures
+                        .saturating_add(wire.lines.len() as u64);
                 }
             }
+            self.last_frame = frame;
+        }
+        Ok(tick)
+    }
+}
+
+/// Ticks read back from the tick lake, presented to a cell as this feed's
+/// wire (R12-TICK-9006).
+///
+/// A replay that wrote recorded ticks into a cell's books directly would
+/// skip the decoder, the sequencer and the feature path that the recorded
+/// session went through. A cell replayed that way decides from a book the
+/// live cell never held. So each recorded tick is written back as the
+/// publisher's line ([`level_line`], [`status_line`]), and the frame goes
+/// through `Cell::on_bytes` and the feed's own decoder. That is the same
+/// path [`SimulatedFeed::publish`] takes.
+///
+/// What it cannot reproduce, stated so a divergence is not a mystery:
+///
+/// * **A resynchronisation.** A book the original cell discarded after a
+///   gap was rebuilt from the venue's whole depth by `Cell::apply_snapshot`.
+///   That is out of band and is not in the lake (see
+///   [`SimulatedFeed::take_captured`]). A replayed cell that asks for a
+///   snapshot keeps asking, and its book stays discarded.
+/// * **An instrument listed but never published.** The original feed began
+///   tracking an instrument when the venue listed it. The replay begins
+///   when the instrument's first tick appears.
+///
+/// Bounded like the feed it replays: at most [`MAX_FEED_INSTRUMENTS`]
+/// instruments, and one frame per call.
+#[derive(Debug)]
+pub struct ReplayFeed {
+    venue: VenueId,
+    key: FeedKey,
+    tracked: std::collections::BTreeSet<String>,
+}
+
+impl ReplayFeed {
+    /// A replay of `venue`'s simulated depth feed.
+    pub fn new(venue: VenueId) -> Self {
+        Self {
+            key: FeedKey::new(venue.clone(), FEED_NAME),
+            venue,
+            tracked: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Bind the feed's decoder and the venue's settlement terms to `cell`,
+    /// exactly as [`SimulatedFeed::attach`] does. A replay bound any other
+    /// way would decode and settle differently from the session it replays.
+    pub fn attach(&self, cell: &mut Cell) -> Result<()> {
+        SimulatedFeed::new(self.venue.clone()).attach(cell)
+    }
+
+    /// Present one pass's recorded `ticks` to `cell` at `now`.
+    ///
+    /// Sorted by the publisher's sequence before they are written, which is
+    /// the order the publisher put them on the wire. Refused, before
+    /// anything reaches the cell, when a tick is not one this feed could
+    /// have published: another venue's or another feed's, a body the
+    /// publisher has no line for, an id the wire cannot carry, or an
+    /// instrument past [`MAX_FEED_INSTRUMENTS`]. Replaying such a tick
+    /// through this decoder would invent a session that never happened.
+    pub fn publish(
+        &mut self,
+        cell: &mut Cell,
+        ticks: &[MarketMessage],
+        now: Timestamp,
+    ) -> Result<FeedTick> {
+        let mut ordered: Vec<&MarketMessage> = ticks.iter().collect();
+        ordered.sort_by_key(|tick| tick.origin.sequence);
+        let mut frame = String::new();
+        let mut instruments = std::collections::BTreeSet::new();
+        let mut first_seen = Vec::new();
+        for tick in &ordered {
+            if tick.origin.venue != self.venue || tick.origin.feed != FEED_NAME {
+                return Err(Error::invalid(format!(
+                    "a recorded tick of {}/{} cannot be replayed as {}/{FEED_NAME}: its \
+                     decoder is not this one",
+                    tick.origin.venue, tick.origin.feed, self.venue
+                )));
+            }
+            let id = tick.object_id.as_str();
+            if id.contains('\t') || id.contains('\n') || id.contains('\r') {
+                return Err(Error::invalid(format!(
+                    "recorded instrument {id:?} cannot be written on this feed's wire, so the \
+                     publisher never sent it"
+                )));
+            }
+            let line = match &tick.body {
+                MessageBody::LevelSet {
+                    side,
+                    price,
+                    quantity,
+                    ..
+                } => level_line(
+                    tick.origin.sequence,
+                    tick.venue_time,
+                    id,
+                    *side,
+                    *price,
+                    *quantity,
+                ),
+                MessageBody::StatusChange { status } => {
+                    status_line(tick.origin.sequence, tick.venue_time, id, *status)
+                }
+                other => {
+                    return Err(Error::invalid(format!(
+                        "recorded tick {} carries {other:?}, which the simulated publisher \
+                         has no line for; replay it through the decoder of the feed that \
+                         published it",
+                        tick.origin.sequence
+                    )));
+                }
+            };
+            if !self.tracked.contains(id) && !first_seen.iter().any(|seen: &String| seen == id) {
+                first_seen.push(id.to_string());
+            }
+            instruments.insert(id.to_string());
+            frame.push_str(&line);
+        }
+        if self.tracked.len() + first_seen.len() > MAX_FEED_INSTRUMENTS {
+            return Err(Error::invalid(format!(
+                "the recorded session names more than {MAX_FEED_INSTRUMENTS} instruments, \
+                 which the feed it replays would not have tracked"
+            )));
+        }
+        // As the live feed does: the venue was read, so its feed is alive
+        // whether or not anything moved.
+        cell.feed_heartbeat(&self.venue, now);
+        for id in first_seen {
+            cell.track(VenueState::aggregated(
+                ObjectId::from_string(id.clone()),
+                self.venue.clone(),
+                VenueStatus::Open,
+            ));
+            self.tracked.insert(id);
+        }
+        let mut tick = FeedTick {
+            instruments: instruments.len(),
+            ..FeedTick::default()
+        };
+        if !ordered.is_empty() {
+            let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
+            if decoded != ordered.len() {
+                return Err(Error::invalid(format!(
+                    "the replay wrote {} recorded tick(s) and the cell decoded {decoded}; the \
+                     feed's wire and its decoder disagree",
+                    ordered.len()
+                )));
+            }
+            tick.messages = decoded;
         }
         Ok(tick)
     }
@@ -563,13 +805,101 @@ pub fn level_line(
     )
 }
 
+/// The exact line the simulated venue published for `event`, re-encoded
+/// with the encoder that wrote it, or `None` for an event this feed does not
+/// publish (R12-TICK-2042, ADR 0181).
+///
+/// The feed stamps every captured event with the SHA-256 of the line it put
+/// on the wire (`MarketEvent::native_hash`). Re-encoding here and comparing
+/// against that hash is how the lake keeps the venue's bytes without a
+/// second copy travelling the spool: a line whose re-encoding does not hash
+/// to what was published is not the published line, and the caller keeps
+/// nothing for it rather than something close.
+pub fn native_line(event: &MarketEvent) -> Option<String> {
+    let origin = event.origin();
+    if origin.feed != FEED_NAME {
+        return None;
+    }
+    let id = event.payload().object_id.as_str();
+    let line = match &event.payload().body {
+        MessageBody::LevelSet {
+            side,
+            price,
+            quantity,
+            ..
+        } => level_line(
+            origin.sequence,
+            event.event_time(),
+            id,
+            *side,
+            *price,
+            *quantity,
+        ),
+        MessageBody::StatusChange { status } => {
+            status_line(origin.sequence, event.event_time(), id, *status)
+        }
+        _ => return None,
+    };
+    let published = event.native_hash()?;
+    (qip_core::hash::sha256_hex(line.as_bytes()) == published).then_some(line)
+}
+
+/// One status line, as the venue's publisher writes it and the feed's
+/// decoder reads it: `sequence ⇥ venue_time_nanos ⇥ object_id ⇥ S ⇥ status ⇤`,
+/// where `status` is [`VenueStatus::as_str`]. Five fields where a level has
+/// six, and `S` where a level has `B` or `A`, so neither can be read as the
+/// other.
+pub fn status_line(
+    sequence: u64,
+    venue_time: Timestamp,
+    object_id: &str,
+    status: VenueStatus,
+) -> String {
+    format!(
+        "{sequence}\t{}\t{object_id}\tS\t{}\n",
+        venue_time.as_nanos(),
+        status.as_str()
+    )
+}
+
+/// The status a status line names, or `None` for a word no status spells.
+fn parse_status(word: &str) -> Option<VenueStatus> {
+    [
+        VenueStatus::Open,
+        VenueStatus::Auction,
+        VenueStatus::Halted,
+        VenueStatus::CircuitBreaker,
+        VenueStatus::Closed,
+        VenueStatus::Unreachable,
+    ]
+    .into_iter()
+    .find(|status| status.as_str() == word)
+}
+
+/// One line of a publication, as a fact.
+#[derive(Debug)]
+enum WireLine {
+    Level {
+        sequence: u64,
+        id: String,
+        side: BookSide,
+        price: Decimal,
+        size: Decimal,
+    },
+    Status {
+        sequence: u64,
+        id: String,
+        status: VenueStatus,
+    },
+}
+
 /// The frame one publication is building, and the two facts every line of
 /// it carries from the venue.
 struct Wire {
     frame: String,
     /// The same lines as facts, for the capture the feed keeps of what it
-    /// published (W1.13): sequence, instrument, side, price, size.
-    lines: Vec<(u64, String, BookSide, Decimal, Decimal)>,
+    /// published (W1.13).
+    lines: Vec<WireLine>,
     /// The sequence number of the last line written.
     sequence: u64,
     venue_time: Timestamp,
@@ -578,8 +908,13 @@ struct Wire {
 impl Wire {
     fn level(&mut self, id: &str, side: BookSide, price: Decimal, size: Decimal) {
         self.sequence = self.sequence.saturating_add(1);
-        self.lines
-            .push((self.sequence, id.to_string(), side, price, size));
+        self.lines.push(WireLine::Level {
+            sequence: self.sequence,
+            id: id.to_string(),
+            side,
+            price,
+            size,
+        });
         self.frame.push_str(&level_line(
             self.sequence,
             self.venue_time,
@@ -588,6 +923,17 @@ impl Wire {
             price,
             size,
         ));
+    }
+
+    fn status(&mut self, id: &str, status: VenueStatus) {
+        self.sequence = self.sequence.saturating_add(1);
+        self.lines.push(WireLine::Status {
+            sequence: self.sequence,
+            id: id.to_string(),
+            status,
+        });
+        self.frame
+            .push_str(&status_line(self.sequence, self.venue_time, id, status));
     }
 }
 
@@ -667,9 +1013,7 @@ struct Level {
     sequence: u64,
     venue_time: Timestamp,
     object_id: ObjectId,
-    side: BookSide,
-    price: Decimal,
-    size: Decimal,
+    body: MessageBody,
 }
 
 /// One line's fields, or why it could not be read.
@@ -681,9 +1025,34 @@ fn parse_line(line: &str) -> std::result::Result<Level, String> {
     let side = fields.next();
     let price = fields.next();
     let size = fields.next();
-    let (Some(sequence), Some(venue_time), Some(id), Some(side), Some(price), Some(size)) =
-        (sequence, venue_time, id, side, price, size)
+    let (Some(sequence), Some(venue_time), Some(id), Some(side)) = (sequence, venue_time, id, side)
     else {
+        return Err("a line needs at least four tab-separated fields".to_string());
+    };
+    if side == "S" {
+        // A status line: five fields, the fifth a status word.
+        let (Some(word), None, None) = (price, size, fields.next()) else {
+            return Err("a status line has exactly five fields".to_string());
+        };
+        let status =
+            parse_status(word).ok_or_else(|| format!("status {word:?} names no status"))?;
+        let sequence = sequence
+            .parse::<u64>()
+            .ok()
+            .filter(|sequence| *sequence > 0)
+            .ok_or_else(|| format!("sequence {sequence:?} is not a positive integer"))?;
+        let venue_time = venue_time
+            .parse::<i64>()
+            .map(Timestamp::from_nanos)
+            .map_err(|_| format!("venue time {venue_time:?} is not a count of nanoseconds"))?;
+        return Ok(Level {
+            sequence,
+            venue_time,
+            object_id: ObjectId::from_string(id),
+            body: MessageBody::StatusChange { status },
+        });
+    }
+    let (Some(price), Some(size)) = (price, size) else {
         return Err("a level needs six tab-separated fields".to_string());
     };
     if fields.next().is_some() {
@@ -715,9 +1084,12 @@ fn parse_line(line: &str) -> std::result::Result<Level, String> {
         sequence,
         venue_time,
         object_id: ObjectId::from_string(id),
-        side,
-        price,
-        size,
+        body: MessageBody::LevelSet {
+            side,
+            price,
+            quantity: size,
+            order_count: None,
+        },
     })
 }
 
@@ -759,12 +1131,7 @@ impl Decoder for DepthDecoder {
                     messages.push(MarketMessage::new(
                         level.object_id,
                         Origin::new(self.venue.clone(), FEED_NAME, 0, level.sequence),
-                        MessageBody::LevelSet {
-                            side: level.side,
-                            price: level.price,
-                            quantity: level.size,
-                            order_count: None,
-                        },
+                        level.body,
                         // Two facts from two sources: the venue's instant as
                         // the line states it, and this node's receipt.
                         level.venue_time,

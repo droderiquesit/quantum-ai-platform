@@ -74,6 +74,67 @@ use std::collections::{BTreeMap, BTreeSet};
 /// records the way the venue review's records are picked out by origin.
 pub const MODEL_PROMOTION_ORIGIN: &str = "kernel/model-promotion";
 
+/// The lineage producer of every [`ModelRegistered`] record, which shares the
+/// promotion records' topic and is told apart from them by this.
+pub const MODEL_REGISTRATION_ORIGIN: &str = "kernel/model-registration";
+
+/// A registered model card as it stood when the registry handed it to the
+/// log (R12-MODEL-9003): its version, every evaluation, its lineage, its
+/// stage and alias history and its limitations, whether or not it was ever
+/// promoted.
+///
+/// The registry is in memory in the deep brain, and the promotion records
+/// only carry promoted versions, so a card registered and evaluated and then
+/// not promoted was lost at every restart — and with it the evidence that a
+/// fit failed, which is the record that keeps a search from retrying until
+/// something passes unseen. A record is written when a card is new or has
+/// changed since the last one; the newest record per reference is the card.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelRegistered {
+    pub card: qip_ai::registry::ModelCard,
+}
+
+impl EventBody for ModelRegistered {
+    /// The Learn group, which the log never evicts, like the promotions.
+    const TOPIC: Topic = Topic::ModelEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// Whether two cards differ only in a drift reading that stays on the same
+/// side of the card's threshold. A reading that crosses it changes whether
+/// the model may inform a decision, so it is a record; one that does not is
+/// monitoring the next round re-measures.
+fn same_but_drift(a: &qip_ai::registry::ModelCard, b: &qip_ai::registry::ModelCard) -> bool {
+    let drifted = |card: &qip_ai::registry::ModelCard| card.drift_score > card.drift_threshold;
+    if drifted(a) != drifted(b) {
+        return false;
+    }
+    let mut b = b.clone();
+    b.drift_score = a.drift_score;
+    *a == b
+}
+
+/// Every card the log's registration records hold, the newest per
+/// reference, for a restarted process to rebuild from.
+pub(crate) fn resume_model_registrations(
+    log: &EventLog,
+) -> Result<BTreeMap<String, qip_ai::registry::ModelCard>> {
+    let mut cards = BTreeMap::new();
+    for event in log.events() {
+        if event.topic != ModelRegistered::TOPIC
+            || event.lineage.producer != MODEL_REGISTRATION_ORIGIN
+        {
+            continue;
+        }
+        let card = StreamEnvelope::from_frame(event)
+            .and_then(|envelope| envelope.decode::<ModelRegistered>())?
+            .body
+            .card;
+        cards.insert(card.reference(), card);
+    }
+    Ok(cards)
+}
+
 /// The `outcome` label values of `qip_model_serves_total`: the provider served
 /// the artifact, or refused it. Constants, so the label stays a fixed pair
 /// however many sites record it.
@@ -93,6 +154,12 @@ pub const SERVE_REFUSED: &str = "refused";
 #[serde(rename_all = "snake_case")]
 pub enum ModelProducer {
     TrainingPipeline,
+    /// A model the platform fitted and proposed for itself: the deep
+    /// brain's learning desk. Promoted only out of a shadow period of at
+    /// least [`MIN_SHADOW_ROUNDS`] won rounds (R12-EXPAND-6070), because a
+    /// self-proposed change must run beside production, acted on by
+    /// nothing, before it may replace what production runs.
+    SelfFitted,
     QuantumGateway,
     QuantumInformed {
         baseline: String,
@@ -185,7 +252,75 @@ pub struct ModelPromotion {
     /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permitted_locations: Option<BTreeSet<String>>,
+    /// Every stage the promotion passed, in order, as the kernel read each
+    /// off the registry and the verifier at that instant (R12-EXPAND-6070).
+    /// Absent from records written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
+    /// The version the promoted card names as its rollback parent, as the
+    /// registry chose it at the promotion: the most recently deployed of the
+    /// displaced (`ModelRegistry::record_rollback_parent`). On the record so
+    /// that a desk restoring after a crash between the record and the moved
+    /// cards takes the same parent the live process did; the replay used to
+    /// take the first displaced reference, and with two production cards
+    /// displaced the two differed (R12-MODEL-9003). Absent from records
+    /// written before the field existed, and from a promotion that displaced
+    /// nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_parent: Option<String>,
+    /// The central plane's signature over [`Self::signed_payload`]: the
+    /// reference, the artifact digest and the stages. A stage list edited
+    /// after the fact does not verify (`Platform::promotion_verifies`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     pub at: Timestamp,
+}
+
+impl ModelPromotion {
+    /// What [`Self::signature`] covers.
+    pub fn signed_payload(&self) -> String {
+        format!(
+            "model-promotion|{}|{}|{}",
+            self.reference,
+            self.artifact_digest,
+            self.stages.join("\u{1f}")
+        )
+    }
+}
+
+/// Shadow rounds a self-fitted model must win before it may be promoted: the
+/// registry's own figure, which `ModelRegistry::promote` enforces for every
+/// self-fitted card whoever calls it.
+pub use qip_ai::registry::MIN_SHADOW_ROUNDS;
+
+/// The shadow stage a self-fitted candidate must have completed, as one
+/// stage line, or the refusal (R12-EXPAND-6070).
+fn require_completed_shadow(registry: &ModelRegistry, reference: &str) -> Result<String> {
+    let card = registry
+        .get(reference)
+        .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+    match (&card.stage, &card.shadow) {
+        (qip_ai::registry::ModelStage::Shadow, Some(shadow))
+            if shadow.rounds_won >= MIN_SHADOW_ROUNDS =>
+        {
+            Ok(format!(
+                "shadow since {}: {} round(s) won against production on data after the fit ({})",
+                shadow.since.as_secs(),
+                shadow.rounds_won,
+                shadow.evidence.join("; ")
+            ))
+        }
+        (qip_ai::registry::ModelStage::Shadow, Some(shadow)) => Err(Error::denied(format!(
+            "{reference} is not promoted: a self-fitted model completes its shadow stage first, \
+             and it has won {} of the {MIN_SHADOW_ROUNDS} shadow round(s) required",
+            shadow.rounds_won
+        ))),
+        (stage, _) => Err(Error::denied(format!(
+            "{reference} is not promoted: a self-fitted model that skipped its shadow stage is \
+             refused production (it is in {stage:?}); run it beside production through \
+             ModelRegistry::enter_shadow first"
+        ))),
+    }
 }
 
 impl EventBody for ModelPromotion {
@@ -577,6 +712,75 @@ fn apply_promotion(promoted: &mut BTreeMap<String, ModelPromotion>, record: Mode
 }
 
 impl Platform {
+    /// Journal every card in `registry` that is new or has changed since this
+    /// process last journaled it — a registration, an evaluation, a stage or
+    /// alias move, a limitation — and return how many were written
+    /// (R12-MODEL-9003). The deep brain calls it after each learning round,
+    /// so the registry it rebuilds empty at start can be refilled from the
+    /// log by [`Self::registered_model_cards`]. A card is written before the
+    /// in-memory mirror moves, so a refused write is retried next time
+    /// rather than forgotten.
+    pub fn journal_model_registry(
+        &mut self,
+        registry: &ModelRegistry,
+        now: Timestamp,
+    ) -> Result<usize> {
+        let mut written = 0;
+        for card in registry.iter() {
+            let reference = card.reference();
+            // A drift reading alone is not a new record. The desk re-measures
+            // every earlier fit on a subject each round, so journaling each
+            // reading would grow the never-evicted Learn group with the
+            // square of the rounds; drift is a monitoring figure the next
+            // round re-measures, not part of what the registry must keep.
+            if self
+                .journaled_cards
+                .get(&reference)
+                .is_some_and(|journaled| same_but_drift(journaled, card))
+            {
+                continue;
+            }
+            self.journal_record(
+                ModelRegistered { card: card.clone() },
+                MODEL_REGISTRATION_ORIGIN,
+                now,
+            )?;
+            self.journaled_cards.insert(reference, card.clone());
+            written += 1;
+        }
+        Ok(written)
+    }
+
+    /// Every promotion the log holds, in log order, displaced ones included:
+    /// what a restarted desk fetches incumbent and predecessor artifacts by
+    /// (R12-MODEL-9003).
+    pub fn model_promotion_history(&self) -> Result<Vec<ModelPromotion>> {
+        promotions_in(self.event_log())
+    }
+
+    /// Journal the cards a committed promotion or rollback moved. The record
+    /// is the commit, so a failure here must not report the move as refused:
+    /// the in-memory mirror is advanced only on a successful write, so the
+    /// caller's next `journal_model_registry` writes them again, and a
+    /// restart in between rebuilds their stages and lifecycle from the
+    /// promotion records (R12-MODEL-9003). The failure is counted where the
+    /// alerts look rather than dropped.
+    fn journal_moved_cards(&mut self, registry: &ModelRegistry, now: Timestamp) {
+        if self.journal_model_registry(registry, now).is_err() {
+            self.telemetry.metrics.count(
+                names::MODEL_PACKAGES,
+                labels([("outcome", "cards_unjournaled")]),
+            );
+        }
+    }
+
+    /// Every registered card the log holds, the newest record per reference,
+    /// in reference order: what a restarted deep brain registers before its
+    /// first round (R12-MODEL-9003).
+    pub fn registered_model_cards(&self) -> impl Iterator<Item = &qip_ai::registry::ModelCard> {
+        self.journaled_cards.values()
+    }
+
     /// The provider the composition root handed in.
     pub fn model_provider(&self) -> &dyn ModelProvider {
         self.model_provider.as_ref()
@@ -609,6 +813,16 @@ impl Platform {
     }
 
     /// Every promotion this process holds, by reference, in reference order.
+    /// Whether a promotion record carries the central plane's signature
+    /// over its reference, digest and stages (R12-EXPAND-6070). False for a
+    /// record with no signature and for one edited after it was signed.
+    pub fn promotion_verifies(&self, record: &ModelPromotion) -> bool {
+        record.signature.as_deref().is_some_and(|signature| {
+            self.central
+                .verifies_record(&record.signed_payload(), signature)
+        })
+    }
+
     pub fn model_promotions(&self) -> &BTreeMap<String, ModelPromotion> {
         &self.model_promotions
     }
@@ -737,8 +951,12 @@ impl Platform {
         displaced: &[String],
         now: Timestamp,
     ) -> Result<PublishedArtifact> {
+        let mut stages = Vec::new();
         match &producer {
             ModelProducer::TrainingPipeline => {}
+            ModelProducer::SelfFitted => {
+                stages.push(require_completed_shadow(registry, &artifact.reference)?);
+            }
             ModelProducer::QuantumGateway => {
                 return Err(Error::denied(format!(
                     "{} is not promoted: its producer is the quantum gateway, whose output is a \
@@ -777,6 +995,26 @@ impl Platform {
                  artifact is {}; a version names one artifact, so publish the new bytes under a \
                  new version",
                 artifact.reference, first.artifact_digest, artifact.digest
+            )));
+        }
+        // A version the log promoted and has since taken out of production
+        // returns only through `rollback_model`, which checks the reading it
+        // rolls back on and the predecessor's eligibility. Promoted again, it
+        // skipped both, stood in production with its retirement still on the
+        // card (so `decision_eligibility` refused it), and a restarted desk
+        // replayed the record as the rollback it was not, restoring a history
+        // that differed from the live one (R12-MODEL-9003, eighth review). A
+        // version still in production may be published again under the same
+        // bytes, as a restarted desk does.
+        if !self.model_promotions().contains_key(&artifact.reference)
+            && let Some(first) = promotions_in(self.event_log())?
+                .into_iter()
+                .find(|record| record.reference == artifact.reference)
+        {
+            return Err(Error::denied(format!(
+                "{} is not promoted: the log promoted it at {} and has since taken it out of \
+                 production; a version returns to production only through a rollback",
+                artifact.reference, first.at
             )));
         }
         let served = self.serve_model(artifact).map_err(|error| {
@@ -820,6 +1058,7 @@ impl Platform {
             .verdict
             .is_refuted()
             .then(|| verification.verdict.summary());
+        let verified = verification.verdict.summary();
         self.journal_record(
             crate::model_tournament::ModelVerified { verification },
             crate::model_tournament::VERIFIER_ORIGIN,
@@ -867,7 +1106,13 @@ impl Platform {
         })?;
         let permitted_locations =
             (!card.data_entitlements.is_empty()).then(|| card.permitted_locations.clone());
-        let record = ModelPromotion {
+        let rollback_parent = card.rollback_parent.clone();
+        // The stages in the order they ran: the shadow period (for a
+        // self-fitted candidate, checked above), the registry's evaluation,
+        // the verifier society's verdict.
+        stages.push(format!("evaluation: {evidence}"));
+        stages.push(format!("verifier: {verified}"));
+        let mut record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,
             format: artifact.format,
@@ -882,12 +1127,25 @@ impl Platform {
             moved_by: Some(desk),
             evidence: Some(evidence),
             permitted_locations,
+            stages,
+            rollback_parent,
+            signature: None,
             at: now,
         };
+        // Signed first, so every copy of the record on the log carries the
+        // centre's signature (lane L4). Then every card as it stands *before*
+        // the move, journaled before the record (R12-MODEL-9003), so the
+        // candidate's card and its evaluation are on the log whatever happens
+        // next, and nothing on the log claims a promotion the record does not
+        // hold. Then the record, which is the commit; then the moved cards,
+        // whose write may not unmake it.
+        record.signature = Some(self.central.sign_record(&record.signed_payload()));
+        self.journal_model_registry(registry, now)?;
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
         *registry = scratch;
         self.succeed_model_pack(&record);
         apply_promotion(&mut self.model_promotions, record);
+        self.journal_moved_cards(registry, now);
         Ok(published)
     }
 
@@ -970,10 +1228,14 @@ impl Platform {
                 at: now,
                 ..original.clone()
             };
+            // As in a promotion: the unmoved cards, the record, then the
+            // moved cards, whose write may not unmake the rollback.
+            self.journal_model_registry(registry, now)?;
             self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
             *registry = scratch;
             self.succeed_model_pack(&record);
             apply_promotion(&mut self.model_promotions, record);
+            self.journal_moved_cards(registry, now);
             return Ok(predecessor.clone());
         }
         Err(Error::not_found(format!(

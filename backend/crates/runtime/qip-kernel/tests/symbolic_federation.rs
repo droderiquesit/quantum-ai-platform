@@ -604,6 +604,7 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
         subject_class: Some("equity".into()),
         lot_headroom: None,
         cash_headroom: None,
+        contract_expiry_margin_days: None,
     };
     let derivation = derive(input, &causal, now);
     // Premise: abduction named Kestrel, seen to move, so there is a cause to
@@ -705,30 +706,60 @@ fn a_resolved_federation_arbitration_is_charged_to_the_ensembles_own_component()
     let mut aaa = tape("AAA", total, end);
     let later = aaa.split_off(120);
     platform.observe(aaa);
+    let key = ComponentKey::new(ComponentKind::Ensemble, FEDERATION_ENSEMBLE)?;
     for (step, a) in later.into_iter().enumerate() {
         platform.observe(vec![a]);
         platform.run_cycle(start().saturating_add(Duration::from_days(step as i64 + 1)));
+        if step == 0 {
+            // The unresolved half: arbitrations are pending after the first
+            // cycle and nothing has answered them, so nothing is charged.
+            let first = federation_stage::replay(&platform)?;
+            assert!(
+                first.iter().all(|r| r.resolved.is_empty())
+                    && first.iter().any(|r| !r.arbitrations.is_empty()),
+                "premise: the first cycle arbitrated and resolved nothing"
+            );
+            assert!(
+                platform.self_model().get(&key).is_none(),
+                "an arbitration was charged before its proposition resolved"
+            );
+        }
     }
 
     let reviews = federation_stage::replay(&platform)?;
     let resolutions: Vec<&federation_stage::Resolution> =
         reviews.iter().flat_map(|r| &r.resolved).collect();
     assert!(!resolutions.is_empty(), "premise: propositions resolved");
-    let sided = resolutions
+    let sided: Vec<(f64, bool)> = resolutions
         .iter()
-        .filter_map(|r| r.ensemble)
-        .filter(|p| p.total_cmp(&0.5).is_ne())
-        .count();
+        .filter_map(|r| r.ensemble.map(|p| (p, r.outcome)))
+        .filter(|(p, _)| p.total_cmp(&0.5).is_ne())
+        .collect();
     assert!(
-        sided > 0,
+        !sided.is_empty(),
         "premise: an arbitration took a side and resolved"
     );
-    let key = ComponentKey::new(ComponentKind::Ensemble, FEDERATION_ENSEMBLE)?;
-    let estimate = platform
-        .self_model()
-        .get(&key)
-        .unwrap_or_else(|| panic!("{sided} arbitration(s) resolved and the ensemble holds none"));
-    assert_eq!(estimate.sample_count(), sided);
+    let called = sided
+        .iter()
+        .filter(|(p, outcome)| (*p > 0.5) == *outcome)
+        .count();
+    let estimate = platform.self_model().get(&key).unwrap_or_else(|| {
+        panic!(
+            "{} arbitration(s) resolved and the ensemble holds none",
+            sided.len()
+        )
+    });
+    assert_eq!(estimate.sample_count(), sided.len());
+    // Graded by the side the arbitration took against what happened.
+    assert_eq!(estimate.hits(), called, "{sided:?}");
+    // Never in the facts the sizing bound reads.
+    assert!(
+        platform
+            .self_model()
+            .sample_facts()
+            .all(|(component, _, _)| !component.starts_with("ensemble:")),
+        "an ensemble record reached the self-model freshness facts"
+    );
     Ok(())
 }
 
@@ -1015,6 +1046,7 @@ fn the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_unty
             subject_class: None,
             lot_headroom: None,
             cash_headroom: None,
+            contract_expiry_margin_days: None,
         }
     };
     let unregistered = derive(input.clone(), platform.world().causal(), start());
@@ -1329,6 +1361,130 @@ fn a_material_disagreement_on_a_held_instrument_issues_a_request_and_on_an_unhel
     assert!(
         (f64::from(*spread_bp) / 10_000.0 - spread).abs() < 1e-4,
         "{spread_bp} bp against {spread}"
+    );
+    Ok(())
+}
+
+/// R12-REASON-3057, the contract rule on the cycle rather than on a hand-built
+/// input: a universe whose one instrument is a future that expired the day
+/// before the cycle. The hypothesis the panel forms on it has a horizon of at
+/// least a day, so the contract's expiry falls short of the claim's deadline,
+/// the kernel's `reason_symbolically` seam reads the margin off the future's
+/// extension, and the journaled derivation rules the hypothesis ineligible
+/// under `r70-contract-expires-before-horizon` and replays to that verdict.
+/// The same tape on a common stock carries no expiry and the fact is absent.
+///
+/// Mutation: in `Platform::new`'s `contract_expiries`, map a future to `None`
+/// — the margin is never read, the fact is absent from the inputs and the
+/// first assertion on the future fails. Verified and restored.
+#[test]
+fn a_hypothesis_on_a_future_that_expires_before_its_horizon_is_ruled_against_on_the_cycle()
+-> Result<()> {
+    use qip_financial::extensions::{Extension, FutureDetails, SettlementStyle};
+    use qip_reasoning_engine::rules::Value;
+
+    let future_universe = || -> Universe {
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    object("AAA"),
+                    "AAA",
+                    InstrumentType::Future,
+                    fixture_liquidity(),
+                )
+                .venue("XCME")
+                .price(dec!("100"))
+                .contract_multiplier(Decimal::from_int(1))
+                .underlying(object("BBB"))
+                .extension(Extension::Future(FutureDetails {
+                    underlying_object_id: "AAA-SPOT".into(),
+                    // Expired the day before the cycle runs: every horizon the
+                    // panel can give the claim ends after this.
+                    expiry: start().saturating_sub(Duration::from_days(1)),
+                    contract_size: Decimal::from_int(1),
+                    tick_size: dec!("0.25"),
+                    tick_value: dec!("0.25"),
+                    initial_margin: Decimal::from_int(10),
+                    maintenance_margin: Decimal::from_int(8),
+                    settlement: SettlementStyle::Cash,
+                    contract_month_index: 1,
+                }))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid future"),
+            )
+            .expect("insertable");
+        universe
+    };
+    let margin_of = |derivation: &symbolic_stage::SymbolicDerivation| {
+        derivation
+            .rules
+            .inputs
+            .iter()
+            .find(|(name, _)| name == "expiry_margin_days")
+            .map(|(_, value)| value.clone())
+    };
+
+    // The stock: the same tape, no expiry, no fact. The premise that the
+    // fixture forms a hypothesis at all is carried by the sibling test above.
+    let mut stock = platform()?;
+    stock.observe(bars("AAA", 120));
+    stock.run_cycle(start());
+    let stock_derivations = symbolic_stage::replay(&stock)?;
+    assert_eq!(
+        stock_derivations.len(),
+        1,
+        "premise: one hypothesis on the stock"
+    );
+    assert_eq!(
+        margin_of(&stock_derivations[0]),
+        None,
+        "a stock has no expiry"
+    );
+
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        future_universe(),
+        limits(),
+    )?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+    let derivations = symbolic_stage::replay(&platform)?;
+    assert_eq!(
+        derivations.len(),
+        1,
+        "premise: one hypothesis on the future:\n{}",
+        report.summarise()
+    );
+    let derivation = &derivations[0];
+    let Some(Value::Int(margin)) = margin_of(derivation) else {
+        panic!(
+            "the future's expiry did not reach the pack: {:?}",
+            derivation.rules.inputs
+        );
+    };
+    assert!(
+        margin < 0,
+        "the contract expired before the horizon: {margin}"
+    );
+    let verdict = derivation
+        .rules
+        .verdict
+        .derived()
+        .expect("the pack evaluated");
+    assert_eq!(
+        verdict.facts.get("contract_expires_before_horizon"),
+        Some(&Value::Bool(true))
+    );
+    assert_ne!(verdict.facts.get("eligible"), Some(&Value::Bool(true)));
+    assert!(
+        derivation.rules.verified,
+        "the journaled verdict reproduces"
     );
     Ok(())
 }

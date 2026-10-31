@@ -339,7 +339,9 @@
 
 use qip_contracts::CapitalEnvelope;
 use qip_contracts::message::BookSide;
-use qip_contracts::policy::{CycleWhitelist, WhitelistedConversion, WhitelistedCosts};
+use qip_contracts::policy::{
+    CycleWhitelist, HoldingTerms, WhitelistedConversion, WhitelistedCosts,
+};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueClass, VenueId};
 use qip_core::Decimal;
@@ -390,6 +392,14 @@ pub struct WhitelistedMarket {
     /// the net edge flattered by its absence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub costs: Option<WhitelistedCosts>,
+    /// The representation and settlement stage of the book's base holding
+    /// (R12-MESH-5053), shipped on the conversion that takes it and the one
+    /// that gives it. `None` is "none stated": native and settled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_terms: Option<HoldingTerms>,
+    /// The same for the book's quote holding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_terms: Option<HoldingTerms>,
 }
 
 /// The operator's statement of what the arbitrage desk may price.
@@ -655,6 +665,8 @@ impl ArbitragePolicy {
                 side: BookSide::Ask,
                 cost_fraction: terms.taker_cost,
                 costs: market.costs.clone(),
+                from_terms: market.quote_terms,
+                to_terms: market.base_terms,
             });
             conversions.push(WhitelistedConversion {
                 venue: market.venue.clone(),
@@ -665,6 +677,8 @@ impl ArbitragePolicy {
                 side: BookSide::Bid,
                 cost_fraction: terms.taker_cost,
                 costs: market.costs.clone(),
+                from_terms: market.base_terms,
+                to_terms: market.quote_terms,
             });
         }
         let mut start_sizes = self.start_sizes.clone();
@@ -813,6 +827,8 @@ mod tests {
                     base: "AAA".to_string(),
                     quote: "USD".to_string(),
                     costs: None,
+                    base_terms: None,
+                    quote_terms: None,
                 },
                 WhitelistedMarket {
                     venue: "XLON".to_string(),
@@ -820,6 +836,8 @@ mod tests {
                     base: "AAA".to_string(),
                     quote: "USD".to_string(),
                     costs: None,
+                    base_terms: None,
+                    quote_terms: None,
                 },
             ],
             start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
@@ -905,6 +923,44 @@ mod tests {
                 "{name}: {refusal}"
             );
         }
+    }
+
+    /// R12-MESH-5053: a book's base holding stated as wrapped and pending
+    /// ships as the *to* end of the conversion that buys it and the *from*
+    /// end of the one that sells it, the quote end stays unstated, and the
+    /// other book carries nothing. Mutation: swap `market.base_terms` and
+    /// `market.quote_terms` on the `Ask` conversion and this fails.
+    #[test]
+    fn a_markets_stated_holding_terms_ship_on_the_ends_that_hold_that_instrument() {
+        use qip_contracts::policy::{HoldingRepresentation, HoldingSettlement};
+        let terms = HoldingTerms {
+            representation: HoldingRepresentation::Wrapped,
+            settlement: HoldingSettlement::Pending,
+        };
+        let mut stated = policy();
+        stated.markets[0].base_terms = Some(terms);
+        let whitelist = stated
+            .whitelist_for(&grant(&["XNYS", "XLON"], dec!("25000")))
+            .expect("two permitted venues emit");
+        assert_eq!(whitelist.conversions.len(), 4, "premise: two per book");
+        for conversion in &whitelist.conversions {
+            let on_stated_book = conversion.market == stated.markets[0].market;
+            let at = |instrument: &str| (on_stated_book && instrument == "AAA").then_some(terms);
+            assert_eq!(
+                conversion.from_terms,
+                at(&conversion.from),
+                "{conversion:?}"
+            );
+            assert_eq!(conversion.to_terms, at(&conversion.to), "{conversion:?}");
+        }
+        assert_eq!(
+            whitelist
+                .conversions
+                .iter()
+                .filter(|c| c.from_terms.is_some() || c.to_terms.is_some())
+                .count(),
+            2
+        );
     }
 
     #[test]

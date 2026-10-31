@@ -946,10 +946,13 @@ impl<S: Spool> SpoolWriter<S> {
             occurred_at,
             recorded_at,
             sequence: 0,
+            // The trace is the correlation the record already joins on — the
+            // order's chain, or the session's — so a fabric envelope carries
+            // the one trace id it requires (R12-CONTRACT-7089).
             lineage: Lineage {
+                trace_id: Some(qip_core::TraceId::new(correlation.as_str())),
                 correlation_id: correlation,
                 causation_id: None,
-                trace_id: None,
                 producer: PRODUCER.to_string(),
             },
             idempotency_key: Some(id),
@@ -1031,6 +1034,9 @@ fn batch(schema_id: u32, records: Vec<Record>) -> Result<Batch> {
         PayloadCodec::CanonicalJson,
         records,
     )
+    // ADR 0129 §2: the writer names the kind of component that produced the
+    // batch, so the ledger can tell a cell's record from a desk's.
+    .map(|batch| batch.with_provenance(qip_events::event_fabric::codec::Provenance::EdgeNode))
 }
 
 /// The journal entry a P2 `ReflexJournalRecorded` record carries.

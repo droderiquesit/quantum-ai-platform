@@ -1184,6 +1184,8 @@ fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
                 base: "AAA".to_string(),
                 quote: "USD".to_string(),
                 costs: None,
+                base_terms: None,
+                quote_terms: None,
             })
             .collect(),
         start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),

@@ -631,7 +631,13 @@ pub fn run_with(
                     .ambient
                     .as_deref()
                     .and_then(|journal| journal.last_correlation().cloned());
-                match agency.route(cycles, round, shared.as_ref(), now) {
+                match agency.route(
+                    cycles,
+                    round,
+                    shared.as_ref(),
+                    now,
+                    &platform.telemetry().metrics,
+                ) {
                     Ok(routed) => outcome.agency = Some(routed),
                     Err(error) => outcome
                         .side_failures
@@ -649,7 +655,13 @@ pub fn run_with(
         }
         if let Some(desk) = loops.tick.as_deref_mut() {
             let world = platform.world();
-            match desk.maybe_round_with_fills(world.graph(), cycles, now, platform.fill_scores()) {
+            match desk.maybe_round_with_orders(
+                world.graph(),
+                cycles,
+                now,
+                platform.orders().orders(),
+                platform.fill_scores(),
+            ) {
                 Ok(round) => outcome.tick = round,
                 Err(error) => outcome
                     .side_failures

@@ -727,6 +727,40 @@ fn a_record_whose_claim_the_world_fabric_holds_inadmissible_is_not_released_for_
     assert_eq!(released, vec!["honest-record"]);
 }
 
+/// R12-EVID-1200: the one seam every root's connector arm goes through
+/// absorbs the poll's evidence and hands back only the records the world
+/// fabric stood behind, keeping a record that rests on no claim. Mutation:
+/// make `admit_world_records` keep every claimed record — the forged record
+/// is released and the first assertion fails.
+#[test]
+fn the_world_record_seam_releases_only_what_the_fabric_stood_behind() {
+    let mut platform = platform();
+    let honest = checked("h1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let mut forged = checked("f1", "https://b.example", "rate 1.12", "1.10", &hash('b'));
+    forged.record.ingestion_timestamp = at(5);
+    forged.verdict = honest.verdict.clone();
+    assert!(honest.verdict.admissible && forged.verdict.admissible);
+
+    let released = platform.admit_world_records(
+        vec![honest, forged],
+        vec![
+            ("honest-record", Some("h1".to_string())),
+            ("forged-record", Some("f1".to_string())),
+            ("unclaimed-record", None),
+        ],
+        at(30),
+    );
+
+    assert_eq!(released.records, vec!["honest-record", "unclaimed-record"]);
+    assert_eq!(released.withheld, 1);
+    assert_eq!(released.intake.admitted, 2, "{:?}", released.intake);
+    assert_eq!(
+        platform.evidence_held(),
+        2,
+        "the poll's evidence was absorbed"
+    );
+}
+
 /// Every knowledge delta the kernel has journalled, re-admitted through the
 /// contract the way a receiving brain would read it.
 fn journalled_deltas(platform: &Platform) -> Vec<KnowledgeDelta> {
@@ -793,4 +827,58 @@ fn a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys() 
     assert_eq!(first.merge_policy, MergePolicy::FastForwardOnly);
     assert_eq!(second.conflicts, vec!["kd-a1".to_string()]);
     assert_eq!(second.merge_policy, MergePolicy::ReviewRequired);
+}
+
+/// R12-EVID-2036: the world fabric's temporal verdict is what the journal
+/// keeps. A claim whose declared cause, held from another source, happened
+/// after the claimed effect is on an impossible event ordering; the
+/// connector's private fabric never held that cause and could not see it,
+/// so only the world fabric's verdict says so, and the journal must carry
+/// that verdict rather than the pre-admission record. Mutation: drop the
+/// `temporal_consistency` assignment in `absorb_evidence` — the journaled
+/// effect carries no verdict and the assertion fails.
+#[test]
+fn a_claim_dated_before_its_declared_cause_is_journaled_with_an_event_ordering_violation() {
+    use qip_world_model::evidence::TemporalConsistency;
+    let mut platform = platform();
+    // The cause, from one source, happened at 8.
+    let mut cause = checked(
+        "cause-1",
+        "https://a.example",
+        "strike called",
+        "1",
+        &hash('a'),
+    );
+    cause.record = cause.record.with_claimed_at(at(8));
+    // The effect, from another, claims to have happened at 2 — before it.
+    let mut effect = checked(
+        "effect-1",
+        "https://b.example",
+        "plant idle",
+        "1",
+        &hash('b'),
+    );
+    effect.record = effect.record.with_claimed_at(at(2));
+    effect.record.caused_by = vec!["cause-1".to_string()];
+    assert!(
+        effect.record.temporal_consistency.is_none(),
+        "premise: the record reaches the kernel without the world's verdict"
+    );
+
+    let intake = platform.absorb_evidence(vec![cause, effect], at(30));
+    assert_eq!(intake.admitted, 2, "{intake:?}");
+
+    let journal = platform.journaled_evidence().unwrap();
+    let effect = journal
+        .iter()
+        .find(|claim| claim.record.id == "effect-1")
+        .expect("the effect was journaled");
+    assert!(
+        matches!(
+            effect.record.temporal_consistency,
+            Some(TemporalConsistency::ViolatesEventOrdering { ref cause_id, .. }) if cause_id == "cause-1"
+        ),
+        "the journal does not carry the world fabric's ordering verdict: {:?}",
+        effect.record.temporal_consistency
+    );
 }

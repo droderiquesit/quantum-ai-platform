@@ -118,6 +118,29 @@ test("the autonomy ceiling's validation file is protected", () => {
   assert.equal(refusals.length, 1);
 });
 
+// R12-ARCH-9071. The suites that hold the non-negotiables are protected, so an
+// agent cannot weaken a guard in the same unreviewed change as the code it
+// guards. Every guard suite CODEOWNERS singles out must be here too, so the two
+// lists cannot drift. Mutation: drop paper_boundary.rs from protected_paths.
+test("an agent change to a guard suite needs a person's approval", () => {
+  const owners = readFileSync(new URL("../.github/CODEOWNERS", import.meta.url), "utf8");
+  const suites = owners.split("\n")
+    .map((l) => l.trim().split(/\s+/)[0])
+    .filter((p) => p && p.startsWith("backend/crates/tests/qip-acceptance/tests/") && p.endsWith(".rs"));
+  // Premise: CODEOWNERS names the guard suites, so the loop below runs.
+  assert.ok(suites.includes("backend/crates/tests/qip-acceptance/tests/paper_boundary.rs"), suites.join(","));
+  assert.ok(suites.includes("backend/crates/tests/qip-acceptance/tests/architecture.rs"), suites.join(","));
+  for (const suite of suites) {
+    // Premise: the test engineer's role admits the file, so only protection refuses it.
+    assert.ok(matchesAny(suite, POLICY.roles["test-engineer"].may_edit), suite);
+    const { refusals } = judgeChange({
+      policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+      files: [suite], commits: [agentCommit("test-engineer")], reviews: [],
+    });
+    assert.equal(refusals.length, 1, suite);
+  }
+});
+
 // ADR 0124 §1. A new decision record and the index row that lists it are the
 // agent's to write without a person: each records a decision, and a gate
 // reads them only to hold their form. Mutation: delete

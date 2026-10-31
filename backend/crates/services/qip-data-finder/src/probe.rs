@@ -23,6 +23,7 @@ use crate::endpoint::SourceEndpoint;
 use crate::robots::RobotsPolicy;
 use crate::schema::SourceSchema;
 use qip_core::error::{Error, Result};
+use qip_core::untrusted::Untrusted;
 use qip_core::{Duration, Timestamp};
 use qip_transport::http::{ClientLimits, HttpClient, HttpRequest, HttpResponse, Method};
 use serde::{Deserialize, Serialize};
@@ -78,9 +79,18 @@ impl HeadResponse {
 }
 
 /// A body actually read from the candidate.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The body is [`Untrusted`] (ADR 0158 decision 16, R12-SEC-9065): it is
+/// the publisher's own text, and until 2026-10-25 it was a `String` on a
+/// public field, one `.clone()` from a brief, a prompt or a tool argument.
+/// It now leaves only through `validate` — [`ProbeEvidence::gather`]
+/// narrows it to a schema fingerprint — and is measured and hashed for the
+/// [`SampleManifest`] without being read. For the same reason the type no
+/// longer derives `Serialize`, `Deserialize` or `PartialEq`: nothing
+/// wrote a sample out, and nothing should be able to.
+#[derive(Clone, Debug)]
 pub struct PayloadSample {
-    pub body: String,
+    pub body: Untrusted<String>,
     pub media_type: String,
     /// When the newest record in the body was true in the world, where the
     /// payload says. `None` means the payload carries no time of its own,
@@ -100,7 +110,7 @@ impl PayloadSample {
             media_type: self.media_type.clone(),
             payload_at: self.payload_at,
             bytes: self.body.len(),
-            content_hash: qip_core::hash::sha256_hex(self.body.as_bytes()),
+            content_hash: self.body.sha256_hex(),
             latency: self.latency,
         }
     }
@@ -214,17 +224,27 @@ impl ProbeEvidence {
         let robots_policy = robots.policy();
         let head = probe.head(endpoint, at)?;
         let sample = probe.sample(endpoint, at)?;
-        let schema = SourceSchema::parse(&sample.body).unwrap_or_else(|_| {
-            // A payload that is not JSON still has a shape; recording it as
-            // an empty schema keeps the source assessable and makes the
-            // absence visible in the fingerprint rather than aborting the
-            // lifecycle over a format this phase cannot parse.
-            SourceSchema::from_fields([])
-        });
-        // The shape has been read; the text's job is over. `sample` is a
-        // local and is dropped at the end of this function, so the body
-        // cannot reach the catalogue through any field of this type.
-        let sample = sample.manifest();
+        // Measured and hashed before the body is consumed, without reading
+        // it.
+        let manifest = sample.manifest();
+        // The validator: the body narrows to its shape — field names and
+        // types — and nothing else of it survives. The field names are still
+        // the publisher's words; they are bounded by being JSON keys of a
+        // payload this probe was pointed at, and they reach a fingerprint
+        // and a schema comparison, not a tool, a brief or a prompt.
+        let schema = sample.body.validate(|body| {
+            Ok(SourceSchema::parse(&body).unwrap_or_else(|_| {
+                // A payload that is not JSON still has a shape; recording it
+                // as an empty schema keeps the source assessable and makes
+                // the absence visible in the fingerprint rather than aborting
+                // the lifecycle over a format this phase cannot parse.
+                SourceSchema::from_fields([])
+            }))
+        })?;
+        // The shape has been read; the text's job is over. The body was
+        // consumed by `validate`, so it cannot reach the catalogue through
+        // any field of this type.
+        let sample = manifest;
         Ok(Self {
             robots,
             robots_policy,
@@ -451,7 +471,16 @@ impl NetworkProbe {
     }
 
     /// Send one request through the route, carrying the user agent.
-    fn fetch(&self, method: Method, path: &str) -> std::result::Result<HttpResponse, String> {
+    ///
+    /// The whole answer comes back [`Untrusted`] — status, headers and body
+    /// alike are what a publisher nobody has vetted chose to send — and each
+    /// probe question below reaches its typed answer through `validate`
+    /// (R12-SEC-9065).
+    fn fetch(
+        &self,
+        method: Method,
+        path: &str,
+    ) -> std::result::Result<Untrusted<HttpResponse>, String> {
         let url = format!("{}{}", self.base_url, path);
         let request = HttpRequest::new(method, &url)
             .map_err(|error| error.to_string())?
@@ -461,6 +490,7 @@ impl NetworkProbe {
             .with_header("accept", "*/*");
         self.client
             .send(&request)
+            .map(|response| Untrusted::new(url, response))
             .map_err(|error| error.to_string())
     }
 }
@@ -476,22 +506,32 @@ impl SourceProbe for NetworkProbe {
     fn robots(&mut self, host: &str, _at: Timestamp) -> Result<RobotsFetch> {
         let started = std::time::Instant::now();
         match self.fetch(Method::Get, "/robots.txt") {
-            Ok(response) if response.is_success() => match response.body_as_str() {
-                Ok(body) => Ok(RobotsFetch::Served {
-                    body: body.to_string(),
-                    latency: elapsed(started),
-                }),
-                // A robots.txt that is not UTF-8 is not a robots.txt. Treated
-                // as unreachable rather than as absent: absent means the host
-                // answered and has no policy, and this host answered with
-                // something nobody can read, which is a different fact.
-                Err(error) => Ok(RobotsFetch::Unreachable {
-                    reason: format!("{host} served an undecodable robots.txt: {error}"),
-                }),
-            },
-            Ok(response) => Ok(RobotsFetch::Absent {
-                status: response.status,
-                latency: elapsed(started),
+            // The validator: a 2xx UTF-8 body is a robots.txt, which
+            // `RobotsPolicy::parse` then narrows to allow and disallow rules.
+            Ok(response) => response.validate(|response| {
+                if !response.is_success() {
+                    return Ok(RobotsFetch::Absent {
+                        status: response.status,
+                        latency: elapsed(started),
+                    });
+                }
+                Ok(match String::from_utf8(response.body) {
+                    Ok(body) => RobotsFetch::Served {
+                        body,
+                        latency: elapsed(started),
+                    },
+                    // A robots.txt that is not UTF-8 is not a robots.txt.
+                    // Treated as unreachable rather than as absent: absent
+                    // means the host answered and has no policy, and this host
+                    // answered with something nobody can read, which is a
+                    // different fact.
+                    Err(error) => RobotsFetch::Unreachable {
+                        reason: format!(
+                            "{host} served an undecodable robots.txt: {}",
+                            error.utf8_error()
+                        ),
+                    },
+                })
             }),
             Err(reason) => Ok(RobotsFetch::Unreachable {
                 reason: format!("{host} via {}: {reason}", self.base_url),
@@ -510,19 +550,22 @@ impl SourceProbe for NetworkProbe {
                     self.base_url
                 ))
             })?;
-        Ok(HeadResponse {
-            status: response.status,
-            content_type: response.header("content-type").map(str::to_string),
-            content_length: response
-                .header("content-length")
-                .and_then(|value| value.parse().ok()),
-            // Deliberately not parsed. `Last-Modified` is an RFC 7231 date and
-            // this crate has no date parser; inventing one to fill a field
-            // whose `None` already means "the source said nothing about when
-            // its content changed" would trade a known gap for a guess. The
-            // freshness finding comes from the payload's own timestamp.
-            last_modified: None,
-            latency: elapsed(started),
+        response.validate(|response| {
+            Ok(HeadResponse {
+                status: response.status,
+                content_type: response.header("content-type").map(str::to_string),
+                content_length: response
+                    .header("content-length")
+                    .and_then(|value| value.parse().ok()),
+                // Deliberately not parsed. `Last-Modified` is an RFC 7231 date
+                // and this crate has no date parser; inventing one to fill a
+                // field whose `None` already means "the source said nothing
+                // about when its content changed" would trade a known gap for
+                // a guess. The freshness finding comes from the payload's own
+                // timestamp.
+                last_modified: None,
+                latency: elapsed(started),
+            })
         })
     }
 
@@ -535,27 +578,22 @@ impl SourceProbe for NetworkProbe {
                 self.base_url
             ))
         })?;
-        if !response.is_success() {
-            return Err(Error::unavailable(format!(
-                "sampling {} through {} answered HTTP {}: a non-2xx body is not a payload, and \
-                 fingerprinting an error page as a schema is how a source is admitted on the \
-                 shape of its own 404",
-                endpoint.url(),
-                self.base_url,
-                response.status
-            )));
-        }
-        let body = response
-            .body_as_str()
-            .map_err(|error| {
-                Error::invalid(format!(
-                    "the payload from {} is not valid UTF-8: {error}",
-                    endpoint.url()
-                ))
-            })?
-            .to_string();
-        Ok(PayloadSample {
-            media_type: response
+        // The validator: a 2xx answer with a UTF-8 body is a sample, which
+        // `ProbeEvidence::gather` then narrows to a schema fingerprint and a
+        // manifest and drops.
+        let origin = response.origin().to_string();
+        response.validate(|response| {
+            if !response.is_success() {
+                return Err(Error::unavailable(format!(
+                    "sampling {} through {} answered HTTP {}: a non-2xx body is not a payload, \
+                     and fingerprinting an error page as a schema is how a source is admitted on \
+                     the shape of its own 404",
+                    endpoint.url(),
+                    self.base_url,
+                    response.status
+                )));
+            }
+            let media_type = response
                 .header("content-type")
                 // The bare type, without the charset parameter: the schema
                 // fingerprint keys on `application/json`, and
@@ -564,14 +602,27 @@ impl SourceProbe for NetworkProbe {
                 .and_then(|value| value.split(';').next())
                 .unwrap_or("application/octet-stream")
                 .trim()
-                .to_string(),
-            body,
-            // As with `last_modified`: the payload's own instant needs a parser
-            // that knows this source's shape, which is the adapter's job and
-            // not the probe's. `None` is a freshness finding, and `assess`
-            // treats it as one.
-            payload_at: None,
-            latency: elapsed(started),
+                .to_string();
+            let body = String::from_utf8(response.body).map_err(|error| {
+                Error::invalid(format!(
+                    "the payload from {} is not valid UTF-8: {}",
+                    endpoint.url(),
+                    error.utf8_error()
+                ))
+            })?;
+            Ok(PayloadSample {
+                media_type,
+                // Wrapped again under the same origin: the status and headers
+                // have been validated into the media type and the 2xx check,
+                // and the body is still exactly what the publisher sent.
+                body: Untrusted::new(origin, body),
+                // As with `last_modified`: the payload's own instant needs a
+                // parser that knows this source's shape, which is the
+                // adapter's job and not the probe's. `None` is a freshness
+                // finding, and `assess` treats it as one.
+                payload_at: None,
+                latency: elapsed(started),
+            })
         })
     }
 }

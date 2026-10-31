@@ -116,7 +116,7 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 7] = [
     (
         "router.huggingface.co",
         "HuggingFaceModel::UPSTREAM_HOST in \
-         crates/services/qip-reasoning-engine/src/providers/huggingface.rs, the \
+         crates/services/qip-language-providers/src/huggingface.rs, the \
          hosted language-model adapter ADR 0037 decides on; constructed by the \
          deep brain alone, reached on POST /v1/chat/completions and nothing \
          else, and dark until an environment sets the variables and mounts the \
@@ -133,7 +133,7 @@ const HUGGING_FACE_LISTENER: &str = "huggingface";
 const HUGGING_FACE_HOST: &str = "router.huggingface.co";
 const HUGGING_FACE_CLUSTER: &str = "router_huggingface_co";
 const HUGGING_FACE_ADAPTER: &str =
-    "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs";
+    "backend/crates/services/qip-language-providers/src/huggingface.rs";
 
 /// The shipped manifest the market-data listener is derived from.
 ///
@@ -950,7 +950,7 @@ fn the_hugging_face_host_is_one_value_in_the_adapter_the_bootstrap_and_the_allow
     // listener whose requests carry a credential, the route is held to one
     // exact path and one method: a second route on this port is a second
     // thing the bearer token is sent to.
-    use qip_reasoning_engine::providers::huggingface::{CHAT_COMPLETIONS_PATH, HuggingFaceModel};
+    use qip_language_providers::huggingface::{CHAT_COMPLETIONS_PATH, HuggingFaceModel};
     let host = HuggingFaceModel::UPSTREAM_HOST;
 
     // Premise: the constant is a bare hostname. A URL or a path here would
@@ -1793,7 +1793,23 @@ fn no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy() {
         "[lookup(local.zone_cidr, each.value.to, \"192.0.2.0/32\")]",
         "[each.value.cidr]",
         "var.central_plane_ranges",
+        // The peer mesh (ADR 0116): the other execution nodes, each at the
+        // /32 the operator declared. Admitted only because the module
+        // refuses a non-private address at plan — asserted below — so the
+        // shape cannot name anything outside the platform's own network.
+        "distinct([for peer in values(var.peer_mesh.peers) : \"${peer.address}/32\"])",
     ];
+    let node_variables = without_comments(&read(
+        "infrastructure/terraform/modules/execution-node/variables.tf",
+    ));
+    assert!(
+        node_variables.contains(
+            "can(regex(\"^(10\\\\.|192\\\\.168\\\\.|172\\\\.(1[6-9]|2[0-9]|3[01])\\\\.)\", peer.address))"
+        ),
+        "the execution-node module no longer refuses a public peer address at plan, so the \
+         peer-mesh egress rule's destination shape is no longer bounded to the private \
+         network and must come out of the permitted list"
+    );
     let mut allows = 0usize;
     for path in [TRUST_ZONES_MODULE, NODE_MODULE] {
         let module = without_comments(&read(path));

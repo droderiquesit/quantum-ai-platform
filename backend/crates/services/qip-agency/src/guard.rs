@@ -45,7 +45,8 @@
 //! running the binary again.
 
 use crate::conduct_brain::{
-    CommunicationDraft, ConductGate, ConductPolicy, EvidenceResolver, HoldingsResolver, StepConduct,
+    CheckResult, CommunicationDraft, ConductGate, ConductPolicy, EvidenceResolver,
+    HoldingsResolver, StepConduct, check_step_conduct,
 };
 use crate::goal::GoalSpec;
 use crate::plan::Step;
@@ -68,9 +69,19 @@ use std::sync::Arc;
 /// [`ActionGuard::resume_voices`] reads back on start.
 pub const VOICE_RETENTION: usize = 1024;
 
-/// One message as it was released: which tool said it, as whom, and the
-/// fingerprint of its words. Kept so a later pass cannot say the same thing
-/// as somebody else (R12-AGENCY-1064).
+/// The most bytes of a released message the guard keeps, and so the longest
+/// message it releases (R12-GOV-3030). A message the journal cannot hold
+/// whole cannot be re-read after release, and one that cannot be re-read
+/// cannot be monitored after release, so a longer draft is refused at
+/// preflight rather than kept in part. With [`VOICE_RETENTION`] this bounds
+/// what a guard holds in memory at four mebibytes.
+pub const MAX_RELEASED_CONTENT_BYTES: usize = 4096;
+
+/// One message as it was released: which tool said it, as whom, the
+/// fingerprint of its words and, since R12-GOV-3030, the words themselves.
+/// Kept so a later pass cannot say the same thing as somebody else
+/// (R12-AGENCY-1064), and so the message can be re-checked after release
+/// against the conduct rules as they later stand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Voice {
@@ -78,6 +89,161 @@ pub struct Voice {
     pub identity: String,
     /// [`voice_fingerprint`] of the draft's content.
     pub fingerprint: String,
+    /// The released text, at most [`MAX_RELEASED_CONTENT_BYTES`]. `None` on
+    /// a voice journaled before the text was kept, which a post-release
+    /// check reports as unreadable rather than as clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// What a post-release re-check of one released message found
+/// (R12-GOV-3030).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostReleaseFinding {
+    pub tool: String,
+    pub identity: String,
+    pub fingerprint: String,
+    /// The conduct rule the message now breaches, or `unreadable` (no text
+    /// was kept) or `fingerprint_mismatch` (the kept text is not the text
+    /// that was released).
+    pub rule: String,
+    pub detail: String,
+}
+
+/// One dimension of a channel's health, as R12-OBS-7132 names them:
+/// identity integrity, reach, provenance and disclosure, policy violations
+/// and anomalous coordination.
+///
+/// The guard decided every one of these and kept none of it: a refusal
+/// became one joined sentence and a pass became nothing, so a channel whose
+/// drafts were all being cleared and one whose provenance had quietly
+/// started failing read identically on any chart. [`ChannelHealth`] is the
+/// guard's own verdict per dimension, taken where it decides, so a caller
+/// records what ran rather than re-running the checks and recording a
+/// second opinion. An enum, so the label it becomes is bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HealthDimension {
+    /// The draft speaks as the identity the tool and the goal hold.
+    IdentityIntegrity,
+    /// The message reached its channel: the adapter's write landed. The
+    /// guard does not make the call, so this one is noted by whoever does.
+    Reach,
+    /// Its claims trace to evidence a policy admits, and it carries every
+    /// disclosure the policy requires.
+    Provenance,
+    /// Audience, jurisdiction, market-conduct and step-conduct policy.
+    Violations,
+    /// One voice posing as several, within a pass or across passes.
+    Coordination,
+}
+
+impl HealthDimension {
+    pub const ALL: [Self; 5] = [
+        Self::IdentityIntegrity,
+        Self::Reach,
+        Self::Provenance,
+        Self::Violations,
+        Self::Coordination,
+    ];
+
+    /// The label value; a literal per arm.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IdentityIntegrity => "identity_integrity",
+            Self::Reach => "reach",
+            Self::Provenance => "provenance",
+            Self::Violations => "violations",
+            Self::Coordination => "coordination",
+        }
+    }
+
+    /// The dimension a conduct check's verdict belongs to, by the check's
+    /// own name. `None` for a name this list has not placed: a new check
+    /// added to the gate must be placed here, and the guard's unit test
+    /// fails until it is, rather than its verdict being filed under a
+    /// dimension nobody chose.
+    pub fn of_check(check_name: &str) -> Option<Self> {
+        match check_name {
+            "identity" => Some(Self::IdentityIntegrity),
+            "provenance" | "disclosures" | "factual_support" => Some(Self::Provenance),
+            "audience_permissions" | "jurisdiction" | "market_conduct" | "step_conduct" => {
+                Some(Self::Violations)
+            }
+            "coordinated_voices" => Some(Self::Coordination),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a dimension held, as a label value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HealthOutcome {
+    Pass,
+    Fail,
+}
+
+impl HealthOutcome {
+    pub fn of(passed: bool) -> Self {
+        if passed { Self::Pass } else { Self::Fail }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+/// The guard's verdict on each dimension it reached in one preflight, per
+/// channel. A dimension is failed if any check placed in it failed. A
+/// dimension the preflight never reached — refused earlier, on the
+/// justification or the approvals — is absent, not passed: a check that did
+/// not run has no outcome.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelHealth {
+    verdicts: BTreeMap<(String, HealthDimension), bool>,
+}
+
+impl ChannelHealth {
+    /// Note one verdict; a failure is never overwritten by a later pass.
+    pub fn note(&mut self, channel: &str, dimension: HealthDimension, passed: bool) {
+        self.verdicts
+            .entry((channel.to_string(), dimension))
+            .and_modify(|held| *held &= passed)
+            .or_insert(passed);
+    }
+
+    /// Every verdict, in channel then dimension order.
+    pub fn verdicts(&self) -> impl Iterator<Item = (&str, HealthDimension, HealthOutcome)> {
+        self.verdicts.iter().map(|((channel, dimension), passed)| {
+            (channel.as_str(), *dimension, HealthOutcome::of(*passed))
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.verdicts.is_empty()
+    }
+}
+
+/// The voice a cleared step releases: its words kept whole, or the draft
+/// refused when they are too long to keep (R12-GOV-3030).
+fn released_voice(tool: &str, draft: &CommunicationDraft) -> Result<Voice, Error> {
+    if draft.content.len() > MAX_RELEASED_CONTENT_BYTES {
+        return Err(Error::denied(format!(
+            "step `{tool}` drafts {} bytes and a released message is kept whole up to \
+             {MAX_RELEASED_CONTENT_BYTES}; a message that cannot be kept cannot be re-checked \
+             after release, so shorten it",
+            draft.content.len()
+        )));
+    }
+    Ok(Voice {
+        tool: tool.to_string(),
+        identity: draft.sender_identity.clone(),
+        fingerprint: voice_fingerprint(&draft.content),
+        content: Some(draft.content.clone()),
+    })
 }
 
 /// The fingerprint of a message: a digest of its words, lower-cased and
@@ -281,6 +447,53 @@ impl ActionGuard {
         self.voices.push_back(voice);
     }
 
+    /// Re-check every message this guard remembers releasing against the
+    /// conduct rules its gate holds now (R12-GOV-3030): a message released
+    /// under one policy and in breach of a rule added since, or of a phrase
+    /// the gate now prohibits, is a finding. Run on resume, where the gate is
+    /// the operator's current policy and the voices are the journal's. Also
+    /// a finding: a voice with no kept text, which cannot be re-read, and one
+    /// whose text does not hash to its fingerprint, which is not the message
+    /// that was released.
+    pub fn recheck_released(&self) -> Vec<PostReleaseFinding> {
+        let rules = self.gate.rules();
+        let mut findings = Vec::new();
+        for voice in &self.voices {
+            let finding = |rule: &str, detail: String| PostReleaseFinding {
+                tool: voice.tool.clone(),
+                identity: voice.identity.clone(),
+                fingerprint: voice.fingerprint.clone(),
+                rule: rule.to_string(),
+                detail,
+            };
+            let Some(content) = voice.content.as_deref() else {
+                findings.push(finding(
+                    "unreadable",
+                    "the release was journaled without its text, so it cannot be re-checked"
+                        .to_string(),
+                ));
+                continue;
+            };
+            if voice_fingerprint(content) != voice.fingerprint {
+                findings.push(finding(
+                    "fingerprint_mismatch",
+                    "the kept text does not hash to the fingerprint the release recorded"
+                        .to_string(),
+                ));
+                continue;
+            }
+            for rule in rules {
+                if let Some(phrase) = rule.breach(content) {
+                    findings.push(finding(
+                        &rule.name(),
+                        format!("the released message now breaches it with '{phrase}'"),
+                    ));
+                }
+            }
+        }
+        findings
+    }
+
     /// Every voice this guard remembers, oldest first.
     pub fn voices(&self) -> impl Iterator<Item = &Voice> {
         self.voices.iter()
@@ -388,6 +601,19 @@ impl ActionGuard {
         goal: &GoalSpec,
         priced: &[(Step, Decimal, Method)],
     ) -> Result<(ApprovalChain, Vec<Cleared>), Error> {
+        self.preflight_observed(goal, priced, &mut ChannelHealth::default())
+    }
+
+    /// [`Self::preflight`], noting into `health` the verdict on every
+    /// [`HealthDimension`] the preflight reached, per channel, whether it
+    /// then cleared or refused. The verdicts are the ones that decided: the
+    /// same results the refusal is built from, not a second evaluation.
+    pub(crate) fn preflight_observed(
+        &self,
+        goal: &GoalSpec,
+        priced: &[(Step, Decimal, Method)],
+        health: &mut ChannelHealth,
+    ) -> Result<(ApprovalChain, Vec<Cleared>), Error> {
         let pass = self.current()?;
         check_justification(&pass.grounds)?;
         let steps: Vec<Step> = priced.iter().map(|(step, _, _)| step.clone()).collect();
@@ -422,6 +648,7 @@ impl ActionGuard {
             if draft.sender_identity != registration.acting_identity
                 || registration.acting_identity != goal.acting_identity
             {
+                health.note(&draft.channel, HealthDimension::IdentityIntegrity, false);
                 return Err(Error::denied(format!(
                     "step `{}` would speak as `{}`, the tool is registered to `{}` and the goal \
                      acts as `{}`; an action under any name but the goal's is a fabricated identity",
@@ -435,11 +662,7 @@ impl ActionGuard {
                 step: step.clone(),
                 channel: draft.channel.clone(),
                 cost_units: budget_units(&step.tool, *cost)?,
-                voice: Voice {
-                    tool: step.tool.clone(),
-                    identity: draft.sender_identity.clone(),
-                    fingerprint: voice_fingerprint(&draft.content),
-                },
+                voice: released_voice(&step.tool, draft)?,
             });
             drafts.insert(step.tool.as_str(), draft);
             faces.push(StepConduct {
@@ -450,10 +673,20 @@ impl ActionGuard {
         }
 
         let released: Vec<&CommunicationDraft> = drafts.values().copied().collect();
-        let mut failures = self.gate.campaign_failures(&released);
-        if let Some(step) = self.gate.step_failure(&faces) {
-            failures.push(("*".to_string(), step));
+        let mut results = self.gate.campaign_results(&released);
+        results.push(("*".to_string(), check_step_conduct(&faces)));
+        // A check on one draft is that draft's channel's; a check across the
+        // pass (`*`) is every released channel's.
+        for (id, check) in &results {
+            let Some(dimension) = HealthDimension::of_check(&check.check_name) else {
+                continue;
+            };
+            for draft in released.iter().filter(|d| id == "*" || d.id == *id) {
+                health.note(&draft.channel, dimension, check.passed);
+            }
         }
+        let failures: Vec<&(String, CheckResult)> =
+            results.iter().filter(|(_, check)| !check.passed).collect();
         if !failures.is_empty() {
             let reasons: Vec<String> = failures
                 .iter()
@@ -477,6 +710,7 @@ impl ActionGuard {
                 .iter()
                 .find(|v| v.fingerprint == c.voice.fingerprint && v.identity != c.voice.identity)
             {
+                health.note(&c.channel, HealthDimension::Coordination, false);
                 return Err(Error::denied(format!(
                     "fake consensus across passes: step `{}` would release as `{}` the same \
                      message `{}` already released as `{}` in an earlier pass; one message under \

@@ -1,14 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_agents::research::{ResearchRegistry, Screening, Verdict};
-use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 
 #[test]
 fn a_tool_of_each_of_the_ten_kinds_resolves_by_kind_with_its_scope() {
     assert_eq!(ToolKind::ALL.len(), 10);
     let mut registry = ToolRegistry::new();
     for (i, kind) in ToolKind::ALL.into_iter().enumerate() {
-        registry.register(&format!("tool-{i}"), kind).unwrap();
+        registry
+            .register(ToolName::parse(&format!("tool-{i}")).unwrap(), kind)
+            .unwrap();
     }
     for (i, kind) in ToolKind::ALL.into_iter().enumerate() {
         let found = registry.by_kind(kind);
@@ -29,63 +31,69 @@ fn a_tool_proposed_or_registered_without_a_name_is_refused_and_nothing_is_regist
     let mut registry = ToolRegistry::new();
     // Premise: the same call with a name is admitted, so what follows is a
     // refusal of the missing field and not of the kind or the registry.
-    registry.register("solver-a", ToolKind::Solver).unwrap();
+    registry
+        .register(ToolName::parse("solver-a").unwrap(), ToolKind::Solver)
+        .unwrap();
     assert_eq!(registry.by_kind(ToolKind::Solver).len(), 1);
 
-    for blank in ["", "   ", "\t\n"] {
-        let proposed = registry.propose(blank, ToolKind::Solver).unwrap_err();
+    // Since R12-SEC-9065 `propose` and `register` take a `ToolName`, so a
+    // blank name is refused where a name is made, before any registry is
+    // reached: no blank can be passed to either at all.
+    let empty = ToolName::parse("").unwrap_err();
+    assert!(empty.to_string().contains("a tool needs a name"), "{empty}");
+    for blank in ["   ", "\t\n"] {
+        let refused = ToolName::parse(blank)
+            .err()
+            .unwrap_or_else(|| panic!("a whitespace-only name {blank:?} became a ToolName"));
         assert!(
-            proposed.to_string().contains("a tool needs a name"),
-            "{proposed}"
+            refused.to_string().contains("a tool needs a name"),
+            "{refused}"
         );
-        let registered = registry.register(blank, ToolKind::Solver).unwrap_err();
-        assert!(
-            registered.to_string().contains("a tool needs a name"),
-            "{registered}"
-        );
-        assert!(registry.get(blank).is_none());
     }
+    // This test also asserted `registry.get(blank).is_none()` for each blank
+    // and for `""`. Since `get` takes a `ToolName` those calls no longer
+    // compile — the refusal moved from a lookup that found nothing to a key
+    // that cannot be built, which the parse refusals above assert, and the
+    // `compile_fail` block on
+    // `tools::a_completion_over_fetched_content_cannot_name_a_tool_until_validated`
+    // holds that a string is no key at all. What a lookup can still be
+    // asked is whether the one registered name resolves and nothing else
+    // was registered beside it.
+    assert!(
+        registry
+            .get(&ToolName::parse("solver-a").unwrap())
+            .is_some()
+    );
     assert_eq!(registry.by_kind(ToolKind::Solver).len(), 1);
 }
 
 #[test]
 fn a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope() {
     let mut registry = ToolRegistry::new();
-    registry.register("parser-a", ToolKind::Parser).unwrap();
-    registry
-        .authorise("parser-a", ToolPermission::Read)
-        .unwrap();
+    let parser = ToolName::parse("parser-a").unwrap();
+    registry.register(parser.clone(), ToolKind::Parser).unwrap();
+    registry.authorise(&parser, ToolPermission::Read).unwrap();
+    assert!(registry.authorise(&parser, ToolPermission::Write).is_err());
     assert!(
         registry
-            .authorise("parser-a", ToolPermission::Write)
-            .is_err()
-    );
-    assert!(
-        registry
-            .authorise("parser-a", ToolPermission::LeaveSandbox)
+            .authorise(&parser, ToolPermission::LeaveSandbox)
             .is_err()
     );
 
     assert!(
         registry
-            .promote("parser-a", ToolPermission::Write, "  ")
+            .promote(&parser, ToolPermission::Write, "  ")
             .is_err()
     );
-    assert!(
-        registry
-            .authorise("parser-a", ToolPermission::Write)
-            .is_err()
-    );
+    assert!(registry.authorise(&parser, ToolPermission::Write).is_err());
 
     registry
-        .promote("parser-a", ToolPermission::Write, "eval-2026-10-04")
+        .promote(&parser, ToolPermission::Write, "eval-2026-10-04")
         .unwrap();
-    registry
-        .authorise("parser-a", ToolPermission::Write)
-        .unwrap();
+    registry.authorise(&parser, ToolPermission::Write).unwrap();
     assert!(
         registry
-            .authorise("parser-a", ToolPermission::LeaveSandbox)
+            .authorise(&parser, ToolPermission::LeaveSandbox)
             .is_err()
     );
 }

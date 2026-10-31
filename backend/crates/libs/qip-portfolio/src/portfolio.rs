@@ -212,6 +212,36 @@ impl Portfolio {
         Ok(true)
     }
 
+    /// Take a corporate action's share-count change on one held position:
+    /// every open lot's quantity multiplied by `quantity_factor`, its price
+    /// by `price_factor`.
+    ///
+    /// The narrow seam onto [`Position::apply_adjustment`], for a book kept
+    /// beside another ledger of the same fills. Without it a split reached
+    /// the other ledger and not this one, the two quantities parted, and the
+    /// sale that took the other ledger flat left this record holding the
+    /// pre-split count — open, `Held`, and describing a position nobody
+    /// owns. A position the book does not hold is refused rather than
+    /// created, for the reason [`Self::flag_position`] gives.
+    pub fn adjust_position(
+        &mut self,
+        object_id: &ObjectId,
+        quantity_factor: Decimal,
+        price_factor: Decimal,
+    ) -> Result<()> {
+        if !quantity_factor.is_positive() || !price_factor.is_positive() {
+            return Err(Error::invalid(format!(
+                "a corporate action adjusting {} by a quantity factor of {quantity_factor} and a \
+                 price factor of {price_factor} is refused; supply strictly positive factors — \
+                 a non-positive one would flip or void a holding",
+                object_id.as_str()
+            )));
+        }
+        self.position_mut(object_id)?
+            .apply_adjustment(quantity_factor, price_factor);
+        Ok(())
+    }
+
     /// Choose how closing fills in one instrument pick the lots they consume.
     ///
     /// The narrow seam onto [`Position::declare_selection`], written the way

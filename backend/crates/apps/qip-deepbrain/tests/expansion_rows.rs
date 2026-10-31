@@ -19,7 +19,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)] // integration tests may unwrap: a panic is the failure report
 
-use qip_agents::tools::{ToolKind, ToolPermission};
+use qip_agents::tools::{ToolKind, ToolName, ToolPermission};
 use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp};
 use qip_deepbrain::discovery::{DiscoveryConfig, DiscoveryDesk};
 use qip_deepbrain::research::{FillObservation, ResearchConfig, ResearchLoop, registered_tools};
@@ -510,7 +510,10 @@ fn an_execution_gap_needing_a_tool_the_node_lacks_proposes_a_read_only_tool_spec
         "premise: three feasibility refusals are on the platform's record"
     );
     assert!(
-        registered_tools().unwrap().get("tick-replay").is_none(),
+        registered_tools()
+            .unwrap()
+            .get(&ToolName::parse("tick-replay").unwrap())
+            .is_none(),
         "premise: the node has no tick-replay tool"
     );
     let (licensed, eligible) = deployed_bounds();

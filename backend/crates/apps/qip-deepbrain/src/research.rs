@@ -631,6 +631,9 @@ pub struct ResearchRound {
     pub poisoning: BTreeMap<&'static str, usize>,
     /// Information requests a better-ranked request left no budget for.
     pub info_outranked: usize,
+    /// DECIDE's uncertain decisions priced into an information request this
+    /// sweep (R12-AMBIENT-3104).
+    pub decisions_asked: usize,
     /// Units granted and bids declined by the compute market, by reason.
     pub units_granted: u32,
     pub declined: BTreeMap<&'static str, usize>,
@@ -1104,13 +1107,13 @@ pub fn node_tools(
 pub fn registered_tools_holding(
     extra: &[(String, qip_agents::tools::ToolKind)],
 ) -> Result<qip_agents::tools::ToolRegistry> {
-    use qip_agents::tools::ToolKind;
+    use qip_agents::tools::{ToolKind, ToolName};
     let mut tools = qip_agents::tools::ToolRegistry::new();
-    tools.register("source-discovery", ToolKind::Connector)?;
-    tools.register("model-fit", ToolKind::ModelEndpoint)?;
-    tools.register("stress-simulator", ToolKind::Simulator)?;
+    tools.register(ToolName::parse("source-discovery")?, ToolKind::Connector)?;
+    tools.register(ToolName::parse("model-fit")?, ToolKind::ModelEndpoint)?;
+    tools.register(ToolName::parse("stress-simulator")?, ToolKind::Simulator)?;
     for (name, kind) in extra {
-        tools.register(name, *kind)?;
+        tools.register(ToolName::parse(name)?, *kind)?;
     }
     Ok(tools)
 }
@@ -1172,7 +1175,9 @@ impl ResearchLoop {
                     specialist.as_str()
                 ))
             })?;
-            if let Some(missing) = spec.tools.iter().find(|t| tools.get(t).is_none()) {
+            if let Some(missing) = spec.tools.iter().find(|t| {
+                !qip_agents::tools::ToolName::parse(t).is_ok_and(|name| tools.get(&name).is_some())
+            }) {
                 return Err(Error::invalid(format!(
                     "BrainSpec {} names tool `{missing}`, which this node does not register; \
                      register the tool or correct the spec",
@@ -1959,6 +1964,10 @@ impl ResearchLoop {
             &mut round,
             licensed_sources,
         )?;
+        // And DECIDE's own uncertain decisions (R12-AMBIENT-3104): a leg the
+        // platform sized while no surer of it than a coin competes for the
+        // same budget, at the cheapest observation that could discriminate.
+        self.admit_decision_uncertainties(platform.decision_uncertainties(), now, &mut round)?;
         self.launch_ranked(&metrics, &mut round)?;
 
         // --- the compute market ---------------------------------------------
@@ -2309,6 +2318,58 @@ impl ResearchLoop {
             } else {
                 self.candidates.push((request, "federation"));
             }
+        }
+        Ok(())
+    }
+
+    /// DECIDE's uncertain decisions as ranked information requests
+    /// (R12-AMBIENT-3104, blueprint §9.10): significance is the notional at
+    /// stake on the loop's money scale, the uncertainty the observation
+    /// would reduce is the decision's own (`1 - |conviction|`), urgency is
+    /// read from the claim's resolution instant, and the observation is the
+    /// cheapest viable one — a re-sweep of the subject's next price, which
+    /// is exactly what the claim will be resolved against, before the
+    /// declared acquisition of a data gap. A decision whose request is
+    /// already held is not asked twice, and one no observation is worth
+    /// paying for is left out: `cheapest_viable` refuses it.
+    fn admit_decision_uncertainties(
+        &mut self,
+        decisions: &[qip_kernel::platform::DecisionUncertainty],
+        now: Timestamp,
+        round: &mut ResearchRound,
+    ) -> Result<()> {
+        let acquisition_bp =
+            u32::try_from(declared_cost(task_kind(GapClass::Data)).raw() / Decimal::ONE.raw())
+                .unwrap_or(u32::MAX)
+                .saturating_mul(1_000)
+                .min(qip_contracts::ambient::MAX_SEVERITY_BP);
+        for decision in decisions {
+            let id = format!("dec-{}", decision.hypothesis_id);
+            let held = self.info_requests.iter().any(|r| r.id() == id)
+                || self.candidates.iter().any(|(r, _)| r.id() == id);
+            if held {
+                continue;
+            }
+            // Money to the ranking scale: statistics from here on.
+            let significance = economic_scale_bp(decision.value_at_stake.to_f64())?;
+            let uncertainty = basis_points(decision.uncertainty)?;
+            let urgency = urgency_bp(now, decision.deadline, self.config.signal_ttl);
+            let Some((source, criteria)) =
+                cheapest_viable(significance, uncertainty, urgency, true, acquisition_bp)
+            else {
+                continue;
+            };
+            let request = InfoRequest::new(
+                id.clone(),
+                decision.question.clone(),
+                criteria,
+                decision.deadline.max(now),
+                now,
+            )?;
+            round.decisions_asked += 1;
+            self.candidate_entities
+                .insert(id, vec![decision.subject.clone()]);
+            self.candidates.push((request, source));
         }
         Ok(())
     }

@@ -6,9 +6,11 @@
     "evidence": [
       "infrastructure/environments/dev/terraform.tfvars:1 project_id algorik-platform-dev",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5009 every_environment_names_a_project_of_its_own",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10696 dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10696 dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project",
+      "infrastructure/terraform/modules/resource-hierarchy/main.tf",
+      "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "No folders or per-plane project split; one project per environment holds every plane.",
+    "gap": "2026-10-24 (lane L6): the folder and per-plane project split now exists as an uninstantiated module (resource-hierarchy: a folder per environment, a project per plane, ids distinct across environments by construction and refused at plan if two planes collide); it outputs nothing a binary reads, so the hierarchy is not a runtime dependency. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -19,7 +21,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure every_environment_names_a_project_of_its_own",
     "work_item": "",
     "size": "M",
-    "notes": "Blueprint wants per-plane blast-radius isolation; the repo isolates per environment only."
+    "notes": "Blueprint wants per-plane blast-radius isolation; the repo isolates per environment only. 2026-10-24 lane L6: Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
   },
   {
     "id": "R12-SEC-10002",
@@ -227,9 +229,11 @@
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:92 google_compute_interconnect_attachment partner",
       "infrastructure/terraform/modules/connectivity/main.tf:191 google_compute_ha_vpn_gateway fallback",
-      "infrastructure/environments/dev/terraform.tfvars partner_interconnects test-attachment-primary admin_enabled=false"
+      "infrastructure/environments/dev/terraform.tfvars partner_interconnects test-attachment-primary admin_enabled=false",
+      "infrastructure/terraform/modules/connectivity/main.tf google_compute_interconnect_attachment.partner precondition; google_compute_external_vpn_gateway.peer",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl::an_interconnect_attachment_with_no_ha_vpn_fallback_in_its_region_is_refused_at_plan"
     ],
-    "gap": "No provider circuit; attachment disabled.",
+    "gap": "2026-10-25 (lane L6): the module now refuses an attachment without an HA VPN fallback in its own region and plans the external peer gateway the tunnels terminate on (mocked terraform test 9 passed). Remaining: the root module does not pass enable_ha_vpn or ha_vpn_gateways, so enabling partner interconnect at the root is refused at plan (fail closed) until the root wires a fallback whose pre-shared key comes from Secret Manager rather than a committed tfvars; the circuits themselves are external and billed (owner-decisions-2026-10-25 decision 5), and nothing is deployed. No provider circuit; attachment disabled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -242,7 +246,7 @@
     "verification": "terraform test modules/connectivity",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L6: terraform 1.9.8 test in a scratch copy, mock provider: 9 passed, 0 failed. The run ha_vpn_flag_left_off_plans_no_gateway_or_tunnel now plans with the interconnect off as well, since an attachment with the flag off is refused by the new run; its billing assertion is unchanged. Mutation: the precondition's condition replaced by `true || var.enable_ha_vpn` failed an_interconnect_attachment_with_no_ha_vpn_fallback_in_its_region_is_refused_at_plan with 'Missing expected failure'; restored, cmp clean, 9 passed."
   },
   {
     "id": "R12-GCP-10012",
@@ -778,7 +782,7 @@
       "infrastructure/terraform/modules/data/main.tf:322 google_bigtable_instance timeseries (count enable_bigtable)",
       "infrastructure/environments/dev/terraform.tfvars:282 enable_bigtable = false"
     ],
-    "gap": "No writer/sink, no rebuild path.",
+    "gap": "2026-10-24 (re-read against the tree): google_bigtable_instance.timeseries (two autoscaling clusters, replication justified in a comment) is declared but enable_bigtable=false in all four envs, so no plan; no rebuild job from GCS/fabric and no Rust Bigtable client exist (provider refuses StorageTarget::Bigtable for want of a gRPC stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable). Needs a Bigtable store ADR, a gRPC/protobuf dependency ADR or REST alternative, a rebuild job, a tfvar flip, and a plan.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -791,7 +795,7 @@
     "verification": "terraform plan; sink integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Line refs stale: the instance now carries a second cluster and app profiles in modules/data/main.tf; enable_bigtable in dev tfvars is at ~line 342."
   },
   {
     "id": "R12-DATA-10036",
@@ -820,7 +824,7 @@
     "status": "MISSING",
     "current": "No Dataplex/Knowledge Catalog resource.",
     "evidence": [],
-    "gap": "Declare catalog/lake/lineage.",
+    "gap": "2026-10-24 (re-read against the tree): No Knowledge Catalog/Dataplex resource (google_dataplex_*) anywhere under infrastructure/terraform, and no catalog, lineage or quality registration in code. ADR 0101 row C4 lists Knowledge Catalog among stores needing their own storage record, so this needs an ADR/owner decision, a managed service in Terraform, and a real plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -834,7 +838,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-10038",
@@ -1302,12 +1306,17 @@
   },
   {
     "id": "R12-OBS-10059",
-    "status": "MISSING",
-    "current": "No tracing exporter in the workspace.",
-    "evidence": [],
-    "gap": "Trace propagation and export.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "qip-api opens a request-scoped span per API request (src/tracing.rs; tests/api.rs::a_request_scoped_span_is_created_for_each_api_request), and the OpenObserve drain (qip-telemetry-drain, ADR 0028/0156) exports the tracer's spans as OTLP/JSON to /api/{org}/traces and the metrics snapshot as OTLP to /api/{org}/v1/metrics from qip-api, qip-fastbrain, qip-deepbrain and qip-fabricd.",
+    "evidence": [
+      "backend/crates/apps/qip-api/src/tracing.rs",
+      "backend/crates/apps/qip-api/tests/api.rs::a_request_scoped_span_is_created_for_each_api_request",
+      "backend/crates/services/qip-telemetry-drain/src/lib.rs traces_url, export_once",
+      "backend/crates/libs/qip-observability/src/trace.rs Tracer::export (OTLP/JSON)"
+    ],
+    "gap": "2026-10-24 (lane L6, current corrected: it said no tracing exporter exists; MISSING->PARTIAL): spans are created and an OTLP exporter exists, but (1) the export goes to OpenObserve, not Cloud Trace, as the requirement names; (2) QIP_OPENOBSERVE_URL is unset in every deployment until a collector is vendored and attested (ADR 0156 §5.4), so no trace leaves a process on a default path; (3) nothing has observed an exported trace (the check's 'a trace exported per API request is observed').",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1316,7 +1325,7 @@
     "verification": "integration test exporting a span",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: read-only correction of a stale row; no code change."
   },
   {
     "id": "R12-GCP-10060",
@@ -1389,16 +1398,19 @@
   },
   {
     "id": "R12-AGENCY-10063",
-    "status": "PARTIAL",
-    "current": "The edge node has no compile-time dependency on cognitive crates and a node test shows identical orders when the centre stops answering; no managed agent runtime and no backlog queue. On the deepbrain node, the agency door's backlog is Intake::Deferred with bounded retry (a_full_outbox_defers_drafts_and_never_stops_the_node), and an agency refusal in every cycle (drafting tool revoked) is counted, never raised, and leaves the platform's event log identical to a run with no agency attached.",
+    "status": "COMPLETE",
+    "current": "The in-process agent runtime is the managed runtime this platform has (owner decisions 2026-10-25 nos. 5 and 6 decline billed and hosted services, and the requirement names Vertex only 'where suitable'). When it cannot run an agent — a manifest past its review interval (AgentHost::run refuses), or a budget it cannot fund (Escalated) — Organisation::dispatch defers the run onto the organisation's bounded AgentBacklog (qip-agents runtime.rs: capacity two per agent, three attempts per agent and question, refused at capacity or past the bound, never an error) and continues to the next agent; a later successful run retires the entry; the report lists what was backlogged and what the backlog refused. dispatch returns a plain OrganisationReport, so no refusal can propagate out of the cycle, and stage_act never reads the organisation, so execution never waits on it. On the default cycle path (run_cycle -> stage_reason -> reason_about_the_queue -> dispatch, in qip-api, qip-fastbrain and qip-deepbrain) a lapsed roster degrades to one backlog entry per refused agent, all eight stages run, and an order is still accepted. The edge node links neither qip-agents nor qip-investment-agents (qip-acceptance lane_placement) and trades identically when the centre stops answering (qip-edge-node reasoning_outage).",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11 reflex_edge_node_has_no_compile_time_dependency_on_cognitive_crates",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342 a_node_works_the_same_..._when_the_centre_stops_answering",
-      "backend/crates/libs/qip-agents/src/runtime.rs agent runtime with BudgetLedger",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_full_outbox_defers_drafts_and_never_stops_the_node"
+      "backend/crates/libs/qip-agents/src/runtime.rs AgentBacklog::defer / retire, DeferredRun, Deferral",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs Organisation::dispatch Refused/Escalated arms defer onto the backlog; OrganisationReport.backlogged / backlog_refused",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs a_panel_agent_that_cannot_run_is_deferred_and_the_findings_are_identical_to_its_absence",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs a_lapsed_panel_is_deferred_to_a_bounded_backlog_and_the_cycle_still_acts",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs the lane register and closure check: qip-edge-node's closure holds neither qip-agents nor qip-investment-agents",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs nothing_the_edge_node_links_directly_or_transitively_is_a_cognitive_crate (whole-name manifest parser, not substring)",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs a node works the same when the centre stops answering",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs a_full_outbox_defers_drafts_and_never_stops_the_node"
     ],
-    "gap": "The in-process qip-agents runtime (runtime.rs) has no backlog queue; backlog and refusal-isolation are proven for the agency door on the deepbrain node and for the edge node's reflex loop, not for that runtime.",
+    "gap": "None for the requirement; not deployed. Residual, not disqualifying: REASON runs before ACT on one thread, so a slow language-model call delays ACT by up to the model chain's timeout; a deferred run is held and reported, not re-dispatched by the backlog itself (the next cycle's dispatch re-asks the agent).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1406,10 +1418,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-investment-agents --test organisation a_panel_agent_that_cannot_run && cargo +1.94.1 test -p qip-kernel --test kernel a_lapsed_panel_is_deferred && cargo +1.94.1 test -p qip-acceptance --test lane_placement --test arch_001_independent_reflex",
     "work_item": "",
     "size": "M",
-    "notes": "arch_001 uses substring contains() on Cargo.toml, the trap the testing rules warn about. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). arch_001 is not changed by this lane."
+    "notes": "arch_001 uses substring contains() on Cargo.toml, the trap the testing rules warn about. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). arch_001 is not changed by this lane. 2026-10-25 lane L2b (wave580): backlog built in qip-agents and wired into Organisation::dispatch. Mutation fired on both tests: deleting the defer arm for RunStatus::Refused in dispatch -> organisation test \"left: [] right: [\\\"macro-analyst\\\"]\", kernel test \"left: 0 right: 19\"; restored byte for byte (cmp), both ok. Skeptic (code-reviewer, read-only, default REFUTED): HOLDS; its record corrections applied here: arch_001's COGNITIVE list names neither agent crate, the guard that does is lane_placement.rs (now cited); the earlier note that arch_001 used substring contains() was stale, the parser compares whole names. Its design note is kept in the gap. Not re-run by the skeptic: part 1 rests on the lane's mutation report. Merge note 2026-10-25: lane L2-intel (commit 409b0e2e, before this lane's triage) wrote into this row's gap that the requirement's subject is a managed runtime declined by owner decision 5 and that a backlog for the in-process runtime \"would be a queue for a dependency that does not exist\"; this lane's reading, which the skeptic held under bar part 4, is that the text names Vertex only where suitable and makes the backlog a property of whatever runtime hosts the agents, so the in-process runtime is in scope and the backlog is real. The two readings disagree and the parent decides; L2-intel's sentence is kept here rather than in the gap because the gap records what is unmet and this lane found nothing unmet."
   },
   {
     "id": "R12-MODEL-10064",
@@ -1767,7 +1779,7 @@
     "status": "MISSING",
     "current": "No Bigtable writer in the workspace; Bigtable is gated off.",
     "evidence": [],
-    "gap": "Bigtable client + sink.",
+    "gap": "2026-10-24 (re-read against the tree): No Bigtable writer or fabric sink exists: StorageTarget::Bigtable is refused in qip-storage/src/provider.rs for want of a gRPC/HTTP2/protobuf stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable. Needs a Bigtable store ADR plus a new-dependency ADR (NEW_DEPENDENCY), a running fabricd (event_fabric_broker null everywhere), and enable_bigtable flipped and applied. The ingest app profile it would write through is declared.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1780,16 +1792,17 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-10081",
     "status": "PARTIAL",
     "current": "qip-mesh has a BigQuery streaming adapter outside the edge closure; no Fabric sink drives it.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/bigquery.rs"
+      "backend/crates/services/qip-mesh/src/bigquery.rs",
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
     ],
-    "gap": "Fabric-driven sink.",
+    "gap": "Decided 2026-10-25 by ADR 0182 d4 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): No fabric-driven sink feeds qip_mesh::bigquery::BigQueryWarehouse; its only caller is qip-deepbrain's direct OutcomeSink, and nothing shows sink lag cannot affect producers. The adapter uses legacy tabledata.insertAll, not the Storage Write API the requirement names. Needs code (a fabric consumer driving the warehouse with a lag-isolation test), a running fabricd, QIP_BIGQUERY_* wiring in catalogue.tf and a deploy; the Storage Write API is gRPC/protobuf and needs a dependency ADR, or an owner restatement accepting insertAll.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1802,7 +1815,7 @@
     "verification": "cargo test -p qip-mesh --test bigquery",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no Fabric sink drives it' is true but incomplete: qip-deepbrain/src/warehouse.rs OutcomeSink drives the adapter directly; it is off because no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET, though dev has enable_bigquery = true. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 4: the warehouse keeps insertAll until a gRPC dependency ADR or an owner restatement; the API clause stays unmet. Code left: a fabricd consumer driving BigQueryWarehouse with a test that a stalled sink never blocks a producer. Status unchanged."
   },
   {
     "id": "R12-LEDGER-10082",
@@ -2298,9 +2311,10 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs::score_filled (fill_error_bps, fill_calibration.observe, fill_scores.push)",
       "backend/crates/runtime/qip-kernel/src/platform.rs::CounterfactualJournal::fill_outcomes",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs::the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual"
     ],
-    "gap": "The record carries the residual in basis points and nothing else of the comparison: not the predicted price, not the actual price, not a slippage figure against the arrival, and not the twin's simulated P&L against the realised outcome. The omission of the predicted price is structural, not an oversight: FillScore deliberately carries no money figure and qip_twin::Simulated<T> exposes no Decimal, so nothing simulated can reach a realised line. The closure proposed (session_replay::replay emitting a per-order Episode with predicted fill) cannot be met there because RecordedInstruction holds no price and a replay has no twin. What would close it: a decision to journal the twin's simulated entry as a statistic (f64, labelled simulated) beside the fill price, and a LEARN-stage comparison of simulated against realised P&L at the horizon.",
+    "gap": "2026-10-25: Platform::score_filled (LEARN, default path) now records on every scored fill the realised and the twin-predicted slippage against the order's arrival price and the outcome residual (twin return to the horizon's close less the realised one), all in basis points, journaled through fill_outcomes beside the existing per-venue fill error. Remaining against the requirement's text: no episode is emitted per scored fill (the residuals sit on FillScore, not in an episodic-memory record), and a cell's fills carry no arrival price, so their slippage is None.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2311,7 +2325,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill. 2026-10-25 lane L3-DATA (wave580): residuals added. Mutation fired: recording outcome_error_bps as None - 'the horizon closed, so the outcome residual exists'. Not promoted (episodes not emitted); no skeptic run."
   },
   {
     "id": "R12-MODEL-10104",
@@ -2372,7 +2386,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_workload_identity_can_delete_from_the_evidence_bucket",
       "backend/crates/services/qip-data-finder"
     ],
-    "gap": "Observation publisher to Fabric and evidence store.",
+    "gap": "2026-10-24 (re-read against the tree): No code writes an observation to the retention-locked evidence bucket: modules/evidence grants the deep brain a writer role but no Rust root writes connector observations to GCS (only the execution node is handed evidence_bucket). Connector evidence is journaled as EvidenceAdmittedRecord on evidence.admitted, but only from connector arms, which no committed environment configures (deepbrain_connector, market_data_connector null; cognition zone external_egress = {}). Needs code (an observation writer to the evidence bucket plus the integration test), a tfvar flip, and the owner's egress decision (or the ADR 0144 scout job deployed).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2385,7 +2399,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Fabric publication of observations' is stale: Platform::absorb_evidence journals each admitted claim with source and document hash on evidence.admitted (ADR 0152 §2), called from deepbrain ConnectorArm::poll, fastbrain node::step_with and api POST /cycle. Nothing goes to GCS."
   },
   {
     "id": "R12-EVID-10107",
@@ -2395,7 +2409,7 @@
       "backend/crates/services/qip-entity-resolution",
       "backend/crates/services/qip-world-model/src/evidence.rs"
     ],
-    "gap": "Graph persistence (Spanner Graph).",
+    "gap": "2026-10-24 (re-read against the tree): The unit clause is met (corroboration moves per-claim weight - confidence x authenticity x source reliability, qip-evidence fabric.rs - and per-source SourceHistory, tested in qip-world-model tests/evidence_fabric.rs ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it). Platform::absorb_evidence and WorldModel::absorb_evidence do not normalize claim subjects through the Resolver and never update the KnowledgeGraph; no graph persistence exists (no root uses the qip-mesh GraphStore; no Spanner Graph); the fabric is fed only by connectors no environment enables. Needs code (resolve entities, apply the delta to the graph), a deploy and ADR for graph persistence, and a connector tfvar plus owner egress decision.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2408,7 +2422,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: qip-world-model/src/evidence.rs does not exist; corroboration and trust live in qip-evidence/src/fabric.rs (re-exported by qip-world-model), and the Resolver is not on the evidence-intake path."
   },
   {
     "id": "R12-AMBIENT-10108",
@@ -2510,14 +2524,20 @@
   {
     "id": "R12-MESH-10112",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/services/qip-mesh/tests/peer.rs:88",
       "backend/crates/services/qip-mesh/tests/peer.rs:246",
       "backend/crates/services/qip-mesh/tests/peer_guarantees.rs",
-      "backend/crates/edge/qip-edge/src/reservation.rs"
+      "backend/crates/edge/qip-edge/src/reservation.rs",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer link; reservation under cell risk gate on real capital.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2527,21 +2547,27 @@
       "R12-MESH-10075"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-MESH-10113",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Cell-level decomposition stops whole-cycle desks on short legs.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Cell-level decomposition stops whole-cycle desks on short legs. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
     "evidence": [
       "backend/crates/edge/qip-edge/tests/decomposition.rs:557 a_desk_that_will_only_carry_a_whole_cycle_stops_on_any_short_leg_at_all",
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1537",
-      "backend/crates/edge/qip-edge/src/cell.rs:73-89 Saga (doc enum)"
+      "backend/crates/edge/qip-edge/src/cell.rs:73-89 Saga (doc enum)",
+      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
+      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
+      "docs/blueprint/lanes/l5b-peer-mesh-root.patch",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
     ],
-    "gap": "Default-on peer saga; cell reroute/executed unwind.",
+    "gap": "2026-10-25 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The module seam and its tests exist and the root patch is written, but no peer can be declared without a second node and a stable internal address fronting each peer (a managed instance group's machine has none; the update policy surges a replacement), both billed and declined for now. Bar part 2 fails until the owner applies the patch and declares two peered nodes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2551,10 +2577,10 @@
       "R12-MESH-10112"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test decomposition",
+    "verification": "cargo test -p qip-edge --test decomposition; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5."
   },
   {
     "id": "R12-LEDGER-10114",
@@ -2652,7 +2678,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL."
+    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL. 2026-10-25 lane L9: the protected half was not written. Running deploy.yml's second-build check for qip-portal before frontend/portal/next.config.ts pins generateBuildId, and before a double build is measured identical, would fail every portal build and leave the console undeployable. The code half comes first (lane L6), then the deploy.yml condition and a named replay job in ci.yml."
   },
   {
     "id": "R12-CICD-10118",
@@ -3311,7 +3337,7 @@
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/replay.rs:1-3"
     ],
-    "gap": "Environment.",
+    "gap": "2026-10-24 (re-read against the tree): No replay environment exists: var.environment (infrastructure/terraform/variables.tf) accepts only dev/test/stage/prod, ADR 0118 fixes those four projects, and infrastructure/environments/ holds only their tfvars. 'replay' is only a Kargo approval gate (infrastructure/gitops/gates/replay/freight.yaml, ADR 0115) with no project, read-only curated-data grants, governance, or proof of no venue route. Needs an owner decision and an ADR 0118 amendment for a fifth environment, then tfvars and a plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3324,7 +3350,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-EXEC-10147",
@@ -3568,7 +3594,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell",
       "docs/blueprint/lanes/l6-sec-10157-protected.patch"
     ],
-    "gap": "The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall. 2026-10-24 (lane L6): that step is written as docs/blueprint/lanes/l6-sec-10157-protected.patch, a step appended to .github/workflows/agent-sandbox.yml that, after the egress verdict, runs as the lane's uid and lane-egress gid and must be refused five times: reading a root-only planted secret, a direct connection with the proxy bypassed, an off-list host through the proxy, a runner token in the lane's environment, and a token kept in either checkout's .git/config; any success fails the job. Checked only statically: the YAML parses, `bash -n` accepts the step, and agent-guard.mjs's sandbox judge still admits the file ('holds no secret, no credential and no write ...'). It has not run: it needs a person to apply the protected patch and a dispatched sandbox run, and its record would then belong in docs/ops/game-days/agent-escalation/.",
+    "gap": "2026-10-25 (lane L6): l6-sec-10157-protected.patch was applied by the parent session on ccr-d1bc1e54-kf6mr0 at b9a45fd5 under owner-decisions-2026-10-25 decision 3 (with the parent's corrections for 9120: rustup inside backend/, and change-windows.json naming `qip change-window`), and is merged into this lane. Still PARTIAL until the owner's approving review of the rolling pull request's head (the `agent boundary` sign-off) and a hosted CI run shows the gate firing. Earlier: The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall. 2026-10-24 (lane L6): that step is written as docs/blueprint/lanes/l6-sec-10157-protected.patch, a step appended to .github/workflows/agent-sandbox.yml that, after the egress verdict, runs as the lane's uid and lane-egress gid and must be refused five times: reading a root-only planted secret, a direct connection with the proxy bypassed, an off-list host through the proxy, a runner token in the lane's environment, and a token kept in either checkout's .git/config; any success fails the job. Checked only statically: the YAML parses, `bash -n` accepts the step, and agent-guard.mjs's sandbox judge still admits the file ('holds no secret, no credential and no write ...'). It has not run: it needs a person to apply the protected patch and a dispatched sandbox run, and its record would then belong in docs/ops/game-days/agent-escalation/.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3738,7 +3764,7 @@
       "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
       "infrastructure/terraform/modules/data/main.tf"
     ],
-    "gap": "Enable stores, sinks, catalog.",
+    "gap": "2026-10-24 (re-read against the tree): Phase 5 deliverables missing or off: GCS tick/internal archive (enable_cloud_storage=false everywhere); Bigtable (enable_bigtable=false everywhere, no Rust client, not admitted by ADR 0113 §1); Knowledge Catalog (no google_dataplex_* resource; ADR 0101 row C4 needs a storage record); replay/feature sinks (no fabric-driven sink to any store). BigQuery is on in dev tfvars but no Terraform sets QIP_BIGQUERY_PROJECT/QIP_BIGQUERY_DATASET for qip-deepbrain, and nothing is applied. No phase-5 exit test exists (ADR 0143's docs/architecture/phase-register.json is not committed; no phase-5 suite beside phase12_exit.rs/phase_16_exit.rs). Needs tfvar flips and applies, store ADRs for Bigtable and Knowledge Catalog, managed services, and the register plus exit test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3754,7 +3780,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'data stores declared but disabled' is stale: dev sets enable_bigquery = true (owner-approved 2026-10-19), a regional segment bucket and a simulation bucket are declared, and a knowledge-pack writer exists (qip-deepbrain connectors with_knowledge_packs, behind QIP_DEEPBRAIN_KNOWLEDGE_PACKS, unset by default)."
   },
   {
     "id": "R12-GCP-10165",
@@ -3930,9 +3956,10 @@
     "status": "PARTIAL",
     "current": "qip-twin counterfactual/regret and simulation engine; no future-state tree or rare-event factory.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs"
+      "backend/crates/services/qip-twin/src/counterfactual.rs",
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
     ],
-    "gap": "Remaining twins.",
+    "gap": "Decided 2026-10-25 by ADR 0182 d5 (see notes for the decision and the code it leaves). 2026-10-24 (re-read against the tree): Present: future-state tree (qip_twin::futures::FutureTree, qip-twin tests/futures.rs) and a market twin as per-instrument TwinState; a portfolio outcome distribution over one tree (FutureTree::portfolio_outcomes), not a counterfactual portfolio farm. Missing: macro and company twins, a rare-event factory, and any defined phase-13 exit test. Needs an owner decision on the exit test, licensed macro/company data (ADR 0157) and new code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3945,7 +3972,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'no future-state tree' is false: FutureTree exists with tests, grown by tick_desk and qip-cli agency TwinScenarios; rare-event pieces (beyond_history branches, Monte Carlo, adversarial_sequence) exist without a factory. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 5 defines phase 13's exit test (a default-path future tree, a twin beyond the per-instrument market twin, a promoted rare-event lesson surviving restart, a portfolio outcome distribution for the platform's own book); macro and company twins wait on licensed data under ADR 0157. Status unchanged."
   },
   {
     "id": "R12-QUANT-10173",
@@ -4692,9 +4719,11 @@
       "backend/crates/tests/qip-acceptance/tests/gitops.rs every_environment_variable_a_workload_reads_is_documented",
       "docs/ops/runbooks/environment-variables.md",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:527",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_docker_repository_in_the_tree_makes_its_tags_immutable"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_docker_repository_in_the_tree_makes_its_tags_immutable",
+      "backend/crates/runtime/qip-kernel/tests/body_schema_lock.rs::each_hash_chained_kernel_body_has_the_shape_its_version_locks",
+      "backend/crates/runtime/qip-kernel/tests/body_schema_lock.rs LedgerEntry (every variant, Booked per BookingBasis) and CycleJournalEntry (top level)"
     ],
-    "gap": "2026-10-24 (after the fleet slice): 'registry tags immutable' now holds for every DOCKER repository in the tree. infrastructure/fleet/main.tf's `fleet` sets docker_config.immutable_tags = true, and every_docker_repository_in_the_tree_makes_its_tags_immutable walks every .tf file; removing the block fails it. Still open: (1) 'schemas versioned and locked' holds for versioned but only 18 bodies are locked (10 in event_fabric_schema_lock.rs, 8 in qip-api schema.rs COMMITTED_SCHEMAS) of the ~98 `impl EventBody`, among them hash-chained log bodies such as FillBooked, AttributionRecorded, CycleJournalEntry and LedgerEntry; (2) nine GitOps image references in envs/test, stage and prod carry `digest: TO-PIN`, exempted as never promoted; (3) the image-building workflows pin actions by movable major-version tags (actions/checkout@v4 and others), a protected .github/** change; (4) the digest-pin and schema-lock clauses were never mutated on their own core lines.",
+    "gap": "2026-10-25 (lane L6): the kernel body lock now covers the per-user LedgerEntry (all five variants, Booked once per BookingBasis) and CycleJournalEntry at its top level. Still open: CycleJournalEntry's optional sub-journals are skipped when absent and are not locked; workflow actions are not pinned by SHA (protected, owner); promotion's TO-PIN digests. Earlier: 2026-10-24 (lane L6): two of the hash-chained kernel bodies the gap named are now locked: qip-kernel tests/body_schema_lock.rs commits FillBooked and AttributionRecorded's full-shape SchemaId with their SCHEMA_VERSION and fails when the shape moves without a version bump. Still open: (1) the other unlocked bodies, among them CycleJournalEntry (its optional calibration and counterfactual journals need filled samples) and LedgerEntry, and most of the ~98 impl EventBody; (2) nine GitOps image references in envs/test, stage and prod carry `digest: TO-PIN` (never promoted); (3) image-building workflows pin actions by movable major-version tags, a protected .github/** change; (4) the digest-pin clause was never mutated on its own core line. 'Registry tags immutable' holds for every DOCKER repository in the tree (fleet included) and for the new secondary repository (modules/registry secondary.tf).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4705,7 +4734,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- no_model_weights_are_committed_outside_a_declared_registry_path every_environment_variable_a_workload_reads_is_documented",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one. AUDIT-4: 2026-10-24 regraded, the named tests cover model weights and documented variables only; flipping the registry module's immutable_tags to false leaves both green and fails only infrastructure.rs, which the row does not name; no named test checks digest pinning.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL; 2026-10-24 parent session: fleet registry made immutable and every DOCKER repository in the tree is now tested; the mutation (dropping fleet's docker_config) failed the new test naming `fleet`. Row stays PARTIAL on the clauses listed in gap."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one. AUDIT-4: 2026-10-24 regraded, the named tests cover model weights and documented variables only; flipping the registry module's immutable_tags to false leaves both green and fails only infrastructure.rs, which the row does not name; no named test checks digest pinning.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL; 2026-10-24 parent session: fleet registry made immutable and every DOCKER repository in the tree is now tested; the mutation (dropping fleet's docker_config) failed the new test naming `fleet`. Row stays PARTIAL on the clauses listed in gap. 2026-10-24 lane L6: lock added. Mutations, restored by cp and cmp: `#[serde(rename = \"fee\")]` on FillBooked.costs failed the lock naming FillBooked's new id; the same on AttributionRecorded.unkeyed failed it naming AttributionRecorded. Stays PARTIAL. 2026-10-25 lane L6: mutations: a serde rename of InflowCancelled.amount without a version bump failed each_hash_chained_kernel_body_has_the_shape_its_version_locks at 'LedgerEntry::InflowCancelled is now version 1 with schema id ...'; a rename of CycleJournalEntry.sensed_unlisted failed it at 'CycleJournalEntry is now version 1 ...'. Both restored with cmp; passed."
   },
   {
     "id": "R12-OBS-10204",
@@ -4762,7 +4791,7 @@
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:322"
     ],
-    "gap": "App profiles.",
+    "gap": "2026-10-24 (re-read against the tree): Profiles are declared: google_bigtable_app_profile.timeseries with ingest (single-cluster to primary, high priority), serve (multi-cluster, medium) and batch (single-cluster to secondary, low) in modules/data/main.tf, planned only when enable_bigtable=true, which no env sets; no plan can run now. No Rust reader/writer picks a profile (Bigtable not admitted, ADR 0113 §1), and no acceptance test guards the profile-to-routing mapping. Needs a tfvar flip, a Bigtable store ADR, and a plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -4775,7 +4804,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Bigtable app profile declared' is false: three profiles (ingest/serve/batch) were added in commit 4f2da224 (local.bigtable_app_profiles, google_bigtable_app_profile.timeseries)."
   },
   {
     "id": "R12-CICD-10207",

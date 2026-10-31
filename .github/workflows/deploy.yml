@@ -338,6 +338,41 @@ jobs:
           fi
           echo "static analysis succeeded in ci run ${run_id} for ${DEPLOY_SHA}"
 
+      # The simulation and performance gates passed, by name, in the ci run
+      # being trusted (R12-CICD-7116, R12-CICD-7119). "ci succeeded" does not
+      # say which jobs it had: a commit whose ci.yml predates the gates, or
+      # one that dropped a gate job, has a successful ci run with no gate in
+      # it. Each gate job must be present and `success`; absent is a refusal.
+      - name: the simulation and performance gates passed in that ci run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_REPOSITORY: ${{ github.repository }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          run_id="${TRIGGER_RUN_ID:-}"
+          if [ -z "$run_id" ]; then
+            run_id=$(gh api \
+              "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success&event=push" \
+              --jq '.workflow_runs[0].id // empty')
+          fi
+          case "$run_id" in
+            ''|*[!0-9]*)
+              echo "no ci run id to read the gates from for ${DEPLOY_SHA}; nothing is deployed." >&2
+              exit 1
+              ;;
+          esac
+          for gate in "simulation gate" "performance gate"; do
+            conclusion=$(gh api --paginate \
+              "repos/${THIS_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"${gate}\") | .conclusion")
+            if [ "$conclusion" != "success" ]; then
+              echo "ci run ${run_id}'s ${gate} is '${conclusion:-absent}', not success; nothing is deployed." >&2
+              exit 1
+            fi
+            echo "${gate} succeeded in ci run ${run_id} for ${DEPLOY_SHA}"
+          done
+
       # The agent boundary held for every commit this deployment ships (R12
       # GOV-9067, SEC-9068, ADR 0117). Each commit since the last successful
       # deployment is judged against its own files and the pull request it
@@ -1285,7 +1320,9 @@ jobs:
             echo
             echo "Nothing was deployed by this run. The digests are in the one build"
             echo "registry (${prefix}); this run attested them for ${TARGET_ENVIRONMENT}."
-            echo "The Kargo warehouse discovers them on its own poll and its promotions"
+            echo "Where Kargo is bootstrapped, its warehouse discovers the api, fastbrain"
+            echo "and deepbrain images on its own poll (qip-portal is not watched and is"
+            echo "pinned by hand in envs/<env>), and its promotions"
             echo "carry the same digests along dev, test, replay, paper, stage, prod —"
             echo "automatically into dev, on a person's approval for every later link,"
             echo "never into prod — and Argo CD's post-sync hook proves the routed"

@@ -948,6 +948,13 @@ impl DataReference {
         self.compare_hash(qip_core::sha256_hex(bytes))
     }
 
+    /// [`Self::verify`] for bytes this platform holds only as a digest — a
+    /// re-fetch's body, which arrives untrusted and is never unwrapped to be
+    /// hashed.
+    pub fn verify_hash(&self, sha256_hex: String) -> RevisionCheck {
+        self.compare_hash(sha256_hex)
+    }
+
     /// Whether a later reference to the same extent still hashes the same.
     ///
     /// For a ledger that keeps references and not bytes: the bytes a
@@ -1060,7 +1067,10 @@ mod tests {
                     // whose sample named nothing, so a body with no fields
                     // would make this fixture fail at registration for a
                     // reason that has nothing to do with what it tests.
-                    body: r#"{"symbol":"EU0001","level":41.0}"#.to_string(),
+                    body: qip_core::untrusted::Untrusted::new(
+                        "a scripted sample",
+                        r#"{"symbol":"EU0001","level":41.0}"#.to_string(),
+                    ),
                     media_type: "application/json".to_string(),
                     payload_at: Some(now()),
                     latency: Duration::from_millis(5),
@@ -1159,7 +1169,10 @@ mod tests {
                     // whose sample named nothing, so a body with no fields
                     // would make this fixture fail at registration for a
                     // reason that has nothing to do with what it tests.
-                    body: r#"{"symbol":"EU0001","level":41.0}"#.to_string(),
+                    body: qip_core::untrusted::Untrusted::new(
+                        "a scripted sample",
+                        r#"{"symbol":"EU0001","level":41.0}"#.to_string(),
+                    ),
                     media_type: "application/json".to_string(),
                     payload_at: Some(now()),
                     latency: Duration::from_millis(5),

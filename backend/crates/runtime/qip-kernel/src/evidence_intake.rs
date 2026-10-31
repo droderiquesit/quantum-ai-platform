@@ -249,7 +249,52 @@ impl EvidenceIntake {
     }
 }
 
+/// What [`Platform::admit_world_records`] let through.
+#[derive(Debug)]
+pub struct Released<T> {
+    /// The records whose claim the world fabric stood behind, and every
+    /// record that rests on no claim, in the order offered.
+    pub records: Vec<T>,
+    /// Records offered whose claim the fabric withheld.
+    pub withheld: usize,
+    /// What the poll's evidence did to the fabric.
+    pub intake: EvidenceIntake,
+}
+
 impl Platform {
+    /// Absorb one poll's checked evidence and hand back only the records the
+    /// world fabric stood behind (R12-EVID-1200): the one seam every
+    /// composition root's connector arm goes through, so the order evidence
+    /// then observation is the kernel's and not three roots' copies of it.
+    ///
+    /// Each item is a record and the claim it rests on: the connector's
+    /// claim id, or `None` for a record no source claimed (a synthetic,
+    /// replayed or tape record), which has nothing to withhold. Until
+    /// 2026-10-24 each root absorbed and released on its own, and two of the
+    /// three observed every record whatever the fabric said; a root now has
+    /// no way to reach the records but through the fabric's verdict.
+    pub fn admit_world_records<T>(
+        &mut self,
+        evidence: Vec<CheckedEvidence>,
+        items: Vec<(T, Option<String>)>,
+        now: Timestamp,
+    ) -> Released<T> {
+        let intake = self.absorb_evidence(evidence, now);
+        let offered = items.len();
+        let records: Vec<T> = items
+            .into_iter()
+            .flat_map(|(record, claim)| match claim {
+                Some(id) => intake.release(vec![(record, id)]),
+                None => vec![record],
+            })
+            .collect();
+        Released {
+            withheld: offered - records.len(),
+            records,
+            intake,
+        }
+    }
+
     /// Forward one connector poll's checked evidence into the world model's
     /// fabric. See the module doc for what is counted and why nothing here
     /// stops the poll: infallible by design, every per-claim refusal is on
@@ -277,7 +322,7 @@ impl Platform {
                 let id = checked.record.id.clone();
                 let claim = ClaimKey::of(&checked.record);
                 let before = world.evidence().version();
-                let journaled = JournaledClaim {
+                let mut journaled = JournaledClaim {
                     record: checked.record.clone(),
                     document_hash: Some(checked.document_hash.clone()),
                     admitted_at: now,
@@ -285,6 +330,15 @@ impl Platform {
                 match world.absorb_evidence(checked.record, Some(&checked.document_hash), now) {
                     Ok((verdict, outcome)) => {
                         intake.admitted += 1;
+                        // The world fabric's own temporal verdict, checked
+                        // against every source's claims, is what the journal
+                        // keeps (R12-EVID-2036). Until 2026-10-25 the record
+                        // journaled was the pre-admission clone, so the log
+                        // said whatever the connector's private check had
+                        // said, or nothing, and a claim the world found
+                        // dated before its declared cause was journaled as
+                        // if no one had looked.
+                        journaled.record.temporal_consistency = Some(verdict.temporal.clone());
                         admitted_claims.push(journaled);
                         // Only an admissible claim with a checkable key moves
                         // what the fabric believes; an inadmissible one is

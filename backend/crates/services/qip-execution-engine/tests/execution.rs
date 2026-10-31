@@ -887,6 +887,48 @@ fn an_order_that_traces_to_no_hypothesis_is_refused() {
 }
 
 #[test]
+fn an_order_justified_only_by_profit_is_refused_and_one_naming_a_hypothesis_is_admitted() {
+    // R12-GOV-6127's unit, on the desk's order (ADR 0200): "a justification
+    // of only profit and/or price impact is refused; one with an evidence
+    // ground is admitted". An order's evidence is the hypothesis it
+    // implements. A blank one names nothing, so it may not count as one —
+    // `Justification::of` would admit the text `hypothesis:  ` as evidence
+    // if blanks were not dropped first.
+    let mut manager = manager();
+    let mut broker = simulator();
+    let controller = AutonomyController::new();
+
+    let grounded = order("AAA", Side::Buy, "1000");
+    let hypothesis = grounded.hypotheses[0].clone();
+    let justification = grounded
+        .justification()
+        .expect("an order naming a hypothesis is justified");
+    assert!(
+        justification
+            .rendered()
+            .contains(&format!("hypothesis:{hypothesis}")),
+        "the justification does not name the hypothesis: {:?}",
+        justification.rendered()
+    );
+    assert!(submit(&mut manager, grounded, &mut broker, &controller).accepted);
+
+    for (case, hypotheses) in [("none", vec![]), ("only blanks", vec!["  ".to_string()])] {
+        let mut ungrounded = order("AAA", Side::Buy, "1000");
+        ungrounded.hypotheses = hypotheses;
+        assert!(
+            ungrounded.justification().is_err(),
+            "{case}: an order with no hypothesis was justified"
+        );
+        assert!(
+            ungrounded.validate().is_err(),
+            "{case}: validation, which the broker seam runs too, admitted it"
+        );
+        let result = submit(&mut manager, ungrounded, &mut broker, &controller);
+        assert!(!result.accepted, "{case}: the order manager admitted it");
+    }
+}
+
+#[test]
 fn an_order_with_no_scope_cannot_be_stopped_and_is_refused() {
     let mut manager = manager();
     let mut broker = simulator();
@@ -1807,4 +1849,144 @@ fn a_second_order_inside_the_headroom_alone_is_refused_when_a_working_order_alre
         1,
         "the refused order rests anyway"
     );
+}
+
+/// A venue at which an order rests until it is withdrawn: it takes the order,
+/// fills nothing, and counts what it was asked to take. Capabilities are the
+/// simulator's, so every gate before the broker reads the venue it always
+/// reads.
+#[derive(Debug)]
+struct RestingBroker {
+    capabilities: SimulatedBroker,
+    submitted: usize,
+}
+
+impl Broker for RestingBroker {
+    fn name(&self) -> &str {
+        self.capabilities.name()
+    }
+    fn is_simulated(&self) -> bool {
+        true
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> qip_execution_engine::broker::VenueCapabilities {
+        self.capabilities.capabilities()
+    }
+    fn submit(&mut self, _order: &Order, _at: Timestamp) -> Result<Vec<Fill>> {
+        self.submitted += 1;
+        Ok(Vec::new())
+    }
+    fn cancel(&mut self, _order: &Order, _at: Timestamp) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_desk_order_after_repeated_unfilled_withdrawals_on_one_book_side_is_refused_before_the_broker()
+-> Result<()> {
+    // R12-GOV-6126 on the desk. A place-and-cancel pattern is made of orders
+    // each of which is within every per-order limit; the cell refused the
+    // pattern at its send seam and the desk's order manager — the one seam a
+    // desk order reaches a broker through — refused nothing of the kind.
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    let mut venue = RestingBroker {
+        capabilities: simulator(),
+        submitted: 0,
+    };
+    let placed = |index: usize, side: Side| {
+        let mut order = order("AAA", side, "10");
+        order.order_id = OrderId::from_string(format!("ord-AAA-{index}"));
+        order
+    };
+
+    // Premise: four buys go to the venue and rest, and the desk withdraws
+    // each with nothing filled — the policy's minimum, past its ratio.
+    for index in 0..4 {
+        let result = submit(
+            &mut manager,
+            placed(index, Side::Buy),
+            &mut venue,
+            &controller,
+        );
+        assert!(
+            result.accepted,
+            "premise: buy {index} was refused: {:?}",
+            result.refusal
+        );
+        manager.cancel(
+            &OrderId::from_string(format!("ord-AAA-{index}")),
+            &mut venue,
+            "withdrawn by the desk",
+            now(),
+        )?;
+    }
+    assert_eq!(venue.submitted, 4, "premise: the venue took four orders");
+
+    // The fifth buy on the same side of the same book is refused, by name,
+    // and the venue is never asked.
+    let result = submit(&mut manager, placed(4, Side::Buy), &mut venue, &controller);
+    assert!(!result.accepted, "a fifth buy continued the pattern");
+    match result.refusal.as_ref() {
+        Some(RefusalReason::Conduct { venue: at, detail }) => {
+            assert_eq!(at, venue.name());
+            assert!(detail.contains("withdrew 4 of its last 4"), "{detail}");
+        }
+        other => panic!("expected a conduct refusal, got {other:?}"),
+    }
+    assert_eq!(venue.submitted, 4, "the refused order reached the venue");
+
+    // The other side of the book holds no pattern, so a sale still goes.
+    let result = submit(&mut manager, placed(5, Side::Sell), &mut venue, &controller);
+    assert!(
+        result.accepted,
+        "a sale was refused for the bids' pattern: {:?}",
+        result.refusal
+    );
+    Ok(())
+}
+
+#[test]
+fn a_kill_switch_sweep_of_unfilled_orders_is_not_counted_as_the_desks_withdrawals() -> Result<()> {
+    // R12-GOV-6126. The conduct watch convicts the desk of a pattern only on
+    // withdrawals the desk chose. A kill switch's sweep pulls every resting
+    // order at once and is an event the desk did not choose; counted, one
+    // halt would refuse the desk's next order on that book as spoofing.
+    // `cancel_scope` once went through `cancel` and was counted.
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    let mut venue = RestingBroker {
+        capabilities: simulator(),
+        submitted: 0,
+    };
+    let placed = |index: usize| {
+        let mut order = order("AAA", Side::Buy, "10");
+        order.order_id = OrderId::from_string(format!("ord-AAA-{index}"));
+        order
+    };
+    for index in 0..4 {
+        let result = submit(&mut manager, placed(index), &mut venue, &controller);
+        assert!(
+            result.accepted,
+            "premise: buy {index} was refused: {:?}",
+            result.refusal
+        );
+    }
+    let (swept, failed) = manager.cancel_scope("momentum", &mut venue, "kill switch", now());
+    assert_eq!(
+        swept.len(),
+        4,
+        "premise: the sweep withdrew the four resting buys"
+    );
+    assert!(failed.is_empty(), "{failed:?}");
+
+    let result = submit(&mut manager, placed(4), &mut venue, &controller);
+    assert!(
+        result.accepted,
+        "a kill switch's sweep convicted the desk of a pattern: {:?}",
+        result.refusal
+    );
+    Ok(())
 }

@@ -394,6 +394,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::Executed { .. } => "executed",
             AgencyRecord::ToolDecision { .. } => "tool",
             AgencyRecord::VoiceReleased { .. } => "voice",
+            AgencyRecord::PostReleaseFinding { .. } => "post-release",
             AgencyRecord::IntentRecorded { .. } => "intent",
             AgencyRecord::PlanBlocked { .. } => "blocked",
             AgencyRecord::Learned { .. } => "learned",
@@ -1072,4 +1073,216 @@ fn a_tool_the_operator_revokes_is_refused_on_the_next_pass_and_the_refusal_is_jo
         err.contains("revokes `qouter`, which it does not register"),
         "{err}"
     );
+}
+
+/// R12-GOV-3030: the Conduct Brain re-checks a message after it was
+/// released. A draft cleared under one policy, and in breach of a phrase
+/// the operator prohibits afterwards, is filed as a finding on the next
+/// pass the shipped binary runs — once, not again on every later pass.
+///
+/// Mutation: in `Session::open`, file nothing (`post_release: Vec::new()`)
+/// and the finding below is never journaled.
+#[test]
+fn a_released_message_that_a_later_policy_prohibits_is_filed_as_a_finding_once() {
+    let scratch = Scratch::new("post-release");
+    let journal = scratch.journal();
+    let policy = scratch.write("policy.json", &policy_document());
+    let first = scratch.write("first.json", &acting(1));
+    let (out, err, code) = qip(
+        &[&policy, &journal, &first],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 3, "stdout {out} stderr {err}");
+    let released: Vec<_> = records(&journal)
+        .into_iter()
+        .filter_map(|r| match r {
+            AgencyRecord::VoiceReleased { voice, .. } => Some(voice),
+            _ => None,
+        })
+        .collect();
+    // Premise: the first pass released the draft, and kept its text.
+    assert_eq!(released.len(), 1, "{out}");
+    assert_eq!(
+        released[0].content.as_deref(),
+        Some("Quote 20 lots on venue-a at the published spread")
+    );
+    let findings = |journal: &Path| -> Vec<qip_agency::guard::PostReleaseFinding> {
+        records(journal)
+            .into_iter()
+            .filter_map(|r| match r {
+                AgencyRecord::PostReleaseFinding { finding, .. } => Some(finding),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(
+        findings(&journal).is_empty(),
+        "premise: nothing breached at release"
+    );
+
+    // The operator prohibits a phrase the released message used.
+    let mut stricter = policy_document();
+    stricter["guard"]["conduct"]["conduct_rules"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("prohibit:published spread"));
+    let stricter = scratch.write("stricter.json", &stricter);
+    let second = scratch.write("second.json", &acting(2));
+    let (out, err, _) = qip(
+        &[&stricter, &journal, &second],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    let filed = findings(&journal);
+    assert_eq!(filed.len(), 1, "stdout {out} stderr {err}: {filed:?}");
+    assert_eq!(filed[0].rule, "prohibit:published spread");
+    assert_eq!(filed[0].fingerprint, released[0].fingerprint);
+    assert_eq!(filed[0].identity, "desk-agent");
+
+    // A third pass under the same policy files nothing new.
+    let third = scratch.write("third.json", &acting(3));
+    let _ = qip(
+        &[&stricter, &journal, &third],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(findings(&journal).len(), 1, "the finding was filed twice");
+}
+
+/// R12-GOV-3030's bound: a message too long to keep whole cannot be
+/// re-checked after release, so it is not released; one exactly at the
+/// bound is. Mutation: in `released_voice`, drop the length refusal and the
+/// long draft is executed.
+#[test]
+fn a_draft_too_long_to_keep_whole_is_not_released_and_one_at_the_bound_is() {
+    let bound = qip_agency::guard::MAX_RELEASED_CONTENT_BYTES;
+    let base = "Quote 20 lots on venue-a at the published spread";
+    let with_length = |length: usize| {
+        let mut document = acting(1);
+        let padded = format!("{base}{}", " ok".repeat((length - base.len()) / 3));
+        let padded = format!("{padded}{}", " ".repeat(length - padded.len()));
+        assert_eq!(padded.len(), length);
+        document["pass"]["communications"]["quoter"]["content"] = json!(padded);
+        document
+    };
+    let executed = |name: &str, document: &Value| {
+        let scratch = Scratch::new(name);
+        let policy = scratch.write("policy.json", &policy_document());
+        let request = scratch.write("request.json", document);
+        let journal = scratch.journal();
+        let (out, err, _) = qip(
+            &[&policy, &journal, &request],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        let ran = records(&journal)
+            .iter()
+            .any(|r| matches!(r, AgencyRecord::Executed { .. }));
+        (ran, format!("{out}{err}"))
+    };
+    let (at_bound, said) = executed("at-bound", &with_length(bound));
+    assert!(
+        at_bound,
+        "premise: a draft at the bound is released: {said}"
+    );
+    let (over, said) = executed("over-bound", &with_length(bound + 1));
+    assert!(!over, "a draft over the bound was released: {said}");
+    assert!(said.contains("kept whole up to 4096"), "{said}");
+}
+
+/// R12-EXPAND-6071: the shipped binary asks for a level, and the level's row
+/// of ADR 0141's schedule judges the request. An operator pass asking
+/// `narrow_compensable` on the evidence that earns `narrow_reversible` -- one
+/// identified attribution and one approver -- is refused by name, journaled,
+/// and the pass stays shadow. Then each shortfall the row names is refused in
+/// turn: a compensation whose drill did not restore the prior state, a single
+/// approver, and, with everything the row asks, the one-level-at-a-time rule
+/// (the policy holds shadow). Nothing in this test widens.
+///
+/// Mutation: in `Session::widen`, ignore `decl.target` and ask for
+/// narrow-reversible -- the first pass then widens and exits 3.
+#[test]
+fn an_operator_pass_asking_narrow_compensable_with_narrow_reversible_evidence_is_refused_by_name() {
+    let scratch = Scratch::new("compensable");
+    let policy = scratch.write("policy.json", &policy_document());
+    let drill = |restored: bool| {
+        json!({"step": "re-widen quotes", "ran_at": "2026-10-01T00:00:00Z",
+               "restored": restored, "record": "drill-2026-10-01"})
+    };
+    let second = json!({"name": "second-approver", "authorities": ["agency:widen-autonomy"]});
+    type Shape = fn(&mut Value, &dyn Fn(bool) -> Value, &Value);
+    let cases: [(&str, Shape, &str); 4] = [
+        (
+            "lesser",
+            |_, _, _| {},
+            "NarrowCompensable needs 30 day(s) at Shadow without drift; the evidence states 0",
+        ),
+        (
+            "unrehearsed",
+            |w, drill, second| {
+                w["clean_days"] = json!(30);
+                w["compensations"] = json!([{"class": "market", "drill": drill(false)}]);
+                w["co_approvers"] = json!([second]);
+            },
+            "compensating step for Market tested in a drill; the drill offered did not restore",
+        ),
+        (
+            "one-approver",
+            |w, drill, _| {
+                w["clean_days"] = json!(30);
+                w["compensations"] = json!([{"class": "market", "drill": drill(true)}]);
+            },
+            "NarrowCompensable needs 2 distinct approver(s)",
+        ),
+        (
+            "from-shadow",
+            |w, drill, second| {
+                w["clean_days"] = json!(30);
+                w["compensations"] = json!([{"class": "market", "drill": drill(true)}]);
+                w["co_approvers"] = json!([second]);
+            },
+            "the policy holds Shadow; NarrowCompensable is reached only from NarrowReversible",
+        ),
+    ];
+    for (name, shape, reason) in cases {
+        let mut document = acting(1);
+        document["widening"]["target"] = json!("narrow_compensable");
+        shape(&mut document["widening"], &drill, &second);
+        let pass = scratch.write(&format!("{name}.json"), &document);
+        let journal = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &journal, &pass],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        assert_eq!(code, 0, "{name}: stdout {out} stderr {err}");
+        assert!(out.contains("widening Market refused"), "{name}: {out}");
+        assert!(out.contains("outcome: shadowed"), "{name}: {out}");
+        let records = records(&journal);
+        assert!(
+            records.iter().any(|r| matches!(
+                r,
+                AgencyRecord::WideningRefused { reason: why, .. } if why.contains(reason)
+            )),
+            "{name}: the refusal names {reason:?}"
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r, AgencyRecord::Executed { .. })),
+            "{name}"
+        );
+    }
+
+    // Premise: the same document with no target widens -- the refusals above
+    // are the level's row, not evidence the binary rejects anyway.
+    let plain = scratch.write("plain.json", &acting(1));
+    let (out, err, code) = qip(
+        &[&policy, &scratch.dir.join("plain.jsonl"), &plain],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 3, "stdout {out} stderr {err}");
+    assert!(out.contains("widened Market"), "{out}");
 }

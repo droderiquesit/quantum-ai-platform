@@ -1,0 +1,30 @@
+diff --git a/.claude/rules/domains/infrastructure.md b/.claude/rules/domains/infrastructure.md
+--- a/.claude/rules/domains/infrastructure.md
++++ b/.claude/rules/domains/infrastructure.md
+@@ -35,15 +35,16 @@
+ bad value **and admits a good one**. The second half is what distinguishes a
+ working gate from one that refuses everything.
+ 
+-## Known gap (flagged 2026-10-17, no rule changed)
++## Known gap (flagged 2026-10-17, closed since `e2948eab`; no rule changed)
+ 
+ `.claude/rules/02-change-management.md` says `prod` is refused by both
+-`infra.yml` and the deploy gate. Read against the workflows, only half of that
+-holds as written: `infra.yml` refuses `prod` unconditionally (lines 261-264,
+-"prod infrastructure is never changed from this workflow"), while
+-`deploy.yml` lists `prod` as a `workflow_dispatch` option (lines 65-69) and its
+-refusal step (lines 135-137) fires only when `TARGET_ENVIRONMENT == 'prod'`
+-**and** the event is not `workflow_dispatch`. A human dispatch of `deploy.yml`
+-for `prod` is therefore not refused by that step; the remaining protection is
+-the human dispatch itself and whatever the later jobs and environment
+-protection require. Re-read both files before relying on either description.
++`infra.yml` and the deploy gate. Both halves hold. `deploy.yml` offers `dev`,
++`test` and `stage` only as `workflow_dispatch` options, and its step
++`refuse a production deployment on every trigger` exits 1 when
++`TARGET_ENVIRONMENT` is `prod`, on any trigger, since `e2948eab`.
++`infra.yml` refuses `prod` unconditionally ("prod infrastructure is never
++changed from this workflow"). Until 2026-10-24 this section said the deploy
++refusal fired only off `workflow_dispatch`; that described the workflow
++before `e2948eab`. Locate both by name, not by line:
++`grep -n 'refuse a production deployment' .github/workflows/deploy.yml` and
++`grep -n 'prod infrastructure is never changed' .github/workflows/infra.yml`.

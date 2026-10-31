@@ -36,10 +36,15 @@
 pub mod arbitrage;
 pub mod cell;
 /// The cell's own order conduct: a place-and-cancel pattern refused before
-/// the next order of its shape exists.
-pub mod conduct;
+/// the next order of its shape exists. The watch lives in
+/// `qip-execution-engine` since R12-GOV-6126, so the desk's order manager
+/// refuses the same pattern on the same arithmetic; re-exported here so the
+/// cell's own path is unchanged.
+pub use qip_execution_engine::conduct;
 /// §32.1's size decomposition: what a cycle does after a leg fills short.
 pub mod decomposition;
+/// The degradation envelope every input of a cell must have (R12-RES-8026).
+pub mod degradation;
 pub mod dispersion;
 pub mod dropcopy;
 pub mod envelope;
@@ -79,11 +84,12 @@ pub mod trust;
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
     Cell, CellConfig, ConfirmedFill, CrossingInterval, DispositionLine, DispositionVerdict,
-    ExecutionReport, GATE_AWAITING_RECONCILIATION, GATE_CYCLE_RESTING, GATE_DARK_REGION,
-    GATE_DISPOSITION, GATE_ENVELOPE_LEVERAGE, GATE_ENVELOPE_LIQUIDITY, GATE_ENVELOPE_UNBOUNDED,
-    GATE_FILL_DISPERSION, GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER,
-    GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy,
-    RoutedCycle, WorkReport,
+    ExecutionReport, GATE_AWAITING_RECONCILIATION, GATE_BORROW, GATE_CYCLE_RESTING,
+    GATE_DARK_REGION, GATE_DISPOSITION, GATE_ENVELOPE_DRAWDOWN, GATE_ENVELOPE_LEVERAGE,
+    GATE_ENVELOPE_LIQUIDITY, GATE_ENVELOPE_UNBOUNDED, GATE_FILL_DISPERSION, GATE_JUSTIFICATION,
+    GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET,
+    MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle,
+    WorkReport,
 };
 pub use decomposition::{
     Completion, DEFAULT_MINIMUM_VIABLE_FRACTION, Decomposition, DecompositionPolicy, LegSize,

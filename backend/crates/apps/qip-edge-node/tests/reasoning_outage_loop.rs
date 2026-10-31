@@ -120,6 +120,11 @@ fn temp_dir(label: &str) -> PathBuf {
 struct Centre {
     address: String,
     stop: Arc<AtomicBool>,
+    /// Set, the centre still accepts every connection and answers none of
+    /// them: the hanging centre, as against the closed one.
+    silent: Arc<AtomicBool>,
+    /// Connections accepted while silent, each held open and never answered.
+    held: Arc<AtomicU64>,
     /// Polls and deltas the centre answered with a 2xx, told apart by path.
     polls: Arc<AtomicU64>,
     deltas: Arc<AtomicU64>,
@@ -134,13 +139,21 @@ impl Centre {
         let address = listener.local_addr().map_err(io)?.to_string();
         listener.set_nonblocking(true).map_err(io)?;
         let stop = Arc::new(AtomicBool::new(false));
+        let silent = Arc::new(AtomicBool::new(false));
+        let held = Arc::new(AtomicU64::new(0));
         let polls = Arc::new(AtomicU64::new(0));
         let deltas = Arc::new(AtomicU64::new(0));
         let (thread_stop, thread_polls, thread_deltas) =
             (Arc::clone(&stop), Arc::clone(&polls), Arc::clone(&deltas));
+        let (thread_silent, thread_held) = (Arc::clone(&silent), Arc::clone(&held));
         let handle = std::thread::spawn(move || {
+            let mut unanswered = Vec::new();
             while !thread_stop.load(Ordering::SeqCst) {
                 match listener.accept() {
+                    Ok((stream, _)) if thread_silent.load(Ordering::SeqCst) => {
+                        thread_held.fetch_add(1, Ordering::SeqCst);
+                        unanswered.push(stream);
+                    }
                     Ok((stream, _)) => {
                         let _ = stream.set_nonblocking(false);
                         match serve_one(stream, &endpoint).as_deref() {
@@ -159,10 +172,21 @@ impl Centre {
         Ok(Self {
             address,
             stop,
+            silent,
+            held,
             polls,
             deltas,
             handle: Some(handle),
         })
+    }
+
+    /// From now on, accept and never answer.
+    fn silence(&self) {
+        self.silent.store(true, Ordering::SeqCst);
+    }
+
+    fn held(&self) -> u64 {
+        self.held.load(Ordering::SeqCst)
     }
 
     fn url(&self) -> String {
@@ -264,6 +288,10 @@ fn grant() -> Result<VerifiedEnvelope> {
         Decimal::ONE,
         capital,
     )?)?;
+    let loss_limit = unsigned.loss_limit();
+    let unsigned = unsigned.with_drawdown(qip_contracts::DrawdownBounds::bounded(
+        loss_limit, None, None,
+    )?)?;
     let signature = sign_payload(KEY, &unsigned.signing_payload());
     VerifiedEnvelope::verify(unsigned.signed(signature), KEY, CELL, t(1))
 }
@@ -288,7 +316,11 @@ fn permitting(gateway: SimulatedGateway, objects: &[&ObjectId]) -> Result<Simula
     // List and seed: the run seeds the touch it trades against, and
     // permission to list is not permission to seed (R12-COVERAGE-5107).
     for object in objects {
-        for action in [CreationAction::List, CreationAction::Seed] {
+        for action in [
+            CreationAction::Create,
+            CreationAction::List,
+            CreationAction::Seed,
+        ] {
             let request = CreationRequest::new(action, venue.as_str(), object.as_str(), "paper");
             for authority in CreationAuthority::ALL {
                 permissions.record(authority, &request, "test fixture")?;
@@ -496,6 +528,19 @@ struct Run {
     /// The health body's mesh object after the last turn.
     mesh: serde_json::Value,
     pressures: Vec<JournalPressure>,
+    /// The longest any turn from the stop on took, by the wall clock.
+    slowest_after_stop: std::time::Duration,
+}
+
+/// What happens to the centre before turn [`CENTRE_STOPS_BEFORE`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CentreFate {
+    /// It answers throughout.
+    Answers,
+    /// Its listener closes and never returns.
+    Stops,
+    /// It goes on accepting and answers nothing again.
+    FallsSilent,
 }
 
 impl Run {
@@ -535,6 +580,15 @@ fn instant(turn: usize) -> Timestamp {
 /// Work [`TURNS`] turns. With `centre_stops` the centre's listener is closed
 /// before turn [`CENTRE_STOPS_BEFORE`] and never returns.
 fn run(centre_stops: bool) -> Result<Run> {
+    run_as(if centre_stops {
+        CentreFate::Stops
+    } else {
+        CentreFate::Answers
+    })
+}
+
+fn run_as(fate: CentreFate) -> Result<Run> {
+    let centre_stops = fate == CentreFate::Stops;
     let store = Arc::new(MemoryKeyValueStore::new());
     let health = HealthSnapshot::new("{}");
     let mut centre = Some(Centre::start()?);
@@ -552,6 +606,7 @@ fn run(centre_stops: bool) -> Result<Run> {
     let mut turns = Vec::new();
     let mut pressures = Vec::new();
     let mut answered_before_stop = (0, 0);
+    let mut slowest_after_stop = std::time::Duration::ZERO;
     for turn in 0..TURNS {
         let now = instant(turn);
         if turn == 1 {
@@ -593,13 +648,32 @@ fn run(centre_stops: bool) -> Result<Run> {
                 // the first turn without a centre.
                 std::thread::sleep(PACE);
             }
+            if fate == CentreFate::FallsSilent {
+                let live = centre.as_ref().expect("a silent centre still runs");
+                live.silence();
+                // Premise: the worker is inside a request the centre will
+                // never answer before the first silent turn, or the turns
+                // below prove nothing about a hang.
+                let waited = std::time::Instant::now();
+                while live.held() == 0 {
+                    assert!(
+                        waited.elapsed() < PATIENCE,
+                        "premise: the worker never reached the silent centre"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
         }
+        let started = std::time::Instant::now();
         let report = {
             let _watchdog = Watchdog::arm(
                 "a decision-loop turn — the turn blocked, which is the centre holding the cell",
             );
             decisions.turn(now)?
         };
+        if turn >= CENTRE_STOPS_BEFORE {
+            slowest_after_stop = slowest_after_stop.max(started.elapsed());
+        }
         pressures.push(report.pressure);
         turns.push(TurnRecord {
             ran_pass: report.ran_pass,
@@ -637,6 +711,7 @@ fn run(centre_stops: bool) -> Result<Run> {
         answered_at_end: centre.as_ref().map(Centre::answered),
         mesh: body["mesh"].clone(),
         pressures,
+        slowest_after_stop,
     })
 }
 
@@ -752,5 +827,61 @@ fn a_node_driven_by_its_decision_loop_trades_the_same_passes_orders_and_refusals
     assert_eq!(stopped.turns.len(), answered.turns.len());
     assert_eq!(stopped.passes(), passes);
     assert_eq!(stopped.journal, answered.journal);
+    Ok(())
+}
+
+/// R12-REFLEX-5029: the node takes every hot-path decision without waiting
+/// on the centre, against the centre that is hardest to survive — one that
+/// accepts the connection and never answers.
+///
+/// The test beside this one closes the centre's listener, so every request
+/// the worker makes after the stop is refused at once and a failed poll is
+/// handed across every interval; a turn that *waited* for the worker would
+/// slow down there and not stop, and that test says so. Here the worker is
+/// held inside a request the centre will never answer, so nothing comes
+/// across at all, and a turn that waited on the worker would wait for the
+/// transport's whole timeout or for ever.
+///
+/// Mutation: `MeshWorker::take_inbound_at_most`'s `try_recv` made a `recv`,
+/// so the turn waits on what the worker brings back.
+#[test]
+fn a_node_driven_by_its_decision_loop_trades_the_same_when_the_centre_accepts_and_never_answers()
+-> Result<()> {
+    let answered = run_as(CentreFate::Answers)?;
+    let silent = run_as(CentreFate::FallsSilent)?;
+
+    // The premise: the link was live before the silence, and the turns on
+    // both sides of it decided something.
+    let (polls, deltas) = silent.answered_before_stop;
+    assert!(
+        polls > 0 && deltas > 0,
+        "premise: the centre answered {polls} polls and {deltas} deltas before falling silent"
+    );
+    let passes = answered.passes();
+    let stop_at = instant(CENTRE_STOPS_BEFORE);
+    assert!(
+        passes.range(stop_at..).any(|(_, p)| !p.orders.is_empty()),
+        "premise: no order was sent after the silence: {passes:?}"
+    );
+
+    // No turn waited on the silent centre: each took the wall time of a
+    // pass, not of a request nobody will answer.
+    assert!(
+        silent.slowest_after_stop < std::time::Duration::from_secs(1),
+        "a turn took {:?} beside a centre that accepts and never answers",
+        silent.slowest_after_stop
+    );
+
+    // And the node decided and executed the same, turn for turn, pass for
+    // pass, down to the chain it shipped.
+    assert_eq!(silent.turns.len(), answered.turns.len());
+    for (turn, (a, s)) in answered.turns.iter().zip(&silent.turns).enumerate() {
+        assert_eq!(
+            s, a,
+            "turn {turn} differs with the centre silent from turn {CENTRE_STOPS_BEFORE}"
+        );
+    }
+    assert_eq!(silent.passes(), passes);
+    assert_eq!(silent.journal, answered.journal);
     Ok(())
 }

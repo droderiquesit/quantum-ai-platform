@@ -16,6 +16,7 @@ pub mod config;
 pub mod decimal;
 pub mod deployment;
 pub mod error;
+pub mod exposure;
 pub mod hash;
 pub mod ids;
 pub mod kv;
@@ -26,6 +27,7 @@ pub mod rng;
 pub mod secret;
 pub mod testing;
 pub mod time;
+pub mod untrusted;
 
 pub use config::{Config, ConfigError};
 pub use decimal::Decimal;

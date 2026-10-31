@@ -54,7 +54,10 @@
 //! Nothing here holds a handle to a thesis, a size, a reservation or a
 //! broker. The aggregate, the influence weights and the compute allocation
 //! are records. A promotion refused is authority not added — never a path
-//! created.
+//! created. The one power that reaches DECIDE is ADR 0125 decision 2's veto
+//! as ADR 0170 sets it: a refutation of an important prediction is returned
+//! on [`ReasonVerdict`] and REASON forms no proposal from it. It can remove a
+//! thesis, never size or enlarge one.
 
 use qip_agents::finding::FindingStatus;
 use qip_contracts::challenge::{ChallengeRequest, VerificationResult};
@@ -283,6 +286,24 @@ impl EventBody for ModelVerified {
     }
 }
 
+/// What the tournament tells REASON about one hypothesis: a clause for the
+/// stage detail and, where the verifier society refuted an important
+/// prediction, the refutation REASON must honour (ADR 0125 decision 2,
+/// ADR 0170, R12-REASON-3108).
+///
+/// The refutation is the society's one path back into the thesis: a veto,
+/// never a size. A refuted leading explanation used to be held out of the
+/// tournament's aggregate and then sized and traded anyway, because this
+/// module returned only a string; the type carries the refusal so the caller
+/// cannot read the clause and drop the verdict.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReasonVerdict {
+    pub clause: String,
+    /// The society's summary when it refuted the prediction; `None` when it
+    /// survived or the prediction was not important enough to attack.
+    pub refuted: Option<String>,
+}
+
 /// What REASON hands the tournament about one hypothesis, all captured at
 /// the instant it was formed.
 #[derive(Debug)]
@@ -299,6 +320,16 @@ pub struct ReasonObservation<'a> {
     pub crossed_recently: Option<bool>,
     pub expected_move_bps: f64,
     pub approved: bool,
+    /// The agents that explain: those whose manifest role is `Research` or
+    /// `Adversarial` (ADR 0170 decision 2). The verifier society reads only
+    /// their views and their missing inputs. A control's or a construction
+    /// agent's finding is about how the platform acts, not about the subject
+    /// (ADR 0147 keeps control findings out of the evidence for the same
+    /// reason); counted, a risk control's negative finding read as a panel
+    /// leaning against every bullish claim, and a construction agent's
+    /// missing quantum backend as a variable every explanation left out.
+    /// The panel report itself keeps every finding.
+    pub explaining: BTreeSet<String>,
 }
 
 /// The stage's state, held by the platform across cycles.
@@ -528,13 +559,14 @@ impl TournamentStage {
 
     /// Open a question on one hypothesis, enter every forecast on it,
     /// review the disagreement, and — where the prediction is important —
-    /// put it to the verifier society. Returns a clause for REASON's detail,
-    /// or `None` when the hypothesis has no directional claim to ask about.
+    /// put it to the verifier society. Returns a clause for REASON's detail
+    /// and the society's refutation if it refuted the prediction, or `None`
+    /// when the hypothesis has no directional claim to ask about.
     pub fn observe_reasoning(
         &mut self,
         observation: ReasonObservation<'_>,
         now: Timestamp,
-    ) -> Option<String> {
+    ) -> Option<ReasonVerdict> {
         let hypothesis = observation.hypothesis;
         let sign = hypothesis.claim.implied_sign()?;
         let subject = hypothesis.subjects.first()?.as_str().to_string();
@@ -561,10 +593,21 @@ impl TournamentStage {
             self.review
                 .refused
                 .push(format!("{question}: {}", error.message()));
-            return Some(format!(
-                "; tournament refused the question: {}",
-                error.message()
-            ));
+            // Fail closed (ADR 0170 decision 1): an approved prediction is
+            // important by definition, and one the society could not attack
+            // has not survived it. This arm returned `refuted: None`, so an
+            // approved thesis whose question the tournament refused — a
+            // second hypothesis on one subject in one cycle shares the id
+            // `hyp-<cycle>-<subject>` — was sized unattacked.
+            return Some(ReasonVerdict {
+                clause: format!("; tournament refused the question: {}", error.message()),
+                refuted: observation.approved.then(|| {
+                    format!(
+                        "it could not be attacked: the tournament refused its question ({})",
+                        error.message()
+                    )
+                }),
+            });
         }
         self.last_regime = Some(observation.regime.clone());
         let band = LatticeHorizon::of(hypothesis.horizon);
@@ -721,6 +764,7 @@ impl TournamentStage {
         // The society, for important predictions only.
         let important = observation.approved || confidence >= IMPORTANCE_CONFIDENCE;
         let mut society_clause = String::new();
+        let mut refuted = None;
         if important {
             let dossier = self.prediction_dossier(&observation, sign, &subject, &forecasts, &rets);
             let verification = self.society.attack_prediction(&dossier, now);
@@ -728,6 +772,7 @@ impl TournamentStage {
                 let _ = self
                     .tournament
                     .hold_out(&question, verification.verdict.summary());
+                refuted = Some(verification.verdict.summary());
             }
             society_clause = format!("; verifier society: {}", verification.verdict.summary());
             // The same attack as the §27 pair a second brain can read: the
@@ -761,10 +806,13 @@ impl TournamentStage {
             forecasts: forecasts.clone(),
             aggregate_up,
         });
-        Some(format!(
-            "; tournament question opened with {} forecast(s){society_clause}",
-            forecasts.len()
-        ))
+        Some(ReasonVerdict {
+            clause: format!(
+                "; tournament question opened with {} forecast(s){society_clause}",
+                forecasts.len()
+            ),
+            refuted,
+        })
     }
 
     fn prediction_dossier(
@@ -792,6 +840,7 @@ impl TournamentStage {
             .findings
             .iter()
             .filter(|f| matches!(f.status, FindingStatus::Complete | FindingStatus::Partial))
+            .filter(|f| observation.explaining.contains(&f.agent_id))
             .map(|f| PanelView {
                 agent: f.agent_id.clone(),
                 direction: f.direction.sign(),
@@ -831,7 +880,17 @@ impl TournamentStage {
             expected_move_bps: observation.expected_move_bps,
             evidence,
             panel,
-            missing_inputs: observation.report.missing_inputs.clone(),
+            missing_inputs: observation
+                .report
+                .findings
+                .iter()
+                .filter(|f| observation.explaining.contains(&f.agent_id))
+                .flat_map(|f| {
+                    f.missing_inputs
+                        .iter()
+                        .map(move |missing| format!("{}: {missing}", f.agent_id))
+                })
+                .collect(),
             coverage: observation.report.coverage(),
             regime_crossed_recently: observation.crossed_recently,
             spread_ratio: observation.spread_ratio,
@@ -1188,5 +1247,127 @@ mod tests {
             let view = binary(up_bp(p));
             assert_eq!(view.values().map(|bp| u64::from(*bp)).sum::<u64>(), 10_000);
         }
+    }
+
+    /// R12-REASON-3108, ADR 0170 decision 1: an approved prediction whose
+    /// question the tournament refuses is refused, never sized unattacked.
+    ///
+    /// The failure this prevents: the refused-question arm returned no
+    /// refutation, and the society runs only after the question opens, so an
+    /// approved thesis the society never saw went on to DECIDE. A second
+    /// hypothesis on one subject in one cycle reaches it in production,
+    /// because both carry the id `hyp-<cycle>-<subject>`; here the same
+    /// hypothesis is observed twice, which is that collision. Mutation:
+    /// return `refuted: None` from the arm again — the second assertion
+    /// fails.
+    #[test]
+    fn an_approved_prediction_whose_question_the_tournament_refuses_is_refused() {
+        use qip_core::ids::{EvidenceId, HypothesisId, ObjectId};
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet};
+        use qip_reasoning_engine::hypothesis::{
+            CausalChain, CausalStep, Claim, HypothesisDraft, UncertaintyType,
+        };
+        use qip_world_model::causal::Mechanism;
+
+        let at = Timestamp::from_secs(1_760_000_000);
+        let hypothesis = Hypothesis::form(HypothesisDraft {
+            hypothesis_id: HypothesisId::from_string("hyp-7-obj-AAA"),
+            opportunity_id: None,
+            formed_at: at,
+            as_of: at,
+            class: "mean-reversion".to_string(),
+            claim: Claim::Undervalued,
+            statement: "AAA fell further than its history explains".to_string(),
+            subjects: vec![ObjectId::from_string("obj-AAA")],
+            chain: CausalChain::new(vec![CausalStep::new(
+                "order-flow",
+                "obj-AAA",
+                Mechanism::CreditConditions,
+                "the dislocation closes as liquidity returns",
+                Duration::from_days(2),
+                0.8,
+            )]),
+            evidence: EvidenceSet::from_items(vec![
+                Evidence::new(
+                    EvidenceId::from_string("e1"),
+                    EvidenceKind::MarketObservation,
+                    Stance::Supports,
+                    "a nine percent drop on the last bar".to_string(),
+                    "rec-e1".to_string(),
+                    "exchange",
+                    at,
+                    at,
+                )
+                .with_reliability(0.9)
+                .with_diagnosticity(0.6),
+            ]),
+            prior: 0.4,
+            uncertainty_type: UncertaintyType::Epistemic,
+            falsifiers: vec!["the price keeps falling for a week".to_string()],
+            leading_alternative: "the drop is news the tape has not finished pricing".to_string(),
+            horizon: Duration::from_days(5),
+            contributors: Vec::new(),
+            models: Vec::new(),
+        })
+        .expect("a well-formed draft forms");
+        let report = OrganisationReport {
+            as_of: at,
+            question: "is AAA undervalued".to_string(),
+            runs: Vec::new(),
+            findings: Vec::new(),
+            deferred: Vec::new(),
+            failed: Vec::new(),
+            missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
+        };
+        let closes: Vec<f64> = (0..30).map(|i| 100.0 + f64::from(i % 3)).collect();
+        let roster: Vec<String> = Vec::new();
+        let observe = |stage: &mut TournamentStage, approved: bool| {
+            stage
+                .observe_reasoning(
+                    ReasonObservation {
+                        hypothesis: &hypothesis,
+                        report: &report,
+                        roster: &roster,
+                        regime: "trend/calm".to_string(),
+                        closes: &closes,
+                        spread_ratio: Some(1.0),
+                        crossed_recently: Some(false),
+                        expected_move_bps: 100.0,
+                        approved,
+                        explaining: BTreeSet::new(),
+                    },
+                    at,
+                )
+                .expect("a directional claim on a subject is observed")
+        };
+
+        let mut stage = TournamentStage::new();
+        let first = observe(&mut stage, true);
+        assert!(
+            !first.clause.contains("tournament refused the question"),
+            "premise: the first question opens: {}",
+            first.clause
+        );
+        let second = observe(&mut stage, true);
+        assert!(
+            second.clause.contains("tournament refused the question"),
+            "premise: the colliding question is refused: {}",
+            second.clause
+        );
+        let refusal = second
+            .refuted
+            .expect("an approved prediction the society could not attack was let through");
+        assert!(refusal.starts_with("it could not be attacked"), "{refusal}");
+
+        // An unapproved one is not vetoed for it: there is no thesis to stop.
+        let unapproved = observe(&mut stage, false);
+        assert!(
+            unapproved
+                .clause
+                .contains("tournament refused the question")
+        );
+        assert_eq!(unapproved.refuted, None);
     }
 }

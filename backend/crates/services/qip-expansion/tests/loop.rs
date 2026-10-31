@@ -6,7 +6,7 @@
 //! Every test asserts its premise before its property: a detector test first
 //! shows the reading would be read, then that the gap was raised.
 
-use qip_agents::tools::{ToolKind, ToolRegistry};
+use qip_agents::tools::{ToolKind, ToolName, ToolRegistry};
 use qip_contracts::expansion::{CapabilityVerb, GapClass};
 use qip_core::Decimal;
 use qip_expansion::campaigns::{self, TickCampaignDetector, TickCampaignTrigger};
@@ -510,7 +510,9 @@ fn a_residual_above_threshold_between_replay_and_live_opens_a_curriculum_item() 
 fn desk_with(tools: &[(&str, ToolKind)]) -> ExpansionDesk {
     let mut registry = ToolRegistry::new();
     for (name, kind) in tools {
-        if let Err(e) = registry.register(name, *kind) {
+        if let Err(e) =
+            ToolName::parse(name).and_then(|name| registry.register(name, *kind).map(drop))
+        {
             panic!("{e}");
         }
     }

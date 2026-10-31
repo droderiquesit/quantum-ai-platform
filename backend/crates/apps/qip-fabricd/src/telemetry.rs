@@ -3,8 +3,9 @@
 
 use qip_observability::critical_paths;
 use qip_observability::metrics::{Labels, Metrics, labels, names};
-use qip_observability::slo::{Slo, fabric_archive_backlog};
+use qip_observability::slo::FABRIC_ARCHIVE_BACKLOG;
 use qip_streaming::event_fabric::broker::LeaseReport;
+use qip_streaming::event_fabric::managed::CommitOutcome;
 use std::sync::Arc;
 
 /// Managed partitions by this instance's role in each (ADR 0111): `leading`,
@@ -26,9 +27,18 @@ pub const SEGMENTS_RETAINED: &str = "qip_fabricd_segments_retained_total";
 #[derive(Debug)]
 pub struct FabricdTelemetry {
     metrics: Arc<Metrics>,
-    /// The `fabric-archive-backlog` objective, evaluated on every lag
-    /// reading by the one process that measures the lag.
-    backlog: Slo,
+}
+
+/// The outcome label a managed commit's answer is timed under: one literal
+/// per arm of `CommitOutcome`, and `error` for an unknown outcome, so the
+/// series' cardinality is the port's own closed set.
+pub const fn quorum_outcome(answer: &qip_core::error::Result<CommitOutcome>) -> &'static str {
+    match answer {
+        Ok(CommitOutcome::Committed) => "committed",
+        Ok(CommitOutcome::Fenced { .. }) => "fenced",
+        Ok(CommitOutcome::Conflict { .. }) => "conflict",
+        Err(_) => "error",
+    }
 }
 
 impl FabricdTelemetry {
@@ -106,11 +116,86 @@ impl FabricdTelemetry {
             names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
             "archive-lag readings judged against the fabric-archive-backlog ceiling, by outcome",
         );
+        m.describe(
+            names::EVENT_FABRIC_GROUP_LAG_CHECKS,
+            "consumer-group lag readings judged against the fabric-consumer-lag ceiling, by outcome",
+        );
+        m.describe(
+            names::EVENT_FABRIC_SERVING_CHECKS,
+            "readings of the serving gauge taken at each objective evaluation: serving, not_serving",
+        );
+        m.describe(
+            names::EVENT_FABRIC_QUORUM_ACK_MS,
+            "milliseconds the managed log took to answer a P0/P1 commit (the quorum \
+             acknowledgement), by class and outcome: committed, fenced, conflict, error",
+        );
 
-        Self {
-            metrics,
-            backlog: fabric_archive_backlog(),
+        Self { metrics }
+    }
+
+    /// The managed log answered one P0/P1 commit after `millis`: the quorum
+    /// acknowledgement's latency (ADR 0111 Amendment 1), recorded at the seam
+    /// where the answer arrives. `class` is the stream's QoS class from the
+    /// catalogue and `outcome` one of [`quorum_outcome`]'s literals; never a
+    /// stream's key, offset or epoch.
+    pub fn quorum_ack_ms(&self, class: &str, outcome: &str, millis: f64) {
+        self.metrics.observe_latency_ms(
+            names::EVENT_FABRIC_QUORUM_ACK_MS,
+            labels([("class", class), ("outcome", outcome)]),
+            millis,
+        );
+    }
+
+    /// Count one reading of a backlog gauge as `within` or `over` the
+    /// ceiling `fabric_objectives` declares for `objective`. The ceiling is
+    /// read from the declaration, not restated, so the recorder and the
+    /// objective cannot carry two figures; an objective missing from it
+    /// counts `over`, because a reading nobody can judge is not evidence of
+    /// health.
+    fn check(&self, series: &str, objective: &str, reading: f64) {
+        let within = critical_paths::fabric_objectives()
+            .iter()
+            .find(|path| path.slo.name == objective)
+            .and_then(|path| path.slo.backlog_ceiling)
+            .is_some_and(|ceiling| reading <= ceiling);
+        let outcome = if within { "within" } else { "over" };
+        self.metrics.count(series, labels([("outcome", outcome)]));
+    }
+
+    /// Evaluate every fabric objective (R12-OBS-9160) against this
+    /// process's registry and write each as the `qip_slo_*{objective}`
+    /// gauges the other processes publish.
+    ///
+    /// First takes one reading of broker availability: the listener's
+    /// `serving` gauge, as the listener last wrote it, counted `serving` or
+    /// `not_serving`. A registry with no `serving` gauge — a listener that
+    /// never recorded one — takes no reading, so the objective reads
+    /// unmeasured rather than counting an absent gauge either way.
+    pub fn evaluate_objectives(&self) {
+        let serving = self
+            .metrics
+            .snapshot()
+            .gauge(names::EVENT_FABRIC_SERVING, &Labels::new());
+        if let Some(value) = serving {
+            let outcome = if value > 0.0 {
+                "serving"
+            } else {
+                "not_serving"
+            };
+            self.metrics.count(
+                names::EVENT_FABRIC_SERVING_CHECKS,
+                labels([("outcome", outcome)]),
+            );
         }
+        let snapshot = self.metrics.snapshot();
+        let statuses: Vec<_> = critical_paths::fabric_objectives()
+            .iter()
+            .map(|path| {
+                let (good, total) = path.counts(&snapshot);
+                path.evaluate(good, total)
+            })
+            .collect();
+        critical_paths::record(&self.metrics, &statuses);
     }
 
     /// One lease pass: how many managed partitions this instance leads,
@@ -249,38 +334,33 @@ impl FabricdTelemetry {
             .count(names::EVENT_FABRIC_SEGMENTS_SEALED, labels);
     }
 
-    /// Archive lag in segments, and the `fabric-archive-backlog` objective
-    /// evaluated over every reading so far.
+    /// Archive lag in segments, and every fabric objective evaluated over
+    /// every reading so far.
     ///
-    /// The objective was declared with a ceiling and a target and evaluated
-    /// by nothing, so a backlog that grew past its ceiling moved a gauge and
-    /// missed no objective anywhere. Each reading is now judged against the
-    /// ceiling and counted, and the objective is written as the same
-    /// `qip_slo_*{objective}` gauges the other processes publish.
+    /// The archive-backlog objective was declared with a ceiling and a
+    /// target and evaluated by nothing, so a backlog that grew past its
+    /// ceiling moved a gauge and missed no objective anywhere. Each reading
+    /// is now judged against the ceiling and counted. This is called once
+    /// per archiver pass whatever the pass found, which makes it the
+    /// fabric's evaluation clock: the other six objectives are evaluated
+    /// here too (R12-OBS-9160), so each reaches `/metrics` on the default
+    /// path without a loop of its own.
     pub fn archive_lag(&self, lag: u64) {
         self.metrics
             .gauge(names::EVENT_FABRIC_ARCHIVE_LAG, Labels::new(), lag as f64);
         // A segment count to the ceiling's `f64`: exact for any count a disk
         // can hold.
-        let within = self
-            .backlog
-            .backlog_ceiling
-            .is_some_and(|ceiling| lag as f64 <= ceiling);
-        let outcome = if within { "within" } else { "over" };
-        self.metrics.count(
+        self.check(
             names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
-            labels([("outcome", outcome)]),
+            FABRIC_ARCHIVE_BACKLOG,
+            lag as f64,
         );
-        let snapshot = self.metrics.snapshot();
-        let good = snapshot.counter(
-            names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
-            &labels([("outcome", "within")]),
-        );
-        let total = snapshot.counter_total(names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS);
-        critical_paths::record(&self.metrics, &[self.backlog.evaluate(good, total)]);
+        self.evaluate_objectives();
     }
 
-    /// Consumer group lag for a group, stream and partition.
+    /// Consumer group lag for a group, stream and partition, and the reading
+    /// judged against the `fabric-consumer-lag` ceiling: the gauge keeps
+    /// only the last value per partition, and an objective needs every one.
     pub fn group_lag(&self, group: &str, stream: &str, partition: u32, lag: u64) {
         let mut labels = Labels::new();
         labels.insert("group".to_string(), group.to_string());
@@ -288,6 +368,11 @@ impl FabricdTelemetry {
         labels.insert("partition".to_string(), partition.to_string());
         self.metrics
             .gauge(names::EVENT_FABRIC_GROUP_LAG, labels, lag as f64);
+        self.check(
+            names::EVENT_FABRIC_GROUP_LAG_CHECKS,
+            critical_paths::FABRIC_CONSUMER_LAG_OBJECTIVE,
+            lag as f64,
+        );
     }
 }
 
@@ -673,5 +758,134 @@ mod tests {
             ),
             1
         );
+    }
+
+    /// The observations and budget gauges `critical_paths::record` wrote for
+    /// `objective`.
+    fn published(metrics: &Metrics, objective: &str) -> (Option<f64>, Option<f64>) {
+        let snapshot = metrics.snapshot();
+        let objective = labels([("objective", objective)]);
+        (
+            snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+            snapshot.gauge(names::SLO_BUDGET_CONSUMED, &objective),
+        )
+    }
+
+    /// R12-OBS-9160 in the process that measures the fabric: one archiver
+    /// pass publishes all seven objectives on this registry - the five
+    /// measurable ones observed once their recorders have run, the two
+    /// unbuilt ones with zero observations and no budget.
+    ///
+    /// Mutation: in `group_lag`, delete the `self.check(
+    /// names::EVENT_FABRIC_GROUP_LAG_CHECKS, ..)` call - `fabric-consumer-lag`
+    /// has no observation and its assertion fires. Mutation: in
+    /// `evaluate_objectives`, delete the `EVENT_FABRIC_SERVING_CHECKS` count -
+    /// `fabric-broker-availability` has none and its assertion fires.
+    #[test]
+    fn an_archive_pass_publishes_every_fabric_objective_from_the_series_this_process_records() {
+        let metrics = Arc::new(Metrics::new("qip-fabricd"));
+        let recorder = FabricdTelemetry::new(metrics.clone());
+        recorder.serving(true);
+        recorder.group_lag("ledger", "outcomes", 0, 5);
+        recorder.append("outcomes", "p1_outcomes", "success");
+        recorder.append("outcomes", "p1_outcomes", "refused");
+        recorder.refusal("p1_outcomes", "schema_refused");
+        recorder.quorum_ack_ms("p1_outcomes", "committed", 3.0);
+        assert_eq!(
+            published(&metrics, critical_paths::FABRIC_CONSUMER_LAG_OBJECTIVE),
+            (None, None),
+            "premise: nothing is evaluated before an archiver pass"
+        );
+
+        recorder.archive_lag(0);
+        for objective in [
+            critical_paths::FABRIC_PUBLISH_QUORUM_OBJECTIVE,
+            critical_paths::FABRIC_BROKER_AVAILABILITY_OBJECTIVE,
+            critical_paths::FABRIC_CONSUMER_LAG_OBJECTIVE,
+            FABRIC_ARCHIVE_BACKLOG,
+            critical_paths::FABRIC_SCHEMA_REJECT_OBJECTIVE,
+        ] {
+            let (observations, budget) = published(&metrics, objective);
+            assert!(
+                observations.is_some_and(|n| n >= 1.0),
+                "{objective} has no observation: {observations:?}"
+            );
+            assert!(budget.is_some(), "{objective} published no budget");
+        }
+        for objective in [
+            critical_paths::FABRIC_UNDER_REPLICATION_OBJECTIVE,
+            critical_paths::FABRIC_MIRROR_LAG_OBJECTIVE,
+        ] {
+            assert_eq!(
+                published(&metrics, objective),
+                (Some(0.0), None),
+                "{objective} must publish as unmeasured"
+            );
+        }
+        let schema = published(&metrics, critical_paths::FABRIC_SCHEMA_REJECT_OBJECTIVE);
+        assert!(
+            schema.1.is_some_and(|b| b > 1.0),
+            "one schema refusal in two produces misses a 99.9% target: {schema:?}"
+        );
+    }
+
+    /// The other half of the check: a registry whose recording sites did
+    /// not run (no `serving` gauge, no group-lag reading, no managed commit,
+    /// no produce) publishes those objectives unmeasured on the same pass,
+    /// never with a budget a dashboard would read as healthy.
+    ///
+    /// Mutation: in `evaluate_objectives`, count a `serving` reading when
+    /// the gauge is absent (`.or(Some(1.0))`) - availability is observed
+    /// with no listener having written anything and the assertion fires.
+    #[test]
+    fn an_objective_whose_recording_site_never_ran_publishes_as_unmeasured() {
+        let metrics = Arc::new(Metrics::new("qip-fabricd"));
+        let recorder = FabricdTelemetry::new(metrics.clone());
+        recorder.archive_lag(0);
+        assert!(
+            published(&metrics, FABRIC_ARCHIVE_BACKLOG)
+                .0
+                .is_some_and(|n| n >= 1.0),
+            "premise: the pass evaluated, and measured what it recorded"
+        );
+        for objective in [
+            critical_paths::FABRIC_PUBLISH_QUORUM_OBJECTIVE,
+            critical_paths::FABRIC_BROKER_AVAILABILITY_OBJECTIVE,
+            critical_paths::FABRIC_CONSUMER_LAG_OBJECTIVE,
+            critical_paths::FABRIC_SCHEMA_REJECT_OBJECTIVE,
+        ] {
+            assert_eq!(
+                published(&metrics, objective),
+                (Some(0.0), None),
+                "{objective} reads measured with its recording site never run"
+            );
+        }
+    }
+
+    /// R12-OBS-9146's recorder: the quorum-acknowledgement histogram carries
+    /// exactly `class` and `outcome`, never a stream, key or offset.
+    ///
+    /// Mutation: in `quorum_ack_ms`, add a third label - the label key set
+    /// assertion fires.
+    #[test]
+    fn the_quorum_ack_series_is_a_histogram_labelled_by_class_and_outcome_only() {
+        let metrics = Arc::new(Metrics::new("qip-fabricd"));
+        let recorder = FabricdTelemetry::new(metrics.clone());
+        assert_absent(&metrics.snapshot(), names::EVENT_FABRIC_QUORUM_ACK_MS);
+        recorder.quorum_ack_ms("p0_control", "fenced", 42.0);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_QUORUM_ACK_MS);
+        assert_label_keys(found, &["class", "outcome"]);
+        assert_eq!(
+            found.labels.get("outcome").map(String::as_str),
+            Some("fenced")
+        );
+        match &found.value {
+            MetricValue::Histogram(h) => {
+                assert_eq!(h.count, 1);
+                assert!((h.sum - 42.0).abs() < 1e-9, "{}", h.sum);
+            }
+            other => panic!("expected a histogram, got {other:?}"),
+        }
     }
 }

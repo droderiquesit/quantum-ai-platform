@@ -198,3 +198,261 @@ fn every_declared_reflex_objective_is_bound_to_a_series_the_node_records() {
         "a binding names no declaration"
     );
 }
+
+/// Every fabric objective evaluated against `snapshot`, by name.
+fn fabric_statuses(
+    snapshot: &qip_observability::metrics::Snapshot,
+) -> std::collections::BTreeMap<String, qip_observability::SloStatus> {
+    qip_observability::critical_paths::fabric_objectives()
+        .iter()
+        .map(|path| {
+            let (good, total) = path.counts(snapshot);
+            (path.slo.name.clone(), path.evaluate(good, total))
+        })
+        .collect()
+}
+
+/// What `record` publishes for `status`: its observations gauge and its
+/// budget gauge. `SloStatus::is_met` is `true` at zero observations, so it
+/// cannot say "unmeasured"; the absent budget is what does.
+fn published(status: &qip_observability::SloStatus) -> (Option<f64>, Option<f64>) {
+    let sink = Metrics::new("sink");
+    record(&sink, std::slice::from_ref(status));
+    let snapshot = sink.snapshot();
+    let objective = labels([("objective", status.slo.name.as_str())]);
+    (
+        snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+        snapshot.gauge(names::SLO_BUDGET_CONSUMED, &objective),
+    )
+}
+
+/// The five measurable fabric objectives and the series each reads.
+const FABRIC_MEASURABLE: [(&str, &str); 5] = [
+    (
+        "fabric-publish-quorum-p99",
+        names::EVENT_FABRIC_QUORUM_ACK_MS,
+    ),
+    (
+        "fabric-broker-availability",
+        names::EVENT_FABRIC_SERVING_CHECKS,
+    ),
+    ("fabric-consumer-lag", names::EVENT_FABRIC_GROUP_LAG_CHECKS),
+    (
+        "fabric-archive-backlog",
+        names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
+    ),
+    ("fabric-schema-reject-rate", names::EVENT_FABRIC_APPEND),
+];
+
+/// The two fabric objectives nothing in the tree can measure.
+const FABRIC_UNBUILT: [&str; 2] = ["fabric-partition-under-replication", "fabric-mirror-lag"];
+
+/// A registry holding one good reading of every series the five measurable
+/// fabric objectives read, as `qip-fabricd` writes them.
+fn fabric_registry() -> Metrics {
+    let metrics = Metrics::new("qip-fabricd");
+    metrics.observe_latency_ms(
+        names::EVENT_FABRIC_QUORUM_ACK_MS,
+        labels([("class", "p1_outcomes"), ("outcome", "committed")]),
+        4.0,
+    );
+    metrics.count(
+        names::EVENT_FABRIC_SERVING_CHECKS,
+        labels([("outcome", "serving")]),
+    );
+    metrics.count(
+        names::EVENT_FABRIC_GROUP_LAG_CHECKS,
+        labels([("outcome", "within")]),
+    );
+    metrics.count(
+        names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
+        labels([("outcome", "within")]),
+    );
+    metrics.count(
+        names::EVENT_FABRIC_APPEND,
+        labels([
+            ("stream", "outcomes"),
+            ("class", "p1_outcomes"),
+            ("outcome", "success"),
+        ]),
+    );
+    metrics
+}
+
+/// R12-OBS-9160: the seven objectives the requirement names are declared,
+/// each with a target in (0, 1]; the five the tree can measure each name the
+/// series `qip-fabricd` records, and the two it cannot name none and say why.
+///
+/// The failure this prevents: a requirement listing seven objectives with a
+/// declaration behind one of them, which reads as covered to anyone counting
+/// names and is measured by nothing.
+///
+/// Mutation: delete the `fabric-consumer-lag` entry from
+/// `fabric_objectives` - the length assertion fires.
+#[test]
+fn the_fabric_declares_seven_objectives_each_with_a_target_and_a_series_or_a_reason() {
+    use qip_observability::critical_paths::{
+        FABRIC_SERVICE, NO_SOURCE_SERIES, SourceRule, fabric_objectives,
+    };
+
+    let declared = fabric_objectives();
+    assert_eq!(
+        declared.len(),
+        FABRIC_MEASURABLE.len() + FABRIC_UNBUILT.len(),
+        "the requirement names seven objectives"
+    );
+    let find = |name: &str| {
+        declared
+            .iter()
+            .find(|path| path.slo.name == name)
+            .unwrap_or_else(|| panic!("{name} is not declared"))
+    };
+    for path in &declared {
+        assert_eq!(path.slo.service, FABRIC_SERVICE, "{}", path.slo.name);
+        assert!(
+            path.slo.target > 0.0 && path.slo.target <= 1.0,
+            "{} has no usable target: {}",
+            path.slo.name,
+            path.slo.target
+        );
+    }
+    for (name, series) in FABRIC_MEASURABLE {
+        let path = find(name);
+        assert_eq!(path.source_series, series, "{name} reads the wrong series");
+        assert!(
+            !matches!(path.rule, SourceRule::Unbuilt { .. }),
+            "{name} is measurable"
+        );
+    }
+    for name in FABRIC_UNBUILT {
+        let path = find(name);
+        assert_eq!(
+            path.source_series, NO_SOURCE_SERIES,
+            "{name} names a series"
+        );
+        match path.rule {
+            SourceRule::Unbuilt { why } => assert!(!why.is_empty(), "{name} says why"),
+            other => panic!("{name} must be declared unbuilt, not {other:?}"),
+        }
+    }
+    let quorum = find("fabric-publish-quorum-p99");
+    assert_eq!(quorum.slo.latency_threshold_ms, Some(100.0));
+    assert!(
+        (quorum.slo.target - 0.99).abs() < 1e-12,
+        "a p99 is a 0.99 target"
+    );
+}
+
+/// R12-OBS-9160's check: each measurable fabric objective reads observed
+/// once its series has moved, and the same registry with that one series
+/// removed - a deleted recording site - reads it unmeasured: zero
+/// observations, and no budget published for a dashboard to read as healthy.
+///
+/// Mutation: in `CriticalPath::counts`, make the `TotalLessLabelled` arm
+/// return `(0, 0)` - the schema reject objective reads unmeasured with its
+/// series present and the observed assertion fires.
+#[test]
+fn each_measurable_fabric_objective_is_observed_and_reads_unmeasured_once_its_series_is_gone() {
+    let snapshot = fabric_registry().snapshot();
+    let measured = fabric_statuses(&snapshot);
+    for (name, series) in FABRIC_MEASURABLE {
+        let status = &measured[name];
+        assert!(
+            status.is_observed(),
+            "{name} is unmeasured with {series} recorded"
+        );
+        assert!(
+            status.is_met,
+            "{name}: one good reading meets it: {status:?}"
+        );
+
+        let mut without = snapshot.clone();
+        let before = without.series.len();
+        without.series.retain(|s| s.name != series);
+        assert!(
+            without.series.len() < before,
+            "premise: {series} was in the registry"
+        );
+        let status = &fabric_statuses(&without)[name];
+        assert!(
+            !status.is_observed(),
+            "{name} still reads measured with {series} gone: {status:?}"
+        );
+        assert_eq!(
+            published(status),
+            (Some(0.0), None),
+            "{name} publishes a budget with no series"
+        );
+    }
+}
+
+/// The schema reject objective is charged for `schema_refused` and for no
+/// other refusal on the shared refusal series: a quota refusal is the
+/// producer narrowing, not a batch the stream's schema does not admit.
+///
+/// Mutation: change `values: &["schema_refused"]` in `fabric_objectives` to
+/// `&["quota"]` - the quota refusal is charged and the first `is_met`
+/// assertion fires.
+#[test]
+fn the_schema_reject_objective_counts_schema_refusals_and_no_other_reason() {
+    let metrics = Metrics::new("qip-fabricd");
+    for outcome in ["success", "refused", "refused", "success"] {
+        metrics.count(
+            names::EVENT_FABRIC_APPEND,
+            labels([
+                ("stream", "outcomes"),
+                ("class", "p1_outcomes"),
+                ("outcome", outcome),
+            ]),
+        );
+    }
+    metrics.count(
+        names::EVENT_FABRIC_REFUSALS,
+        labels([("class", "p1_outcomes"), ("reason", "quota")]),
+    );
+    let status = &fabric_statuses(&metrics.snapshot())["fabric-schema-reject-rate"];
+    assert_eq!(status.observations, 4);
+    assert!(status.is_met, "a quota refusal is not a schema reject");
+
+    metrics.count(
+        names::EVENT_FABRIC_REFUSALS,
+        labels([("class", "p1_outcomes"), ("reason", "schema_refused")]),
+    );
+    metrics.count(
+        names::EVENT_FABRIC_REFUSALS,
+        labels([("class", "p0_control"), ("reason", "schema_refused")]),
+    );
+    let status = &fabric_statuses(&metrics.snapshot())["fabric-schema-reject-rate"];
+    assert!(
+        (status.achieved - 0.5).abs() < 1e-12,
+        "two schema refusals in four produces, across classes: {status:?}"
+    );
+    assert!(!status.is_met);
+}
+
+/// Partition under-replication and mirror lag have nothing in the tree to
+/// measure them, so they read unmeasured whatever the registry holds -
+/// including one in which every other fabric objective is measured.
+///
+/// Mutation: in `fabric_objectives`, point `fabric-mirror-lag` at
+/// `names::EVENT_FABRIC_APPEND` under `CounterExcluding { bad: &[] }` -
+/// inventing a series for it - and the observations assertion fires.
+#[test]
+fn the_unbuilt_fabric_objectives_read_unmeasured_whatever_the_registry_holds() {
+    let statuses = fabric_statuses(&fabric_registry().snapshot());
+    for (name, _) in FABRIC_MEASURABLE {
+        assert!(
+            statuses[name].is_observed(),
+            "premise: the registry measures {name}"
+        );
+    }
+    for name in FABRIC_UNBUILT {
+        let status = &statuses[name];
+        assert_eq!(status.observations, 0, "{name} has a reading");
+        assert_eq!(
+            published(status),
+            (Some(0.0), None),
+            "{name} publishes a budget with nothing to measure it"
+        );
+    }
+}

@@ -1,0 +1,27 @@
+diff --git a/.github/workflows/infra.yml b/.github/workflows/infra.yml
+index 6af98b52..bdf990d4 100644
+--- a/.github/workflows/infra.yml
++++ b/.github/workflows/infra.yml
+@@ -1116,6 +1116,22 @@ jobs:
+             ${VAR_FILES}
+           terraform -chdir=infrastructure/terraform show -no-color tfplan
+ 
++      # A plan that changes a core resource — the hierarchy, a network, a
++      # database — is applied only inside a committed change window
++      # (R12-GCP-9120; infrastructure/change-windows.json). Judged on the
++      # saved plan this job applies, so what is judged is what lands, by the
++      # operator command line (`qip change-window`, Rust like every other
++      # gate; exit 3 is the refusal, 1 a plan or policy it could not read).
++      - name: a core change lands only inside its change window
++        if: inputs.action == 'up'
++        run: |
++          set -euo pipefail
++          terraform -chdir=infrastructure/terraform show -json tfplan > "$RUNNER_TEMP/plan.json"
++          rustup show active-toolchain || rustup toolchain install
++          cd backend
++          cargo run --locked --quiet -p qip-cli --bin qip -- change-window \
++            --plan "$RUNNER_TEMP/plan.json" --policy ../infrastructure/change-windows.json
++
+       - name: keep the applied plan
+         if: inputs.action == 'up'
+         uses: actions/upload-artifact@v4

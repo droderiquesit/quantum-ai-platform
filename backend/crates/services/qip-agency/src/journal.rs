@@ -53,7 +53,7 @@ use crate::autonomy::Authority;
 use crate::causal::SimulationResult;
 use crate::engine::{Alternative, Learning, LearningOutcome, Outcome, Report};
 use crate::estimate::EstimatorKind;
-use crate::guard::Voice;
+use crate::guard::{PostReleaseFinding, Voice};
 use crate::memory::{ActionOutcome, FailureEpisode};
 use qip_contracts::action::{ExecutionRecord, GoalApproval, Method, PlanApproval, ToolAudit};
 use qip_contracts::action_intent::ActionIntent;
@@ -135,6 +135,15 @@ pub enum AgencyRecord {
         pass: u64,
         voice: Voice,
     },
+    /// A message released on an earlier pass that the conduct rules in
+    /// force at this pass's start find in breach, unreadable or altered
+    /// (R12-GOV-3030): the Conduct Brain's check after publication. Written
+    /// once per message and rule; [`resume`] reads them back so a restart
+    /// does not file the same finding again.
+    PostReleaseFinding {
+        pass: u64,
+        finding: PostReleaseFinding,
+    },
     /// The §27 intent of one step the guard cleared, shadowed or sent
     /// (R12-CONTRACT-7082): the record another brain or an auditor reads
     /// to know what was intended, through which channel, on whose
@@ -212,6 +221,7 @@ impl AgencyRecord {
             | Self::Executed { pass, .. }
             | Self::ToolDecision { pass, .. }
             | Self::VoiceReleased { pass, .. }
+            | Self::PostReleaseFinding { pass, .. }
             | Self::IntentRecorded { pass, .. }
             | Self::PlanBlocked { pass, .. }
             | Self::Learned { pass, .. }
@@ -230,6 +240,7 @@ impl AgencyRecord {
             Self::Executed { .. } => "executed",
             Self::ToolDecision { .. } => "tool",
             Self::VoiceReleased { .. } => "voice",
+            Self::PostReleaseFinding { .. } => "post-release",
             Self::IntentRecorded { .. } => "intent",
             Self::PlanBlocked { .. } => "blocked",
             Self::Learned { .. } => "learned",
@@ -329,6 +340,10 @@ pub struct PassEntry<'a> {
     /// is journaled as such: no learning record, and the stages stop where
     /// the pass stopped.
     pub learning: Option<&'a Learning>,
+    /// The post-release findings to file with this pass: what
+    /// [`crate::guard::ActionGuard::recheck_released`] found at the session's
+    /// start that the journal does not already hold (R12-GOV-3030).
+    pub post_release: &'a [PostReleaseFinding],
     /// When the platform recorded the pass.
     pub at: Timestamp,
 }
@@ -344,6 +359,7 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
         goal_target,
         acting_identity,
         learning,
+        post_release,
         at,
     } = entry;
     let mut w = Writer {
@@ -476,6 +492,15 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
             at,
         )?;
     }
+    for finding in post_release {
+        w.write(
+            AgencyRecord::PostReleaseFinding {
+                pass,
+                finding: finding.clone(),
+            },
+            at,
+        )?;
+    }
     match learning.map(|l| &l.outcome) {
         Some(LearningOutcome::Learned(learned)) => w.write(
             AgencyRecord::Learned {
@@ -565,6 +590,9 @@ pub struct Resumed {
     /// Every voice released, oldest first, for
     /// [`crate::guard::ActionGuard::resume_voices`].
     pub voices: Vec<Voice>,
+    /// Every post-release finding already filed, so a session files only
+    /// what is new.
+    pub findings: Vec<PostReleaseFinding>,
 }
 
 /// Read back what [`record_pass`] wrote. Refuses a log whose chain does not
@@ -581,12 +609,14 @@ pub fn resume(log: &EventLog) -> Result<Resumed, Error> {
         next_pass: 1,
         decisions: Vec::new(),
         voices: Vec::new(),
+        findings: Vec::new(),
     };
     for record in records(log)? {
         resumed.next_pass = resumed.next_pass.max(record.pass().saturating_add(1));
         match record {
             AgencyRecord::ToolDecision { decision, .. } => resumed.decisions.push(decision),
             AgencyRecord::VoiceReleased { voice, .. } => resumed.voices.push(voice),
+            AgencyRecord::PostReleaseFinding { finding, .. } => resumed.findings.push(finding),
             _ => {}
         }
     }
@@ -707,6 +737,7 @@ pub fn lineages(log: &EventLog) -> Result<BTreeMap<u64, PassLineage>, Error> {
             AgencyRecord::Widened { .. }
             | AgencyRecord::WideningRefused { .. }
             | AgencyRecord::PlanBlocked { .. }
+            | AgencyRecord::PostReleaseFinding { .. }
             | AgencyRecord::LearningWithheld { .. } => {}
         }
     }

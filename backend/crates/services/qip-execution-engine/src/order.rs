@@ -11,6 +11,7 @@
 //! including the ones that would be convenient, like filling a cancelled order
 //! because a late report arrived.
 
+use qip_contracts::action::{Ground, Justification};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{FillId, ObjectId, OrderId};
@@ -424,6 +425,38 @@ impl Order {
         }
     }
 
+    /// The grounds this order stands on (R12-GOV-6127, ADR 0200): the
+    /// return it expects, and each hypothesis it implements as an evidence
+    /// ground, `hypothesis:{id}`.
+    ///
+    /// A hypothesis is the independent part. On the desk it is what the
+    /// REASON stage synthesised from evidence and the panel's review found
+    /// actionable, and the thesis built from it was queued only beside a
+    /// [`Justification`] naming the evidence that supports it. So an order
+    /// that names a hypothesis traces to evidence, and one naming none — or
+    /// only blanks — is an order justified by nothing but the trade, and
+    /// [`Justification::of`] refuses it. [`Self::validate`] calls this, and
+    /// the order manager and the simulated broker both validate, so neither
+    /// seam a desk order reaches a venue through admits one without a
+    /// justification.
+    pub fn justification(&self) -> Result<Justification> {
+        let grounds = std::iter::once(Ground::ExpectedProfit)
+            .chain(
+                self.hypotheses
+                    .iter()
+                    .filter(|hypothesis| !hypothesis.trim().is_empty())
+                    .map(|hypothesis| Ground::Evidence(format!("hypothesis:{hypothesis}"))),
+            )
+            .collect();
+        Justification::of(grounds).map_err(|_| {
+            Error::invalid(format!(
+                "order {} traces to no hypothesis; an untraceable order is one nobody can explain, \
+                 and one justified only by the profit it expects is refused",
+                self.order_id.as_str()
+            ))
+        })
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.quantity <= Decimal::ZERO {
             return Err(Error::invalid(
@@ -436,12 +469,7 @@ impl Order {
                 self.order_id.as_str()
             )));
         }
-        if self.hypotheses.is_empty() {
-            return Err(Error::invalid(format!(
-                "order {} traces to no hypothesis; an untraceable order is one nobody can explain",
-                self.order_id.as_str()
-            )));
-        }
+        self.justification()?;
         if self.proposal_id.trim().is_empty() {
             return Err(Error::invalid(format!(
                 "order {} traces to no proposal",

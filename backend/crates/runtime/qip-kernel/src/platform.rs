@@ -189,7 +189,7 @@ use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
 use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
-use qip_risk_engine::monitor::RiskMonitor;
+use qip_risk_engine::monitor::{MonitorAction, RiskMonitor};
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::agents::CounterpartyAgent;
 use qip_simulation_engine::conditions::{ConditionSchedule, ConditionWindow, MarketCondition};
@@ -213,7 +213,7 @@ use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
-    EstimationMethod, VenueOption,
+    EstimationMethod, SimulatedFill, VenueOption,
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
@@ -226,6 +226,23 @@ use qip_world_model::resolution_source::ResolutionSourceClaim;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// What REASON reads off one hypothesis's symbolic derivation.
+///
+/// Named fields rather than a tuple because two of them are reasons to form
+/// no proposal and they are not interchangeable: a `veto` is the rule pack's
+/// hard stop on an approved hypothesis (ADR 0125 decision 2), `infeasible`
+/// is the derivation contradicting itself (ADR 0212). Swapping two
+/// `Option<String>`s in a tuple would compile and report one as the other.
+#[derive(Debug, Default)]
+struct SymbolicReading {
+    /// The derivation as a clause for the stage's detail line.
+    detail: String,
+    /// The derivation was computed and could not be journaled.
+    problem: Option<String>,
+    veto: Option<String>,
+    infeasible: Option<String>,
+}
 
 /// The assembled platform.
 #[derive(Debug)]
@@ -376,8 +393,9 @@ pub struct Platform {
     /// still exactly one place that knows how the pieces fit together, and
     /// touched by nothing in [`Platform::run_cycle`] — the loop above runs one
     /// process against the market in front of it, and the centre reasons about
-    /// every cell on its own schedule.
-    central: CentralPlane,
+    /// every cell on its own schedule. `pub(crate)` for
+    /// `crate::model_serving`, which signs promotion records with its key.
+    pub(crate) central: CentralPlane,
     /// The confidential gate between the plane's per-cell state and any
     /// aggregate that leaves it as insight. Held here rather than constructed
     /// per query, because its privacy budget and its release record are the
@@ -415,6 +433,12 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// Every registered model card as this process last journaled it, by
+    /// reference, rebuilt from the log at assembly and written only by
+    /// `Platform::journal_model_registry` (R12-MODEL-9003). What lets a card
+    /// that was registered and evaluated but never promoted survive a
+    /// restart; bounded by the registry it mirrors.
+    pub(crate) journaled_cards: BTreeMap<String, qip_ai::registry::ModelCard>,
     /// The Model Pack in force — the newest version of the promoted set,
     /// naming its predecessor and delta (MODEL-037). Rebuilt from the same
     /// log records as `model_promotions` and advanced only beside it.
@@ -545,6 +569,12 @@ pub struct Platform {
     /// taken for, oldest first, bounded by [`DECLINED_HISTORY`] under the
     /// same counted-not-evicted discipline as `declined`.
     filled: Vec<FilledPath>,
+    /// Every cell fill already queued for the twin, keyed by where it sat on
+    /// the report that carried it, so a fill is scored once however often
+    /// its report arrives. Bounded by [`CELL_FILLS_REMEMBERED`], oldest
+    /// forgotten first; see [`Platform::queue_cell_fills`] for why the key
+    /// is this and why the set exists at all.
+    cell_fills_queued: CellFillsQueued,
     /// What the twin found about each priced fill — whether a smaller or a
     /// larger size would have done better, and how far its own entry price
     /// was from the venue's — most recent last, bounded by
@@ -556,6 +586,14 @@ pub struct Platform {
     /// error was charted and read by nothing, so a twin that was wrong about
     /// a venue stayed wrong by the same amount for ever.
     fill_calibration: qip_twin::calibration::FillCalibration,
+    /// Strategies whose capital grants are narrowed because the twin's replay
+    /// of fills at their venue diverged from the venue (R12-RES-7104), each
+    /// until a re-promotion recorded after it. Resumed from the log, so a
+    /// restart does not hand a held strategy back its full size.
+    replay_divergence_holds: BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold>,
+    /// Where each released strategy's divergence evidence starts again: the
+    /// instant of the re-promotion that released it. Resumed with the holds.
+    replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -695,6 +733,11 @@ pub struct Platform {
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
     /// has resolved stops asking. Read by the deep brain's research sweep.
     federation_requests: Vec<(qip_contracts::control::InformationRequest, u32)>,
+    /// The decisions the latest DECIDE sized on a conviction it was unsure
+    /// of (R12-AMBIENT-3104), replaced wholesale each cycle and bounded by
+    /// that cycle's legs. Read by the deep brain's research sweep, which
+    /// prices the cheapest observation that could discriminate.
+    decision_uncertainties: Vec<DecisionUncertainty>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -754,6 +797,15 @@ pub struct Platform {
     /// order if it cannot. Kept so a test and an operator can see the routing
     /// that guarded the last order rather than trust that one happened.
     pretrade_routing: Option<DeterministicRouting>,
+    /// How the most recent pass of the risk monitor over the book was routed
+    /// (R12-RISK-3022). The monitor's verdict is what engages the kill switch
+    /// and what withholds sign-off and release in ACT, so it is the second
+    /// place a hard limit is evaluated, and until this it was evaluated with
+    /// no routing at all — deterministic by the absence of a model in the
+    /// call, not by anything that could be shown. Always the deterministic
+    /// arm, obtained through [`Router::determine`]; see
+    /// [`Self::observe_book_under_routing`].
+    monitor_routing: Option<DeterministicRouting>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -848,6 +900,11 @@ pub struct Platform {
     /// `asset_classes`. What the symbolic rule pack prices one lot with
     /// (R12-REASON-3057).
     lot_units: BTreeMap<String, Decimal>,
+    /// The expiry of every dated contract in the universe — a future's or an
+    /// option's, from its extension — taken at assembly like `lot_units`.
+    /// What the symbolic rule pack measures a claim's horizon against
+    /// (R12-REASON-3057, contracts); an undated instrument is absent.
+    contract_expiries: BTreeMap<String, Timestamp>,
     /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
     /// so every derivative order is refused until a composition root grants.
     derivative_permissions: DerivativePermissions,
@@ -1153,10 +1210,25 @@ pub struct Platform {
     /// so an approved thesis — however good — could never become a trade. A
     /// thesis is queued once and drained once; re-expressing it every cycle
     /// would pyramid the same idea until the mandate cap alone stopped it.
-    pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
+    pending_theses: Vec<JustifiedThesis>,
+    /// The justification each thesis DECIDE expressed stood on, by hypothesis
+    /// id (ADR 0200). ACT resolves a proposal leg's hypotheses here before an
+    /// order exists for it, so a desk order traces to a thesis REASON
+    /// justified and not merely to non-blank text. Bounded at
+    /// [`PROPOSAL_HISTORY`] per hypothesis, oldest out first, because a
+    /// proposal can wait for sign-off past the cycle that sized it.
+    justified_hypotheses: justification::JustifiedHypotheses,
     /// Beliefs from outside the opportunity, by subject. REASON may only be
     /// narrowed by them (ADR 0151 decision 3); empty unless a producer sets it.
     outside_priors: BTreeMap<String, crate::fusion::OutsidePrior>,
+    /// The rule pack REASON's symbolic derivations are evaluated under:
+    /// `symbolic_stage::rule_pack()`, set at construction and by nothing
+    /// else outside this file's tests. Held rather than called so that a pack
+    /// revision whose rules collide can be driven through the default cycle
+    /// and shown to form no proposal (ADR 0212). There is no setter: a pack
+    /// swapped at run time would be one the replay could not name, and
+    /// `symbolic_stage::verify` holds every record to the build's own pack.
+    symbolic_rule_pack: qip_reasoning_engine::rules::RulePack,
     /// The reference and sized quantities of each leg ACT is about to release,
     /// by order id, taken by `submit_order` when it stamps the order. Emptied
     /// on every submission, accepted or refused, so it holds at most the order
@@ -1198,6 +1270,38 @@ pub struct Platform {
     /// event log dedups on, so the two agree by construction rather than by a
     /// second rule that could drift.
     corporate_actions_applied: BTreeSet<String>,
+    /// The desk's positions as a lifecycle register (blueprint §35.1): the
+    /// same booked fills and lot adjustments [`TrackedCapital`] takes, fed
+    /// at the same two seams by [`Platform::book_desk_fill`] and
+    /// [`Platform::adjust_desk_lot`], so a held position can carry the
+    /// `Flagged` state the Asset Brain raises against it (R12-ASSET-4066).
+    ///
+    /// **Not a second account of the book.** Every figure a limit, a size or
+    /// a report reads is still `capital`'s; nothing reads this one's cash or
+    /// valuation. What it holds that `capital` cannot is the lifecycle, and
+    /// the LEARN stage's mandate review reports every cycle on which the two
+    /// disagree about which objects are held rather than letting either
+    /// win silently.
+    asset_book: Portfolio,
+    /// The mandate and target weight each object was last sized under, by
+    /// object id, written by `construct_from` once a proposal's capital is
+    /// held (R12-ASSET-4066). Bounded by the universe: one entry per object
+    /// any construction ever sized.
+    ///
+    /// Held in memory and not rebuilt on a restart, deliberately: proposals
+    /// are not journalled, so a resumed process cannot say what a resumed
+    /// position was sized toward, and its first LEARN stage flags every one.
+    /// A record invented at resume would be the platform asserting a purpose
+    /// it has no evidence of.
+    position_mandates: BTreeMap<String, crate::position_register::PositionMandate>,
+    /// The hypothesis each object was last sized on and that hypothesis's
+    /// horizon, by object id, written by `construct_from` beside
+    /// [`Self::position_mandates`] on the same terms (R12-ASSET-4067). The
+    /// horizon is looked up through the leg's hypothesis ids in the
+    /// justifications DECIDE registered, never defaulted: a leg whose
+    /// hypotheses carry none records nothing here, and the position's record
+    /// then refuses rather than stating a horizon nobody approved.
+    position_horizons: BTreeMap<String, (String, Duration)>,
 }
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
@@ -1222,6 +1326,77 @@ const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 const OUTSIDE_PRIOR_CAPACITY: usize = 1_024;
 
 const PROPOSAL_HISTORY: usize = 256;
+/// The uncertainty, `1 - |conviction|`, at or above which a sized decision
+/// is handed to active sensing (R12-AMBIENT-3104): a leg sized on a
+/// conviction of one half or less is a decision the platform is no surer
+/// of than a coin, and the value of learning more before its horizon is
+/// worth pricing.
+pub const DECISION_UNCERTAINTY_FLOOR: f64 = 0.5;
+
+/// A decision DECIDE sized on a conviction it was unsure of, as the deep
+/// brain's research sweep reads it (R12-AMBIENT-3104, blueprint §9.10):
+/// what is at stake, how unsure the platform is, and the deadline after
+/// which evidence answers a question nobody is still asking.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionUncertainty {
+    pub hypothesis_id: String,
+    pub subject: String,
+    /// What the evidence would have to decide.
+    pub question: String,
+    /// The notional the decision commits, in account currency.
+    pub value_at_stake: Decimal,
+    /// `1 - |conviction|` of the thesis the leg expresses, in `[0, 1]`.
+    pub uncertainty: f64,
+    /// The thesis's horizon: when its claim resolves.
+    pub deadline: Timestamp,
+}
+
+/// The decisions in `proposal` sized on a thesis at or above
+/// [`DECISION_UNCERTAINTY_FLOOR`], one per leg and thesis, with the claim's
+/// resolution instant as the deadline. A thesis no prediction claims a
+/// resolution for has no deadline to state and is left out rather than given
+/// one.
+fn decision_uncertainties(
+    proposal: &Proposal,
+    theses: &[qip_portfolio_engine::construction::ApprovedThesis],
+    predictions: &[RecordedPrediction],
+) -> Vec<DecisionUncertainty> {
+    let mut out = Vec::new();
+    for leg in &proposal.legs {
+        for hypothesis in &leg.hypotheses {
+            let Some(thesis) = theses.iter().find(|t| &t.hypothesis_id == hypothesis) else {
+                continue;
+            };
+            let uncertainty = 1.0 - thesis.conviction.abs().min(1.0);
+            if uncertainty < DECISION_UNCERTAINTY_FLOOR {
+                continue;
+            }
+            let Some(claim) = predictions
+                .iter()
+                .rev()
+                .find(|p| &p.hypothesis == hypothesis)
+                .and_then(|p| p.claim.as_ref())
+            else {
+                continue;
+            };
+            out.push(DecisionUncertainty {
+                hypothesis_id: hypothesis.clone(),
+                subject: leg.object_id.as_str().to_string(),
+                question: format!(
+                    "does {} move {:.0} bp {} by {} as {hypothesis} claims?",
+                    claim.subject,
+                    claim.expected_move_bps.abs(),
+                    if claim.direction >= 0.0 { "up" } else { "down" },
+                    claim.resolves_at,
+                ),
+                value_at_stake: leg.notional().abs(),
+                uncertainty,
+                deadline: claim.resolves_at,
+            });
+        }
+    }
+    out
+}
 /// The self-model key the world-model federation's arbitrated view is
 /// scored under as an ensemble (R12-MODEL-6016).
 pub const FEDERATION_ENSEMBLE: &str = "world-model-federation";
@@ -1301,6 +1476,46 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// reported on the cycle, because evicting the oldest waiting path would
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
+
+/// How many cell fills the twin remembers having queued, across cells, so a
+/// replayed report is not scored twice (R12-RES-7104).
+///
+/// The centre's own sent-order register keeps 4,096 orders per cell; this
+/// is the same figure across all cells, and a replay older than it is scored
+/// again — a duplicate sample in the divergence mean, which moves a mean of
+/// many by little, against a set that would otherwise grow with every fill
+/// any cell ever reported.
+const CELL_FILLS_REMEMBERED: usize = 4_096;
+
+/// One cell fill's place on the report that carried it: the cell, the
+/// report's instant, the order it filled, and which fill on that order it
+/// was within the report. The wire carries no fill id, so this is the
+/// narrowest key a replay reproduces and two genuine fills do not share.
+type CellFillKey = (String, Timestamp, String, usize);
+
+/// The queued keys and their arrival order, the second only for eviction.
+#[derive(Debug, Default)]
+struct CellFillsQueued {
+    keys: BTreeSet<CellFillKey>,
+    arrival: std::collections::VecDeque<CellFillKey>,
+}
+
+impl CellFillsQueued {
+    /// Remember `key`; `false` where it was already remembered.
+    fn admit(&mut self, key: CellFillKey) -> bool {
+        if !self.keys.insert(key.clone()) {
+            return false;
+        }
+        self.arrival.push_back(key);
+        while self.keys.len() > CELL_FILLS_REMEMBERED {
+            let Some(oldest) = self.arrival.pop_front() else {
+                break;
+            };
+            self.keys.remove(&oldest);
+        }
+        true
+    }
+}
 
 /// The `control` an order refused for a wallet reconciliation halt is counted
 /// under, and the `gate` its rejection record carries (R12-ASSET-4074). A
@@ -3363,6 +3578,24 @@ struct FilledPath {
     /// What the venue left unfilled of the order when it reported, from the
     /// order manager's own book (R12-MODEL-6004). Zero for a whole fill.
     unfilled: Decimal,
+    /// The cell that reported the fill, or `None` for the desk's own.
+    ///
+    /// A desk fill is priced through the placement the outcome capture
+    /// holds; a cell's has no placement here — the cell decided alone (ADR
+    /// 0008) — so the twin prices it from this path itself. Without this arm
+    /// the twin scored only the desk, and a strategy trading at a venue only
+    /// cells reach was never held however wrong the twin was there
+    /// (R12-RES-7104).
+    cell: Option<CellFillOrigin>,
+}
+
+/// What a cell's fill carries that a desk fill reads from the outcome
+/// capture instead: who reported it, and how much traded.
+#[derive(Clone, Debug, PartialEq)]
+struct CellFillOrigin {
+    cell: String,
+    /// The venue's quantity on this fill. Money-adjacent, and exact.
+    quantity: Decimal,
 }
 
 /// What the twin found about one fill, once it has priced the sizes not
@@ -3408,6 +3641,33 @@ pub struct FillScore {
     /// the field existed, which is the reading those records were made under.
     #[serde(default)]
     pub unfilled: Decimal,
+    /// What the fill cost against the order's arrival price, in signed basis
+    /// points on the side taken — positive meaning the venue filled worse
+    /// than the price the decision saw (R12-TICK-10103). `None` where the
+    /// order manager holds no positive arrival price (a cell's fill).
+    #[serde(default)]
+    pub realised_slippage_bps: Option<f64>,
+    /// The same measure for the twin's own entry: the slippage it predicted.
+    /// Beside the realised figure it is the comparison of predicted and
+    /// actual slippage the replay exists to make.
+    #[serde(default)]
+    pub predicted_slippage_bps: Option<f64>,
+    /// The outcome the twin predicted for the trade: per unit, the price
+    /// printed at the twin's exit instant less the twin's entry, on the side
+    /// taken, net of its cost model's entry charge, in basis points of the
+    /// venue's fill price. `None` where the twin did not trade it or the
+    /// order manager holds no fills for it.
+    #[serde(default)]
+    pub predicted_outcome_bps: Option<f64>,
+    /// The same measure for what happened: the venue's fill marked at the
+    /// same printed exit price, net of the costs the venue charged.
+    #[serde(default)]
+    pub realised_outcome_bps: Option<f64>,
+    /// `predicted_outcome_bps - realised_outcome_bps` — positive meaning the
+    /// twin's outcome flattered the trade. A model residual, read by nothing
+    /// that sizes.
+    #[serde(default)]
+    pub outcome_error_bps: Option<f64>,
 }
 
 impl FillScore {
@@ -4509,33 +4769,36 @@ fn capital_grant_of(
     use qip_contracts::capital::{CapitalGrantFields, CollateralClass, GrantMode};
     use qip_contracts::validated::{Contract, MAX_BP};
     let capital = envelope.gross_limit();
-    // The loss limit as a share of the capital, in basis points — exact or
+    // ADR 0126 decision 3: the drawdown stop, the reserve and the ADV share
+    // are read from the envelope's drawdown block when it states them, and
+    // only written — the stop as the loss limit, a zero reserve, the whole
+    // ADV — when it does not. An envelope from before the block existed is
+    // the only one that reaches the written arm.
+    let block = envelope.drawdown();
+    let stop = block.map_or(envelope.loss_limit(), |block| block.max_drawdown);
+    // The stop as a share of the capital, in basis points — exact or
     // refused. `Decimal::ONE.raw()` is one unit at the decimal's scale.
     let one = Decimal::ONE.raw();
-    let scaled = envelope
-        .loss_limit()
+    let scaled = stop
         .checked_mul(Decimal::from_int(i64::from(MAX_BP)))
         .and_then(|scaled| scaled.checked_div(capital))
         .ok_or_else(|| {
             Error::numeric(format!(
-                "the loss limit {} over the capital {capital} of {}'s grant does not compute in \
-                 basis points",
-                envelope.loss_limit(),
+                "the drawdown stop {stop} over the capital {capital} of {}'s grant does not \
+                 compute in basis points",
                 envelope.strategy()
             ))
         })?;
     if scaled.raw() % one != 0 {
         return Err(Error::invalid(format!(
-            "the loss limit {} is not a whole number of basis points of the capital {capital} \
-             of {}'s grant; the funding record cannot state the drawdown stop exactly",
-            envelope.loss_limit(),
+            "the drawdown stop {stop} is not a whole number of basis points of the capital \
+             {capital} of {}'s grant; the funding record cannot state it exactly",
             envelope.strategy()
         )));
     }
     let max_drawdown_bp = u32::try_from(scaled.raw() / one).map_err(|_| {
         Error::invalid(format!(
-            "the loss limit {} of {}'s grant is not within its capital {capital}",
-            envelope.loss_limit(),
+            "the drawdown stop {stop} of {}'s grant is not within its capital {capital}",
             envelope.strategy()
         ))
     })?;
@@ -4562,8 +4825,12 @@ fn capital_grant_of(
         max_leverage,
         risk_budget: envelope.loss_limit(),
         max_drawdown_bp,
-        liquidity_reserve: Decimal::ZERO,
-        max_adv_share_bp: MAX_BP,
+        liquidity_reserve: block
+            .and_then(|block| block.liquidity_reserve)
+            .unwrap_or(Decimal::ZERO),
+        max_adv_share_bp: block
+            .and_then(|block| block.max_adv_share_bp)
+            .unwrap_or(MAX_BP),
         granted_at: envelope.granted_at(),
         expires_at: envelope.expires_at(),
     })
@@ -4595,6 +4862,19 @@ impl EventBody for FillBooked {
 impl EventBody for LotAdjusted {
     const TOPIC: Topic = Topic::PositionUpdated;
     const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The empty lifecycle register [`Platform`]'s `asset_book` starts from, and
+/// restarts from when the book is resumed from the log. One constructor for
+/// both so the resumed register is the one assembly would have built.
+fn asset_book_opened(initial_equity: Decimal, at: Timestamp) -> Portfolio {
+    Portfolio::new(
+        PortfolioId::from_string("pf-desk-assets"),
+        "desk-assets",
+        Currency::USD,
+        initial_equity,
+        at,
+    )
 }
 
 /// One open position at its average entry cost. Quantity is signed: negative
@@ -5093,6 +5373,17 @@ impl Platform {
                 )
             })
             .collect();
+        let contract_expiries: BTreeMap<String, Timestamp> = universe
+            .iter()
+            .filter_map(|object| {
+                let expiry = match &object.extension {
+                    qip_financial::extensions::Extension::Future(future) => future.expiry,
+                    qip_financial::extensions::Extension::Option(option) => option.expiry,
+                    _ => return None,
+                };
+                Some((object.object_id.as_str().to_string(), expiry))
+            })
+            .collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -5117,6 +5408,21 @@ impl Platform {
         // operator correcting a catalogue needs the whole list, and refusing
         // one at a time would take as many restarts as there are bad rows.
         let asset_class_registry = crate::asset_class_registry::AssetClassRegistry::shipped()?;
+        // The self-model's capability boundary (R12-WORLD-3036): the classes
+        // the admitted universe holds an instrument in. Registration says what
+        // the platform may trade, and the shipped registry registers every
+        // class, so a boundary read from it would bound nothing. The universe
+        // says what the platform has reference data, a price and a lot size
+        // for, which is what it can actually act on. It is read once here
+        // because the universe is fixed at assembly; an instrument the
+        // registry would refuse never reaches it, since `admit` below stops
+        // the process first.
+        let mut self_model = SelfModel::new();
+        self_model.declare_boundary(
+            universe
+                .iter()
+                .map(|object| object.asset_class.as_str().to_string()),
+        )?;
         let unsupported: Vec<String> = universe
             .iter()
             .filter_map(|object| asset_class_registry.admit(object).err())
@@ -5518,6 +5824,7 @@ impl Platform {
         // under — while it is still borrowed rather than moved, so a
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
+        let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -5536,6 +5843,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
             model_desk: None,
@@ -5550,7 +5858,7 @@ impl Platform {
             falsification: crate::falsification::Book::new(),
             evaluations: Vec::new(),
             last_calibration: None,
-            self_model: SelfModel::new(),
+            self_model,
             // The universe's asset classes are named here, at the one place
             // they are known, so the domain members (MODEL-4009) are declared
             // by the first pass of every deployed cycle and not only in the
@@ -5574,8 +5882,11 @@ impl Platform {
             declined: Vec::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
+            cell_fills_queued: CellFillsQueued::default(),
             fill_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
+            replay_divergence_holds: replay_divergence_resumed.0,
+            replay_divergence_windows: replay_divergence_resumed.1,
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -5603,6 +5914,7 @@ impl Platform {
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
             federation_requests: Vec::new(),
+            decision_uncertainties: Vec::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -5616,6 +5928,7 @@ impl Platform {
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
             pretrade_routing: None,
+            monitor_routing: None,
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             commitments,
@@ -5628,6 +5941,7 @@ impl Platform {
             asset_classes,
             derivative_types,
             lot_units,
+            contract_expiries,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
             licensed_jurisdictions: None,
@@ -5652,7 +5966,9 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
+            justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
+            symbolic_rule_pack: crate::symbolic_stage::rule_pack(),
             leg_quantities: BTreeMap::new(),
             governor: crate::survival::SurvivalGovernor::default(),
             ledger_obligations: None,
@@ -5737,6 +6053,9 @@ impl Platform {
             proposals_made: 0,
             corporate_actions_pending: BTreeMap::new(),
             corporate_actions_applied: BTreeSet::new(),
+            asset_book: asset_book_opened(initial_equity, now),
+            position_mandates: BTreeMap::new(),
+            position_horizons: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -6892,6 +7211,7 @@ impl Platform {
             }
         }
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
+        self.queue_cell_fills(&ingestion.cell, reported_at, &ingestion.settlement.absorbed);
         self.book_settlement(&ingestion.settlement, now);
         // The cell's feasibility refusals, into the same window the desk's
         // land in, through the same recording site. What the plane could
@@ -8303,6 +8623,7 @@ impl Platform {
         });
         if let Some(opened_at) = first_fill {
             self.capital = TrackedCapital::new(self.config.initial_equity, opened_at);
+            self.asset_book = asset_book_opened(self.config.initial_equity, opened_at);
         }
         let resumed = entries.len();
         if let Some(through) = watermark {
@@ -8364,7 +8685,7 @@ impl Platform {
                             ));
                         }
                     }
-                    let moved = self.capital.apply_fill(
+                    let moved = self.book_desk_fill(
                         &fill.object_id,
                         fill.side,
                         fill.price,
@@ -8385,8 +8706,7 @@ impl Platform {
                     );
                 }
                 Entry::Adjustment(adjusted) => self
-                    .capital
-                    .adjust_lot(
+                    .adjust_desk_lot(
                         &adjusted.action,
                         &adjusted.object_id,
                         adjusted.quantity_factor,
@@ -8940,7 +9260,12 @@ impl Platform {
                 // than skipped when a measurement it reads is malformed — a
                 // grant signed past a governor that could not decide is a
                 // grant the governor never saw.
-                let narrowing = self.grant_narrowing(now);
+                // And, for this strategy alone, the twin's divergence at its
+                // venue (R12-RES-7104): a hold narrows every grant signed
+                // while it stands, and only a re-promotion releases it.
+                let narrowing = self
+                    .grant_narrowing(now)
+                    .and_then(|decision| self.narrow_for_replay_divergence(strategy, decision));
                 let outcome = narrowing.and_then(|narrowing| {
                     self.central
                         .issue_narrowed(
@@ -10021,6 +10346,166 @@ impl Platform {
             }
         }
         self.aggregates.mark_cash(self.capital.cash);
+    }
+
+    /// Queue every fill the centre absorbed from a cell for the twin's fill
+    /// scoring — the same queue, the same pass and the same
+    /// `qip_venue_fill_error_bps` and calibration a desk fill reaches
+    /// (R12-RES-7104).
+    ///
+    /// Until this, `score_filled` saw only the desk's fills, so
+    /// `replay_divergence::measure` had nothing at a venue only cells trade
+    /// at, and a strategy whose replays were priced by a twin a thousand
+    /// basis points wrong about that venue kept its full grant.
+    ///
+    /// **Read off the settlement, not the report**, so a fill the centre
+    /// refused or found unsent is never scored.
+    ///
+    /// **Exactly once, and not because the settlement guarantees it.** This
+    /// was first written trusting the centre's sent register to make a
+    /// replay inert, and a test replaying the report proved otherwise: an
+    /// order whose fills complete it *leaves* the register, so the same
+    /// report arriving again re-registers its orders as new sends and
+    /// settles its fills a second time. So each fill is remembered here by
+    /// its place on the report — cell, report instant, order, and its
+    /// ordinal among that order's fills in the report — and a fill already
+    /// remembered is not queued again, within [`CELL_FILLS_REMEMBERED`].
+    ///
+    /// **Only at a venue a registered strategy trades at.** The venue
+    /// arrives on a wire that authenticates nobody, and it becomes a metric
+    /// label and a calibration key; a venue no strategy trades at holds
+    /// nobody, so admitting it would buy an unbounded label and nothing else.
+    /// A fill at such a venue is counted under
+    /// `qip_counterfactuals_unscored{reason="unregistered_venue"}` rather
+    /// than dropped silently.
+    ///
+    /// **A fill score never withdraws a venue** (ADR 0062): this queues
+    /// into the fill-scoring pass, which writes the error histogram and the
+    /// calibration and nothing a withdrawal reads.
+    ///
+    /// A full queue is a refusal to queue, counted under
+    /// `reason="fill_capacity"` as the desk's is, never an eviction.
+    fn queue_cell_fills(&mut self, cell: &str, reported_at: Timestamp, fills: &[AbsorbedFill]) {
+        if fills.is_empty() {
+            return;
+        }
+        let mut ordinals: BTreeMap<&str, usize> = BTreeMap::new();
+        let traded: BTreeSet<String> = self
+            .central
+            .factory()
+            .candidates()
+            .map(|candidate| candidate.venue().as_str().to_string())
+            .collect();
+        for fill in fills {
+            let ordinal = ordinals.entry(fill.order_id.as_str()).or_default();
+            let key = (
+                cell.to_string(),
+                reported_at,
+                fill.order_id.clone(),
+                *ordinal,
+            );
+            *ordinal += 1;
+            if !self.cell_fills_queued.admit(key) {
+                continue;
+            }
+            if !traded.contains(&fill.venue) {
+                self.telemetry.metrics.count(
+                    names::COUNTERFACTUALS_UNSCORED,
+                    labels([("reason", "unregistered_venue")]),
+                );
+                continue;
+            }
+            if self.filled.len() >= DECLINED_HISTORY {
+                self.telemetry.metrics.count(
+                    names::COUNTERFACTUALS_UNSCORED,
+                    labels([("reason", "fill_capacity")]),
+                );
+                self.capture_problems.push(format!(
+                    "{cell}'s fill on order {} will not be priced by the twin: \
+                     {DECLINED_HISTORY} filled paths are already waiting to be",
+                    fill.order_id
+                ));
+                continue;
+            }
+            self.filled.push(FilledPath {
+                // Qualified by the cell: a cell's order ids are its own, and
+                // two cells naming the same id would otherwise score one
+                // cell's fill against the other's path.
+                order_id: OrderId::from_string(format!("{cell}/{}", fill.order_id)),
+                object_id: ObjectId::from_string(fill.object_id.clone()),
+                venue: VenueId::new(fill.venue.clone()),
+                fill_price: fill.price,
+                side: fill.side,
+                // The venue's report instant: the twin is asked where it
+                // would have entered as of the moment the venue says it
+                // filled, which is the only instant the wire carries for it.
+                decided_at: fill.at,
+                // A cell reports fills, not what remains resting; the
+                // remainder is the cell's book, not a fact the centre holds.
+                unfilled: Decimal::ZERO,
+                cell: Some(CellFillOrigin {
+                    cell: cell.to_string(),
+                    quantity: fill.quantity,
+                }),
+            });
+        }
+    }
+
+    /// The twin's alternatives to one fill a cell reported, priced from the
+    /// queued path itself — a cell's order has no placement in this
+    /// platform's outcome capture, so [`Self::evaluate_alternatives`] has
+    /// nothing to find it by.
+    ///
+    /// The decision is dated at the fill and named deterministically from
+    /// the cell and its order, so the twin's per-alternative streams — and so
+    /// the score — are the same on every replay of the same log. What was
+    /// realised is "nothing happened", as an opening desk fill's is
+    /// (`capture_submission` books it at zero P&L); the fill error read off
+    /// the result compares entry prices and never a P&L.
+    fn evaluate_cell_fill(
+        &self,
+        path: &FilledPath,
+        origin: &CellFillOrigin,
+        market: &mut TwinMarket,
+    ) -> Result<CounterfactualSet> {
+        let decision = Decision::new(
+            qip_core::ids::DecisionId::from_string(format!(
+                "cell-fill:{}:{}",
+                path.order_id,
+                path.decided_at.to_rfc3339()
+            )),
+            TraceId::new(format!("trace-cell-fill-{}", path.order_id)),
+            CorrelationId::from_string(format!("cell-fill-{}", path.order_id)),
+            path.decided_at,
+            path.object_id.clone(),
+            Action::Filled {
+                order_id: path.order_id.clone(),
+                venue: path.venue.clone(),
+                quantity: origin.quantity,
+                price: path.fill_price,
+            },
+        )
+        .because(format!(
+            "{} reported this fill at {}; the twin re-prices it to measure its divergence there",
+            origin.cell, path.venue
+        ));
+        let actual = ActualTrade::new(
+            path.object_id.clone(),
+            path.side,
+            origin.quantity,
+            path.venue.clone(),
+            // The region on an actual trade labels it and selects nothing
+            // the fill error reads: the error comes off the `trade`
+            // alternative, the order re-priced as taken.
+            HOME_REGION,
+            path.decided_at,
+        )?;
+        self.counterfactuals.evaluate(
+            market,
+            &decision,
+            &actual,
+            &RealisedOutcome::nothing_happened(path.decided_at),
+        )
     }
 
     /// Feed realised cell outcomes back into the ladder and the allocator.
@@ -11589,6 +12074,43 @@ impl Platform {
     /// what the caller gets back. The refusal is not a stage failing — it is the
     /// argument being wrong — so nothing is journalled, nothing is charged and
     /// no state moves.
+    /// Hand the self-model this cycle's operational health: whether the
+    /// global kill switch is tripped, and every §6.2 row the centre reads as
+    /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
+    /// halted or not, since a halted platform is the case a self-model most
+    /// needs to know about. A degradation table that cannot be read is put on
+    /// the cycle's problems and recorded as no reading, never as a healthy
+    /// one.
+    fn observe_own_health(&mut self, now: Timestamp) {
+        use qip_contracts::degradation::{Capability, Freshness};
+        let degraded = match self.central_degradation(now) {
+            Ok(state) => Capability::all()
+                .into_iter()
+                .map(|row| (row, state.freshness(row)))
+                .filter(|(_, freshness)| *freshness != Freshness::Fresh)
+                .collect(),
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the self-model's health was not observed this cycle: the degradation \
+                     table could not be read: {}",
+                    error.message()
+                ));
+                return;
+            }
+        };
+        let health = qip_learning_engine::self_model::OperationalHealth {
+            observed_at: now,
+            halted: self.autonomy.kill_switch().is_globally_tripped(),
+            degraded,
+        };
+        if let Err(error) = self.self_model.observe_health(health) {
+            self.capture_problems.push(format!(
+                "the self-model refused this cycle's health reading: {}",
+                error.message()
+            ));
+        }
+    }
+
     pub fn run_cycle(&mut self, now: Timestamp) -> CycleReport {
         if now < self.reasoned_through {
             return self.refuse_cycle_before(now);
@@ -11644,6 +12166,7 @@ impl Platform {
         self.finish_stage(&mut stages, acted, &mut mark);
         let learned = self.stage_learn(now);
         self.finish_stage(&mut stages, learned, &mut mark);
+        self.observe_own_health(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -12326,7 +12849,94 @@ impl Platform {
             BOOK_ORIGIN,
             now,
         )?;
-        self.capital.adjust_lot(key, object, quantity_factor)
+        self.adjust_desk_lot(key, object, quantity_factor)
+    }
+
+    /// Book one desk fill into [`TrackedCapital`] and the lifecycle register
+    /// together, and return what the tracked book's at-cost notional moved.
+    ///
+    /// The one place either is fed a fill, live or resumed, so the register
+    /// cannot miss a fill the book took — the way it would if each seam
+    /// remembered to call both. The register refusing the fill (an instrument
+    /// outside the universe, or priced in a unit other than the book's) does
+    /// not stop the booking: the venue has filled and `capital` is what every
+    /// limit reads. The refusal is said out loud on the cycle instead, and
+    /// the next mandate review reports the disagreement for as long as it
+    /// lasts.
+    fn book_desk_fill(
+        &mut self,
+        object_id: &str,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        costs: Decimal,
+        at: Timestamp,
+    ) -> Decimal {
+        let moved = self
+            .capital
+            .apply_fill(object_id, side, price, quantity, costs, at);
+        let signed = match side {
+            Side::Buy => quantity,
+            Side::Sell => -quantity,
+        };
+        let object = self
+            .market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object_id))
+            .cloned();
+        let mirrored = match object {
+            Some(object) => self
+                .asset_book
+                .apply_fill(&object, signed, price, costs, at, None)
+                .map(|_| ()),
+            None => Err(Error::not_found(format!(
+                "{object_id} is not in the universe the platform was assembled over"
+            ))),
+        };
+        if let Err(error) = mirrored {
+            self.capture_problems.push(format!(
+                "a desk fill in {object_id} was booked and the position lifecycle register \
+                 refused it ({}); the position cannot be flagged until the two agree",
+                error.message()
+            ));
+        }
+        moved
+    }
+
+    /// Take one corporate action's share-count change on [`TrackedCapital`]
+    /// and on the lifecycle register together, for the reason
+    /// [`Self::book_desk_fill`] gives. The tracked book's refusal is returned
+    /// unchanged and the register is not touched; the register's own refusal
+    /// is a problem on the cycle, never a reason to undo the book.
+    fn adjust_desk_lot(&mut self, action: &str, object: &str, factor: Decimal) -> Result<()> {
+        let held = self.capital.positions.contains_key(object);
+        self.capital.adjust_lot(action, object, factor)?;
+        if held {
+            let adjusted = Decimal::ONE
+                .checked_div(factor)
+                .ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the price factor of a share-count factor of {factor} is not \
+                         representable"
+                    ))
+                })
+                .and_then(|price_factor| {
+                    self.asset_book.adjust_position(
+                        &ObjectId::from_string(object),
+                        factor,
+                        price_factor,
+                    )
+                });
+            if let Err(error) = adjusted {
+                self.capture_problems.push(format!(
+                    "corporate action {action} adjusted the desk's holding of {object} and the \
+                     position lifecycle register refused it ({})",
+                    error.message()
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn stage_sense(&mut self, now: Timestamp) -> StageOutcome {
@@ -12647,12 +13257,15 @@ impl Platform {
             routing_decisions.len() as f64,
         );
         // Blueprint §9.3: the World Model Federation's pass — views fed,
-        // forecasts scored, disagreement arbitrated and journaled. Advisory;
-        // see `crate::federation_stage` for why nothing downstream reads it.
+        // forecasts scored, disagreement arbitrated and journaled. Advisory
+        // under ADR 0125: DECIDE reads only the narrowing it derives
+        // (`federation_stage::narrow`), which can shrink a bound and never
+        // raise one.
         let (federation_detail, federation_problems) = self.understand_federation(now);
         // Blueprint §9.6 and §9.7: the NOW Brain's latent state, then the
-        // forecast lattice over it. Advisory; see `crate::now_stage` and
-        // `crate::lattice_stage` for why nothing downstream reads either.
+        // forecast lattice over it. Advisory under ADR 0125: DECIDE reads
+        // only the lattice's tactical staleness, which vetoes a thesis on an
+        // expired forecast or narrows its bound (R12-WORLD-9024).
         let (now_detail, now_problems) = self.understand_now(now);
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
@@ -12912,6 +13525,9 @@ impl Platform {
         // next pass rather than moving influence on a record nobody kept.
         let journalled = self.journal_record(lattice, "kernel/forecast-lattice", now);
         self.lattice.set_calibrator_available(journalled.is_ok());
+        if journalled.is_ok() {
+            self.lattice.confirm_calibration();
+        }
         if let Err(error) = journalled {
             problems.push(format!(
                 "the forecast lattice's review was computed and not journalled, so its \
@@ -13140,6 +13756,12 @@ impl Platform {
         &self,
     ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
         &self.federation_narrowing
+    }
+
+    /// The decisions the latest DECIDE sized on a conviction it was unsure of
+    /// (R12-AMBIENT-3104), for the deep brain's research intake.
+    pub fn decision_uncertainties(&self) -> &[DecisionUncertainty] {
+        &self.decision_uncertainties
     }
 
     /// The active-sensing requests the latest federation pass issued, with
@@ -13798,6 +14420,50 @@ impl Platform {
         self.pretrade_routing.as_ref()
     }
 
+    /// How the last pass of the risk monitor over the book was routed.
+    pub fn monitor_routing(&self) -> Option<&DeterministicRouting> {
+        self.monitor_routing.as_ref()
+    }
+
+    /// The conditions the book-level limit evaluation is routed under.
+    ///
+    /// The book has no one instrument, so the regime is the book's own — a
+    /// crisis at the crisis drawdown, quiet otherwise — and the horizon is the
+    /// cycle's. The conditions label the routing record; they choose nothing,
+    /// because the `Required` arm consults no ladder.
+    fn book_conditions(&self) -> Conditions {
+        Conditions::new(
+            AssetClass::Equity,
+            CostRegion::new(HOME_REGION),
+            if self.capital.drawdown() >= CRISIS_DRAWDOWN {
+                MarketRegime::Crisis
+            } else {
+                MarketRegime::Quiet
+            },
+            VolatilityRegime::Normal,
+            Horizon::Intraday,
+        )
+    }
+
+    /// Run the risk monitor over the book under a deterministic routing.
+    ///
+    /// **The only caller of `RiskMonitor::observe`** (R12-RISK-3022). The
+    /// routing is taken by value so a caller must have obtained one from
+    /// [`Router::determine`] — a type that cannot name a model rung — before
+    /// the limits are evaluated, and it is kept as the record of how this
+    /// pass was routed. The monitor's verdict engages the kill switch and
+    /// gates sign-off and release, so those paths are covered by this one.
+    fn observe_book_under_routing(
+        &mut self,
+        routing: DeterministicRouting,
+        state: &RiskState,
+        now: Timestamp,
+    ) -> MonitorAction {
+        self.monitor_routing = Some(routing);
+        self.monitor
+            .observe(state, "platform", self.autonomy.level(), now)
+    }
+
     /// Describe the market this decision is being made in.
     ///
     /// Every field is read off something the platform already tracks. Nothing
@@ -14367,6 +15033,29 @@ impl Platform {
                 if let Some(multiplier) = outside_narrowing {
                     reasoned.hypothesis.confidence *= multiplier;
                 }
+                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
+                // journaled as a derivation trace. Run before approval is read
+                // (ADR 0125 decision 2, R12-REASON-3053), so the rule pack's
+                // verdict is an input to approval rather than a comment on it:
+                // a hypothesis review approved that the pack refuses on a hard
+                // stop is rejected here, before it is counted, charted, written
+                // into a prediction or handed to the tournament as approved.
+                // The derivation records the status review gave it, which is
+                // what the pack was asked about. Nothing here sizes or sends.
+                let SymbolicReading {
+                    detail: symbolic_detail,
+                    problem: symbolic_problem,
+                    veto: symbolic_veto,
+                    infeasible: symbolic_infeasibility,
+                } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                // ADR 0212: a derivation that contradicts itself is a
+                // conclusion no money may rest on, whatever review said, so
+                // it is demoted here beside the veto and the decision below
+                // forms no proposal on it. Dissent does not reach this arm.
+                if symbolic_veto.is_some() || symbolic_infeasibility.is_some() {
+                    reasoned.hypothesis.status =
+                        qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected;
+                }
                 let approved = reasoned.hypothesis.status.is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
@@ -14439,35 +15128,57 @@ impl Platform {
                         error.message()
                     ));
                 }
-                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
-                // journaled as a derivation trace. Its one power is ADR 0125's
-                // veto: a hypothesis review approved and the rule pack does not
-                // find eligible forms no proposal. Nothing here sizes or sends.
-                let (symbolic_detail, symbolic_problem, symbolic_veto) =
-                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                // The derivation ran before approval, above; its trace joins
+                // the stage detail here, after the hypothesis line it explains.
                 outcome.detail.push_str(&symbolic_detail);
                 if let Some(problem) = symbolic_problem {
                     outcome = outcome.with_problem(problem);
                 }
                 // §22's attribution keys and §9.8's tournament, both read
-                // here because this is the instant the facts were true.
-                // Advisory: neither reaches DECIDE. See `crate::attribution`
-                // and `crate::model_tournament`.
-                if let Some(clause) = self.observe_hypothesis(&reasoned, &report, approved, now) {
-                    outcome.detail.push_str(&clause);
+                // here because this is the instant the facts were true. The
+                // one power that reaches DECIDE is the verifier society's
+                // veto (ADR 0125 decision 2, ADR 0170, R12-REASON-3108): a
+                // refuted important prediction forms no proposal. See
+                // `crate::attribution` and `crate::model_tournament`.
+                let mut society_refutation = None;
+                if let Some(verdict) = self.observe_hypothesis(&reasoned, &report, approved, now) {
+                    outcome.detail.push_str(&verdict.clause);
+                    society_refutation = verdict.refuted;
                 }
-                let decision = if !approved {
+                let decision = if let Some(contradiction) = symbolic_infeasibility {
+                    // ADR 0212, R12-RES-7106: first, because a contradiction
+                    // is a finding about the reasoning itself and outranks
+                    // what review or the pack's hard stops said of it. The
+                    // derivation carrying the trace and the alternates is
+                    // already on the log under `kernel/symbolic`; nothing is
+                    // queued for DECIDE, so no proposal, size or order can
+                    // follow from it.
+                    outcome = outcome.with_problem(format!(
+                        "symbolically infeasible, no proposal formed: {contradiction}"
+                    ));
+                    DecisionTaken::NotSizeable
+                } else if let Some(veto) = symbolic_veto {
+                    // ADR 0125 decision 2: the rule pack refused what review
+                    // approved, so the hypothesis was rejected above. Recorded
+                    // under its own words, because "vetoed by a rule" and
+                    // "rejected on review" send an operator to different
+                    // places; the derivation that produced it is already on
+                    // the log under `kernel/symbolic`.
+                    outcome = outcome.with_problem(format!(
+                        "approved on review but vetoed by the symbolic rule pack: {veto}"
+                    ));
+                    DecisionTaken::NotSizeable
+                } else if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
-                } else if let Some(veto) = symbolic_veto {
-                    // ADR 0125 decision 2: the rule pack refused what review
-                    // approved. Recorded under its own words, because "vetoed
-                    // by a rule" and "could not be sized" send an operator to
-                    // different places; the derivation that produced it is
-                    // already on the log under `kernel/symbolic`.
+                } else if let Some(refutation) = society_refutation {
+                    // ADR 0170: the verifier society falsified the leading
+                    // explanation review approved. Recorded under its own
+                    // words; the verification is journaled with the
+                    // tournament's review in LEARN.
                     outcome = outcome.with_problem(format!(
-                        "approved but vetoed by the symbolic rule pack: {veto}"
+                        "approved but refuted by the verifier society: {refutation}"
                     ));
                     DecisionTaken::NotSizeable
                 } else {
@@ -14475,9 +15186,9 @@ impl Platform {
                     // justified: a thesis whose only ground is the return it
                     // expects never reaches DECIDE, so no intent is formed on
                     // profit alone (R12-GOV-6127). `thesis_from` takes the
-                    // proof by value and only `justify_thesis` can mint one,
-                    // so this check cannot be dropped without the queue's
-                    // only constructor failing to compile.
+                    // proof by value and the queue holds it beside the
+                    // thesis; nothing but `Justification::of` makes one, and
+                    // it makes none for profit-only grounds.
                     match justify_thesis(&reasoned.hypothesis.evidence) {
                         Err(refusal) => {
                             // Recorded under its own words, because "could not
@@ -14503,13 +15214,13 @@ impl Platform {
                                 // narrowing an operator can see the size of.
                                 outcome.detail.push_str(&format!(
                                     "; sized on conviction {:.3}",
-                                    thesis.conviction.abs()
+                                    thesis.thesis().conviction.abs()
                                 ));
                                 // R12-RISK-4112: how split the panel was on
                                 // the thesis now queued, for DECIDE's
                                 // confidence governor to size against.
                                 self.governor.signals_mut().observe_dissent(
-                                    &thesis.hypothesis_id,
+                                    &thesis.thesis().hypothesis_id,
                                     reasoned.dissenters.len(),
                                     report.runs.len(),
                                 );
@@ -14612,11 +15323,26 @@ impl Platform {
         report: &qip_investment_agents::OrganisationReport,
         approved: bool,
         now: Timestamp,
-    ) -> Option<String> {
+    ) -> Option<crate::model_tournament::ReasonVerdict> {
         let roster: Vec<String> = self
             .organisation
             .roster()
             .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        // ADR 0170 decision 2: the society reads only the agents that
+        // explain. See `ReasonObservation::explaining`.
+        let explaining: BTreeSet<String> = self
+            .organisation
+            .roster()
+            .iter()
+            .filter(|manifest| {
+                matches!(
+                    manifest.role,
+                    qip_agents::manifest::AgentRole::Research
+                        | qip_agents::manifest::AgentRole::Adversarial
+                )
+            })
             .map(|manifest| manifest.id.clone())
             .collect();
         self.attribution_lineage
@@ -14656,6 +15382,7 @@ impl Platform {
                 crossed_recently,
                 expected_move_bps,
                 approved,
+                explaining,
             },
             now,
         )
@@ -14707,9 +15434,11 @@ impl Platform {
     /// Gathers only; the module decides. Takes the hypothesis by shared
     /// reference and returns a clause, a problem and, under ADR 0125
     /// decision 2, the reason the rule pack vetoes an approved hypothesis (see
-    /// `SymbolicDerivation::veto`). The derivation has no path back into the
-    /// thesis, its conviction or any order: the caller may drop a proposal on
-    /// the veto and can do nothing else with it.
+    /// `SymbolicDerivation::veto`), and under ADR 0212 the reason its parts
+    /// contradict each other (`SymbolicDerivation::infeasibility`). The
+    /// derivation has no path back into the thesis, its conviction or any
+    /// order: the caller may drop a proposal on either and can do nothing
+    /// else with them.
     /// What one lot of `subject` leaves of the position budget and of cash,
     /// in whole currency units, for the symbolic rule pack (REASON-3057).
     ///
@@ -14761,13 +15490,13 @@ impl Platform {
         reasoned: &ReasoningOutcome,
         contested: bool,
         now: Timestamp,
-    ) -> (String, Option<String>, Option<String>) {
+    ) -> SymbolicReading {
         use crate::symbolic_stage::{AnomalyFacts, SymbolicInput};
         let (Some(anomaly), Some(subject)) = (
             opportunity.anomalies.first(),
             opportunity.affected_objects.first(),
         ) else {
-            return (String::new(), None, None);
+            return SymbolicReading::default();
         };
         let hypothesis = &reasoned.hypothesis;
         let moves: BTreeMap<String, f64> = self
@@ -14822,13 +15551,30 @@ impl Platform {
                 .map(|class| class.as_str().to_string()),
             lot_headroom,
             cash_headroom,
+            // Whole days from the claim's deadline to the contract's expiry,
+            // floored: an expiry an hour short of the deadline is minus one.
+            contract_expiry_margin_days: self.contract_expiries.get(subject.as_str()).map(
+                |expiry| {
+                    let deadline = hypothesis.formed_at.saturating_add(hypothesis.horizon);
+                    expiry
+                        .since(deadline)
+                        .as_nanos()
+                        .div_euclid(Duration::from_days(1).as_nanos())
+                },
+            ),
         };
         let derivation = {
             let world = self.world.read();
-            crate::symbolic_stage::derive(input, world.causal(), now)
+            crate::symbolic_stage::derive_under(
+                &self.symbolic_rule_pack,
+                input,
+                world.causal(),
+                now,
+            )
         };
         let detail = derivation.detail();
         let veto = derivation.veto();
+        let infeasible = derivation.infeasibility();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
             .err()
@@ -14838,7 +15584,12 @@ impl Platform {
                     error.message()
                 )
             });
-        (detail, problem, veto)
+        SymbolicReading {
+            detail,
+            problem,
+            veto,
+            infeasible,
+        }
     }
 
     /// The regime in force for `subject`, as the labels memory encodes.
@@ -15620,6 +16371,15 @@ impl Platform {
         let mut weakest = Decimal::ONE;
         let mut refusals = Vec::new();
         for thesis in theses {
+            // R12-WORLD-9024: a tactical forecast past its expiry vetoes the
+            // thesis before anything else is read about it.
+            if let Some(Err(stale)) = self
+                .lattice
+                .tactical_staleness(thesis.object_id.as_str(), now)
+            {
+                refusals.push(stale);
+                continue;
+            }
             match self.sizing_confidence(thesis.object_id.as_str(), now) {
                 Ok(confidence) => {
                     weakest = weakest.min(confidence);
@@ -16045,6 +16805,25 @@ impl Platform {
                 .map(|thesis| thesis.object_id.as_str().to_string()),
             &self.federation_narrowing,
         );
+        // ADR 0125 decision 4 for the forecast lattice (R12-WORLD-9024): the
+        // bound narrows by the share of its tactical forecasts' life left,
+        // compounding with the caps above and never above one. An expired
+        // forecast never reaches here; `sizeable_theses` vetoed its thesis.
+        let distinct: std::collections::BTreeSet<&str> = theses
+            .iter()
+            .map(|thesis| thesis.object_id.as_str())
+            .collect();
+        for object in distinct {
+            if let Some(Ok(left)) = self.lattice.tactical_staleness(object, now)
+                && left < 1.0
+            {
+                *caps.entry(object.to_string()).or_insert(1.0) *= left;
+                capped.push(format!(
+                    "{object}: its tactical forecasts have {left:.2} of their life left, narrowed \
+                     to that share of the bound"
+                ));
+            }
+        }
         // Every survival tier and confidence contraction that bit, on the
         // same DECIDE detail line the caps above reach: the recorded capital
         // response a tail world the book does not survive is required to
@@ -16162,19 +16941,264 @@ impl Platform {
                 Duration::from_hours(24),
             )?;
         }
+        // The mandate and target each leg was sized under (R12-ASSET-4066),
+        // written only now that the proposal's capital is held: a refused
+        // hold returned above, and a target the platform never committed
+        // capital to is not the target of anything it holds.
+        let mandate = self.user_ledger.desk().as_str().to_string();
+        for leg in &outcome.proposal.legs {
+            // Removed rather than left standing where this leg's hypotheses
+            // carry no horizon: a horizon from an earlier construction is not
+            // the horizon of what was sized now.
+            match self.justified_hypotheses.horizon(&leg.hypotheses) {
+                Some(horizon) => {
+                    self.position_horizons
+                        .insert(leg.object_id.as_str().to_string(), horizon);
+                }
+                None => {
+                    self.position_horizons.remove(leg.object_id.as_str());
+                }
+            }
+            self.position_mandates.insert(
+                leg.object_id.as_str().to_string(),
+                crate::position_register::PositionMandate::new(
+                    mandate.clone(),
+                    leg.target_weight,
+                    outcome.proposal.proposal_id.as_str(),
+                    now,
+                ),
+            );
+        }
         Ok((outcome, unsizeable, capped))
     }
 
-    /// `_justified` is the proof [`justification::justify_thesis`] mints and
-    /// nothing else can: the queue's only constructor will not build a
-    /// thesis from a hypothesis nobody showed was justified by more than
-    /// the return it expects (R12-GOV-6127).
+    /// Each held position's hedge relationships, pending corporate actions
+    /// and commitments, every one present or declared not applicable with
+    /// the reason (R12-ASSET-4068), keyed by object id over the book every
+    /// limit reads.
+    ///
+    /// Read from the records the platform already holds: the declared hedge
+    /// policies classified through the catalogue
+    /// ([`crate::hedge_review::policies_relating_to`]), the corporate actions
+    /// awaiting their ex-date, and the commitment book. A position whose
+    /// catalogue record cannot be classified is refused with the object
+    /// named, rather than reported unhedged.
+    pub fn position_obligations(
+        &self,
+    ) -> Result<BTreeMap<String, crate::position_register::PositionObligations>> {
+        use qip_financial::position_record::Declared;
+        let market = self.market.read();
+        let mut obligations = BTreeMap::new();
+        for object in self.capital.positions.keys() {
+            let related = crate::hedge_review::policies_relating_to(
+                &self.config.hedge_policies,
+                object,
+                &market.universe,
+            )?;
+            let hedges = if !related.is_empty() {
+                Declared::Present(related)
+            } else if self.config.hedge_policies.is_empty() {
+                Declared::NoneApplicable {
+                    reason: "no hedge policy is declared for this deployment".to_string(),
+                }
+            } else {
+                Declared::NoneApplicable {
+                    reason: format!(
+                        "none of the {} declared hedge policies names this position's \
+                         instrument or classification, or hedges with it",
+                        self.config.hedge_policies.len()
+                    ),
+                }
+            };
+            let pending: Vec<String> = self
+                .corporate_actions_pending
+                .iter()
+                .filter(|(_, action)| action.object_id.as_str() == object)
+                .map(|(key, _)| key.clone())
+                .collect();
+            let corporate_actions = if pending.is_empty() {
+                Declared::NoneApplicable {
+                    reason: "no corporate action on this instrument is announced and awaiting \
+                             its ex-date"
+                        .to_string(),
+                }
+            } else {
+                Declared::Present(pending)
+            };
+            let commitments = match self.commitments.get(object) {
+                Some(commitment) => Declared::Present(commitment.clone()),
+                None => Declared::NoneApplicable {
+                    reason: "the commitment book holds no capital commitment on this instrument"
+                        .to_string(),
+                },
+            };
+            obligations.insert(
+                object.clone(),
+                crate::position_register::PositionObligations::new(
+                    hedges,
+                    corporate_actions,
+                    commitments,
+                ),
+            );
+        }
+        Ok(obligations)
+    }
+
+    /// The record of a held position's valuation confidence, investment
+    /// horizon and expected liquidity (R12-ASSET-4067), or a refusal naming
+    /// which of the three cannot be stated.
+    ///
+    /// Each is read from the one place the platform already keeps it, so
+    /// the record cannot disagree with the decision it describes:
+    ///
+    /// * **valuation confidence** is [`Self::sizing_confidence`] — the
+    ///   figure every construction narrows by. A mark past its review date
+    ///   refuses here exactly as it refuses sizing, rather than being
+    ///   reported at some decayed confidence nobody may size against;
+    /// * **horizon** is the horizon of the hypothesis the position was last
+    ///   sized on, looked up through the leg's hypothesis id when it was
+    ///   sized. A position no construction in this process sized — one
+    ///   resumed from the log — has none, and is refused rather than given
+    ///   a default;
+    /// * **expected liquidity** is the catalogue's days to exit raised to
+    ///   the holding's own dated return of capital by
+    ///   [`exit_days_with_forecast`], the same bound the liquidity limits
+    ///   read, so a seven-year lockup is not reported as thirty days.
+    ///
+    /// A position the book does not hold is refused: a record of a holding
+    /// nobody has is a statement about the caller's bookkeeping.
+    pub fn position_holding(
+        &self,
+        object_id: &str,
+        now: Timestamp,
+    ) -> Result<crate::position_register::PositionHolding> {
+        if !self.capital.positions.contains_key(object_id) {
+            return Err(Error::not_found(format!(
+                "the desk holds no position in {object_id}, so there is no holding to record"
+            )));
+        }
+        let confidence = self.sizing_confidence(object_id, now)?;
+        let (hypothesis, horizon) = self.position_horizons.get(object_id).cloned().ok_or_else(
+            || {
+                Error::invalid(format!(
+                    "{object_id} is held with no hypothesis horizon on record — no construction \
+                     in this process sized it — so its investment horizon cannot be stated; \
+                     size it through a construction or unwind it"
+                ))
+            },
+        )?;
+        let reference = self.liquidity_reference.get(object_id).ok_or_else(|| {
+            Error::invalid(format!(
+                "{object_id} is held and the platform holds no liquidity record for it, so its \
+                 expected liquidity cannot be stated; assemble the platform over a universe \
+                 containing it"
+            ))
+        })?;
+        let expected_exit_days = match self.private_forecasts.get(object_id) {
+            Some(forecast) => match forecast.first_return_at(now)? {
+                Some(returns_at) => {
+                    exit_days_with_forecast(reference.days_to_liquidate, returns_at, now)
+                }
+                None => reference.days_to_liquidate,
+            },
+            None => reference.days_to_liquidate,
+        };
+        crate::position_register::PositionHolding::new(
+            confidence,
+            hypothesis,
+            horizon,
+            expected_exit_days,
+        )
+    }
+
+    /// The mandate and target weight `object_id` was last sized under, or
+    /// `None` where no construction this process ran has sized it
+    /// (R12-ASSET-4066).
+    pub fn position_mandate(
+        &self,
+        object_id: &str,
+    ) -> Option<&crate::position_register::PositionMandate> {
+        self.position_mandates.get(object_id)
+    }
+
+    /// Where the desk's position in `object_id` sits on blueprint §35.1's
+    /// lifecycle, as the register holds it, or `None` where the register has
+    /// never held it.
+    pub fn position_lifecycle(&self, object_id: &str) -> Option<qip_portfolio::PositionLifecycle> {
+        self.asset_book
+            .position(&ObjectId::from_string(object_id))
+            .map(qip_portfolio::position::Position::lifecycle)
+    }
+
+    /// Resolve every held position to the mandate and target it was sized
+    /// under, and flag through [`Portfolio::flag_position`] each that does
+    /// not resolve (R12-ASSET-4066). Returns the problems the LEARN stage
+    /// puts on the cycle.
+    ///
+    /// A position resolves when a construction recorded a mandate for it and
+    /// the ledger still holds that mandate. Anything else — a position
+    /// resumed from the log, one a path other than `construct_from` opened,
+    /// a mandate the registry no longer holds — is flagged, because a
+    /// holding with no stated purpose reads exactly like one with a purpose,
+    /// and the Asset Brain's whole claim is that it can tell them apart.
+    ///
+    /// The held set is `capital`'s, the book every limit reads. Where the
+    /// register disagrees about which objects are held, that is reported
+    /// too, every cycle it lasts, rather than one side quietly winning.
+    fn review_position_mandates(&mut self) -> Vec<String> {
+        let mut problems = Vec::new();
+        let held: Vec<String> = self.capital.positions.keys().cloned().collect();
+        for object in &held {
+            let resolved = self.position_mandates.get(object).is_some_and(|record| {
+                self.user_ledger
+                    .mandates()
+                    .keys()
+                    .any(|user| user.as_str() == record.mandate())
+            });
+            if resolved {
+                continue;
+            }
+            match self
+                .asset_book
+                .flag_position(&ObjectId::from_string(object.as_str()))
+            {
+                Ok(true) => problems.push(format!(
+                    "{object} is held with no mandate and target exposure on record, so the \
+                     position is flagged; size it through a construction or unwind it"
+                )),
+                Ok(false) => {}
+                Err(error) => problems.push(format!(
+                    "{object} is held with no mandate and target exposure on record and could \
+                     not be flagged: {}",
+                    error.message()
+                )),
+            }
+        }
+        for position in self.asset_book.positions() {
+            if !self
+                .capital
+                .positions
+                .contains_key(position.object_id.as_str())
+            {
+                problems.push(format!(
+                    "the position lifecycle register holds {} {} and the book holds none; the \
+                     two disagree about what the desk owns",
+                    position.quantity(),
+                    position.object_id.as_str()
+                ));
+            }
+        }
+        problems
+    }
+
+    /// `justification` is the proof the thesis stands on more than the
+    /// return it expects (R12-GOV-6127), carried into the queue with it.
     fn thesis_from(
         &self,
         opportunity: &Opportunity,
         reasoned: &qip_reasoning_engine::engine::ReasoningOutcome,
-        _justified: justification::Justified,
-    ) -> Result<qip_portfolio_engine::construction::ApprovedThesis> {
+        justification: qip_contracts::action::Justification,
+    ) -> Result<JustifiedThesis> {
         let object_id = opportunity
             .affected_objects
             .first()
@@ -16200,30 +17224,37 @@ impl Platform {
             .anomalies
             .first()
             .ok_or_else(|| Error::invalid("the opportunity carries no anomaly to measure"))?;
-        Ok(qip_portfolio_engine::construction::ApprovedThesis {
-            hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
-            object_id: object_id.clone(),
-            // The sizing number rather than the admission number. Both are
-            // the hypothesis's own confidence; this one is additionally
-            // narrowed where the evidence contradicts itself, so that a
-            // thesis whose support is answered by an equal dissent commits
-            // less capital than one nothing argued against. Without it a
-            // conflict of evidence and an absence of evidence arrived here as
-            // the same figure and were sized identically, with nothing in the
-            // record to say which had happened.
-            conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
-            // The reversion of what was measured: the anomaly observed a
-            // displacement from expectation, and the thesis is that it closes.
-            // Bounded to the mandate-scale range construction validates, so an
-            // extreme print proposes a large-but-finite return rather than an
-            // absurd one.
-            expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
-            price: Decimal::from_f64(price).ok_or_else(|| {
-                Error::numeric(format!(
-                    "{object_id}'s last close {price} is not representable as a Decimal"
-                ))
-            })?,
-        })
+        Ok(JustifiedThesis::new(
+            qip_portfolio_engine::construction::ApprovedThesis {
+                hypothesis_id: reasoned.hypothesis.hypothesis_id.to_string(),
+                object_id: object_id.clone(),
+                // The sizing number rather than the admission number. Both are
+                // the hypothesis's own confidence; this one is additionally
+                // narrowed where the evidence contradicts itself, so that a
+                // thesis whose support is answered by an equal dissent commits
+                // less capital than one nothing argued against. Without it a
+                // conflict of evidence and an absence of evidence arrived here as
+                // the same figure and were sized identically, with nothing in the
+                // record to say which had happened.
+                conviction: sign * reasoned.hypothesis.confidence_for_sizing(),
+                // The reversion of what was measured: the anomaly observed a
+                // displacement from expectation, and the thesis is that it closes.
+                // Bounded to the mandate-scale range construction validates, so an
+                // extreme print proposes a large-but-finite return rather than an
+                // absurd one.
+                expected_return: (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5),
+                price: Decimal::from_f64(price).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "{object_id}'s last close {price} is not representable as a Decimal"
+                    ))
+                })?,
+            },
+            justification,
+            // The hypothesis's own horizon, carried beside the thesis so the
+            // horizon a held position is recorded under is the one review
+            // approved and not a second estimate of it (R12-ASSET-4067).
+            reasoned.hypothesis.horizon,
+        ))
     }
 
     /// Turn an opportunity and the organisation's findings into a reviewed
@@ -17171,7 +18202,15 @@ impl Platform {
         // Theses are drained, not read: a thesis expresses once. Re-expressing
         // the queue every cycle would pyramid the same idea until the mandate
         // cap alone stopped it.
-        let theses = std::mem::take(&mut self.pending_theses);
+        let theses: Vec<qip_portfolio_engine::construction::ApprovedThesis> =
+            std::mem::take(&mut self.pending_theses)
+                .into_iter()
+                .map(|justified| {
+                    self.justified_hypotheses
+                        .register(&justified, PROPOSAL_HISTORY);
+                    justified.into_thesis()
+                })
+                .collect();
         let approved = theses.len();
         // The refusal, kept so the stage itself carries it. A construction
         // that was attempted and refused is not a quiet cycle, and until this
@@ -17236,6 +18275,10 @@ impl Platform {
             }
         };
         let legs = proposal.len();
+        // §9.10: a decision sized while the platform was unsure of it is
+        // handed to active sensing, which prices the cheapest observation
+        // that could tell its worlds apart (R12-AMBIENT-3104).
+        self.decision_uncertainties = decision_uncertainties(&proposal, &theses, &self.predictions);
         self.proposals.push(proposal);
         self.proposals_made += 1;
         // Age the oldest out rather than letting the working set grow with
@@ -17500,9 +18543,26 @@ impl Platform {
         // book that became unacceptable while it sat is exactly what this
         // stage exists to catch.
         let risk_state = self.risk_state();
-        let action = self
-            .monitor
-            .observe(&risk_state, "platform", self.autonomy.level(), now);
+        // Routed before the limits are read (R12-RISK-3022). A routing the
+        // router refuses is not a reason to skip the monitor: the book is
+        // halted, because limits that could not be shown to be evaluated
+        // deterministically are limits nobody may trade against.
+        let action = match self
+            .cost_router
+            .determine("risk monitor limits for the book", self.book_conditions())
+        {
+            Ok(routing) => self.observe_book_under_routing(routing, &risk_state, now),
+            Err(error) => {
+                self.monitor_routing = None;
+                MonitorAction::HaltGlobally {
+                    reason: format!(
+                        "the book's limits could not be routed as a deterministic decision ({}); \
+                         halted rather than evaluated on an unproven path",
+                        error.message()
+                    ),
+                }
+            }
+        };
         self.monitor
             .enforce(&action, self.autonomy.kill_switch_mut(), now);
 
@@ -17842,6 +18902,22 @@ impl Platform {
                         "{} leg {index} was refused before an order existed: {}",
                         proposal.proposal_id.as_str(),
                         error.message()
+                    ));
+                    continue;
+                }
+                // ADR 0200: the leg's hypothesis must be one DECIDE expressed
+                // a justified thesis on. An order's own hypotheses are text,
+                // and validation can only see that they are non-blank; this
+                // is where they are resolved against what REASON actually
+                // justified, before an order exists to refuse.
+                if self.justified_hypotheses.resolve(&leg.hypotheses).is_none() {
+                    refused += 1;
+                    problems.push(format!(
+                        "{} leg {index} was refused before an order existed: its hypotheses {:?} \
+                         name no thesis DECIDE expressed on a justification, so the order would \
+                         stand on the trade alone",
+                        proposal.proposal_id.as_str(),
+                        leg.hypotheses
                     ));
                     continue;
                 }
@@ -18362,6 +19438,19 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // R12-RES-7104: what the same fill errors say about the replays the
+        // strategies at each venue were promoted on. After `score_filled`, so
+        // this cycle's errors are read, and beside `review_sizing` rather than
+        // inside it because that narrows an instrument on the desk and this
+        // narrows a strategy's grant at the centre. It withdraws no venue.
+        let (reviewed, problems) = self.review_replay_divergence(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         // §15.2's third question, after `score_filled` so the twin's per-fill
         // error exists to read. Until this call the fill error was charted per
         // venue and nothing ever asked whether a venue's fills were getting
@@ -18525,6 +19614,80 @@ impl Platform {
         // See `crate::blueprint_objectives` for why a reader that reported
         // only the first number would be worse than no reader.
         outcome = crate::blueprint_objectives::fold(outcome, &self.objectives, now);
+        for problem in self.review_position_mandates() {
+            outcome = outcome.with_problem(problem);
+        }
+        // What each held position is hedged by, owes and is about to have
+        // done to it (R12-ASSET-4068), counted on the stage line every
+        // cycle the book holds anything, so a position nobody has stated
+        // obligations for is a refusal on the record and not an absence.
+        if !self.capital.positions.is_empty() {
+            match self.position_obligations() {
+                Ok(obligations) => {
+                    let count =
+                        |present: fn(&crate::position_register::PositionObligations) -> bool| {
+                            obligations.values().filter(|o| present(o)).count()
+                        };
+                    let hedged = count(|o| {
+                        matches!(
+                            o.hedges(),
+                            qip_financial::position_record::Declared::Present(_)
+                        )
+                    });
+                    let actions = count(|o| {
+                        matches!(
+                            o.corporate_actions(),
+                            qip_financial::position_record::Declared::Present(_)
+                        )
+                    });
+                    let committed = count(|o| {
+                        matches!(
+                            o.commitments(),
+                            qip_financial::position_record::Declared::Present(_)
+                        )
+                    });
+                    let detail = format!(
+                        "{}; of {} held position(s), {hedged} hedged, {actions} with a pending \
+                         corporate action, {committed} with a capital commitment",
+                        outcome.detail,
+                        obligations.len()
+                    );
+                    outcome = StageOutcome { detail, ..outcome };
+                }
+                Err(error) => {
+                    outcome = outcome.with_problem(format!(
+                        "the held positions' hedges, corporate actions and commitments could \
+                         not be stated: {}",
+                        error.message()
+                    ));
+                }
+            }
+            // And each one's valuation confidence, horizon and expected
+            // liquidity (R12-ASSET-4067): counted on the stage line, and
+            // every position whose record refuses is named as a problem,
+            // because a holding whose horizon or mark nobody can state is
+            // the platform not knowing why it holds it.
+            let held: Vec<String> = self.capital.positions.keys().cloned().collect();
+            let mut recorded = 0usize;
+            for object in &held {
+                match self.position_holding(object, now) {
+                    Ok(_) => recorded += 1,
+                    Err(error) => {
+                        outcome = outcome.with_problem(format!(
+                            "{object}'s holding record cannot be stated: {}",
+                            error.message()
+                        ));
+                    }
+                }
+            }
+            let detail = format!(
+                "{}; {recorded} of {} held position(s) carry valuation confidence, horizon and \
+                 expected liquidity",
+                outcome.detail,
+                held.len()
+            );
+            outcome = StageOutcome { detail, ..outcome };
+        }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
         }
@@ -20554,7 +21717,7 @@ impl Platform {
                     error.message()
                 ));
             }
-            let moved = self.capital.apply_fill(
+            let moved = self.book_desk_fill(
                 object_id.as_str(),
                 side,
                 fill.price,
@@ -20637,6 +21800,7 @@ impl Platform {
                         side: book_side(side),
                         decided_at: now,
                         unfilled: shortfall.map_or(Decimal::ZERO, |(_, remaining)| remaining),
+                        cell: None,
                     }),
                     None => self.capture_problems.push(format!(
                         "filled order {} will not be priced for its size: its fills do not \
@@ -20908,6 +22072,32 @@ impl Platform {
         self.last_correlation.clone()
     }
 
+    /// The cycle a policy payload issued now was decided by, for the
+    /// payload's `decision` field (ADR 0129 decision 5, R12-OBS-7018,
+    /// R12-OBS-9154).
+    ///
+    /// The last cycle that *ran*: its number and the correlation id its
+    /// report carried, which is the id `POST /cycle` returned to the caller.
+    /// A cycle refused for running before the last one (`run_cycle`'s
+    /// time-travel refusal) mints a correlation id for its report and stores
+    /// none, so a payload issued after it is attributed to the cycle whose
+    /// state it actually carries rather than to one that moved nothing.
+    ///
+    /// `None` before the first cycle — a payload then ships with no origin
+    /// rather than one attributed to a cycle that never ran. Built without
+    /// [`qip_contracts::policy::DecisionOrigin::new`]'s checks because both
+    /// hold by construction here: `last_correlation` is set only after the
+    /// counter has been incremented, and the id generator never returns an
+    /// empty id.
+    pub fn decision_origin(&self) -> Option<qip_contracts::policy::DecisionOrigin> {
+        self.last_correlation
+            .clone()
+            .map(|correlation| qip_contracts::policy::DecisionOrigin {
+                cycle: self.cycle,
+                correlation,
+            })
+    }
+
     // --- the data finder, and the catalogue it feeds ------------------------
 
     /// The source registry: what this deployment has decided to collect.
@@ -20996,11 +22186,18 @@ impl Platform {
             // being believed, so every belief and hypothesis read from the
             // graph afterwards is formed without it. A retirement is not a
             // finding against the facts — a feed retired for cost or
-            // staleness said nothing false — so it leaves them standing.
+            // staleness said nothing false — so it leaves them standing, but
+            // held less firmly: a stale source's beliefs are downweighted
+            // rather than kept at the confidence a fresh one earned.
             if transition.action == LifecycleAction::Quarantined {
                 let source = transition.source_id.clone();
                 self.world
                     .update(|world| world.quarantine_source(&source, now));
+            }
+            if transition.action == LifecycleAction::Retired {
+                let source = transition.source_id.clone();
+                self.world
+                    .update(|world| world.mark_source_stale(&source, now))?;
             }
             if matches!(
                 transition.action,
@@ -22330,7 +23527,12 @@ impl Platform {
             let priced = self
                 .counterfactual_bars(&path.object_id)
                 .and_then(|bars| TwinMarket::new(bars, cost_model, COUNTERFACTUAL_IMPACT_WINDOW))
-                .and_then(|mut market| self.evaluate_alternatives(&order_id, &mut market));
+                .and_then(|mut market| match &path.cell {
+                    // A cell's fill has no placement in the capture; it is
+                    // priced from the path (R12-RES-7104).
+                    Some(origin) => self.evaluate_cell_fill(&path, origin, &mut market),
+                    None => self.evaluate_alternatives(&order_id, &mut market),
+                });
             // Priced or refused, the path leaves the queue, as a declined
             // path does.
             self.filled.remove(index);
@@ -22420,6 +23622,80 @@ impl Platform {
                     // `larger_size_finding`'s type, which carries no
                     // multiplier.
                     let larger_favoured = beats_trade("larger_size");
+                    // Predicted against actual, as the replay's residuals
+                    // (R12-TICK-10103): slippage from the arrival price the
+                    // order manager recorded, and the outcome of the trade
+                    // held to the twin's horizon. Statistics: every money
+                    // figure crosses to f64 here, at the residuals, and is
+                    // never booked.
+                    let simulated_entry = trade
+                        .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
+                        .map(|price| price.as_f64_for_statistics());
+                    let order = self.orders.order(&order_id);
+                    let arrival = order
+                        .map(|order| order.arrival_price)
+                        .filter(|price| price.is_positive())
+                        .map(|price| price.to_f64());
+                    let fill = path.fill_price.to_f64();
+                    let realised_slippage_bps =
+                        arrival.and_then(|arrival| signed_bps(fill, arrival, path.side));
+                    let predicted_slippage_bps = arrival
+                        .zip(simulated_entry)
+                        .and_then(|(arrival, entry)| signed_bps(entry, arrival, path.side));
+                    // The outcome each side expects per unit, marked at the
+                    // price that printed at the twin's exit instant and net
+                    // of what each paid to get in: the twin's entry and its
+                    // cost model's entry charge, against the venue's fills
+                    // and the costs the venue actually charged. The exit leg
+                    // is left out of both because the position has not been
+                    // exited and the venue has charged nothing for it. Both
+                    // ride the same printed tape, so the residual is what the
+                    // twin's fill and cost models got wrong about the money
+                    // the trade made, and is zero only when both were right.
+                    // An earlier version marked both returns at one close
+                    // from two entries, which is the entry error rescaled and
+                    // reads zero whatever the costs did.
+                    let outcomes = trade
+                        .filter(|entry| entry.counterfactual_outcome.fill().traded())
+                        .zip(order)
+                        .and_then(|(entry, order)| {
+                            let outcome = &entry.counterfactual_outcome;
+                            let (twin_quantity, twin_entry, exit) = match outcome.fill() {
+                                SimulatedFill::Filled {
+                                    quantity,
+                                    entry_price,
+                                    exit_price,
+                                } => (
+                                    quantity.as_f64_for_statistics(),
+                                    entry_price.to_f64(),
+                                    exit_price.to_f64(),
+                                ),
+                                _ => return None,
+                            };
+                            let filled: f64 =
+                                order.fills.iter().map(|fill| fill.quantity.to_f64()).sum();
+                            let paid: f64 =
+                                order.fills.iter().map(|fill| fill.costs.to_f64()).sum();
+                            if twin_quantity <= 0.0 || filled <= 0.0 || fill <= 0.0 {
+                                return None;
+                            }
+                            let direction = match path.side {
+                                BookSide::Ask => 1.0,
+                                BookSide::Bid => -1.0,
+                            };
+                            let twin_per_unit = (exit - twin_entry) * direction
+                                - outcome.simulated_entry_costs().as_f64_for_statistics()
+                                    / twin_quantity;
+                            let realised_per_unit = (exit - fill) * direction - paid / filled;
+                            let predicted = twin_per_unit / fill * 10_000.0;
+                            let realised = realised_per_unit / fill * 10_000.0;
+                            (predicted.is_finite() && realised.is_finite())
+                                .then_some((predicted, realised))
+                        });
+                    let predicted_outcome_bps = outcomes.map(|(predicted, _)| predicted);
+                    let realised_outcome_bps = outcomes.map(|(_, realised)| realised);
+                    let outcome_error_bps =
+                        outcomes.map(|(predicted, realised)| predicted - realised);
                     let trade_error_bps = trade
                         .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
                         .and_then(|simulated| {
@@ -22450,6 +23726,11 @@ impl Platform {
                         larger_favoured,
                         trade_error_bps,
                         unfilled: path.unfilled,
+                        realised_slippage_bps,
+                        predicted_slippage_bps,
+                        predicted_outcome_bps,
+                        realised_outcome_bps,
+                        outcome_error_bps,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
                         let excess = self.fill_scores.len() - DECLINED_HISTORY;
@@ -22512,6 +23793,174 @@ impl Platform {
     #[doc(hidden)]
     pub fn fill_calibration_mut(&mut self) -> &mut qip_twin::calibration::FillCalibration {
         &mut self.fill_calibration
+    }
+
+    /// The strategies held to a narrowed grant because the twin diverged at
+    /// their venue, and the measurement behind each (R12-RES-7104).
+    pub fn replay_divergence_holds(
+        &self,
+    ) -> &BTreeMap<StrategyId, crate::replay_divergence::DivergenceHold> {
+        &self.replay_divergence_holds
+    }
+
+    /// The fraction of its allocation a grant to `strategy` is held to by the
+    /// twin's divergence at its venue: one where nothing holds it, and
+    /// [`crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER`] where a hold
+    /// stands. Never above one.
+    pub fn replay_divergence_multiplier(&self, strategy: &StrategyId) -> Decimal {
+        self.replay_divergence_holds
+            .get(strategy)
+            .map_or(Decimal::ONE, |hold| hold.multiplier)
+    }
+
+    /// `decision` further narrowed for `strategy`'s replay-divergence hold,
+    /// named as its own contraction so the grant record says why it is
+    /// smaller. Unchanged where no hold stands.
+    fn narrow_for_replay_divergence(
+        &self,
+        strategy: &StrategyId,
+        mut decision: crate::confidence::ConfidenceDecision,
+    ) -> Result<crate::confidence::ConfidenceDecision> {
+        let Some(hold) = self.replay_divergence_holds.get(strategy) else {
+            return Ok(decision);
+        };
+        decision.multiplier = decision
+            .multiplier
+            .checked_mul(hold.multiplier)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "narrowing {strategy}'s grant by its replay-divergence hold overflows"
+                ))
+            })?;
+        decision.contractions.push(crate::confidence::Contraction {
+            trigger: crate::confidence::Trigger::ReplayDivergence,
+            subject: Some(strategy.as_str().to_string()),
+            multiplier: hold.multiplier,
+            reason: format!(
+                "the twin's replay of fills at {} diverged from the venue by a mean {:.1} bps \
+                 over {} fills, past the {} bps threshold, at {}; {strategy}'s grant is held to \
+                 {} until it is promoted again",
+                hold.venue,
+                hold.mean_abs_error_bps,
+                hold.sample,
+                crate::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS,
+                hold.raised_at.to_rfc3339(),
+                hold.multiplier
+            ),
+        });
+        Ok(decision)
+    }
+
+    /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
+    /// has answered, then hold every registered strategy whose venue the
+    /// twin now diverges from. Each change is journaled before the state
+    /// moves, so a hold the platform acts on is a hold the log carries.
+    ///
+    /// Releases first: a strategy re-promoted since its hold is measured on
+    /// the fills after its re-promotion in the same pass, so a twin still
+    /// diverging re-holds it on new evidence rather than on the evidence the
+    /// re-promotion answered.
+    fn review_replay_divergence(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        use crate::replay_divergence::{
+            DivergenceHold, REPLAY_DIVERGENCE_ORIGIN, ReplayDivergenceEntry, measure,
+            repromotion_after,
+        };
+        let mut problems = Vec::new();
+        let mut restored = 0usize;
+        let mut reduced = 0usize;
+
+        let held: Vec<DivergenceHold> = self.replay_divergence_holds.values().cloned().collect();
+        for hold in held {
+            let Some(repromotion) = repromotion_after(
+                self.central.factory().ledger().history(&hold.strategy),
+                hold.raised_at,
+            )
+            .cloned() else {
+                continue;
+            };
+            let entry = ReplayDivergenceEntry::restored(&hold, &repromotion, now);
+            if let Err(error) = self.journal_record(entry, REPLAY_DIVERGENCE_ORIGIN, now) {
+                problems.push(format!(
+                    "{}'s replay-divergence hold was answered by a re-promotion and stays in \
+                     force because the release could not be journaled: {}",
+                    hold.strategy,
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.remove(&hold.strategy);
+            self.replay_divergence_windows
+                .insert(hold.strategy.clone(), repromotion.promotion.at);
+            restored += 1;
+        }
+
+        let dependents: Vec<(StrategyId, String)> = self
+            .central
+            .factory()
+            .candidates()
+            .filter(|candidate| {
+                !self
+                    .replay_divergence_holds
+                    .contains_key(candidate.strategy())
+                    && self.central.factory().stage_of(candidate.strategy())
+                        != qip_contracts::gate::GateStage::Retired
+            })
+            .map(|candidate| {
+                (
+                    candidate.strategy().clone(),
+                    candidate.venue().as_str().to_string(),
+                )
+            })
+            .collect();
+        for (strategy, venue) in dependents {
+            let since = self.replay_divergence_windows.get(&strategy).copied();
+            let divergence = match measure(&self.fill_scores, &venue, since) {
+                Ok(Some(divergence)) if divergence.exceeds_threshold() => divergence,
+                Ok(_) => continue,
+                Err(error) => {
+                    problems.push(format!("replay divergence: {}", error.message()));
+                    continue;
+                }
+            };
+            let hold = DivergenceHold {
+                strategy: strategy.clone(),
+                venue: venue.clone(),
+                raised_at: now,
+                sample: divergence.sample,
+                mean_abs_error_bps: divergence.mean_abs_error_bps,
+                multiplier: crate::replay_divergence::REPLAY_DIVERGENCE_MULTIPLIER,
+                calibration_observations: self
+                    .fill_calibration
+                    .venue(&venue)
+                    .map_or(0, |calibration| calibration.observations),
+            };
+            if let Err(error) = self.journal_record(
+                ReplayDivergenceEntry::reduced(&hold),
+                REPLAY_DIVERGENCE_ORIGIN,
+                now,
+            ) {
+                problems.push(format!(
+                    "{strategy} could not be held for the twin's divergence at {venue} because \
+                     the hold could not be journaled: {}",
+                    error.message()
+                ));
+                continue;
+            }
+            self.replay_divergence_holds.insert(strategy, hold);
+            reduced += 1;
+        }
+
+        if reduced == 0 && restored == 0 && self.replay_divergence_holds.is_empty() {
+            return (None, problems);
+        }
+        (
+            Some(format!(
+                "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
+                 re-promotion, {} held",
+                self.replay_divergence_holds.len()
+            )),
+            problems,
+        )
     }
 
     /// The twin's per-venue fill calibration, as the scored fills have moved
@@ -24166,6 +25615,8 @@ fn gate_of(refusal: &RefusalReason) -> String {
         RefusalReason::VenueUnavailable { .. } => "venue-availability",
         RefusalReason::RiskRejected { .. } => "pre-trade-risk",
         RefusalReason::VenueRejected { .. } => "venue",
+        // The edge charts the same pattern under `conduct_spoofing`.
+        RefusalReason::Conduct { .. } => "conduct-spoofing",
     }
     .to_string()
 }
@@ -24216,6 +25667,22 @@ fn fill_error_bps(simulated: Simulated<Decimal>, actual: Decimal, side: BookSide
         BookSide::Ask => raw,
         // A sell against the bid: a *dearer* simulated sell flatters, so the
         // sign is flipped to keep "negative means flattering".
+        BookSide::Bid => -raw,
+    };
+    signed.is_finite().then_some(signed)
+}
+
+/// `price` against `reference` in basis points on the side taken, positive
+/// meaning worse for the trader: a buy (recorded against the ask) paying
+/// more, a sell (against the bid) receiving less. `None` for a reference
+/// that is not positive or a result that is not finite.
+fn signed_bps(price: f64, reference: f64, side: BookSide) -> Option<f64> {
+    if reference.is_nan() || reference <= 0.0 {
+        return None;
+    }
+    let raw = (price - reference) / reference * 10_000.0;
+    let signed = match side {
+        BookSide::Ask => raw,
         BookSide::Bid => -raw,
     };
     signed.is_finite().then_some(signed)
@@ -24494,16 +25961,112 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
 /// was a branch beside `thesis_from` that deleting compiled and no cycle
 /// test could notice, because `synthesise` always supplies a supporting item.
 mod justification {
+    use qip_contracts::action::Justification;
+    use qip_core::Duration;
     use qip_core::error::Result;
+    use qip_portfolio_engine::construction::ApprovedThesis;
 
-    /// Proof that a thesis stands on more than its expected profit.
-    #[derive(Debug)]
-    pub(super) struct Justified(());
+    /// A thesis and the proof it stands on more than its expected profit
+    /// (R12-GOV-6127). The queue DECIDE drains holds only these, and the
+    /// fields are private to this module, so a thesis reaches sizing only
+    /// beside a [`Justification`] — which [`Justification::of`] alone makes,
+    /// and only for grounds naming independent evidence. The proof travels
+    /// with the thesis rather than guarding one push site beside it.
+    ///
+    /// The hypothesis's horizon travels the same way (R12-ASSET-4067):
+    /// `ApprovedThesis` carries no horizon, and REASON is the last place the
+    /// hypothesis that states one is in hand.
+    #[derive(Clone, Debug)]
+    pub(super) struct JustifiedThesis {
+        thesis: ApprovedThesis,
+        justification: Justification,
+        horizon: Duration,
+    }
+
+    impl JustifiedThesis {
+        pub(super) fn new(
+            thesis: ApprovedThesis,
+            justification: Justification,
+            horizon: Duration,
+        ) -> Self {
+            Self {
+                thesis,
+                justification,
+                horizon,
+            }
+        }
+
+        pub(super) fn thesis(&self) -> &ApprovedThesis {
+            &self.thesis
+        }
+
+        #[allow(dead_code)] // read by the tests beside the queue
+        pub(super) fn justification(&self) -> &Justification {
+            &self.justification
+        }
+
+        pub(super) fn into_thesis(self) -> ApprovedThesis {
+            self.thesis
+        }
+    }
+
+    /// The justifications DECIDE expressed theses on, by hypothesis id, and
+    /// the order they arrived in so the oldest leaves first at the bound —
+    /// each beside the hypothesis's horizon, which `construct_from` records a
+    /// held position's horizon from (R12-ASSET-4067).
+    #[derive(Clone, Debug, Default)]
+    pub(super) struct JustifiedHypotheses {
+        by_hypothesis: std::collections::BTreeMap<String, (Justification, Duration)>,
+        arrival: std::collections::VecDeque<String>,
+    }
+
+    impl JustifiedHypotheses {
+        pub(super) fn register(&mut self, justified: &JustifiedThesis, bound: usize) {
+            let id = justified.thesis.hypothesis_id.clone();
+            if self
+                .by_hypothesis
+                .insert(
+                    id.clone(),
+                    (justified.justification.clone(), justified.horizon),
+                )
+                .is_none()
+            {
+                self.arrival.push_back(id);
+            }
+            while self.arrival.len() > bound {
+                if let Some(oldest) = self.arrival.pop_front() {
+                    self.by_hypothesis.remove(&oldest);
+                }
+            }
+        }
+
+        /// The justification of the first of `hypotheses` DECIDE expressed a
+        /// thesis on, or `None` when none of them was.
+        pub(super) fn resolve(&self, hypotheses: &[String]) -> Option<&Justification> {
+            hypotheses.iter().find_map(|hypothesis| {
+                self.by_hypothesis
+                    .get(hypothesis)
+                    .map(|(justification, _)| justification)
+            })
+        }
+
+        /// The id and horizon of the first of `hypotheses` DECIDE expressed a
+        /// thesis on, or `None` when none of them was — the same lookup as
+        /// [`Self::resolve`], so a leg's horizon and its justification are
+        /// read off one hypothesis.
+        pub(super) fn horizon(&self, hypotheses: &[String]) -> Option<(String, Duration)> {
+            hypotheses.iter().find_map(|hypothesis| {
+                self.by_hypothesis
+                    .get(hypothesis)
+                    .map(|(_, horizon)| (hypothesis.clone(), *horizon))
+            })
+        }
+    }
 
     pub(super) fn justify_thesis(
         evidence: &qip_reasoning_engine::evidence::EvidenceSet,
-    ) -> Result<Justified> {
-        use qip_contracts::action::{Ground, check_justification};
+    ) -> Result<Justification> {
+        use qip_contracts::action::Ground;
         use qip_reasoning_engine::evidence::Stance;
         let mut grounds = vec![Ground::ExpectedProfit];
         grounds.extend(
@@ -24512,11 +26075,90 @@ mod justification {
                 .into_iter()
                 .map(|item| Ground::Evidence(item.record_id.clone())),
         );
-        check_justification(&grounds)?;
-        Ok(Justified(()))
+        Justification::of(grounds)
     }
 }
-use justification::justify_thesis;
+use justification::{JustifiedThesis, justify_thesis};
+
+/// A test thesis queued as REASON would queue it: beside a justification
+/// naming independent evidence, the only kind [`Justification::of`] makes.
+///
+/// [`Justification::of`]: qip_contracts::action::Justification::of
+#[cfg(test)]
+fn justified(thesis: qip_portfolio_engine::construction::ApprovedThesis) -> JustifiedThesis {
+    use qip_contracts::action::{Ground, Justification};
+    JustifiedThesis::new(
+        thesis,
+        Justification::of(vec![
+            Ground::ExpectedProfit,
+            Ground::Evidence("test-evidence".to_string()),
+        ])
+        .expect("an evidence ground justifies"),
+        // A test thesis's horizon, stated once here so no fixture records a
+        // held position under a horizon nobody wrote down.
+        Duration::from_days(30),
+    )
+}
+
+#[cfg(test)]
+mod capital_grant_tests {
+    //! ADR 0126 decision 3 (R12-CONTRACT-7066): the grant the ledger books
+    //! reads the drawdown stop, reserve and ADV share the envelope states,
+    //! and writes them only for an envelope that states none.
+
+    use super::*;
+    use qip_contracts::DrawdownBounds;
+    use qip_contracts::signal::StrategyId;
+
+    fn envelope() -> qip_contracts::CapitalEnvelope {
+        qip_contracts::CapitalEnvelope::new(
+            StrategyId::new("alpha"),
+            "london-1",
+            Decimal::from_int(1_000_000),
+            Decimal::from_int(100_000),
+            Decimal::from_int(20_000),
+            vec![VenueId::new("XLON")],
+            Timestamp::from_secs(1_760_000_000),
+            Timestamp::from_secs(1_760_003_600),
+            "alice",
+            "",
+        )
+        .expect("a valid envelope")
+    }
+
+    #[test]
+    fn the_funded_grant_reads_the_envelopes_drawdown_block_and_writes_only_what_it_does_not_state()
+    {
+        let venue = VenueId::new("XLON");
+        // Premise: without the block the grant writes the loss limit as the
+        // stop (200 bp of the capital), no reserve and the whole ADV, so the
+        // three readings below differ from what is written.
+        let written = capital_grant_of(&envelope(), &venue, "europe-west2".to_string())
+            .expect("a grant from an unblocked envelope");
+        assert_eq!(written.max_drawdown_bp, 200);
+        assert_eq!(written.liquidity_reserve, Decimal::ZERO);
+        assert_eq!(written.max_adv_share_bp, qip_contracts::validated::MAX_BP);
+
+        let blocked = envelope()
+            .with_drawdown(
+                DrawdownBounds::bounded(
+                    Decimal::from_int(10_000),
+                    Some(Decimal::from_int(5_000)),
+                    Some(2_500),
+                )
+                .expect("valid bounds"),
+            )
+            .expect("a stop under the loss limit");
+        let read = capital_grant_of(&blocked, &venue, "europe-west2".to_string())
+            .expect("a grant from a blocked envelope");
+        assert_eq!(
+            read.max_drawdown_bp, 100,
+            "the stop was not read from the block"
+        );
+        assert_eq!(read.liquidity_reserve, Decimal::from_int(5_000));
+        assert_eq!(read.max_adv_share_bp, 2_500);
+    }
+}
 
 #[cfg(test)]
 mod decide_tests {
@@ -24708,6 +26350,80 @@ mod decide_tests {
         .expect("the platform assembles")
     }
 
+    /// R12-WORLD-9024: a tactical forecast past its expiry is not used and
+    /// its thesis is not sized; one part-way through its life narrows the
+    /// instrument's bound by the share left (ADR 0125 decision 4). The
+    /// fresh run is the premise that AAPL is sized at all.
+    ///
+    /// Mutations: drop the expiry veto in `sizeable_theses` (the stale run
+    /// sizes AAPL and the leg assertion fails); return no `Err` for an
+    /// expired slot in `LatticeStage::tactical_staleness` (the veto then
+    /// comes from the no-life-left guard, and the expiry-specific refusal the
+    /// test pins is missing); make the cap multiply a no-op while keeping its
+    /// note (the strict size assertion fails).
+    #[test]
+    fn an_expired_tactical_forecast_vetoes_its_thesis_and_an_ageing_one_narrows_the_bound() {
+        use qip_world_model::lattice::LatticeHorizon;
+        let now = Timestamp::from_secs(1_760_000_100);
+        let run = |slot: Option<(Timestamp, Timestamp)>| {
+            let mut platform = small_book_platform();
+            feed_history(&mut platform, "AAPL", 30);
+            feed_history(&mut platform, "MSFT", 30);
+            platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+            platform
+                .pending_theses
+                .push(justified(thesis("MSFT", -0.4)));
+            if let Some((issued, expires)) = slot {
+                platform
+                    .lattice
+                    .set_slot("AAPL", LatticeHorizon::HoursDays, issued, expires);
+            }
+            let decided = platform.stage_decide(now);
+            let aapl = platform.proposals.last().and_then(|p| {
+                p.legs
+                    .iter()
+                    .find(|leg| leg.object_id.as_str() == "AAPL")
+                    .map(|leg| leg.quantity.abs())
+            });
+            (decided, aapl)
+        };
+
+        let (_, fresh) = run(None);
+        let fresh = fresh.expect("premise: with no lattice slot AAPL is sized");
+
+        let (decided, stale) = run(Some((
+            now.saturating_sub(Duration::from_days(2)),
+            now.saturating_sub(Duration::from_days(1)),
+        )));
+        assert!(
+            stale.is_none(),
+            "an expired forecast's thesis was sized: {stale:?}"
+        );
+        let said = format!("{} {:?}", decided.detail, decided.problems);
+        assert!(
+            said.contains("AAPL: the forecast lattice's hours_days forecast expired"),
+            "{said}"
+        );
+
+        let (decided, ageing) = run(Some((
+            now.saturating_sub(Duration::from_secs(990)),
+            now.saturating_add(Duration::from_secs(10)),
+        )));
+        let said = format!("{} {:?}", decided.detail, decided.problems);
+        assert!(
+            said.contains("AAPL: its tactical forecasts have 0.01 of their life left"),
+            "{said}"
+        );
+        // A hundredth of the bound binds whatever the optimiser wanted, so
+        // the size must fall, strictly: a cap noted and not applied leaves
+        // it where the fresh run put it.
+        let ageing = ageing.expect("an ageing forecast still sizes its thesis");
+        assert!(
+            ageing < fresh,
+            "sizing did not contract on staleness: {ageing} vs fresh {fresh}"
+        );
+    }
+
     #[test]
     fn a_sized_leg_is_released_as_whole_lots_and_the_installed_gate_admits_it() {
         // The optimiser sizes a leg as notional over price, a fraction; the
@@ -24719,8 +26435,10 @@ mod decide_tests {
         let mut platform = gridded_small_book_platform(lot);
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -24790,6 +26508,73 @@ mod decide_tests {
                 .contains(&format!("{} sized down to whole lots", off_grid.len())),
             "the stage summary does not say how many legs were expressed at the lot: {}",
             outcome.detail
+        );
+    }
+
+    /// R12-RISK-3022: every hard-limit evaluation the kernel makes is taken
+    /// under a deterministic routing. The pre-trade check was; the monitor's
+    /// pass — which engages the kill switch and gates sign-off and release —
+    /// was evaluated with no routing at all. Now ACT obtains one from
+    /// `Router::determine` and hands it to `observe_book_under_routing`, the only
+    /// production caller of `RiskMonitor::observe`.
+    ///
+    /// Mutation: call the monitor directly in `stage_act_orders`, bypassing
+    /// `determine` — the routing is absent after the cycle and the source
+    /// scan finds a second call.
+    #[test]
+    fn every_limit_evaluation_takes_a_deterministic_routing_witness() {
+        let mut platform = platform();
+        assert!(
+            platform.monitor_routing().is_none(),
+            "premise: nothing has been evaluated yet"
+        );
+        let report = platform.run_cycle(Timestamp::from_secs(1_760_000_100));
+        assert!(
+            report.stage(Stage::Act).is_some(),
+            "premise: ACT ran, so the monitor ran"
+        );
+        let routing = platform
+            .monitor_routing()
+            .expect("the monitor's pass was not routed as a deterministic decision");
+        assert!(
+            routing
+                .rationale()
+                .contains("risk monitor limits for the book"),
+            "{}",
+            routing.rationale()
+        );
+
+        // Structurally, not only on this cycle: the production half of this
+        // file evaluates the monitor at exactly one place, inside the function
+        // that demands the routing. The production half ends at the first
+        // test *module*, not the first `#[cfg(test)]` attribute (production
+        // items carry those too). A call is any `.observe(` whose receiver
+        // ends in `monitor`, whatever the argument names. The needles are
+        // assembled so this test's own text is not a match.
+        let source = include_str!("platform.rs");
+        let boundary = ["\n#[cfg(test)]", "\nmod "].concat();
+        let production = &source[..source.find(&boundary).expect("the file has a test module")];
+        let call = [".", "observe("].concat();
+        let monitor_calls: Vec<usize> = production
+            .match_indices(&call)
+            .map(|(at, _)| at)
+            .filter(|&at| production[..at].trim_end().ends_with("monitor"))
+            .collect();
+        assert_eq!(
+            monitor_calls.len(),
+            1,
+            "the monitor is observed at {} production sites, not one",
+            monitor_calls.len()
+        );
+        let wrapper = production
+            .find("fn observe_book_under_routing(")
+            .expect("premise: the routed wrapper exists");
+        let next_fn = production[wrapper + 1..]
+            .find("\n    fn ")
+            .map_or(production.len(), |offset| wrapper + 1 + offset);
+        assert!(
+            (wrapper..next_fn).contains(&monitor_calls[0]),
+            "the monitor's one evaluation sits outside the routed wrapper"
         );
     }
 
@@ -25925,8 +27710,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -25995,8 +27782,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         // Not `std::env::temp_dir()`, for the reason
         // `dormancy_boot_log_path` gives.
@@ -26069,8 +27858,10 @@ mod decide_tests {
         let mut platform = over_limit_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         let correlation = CorrelationId::from_string("corr-refused");
@@ -26119,8 +27910,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26143,8 +27936,10 @@ mod decide_tests {
         // proposal id is derived from it and the reservation is keyed by the
         // proposal id.
         platform.cycle += 1;
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
         platform.stage_decide(Timestamp::from_secs(1_760_000_160));
         let second = platform
             .proposals
@@ -26191,8 +27986,8 @@ mod decide_tests {
         let mut placed = small_book_platform();
         feed_history(&mut placed, "AAPL", 30);
         feed_history(&mut placed, "MSFT", 30);
-        placed.pending_theses.push(thesis("AAPL", 0.6));
-        placed.pending_theses.push(thesis("MSFT", -0.4));
+        placed.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        placed.pending_theses.push(justified(thesis("MSFT", -0.4)));
         placed.stage_decide(now);
         let notional = placed
             .proposals
@@ -26216,8 +28011,8 @@ mod decide_tests {
         let mut refused = over_limit_book_platform();
         feed_history(&mut refused, "AAPL", 30);
         feed_history(&mut refused, "MSFT", 30);
-        refused.pending_theses.push(thesis("AAPL", 0.6));
-        refused.pending_theses.push(thesis("MSFT", -0.4));
+        refused.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        refused.pending_theses.push(justified(thesis("MSFT", -0.4)));
         refused.stage_decide(now);
         let sized = refused.proposals.last().expect("a proposal");
         assert!(
@@ -26247,6 +28042,55 @@ mod decide_tests {
     }
 
     #[test]
+    fn a_leg_whose_hypothesis_no_justified_thesis_stood_on_is_refused_before_an_order_exists() {
+        // ADR 0200 (R12-GOV-6127). A desk order's grounds are its
+        // hypotheses, and `Order::validate` can see only that they are
+        // non-blank: an order naming any text was admitted as justified.
+        // ACT now resolves each leg's hypotheses against the theses DECIDE
+        // expressed on a justification, so a proposal whose hypothesis no
+        // justified thesis stood on places nothing.
+        let now = Timestamp::from_secs(1_760_000_100);
+        let correlation = CorrelationId::from_string("corr-justified");
+        let decided = |forget: bool| {
+            let mut platform = small_book_platform();
+            feed_history(&mut platform, "AAPL", 30);
+            feed_history(&mut platform, "MSFT", 30);
+            platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+            platform
+                .pending_theses
+                .push(justified(thesis("MSFT", -0.4)));
+            platform.stage_decide(now);
+            if forget {
+                platform.justified_hypotheses = justification::JustifiedHypotheses::default();
+            }
+            let outcome = platform.stage_act(now, &correlation);
+            (platform, outcome)
+        };
+
+        // Premise: the same proposal, its theses justified, places orders.
+        let (_, released) = decided(false);
+        assert!(
+            released.produced > 0,
+            "the premise failed: nothing was released"
+        );
+
+        let (_, refused) = decided(true);
+        assert_eq!(
+            refused.produced, 0,
+            "a leg whose hypothesis no justified thesis stood on became an order"
+        );
+        assert!(
+            refused
+                .problems
+                .iter()
+                .any(|problem| problem
+                    .contains("name no thesis DECIDE expressed on a justification")),
+            "the refusal is not on the stage's record: {:?}",
+            refused.problems
+        );
+    }
+
+    #[test]
     fn a_released_proposal_is_not_released_a_second_time() {
         // The duplicate-order failure. An approved proposal left in `Approved`
         // is re-offered on every later cycle, so one sizing decision pyramids
@@ -26256,8 +28100,10 @@ mod decide_tests {
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         let correlation = CorrelationId::from_string("corr-twice");
@@ -26284,8 +28130,10 @@ mod decide_tests {
         let mut platform = platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
 
         // The premise: before this change, stage_decide constructed the empty
         // proposal unconditionally — the audit's first-ranked finding. If this
@@ -26313,7 +28161,7 @@ mod decide_tests {
     fn too_little_shared_history_is_a_named_refusal_and_not_a_guessed_covariance() {
         let mut platform = platform();
         feed_history(&mut platform, "AAPL", 5);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
 
         let now = Timestamp::from_secs(1_760_000_100);
         platform.stage_decide(now);
@@ -26366,8 +28214,8 @@ mod decide_tests {
         let mut funded = small_book_platform();
         feed_history(&mut funded, "AAPL", 30);
         feed_history(&mut funded, "MSFT", 30);
-        funded.pending_theses.push(thesis("AAPL", 0.6));
-        funded.pending_theses.push(thesis("MSFT", -0.4));
+        funded.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        funded.pending_theses.push(justified(thesis("MSFT", -0.4)));
         let funded_decide = funded
             .run_cycle(now)
             .stage(Stage::Decide)
@@ -26412,8 +28260,8 @@ mod decide_tests {
         held.reservations
             .reserve("standing-hold", equity, now, Duration::from_hours(24))
             .expect("the whole equity is free to hold");
-        held.pending_theses.push(thesis("AAPL", 0.6));
-        held.pending_theses.push(thesis("MSFT", -0.4));
+        held.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        held.pending_theses.push(justified(thesis("MSFT", -0.4)));
 
         let report = held.run_cycle(now);
         let decide = report.stage(Stage::Decide).expect("DECIDE ran");
@@ -26622,8 +28470,8 @@ mod decide_tests {
         let mut platform = gridded_small_book_platform(Decimal::from_int(1));
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", 0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform.pending_theses.push(justified(thesis("MSFT", 0.4)));
 
         let before = platform.telemetry().metrics.snapshot();
         assert!(
@@ -27856,8 +29704,10 @@ mod central_sizing_tests {
     fn size(platform: &mut Platform, now: Timestamp) -> (Decimal, Decimal) {
         feed_history(platform, "AAPL", 30);
         feed_history(platform, "MSFT", 30);
-        platform.pending_theses.push(thesis("AAPL", 0.6));
-        platform.pending_theses.push(thesis("MSFT", -0.4));
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
         platform.stage_decide(now);
         let proposal = platform.proposals.last().expect("a proposal is recorded");
         (proposal.equity.amount, proposal.traded_notional())
@@ -29945,8 +31795,10 @@ mod unsizeable_thesis_tests {
     /// Push both theses and run DECIDE, returning the stage's own outcome and
     /// the proposal it recorded.
     fn decide(platform: &mut Platform, now: Timestamp) -> (StageOutcome, Proposal) {
-        platform.pending_theses.push(thesis(LIQUID, 0.6));
-        platform.pending_theses.push(thesis(PRIVATE, 0.5));
+        platform.pending_theses.push(justified(thesis(LIQUID, 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis(PRIVATE, 0.5)));
         assert_eq!(
             platform.pending_theses.len(),
             2,
@@ -31465,6 +33317,11 @@ mod counterfactual_trial_seam_tests {
             larger_favoured,
             trade_error_bps: None,
             unfilled: Decimal::ZERO,
+            realised_slippage_bps: None,
+            predicted_slippage_bps: None,
+            predicted_outcome_bps: None,
+            realised_outcome_bps: None,
+            outcome_error_bps: None,
         }
     }
 
@@ -33453,6 +35310,102 @@ mod lattice_journal_tests {
         out
     }
 
+    /// A resolved forecast with two members, the second `drift_err` off.
+    fn resolution(id: &str, outcome: f64, drift_err: f64) -> qip_world_model::lattice::Resolution {
+        use qip_world_model::lattice::LatticeHorizon;
+        let h = LatticeHorizon::HoursDays;
+        let issued = start().saturating_sub(Duration::from_days(10));
+        let due = issued.saturating_add(h.representative());
+        qip_world_model::lattice::Resolution {
+            forecast_id: id.into(),
+            domain: "markets".into(),
+            horizon: h,
+            regime: "r".into(),
+            model_means: BTreeMap::from([
+                ("seeded/martingale".to_string(), 100.0),
+                ("seeded/drift".to_string(), outcome + drift_err),
+            ]),
+            quantiles: [98.0, 100.0, 102.0],
+            p_up: 0.6,
+            reference: 100.0,
+            issued_at: issued,
+            observed_at: due,
+            outcome,
+            resolved_at: due,
+        }
+    }
+
+    /// The bug the first version of this test let through: the set frozen
+    /// on must be the last one whose review the log *kept*, not the one
+    /// computed on the pass whose review it refused. Seeded scores make both
+    /// sets non-empty and different, so an empty-equals-empty pass cannot
+    /// stand in for the property. Mutations: drop `confirm_calibration` after
+    /// a kept review (the frozen set is empty, not the kept one); make
+    /// `refresh_weights` set `last_safe` on refresh (the frozen set is the
+    /// refused one).
+    #[test]
+    fn the_weights_freeze_at_the_last_set_whose_review_the_log_kept() {
+        let config = PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            listed_test_universe(&["AAPL", "MSFT"]),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        platform.observe(calm_history());
+        for i in 0..5 {
+            platform
+                .lattice
+                .calibrator_mut()
+                .score(&resolution(&format!("a{i}"), 101.0, 0.1))
+                .expect("a seeded score");
+        }
+        let (_, problems) = platform.understand_now(start());
+        assert!(
+            problems.iter().all(|p| !p.contains("not journalled")),
+            "{problems:?}"
+        );
+        let kept = platform.lattice().calibrator().weights().clone();
+        assert!(
+            kept.len() >= 2,
+            "premise: the seeded row is weighed: {kept:?}"
+        );
+
+        for i in 0..20 {
+            platform
+                .lattice
+                .calibrator_mut()
+                .score(&resolution(&format!("b{i}"), 110.0, 30.0))
+                .expect("a seeded score");
+        }
+        let dir = std::path::PathBuf::from("/tmp")
+            .join(format!("qip-kernel-lattice-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").expect("an empty log file");
+        platform.event_log = EventLog::inspect(&path).expect("a read-only log");
+        let (_, problems) = platform.understand_now(start().saturating_add(Duration::from_days(1)));
+        assert!(
+            problems.iter().any(|p| p.contains("not journalled")),
+            "premise: {problems:?}"
+        );
+        let refused = platform.lattice().calibrator().weights().clone();
+        assert_ne!(refused, kept, "premise: the refused pass moved the weights");
+
+        let _ = platform.understand_now(start().saturating_add(Duration::from_days(2)));
+        assert!(platform.lattice().calibrator().frozen());
+        assert_eq!(
+            platform.lattice().calibrator().weights(),
+            &kept,
+            "the weights froze on a set whose review the log refused"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_lattice_review_the_log_refused_freezes_the_ensemble_weights_on_the_next_pass() {
         let config = PlatformConfig::default();
@@ -33511,5 +35464,372 @@ mod lattice_journal_tests {
         );
         assert!(platform.lattice().calibrator().frozen());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+#[cfg(test)]
+mod symbolic_contradiction_tests {
+    //! ADR 0212, R12-RES-7106: a symbolic contradiction blocks money
+    //! movement on the default cycle; dissent does not. A unit test because
+    //! the only way to make the shipped rule pack contradict itself is to
+    //! revise it, and the pack the platform holds is private on purpose.
+
+    use super::*;
+    use crate::cycle::Stage;
+    use crate::symbolic_stage::{Feasibility, SymbolicDerivation};
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_reasoning_engine::rules::{Cond, Conflict, Op, Rule, RulePack, Value};
+    use qip_risk::limits::{Limit, LimitKind, LimitSet};
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    /// The tape `tests/valuation_seam.rs` drives: quiet, then a nine
+    /// percent drop on the last bar. Its panel contests the thesis and
+    /// review still approves it, which is the dissent case these tests need.
+    fn tape() -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+        use qip_market::bar::{Bar, Interval};
+        const TAPE: usize = 120;
+        let mut price = 100.0_f64;
+        (0..TAPE)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let drop = if i == TAPE - 1 { -0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + drop;
+                let at = start().saturating_sub(Duration::from_days((TAPE - i) as i64));
+                qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: Decimal::from_f64(open).expect("a price"),
+                    high: Decimal::from_f64(open.max(price) * 1.002).expect("a price"),
+                    low: Decimal::from_f64(open.min(price) * 0.998).expect("a price"),
+                    close: Decimal::from_f64(price).expect("a price"),
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .collect()
+    }
+
+    fn platform() -> Platform {
+        let config = PlatformConfig {
+            initial_equity: Decimal::from_int(1_000_000),
+            review: qip_reasoning_engine::redteam::ReviewPolicy {
+                minimum_surviving_confidence: 0.10,
+                ..qip_reasoning_engine::redteam::ReviewPolicy::default()
+            },
+            ..PlatformConfig::default()
+        };
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string("obj-AAA"),
+                    "AAA",
+                    InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                )
+                .venue("XNYS")
+                .geography("US")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        let limits = LimitSet::new("kernel-test").with(
+            Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
+                .with_rationale("gross exposure is capped at 2x equity"),
+        );
+        Platform::new(config, context, Telemetry::silent(), universe, limits)
+            .expect("the platform assembles")
+    }
+
+    /// The shipped pack plus a revision of two rules that conclude opposite
+    /// values of one fact from the same premise, an approved review. Both
+    /// fire on every approved hypothesis, contested or not, so the pack
+    /// derives `second_reviewer` one way and then refuses the step that
+    /// would set it the other. A premise that `r10-eligible` must hold would
+    /// not do: this tape's thesis is contested, so `r10` never fires, which
+    /// is how the first draft of this test passed a pack it meant to break.
+    fn self_contradicting_pack() -> RulePack {
+        let mut pack = crate::symbolic_stage::rule_pack();
+        let approved = || Cond::Cmp {
+            fact: "status".into(),
+            op: Op::Eq,
+            value: Value::Text("approved".into()),
+        };
+        for (id, value) in [
+            ("r05-revision-asks-a-second-reviewer", true),
+            ("r06-revision-waives-the-second-reviewer", false),
+        ] {
+            pack.rules.push(Rule {
+                id: id.into(),
+                when: approved(),
+                fact: "second_reviewer".into(),
+                value: Value::Bool(value),
+            });
+        }
+        pack
+    }
+
+    /// Every derivation on the log, decoded but not re-verified: a record
+    /// written under a pack this build does not ship is refused by
+    /// `symbolic_stage::replay` by design, and what this test reads is
+    /// whether the trace was kept, not whether it is the build's proof.
+    fn journaled(platform: &Platform) -> Vec<SymbolicDerivation> {
+        platform
+            .replay_journal(
+                &qip_events::EventFilter::new().topic(<SymbolicDerivation as EventBody>::TOPIC),
+            )
+            .expect("the journal replays")
+            .into_iter()
+            .filter(|e| {
+                e.idempotency_key()
+                    .contains(crate::symbolic_stage::IDEMPOTENCY_PREFIX)
+            })
+            .map(|e| e.decode::<SymbolicDerivation>().expect("a derivation").body)
+            .collect()
+    }
+
+    /// R12-RES-7106's check: a contradictory derivation yields infeasible
+    /// with its trace, and blocks money movement — on the default cycle,
+    /// from REASON through ACT, not at an accessor beside it.
+    ///
+    /// The failure prevented: ADR 0150 decision 14 withdrew the blocking
+    /// clause for *dissent*, and with it the platform had no answer at all
+    /// for a derivation whose own rules collide. Such a derivation's verdict
+    /// is `Step::Refused`, which `SymbolicDerivation::veto` reads as "not a
+    /// rule firing", so before ADR 0212 the hypothesis review approved went
+    /// on to be sized and sent with a self-contradicting proof on the log.
+    ///
+    /// The control is the same tape under the shipped pack, which proposes a
+    /// leg and opens a position, so a legless book on the other side is the
+    /// contradiction's doing. Mutations: skip the `symbolic_infeasibility`
+    /// arm in `stage_reason` (the thesis is queued and the position opens);
+    /// record `contradictions` without the pack's words and `alternates` as
+    /// empty in `feasibility_of` (the trace assertions fail).
+    #[test]
+    fn a_contradictory_derivation_yields_infeasible_with_its_trace_and_blocks_money_movement() {
+        let mut control = platform();
+        control.observe(tape());
+        let report = control.run_cycle(start());
+        let reason = report.stage(Stage::Reason).expect("reason ran");
+        assert!(
+            reason.detail.contains("hypothesis approved at confidence "),
+            "premise: review approves this tape's hypothesis: {}",
+            reason.detail
+        );
+        assert!(
+            reason.detail.contains("; sized on conviction"),
+            "premise: under the shipped pack the thesis is queued: {}",
+            reason.detail
+        );
+        assert!(
+            control.proposals().iter().any(|p| !p.legs.is_empty()),
+            "premise: the control proposes a leg"
+        );
+        assert!(
+            !control.positions_at_cost().is_empty(),
+            "premise: the control's cycle opens a position"
+        );
+        let shipped = journaled(&control);
+        assert_eq!(shipped.len(), 1, "premise: one derivation is journaled");
+        assert_eq!(shipped[0].feasibility, Some(Feasibility::Feasible));
+
+        let mut revised = platform();
+        revised.symbolic_rule_pack = self_contradicting_pack();
+        revised.observe(tape());
+        let report = revised.run_cycle(start());
+        let reason = report.stage(Stage::Reason).expect("reason ran");
+
+        // Infeasible, with its trace: the record is on the log, says which
+        // parts collided, keeps the pack's own words and the alternates its
+        // contradiction search offers.
+        let derivations = journaled(&revised);
+        assert_eq!(
+            derivations.len(),
+            1,
+            "the infeasible derivation was not journaled"
+        );
+        let derivation = &derivations[0];
+        assert!(
+            derivation
+                .rules
+                .inputs
+                .iter()
+                .any(|(n, v)| n == "status" && *v == Value::Text("approved".into())),
+            "premise: review approved this hypothesis and the pack was asked about it: {:?}",
+            derivation.rules.inputs
+        );
+        assert_eq!(
+            derivation.veto(),
+            None,
+            "premise: the hard-stop veto does not fire, so the block below is ADR 0212's"
+        );
+        let Some(Feasibility::Infeasible {
+            contradictions,
+            alternates,
+        }) = &derivation.feasibility
+        else {
+            panic!(
+                "a self-contradicting derivation was not marked infeasible: {:?}",
+                derivation.feasibility
+            );
+        };
+        assert!(
+            contradictions.iter().any(|c| c.starts_with("rules: ")
+                && c.contains("r06-revision-waives-the-second-reviewer")
+                && c.contains("the pack contradicts itself")),
+            "the contradiction's own words were not kept: {contradictions:?}"
+        );
+        let tasks = alternates.derived().expect("the revision search ran");
+        assert!(
+            tasks.iter().any(|t| t.conflict
+                == Conflict::RuleAgainstRule {
+                    rule: "r05-revision-asks-a-second-reviewer".into(),
+                    other: "r06-revision-waives-the-second-reviewer".into(),
+                }),
+            "the alternates do not name the two colliding rules: {tasks:?}"
+        );
+        assert!(
+            derivation
+                .violated_assumptions
+                .iter()
+                .any(|v| v.starts_with("rules: ")),
+            "the rule pack's refusal left the trace: {:?}",
+            derivation.violated_assumptions
+        );
+        assert!(
+            reason.detail.contains(", infeasible (1 contradiction(s))"),
+            "the stage detail does not say the derivation is infeasible: {}",
+            reason.detail
+        );
+
+        // Blocks money movement: nothing is queued, no leg is proposed, no
+        // position opens, and the reason is reported in its own words.
+        assert!(
+            reason.detail.contains("hypothesis rejected at confidence "),
+            "an infeasible conclusion was still reported approved: {}",
+            reason.detail
+        );
+        assert!(
+            !reason.detail.contains("; sized on conviction"),
+            "an infeasible thesis was queued for sizing: {}",
+            reason.detail
+        );
+        assert!(
+            reason
+                .problems
+                .iter()
+                .any(|p| p.starts_with("symbolically infeasible, no proposal formed: ")),
+            "the refusal was not reported: {:?}",
+            reason.problems
+        );
+        assert!(revised.pending_theses.is_empty());
+        assert!(
+            revised.proposals().iter().all(|p| p.legs.is_empty()),
+            "an infeasible conclusion produced a proposed leg: {:?}",
+            revised.proposals()
+        );
+        assert!(
+            revised.positions_at_cost().is_empty(),
+            "an infeasible conclusion moved money: {:?}",
+            revised.positions_at_cost()
+        );
+        for platform in [&control, &revised] {
+            assert!(!platform.orders().has_live_fills());
+            assert!(!platform.is_live_capable());
+        }
+    }
+
+    /// ADR 0150 decision 14, preserved by ADR 0212: a merely contested
+    /// thesis is not a contradiction. Its derivation is feasible, it is
+    /// queued, it is sized on a conviction narrower than the confidence it
+    /// was admitted on, and its proposal carries a leg.
+    ///
+    /// The failure prevented: widening "contradiction" to cover an
+    /// unsatisfiable acting problem — which every contested thesis has,
+    /// because `r10-eligible` requires an uncontested panel — would refuse
+    /// every contested thesis review approved and stop the platform learning
+    /// about exactly the questions it was least sure of. Mutation: in
+    /// `contradictions`, list an unsatisfiable acting problem whatever the
+    /// verdict (drop the `eligible &&`) — this thesis is marked infeasible
+    /// and the feasibility assertion fails.
+    #[test]
+    fn a_contested_thesis_is_not_a_contradiction_and_still_forms_a_proposal_sized_small() {
+        let mut platform = platform();
+        platform.observe(tape());
+        let report = platform.run_cycle(start());
+        let reason = report.stage(Stage::Reason).expect("reason ran");
+        assert!(
+            reason.detail.contains(", contested"),
+            "premise: the panel contests this thesis: {}",
+            reason.detail
+        );
+        let derivations = crate::symbolic_stage::replay(&platform).expect("the log replays");
+        assert_eq!(derivations.len(), 1, "premise: one derivation is journaled");
+        assert!(
+            matches!(
+                derivations[0].acting,
+                crate::symbolic_stage::Step::Derived(
+                    qip_reasoning_engine::constraint::Answer::Unsatisfiable { .. }
+                )
+            ),
+            "premise: a contested thesis's acting problem is unsatisfiable, which is the case \
+             a careless reading of 'unsatisfied constraints' would block: {:?}",
+            derivations[0].acting
+        );
+        assert_eq!(
+            derivations[0].feasibility,
+            Some(Feasibility::Feasible),
+            "dissent was marked as a contradiction"
+        );
+        assert!(
+            reason.detail.contains("hypothesis approved at confidence "),
+            "a contested thesis was not approved: {}",
+            reason.detail
+        );
+        let admitted = number_after(&reason.detail, "hypothesis approved at confidence ");
+        let sized_on = number_after(&reason.detail, "; sized on conviction ");
+        assert!(
+            sized_on < admitted - 0.005,
+            "a contested thesis was sized on {sized_on}, not below the {admitted} it was \
+             admitted on: {}",
+            reason.detail
+        );
+        assert!(
+            platform.proposals().iter().any(|p| !p.legs.is_empty()),
+            "a contested thesis formed no proposal: {:?}",
+            platform.proposals()
+        );
+        assert!(
+            reason.problems.iter().all(|p| !p.contains("infeasible")),
+            "{:?}",
+            reason.problems
+        );
+    }
+
+    fn number_after(detail: &str, marker: &str) -> f64 {
+        let (_, rest) = detail
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("no `{marker}` in: {detail}"));
+        let digits: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        digits.parse().expect("a number")
     }
 }

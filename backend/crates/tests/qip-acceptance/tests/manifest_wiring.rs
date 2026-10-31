@@ -834,6 +834,25 @@ fn variables_read_by(
             );
             by_delegation.extend(variables_read_through_link_source());
         }
+        // A binary that starts the Cloud Monitoring push through
+        // `qip_telemetry_drain::cloud_monitoring::start` reads the exporter's
+        // variables through the lookup it hands in, and names none of them
+        // itself (R12-OBS-9143). Without this rule four variables a deployed
+        // binary reads were invisible here, so a deployment could set one
+        // nobody had argued for and this suite would not notice.
+        if source.contains("cloud_monitoring::start(") {
+            by_delegation.extend(
+                [
+                    "QIP_METRICS_EXPORT_PROJECT",
+                    "QIP_METRICS_EXPORT_ENDPOINT",
+                    "QIP_METRICS_EXPORT_LOCATION",
+                    "QIP_METRICS_EXPORT_INTERVAL_SECS",
+                    "QIP_GOOGLE_TLS_ROOTS_PATH",
+                ]
+                .into_iter()
+                .map(str::to_string),
+            );
+        }
         literal.extend(variable_literals(source));
         for (identifier, variables) in constants {
             if mentions_identifier(source, identifier) {
@@ -1413,6 +1432,20 @@ const NO_TERMS_HAVE_BEEN_READ_SO_THERE_IS_NOTHING_TO_ATTEST: &str = "The deep \
      it unset is not a capability withheld from an operator but the absence of \
      a claim nobody is yet entitled to make.";
 
+/// The Cloud Monitoring push, which has no route, grant or policy yet.
+const NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET: &str = "The \
+     central binaries push their registry to Cloud Monitoring only when \
+     QIP_METRICS_EXPORT_PROJECT names a project (R12-OBS-9143). No environment \
+     has the three things a push needs: a route to monitoring.googleapis.com \
+     (an egress-proxy listener, or direct egress with mounted Google roots), \
+     roles/monitoring.metricWriter on the services' accounts, and alert \
+     policies re-pointed at the pushed metric types. Setting the project \
+     without them would start a thread that fails every interval and reads \
+     as a configured exporter. Absent, the binaries say so at start and keep \
+     their registries local, which is where they are today. The entries end \
+     when an environment adds the route and the grant, from a root variable \
+     so an absent value still means off.";
+
 /// The edge node's fabric partition, which has no broker to name.
 const NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE: &str = "The node's spool drains to a \
      `qip-fabricd` partition when one is named, and no environment runs a \
@@ -1475,6 +1508,66 @@ const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain s
      endpoint and one credential.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-api",
+        "QIP_METRICS_EXPORT_PROJECT",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_METRICS_EXPORT_ENDPOINT",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_METRICS_EXPORT_LOCATION",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_METRICS_EXPORT_INTERVAL_SECS",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_METRICS_EXPORT_PROJECT",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_METRICS_EXPORT_ENDPOINT",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_METRICS_EXPORT_LOCATION",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_METRICS_EXPORT_INTERVAL_SECS",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_METRICS_EXPORT_PROJECT",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_METRICS_EXPORT_ENDPOINT",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_METRICS_EXPORT_LOCATION",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_METRICS_EXPORT_INTERVAL_SECS",
+        NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET,
+    ),
     // QIP_ARTEFACT_SIGNER, QIP_TRUST_BUNDLE_PATH, QIP_KMS_KEY_VERSIONS_PATH
     // and QIP_GOOGLE_TLS_ROOTS_PATH on qip-api, and QIP_TRUST_BUNDLE_PATH on
     // qip-edge-node, were argued here until the KMS keys and the committed
@@ -2311,21 +2404,6 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-edge-node",
-        "QIP_PEER_MESH_LISTEN",
-        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
-    ),
-    (
-        "qip-edge-node",
-        "QIP_PEER_MESH_PEERS",
-        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
-    ),
-    (
-        "qip-edge-node",
-        "QIP_PEER_MESH_CLOCK_BOUND_MS",
-        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
-    ),
-    (
-        "qip-edge-node",
         "QIP_SPOOL_WRITER_CPU",
         "Unset, the spool writer is left to the scheduler and its placement \
          is read from the kernel and announced at start \
@@ -2402,15 +2480,6 @@ const NO_PRODUCER_STATES_THE_ACCEPTABLE_BUILDS_YET: &str = "Unset because the \
      `deployment` halt series at all rather than a zero.";
 
 /// The node-to-node coordination mesh.
-const THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: &str = "The peer transport is \
-     mutual TLS off-host (ADR 0112) and plaintext only on loopback in a \
-     `local` deployment (`qip-peer-link/src/wire.rs`, `PeerSettings::validate`). \
-     A deployed node's peers are other execution nodes, and none exists: \
-     `execution_nodes = {}` in every environment, so there is no peer \
-     address to name and no peer workload certificate issued to admit. \
-     Unset, the node announces that it coordinates with no other cell \
-     directly; the clock bound is read only once a mesh is configured.";
-
 #[test]
 fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_be_unset() {
     // The direction nothing checked, and the one whose symptom is silence.

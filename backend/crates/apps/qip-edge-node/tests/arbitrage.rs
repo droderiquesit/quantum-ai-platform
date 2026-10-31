@@ -94,6 +94,8 @@ fn conversion(
         side,
         cost_fraction: dec!("0.0004"),
         costs: None,
+        from_terms: None,
+        to_terms: None,
     }
 }
 
@@ -732,6 +734,70 @@ fn the_installed_desks_graph_places_every_node_in_the_cells_region_and_two_regio
     assert!(
         main.contains(".in_region(&config.region)"),
         "main.rs no longer places the desk's graph in the cell's region"
+    );
+    Ok(())
+}
+
+/// R12-MESH-5053: the whitelist states each end's representation and
+/// settlement stage, and the desk's graph places the node there. ETH bought
+/// as a wrapped, pending holding is not the native, settled ETH the next
+/// leg sells, so the triangle no longer closes: two nodes differing only in
+/// those two fields are distinct, and no edge joins them for free.
+///
+/// Mutation: in `held_as`, return `node` unchanged and the wrapped node
+/// never appears, so the first assertion fails.
+#[test]
+fn a_holding_the_whitelist_states_as_wrapped_and_pending_is_its_own_node_and_breaks_the_free_join()
+-> Result<()> {
+    use qip_contracts::policy::{HoldingRepresentation, HoldingSettlement, HoldingTerms};
+    let plain = qip_edge_node::arbitrage::graph_from_whitelist_in(
+        &triangle(VENUE),
+        &[VenueId::new(VENUE)],
+        Some("eu-west"),
+    )?;
+    let eth = |graph: &qip_arbitrage::ArbitrageGraph| -> Vec<qip_arbitrage::Node> {
+        graph
+            .nodes()
+            .iter()
+            .filter(|n| n.object.as_str() == "ETH")
+            .cloned()
+            .collect()
+    };
+    // Premise: unstated, ETH is one native, settled node both legs share.
+    assert_eq!(eth(&plain).len(), 1, "{:?}", plain.nodes());
+
+    let mut stated = triangle(VENUE);
+    stated.conversions[0].to_terms = Some(HoldingTerms {
+        representation: HoldingRepresentation::Wrapped,
+        settlement: HoldingSettlement::Pending,
+    });
+    let graph = qip_edge_node::arbitrage::graph_from_whitelist_in(
+        &stated,
+        &[VenueId::new(VENUE)],
+        Some("eu-west"),
+    )?;
+    let nodes = eth(&graph);
+    assert_eq!(
+        nodes.len(),
+        2,
+        "the stated holding is not a node of its own: {nodes:?}"
+    );
+    let wrapped = nodes
+        .iter()
+        .find(|n| n.representation == qip_arbitrage::Representation::Wrapped)
+        .expect("a wrapped ETH node");
+    assert_eq!(wrapped.settlement, qip_arbitrage::SettlementStage::Pending);
+    assert_eq!(wrapped.region.as_deref(), Some("eu-west"));
+    let native = nodes
+        .iter()
+        .find(|n| *n != wrapped)
+        .expect("the native ETH node");
+    assert!(
+        !graph.edges().iter().any(|edge| {
+            (edge.from == *wrapped && edge.to == *native)
+                || (edge.from == *native && edge.to == *wrapped)
+        }),
+        "an edge joins the wrapped and the native holding"
     );
     Ok(())
 }

@@ -44,7 +44,9 @@
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
-use qip_deepbrain::artifacts::{MODEL_ARTIFACTS_NAMESPACE, write_model_artifact};
+use qip_deepbrain::artifacts::{
+    MODEL_ARTIFACTS_NAMESPACE, read_model_artifact, write_model_artifact,
+};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
@@ -373,6 +375,29 @@ fn run() -> Result<()> {
         breadth_at,
     )?;
 
+    // The Cloud Monitoring push (ADR 0121, R12-OBS-9143): nothing scrapes a
+    // Cloud Run service, so this process pushes its own registry. Off unless
+    // QIP_METRICS_EXPORT_PROJECT names a project — the default everywhere,
+    // because no route to the API, no metricWriter grant and no re-pointed
+    // alert policy exist yet — and refused here, before anything is served,
+    // when it is named badly. The token is the metadata server's, the same
+    // credential path the KMS signer uses; nothing is minted in-process. The
+    // handle must outlive the serve loop: dropping it stops the thread.
+    let metrics_push = qip_telemetry_drain::cloud_monitoring::start(
+        &|name| {
+            qip_telemetry_drain::cloud_monitoring::reads(name)
+                .then(|| std::env::var(name).ok())
+                .flatten()
+        },
+        &telemetry_for_export,
+        clock.clone(),
+        &|| {
+            Arc::new(qip_storage::gcp::auth::MetadataServerTokens::new(
+                clock.clone(),
+            ))
+        },
+    )?;
+
     // The OpenObserve drain (ADR 0028): absent configuration means this
     // process's telemetry stays where it already is, on /metrics on the health
     // port bound above. Set means a thread starts that POSTs this node's
@@ -440,6 +465,14 @@ fn run() -> Result<()> {
             "  openobserve:      not draining ({} is not set); telemetry stays local to \
              /metrics on the health port",
             qip_deepbrain::openobserve::URL_VARIABLE
+        ),
+    }
+    match &metrics_push {
+        Some((config, _)) => println!("  cloud monitoring: pushing to {}", config.describe()),
+        None => println!(
+            "  cloud monitoring: not pushing ({} is not set); metrics stay on this process's \
+             /metrics",
+            qip_telemetry_drain::cloud_monitoring::PROJECT_VARIABLE
         ),
     }
 
@@ -980,6 +1013,23 @@ fn run() -> Result<()> {
             .storage
             .blobs(qip_deepbrain::tick_desk::OUTPUT_NAMESPACE)?,
     );
+
+    // A restarted desk rescores its restored incumbents by the artifacts
+    // their promotion records name (R12-MODEL-9003). One that cannot be
+    // fetched is printed, and its incumbent blocks promotion by name.
+    evolution = evolution.with_model_artifact_store(model_artifacts.clone());
+    let (restored_artifacts, missing_artifacts) = evolution
+        .restore_model_artifacts(&platform, |digest| {
+            read_model_artifact(model_artifacts.as_ref(), digest)
+        })?;
+    println!(
+        "  model artifacts:  {} restored from the promotion log, {} missing",
+        restored_artifacts.len(),
+        missing_artifacts.len()
+    );
+    for (reference, why) in &missing_artifacts {
+        println!("    {reference}: {why}");
+    }
 
     let run = node::run_with(
         &mut platform,

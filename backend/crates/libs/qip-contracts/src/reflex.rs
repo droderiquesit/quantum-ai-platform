@@ -162,6 +162,13 @@ pub enum Decision {
         equalised: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         grants: Vec<(String, String)>,
+        /// The grounds the order was sent on (R12-GOV-6127, ADR 0200), as
+        /// [`crate::action::Justification::rendered`] writes them: each one
+        /// a reference the cell resolved against its own state at the send
+        /// seam. Empty, and so absent for the reason `release_at` is, on
+        /// entries sealed before the field existed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grounds: Vec<String>,
     },
     /// The venue reported part or all of an order traded, and the cell
     /// booked it.
@@ -217,6 +224,9 @@ pub enum Decision {
         object: String,
         quantity: String,
         simulated: bool,
+        /// The grounds the hedge was sent on, as on [`Self::OrderSent`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grounds: Vec<String>,
     },
     /// A resting order passed its time to live and the cell withdrew what
     /// remained, `withdrawn` being the venue's own answer to the cancel.
@@ -374,6 +384,15 @@ pub enum Decision {
         cycle_id: String,
         orders: Vec<String>,
         net: String,
+        /// The origin desk's own record of the opportunity it acted on
+        /// (R12-CONTRACT-7068, ADR 0154 decision 7): the legs as they went
+        /// out, the size, the edge, the time to live, the region hold, and
+        /// how the cycle was worked and unwound. Absent on entries sealed
+        /// before it existed, and not written back then, so a sealed chain
+        /// still verifies; absent too on a cycle whose edge rounds below one
+        /// basis point, which the token's own contract refuses to describe.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<Box<crate::opportunity_token::OpportunityToken>>,
     },
     /// A leg of an arbitrage cycle went out smaller than the scanner priced
     /// it, because an earlier leg of the same cycle filled short (§32.1).
@@ -643,11 +662,25 @@ pub enum Decision {
     /// order carries no copy: its id is derived from its own `order_id`.
     /// P2 only, because ADR 0100 §5's P1 row does not name this kind and
     /// widening that row is the ADR's to do.
+    ///
+    /// `policy_sequence` and `decision` are the join to the centre (ADR 0129
+    /// decision 5): the sequence of the policy payload the cell had applied
+    /// when it opened the chain, and the central cycle and correlation id
+    /// that payload was issued from. Without them a chain could be walked
+    /// back to its signals and no further, so the correlation id an operator
+    /// got from `POST /cycle` reached no cell record. Each is absent when the
+    /// cell holds no payload, or holds one that names no cycle, and absent
+    /// is off the wire — so a `ChainOpened` sealed before the fields existed
+    /// re-serialises, and re-digests, byte for byte.
     ChainOpened {
         correlation: String,
         order_id: String,
         pass: u64,
         signals: Vec<(String, u64)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy_sequence: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision: Option<crate::policy::DecisionOrigin>,
     },
 }
 

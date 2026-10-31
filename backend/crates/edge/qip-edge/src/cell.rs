@@ -33,10 +33,15 @@ use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
+use qip_contracts::action::{Ground, Justification};
 use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{Capability, DegradationState, Freshness, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
+use qip_contracts::opportunity_token::{
+    ExecutionPolicy, LegSide, OpportunityToken, OpportunityTokenFields, TokenLeg, TokenLineage,
+    UnwindPolicy,
+};
 use qip_contracts::policy::Dispositions;
 use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
@@ -259,6 +264,20 @@ pub enum FeedLossPlaybook {
 /// enumeration.
 pub const GATE_FEED_LOSS_PLAYBOOK: &str = "feed_loss_playbook";
 
+/// The gate a net intent is refused under when it stands on no signal its
+/// contributors raised and no feature revision they reasoned from: an order
+/// whose only reason is the trade itself (R12-GOV-6127). A constant for the
+/// same cardinality reason as every gate here.
+pub const GATE_JUSTIFICATION: &str = "justification";
+
+/// The gate a sale is refused under when it needs borrow the venue has not
+/// stated it can lend, or would open a short whose funding the venue has
+/// not stated (R12-REFLEX-5038). Armed by
+/// [`CellConfig::with_borrow_required`]; recorded at [`Cell::send`], which
+/// has no report to push a refusal onto, so it is a constant for the
+/// cardinality reason every directly recorded gate is.
+pub const GATE_BORROW: &str = "borrow";
+
 /// Five per cent. Venues quoting one instrument normally sit within a few
 /// basis points; a gap twenty times the widest arbitrage the scanner acts
 /// on is a broken or manipulated book, not an opportunity.
@@ -281,6 +300,20 @@ pub const GATE_FILL_DISPERSION: &str = "fill_dispersion";
 /// outside the window its cycle was admitted on is exactly the exposure the
 /// offsets were computed against. Withdrawn is the refusal.
 pub const GATE_RELEASE_LATE: &str = "release_late";
+
+/// The gate an order is refused under when the gateway held it for a later
+/// release and then refused it at that release — today, because the
+/// listing permission the gateway re-admits every release against had
+/// lapsed in between (R12-COVERAGE-5107). A `pub const` for the reason
+/// [`GATE_RELEASE_LATE`] is one: recorded from the same seam, which has no
+/// `WorkReport`.
+///
+/// Distinct from [`GATE_RELEASE_LATE`] because the remedy is: a late
+/// release is a schedule the gateway could not keep, a refused one is a
+/// permission somebody withdrew. Until 2026-10-24 the refusal reached the
+/// cell as nothing at all — `advance_to` returned it as error text, the
+/// pass stopped on it, and the cell's record kept the order open as sent.
+pub const GATE_RELEASE_REFUSED: &str = "release_refused";
 
 /// The gate a halted cell journals under when it holds resting orders and
 /// the gateway it was handed cannot withdraw them (§29.2).
@@ -495,6 +528,13 @@ pub const GATE_VENUE_WITHDRAWAL: &str = "venue_withdrawal";
 /// (R12-CAPITAL-4088). A constant so the `gate` label stays bounded by source.
 pub const GATE_ENVELOPE_LIQUIDITY: &str = "envelope_liquidity";
 
+/// The gate an order is refused under once its owner's realised
+/// peak-to-trough fall within the grant has reached the envelope's drawdown
+/// stop (ADR 0126 decision 2, R12-CAPITAL-4088, R12-CONTRACT-7066). Its own
+/// gate rather than `capital`, because "gave back what it made" and "is
+/// under water" send an operator to different places.
+pub const GATE_ENVELOPE_DRAWDOWN: &str = "envelope_drawdown";
+
 /// The gate an order is refused under when it would carry its envelope past
 /// the leverage the grant allows on the equity it has left after realised
 /// loss (R12-CAPITAL-4088).
@@ -676,6 +716,21 @@ pub struct CellConfig {
     /// envelope it issues, so on the binary path an unbounded envelope is
     /// one the centre did not issue.
     pub exposure_bounds_required: bool,
+    /// Whether a sale beyond what the cell holds long at a venue is refused
+    /// unless the cell holds that venue's stated borrow availability, large
+    /// enough, and a stated funding rate (R12-REFLEX-5038), under
+    /// [`GATE_BORROW`]. Off by default for the reason
+    /// [`Self::exposure_bounds_required`] is: suites minted before the venue
+    /// stated either would stop. `qip-edge-node`'s `assemble` arms it; its
+    /// simulated feed states neither fact, because the simulated exchange
+    /// models no lending, so on that path a sale needing borrow is refused.
+    pub borrow_required: bool,
+    /// Whether an envelope without a drawdown stop is refused (ADR 0126
+    /// decision 2). Off by default for the reason `exposure_bounds_required`
+    /// is; `qip-edge-node`'s `assemble` arms it, and the centre's issuer
+    /// signs a stop into every envelope, so on the binary path an envelope
+    /// without one is one the centre did not issue.
+    pub drawdown_stop_required: bool,
     /// The margin, in basis points of notional, a stated edge must clear on
     /// top of the cell's fixed cost (ADR 0155 §8). `None` — the only default —
     /// means the net-edge gate is not built: the value is a risk matter and no
@@ -738,6 +793,8 @@ impl CellConfig {
             journal_trimmed_on_ship: false,
             venue_health: None,
             exposure_bounds_required: false,
+            borrow_required: false,
+            drawdown_stop_required: false,
             net_edge_margin_bp: None,
             edgeless_signals_refused: false,
         }
@@ -750,6 +807,24 @@ impl CellConfig {
     #[must_use]
     pub fn with_exposure_bounds_required(mut self) -> Self {
         self.exposure_bounds_required = true;
+        self
+    }
+
+    /// Refuse a sale that needs borrow the venue has not stated it can lend,
+    /// or whose short carries no stated funding rate, under [`GATE_BORROW`]
+    /// (R12-REFLEX-5038). The fail-closed reading of an absent fact: a venue
+    /// that said nothing about borrow lends nothing the cell may count on.
+    #[must_use]
+    pub fn with_borrow_required(mut self) -> Self {
+        self.borrow_required = true;
+        self
+    }
+
+    /// Refuse every order against an envelope that carries no drawdown stop
+    /// (ADR 0126 decision 2), under [`GATE_ENVELOPE_DRAWDOWN`].
+    #[must_use]
+    pub fn with_drawdown_stop_required(mut self) -> Self {
+        self.drawdown_stop_required = true;
         self
     }
 
@@ -1287,7 +1362,8 @@ pub struct ExecutionReport {
 
 /// An order the gateway withdrew without sending, because the instant it was
 /// told to release it at was already further in the past than it will send
-/// late (ADR 0084 §4).
+/// late (ADR 0084 §4), or because it refused the order at that release
+/// (`refused`, R12-COVERAGE-5107).
 ///
 /// Not an [`ExecutionReport`]: nothing traded. Not a cancel either — the
 /// venue never saw the order, so there is no remaining quantity for it to
@@ -1304,8 +1380,13 @@ pub struct UnreleasedOrder {
     /// How far past `scheduled` the gateway found itself on the first pass
     /// that could have released the order.
     pub lag: Duration,
-    /// The most lag the gateway will release under; what `lag` exceeded.
+    /// The most lag the gateway will release under; what `lag` exceeded,
+    /// when the order was withdrawn for being late.
     pub tolerance: Duration,
+    /// The gateway's refusal, when it withdrew the order because it refused
+    /// it at release rather than because the release came too late. `None`
+    /// is the late case, which `lag` and `tolerance` describe.
+    pub refused: Option<String>,
 }
 
 /// A fill the venue reported, attributed to the strategies whose intent the
@@ -1383,6 +1464,13 @@ struct Working {
     /// recomputed from a different price. Zero for a cell with no allocation
     /// and for a cycle leg, whose cycle holds once for every leg.
     region_committed: Decimal,
+    /// The grounds `Cell::send` resolved when the order went out, rendered as
+    /// its `OrderSent` records them (ADR 0200). A replacement stands on
+    /// these, and [`Cell::admit_replacement`] refuses to requote an order
+    /// whose recorded grounds name no evidence: a new price with nothing
+    /// behind it but the price is the order R12-GOV-6127 forbids. Set by
+    /// `record_sent`, the one place a `Working` enters the set.
+    grounds: Vec<String>,
 }
 
 /// How many orders the cell will hold open at once.
@@ -1626,6 +1714,11 @@ pub struct Cell {
     /// Cleared at the start of every pass and bounded by the deployed
     /// strategies, one slot each.
     signal_sequences: BTreeMap<String, u64>,
+    /// The (strategy, instrument) lots the applied dispositions slot told
+    /// this pass to unwind and that became intents, so the order carrying
+    /// one names the signed instruction as its ground (R12-GOV-6127). Kept
+    /// here rather than re-read from the slot, which has one reader.
+    instructed_unwinds: BTreeSet<(String, String)>,
     /// Passes of [`Self::work`] so far, counting the halted ones. What a
     /// [`CrossingInterval::Passes`] window is measured in.
     pass: u64,
@@ -1746,10 +1839,17 @@ pub struct Cell {
     /// entry has never been measured, which the clock row reads as unknown
     /// and not as healthy.
     clock_lead: BTreeMap<VenueId, Duration>,
-    /// The venues currently journaled as silent, and the instant each was
-    /// last heard — so the incident is recorded once, not once per pass, and
-    /// the reconciliation entry can name where the blind interval began.
-    feed_silent: BTreeMap<VenueId, Timestamp>,
+    /// The venues currently journaled as silent, the instant each was last
+    /// heard, and the journal sequence of the `FeedSilent` entry — so the
+    /// incident is recorded once, not once per pass, the reconciliation
+    /// entry can name where the blind interval began, and a hedge the
+    /// silence prompts can cite the entry it answers (ADR 0200).
+    feed_silent: BTreeMap<VenueId, (Timestamp, u64)>,
+    /// The cycles being unwound right now, each with the journal sequence of
+    /// the refusal that broke it (ADR 0200). Filled by `break_cycle` for the
+    /// length of one `unwind_cycle` call and emptied after it, so an offset
+    /// can cite the break it answers and nothing else can cite one.
+    unwinding_breaks: BTreeMap<String, u64>,
     /// The silent venues the feed-loss playbook has already acted on, so a
     /// silence is hedged once and a venue heard again can be hedged on its
     /// next silence.
@@ -1757,6 +1857,10 @@ pub struct Cell {
     /// What each venue has done with the orders sent to it, when the
     /// composition root armed the quarantine. `None` records nothing.
     venue_health: Option<HealthTracker>,
+    /// What each input this cell reads does to its size as it ages or is
+    /// lost, validated at assembly so no input goes without one
+    /// (R12-RES-8026). The pass reads the clock row's multiplier from it.
+    degradation: crate::degradation::DegradationEnvelope,
     /// The venues currently journaled as quarantined, and until when — the
     /// same once-only bookkeeping as `feed_silent`.
     quarantined: BTreeMap<VenueId, Timestamp>,
@@ -1814,6 +1918,10 @@ impl Cell {
     /// unexamined, so no input could make assembly refuse.
     pub fn new(config: CellConfig, features: FeatureEngine) -> Result<Self> {
         config.validate()?;
+        // Before anything is built from the configuration: a cell that reads
+        // an input whose loss nobody decided is refused here, by name, not
+        // discovered at the pass where that input first goes quiet.
+        let degradation = crate::degradation::DegradationEnvelope::for_cell(&config)?;
         // Both are built from the validated venue list, so the bucket set
         // and the fill-time history are exactly the venues this cell may
         // reach: neither can be grown by an admission naming a venue the
@@ -1868,6 +1976,7 @@ impl Cell {
             order_sequence: 0,
             chain_epoch: 0,
             signal_sequences: BTreeMap::new(),
+            instructed_unwinds: BTreeSet::new(),
             pass: 0,
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
@@ -1885,8 +1994,10 @@ impl Cell {
             feed_heard: BTreeMap::new(),
             clock_lead: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
+            unwinding_breaks: BTreeMap::new(),
             feed_loss_handled: BTreeSet::new(),
             venue_health,
+            degradation,
             quarantined: BTreeMap::new(),
             unwithdrawable: BTreeSet::new(),
             open_gaps: BTreeMap::new(),
@@ -1898,6 +2009,13 @@ impl Cell {
 
     pub fn config(&self) -> &CellConfig {
         &self.config
+    }
+
+    /// The degradation envelope this cell was assembled with: one row per
+    /// input it reads, each with a freshness bound and its stale and
+    /// unavailable multipliers.
+    pub fn degradation_envelope(&self) -> &crate::degradation::DegradationEnvelope {
+        &self.degradation
     }
 
     /// Get access to the funding state for inspection.
@@ -2645,6 +2763,28 @@ impl Cell {
         &self.liquidity
     }
 
+    /// The fingerprint of the book this cell holds for `object` at `venue`
+    /// ([`qip_orderbook::BookSnapshot::digest`]), or `None` when it tracks no
+    /// book there (R12-TICK-1201).
+    ///
+    /// Read-only, and read from the state every gate prices against rather
+    /// than from a copy, so a replay outside the cell — the tick lake read
+    /// back through `qip_orderbook::replay` — can prove it rebuilt the book
+    /// this cell actually decided from. Without it the only comparison
+    /// available was the lake against the venue's own depth, which cannot
+    /// see a decoder that misread the venue's bytes: the venue and the lake
+    /// would agree and the cell would trade off a third book nobody checked.
+    ///
+    /// Not filtered by staleness, unlike [`CellLiquidity`]'s pricing
+    /// accessors: this answers "what does the cell hold", and a stale book is
+    /// still what it holds. [`qip_orderbook::venue::VenueState::is_stale`]
+    /// says whether it may be priced from.
+    pub fn book_digest(&self, venue: &VenueId, object: &ObjectId) -> Option<String> {
+        self.liquidity
+            .get(venue, object)
+            .map(|state| state.snapshot().book.digest())
+    }
+
     pub fn dropcopy_mut(&mut self) -> &mut DropCopyReconciler {
         &mut self.dropcopy
     }
@@ -3023,13 +3163,8 @@ impl Cell {
                 Freshness::Unavailable
             }
         };
-        if !self.clock_lead.is_empty() {
-            let skewed = self
-                .clock_lead
-                .keys()
-                .filter(|venue| self.clock_skewed(venue))
-                .count();
-            state.observe(Capability::Clock, share(skewed, self.clock_lead.len()));
+        if let Some(clock) = self.clock_row() {
+            state.observe(Capability::Clock, clock);
         }
         if !self.feed_heard.is_empty() {
             let silent = self
@@ -4138,7 +4273,7 @@ impl Cell {
     /// there and how many of its books are still awaiting resynchronisation.
     pub fn feed_heartbeat(&mut self, venue: &VenueId, now: Timestamp) {
         self.feed_heard.insert(venue.clone(), now);
-        let Some(silent_from) = self.feed_silent.remove(venue) else {
+        let Some((silent_from, _)) = self.feed_silent.remove(venue) else {
             return;
         };
         let resting_orders = self
@@ -4192,6 +4327,87 @@ impl Cell {
                 },
                 now,
             );
+        }
+    }
+
+    /// The [`Capability::Clock`] row as this cell measures it: fresh while
+    /// every measured venue is within [`CellConfig::max_clock_skew`], stale
+    /// while some are not, unavailable while all are, and `None` before any
+    /// venue has been measured.
+    ///
+    /// One function for [`Self::narrowing`] and [`Self::clock_uncertainty`]
+    /// so the row the pass sizes against and the row a captured event's
+    /// uncertainty is widened by cannot disagree about the same clock.
+    fn clock_row(&self) -> Option<Freshness> {
+        if self.clock_lead.is_empty() {
+            return None;
+        }
+        let skewed = self
+            .clock_lead
+            .keys()
+            .filter(|venue| self.clock_skewed(venue))
+            .count();
+        Some(if skewed == 0 {
+            Freshness::Fresh
+        } else if skewed < self.clock_lead.len() {
+            Freshness::Stale
+        } else {
+            Freshness::Unavailable
+        })
+    }
+
+    /// The clock uncertainty — a half-width — an event captured from `venue`
+    /// must be stored with, given the `lead` its own venue stamp showed over
+    /// this cell's receive instant (R12-RES-7103).
+    ///
+    /// Never narrower than `lead`, and wider where the cell knows more:
+    ///
+    /// * A venue the cell has measured carries at least the largest lead its
+    ///   last batch showed. Clock error belongs to the pair of clocks, not to
+    ///   one message: a batch whose worst message led by two seconds proves
+    ///   the pair is out by two seconds for the level message beside it too.
+    /// * A venue the cell has **not** measured, while the clock row is stale
+    ///   or unavailable, carries at least the widest lead any measured venue
+    ///   shows. From one venue the cell cannot tell which of the two clocks
+    ///   is wrong; once some venue proves a skew past the tolerance the
+    ///   cell's own clock is a suspect, and an event from a venue nobody
+    ///   measured, stored with only its own lead, is a precision-sensitive
+    ///   label written down as exact beside a clock the cell has already
+    ///   stopped trading against.
+    ///
+    /// A fresh or unobserved row widens nothing for an unmeasured venue: no
+    /// venue has shown a skew, and widening on a number nobody computed is
+    /// the failure [`DegradationState::pauses_cross_venue_ordering`] refuses
+    /// for the pause.
+    ///
+    /// A negative `lead` is refused, not floored: it is a subtraction that
+    /// ran the wrong way. A caller whose stamp trails receipt — which proves
+    /// nothing about the clock — floors it at zero itself, where the reason
+    /// is visible.
+    pub fn clock_uncertainty(&self, venue: &VenueId, lead: Duration) -> Result<Duration> {
+        if lead < Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "a negative clock lead ({} ns) was offered for an event from {}; a lead is the \
+                 venue stamp's distance ahead of receipt, and the caller floors it at zero \
+                 where the stamp trails",
+                lead.as_nanos(),
+                venue.as_str()
+            )));
+        }
+        if let Some(measured) = self.clock_lead.get(venue) {
+            return Ok(lead.max(*measured));
+        }
+        match self.clock_row() {
+            Some(Freshness::Stale | Freshness::Unavailable) => {
+                let widest = self
+                    .clock_lead
+                    .values()
+                    .copied()
+                    .max()
+                    .unwrap_or(Duration::ZERO);
+                Ok(lead.max(widest))
+            }
+            Some(Freshness::Fresh) | None => Ok(lead),
         }
     }
 
@@ -4286,15 +4502,18 @@ impl Cell {
             .map(|(venue, heard)| (venue.clone(), *heard))
             .collect();
         for (venue, last_heard) in silent {
-            self.journal.record(
-                Decision::FeedSilent {
-                    venue: venue.as_str().to_string(),
-                    last_heard,
-                    limit_ms: limit.as_millis(),
-                },
-                now,
-            );
-            self.feed_silent.insert(venue, last_heard);
+            let entry = self
+                .journal
+                .record(
+                    Decision::FeedSilent {
+                        venue: venue.as_str().to_string(),
+                        last_heard,
+                        limit_ms: limit.as_millis(),
+                    },
+                    now,
+                )
+                .sequence;
+            self.feed_silent.insert(venue, (last_heard, entry));
         }
 
         let Some(health) = self.venue_health.as_ref() else {
@@ -4415,6 +4634,21 @@ impl Cell {
             );
             return;
         };
+        // The hedge answers a fact the cell journaled: the venue fell
+        // silent with a position open there. It cites that entry by
+        // sequence, which `Cell::send` resolves against `feed_silent`.
+        let grounds = self
+            .feed_silent
+            .get(blind)
+            .map(|(_, entry)| vec![Ground::Evidence(format!("journal:feed_silent:{entry}"))])
+            .unwrap_or_default();
+        let justification = match Justification::of(grounds) {
+            Ok(justification) => justification,
+            Err(error) => {
+                self.refuse(report, GATE_JUSTIFICATION, error.message(), now);
+                return;
+            }
+        };
         match self.send(
             object_id,
             &target,
@@ -4424,6 +4658,7 @@ impl Cell {
             now,
             now,
             qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            &justification,
             gateway,
         ) {
             Ok((order_id, simulated)) => {
@@ -4434,6 +4669,7 @@ impl Cell {
                         object: object_id.as_str().to_string(),
                         quantity: quantity.to_string(),
                         simulated,
+                        grounds: justification.rendered(),
                     },
                     now,
                 );
@@ -5079,7 +5315,10 @@ impl Cell {
             .sizing_multiplier()
             .checked_mul(self.journal_sizing_multiplier())
             .and_then(|size| {
-                size.checked_mul(narrowing.dependency_row_multiplier(Capability::Clock))
+                size.checked_mul(
+                    self.degradation
+                        .multiplier(Capability::Clock, narrowing.observed(Capability::Clock)),
+                )
             })
             .unwrap_or(Decimal::ZERO);
         // Freshness is a function of `now`, so this is the instant it becomes
@@ -5121,6 +5360,9 @@ impl Cell {
         // evaluation, deliberately: reducing a lot needs no feature vector,
         // and a feature-engine fault that stops every signal should not also
         // stop the one intent that only lowers gross.
+        // Cleared before the disposition path refills it: the lots this
+        // pass was told to unwind are this pass's grounds and no later one's.
+        self.instructed_unwinds.clear();
         let retired = self.disposition_intents(now, &mut report, &mut intents);
 
         let vector = self.features.evaluate(now)?;
@@ -5479,6 +5721,10 @@ impl Cell {
             report
                 .dispositions
                 .push(line(DispositionVerdict::Intent { signed_size, venue }));
+            self.instructed_unwinds.insert((
+                strategy.as_str().to_string(),
+                object_id.as_str().to_string(),
+            ));
             intents.push(intent);
         }
         named
@@ -5771,6 +6017,22 @@ impl Cell {
                 unpriced,
             );
             self.refuse(report, "capital", &reason, now);
+            return Ok(None);
+        }
+
+        // The drawdown stop, before the money limits: a strategy that has
+        // given back its peak by the bound sends nothing more under this
+        // grant, whatever headroom the loss limit still shows.
+        if let Err(reason) = drawdown_verdict(
+            self.config.drawdown_stop_required,
+            &deployed.envelope,
+            self.realised.realised_drawdown(&key),
+        ) {
+            let reason = format!(
+                "strategy {key} under grant {}: {reason}",
+                deployed.envelope.signature()
+            );
+            self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
             return Ok(None);
         }
 
@@ -6130,6 +6392,18 @@ impl Cell {
             .fill_times
             .release_schedule(std::slice::from_ref(&venue));
         let release_at = now.saturating_add(schedule.offset(&venue));
+        // R12-GOV-6127: the net stands on the signals its contributors
+        // raised this pass and the feature revisions each reasoned from. A
+        // net with neither has nothing behind it but the trade, and is
+        // refused here rather than sent.
+        let justification = match Justification::of(self.grounds_of(net_intent)) {
+            Ok(justification) => justification,
+            Err(error) => {
+                self.refuse(report, GATE_JUSTIFICATION, error.message(), now);
+                self.release_region_holds(&net_intent.contributors);
+                return Ok(None);
+            }
+        };
         let (order_id, simulated) = match self.send(
             &net_intent.object_id,
             &venue,
@@ -6139,6 +6413,7 @@ impl Cell {
             now,
             release_at,
             qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            &justification,
             gateway,
         ) {
             Ok(placed) => placed,
@@ -6207,9 +6482,11 @@ impl Cell {
                 },
                 net: net_intent.clone(),
                 region_committed,
+                grounds: Vec::new(),
             },
             schedule.equalised(),
             grants,
+            justification.rendered(),
             now,
         );
         self.open_chain(&order_id, net_intent, now);
@@ -6275,6 +6552,22 @@ impl Cell {
     /// order before (ADR 0084); `now` is the pass instant the refusal, if
     /// any, is journaled at. The two differ by the leg's offset on its
     /// cycle's release schedule and by nothing else.
+    ///
+    /// `justification` is the proof the order stands on more than the
+    /// profit it expects (R12-GOV-6127): a value only
+    /// [`qip_contracts::action::Justification::of`] makes, and only for
+    /// grounds naming independent evidence — the signals and feature
+    /// revisions a net intent was formed from, the books a cycle leg was
+    /// found over, the journaled silence a hedge or the journaled break an
+    /// offset answers. This is the one place a `Placer` is called, so no
+    /// order reaches a venue from this cell without one; a caller that
+    /// cannot name evidence refuses before it gets here, under
+    /// [`GATE_JUSTIFICATION`]. And because a reference is only text, the
+    /// type proves that one was named, not that it is true: so here, before
+    /// the sequence advances, every reference is resolved against what the
+    /// cell itself holds (ADR 0200, [`Self::unresolved_ground`]), and an
+    /// order citing something the cell does not hold is refused and
+    /// journaled under the same gate.
     #[allow(clippy::too_many_arguments)]
     fn send(
         &mut self,
@@ -6286,6 +6579,7 @@ impl Cell {
         now: Timestamp,
         release_at: Timestamp,
         mode: qip_execution_engine::modes::ExecutionMode,
+        justification: &Justification,
         gateway: &mut dyn Placer,
     ) -> Result<(String, bool)> {
         let simulated = gateway.is_simulated();
@@ -6322,6 +6616,25 @@ impl Cell {
             );
             return Err(error);
         }
+        // After the posture checks, which say what may be sent at all, and
+        // before the fence and the risk gate, which say whether this order
+        // may be sent now: an order that names nothing the cell can re-read
+        // has no reason to be asked about either.
+        if let Some(reason) = self.unresolved_ground(justification, now) {
+            self.metrics.refusal(GATE_JUSTIFICATION);
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_JUSTIFICATION.to_string(),
+                    reason: reason.clone(),
+                },
+                now,
+            );
+            return Err(Error::denied(reason));
+        }
+        // Borrow and funding, the cell's own local state (R12-REFLEX-5038):
+        // a sale beyond what the cell holds long here needs borrow the venue
+        // stated it can lend and a funding rate the venue stated it charges.
+        self.borrow_admit(object_id, venue, side, quantity, now)?;
         // The fence, before the risk gate: a process that does not own the
         // venue session has no business asking whether an order is within
         // limits, and the refusal should say which it was.
@@ -6386,8 +6699,49 @@ impl Cell {
         price: Decimal,
         now: Timestamp,
     ) -> Result<()> {
+        self.replacement_grounded(order_id, now)?;
         self.fence_admit(now)?;
         self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// Refuse under [`GATE_JUSTIFICATION`] a replacement for `order_id` when
+    /// the order it replaces went out on no evidence (ADR 0200).
+    ///
+    /// A requote moves an order's price and nothing else: the intention, the
+    /// size the venue acknowledged and the reasons are the original's. So
+    /// the replacement stands on the grounds `Cell::send` resolved when the
+    /// original went out, and those are what is checked — not resolved
+    /// again, because the signals of a pass are cleared with it and a ground
+    /// re-resolved a pass later would refuse every honest requote. An order
+    /// the cell holds no grounds for, or whose grounds were only the profit
+    /// it expected, the price it wanted to move and corroborating features,
+    /// is not repriced: a new price for such an order is a price impact
+    /// with nothing behind it. Journaled and counted here, as at
+    /// [`Self::send`], because a requote has no report to push onto.
+    fn replacement_grounded(&mut self, order_id: &str, now: Timestamp) -> Result<()> {
+        let grounded = self.working.get(order_id).is_some_and(|working| {
+            working.grounds.iter().any(|ground| {
+                ground != "expected_profit"
+                    && ground != "desired_price_impact"
+                    && !ground.starts_with("feature:")
+            })
+        });
+        if grounded {
+            return Ok(());
+        }
+        let reason = format!(
+            "order {order_id} went out on no evidence the cell recorded, so a new price for it \
+             would be justified by the price alone; it is not requoted"
+        );
+        self.metrics.refusal(GATE_JUSTIFICATION);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_JUSTIFICATION.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Refuse under [`crate::fencing::GATE_FENCED`] when an installed fence
@@ -6530,12 +6884,14 @@ impl Cell {
     /// `grants` is what each grant was charged for this order, as
     /// [`Decision::OrderSent`] documents; the caller charged them and passes
     /// the same figures, so the record is the charge and not a second account
-    /// of it.
+    /// of it. `grounds` is the justification [`Self::send`] resolved, rendered,
+    /// so the chain says why the order went and not only that it went.
     fn record_sent(
         &mut self,
         working: Working,
         equalised: bool,
         grants: Vec<(String, String)>,
+        grounds: Vec<String>,
         now: Timestamp,
     ) {
         let order = &working.order;
@@ -6548,11 +6904,237 @@ impl Cell {
                 release_at: Some(order.release_at),
                 equalised,
                 grants,
+                grounds: grounds.clone(),
             },
             now,
         );
         self.metrics.order_placed(&order.venue);
-        self.working.insert(order.order_id.clone(), working);
+        let order_id = order.order_id.clone();
+        self.working
+            .insert(order_id, Working { grounds, ..working });
+    }
+
+    /// The grounds a net intent stands on (R12-GOV-6127): its expected
+    /// return, and — the independent part — the journal sequence of each
+    /// contributor's signal this pass, every feature revision a contributor
+    /// reasoned from, and for a disposition unwind (ADR 0080, which raises no
+    /// signal) the signed policy's instruction to unwind that lot. Each is a
+    /// record a reader can re-read.
+    fn grounds_of(&self, net_intent: &NetIntent) -> Vec<Ground> {
+        let mut grounds = vec![Ground::ExpectedProfit];
+        if let Some(sequence) = self.policy_sequence() {
+            for contributor in &net_intent.contributors {
+                let lot = (
+                    contributor.strategy.as_str().to_string(),
+                    net_intent.object_id.as_str().to_string(),
+                );
+                if self.instructed_unwinds.contains(&lot) {
+                    grounds.push(Ground::Evidence(format!(
+                        "policy:{sequence}:disposition:{}:{}",
+                        lot.0, lot.1
+                    )));
+                }
+            }
+        }
+        for contributor in &net_intent.contributors {
+            if let Some(sequence) = self.signal_sequences.get(contributor.strategy.as_str()) {
+                grounds.push(Ground::Evidence(format!(
+                    "journal:signal_raised:{sequence}"
+                )));
+            }
+            for (feature, revision) in &contributor.inputs {
+                grounds.push(Ground::Evidence(format!("feature:{feature}@{revision}")));
+            }
+        }
+        grounds
+    }
+
+    /// Refuse under [`GATE_BORROW`] a sale of `quantity` of `object_id` at
+    /// `venue` that needs borrow the cell does not hold a statement for, or
+    /// that opens a short with no stated funding rate. Admits every buy, and
+    /// a sale the cell's confirmed long position at the venue covers, and
+    /// everything on a cell not armed with
+    /// [`CellConfig::with_borrow_required`].
+    fn borrow_admit(
+        &mut self,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        // The side is the book the order takes from: a sale hits the bid.
+        if !self.config.borrow_required || side != BookSide::Bid {
+            return Ok(());
+        }
+        let held = self.position(venue, object_id).max(Decimal::ZERO);
+        let needed = quantity - held;
+        if !needed.is_positive() {
+            return Ok(());
+        }
+        let instrument = object_id.as_str();
+        let reason = match (
+            self.funding.borrow_availability(instrument),
+            self.funding.funding_rate(instrument),
+        ) {
+            (None, _) => Some(format!(
+                "a sale of {quantity} {instrument} at {} needs {needed} borrowed and the venue \
+                 has stated no borrow availability; an unstated lender lends nothing",
+                venue.as_str()
+            )),
+            (Some(borrow), _) if borrow.quantity().is_none_or(|lendable| lendable < needed) => {
+                Some(format!(
+                    "a sale of {quantity} {instrument} at {} needs {needed} borrowed and the \
+                     venue states {} available",
+                    venue.as_str(),
+                    borrow
+                        .quantity()
+                        .map_or_else(|| "none".to_string(), |lendable| lendable.to_string())
+                ))
+            }
+            (_, None) => Some(format!(
+                "a sale of {quantity} {instrument} at {} opens a short and the venue has \
+                 stated no funding rate for it, so its carry is unknown",
+                venue.as_str()
+            )),
+            _ => None,
+        };
+        let Some(reason) = reason else {
+            return Ok(());
+        };
+        self.metrics.refusal(GATE_BORROW);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_BORROW.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
+    }
+
+    /// Why `justification` cannot be sent at `now`, or `None` when it can
+    /// (ADR 0200).
+    ///
+    /// Every evidence ground is a reference in one of seven forms. Five
+    /// **anchor** an order — each names a reason that is not the price, held
+    /// by this cell and checked against it:
+    ///
+    /// - `journal:signal_raised:{sequence}` — a signal raised this pass;
+    /// - `policy:{sequence}:disposition:{strategy}:{object}` — the signed
+    ///   policy in force instructed that lot unwound;
+    /// - `journal:feed_silent:{sequence}` — a venue is silent, journaled at
+    ///   that entry, and still silent;
+    /// - `journal:cycle_broken:{sequence}` — a cycle broke at that entry and
+    ///   is being unwound now;
+    /// - `grant:{signature}` — the arbitrage desk this cell holds is funded
+    ///   by the signed grant with that signature, live at `now`: the
+    ///   operator's mandate for the strategy, which is an instruction and
+    ///   not a price.
+    ///
+    /// Two **corroborate** and never carry an order alone:
+    ///
+    /// - `book:{venue}:{object}@{sequence}` — the cell holds that book, it is
+    ///   not stale, and it has applied that venue message. Checked, because a
+    ///   false citation is a false record, but not an anchor: the books a
+    ///   cycle was found over are the price discrepancy itself, and a leg on
+    ///   its books alone is a leg on its expected profit;
+    /// - `feature:{name}@{revision}` — not checked, because the revision
+    ///   belongs to a contributor's feature graph, which the send seam does
+    ///   not hold.
+    ///
+    /// A reference in any other form, or a checked reference naming
+    /// something the cell does not hold, refuses the order: one false ground
+    /// beside a true one is still a false record of why the order went.
+    fn unresolved_ground(&self, justification: &Justification, now: Timestamp) -> Option<String> {
+        let mut anchored = false;
+        for ground in justification.grounds() {
+            let Ground::Evidence(reference) = ground else {
+                continue;
+            };
+            match self.resolves(reference, now) {
+                Resolution::Anchors => anchored = true,
+                Resolution::Corroborates => {}
+                Resolution::Fails => {
+                    return Some(format!(
+                        "the ground {reference} names nothing this cell holds; an order is sent \
+                         on evidence the cell can re-read, or not at all"
+                    ));
+                }
+            }
+        }
+        (!anchored).then(|| {
+            "no ground names a signal, an instruction, a mandate or a journaled failure; \
+             expected profit, the books it was read from and corroborating features do not \
+             carry an order alone"
+                .to_string()
+        })
+    }
+
+    /// What `reference` is worth against this cell's state at `now`. See
+    /// [`Self::unresolved_ground`] for the forms.
+    fn resolves(&self, reference: &str, now: Timestamp) -> Resolution {
+        let sequence_of = |rest: &str| rest.parse::<u64>().ok();
+        let anchor = |held: bool| {
+            if held {
+                Resolution::Anchors
+            } else {
+                Resolution::Fails
+            }
+        };
+        if reference.starts_with("feature:") {
+            Resolution::Corroborates
+        } else if let Some(rest) = reference.strip_prefix("book:") {
+            let held = rest
+                .rsplit_once('@')
+                .and_then(|(key, applied)| Some((key.split_once(':')?, sequence_of(applied)?)))
+                .is_some_and(|((venue, object), applied)| {
+                    self.liquidity
+                        .get(&VenueId::new(venue), &ObjectId::from_string(object))
+                        .is_some_and(|book| {
+                            !book.is_stale()
+                                && book.last_sequence().is_some_and(|last| last >= applied)
+                        })
+                });
+            if held {
+                Resolution::Corroborates
+            } else {
+                Resolution::Fails
+            }
+        } else if let Some(rest) = reference.strip_prefix("journal:signal_raised:") {
+            anchor(
+                sequence_of(rest)
+                    .is_some_and(|entry| self.signal_sequences.values().any(|held| *held == entry)),
+            )
+        } else if let Some(rest) = reference.strip_prefix("journal:feed_silent:") {
+            anchor(
+                sequence_of(rest)
+                    .is_some_and(|entry| self.feed_silent.values().any(|(_, held)| *held == entry)),
+            )
+        } else if let Some(rest) = reference.strip_prefix("journal:cycle_broken:") {
+            anchor(
+                sequence_of(rest)
+                    .is_some_and(|entry| self.unwinding_breaks.values().any(|held| *held == entry)),
+            )
+        } else if let Some(signature) = reference.strip_prefix("grant:") {
+            anchor(self.desk.as_ref().is_some_and(|installed| {
+                let envelope = installed.desk.envelope();
+                envelope.signature() == signature && envelope.is_live(now)
+            }))
+        } else if let Some(rest) = reference.strip_prefix("policy:") {
+            anchor(
+                rest.split_once(":disposition:")
+                    .and_then(|(entry, lot)| Some((sequence_of(entry)?, lot.split_once(':')?)))
+                    .is_some_and(|(entry, (strategy, object))| {
+                        self.policy_sequence() == Some(entry)
+                            && self
+                                .instructed_unwinds
+                                .contains(&(strategy.to_string(), object.to_string()))
+                    }),
+            )
+        } else {
+            Resolution::Fails
+        }
     }
 
     /// Journal the join between the signals a netted order answered and the
@@ -6579,12 +7161,19 @@ impl Cell {
                     .map(|sequence| (strategy.to_string(), *sequence))
             })
             .collect();
+        // The payload applied at this instant, not the newest one seen: a
+        // refused payload never replaced `self.policy`, so a chain is
+        // attributed to the decision state the cell was actually sizing
+        // under (ADR 0129 decision 5).
+        let applied = self.policy.as_ref().map(VerifiedPolicy::payload);
         self.journal.record(
             Decision::ChainOpened {
                 correlation: correlation.as_str().to_string(),
                 order_id: order_id.to_string(),
                 pass: self.pass,
                 signals,
+                policy_sequence: applied.map(|payload| payload.sequence),
+                decision: applied.and_then(|payload| payload.decision.clone()),
             },
             now,
         );
@@ -7188,25 +7777,47 @@ impl Cell {
     /// reconciler does not hold it against the venue, and what the region
     /// committed for it is returned, because nothing was spent.
     fn withdraw_unreleased(&mut self, unreleased: UnreleasedOrder, now: Timestamp) {
-        let reason = format!(
-            "order {} for {} was to be released no earlier than {} and the gateway found that \
-             instant {} ms past on the first pass that could have released it, past the {} ms \
-             it will send late; withdrawn rather than sent late, because a leg arriving outside \
-             the window its cycle was admitted on is the exposure the release schedule exists to \
-             prevent",
-            unreleased.order_id,
-            unreleased.venue.as_str(),
-            unreleased.scheduled.to_rfc3339(),
-            unreleased.lag.as_millis(),
-            unreleased.tolerance.as_millis()
-        );
         // Recorded directly rather than through `Cell::refuse`: there is no
         // `WorkReport` on this path. See [`GATE_RELEASE_LATE`] for the
-        // enumeration this makes a constant necessary for.
-        self.metrics.refusal(GATE_RELEASE_LATE);
+        // enumeration this makes a constant necessary for; each arm passes
+        // its own `pub const`, so the label stays bounded.
+        let (gate, reason) = match &unreleased.refused {
+            None => {
+                self.metrics.refusal(GATE_RELEASE_LATE);
+                (
+                    GATE_RELEASE_LATE,
+                    format!(
+                        "order {} for {} was to be released no earlier than {} and the gateway \
+                         found that instant {} ms past on the first pass that could have \
+                         released it, past the {} ms it will send late; withdrawn rather than \
+                         sent late, because a leg arriving outside the window its cycle was \
+                         admitted on is the exposure the release schedule exists to prevent",
+                        unreleased.order_id,
+                        unreleased.venue.as_str(),
+                        unreleased.scheduled.to_rfc3339(),
+                        unreleased.lag.as_millis(),
+                        unreleased.tolerance.as_millis()
+                    ),
+                )
+            }
+            Some(refusal) => {
+                self.metrics.refusal(GATE_RELEASE_REFUSED);
+                (
+                    GATE_RELEASE_REFUSED,
+                    format!(
+                        "order {} for {} was held for release no earlier than {} and the \
+                         gateway refused it at that release, so it never reached the venue: \
+                         {refusal}",
+                        unreleased.order_id,
+                        unreleased.venue.as_str(),
+                        unreleased.scheduled.to_rfc3339()
+                    ),
+                )
+            }
+        };
         self.journal.record(
             Decision::Refused {
-                gate: GATE_RELEASE_LATE.to_string(),
+                gate: gate.to_string(),
                 reason,
             },
             now,
@@ -8671,9 +9282,18 @@ impl Cell {
         for venue in &venues {
             self.metrics.message_sent(venue, MessageKind::Placement);
         }
+        // Statistics, not money: a ratio of two quantities of one instrument,
+        // crossed to whole basis points for the token's integer field.
+        let priced = opportunity.net_edge.quantity();
+        let edge_bp = priced
+            .is_positive()
+            .then(|| opportunity.net() * Decimal::from_int(10_000) / priced)
+            .and_then(|bp| bp.truncate_dp(0).to_string().parse::<i32>().ok());
         Some(AdmittedCycle {
             cycle_id: cycle_id.to_string(),
             net: opportunity.net(),
+            edge_bp,
+            hold_id: region_hold_id_for_cycle(pass, cycle_id),
             legs: intents,
             notional,
         })
@@ -8871,6 +9491,27 @@ impl Cell {
         });
         if let Some(reason) = latched {
             self.refuse(report, "capital", &reason, now);
+            return None;
+        }
+        // The desk's grant meets the same drawdown stop a strategy's does.
+        let fallen = self.desk.as_ref().and_then(|installed| {
+            let desk = &installed.desk;
+            let owner = desk.strategy().as_str();
+            drawdown_verdict(
+                self.config.drawdown_stop_required,
+                desk.envelope(),
+                self.realised.realised_drawdown(owner),
+            )
+            .err()
+            .map(|reason| {
+                format!(
+                    "desk {owner} under grant {}: {reason}",
+                    desk.envelope().signature()
+                )
+            })
+        });
+        if let Some(reason) = fallen {
+            self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
             return None;
         }
 
@@ -9092,6 +9733,7 @@ impl Cell {
         // cycle that rests a leg sends that leg alone and the rest later.
         let schedule = self.fill_times.release_schedule(&venues);
         let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
+        let mut sent: Vec<(usize, Decimal)> = Vec::with_capacity(cycle.legs.len());
         for position in 0..cycle.legs.len() {
             let (order_id, quantity) = self.send_cycle_leg(
                 cycle,
@@ -9104,6 +9746,7 @@ impl Cell {
                 report,
             )?;
             orders.push(order_id.clone());
+            sent.push((position, quantity));
             self.observe_cycle_leg(
                 cycle,
                 position,
@@ -9116,12 +9759,14 @@ impl Cell {
             )?;
         }
         // Every leg is out, so the cycle's hold on the region is spend.
-        self.commit_cycle_hold(&cycle.cycle_id);
+        let committed = self.commit_cycle_hold(&cycle.cycle_id);
+        let token = opportunity_token(cycle, &sent, ExecutionPolicy::AllOrNone, committed, now);
         self.journal.record(
             Decision::CycleCommitted {
                 cycle_id: cycle.cycle_id.clone(),
                 orders,
                 net: cycle.net.to_string(),
+                token,
             },
             now,
         );
@@ -9353,6 +9998,7 @@ impl Cell {
             return Err(error);
         }
         let mut orders = vec![order_id];
+        let mut legs_sent: Vec<(usize, Decimal)> = vec![(position, sent)];
         // ADR 0084: the legs crossed against the rested one go out together
         // on this pass, so they are scheduled as a set of their own — the
         // rested leg is already at its venue and is not in it.
@@ -9396,6 +10042,7 @@ impl Cell {
                 report,
             )?;
             orders.push(id.clone());
+            legs_sent.push((other, quantity));
             self.observe_cycle_leg(
                 &cycle,
                 other,
@@ -9407,11 +10054,19 @@ impl Cell {
                 report,
             )?;
         }
+        let token = opportunity_token(
+            &cycle,
+            &legs_sent,
+            ExecutionPolicy::Sequential,
+            committed,
+            now,
+        );
         self.journal.record(
             Decision::CycleCommitted {
                 cycle_id: cycle_id.to_string(),
                 orders,
                 net: cycle.net.to_string(),
+                token,
             },
             now,
         );
@@ -9557,6 +10212,46 @@ impl Cell {
         };
         let price = leg.reference_price;
         let release_at = now.saturating_add(schedule.offset(&leg.venue));
+        // A leg stands on the operator's mandate for the desk — the signed
+        // grant it was admitted against, which `Cell::send` checks is the
+        // grant the installed desk holds and is live — corroborated by the
+        // books the cycle was found over, each by the venue sequence of the
+        // last message the cell applied to it (ADR 0200). The books are the
+        // price discrepancy and cannot carry the leg alone; the cycle id
+        // names the trade, not a reason for it.
+        let mandate = self.desk.as_ref().map(|installed| {
+            Ground::Evidence(format!("grant:{}", installed.desk.envelope().signature()))
+        });
+        let grounds: Vec<Ground> = std::iter::once(Ground::ExpectedProfit)
+            .chain(mandate)
+            .chain(cycle.legs.iter().filter_map(|member| {
+                self.liquidity
+                    .get(&member.venue, &member.object_id)
+                    .and_then(VenueState::last_sequence)
+                    .map(|sequence| {
+                        Ground::Evidence(format!(
+                            "book:{}:{}@{sequence}",
+                            member.venue.as_str(),
+                            member.object_id.as_str()
+                        ))
+                    })
+            }))
+            .collect();
+        let justification = match Justification::of(grounds) {
+            Ok(justification) => justification,
+            Err(error) => {
+                self.break_cycle(
+                    gateway,
+                    &cycle.cycle_id,
+                    position,
+                    cycle.legs.len(),
+                    &error,
+                    now,
+                    report,
+                );
+                return Err(error);
+            }
+        };
         let sent = self.send(
             &leg.object_id,
             &leg.venue,
@@ -9566,6 +10261,7 @@ impl Cell {
             now,
             release_at,
             qip_execution_engine::modes::ExecutionMode::Routing,
+            &justification,
             gateway,
         );
         let (order_id, simulated) = match sent {
@@ -9666,9 +10362,11 @@ impl Cell {
                 // stays zero and `return_region_capital_for_unfilled` passes
                 // a cycle leg over.
                 region_committed: Decimal::ZERO,
+                grounds: Vec::new(),
             },
             schedule.equalised(),
             grants,
+            justification.rendered(),
             now,
         );
         if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
@@ -9797,7 +10495,12 @@ impl Cell {
         // never reaches this line. A predicate distinction no input can
         // exercise would be a guard no test can prove.
         if sent > 0 {
+            // The refusal just journaled is the break each offset answers.
+            if let Some(entry) = self.journal.entries().last().map(|entry| entry.sequence) {
+                self.unwinding_breaks.insert(cycle_id.to_string(), entry);
+            }
             self.unwind_cycle(cycle_id, gateway, now);
+            self.unwinding_breaks.remove(cycle_id);
         }
         if sent > 0 && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(
@@ -9873,6 +10576,30 @@ impl Cell {
                 );
                 continue;
             };
+            // The offset answers the broken cycle that left the position,
+            // citing the refusal that broke it by sequence.
+            let grounds = self
+                .unwinding_breaks
+                .get(cycle_id)
+                .map(|entry| vec![Ground::Evidence(format!("journal:cycle_broken:{entry}"))])
+                .unwrap_or_default();
+            let justification = match Justification::of(grounds) {
+                Ok(justification) => justification,
+                Err(error) => {
+                    self.break_on(
+                        format!(
+                            "cycle {cycle_id} left {} {} open at {} and the offset names no \
+                             ground: {}; the position stands until an operator closes it",
+                            offset.quantity,
+                            offset.object_id.as_str(),
+                            offset.venue.as_str(),
+                            error.message()
+                        ),
+                        now,
+                    );
+                    continue;
+                }
+            };
             match self.send(
                 &offset.object_id,
                 &offset.venue,
@@ -9882,6 +10609,7 @@ impl Cell {
                 now,
                 now,
                 qip_execution_engine::modes::ExecutionMode::OrderTaking,
+                &justification,
                 gateway,
             ) {
                 Ok((order_id, simulated)) => {
@@ -9892,6 +10620,7 @@ impl Cell {
                             object: offset.object_id.as_str().to_string(),
                             quantity: offset.quantity.to_string(),
                             simulated,
+                            grounds: justification.rendered(),
                         },
                         now,
                     );
@@ -11409,6 +12138,81 @@ struct CrossingWindow {
 /// The router is built once, where the desk is installed. Rebuilding it per
 /// pass would re-read configuration on the hot path, and configuration read on
 /// the hot path is how a pass comes to depend on when it ran.
+/// The origin desk's record of a committed cycle as an [`OpportunityToken`]
+/// (R12-CONTRACT-7068, ADR 0154 decision 7), or `None` when the contract
+/// refuses it — an edge below one basis point is one the token cannot
+/// describe, and the cycle's own entry still records it.
+///
+/// Built from what went out, never from the plan: `sent` is each leg's
+/// position in the cycle and the quantity sent for it, so a decomposed leg
+/// is described at the size the venue was asked for. `execution` is how the
+/// cell worked the legs — all at once, or the rested leg first. The unwind is
+/// the cell's own: flatten at the touch, with no loss bound, because none is
+/// enforced. The reservation is the region hold, when one was committed.
+fn opportunity_token(
+    cycle: &AdmittedCycle,
+    sent: &[(usize, Decimal)],
+    execution: ExecutionPolicy,
+    committed: Decimal,
+    now: Timestamp,
+) -> Option<Box<OpportunityToken>> {
+    let legs = sent
+        .iter()
+        .filter_map(|(position, quantity)| {
+            let leg = cycle.legs.get(*position)?;
+            Some(TokenLeg {
+                venue: leg.venue.clone(),
+                instrument: leg.object_id.as_str().to_string(),
+                side: if leg.signed_size.is_positive() {
+                    LegSide::Buy
+                } else {
+                    LegSide::Sell
+                },
+                quantity: *quantity,
+            })
+        })
+        .collect();
+    let expires_at = cycle.legs.iter().map(|leg| leg.valid_until).min()?;
+    OpportunityToken::new(OpportunityTokenFields {
+        schema_version:
+            <OpportunityTokenFields as qip_contracts::validated::Contract>::SCHEMA_VERSION,
+        opportunity: qip_contracts::signal::OpportunityId::new(cycle.cycle_id.clone()),
+        cycle_id: cycle.cycle_id.clone(),
+        version: 1,
+        lineage: TokenLineage::Original,
+        legs,
+        size: cycle.notional,
+        edge_bp: cycle.edge_bp?,
+        issued_at: now,
+        expires_at,
+        reservations: if committed.is_positive() {
+            vec![cycle.hold_id.clone()]
+        } else {
+            Vec::new()
+        },
+        execution,
+        // The cell's own unwind: `unwind_cycle` offsets each filled leg at
+        // the touch the book serves, and enforces no loss bound. So none is
+        // stated — the plan's residual exposure is an exposure, possibly a sum
+        // across currencies, and calling it a loss bound would be a claim the
+        // cell does not keep.
+        unwind: UnwindPolicy::FlattenAtMarket,
+    })
+    .ok()
+    .map(Box::new)
+}
+
+/// What one evidence reference is worth at the send seam (ADR 0200).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolution {
+    /// A reason that is not the price, held by the cell: it carries an order.
+    Anchors,
+    /// True as far as the cell can tell, and never enough alone.
+    Corroborates,
+    /// Names nothing the cell holds, or is in no known form: refuses.
+    Fails,
+}
+
 #[derive(Debug)]
 struct InstalledDesk {
     desk: ArbitrageDesk,
@@ -11423,6 +12227,12 @@ struct AdmittedCycle {
     cycle_id: String,
     /// The scanner's net edge, in units of the start instrument.
     net: Decimal,
+    /// The same net edge in basis points of the quantity it was priced for
+    /// (both in units of the start instrument, so the ratio has no unit),
+    /// truncated toward zero; `None` when that quantity is not positive.
+    edge_bp: Option<i32>,
+    /// The region hold this cycle was admitted under.
+    hold_id: String,
     /// In plan order. Every one carries `NettingPolicy::NoNet` by
     /// construction, which is what `CycleLeg` exists to guarantee.
     legs: Vec<Intent>,
@@ -11619,6 +12429,24 @@ fn clear_for(owner: &str, is_desk: bool, at: Timestamp) -> String {
 /// rather than read from its wording: the same order against the same use
 /// with no loss booked. A different answer means the loss is what refused.
 /// Every other refusal keeps its reason exactly as the envelope gave it.
+/// The drawdown gate (ADR 0126 decision 2): a cell that requires a stop
+/// refuses an envelope without one, and any stop refuses once the strategy's
+/// realised drawdown within the grant has reached it.
+fn drawdown_verdict(
+    required: bool,
+    envelope: &VerifiedEnvelope,
+    drawdown: Decimal,
+) -> std::result::Result<(), String> {
+    if required && envelope.drawdown().is_none() {
+        return Err(format!(
+            "the envelope for {} carries no drawdown stop and this cell requires one; ask the \
+             centre for an envelope signed with its stop",
+            envelope.strategy().as_str()
+        ));
+    }
+    envelope.check_drawdown(drawdown)
+}
+
 fn drawdown_refusal(
     owner: &str,
     envelope: &VerifiedEnvelope,
@@ -12019,6 +12847,9 @@ mod crossing_tests {
                     at(60),
                 )
                 .expect("a fixture size is never zero")
+                // Reasoned from a feature, as every signal's intent is, so
+                // the net carries the evidence `Cell::send` requires.
+                .with_inputs(vec![("mid".to_string(), 1)])
             })
             .collect();
         let mut nets = net(intents);
@@ -12181,6 +13012,28 @@ mod crossing_tests {
         netted(&[("alpha", "100"), ("beta", "40")], reference_price)
     }
 
+    /// Journal a signal for `strategy` as a pass would before netting, so a
+    /// net driven straight into `place_net` stands on what a pass's net
+    /// stands on: `Cell::send` resolves a net's grounds against the signals
+    /// raised this pass (ADR 0200), and a fixture net with features alone
+    /// is refused there by design.
+    fn raise_signal(cell: &mut Cell, strategy: &str) {
+        let raised = cell
+            .journal
+            .record(
+                Decision::SignalRaised {
+                    strategy: strategy.to_string(),
+                    object: "ACME".to_string(),
+                    kind: "entry".to_string(),
+                    conviction_shrunk_f64: 0.5,
+                    expected_edge_bp: None,
+                },
+                at(10),
+            )
+            .sequence;
+        cell.signal_sequences.insert(strategy.to_string(), raised);
+    }
+
     #[test]
     fn the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called() -> Result<()> {
         // `Cell::work` refuses a live-class gateway for the whole pass, so
@@ -12199,6 +13052,8 @@ mod crossing_tests {
         let mut cell = cell_with_book()?;
         deploy_marketable(&mut cell, "alpha")?;
         deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
         let mut simulated = ClassedGateway {
             simulated: true,
             placed: Vec::new(),
@@ -12217,6 +13072,8 @@ mod crossing_tests {
         let mut cell = cell_with_book()?;
         deploy_marketable(&mut cell, "alpha")?;
         deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
         let mut live = ClassedGateway {
             simulated: false,
             placed: Vec::new(),
@@ -12259,6 +13116,490 @@ mod crossing_tests {
             gates.iter().any(|gate| gate == GATE_LIVE_VENUE),
             "the chain does not name the {GATE_LIVE_VENUE} gate: {gates:?}"
         );
+        Ok(())
+    }
+
+    /// Send one order of `object()` at `venue()` straight through the seam,
+    /// on `grounds`, as any caller of `Cell::send` would.
+    fn send_on(
+        cell: &mut Cell,
+        grounds: Vec<Ground>,
+        gateway: &mut ClassedGateway,
+    ) -> Result<(String, bool)> {
+        let justification = Justification::of(grounds)?;
+        cell.send(
+            &object(),
+            &venue(),
+            BookSide::Bid,
+            Decimal::from_int(1),
+            Decimal::parse("100").expect("a decimal literal"),
+            at(10),
+            at(10),
+            qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            &justification,
+            gateway,
+        )
+    }
+
+    fn justification_refusals(cell: &Cell, before: usize) -> usize {
+        cell.journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter(|entry| {
+                matches!(&entry.decision, Decision::Refused { gate, .. } if gate == GATE_JUSTIFICATION)
+            })
+            .count()
+    }
+
+    #[test]
+    fn an_order_citing_evidence_the_cell_does_not_hold_is_refused_at_the_send_seam() -> Result<()> {
+        // ADR 0200. `Justification::of` proves a reference was named, not
+        // that it is true: before this seam resolved references, an order
+        // citing a signal nobody raised went to the venue on the strength
+        // of the text alone, which is a profit-only order wearing a label.
+        //
+        // Premise: the same seam, the same order, citing the signal the
+        // cell did raise, reaches the venue — so the refusals below are the
+        // citation's and not some other gate's.
+        let mut cell = cell_with_book()?;
+        raise_signal(&mut cell, "alpha");
+        let raised = cell.signal_sequences["alpha"];
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        send_on(
+            &mut cell,
+            vec![
+                Ground::ExpectedProfit,
+                Ground::Evidence(format!("journal:signal_raised:{raised}")),
+            ],
+            &mut gateway,
+        )?;
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "the premise failed: the true citation was refused"
+        );
+
+        let held_sequence = cell
+            .liquidity
+            .get(&venue(), &object())
+            .and_then(VenueState::last_sequence)
+            .expect("the premise: the fixture book has applied a message");
+        let refused: [(&str, Vec<Ground>); 7] = [
+            (
+                "a signal never raised",
+                vec![Ground::Evidence(format!(
+                    "journal:signal_raised:{}",
+                    raised + 1000
+                ))],
+            ),
+            (
+                "a corroborating feature alone",
+                vec![
+                    Ground::ExpectedProfit,
+                    Ground::Evidence("feature:mid@1".to_string()),
+                ],
+            ),
+            (
+                "a true signal beside a book the cell does not hold",
+                vec![
+                    Ground::Evidence(format!("journal:signal_raised:{raised}")),
+                    Ground::Evidence(format!("book:{}:NOT-HELD@1", venue().as_str())),
+                ],
+            ),
+            (
+                "the books alone, which are the price itself",
+                vec![
+                    Ground::ExpectedProfit,
+                    Ground::Evidence(format!(
+                        "book:{}:{}@{}",
+                        venue().as_str(),
+                        object().as_str(),
+                        held_sequence
+                    )),
+                ],
+            ),
+            (
+                "a grant the cell holds no desk for",
+                vec![Ground::Evidence("grant:not-a-held-signature".to_string())],
+            ),
+            (
+                "a held book cited at a message it never applied",
+                vec![Ground::Evidence(format!(
+                    "book:{}:{}@{}",
+                    venue().as_str(),
+                    object().as_str(),
+                    u64::MAX
+                ))],
+            ),
+            (
+                "a reference in no known form",
+                vec![Ground::Evidence("because the desk said so".to_string())],
+            ),
+        ];
+        for (case, grounds) in refused {
+            let before = cell.journal().entries().len();
+            let sequence = cell.order_sequence;
+            let error = match send_on(&mut cell, grounds, &mut gateway) {
+                Ok(placed) => panic!("{case}: the order was sent: {placed:?}"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "denied", "{case}: {error}");
+            assert_eq!(
+                gateway.placed.len(),
+                1,
+                "{case}: the venue was called anyway"
+            );
+            assert_eq!(
+                cell.order_sequence, sequence,
+                "{case}: a refusal burned an order number"
+            );
+            assert_eq!(
+                justification_refusals(&cell, before),
+                1,
+                "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Install an arbitrage desk funded by a grant live until `expires`, and
+    /// return the grant's signature: the desk's mandate a cycle leg cites.
+    fn install_desk(cell: &mut Cell, expires: Timestamp) -> Result<String> {
+        use qip_arbitrage::{
+            ArbitrageGraph, EdgeAssumptions, OpportunityScanner, PlanSettings, SearchSettings,
+            SizePolicy, VenueFacts,
+        };
+        use qip_contracts::capital::CapitalEnvelope;
+        use qip_contracts::venue::VenueClass;
+
+        let key = b"a-unit-test-envelope-key";
+        let build = |signature: &str| {
+            CapitalEnvelope::new(
+                StrategyId::new("arb"),
+                CELL,
+                Decimal::from_int(1_000_000),
+                Decimal::from_int(100_000),
+                Decimal::from_int(50_000),
+                vec![venue()],
+                at(0),
+                expires,
+                "alice@example.com",
+                signature,
+            )
+        };
+        let unsigned = build("unsigned")?;
+        let signature = crate::envelope::sign_payload(key, &unsigned.signing_payload());
+        let envelope = VerifiedEnvelope::verify(build(&signature)?, key, CELL, at(1))?;
+        let mut graph = ArbitrageGraph::new();
+        graph.register_venue(
+            venue(),
+            VenueFacts::new(VenueClass::CryptoExchange, VenueStatus::Open),
+        );
+        // One trade edge, on the fixture book: a desk with none is refused.
+        graph.add_trade(
+            qip_arbitrage::Node::new(ObjectId::from_string("USD"), venue()),
+            qip_arbitrage::Node::new(object(), venue()),
+            Decimal::ONE,
+            Decimal::parse("0.0004").expect("a decimal literal"),
+            object(),
+            BookSide::Ask,
+            at(0),
+            0,
+        )?;
+        let desk = ArbitrageDesk::new(
+            StrategyId::new("arb"),
+            OpportunityScanner::new(
+                SearchSettings::default(),
+                EdgeAssumptions::default(),
+                PlanSettings::with_budget(Decimal::from_int(50_000)),
+            ),
+            graph,
+            SizePolicy::uniform(Decimal::from_int(10_000)),
+            envelope,
+            4,
+            qip_core::Duration::from_secs(30),
+        )?;
+        cell.install_arbitrage(desk)?;
+        Ok(signature)
+    }
+
+    #[test]
+    fn a_leg_on_its_desks_mandate_is_sent_only_while_that_grant_is_the_desks_and_live() -> Result<()>
+    {
+        // ADR 0200. A cycle leg's books are the price discrepancy, so they
+        // corroborate and cannot carry it; the anchor is the signed grant
+        // that mandates the desk. That anchor is worth only as much as the
+        // check behind it: a grant the desk does not hold, or one that has
+        // lapsed, is no mandate.
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+
+        // Premise: the desk's own live grant carries an order.
+        let mut cell = cell_with_book()?;
+        let mandate = install_desk(&mut cell, at(3600))?;
+        send_on(
+            &mut cell,
+            vec![Ground::Evidence(format!("grant:{mandate}"))],
+            &mut gateway,
+        )?;
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "the premise failed: the mandate was refused"
+        );
+
+        let before = cell.journal().entries().len();
+        let forged = send_on(
+            &mut cell,
+            vec![Ground::Evidence(format!("grant:{mandate}x"))],
+            &mut gateway,
+        );
+        assert!(
+            forged.is_err(),
+            "a grant the desk does not hold carried an order"
+        );
+        assert_eq!(justification_refusals(&cell, before), 1);
+
+        // A grant lapsed by the send instant is no mandate.
+        let mut lapsed = cell_with_book()?;
+        let mandate = install_desk(&mut lapsed, at(5))?;
+        let before = lapsed.journal().entries().len();
+        let late = send_on(
+            &mut lapsed,
+            vec![Ground::Evidence(format!("grant:{mandate}"))],
+            &mut gateway,
+        );
+        assert!(late.is_err(), "a lapsed grant carried an order");
+        assert_eq!(justification_refusals(&lapsed, before), 1);
+        assert_eq!(gateway.placed.len(), 1, "a refused order reached the venue");
+        Ok(())
+    }
+
+    #[test]
+    fn a_net_order_is_journaled_with_the_grounds_the_send_seam_resolved() -> Result<()> {
+        // ADR 0200: the chain says why an order went, not only that it went.
+        // `OrderSent` carried no reason before, so a reader auditing
+        // R12-GOV-6127 had to re-derive the grounds from the signals around
+        // it and could not tell a profit-only order from a grounded one.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let (alpha, beta) = (
+            cell.signal_sequences["alpha"],
+            cell.signal_sequences["beta"],
+        );
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        let sent = cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
+        assert!(
+            sent.is_some(),
+            "the premise failed: refusals {:?}",
+            report.refusals
+        );
+        let grounds: Vec<Vec<String>> = cell
+            .journal()
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.decision {
+                Decision::OrderSent { grounds, .. } => Some(grounds.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(grounds.len(), 1, "the premise failed: {grounds:?}");
+        for expected in [
+            "expected_profit".to_string(),
+            format!("journal:signal_raised:{alpha}"),
+            format!("journal:signal_raised:{beta}"),
+        ] {
+            assert!(
+                grounds[0].contains(&expected),
+                "the order's record does not name {expected}: {:?}",
+                grounds[0]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_requote_stands_on_the_grounds_its_order_went_out_on_and_none_is_refused() -> Result<()> {
+        // ADR 0200. `qip-edge-node`'s repricer sends a replacement after
+        // `Cell::admit_replacement` and never through `Cell::send`, so until
+        // the replacement was checked a new price reached the venue on the
+        // fence and the risk gate alone — a price move nothing justified,
+        // which is R12-GOV-6127's own example.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
+        let order_id = gateway
+            .placed
+            .first()
+            .cloned()
+            .expect("the premise: one order went out");
+        let requote = |cell: &mut Cell| {
+            cell.admit_replacement(
+                &order_id,
+                &object(),
+                &venue(),
+                BookSide::Bid,
+                Decimal::from_int(1),
+                price,
+                at(11),
+            )
+        };
+        // Premise: the grounded order is requoted.
+        requote(&mut cell)?;
+
+        for (case, grounds) in [
+            ("no grounds recorded", vec![]),
+            (
+                "profit, price impact and a feature only",
+                vec![
+                    "expected_profit".to_string(),
+                    "desired_price_impact".to_string(),
+                    "feature:mid@1".to_string(),
+                ],
+            ),
+        ] {
+            if let Some(working) = cell.working.get_mut(&order_id) {
+                working.grounds = grounds;
+            }
+            let before = cell.journal().entries().len();
+            let error = match requote(&mut cell) {
+                Ok(()) => panic!("{case}: the replacement was admitted"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "denied", "{case}: {error}");
+            assert_eq!(
+                justification_refusals(&cell, before),
+                1,
+                "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_short_sale_is_refused_when_the_venue_states_no_borrow() -> Result<()> {
+        // R12-REFLEX-5038. The cell held funding and borrow state that
+        // nothing wrote and nothing read: a sale needing borrow the venue
+        // said it could not lend went out on the strength of the cell never
+        // having asked. `send_on` sells one unit and the cell holds none, so
+        // every send below needs one unit borrowed.
+        use crate::funding::{BorrowAvailability, FundingRate};
+        use qip_core::dec;
+        let armed = || -> Result<Cell> {
+            let config = CellConfig::new(CELL, "europe-west2")
+                .with_venue(venue())
+                .with_borrow_required();
+            let features =
+                FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+            let mut cell = Cell::new(config, features)?;
+            cell.track(book());
+            raise_signal(&mut cell, "alpha");
+            Ok(cell)
+        };
+        let grounds = |cell: &Cell| {
+            vec![Ground::Evidence(format!(
+                "journal:signal_raised:{}",
+                cell.signal_sequences["alpha"]
+            ))]
+        };
+        let instrument = object().as_str().to_string();
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+
+        // Premise: with borrow and funding stated, the sale goes.
+        let mut cell = armed()?;
+        cell.set_borrow_availability(
+            instrument.clone(),
+            BorrowAvailability::available(dec!("10")),
+        );
+        cell.set_funding_rate(instrument.clone(), FundingRate::new(Decimal::ZERO));
+        let held = grounds(&cell);
+        send_on(&mut cell, held, &mut gateway)?;
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "the premise failed: the stated sale was refused"
+        );
+
+        type Statement = (Option<BorrowAvailability>, Option<FundingRate>);
+        let refused: [(&str, Statement); 4] = [
+            ("nothing stated", (None, None)),
+            (
+                "the venue states it lends none",
+                (
+                    Some(BorrowAvailability::unavailable()),
+                    Some(FundingRate::new(Decimal::ZERO)),
+                ),
+            ),
+            (
+                "the venue lends less than the sale needs",
+                (
+                    Some(BorrowAvailability::available(dec!("0.5"))),
+                    Some(FundingRate::new(Decimal::ZERO)),
+                ),
+            ),
+            (
+                "borrow stated and no funding rate",
+                (Some(BorrowAvailability::available(dec!("10"))), None),
+            ),
+        ];
+        for (case, (borrow, funding)) in refused {
+            let mut cell = armed()?;
+            if let Some(borrow) = borrow {
+                cell.set_borrow_availability(instrument.clone(), borrow);
+            }
+            if let Some(funding) = funding {
+                cell.set_funding_rate(instrument.clone(), funding);
+            }
+            let before = cell.journal().entries().len();
+            let grounds = grounds(&cell);
+            let error = match send_on(&mut cell, grounds, &mut gateway) {
+                Ok(placed) => panic!("{case}: the sale was sent: {placed:?}"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), "denied", "{case}: {error}");
+            assert_eq!(
+                gateway.placed.len(),
+                1,
+                "{case}: the venue was called anyway"
+            );
+            let gates: Vec<String> = cell
+                .journal()
+                .entries()
+                .iter()
+                .skip(before)
+                .filter_map(|entry| match &entry.decision {
+                    Decision::Refused { gate, .. } => Some(gate.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(gates, vec![GATE_BORROW.to_string()], "{case}");
+        }
         Ok(())
     }
 

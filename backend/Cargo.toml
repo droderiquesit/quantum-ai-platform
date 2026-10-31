@@ -45,6 +45,7 @@ members = [
     "crates/services/qip-world-model",
     "crates/services/qip-opportunity-engine",
     "crates/services/qip-reasoning-engine",
+    "crates/services/qip-language-providers",
     "crates/services/qip-simulation-engine",
     "crates/services/qip-optimization-engine",
     "crates/services/qip-portfolio-engine",
@@ -148,6 +149,7 @@ qip-entity-resolution = { path = "crates/services/qip-entity-resolution" }
 qip-world-model = { path = "crates/services/qip-world-model" }
 qip-opportunity-engine = { path = "crates/services/qip-opportunity-engine" }
 qip-reasoning-engine = { path = "crates/services/qip-reasoning-engine" }
+qip-language-providers = { path = "crates/services/qip-language-providers" }
 qip-simulation-engine = { path = "crates/services/qip-simulation-engine" }
 qip-optimization-engine = { path = "crates/services/qip-optimization-engine" }
 qip-portfolio-engine = { path = "crates/services/qip-portfolio-engine" }

@@ -25,11 +25,12 @@
   {
     "id": "R12-GCP-7002",
     "status": "PARTIAL",
-    "current": "execution-node module validates machine_type to C3 highcpu sizes and runs qip-edge-node under systemd.",
+    "current": "execution-node module validates machine_type to the C4/C4D high-CPU class (ADR 0211 reads it as the requirement's C3/C3D-class equivalent) and runs qip-edge-node under systemd.",
     "evidence": [
-      "infrastructure/terraform/modules/execution-node/variables.tf:118-142 machine_type validated to c3-highcpu-8..22",
+      "infrastructure/terraform/modules/execution-node/variables.tf machine_type validation (c4-highcpu-8/16, c4d-highcpu-8/16; every other family refused)",
       "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:67-85 refuses boot without isolcpus and preallocated huge pages; :352 CPUAffinity",
-      "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {} (same in stage:49, test:49, prod:51)"
+      "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {} (same in stage:49, test:49, prod:51)",
+      "docs/adr/0211-the-execution-planes-c3-class-is-the-c4-and-c4d-high-cpu-shapes-and-every-other-family-is-refused-at-plan.md"
     ],
     "gap": "No node is declared in any environment (execution_nodes = {} in stage/test/prod; dev declares newyork-1 with execution_nodes_enabled = false) and there is no plan showing a node rendered. Needs infrastructure/environments/** and execution-nodes-enabled.tf, both protected, and a real plan.",
     "implemented": true,
@@ -42,7 +43,7 @@
     "verification": "terraform plan with execution_nodes naming one region",
     "work_item": "",
     "size": "S",
-    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed."
+    "notes": "Checked 2026-10-24 by lane M1-KERNEL-EDGE: protected-path and deploy-dependent gap; left PARTIAL. 2026-10-24 lane L6: a conflict for the owner, not a code gap: modules/execution-node/variables.tf's machine_type validation admits only c4-highcpu-8/16 and c4d-highcpu-8/16 and refuses C3 and C3D, following R12-REFLEX-8002 (GCP v3.0 §1, 'a C3 or N2 shape must be refused at plan'), while this row's check asks that 'a non-C3 machine_type is refused'. The requirement's own text allows 'C3/C3D-class (or equivalent)', which C4/C4D can be read to meet; the check's literal wording cannot be met without breaking REFLEX-8002. Recorded, not changed. 2026-10-24 lane L6: ADR 0211 (Accepted under the owner's 2026-10-24 delegation) resolves the C3-versus-C4 conflict: the check reads as refusing every shape outside the C4/C4D high-CPU class, which variables.tf already does. The row stays PARTIAL only on the deploy gap: no node declared, protected tfvars, no real plan (billing paused). 2026-10-25 lane L9: no patch. The closure turns on execution_nodes_enabled for a billed C4 node, and owner decision 5 of 2026-10-25 declined new billed infrastructure. It stays PARTIAL until that decision changes."
   },
   {
     "id": "R12-REFLEX-7003",
@@ -358,12 +359,14 @@
   {
     "id": "R12-OBS-7017",
     "status": "PARTIAL",
-    "current": "Prometheus exposition from Telemetry registries; OpenObserve module/secret plumbing exists but is gated on a vendored image digest; no OTel export.",
+    "current": "Every central binary (qip-api, qip-fastbrain, qip-deepbrain, qip-fabricd) carries an OpenObserve drain (qip-telemetry-drain) that exports the metrics snapshot as OTLP (Snapshot::to_otlp_metrics) and spans as OTLP/JSON (Tracer::export); Prometheus exposition is also served. The drain is configured by QIP_OPENOBSERVE_URL, unset in every deployment; the OpenObserve module is gated on a vendored image digest.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/lib.rs",
-      "infrastructure/terraform/main.tf:311-314,1039 openobserve secrets and moved block"
+      "infrastructure/terraform/main.tf:311-314,1039 openobserve secrets and moved block",
+      "backend/crates/services/qip-telemetry-drain/src/lib.rs",
+      "backend/crates/services/qip-telemetry-drain/tests/credential.rs"
     ],
-    "gap": "No OTel protocol export; no proof of ingestion.",
+    "gap": "2026-10-24 (lane L6, current corrected: it said no OTel export): OTLP export is built and off by default (QIP_OPENOBSERVE_URL unset until a collector is vendored and attested, ADR 0156 §5.4); no OpenObserve instance runs and nothing has been shown to ingest a series or span. Collection, not emission, is what is missing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -374,7 +377,7 @@
     "verification": "scrape of /metrics ingested by collector",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6: read-only correction; no code change."
   },
   {
     "id": "R12-OBS-7018",
@@ -384,9 +387,14 @@
       "backend/crates/apps/qip-fastbrain/src/node.rs::SensePath",
       "backend/crates/runtime/qip-kernel/src/bus_bridge.rs::PlatformBridge",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_lineage.rs::the_fast_brain_path_carries_a_correlation_id_per_record_into_the_log_and_the_journal",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event",
+      "backend/crates/libs/qip-contracts/src/policy.rs DecisionOrigin, PolicyPayload.decision (signed when present, absent from the signing string when not)",
+      "backend/crates/edge/qip-edge/src/cell.rs open_chain copies policy_sequence and decision into ChainOpened",
+      "backend/crates/apps/qip-api/src/mesh.rs pending_policy stamps Platform::decision_origin",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::a_correlation_id_set_at_the_api_is_reachable_from_the_cells_chain_opened_record",
+      "backend/crates/libs/qip-contracts/tests/policy_decision.rs"
     ],
-    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: PolicyPayload cycle and correlation fields and ChainOpened.policy_sequence, with an acceptance walk API to cell to ledger in vertical_slice_correlation.rs.",
+    "gap": "2026-10-25 (lane L6): the join is built and tested end to end in process. Still PARTIAL: (1) the policy reaches a cell only over the mesh, which qip-api serves only when QIP_MESH_CELLS/QIP_MESH_REGIONS are set (the Cloud Run API serves no mesh, R12-RES-10127), and no execution node is deployed, so the join does not run on a shipped binary's default path (bar part 2); (2) the event-fabric PolicyFrame schema-lock sample does not state the decision field, so a retype of DecisionOrigin is caught only by policy_decision.rs's wire assertion; a schema-version bump is the honest fix. Earlier: Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: PolicyPayload cycle and correlation fields and ChainOpened.policy_sequence, with an acceptance walk API to cell to ledger in vertical_slice_correlation.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -397,7 +405,7 @@
     "verification": "acceptance test following one opportunity id through every stage",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement is one trace across brain, model, risk, node, venue, ledger and learning; the cell chain id is derived from cell/session/order and is never linked to the brain's record ids. Desk records now reach the ledger carrying chain_correlation, but the cycle id is not on the wire and the cycle id is still not joined to the cell's. Still not one trace (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: One trace id from the brain's decision to the cell order and ledger; learning records not joined."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement is one trace across brain, model, risk, node, venue, ledger and learning; the cell chain id is derived from cell/session/order and is never linked to the brain's record ids. Desk records now reach the ledger carrying chain_correlation, but the cycle id is not on the wire and the cycle id is still not joined to the cell's. Still not one trace (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: One trace id from the brain's decision to the cell order and ledger; learning records not joined. 2026-10-25 lane L6 (delegated agent, cherry-picked as 4f50f72a): the cycle's correlation id rides the signed PolicyPayload as an optional DecisionOrigin and the cell copies it, with policy_sequence, into ChainOpened; the acceptance walk goes run_cycle, pending_policy, signed payload, apply_policy, pass, spool ChainOpened, chain correlation, LedgerEvent. Eight mutations each failed a named test (decision or policy_sequence dropped in cell.rs; absent origin moving the signing string; present origin unsigned; skip_serializing_if dropped; mesh.rs stamp removed; cycle-zero refusal disabled; cell inventing an origin). Agent's gates: five crates passed 2542, failed 0; qip-acceptance in batches passed 1606, failed 0; clippy -D warnings clean. Lane gate after integration: qip-kernel/contracts/edge/api/edge-node passed 2546, failed 0. Deploy order: cells before the centre, because an older cell refuses a stamped payload under deny_unknown_fields."
   },
   {
     "id": "R12-TICK-7019",
@@ -428,7 +436,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs"
     ],
-    "gap": "No replay worker placement.",
+    "gap": "2026-10-24 (re-read against the tree): No replay worker pool is provisioned separately from serving: no Terraform module, instance group or Cloud Run service/job in infrastructure/terraform is dedicated to replay; hot replay indexes exist only in-process (qip-acceptance tests/tick_hot_replay_indexes.rs, qip-edge-node replay.rs). Needs an owner cost decision (ADR 0101 C11), a Terraform placement plus per-env tfvar, and a plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -439,7 +447,7 @@
     "verification": "terraform plan with replay pool",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
   },
   {
     "id": "R12-DATA-7021",
@@ -493,7 +501,7 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
       "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11,40 edge node has no compile-time dependency on cognitive crates; separate binaries"
     ],
-    "gap": "2026-10-24 (L4): the requirement has two halves. The first, world-model services that are long-running and versioned with domain-specific stores, is unmet: the world model runs in-process inside qip-kernel's cycle, and no world-model service or store is deployed (billing paused, nothing applied). Only the second half, no single model on the reflex critical path, is proven, by lane_placement and arch_001_independent_reflex. Closing it needs a deployed, versioned world-model service with its own store: a deploy and an ADR, not code in this lane.",
+    "gap": "2026-10-24 (L4, wave580): decided by ADR 0191 under the delegation. The central brains are the long-running world-model services, and the domain stores are the log's records by journalling stage. Still to do: (1) code: a versioned per-domain snapshot record on the world_model.snapshot topic, which has no producer today; (2) deploy: a separate world-model service with its own store, deferred to the deployment phase because it is billed infrastructure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -504,7 +512,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement --test arch_001_independent_reflex",
     "work_item": "",
     "size": "S",
-    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed."
+    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed. 2026-10-24 (L4, wave580): ADR 0191 recorded; no status change."
   },
   {
     "id": "R12-REASON-7024",
@@ -1445,9 +1453,11 @@
     "status": "PARTIAL",
     "current": "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack; a second ModelPack in backend/crates/runtime/qip-kernel/src/model_serving.rs:242",
     "evidence": [
-      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode"
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode",
+      "backend/crates/apps/qip-cli/src/model_pack.rs (signing_message_hex, attach_signature, verify, run); main.rs dispatches `model-pack`",
+      "backend/crates/apps/qip-cli/tests/model_pack.rs::a_model_pack_whose_signature_changes_by_one_byte_is_refused_by_qip_model_pack_verify"
     ],
-    "gap": "Decided (ADR 0149): keep one signed contract ModelPack, no body/envelope split; Platform::admit_model_packs already feeds the kernel from QIP_MODEL_PACKS_PATH, failing closed. Not built: the kernel's lineage struct is still named ModelPack (model_serving.rs:307, Platform::model_pack_lineage) rather than ModelSetVersion; LearningDesk::promote_candidate writes no unsigned draft pack; and qip-cli has no model-pack verbs (signing-message, attach-signature, verify) for the publish workflow to call (grep -n 'model-pack' backend/crates/apps/qip-cli/src/main.rs finds nothing). The workflow edit that calls them is a person's. Corrected 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE): qip-cli now carries the publish workflow's three verbs (model-pack signing-message, attach-signature, verify). Remaining: (1) LearningDesk::promote_candidate in qip-deepbrain writes no unsigned draft pack for those verbs to sign; (2) the kernel's lineage struct is still model_serving::ModelPack, not ModelSetVersion; (3) packs reach a brain only through QIP_MODEL_PACKS_PATH, which no committed environment sets, so no pack travels between brains on a default path (bar part 2).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1455,10 +1465,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts; cargo +1.94.1 test -p qip-cli --test model_pack",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL. 2026-10-24 lane L5-EDGE: read against the requirement text (bar part 4) rather than the row's ADR 0149 restatement: the typed fields and the missing-field decode refusal exist (section27_partial_contracts.rs), but bar part 2 fails on its own: ModelManifest.packs is skipped from the wire while empty and packs load only from QIP_MODEL_PACKS_PATH (qip-api signing.rs MODEL_PACKS_VARIABLE), which no committed environment sets (grep of infrastructure finds nothing), so no pack travels between brains on a default path. Kept PARTIAL."
+    "notes": "2026-10-18 lane L06 and 2026-10-24 lane T6-MODEL-AGENTS: not implemented. The rename touches the kernel's lineage API and every caller; the CLI verbs need the per-person signing credentials ADR 0110 and 0121 reserve for the release. Test the closure names: an_unsigned_draft_pack_written_at_promotion_is_refused_by_admit_model_packs_and_a_cli_signed_pack_over_the_same_bytes_is_admitted (qip-kernel/tests/release_packs.rs). Kept PARTIAL. 2026-10-24 lane L5-EDGE: read against the requirement text (bar part 4) rather than the row's ADR 0149 restatement: the typed fields and the missing-field decode refusal exist (section27_partial_contracts.rs), but bar part 2 fails on its own: ModelManifest.packs is skipped from the wire while empty and packs load only from QIP_MODEL_PACKS_PATH (qip-api signing.rs MODEL_PACKS_VARIABLE), which no committed environment sets (grep of infrastructure finds nothing), so no pack travels between brains on a default path. Kept PARTIAL. 2026-10-25 lane L5-EDGE: qip-cli model-pack verbs built. Mutations fired: verify skips the signature (validate only); attach keeps the old signature; message built under the policy class instead of model-pack. Kept PARTIAL on the three remaining steps in the gap."
   },
   {
     "id": "R12-CONTRACT-7065",
@@ -1492,9 +1502,14 @@
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:764 a_capital_grant_refuses_each_broken_invariant",
       "backend/crates/runtime/qip-kernel/src/platform.rs::capital_grant_of",
       "backend/crates/runtime/qip-kernel/tests/central.rs::issuing_a_grant_queues_its_funding_for_the_ledger_and_a_restart_requeues_the_same_record",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts",
+      "backend/crates/libs/qip-contracts/src/capital.rs::DrawdownBounds, CapitalEnvelope::with_drawdown, check_drawdown_consistent (288e5887)",
+      "backend/crates/libs/qip-contracts/tests/drawdown_bounds.rs (5 tests: payload, round trip, missing-field decode, consistency, the stop)",
+      "backend/crates/edge/qip-edge/tests/drawdown.rs::a_strategy_that_gave_back_its_peak_by_the_drawdown_stop_is_refused_while_its_loss_limit_reads_no_loss",
+      "backend/crates/services/qip-capital/tests/capital.rs::every_issued_envelope_carries_a_drawdown_stop_and_a_share_outside_its_range_is_refused",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::capital_grant_tests::the_funded_grant_reads_the_envelopes_drawdown_block_and_writes_only_what_it_does_not_state"
     ],
-    "gap": "Decided by ADR 0126 (accepted 2026-10-18): The downward capital authority is the signed CapitalEnvelope alone; it gains a drawdown bound, the CapitalGrant is stated from it rather than sent beside it, and a hedge plan reaches a cell only as a narrowing frame it may refuse. Code left: the envelope bounds block read by Platform::fund_capital_grant, and a downward_signed_path.rs test that a grant past its drawdown stop is refused at the cell.",
+    "gap": "2026-10-24 (lane L5-EDGE, after 288e5887; independent skeptic REFUTED): Make the signed brain-to-brain grant carry owner/mandate, collateral class, leverage and the drawdown/liquidity block as required fields, refused when absent on decode at the cell, with a missing-field test. Or amend the requirement text to accept the envelope-plus-ledger split. Separately, a committed deployment of the receiving cell is needed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1502,10 +1517,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test envelope_expiry",
+    "verification": "cargo +1.94.1 test -p qip-contracts --test drawdown_bounds; cargo +1.94.1 test -p qip-edge --test drawdown; cargo +1.94.1 test -p qip-capital --test capital every_issued; cargo +1.94.1 test -p qip-kernel --lib capital_grant_tests",
     "work_item": "",
     "size": "M",
-    "notes": "Here CapitalGrant is an enum of decisions, not the §27 record. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding CapitalGrant exists and is tested; nothing in production constructs or decodes it. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; 'nothing in production constructs or decodes it' is no longer true and the gap names the clause still unmet (consumed by the ledger only, not between brains). Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the recall carries the same grant the funding stated and the gap is unchanged. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: The cell still enforces CapitalEnvelope, not CapitalGrant: the grant is a statement of the envelope for the ledger, consumed by qip-ledgerd and by nothing between brains, and three of its fields (liquidity reserve, drawdown stop, ADV share) are written from what the envelope says rather than from a bound the issuer set."
+    "notes": "Here CapitalGrant is an enum of decisions, not the §27 record. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding CapitalGrant exists and is tested; nothing in production constructs or decodes it. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; 'nothing in production constructs or decodes it' is no longer true and the gap names the clause still unmet (consumed by the ledger only, not between brains). Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the recall carries the same grant the funding stated and the gap is unchanged. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: The cell still enforces CapitalEnvelope, not CapitalGrant: the grant is a statement of the envelope for the ledger, consumed by qip-ledgerd and by nothing between brains, and three of its fields (liquidity reserve, drawdown stop, ADV share) are written from what the envelope says rather than from a bound the issuer set. 2026-10-24 lane L5-EDGE: built in 288e5887. Mutations fired (each its named test, restored by cmp): check_drawdown never refuses; ledger peak not tracked; signal-path call removed; verify skips consistency; issuer drops the block; grant ignores the block; payload drops the block; with_drawdown skips consistency. Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: Requirement (requirements.md:123) wants a typed CapitalGrant contract between brains. It must carry owner/mandate, region/strategy, amount, collateral class, leverage, expiry, and drawdown and liquidity constraints. Constructing or decoding one with any required field missing must be refused.  Part 4 fails. ADR 0126 swaps CapitalGrant for the signed CapitalEnvelope as the contract between brains. The requirement text outranks that swap. The envelope (libs/qip-contracts/src/capital.rs:23-40) has no owner, no mandate and no collateral class. Its drawdown/liquidity block is `Option` with `#[serde(default)]` (:37-38), and leverage (`exposure`) is optional too. So an envelope with the required fields missing decodes and is admitted. Worse, `check_drawdown` (:455-462) returns `Ok(())` when the block is absent. The test clause fails for the contract that actually crosses between brains.  The real CapitalGrant (capital.rs:913-945) does refuse missing fields and does round-trip. But it never travels between brains. `capital_grant_of` (runtime/qip-kernel/src/platform.rs:4586) builds it only for the ledger record sent to qip-ledgerd. Several of its fields are filled in by the code, not passed down from the issuer: - `collateral: CollateralClass::Cash` is hardcoded. - owner and mandate are the constants `DESK_USER` and `DESK_MANDATE`. - leverage defaults to 1, reserve to zero and ADV share to `MAX_BP` when the envelope does not state them. The record's own gap line (\"consumed by the ledger only, not between brains\") still holds after commit 288e5887.  Part 2 is weak as well. The drawdown gate the commit adds to the cell only runs inside qip-edge-node. No committed environment deploys one: `execution_nodes = {}` in test, stage and prod, and dev has `execution_nodes_enabled = false`."
   },
   {
     "id": "R12-CONTRACT-7067",
@@ -1536,9 +1551,11 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/opportunity_token.rs:91 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant",
+      "backend/crates/edge/qip-edge/src/cell.rs::opportunity_token, journaled on Decision::CycleCommitted.token at both commit sites (whole-out AllOrNone, rested Sequential)",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_committed_cycle_journals_an_opportunity_token_whose_legs_equal_the_legs_sent"
     ],
-    "gap": "The Lane 1 frame carries an epoch by decision (ADR 0154 d7, accepted): qip_peer::PeerMessage::Token stays an OpportunityEpoch and the receiver re-derives legs from its own whitelist; the contract OpportunityToken is the origin desk's own record. Not built: the desk-side construction of that record from legs, size, edge and reservations in qip-arbitrage / qip-edge-node. Restated 2026-10-24.",
+    "gap": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED): (1) no committed path installs a desk or commits a cycle: qip-edge-node needs QIP_ARBITRAGE_STRATEGY, a fresh signed CycleWhitelist and a strategy envelope, which arrive only over the mesh (QIP_MESH_PEER) or the control handoff, and no committed environment enables an execution node; (2) 'between brains': the token sits only in the cell's journal, and ADR 0154 decision 7 keeps the peer wire an epoch, which declines the requirement's text (bar part 4), so this needs an owner decision; (3) a committed cycle whose edge is below one basis point journals no token, because the contract refuses a zero edge and the record is made after the legs are out.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1546,10 +1563,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-mesh; cargo +1.94.1 test -p qip-edge --test arbitrage a_committed_cycle",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields. Lane T1-EDGE 2026-10-24: wire change dropped by ADR 0154 d7; no code changed, kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields. Lane T1-EDGE 2026-10-24: wire change dropped by ADR 0154 d7; no code changed, kept PARTIAL. 2026-10-25 lane L5-EDGE: the cell now constructs and journals an OpportunityToken when it commits a cycle: the legs as sent (venue, instrument, side, sent quantity), size (the legs' notional), edge (net over the priced quantity, whole bp), TTL (the earliest leg validity), the region hold as reservation when committed, execution AllOrNone or Sequential (rested), unwind FlattenAtMarket (a contract variant added for an unwind with no stated loss bound), lineage Original v1. Mutations fired: one leg dropped from the token; token not journaled. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED on parts 2 and 4. It also found the first unwind (Flatten bounded by the plan's residual exposure) dishonest: that is an exposure, possibly summed across currencies, and nothing enforces it. Replaced by UnwindPolicy::FlattenAtMarket."
   },
   {
     "id": "R12-CONTRACT-7069",
@@ -2021,9 +2038,16 @@
     "current": "Envelope assembled at both ends; ledger stamps region and auth_context locally, not carried on the wire.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/envelope.rs::FabricEnvelope::open_decoded",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs:220"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:220",
+      "backend/crates/libs/qip-events/src/event_fabric/codec.rs::BrokerOrigin, Provenance, FORMAT_VERSION 2 (288e5887)",
+      "backend/crates/libs/qip-events/tests/event_fabric_origin.rs (6 tests incl. a_consumer_fabricated_region_a_wrong_partition_and_an_unstamped_batch_are_refused)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs::a_broker_stamps_its_region_partition_and_the_sessions_principal_and_refuses_a_producers_own",
+      "backend/crates/apps/qip-fabricd/src/config.rs::tests::a_deployed_broker_refuses_to_start_without_the_region_it_stamps",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs::fabric_context region None; READ_REGION deleted",
+      "backend/crates/libs/qip-events/src/event_fabric/envelope.rs::FabricEnvelope::assemble refuses an absent or blank trace_id and idempotency_key (2026-10-24)",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs::an_envelope_with_any_mandatory_field_absent_or_emptied_is_refused (trace and idempotency key, absent and blank)"
     ],
-    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: the same codec fields, READ_REGION deleted from qip-ledgerd, and a test that a consumer-fabricated region is refused.",
+    "gap": "2026-10-24 (lane L5-EDGE, after the trace/idempotency commit): a committed environment with non-null event_fabric_broker and ledgerd, so the envelope this row describes is exchanged by a deployed producer and consumer. Every field the requirement names is now required on every path onto and off the wire; what remains is a deployment, which this lane does not make.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2031,10 +2055,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events --test event_fabric_policy",
+    "verification": "cargo +1.94.1 test -p qip-events --test event_fabric_origin; cargo +1.94.1 test -p qip-streaming --test event_fabric_broker; cargo +1.94.1 test -p qip-fabricd --lib; cargo +1.94.1 test -p qip-ledgerd; cargo +1.94.1 test -p qip-events --test event_fabric_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Cited src/fabric_envelope.rs does not exist (real: qip-events/src/event_fabric/envelope.rs). Schema version is an integer, not a hash. No producer or consumer exchanges this envelope. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The contract, schema hash and both ends are real and tested. The consumer-side envelope carries a fabricated region and a non-authenticated auth context, which is the provenance loss the requirement names. The implementing commit admits both. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Region and authenticated principal on the wire."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Cited src/fabric_envelope.rs does not exist (real: qip-events/src/event_fabric/envelope.rs). Schema version is an integer, not a hash. No producer or consumer exchanges this envelope. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The contract, schema hash and both ends are real and tested. The consumer-side envelope carries a fabricated region and a non-authenticated auth context, which is the provenance loss the requirement names. The implementing commit admits both. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Region and authenticated principal on the wire. 2026-10-24 lane L5-EDGE: built in 288e5887. Mutations fired: encode drops origin; reader region believed; unstamped given a default region; broker stamp no-op; producer origin admitted; region optional outside local. Skeptic (security-engineer, read-only, default REFUTED): REFUTED. Findings: R12-CONTRACT-7089 is not COMPLETE. Parts 1, 2 and 4 each fail.  Requirement (docs/blueprint/requirements.md:146): the envelope must carry trace id and idempotency key among its fields. The test clause says a FabricEnvelope \"missing any required field is refused\".  1. Part 4 and part 1: two required fields are optional. - `AnyEvent::idempotency_key` is `Option<String>` (backend/crates/libs/qip-events/src/envelope.rs:53,111). - `Lineage::trace_id` is `Option<TraceId>` with `#[serde(default)]` (qip-core/src/lineage.rs:70-71). - `FabricEnvelope::assemble` (event_fabric/envelope.rs:429-445) runs `require_non_empty` only on stream, region, ordering key, producer, auth context and provenance. An envelope with no trace id or no idempotency key is accepted, built or deserialised. - `open_decoded` (:270-276) checks only that the header trace matches the payload trace. None matching None passes. - The named proof is too narrow. `an_envelope_round_trips_every_contract_036_field_and_one_missing_field_is_refused` (tests/event_fabric_policy.rs:64-112) refuses only an empty ordering key. It never asserts trace id. No test refuses a missing trace id, idempotency key, region or auth context on the wire.  2. Part 2: nothing is deployed. - `event_fabric_broker` and `ledgerd` are null in every environment (infrastructure/terraform/variables.tf:1749-1755 and :1795-1799). No environment tfvars names either one. - Edge-node fabric is `Option<FabricSettings>` (qip-edge-node/src/main.rs:263). Execution nodes are disabled in every environment. - The ADR 0129 broker stamp therefore reaches no committed deployment. - The record itself says `deployable: false` (R12-M7.json).  What does hold: the region and partition checks (envelope.rs:142-172), the refusal of an unstamped batch, and `fabric_context 2026-10-24 lane L5-EDGE, skeptic finding 1 answered: FabricEnvelope::assemble, which the TryFrom<FabricEnvelopeWire> decode path and open_decoded both reach, refuses an absent or blank trace_id and idempotency_key. The edge writer and the desk's fabric now stamp trace_id from the record's correlation id; harness fixtures stamp both. Mutations fired: trace check dropped (event_fabric_policy fails at :785), idempotency check dropped (fails at :791). Gate on this tree: 361 result lines, 3244 passed, 1 failed (the_blueprint_views_are_what_their_sources_render_to, the rendered traceability matrix the parent re-renders), qip-fastbrain tape ok. Finding 2 (nothing deployed) stands, so the row stays PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7090",
@@ -2159,9 +2183,10 @@
       "backend/crates/edge/qip-peer-link/src/saga.rs Saga::forget_gone (cycles_expired), Saga::fired",
       "backend/crates/edge/qip-peer-link/src/boundary.rs PeerStatus::cycles_expired",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading",
-      "backend/crates/edge/qip-peer-link/tests/saga.rs::a_fired_cycle_that_outlives_its_ttl_is_not_counted_as_lapsed"
+      "backend/crates/edge/qip-peer-link/tests/saga.rs::a_fired_cycle_that_outlives_its_ttl_is_not_counted_as_lapsed",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs PeerSeries::observe (qip_edge_peer_cycles_expired_total)"
     ],
-    "gap": "2026-10-24 (lane L6): the refusal at TTL is now observable and tested. qip-peer-link PeerStatus::cycles_expired counts cycles this node originated that reached their TTL without FIRE, incremented only in Saga::forget_gone, with a fired set so a cycle that traded and then aged out is not miscounted; decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading drives the shipped DecisionLoop::turn with real ports, drops the peer's port after a cycle opens, and asserts the cycle lapsed (cycles_expired >= 1, fires 0, legs_sent 0) while the single-venue strategy's orders kept growing. Still open: (1) 'reduced to pre-positioned directional bands' (ADR 0154 DirectionalBand) is not built; (2) cycles_expired is in PeerStatus only, not in the node's health body or PeerSeries; (3) the peer mesh runs only when QIP_MESH_PEER/peers are configured, which no committed environment does, so the multi-cell refusal is not on a default path (bar part 2).",
+    "gap": "2026-10-24 (lane L6): the refusal at TTL is now observable and tested. qip-peer-link PeerStatus::cycles_expired counts cycles this node originated that reached their TTL without FIRE, incremented only in Saga::forget_gone, with a fired set so a cycle that traded and then aged out is not miscounted; decision_loop.rs::a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading drives the shipped DecisionLoop::turn with real ports, drops the peer's port after a cycle opens, and asserts the cycle lapsed (cycles_expired >= 1, fires 0, legs_sent 0) while the single-venue strategy's orders kept growing. Still open: (1) 'reduced to pre-positioned directional bands' (ADR 0154 DirectionalBand) is not built; (2) closed 2026-10-25: cycles_expired is counted as qip_edge_peer_cycles_expired_total by PeerSeries and printed in the health body's peer_mesh object; (3) the peer mesh runs only when QIP_MESH_PEER/peers are configured, which no committed environment does, so the multi-cell refusal is not on a default path (bar part 2).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2172,7 +2197,7 @@
     "verification": "cargo test -p qip-edge-node --test decision_loop a_cycle_whose_peer_is_lost_mid_epoch_is_refused_at_its_ttl_while_the_single_venue_strategy_keeps_trading; cargo test -p qip-peer-link --test saga",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE: not closed; the missing seam is in qip-peer-link, not in qip-edge or qip-edge-node. 2026-10-24 lane L6 (implemented by a delegated agent, re-verified on this branch): `lapsed += 1` made a no-op in forget_gone failed the new decision_loop test at :1557 after its 60 s bound ('0 passed; 1 failed'); restored by cp and cmp, it passes in 2.04 s. The agent also reported: dropping the Host::record line for cycles_expired failed it the same way; an always-true fired guard failed saga.rs:327 (left 2, right 1). qip-peer-link + qip-edge-node --no-fail-fast: 46 result lines, 301 passed, 0 failed; mesh_lane 'ok. 4 passed'. Stays PARTIAL."
+    "notes": "Corrected 2026-10-24 by lane M1-KERNEL-EDGE: not closed; the missing seam is in qip-peer-link, not in qip-edge or qip-edge-node. 2026-10-24 lane L6 (implemented by a delegated agent, re-verified on this branch): `lapsed += 1` made a no-op in forget_gone failed the new decision_loop test at :1557 after its 60 s bound ('0 passed; 1 failed'); restored by cp and cmp, it passes in 2.04 s. The agent also reported: dropping the Host::record line for cycles_expired failed it the same way; an always-true fired guard failed saga.rs:327 (left 2, right 1). qip-peer-link + qip-edge-node --no-fail-fast: 46 result lines, 301 passed, 0 failed; mesh_lane 'ok. 4 passed'. Stays PARTIAL. 2026-10-25 lane L6: PeerSeries::observe now counts the difference in cycles_expired as qip_edge_peer_cycles_expired_total {cell,region}, and the health body's peer_mesh object prints cycles_expired. The lost-peer decision_loop test now attaches the series as main.rs does and asserts the counter moved (>=1, never above the port's count). Mutation: the increment guarded by `lapsed > u64::MAX` failed it at 'a cycle that lapsed at its ttl did not move the peer cycles expired series: 0 counted'; restored, cmp clean, passed. cargo test -p qip-edge-node -p qip-observability --no-fail-fast: passed 357, failed 0. Still PARTIAL on (1) directional bands and (3) the env-gated mesh."
   },
   {
     "id": "R12-RES-7096",
@@ -2205,9 +2230,13 @@
       "backend/crates/services/qip-world-model/src/world.rs WorldModel::quarantine_source",
       "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources (Quarantined transition)",
       "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::quarantining_a_source_stops_the_world_model_believing_what_it_said",
-      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)"
+      "backend/crates/services/qip-learning-engine/src/verifier.rs attack_model (quarantined training data)",
+      "backend/crates/services/qip-world-model/src/graph.rs KnowledgeGraph::downweight_source",
+      "backend/crates/services/qip-world-model/src/world.rs WorldModel::mark_source_stale, STALE_SOURCE_CONFIDENCE",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted",
+      "backend/crates/services/qip-world-model/tests/contradictions.rs::a_stale_downweight_that_would_not_lower_belief_is_refused"
     ],
-    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) 'stale' half: a source retired for staleness or cost keeps its facts and nothing downweights beliefs citing a stale source; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
+    "gap": "2026-10-24 (lane L6): (1) default path: qip-deepbrain assesses sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH names a candidate catalogue, which no committed environment sets, so the quarantine (and with it the retraction) never runs on a shipped binary's default path (bar part 2); (2) closed 2026-10-25: a retired source's facts are restated at STALE_SOURCE_CONFIDENCE (0.5) of their confidence from the retirement, bitemporally, and journaled as BeliefRevised; (3) a hypothesis or belief already formed and held (reasoning engine, episodic memory) is not re-scored when its evidence is retracted; only reads after the quarantine see the narrower graph.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2218,7 +2247,7 @@
     "verification": "cd backend && cargo test -p qip-kernel --test source_lifecycle quarantining_a_source_stops_the_world_model_believing_what_it_said",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses."
+    "notes": "2026-10-24 lane L6: implemented the propagation. Mutations, each restored by cp and cmp: replacing the kernel's quarantine_source call with a no-op failed the new test at source_lifecycle.rs:470 ('a quarantined source's facts are still believed'); dropping the source match in retract_source failed it at :475 ('a clean source's facts were retracted with the quarantined one's'). qip-kernel + qip-world-model --no-fail-fast: 90 result lines, 1355 passed, 0 failed. Stays PARTIAL on the default-path and stale clauses. 2026-10-25 lane L6: Platform::assess_sources calls WorldModel::mark_source_stale on a Retired transition. Mutations: the kernel call guarded `&& false` and the restated confidence left undivided each failed a_belief_citing_a_source_retired_as_stale_is_downweighted_not_retracted at 'a stale source's beliefs were not held at the downweighted confidence'; widening the factor range to 0.0..=1.0 failed a_stale_downweight_that_would_not_lower_belief_is_refused at 'a downweight by 1 was admitted'. Each restored, cmp clean, passed. cargo test -p qip-world-model -p qip-kernel --no-fail-fast: passed 1386, failed 0. Still PARTIAL on (1) the env-gated source assessment and (3) re-scoring held hypotheses."
   },
   {
     "id": "R12-RES-7098",
@@ -2346,9 +2375,17 @@
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:1516 a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again; :1597 a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering; :1673 a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed",
       "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells",
       "backend/crates/apps/qip-edge-node/src/feed.rs::SimulatedFeed::capture (uncertainty = venue_time.since(now), floored at zero)",
-      "backend/crates/apps/qip-edge-node/tests/capture_uncertainty.rs a_venue_stamping_ahead_of_the_cell_is_captured_with_that_lead_as_its_clock_uncertainty; a_venue_stamping_behind_the_cell_is_captured_without_inventing_doubt"
+      "backend/crates/apps/qip-edge-node/tests/capture_uncertainty.rs a_venue_stamping_ahead_of_the_cell_is_captured_with_that_lead_as_its_clock_uncertainty; a_venue_stamping_behind_the_cell_is_captured_without_inventing_doubt",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::clock_uncertainty",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs::a_degraded_clock_row_widens_the_uncertainty_of_events_from_venues_the_cell_never_measured",
+      "backend/crates/libs/qip-storage/tests/lake_history.rs::a_tick_captured_under_a_degraded_clock_reads_back_with_its_widened_uncertainty",
+      "backend/crates/services/qip-training/src/clock_precision.rs ClockPrecision::admit",
+      "backend/crates/services/qip-training/tests/clock_precision.rs",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on",
+      "backend/crates/apps/qip-edge-node/src/feed.rs SimulatedFeed::publish",
+      "backend/crates/apps/qip-edge-node/tests/capture_uncertainty.rs::a_captured_event_from_a_venue_the_cell_has_not_measured_carries_the_widened_clock_uncertainty"
     ],
-    "gap": "One half of the clause is not done: precision-sensitive labels and replay are not blocked from promotion by the widened uncertainty (a centre and research-lane control; nothing in qip-kernel or qip-edge reads CapturedMarketEvent.uncertainty to refuse a label). The cell-side widening is the lead only, a lower bound; it does not yet use the cell's Clock row (fresh/stale/unavailable) to widen events from venues it has not measured, and the capture path in qip-sequencing (CaptureStream, which derives uncertainty from ClockDiscipline) is a different producer that this does not touch.",
+    "gap": "2026-10-24 (lane L6): (a) the cell's Clock row now widens a captured event's clock uncertainty for venues it has not measured (Cell::clock_uncertainty, never narrower than the venue's own lead), and the Tick Lake reader keeps the field (lake_history.rs RecordedTick.clock_uncertainty, which it used to drop); (b) precision-sensitive labels are blocked from promotion: qip-training ClockPrecision (derived from the label plan's shortest horizon, /10, a house default) refuses a whole window whose events are less precise, and the deep brain's tick desk applies it before labelling, so an imprecise window yields no labels and no model, with the refusal naming the window. Open: (1) closed for SimulatedFeed 2026-10-25: SimulatedFeed::publish asks Cell::clock_uncertainty once per frame, before the frame is decoded (after decoding the feed's own venue reads as measured by that same lead, so the answer would always equal the lead), and every captured event stores it; qip-sequencing's CaptureStream is still untouched; (2) the tick desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no environment does (bar part 2); (3) 'strategies needing precise cross-venue ordering disabled' was already the cell-side clock sizing; replay promotion outside the tick desk is not gated.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2356,31 +2393,37 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage; cargo test -p qip-edge-node --test capture_uncertainty",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test tick_desk a_window_captured_under_a_degraded_clock_is_not_labelled_or_trained_on; cargo test -p qip-training --test clock_precision; cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. Lane M1-KERNEL-EDGE, 2026-10-24: uncertainty widening closed for the simulated feed; PARTIAL kept for label/replay promotion. Mutations (each fired, restored): storing ZERO fails the ahead test; reversing the subtraction (now.since(venue_time)) fails both tests."
+    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests. Lane M1-KERNEL-EDGE, 2026-10-24: uncertainty widening closed for the simulated feed; PARTIAL kept for label/replay promotion. Mutations (each fired, restored): storing ZERO fails the ahead test; reversing the subtraction (now.since(venue_time)) fails both tests. 2026-10-24 lane L6: library half by a delegated agent (8 mutations reported, each failing its named assertion); re-verified here: dropping the precision bound in admit failed clock_precision.rs:63. Tick desk wiring added in this lane: admitting every window failed tick_desk.rs:724 ('a window with two seconds of clock doubt was labelled'); restored by cp and cmp, 8 passed. clippy --workspace -D warnings exit 0; qip-edge + qip-storage + qip-training + qip-deepbrain --no-fail-fast 1115 passed, 0 failed (before the wiring); qip-deepbrain --no-fail-fast after it: 15 result lines, 318 passed, 0 failed. Stays PARTIAL. 2026-10-25 lane L6 (delegated agent, cherry-picked as 2b7e6ce3): mutations: storing the lead alone, and asking the cell after on_bytes, each failed both new tests at 'stored with [0ns]'; skipping Cell::clock_uncertainty's measured branch failed the measured-venue test at 'stored with [3.000s]'. Agent's gate: qip-edge-node/edge/storage/deepbrain passed 1312, failed 0. Design cost, stated in the code: a venue whose previous frame led by 1s carries 1s on its next level frame (errs wider)."
   },
   {
     "id": "R12-RES-7104",
     "status": "PARTIAL",
-    "current": "venue fill error histogram recorded (diagnostic only, decides nothing); no recalibration or capital reduction.",
+    "current": "LEARN measures, per registered strategy, the twin's mean absolute fill error at the strategy's venue since its last re-promotion; past REPLAY_DIVERGENCE_THRESHOLD_BPS (100) on at least REPLAY_DIVERGENCE_MIN_SAMPLE (10) fills it journals a ReplayDivergenceEntry `reduced` (kernel/replay-divergence, carrying the twin's calibration count and the benchmark rerun as required) and holds the strategy; Platform::issue_capital applies REPLAY_DIVERGENCE_MULTIPLIER (0.5) beside the confidence governor's contraction. Only a lifecycle escalation recorded after the hold releases it (a `restored` record); holds resume from the log.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/tests/learning.rs:935 a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue",
-      "backend/crates/services/qip-twin/src/asof.rs"
+      "backend/crates/services/qip-twin/src/asof.rs",
+      "backend/crates/runtime/qip-kernel/src/replay_divergence.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs replay_divergence_holds, issue_capital",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_diverges_from_a_venue_halves_the_grant_of_the_strategy_trading_there_until_it_is_promoted_again",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_agrees_with_the_venue_holds_no_strategy_trading_there",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_strategy_trading_at_a_cell_venue_whose_twin_misprices_its_fills_is_held",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_twin_that_agrees_with_a_cell_venue_holds_no_strategy_trading_there"
     ],
-    "gap": "Divergence → capital reduction → recalibration → re-promotion.",
+    "gap": "2026-10-24 (lane L6): two steps remain. (1) Platform::issue_capital is not reached on a shipped binary's default path past Principal::presence, so the narrowed grant is proven in the kernel test, not in a running binary (AUDIT-5 part 2). (2) closed 2026-10-25: Platform::ingest_cell_report queues each settled cell fill at a registered venue into the same scoring path (queue_cell_fills, evaluate_cell_fill), deduplicated by CellFillsQueued; a replayed cell report is also refused settlement by CentralPlane (SettledReports). The 100 bps threshold, 10-fill minimum and 0.5 multiplier were approved as written by the owner (docs/blueprint/owner-decisions-2026-10-25.md decision 2).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "kernel learning test",
+    "verification": "cd backend && cargo test -p qip-kernel --test central a_twin && cargo test -p qip-kernel replay_divergence",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-24 lane L6 (implemented by a delegated agent, integrated here): cargo test -p qip-kernel --no-fail-fast passed 1062, failed 0. Mutation reproduced here: replacing replay_divergence_holds.insert(strategy, hold) with a no-op failed the divergence test at 'a twin past the threshold at the strategy's venue did not hold its grant' (left 1, right 0.5); restored, cmp clean, 2 passed. The agent also reported seven further mutations each failing its named test (unnarrowed governor decision, escalation check dropped, release never removing the hold, threshold always true, signed error, window bound, multiplier of one). It withdraws no venue (learning.rs's never-withdraws test untouched and passing) and touches no paper-trading layer. Kept PARTIAL on the gap above. 2026-10-25 lane L6: cell fills scored (delegated agent, cherry-picked as 2e0a8b20). Agent's mutations: deleting the queue_cell_fills call failed at 'LEARN priced 0 of the cell's 12 fills'; scoring twice at 'priced 16 of the cell's 12 fills'; exceeds_threshold always true failed the agreeing-twin premise. The agent found the centre settled a replayed cell report twice; fixed here (see the replay leg)."
   },
   {
     "id": "R12-RES-7105",
@@ -2413,9 +2456,14 @@
       "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs::Hypothesis::confidence_for_sizing",
       "backend/crates/runtime/qip-kernel/src/platform.rs conviction: sign * reasoned.hypothesis.confidence_for_sizing()",
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on",
-      "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one"
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs::the_reason_stage_names_the_evidence_posture_so_a_small_size_can_be_told_from_an_absent_one",
+      "docs/adr/0212-a-derivation-that-contradicts-itself-is-infeasible-keeps-its-trace-and-moves-no-money-and-dissent-is-not-a-contradiction.md",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs contradictions, Feasibility, feasibility_of",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_reason (infeasible derivation never reaches pending_theses)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::symbolic_contradiction_tests::a_contradictory_derivation_yields_infeasible_with_its_trace_and_blocks_money_movement",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::symbolic_contradiction_tests::a_contested_thesis_is_not_a_contradiction_and_still_forms_a_proposal_sized_small"
     ],
-    "gap": "2026-10-24: requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement",
+    "gap": "2026-10-25 (lane L6): ADR 0212 (Accepted under the owner's delegation) scopes ADR 0150 d14 to dissent; a derivation that contradicts itself is journaled Infeasible with its words and RulePack alternates kept, and stage_reason never queues it to pending_theses, the only road to sizing, a leg and an order. An independent skeptic judged the COMPLETE claim REFUTED on bar part 4: the requirement marks a conclusion infeasible or unresolved on 'unsatisfied constraints', and ADR 0212 decision 1 declines that for dissent, so a contested thesis whose acting problem the platform's own constraint check answers Unsatisfiable is marked Feasible, queued and sized (the dissent test asserts exactly that). Closing it needs either the owner to scope the requirement's clause to self-contradiction, or an Unresolved mark that blocks money when the acting problem is unsatisfiable, which reverses ADR 0150 d14 and ADR 0212 d1 for dissent. Caveat: the shipped rule pack's invariants are theorems of its rules, so no real input trips it today; the test drives a revised pack through the default cycle. Earlier: 2026-10-24: requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2425,10 +2473,10 @@
       "R12-CONTRACT-7077"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoning contradiction_only_ever; cargo test -p qip-kernel --test kernel the_reason_stage_names",
+    "verification": "cd backend && cargo test -p qip-kernel --lib symbolic_contradiction_tests",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed. AUDIT-2 2026-10-24: regraded, requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement"
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed by ADR 0150 d14: the closure clause that an unresolved contradiction blocks a proposal is withdrawn; a ContradictionResolution trace is advisory and waits for a named consumer. Mutation fired: confidence_for_sizing multiplying by (2.0 - dissent) instead of dissent failed contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on at reasoning.rs:1086; restored, it passed. AUDIT-2 2026-10-24: regraded, requirement is a contradictory derivation yielding infeasible/unresolved with the trace kept and money movement blocked (fail closed); the row withdraws the blocking clause by ADR 0150 d14, a contradicted thesis is still sized (only smaller) and nothing marks it infeasible, so the named tests prove narrowing, not the requirement 2026-10-25 lane L6 (delegated agent, cherry-picked as 066ef182): mutations: skipping the refusal failed the contradiction test at 'an infeasible conclusion was still reported approved'; dropping the trace failed it at 'the contradiction's own words were not kept'; emptying alternates at 'the alternates do not name the two colliding rules'; counting dissent as a contradiction failed the dissent test at 'dissent was marked as a contradiction'. Agent's gate: qip-kernel passed 1088, failed 0; compliance_proof 8, paper_boundary 5, security 29 passed; clippy -D warnings clean. Paper boundary intact (no layer touched). 2026-10-25 skeptic (read-only, independent): REFUTED on part 4 (ADR 0212 d1 withdraws the unsatisfied-constraints clause for dissent); parts 1-3 hold for the self-contradiction class (one production push site to pending_theses; a record with no mark fails closed). Lane gate on 091703ec: qip-kernel passed 1088, failed 0; qip-acceptance passed 1610, failed 1 (blueprint view); clippy --workspace exit 0."
   },
   {
     "id": "R12-RES-7107",
@@ -2659,7 +2707,7 @@
       ".github/workflows/deploy.yml:44,91 deploy runs on CI workflow_run and a gate job",
       "docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch"
     ],
-    "gap": "2026-10-24 (lane L6): the gate is written as docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch: a ci.yml job named 'simulation gate' (qip-simulation-engine's tests, then qip-acceptance arch_042_twin_simulation, arch_056_simulation_engine, tick_replay, replay_queue_and_unwind) and a deploy.yml step that refuses a deploy unless the trusted ci run has that job by name and it succeeded (absent is a refusal), with deploy_provenance.rs::a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused executing the step against a stub gh and asserting ci.yml defines the job. The suites it runs pass today (lane run: 'test result: ok' for 13, 4, 4, 4 and 1 tests). The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it. Until it lands, a deploy is gated only on ci as a whole.",
+    "gap": "2026-10-25 (lane L6): l6-cicd-7116-7119-protected.patch was applied by the parent session on ccr-d1bc1e54-kf6mr0 at b9a45fd5 under owner-decisions-2026-10-25 decision 3 (with the parent's corrections for 9120: rustup inside backend/, and change-windows.json naming `qip change-window`), and is merged into this lane. Still PARTIAL until the owner's approving review of the rolling pull request's head (the `agent boundary` sign-off) and a hosted CI run shows the gate firing. Earlier: 2026-10-24 (lane L6): the gate is written as docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch: a ci.yml job named 'simulation gate' (qip-simulation-engine's tests, then qip-acceptance arch_042_twin_simulation, arch_056_simulation_engine, tick_replay, replay_queue_and_unwind) and a deploy.yml step that refuses a deploy unless the trusted ci run has that job by name and it succeeded (absent is a refusal), with deploy_provenance.rs::a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused executing the step against a stub gh and asserting ci.yml defines the job. The suites it runs pass today (lane run: 'test result: ok' for 13, 4, 4, 4 and 1 tests). The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it. Until it lands, a deploy is gated only on ci as a whole.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2726,7 +2774,7 @@
       "backend/crates/tests/qip-acceptance/tests/performance.rs",
       "backend/crates/tests/qip-acceptance/tests/m5_performance.rs"
     ],
-    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL: the thresholds exist, the gate does not): docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch adds a ci.yml job named 'performance gate' running performance and m5_performance in the release profile on one test thread, and the deploy.yml step that refuses a deploy unless that job succeeded in the trusted ci run. In this lane's session, the release suite failed twice under heavy machine load (central OMS submit scaling 2.04x vs a 2.0x tolerance; cell::work p99 11479us vs 10000us) and passed on three reruns on the same build (twice the two tests alone, then 'test result: ok. 36 passed' with --test-threads=1 and again in parallel), which is why the patch pins one thread; a hosted runner's noise is unmeasured. The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it.",
+    "gap": "2026-10-25 (lane L6): l6-cicd-7116-7119-protected.patch was applied by the parent session on ccr-d1bc1e54-kf6mr0 at b9a45fd5 under owner-decisions-2026-10-25 decision 3 (with the parent's corrections for 9120: rustup inside backend/, and change-windows.json naming `qip change-window`), and is merged into this lane. Still PARTIAL until the owner's approving review of the rolling pull request's head (the `agent boundary` sign-off) and a hosted CI run shows the gate firing. Earlier: 2026-10-24 (lane L6, MISSING->PARTIAL: the thresholds exist, the gate does not): docs/blueprint/lanes/l6-cicd-7116-7119-protected.patch adds a ci.yml job named 'performance gate' running performance and m5_performance in the release profile on one test thread, and the deploy.yml step that refuses a deploy unless that job succeeded in the trusted ci run. In this lane's session, the release suite failed twice under heavy machine load (central OMS submit scaling 2.04x vs a 2.0x tolerance; cell::work p99 11479us vs 10000us) and passed on three reruns on the same build (twice the two tests alone, then 'test result: ok. 36 passed' with --test-threads=1 and again in parallel), which is why the patch pins one thread; a hosted runner's noise is unmeasured. The patch applies on top of docs/blueprint/lanes/l6-cicd-9066-protected.patch (both append to deploy_provenance.rs); with both applied in a scratch worktree, cargo test -p qip-acceptance --test deploy_provenance printed 'test result: ok. 7 passed'. Mutations, restored by cp and cmp: the deploy step's `!= \"success\"` turned into `= \"never\"` failed a_deployment_whose_simulation_or_performance_gate_did_not_succeed_is_refused at the missing-simulation-gate case; renaming ci.yml's job to 'perf gate' failed it at the job-definition assertion. .github/** is protected, so a person must apply it.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3022,23 +3070,30 @@
   },
   {
     "id": "R12-OBS-7132",
-    "status": "MISSING",
-    "current": "No channel health metrics (no external channels exist).",
+    "status": "COMPLETE",
+    "current": "The agency guard records qip_agency_channel_health_total {channel, dimension, outcome} for identity_integrity, reach, provenance, violations and coordination at the seam where it decides (ActionGuard::preflight_observed, folded by the ambient intake door), plus qip_agency_drafts_appended_total {channel}; the deep brain's ambient agency route writes them into the platform Telemetry served at /metrics, on its default path (research every cycle unless QIP_DEEPBRAIN_RESEARCH_EVERY=0). Since 2026-10-25 qip-agency engine::execute also calls preflight_observed and returns Report::health, and `qip-cli agency` records each verdict per channel (channel bounded by the policy's registered tool channels, others under `unconfigured`) and prints one line per verdict.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs"
+      "backend/crates/services/qip-agency/src/guard.rs HealthDimension, ActionGuard::preflight_observed",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs take_channel_health",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs record_channel_health",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::each_channel_health_dimension_is_recorded_for_the_internal_outbox_channel",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::every_check_the_guard_runs_is_placed_in_a_channel_health_dimension",
+      "backend/crates/services/qip-agency/src/engine.rs execute (preflight_observed, Report::health)",
+      "backend/crates/apps/qip-cli/src/agency.rs record_channel_health",
+      "backend/crates/apps/qip-cli/tests/agency_channel_health.rs::a_governed_cli_pass_records_each_channel_health_dimension_for_each_channel_it_judges"
     ],
-    "gap": "Define metrics with channels.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "None against the requirement's check. Recorded caveats (not gaps under the bar): the CLI's registry is in-process and only its printed lines outlive the one-shot command (they are lost if a later step of the pass errors); no test drives engine::execute with an adapter that accepts the call, so reach=pass on the engine path is unproven (the deep brain's reach pass is tested); no collector scrapes the deep brain, which the requirement does not ask for.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "no external channel exists under paper-only posture",
-    "verification": "metrics test",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test ambient_agency each_channel_health && cargo test -p qip-agency --lib every_check_the_guard_runs && cargo test -p qip-cli --test agency_channel_health",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-25 lane L6 (delegated agent, cherry-picked as ecb5dbab): mutations: deleting the provenance arm of HealthDimension::of_check failed the deep-brain test at 'provenance is recorded `pass` once per draft the guard cleared left: 0 right: 2'; noting reach pass on a failed write failed it at the full-outbox reach assertion (left 2, right 1); dropping 'disclosures' failed the unit test at '`disclosures` is in no channel-health dimension'. Agent's gate: qip-deepbrain/observability/agency passed 545, failed 0; clippy -D warnings clean. 2026-10-25 skeptic (read-only, independent): REFUTED on the qip-cli agency path (engine.rs:461 plain preflight); parts 1 and 3 and the deep-brain half of part 2 hold. 2026-10-25 lane L6: CLI path closed (delegated agent, cherry-picked as 989a59ab). Mutation reproduced by the lane: engine.rs execute switched back to plain guard.preflight failed both tests in qip-cli/tests/agency_channel_health.rs (identity_integrity pass left 0 right 1 at :278; the unconfigured-bucket test at :352); restored, cmp clean, 2 passed. Lane gate on 989a59ab: crates passed 8834 failed 0; qip-acceptance passed 1610 failed 1 (the_blueprint_views_are_what_their_sources_render_to, expected on a lane); clippy --workspace -D warnings exit 0; deps 'all permitted'; secrets 'nothing found'. Second independent skeptic (read-only): HOLDS, with the caveats in gap. PROMOTED to COMPLETE 2026-10-25."
   },
   {
     "id": "R12-AGENCY-7133",
@@ -3328,7 +3383,7 @@
       "backend/crates/tests/qip-acceptance/tests/market_creation.rs",
       "backend/crates/libs/qip-financial/src/commerce.rs"
     ],
-    "gap": "Logistics adapters; regulated wagering isolation not assessed.",
+    "gap": "2026-10-24 (re-read against the tree): Event markets (qip-prediction plus kernel event_markets.rs), market creation (market_factory_stage.rs, qip-acceptance tests/market_creation.rs) and paper physical commerce (qip-financial commerce.rs, kernel commerce_research.rs) exist and are tested; no logistics adapter exists - qip-financial commerce.rs LogisticsPlan is a planner with no carrier port and no simulated or real carrier adapter anywhere in backend/crates. A simulated carrier adapter is plain code; any real carrier is BLOCKED by ADR 0021/0099; the commerce plane is itself behind QIP_DEEPBRAIN_BREADTH_PLAN, unset in every committed env.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3339,7 +3394,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'regulated wagering isolation not assessed' is stale: qip-prediction src/access.rs isolates VenueKind::Wagering, tested by qip-prediction tests/access.rs and qip-kernel tests/breadth.rs."
   },
   {
     "id": "R12-AMBIENT-7146",

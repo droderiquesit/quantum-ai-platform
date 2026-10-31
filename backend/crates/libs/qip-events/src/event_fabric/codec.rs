@@ -22,6 +22,14 @@
 //! | base offset, leader epoch | broker | the partition log position and the epoch of the broker that accepted the batch |
 //! | logical (HLC) timestamp | broker | assigned on admission to the partition; carried as the two plain integers below, since [`Hlc`](super::hlc)'s own causality rules are SLICE-14's, not this codec's |
 //! | previous-batch hash | broker | chains this batch to the one before it in the same partition |
+//! | provenance | writer | ADR 0129 §2: the producing component's kind, from the closed [`Provenance`] set, never a free string |
+//! | region, partition, principal | broker | ADR 0129 §1: [`BrokerOrigin`], facts the broker knows and a producer could only assert — its own region, the partition it appends to, and the identity the session authenticated |
+//!
+//! The last two rows arrived with format version 2. A batch carrying neither
+//! is written in version 1's layout, byte for byte, so every batch written
+//! before them — and every chain hash over one — re-encodes to the bytes it
+//! always had; a version-1 batch decodes with both explicitly absent, never
+//! defaulted by its reader.
 //!
 //! Three fields are **not** in this table because they are framing, not
 //! CONTRACT-048 content: the total body length together with the prefix CRC
@@ -111,9 +119,15 @@ use super::crc32c::crc32c;
 /// handed the wrong stream refuses immediately rather than misparsing it.
 pub const BATCH_MAGIC: [u8; 4] = *b"QEVB";
 
-/// Bumped only for an incompatible layout change; an older or newer batch is
-/// refused rather than guessed at.
-pub const FORMAT_VERSION: u16 = 1;
+/// Bumped only for an incompatible layout change; a newer batch is refused
+/// rather than guessed at. Version 2 (ADR 0129) adds the writer's
+/// [`Provenance`] and the broker's [`BrokerOrigin`]; this build still reads
+/// [`FORMAT_VERSION_WITHOUT_ORIGIN`], and writes it for a batch carrying
+/// neither, so an old batch's bytes and chain hash do not move.
+pub const FORMAT_VERSION: u16 = 2;
+
+/// The layout before ADR 0129: no provenance and no broker origin.
+pub const FORMAT_VERSION_WITHOUT_ORIGIN: u16 = 1;
 
 /// Refuse to trust a declared body length before the buffer is known to hold
 /// that many bytes. 32 MiB comfortably covers a fast brain's decision batch
@@ -149,6 +163,82 @@ const ENCODING_TAG_CANONICAL_JSON: u8 = 0;
 
 /// The wire tag for [`MessageType::Data`].
 const MESSAGE_TYPE_TAG_DATA: u8 = 0;
+
+/// The wire tags for an absent and a present [`BrokerOrigin`], and for a
+/// batch the broker stamped with its partition alone (R12-FABRIC-8084): an
+/// append from a producer with no authenticated session still names the
+/// partition it landed in, because the frame header carries the partition
+/// on every append, not only on the ones a principal can be named for.
+const ORIGIN_TAG_NONE: u8 = 0;
+const ORIGIN_TAG_PRESENT: u8 = 1;
+const ORIGIN_TAG_PARTITION: u8 = 2;
+
+/// The component kind that wrote a batch (ADR 0129 §2). A closed set, so a
+/// reader can tell a desk record from a cell record without parsing ids and
+/// no producer can name itself anything a reader has not heard of. The
+/// producer id names the instance; this names the kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provenance {
+    EdgeNode,
+    Desk,
+    Api,
+    Cli,
+    Fabricd,
+}
+
+impl Provenance {
+    /// The label a reader sees, the same one ADR 0129 names.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Provenance::EdgeNode => "qip-edge-node",
+            Provenance::Desk => "desk",
+            Provenance::Api => "qip-api",
+            Provenance::Cli => "qip-cli",
+            Provenance::Fabricd => "qip-fabricd",
+        }
+    }
+
+    /// Zero is "not stated" on the wire and is never a variant.
+    const fn tag(self) -> u8 {
+        match self {
+            Provenance::EdgeNode => 1,
+            Provenance::Desk => 2,
+            Provenance::Api => 3,
+            Provenance::Cli => 4,
+            Provenance::Fabricd => 5,
+        }
+    }
+
+    fn from_tag(tag: u8, offset: usize) -> Result<Option<Self>> {
+        Ok(Some(match tag {
+            0 => return Ok(None),
+            1 => Provenance::EdgeNode,
+            2 => Provenance::Desk,
+            3 => Provenance::Api,
+            4 => Provenance::Cli,
+            5 => Provenance::Fabricd,
+            other => {
+                return Err(Error::schema(format!(
+                    "corrupt batch at byte offset {offset}: provenance byte {other} names no \
+                     component this build knows; the set is closed so a producer cannot name \
+                     itself into a reader's records"
+                )));
+            }
+        }))
+    }
+}
+
+/// What the broker that accepted a batch stamps about where it was produced
+/// (ADR 0129 §1): the broker's own region, the partition it appended to and
+/// the identity the producer's session authenticated as. Under the batch CRC
+/// and the ADR 0104 chain hash, so no later custodian can alter them without
+/// breaking the chain, and never supplied by a reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrokerOrigin {
+    pub region: String,
+    pub partition: u32,
+    pub principal: String,
+}
 
 /// How a record's payload bytes are encoded.
 ///
@@ -349,6 +439,18 @@ pub struct Batch {
     pub leader_epoch: u64,
     pub logical_timestamp: LogicalTimestamp,
     pub previous_batch_hash: Option<ContentHash>,
+    /// Boxed so a batch no broker stamped — every batch a writer or drain
+    /// holds — does not carry the origin's size inline.
+    pub origin: Option<Box<BrokerOrigin>>,
+    /// The partition the broker appended this batch to, stamped on every
+    /// append (R12-FABRIC-8084), with or without an [`BrokerOrigin`]. When
+    /// an origin is present the two name the same partition, and
+    /// [`Batch::encode`] refuses a batch where they disagree rather than
+    /// write two claims about one fact. `None` on a batch no broker
+    /// stamped, and on every batch appended before this field existed.
+    pub partition: Option<u32>,
+    // --- writer-owned, format version 2 ---
+    pub provenance: Option<Provenance>,
 }
 
 impl Batch {
@@ -381,7 +483,26 @@ impl Batch {
             leader_epoch: 0,
             logical_timestamp: LogicalTimestamp::default(),
             previous_batch_hash: None,
+            origin: None,
+            partition: None,
+            provenance: None,
         })
+    }
+
+    /// The writer's provenance stamp (ADR 0129 §2), made with the batch.
+    pub fn with_provenance(mut self, provenance: Provenance) -> Self {
+        self.provenance = Some(provenance);
+        self
+    }
+
+    /// The layout this batch encodes as: version 1 while it carries none of
+    /// the fields version 2 added, so an old batch keeps its bytes.
+    fn format_version(&self) -> u16 {
+        if self.origin.is_none() && self.partition.is_none() && self.provenance.is_none() {
+            FORMAT_VERSION_WITHOUT_ORIGIN
+        } else {
+            FORMAT_VERSION
+        }
     }
 
     /// Encode this batch to its wire bytes, recomputing the batch CRC (over
@@ -405,6 +526,30 @@ impl Batch {
         write_i64(&mut header, self.logical_timestamp.physical_ns);
         write_u32(&mut header, self.logical_timestamp.logical);
         encode_previous_hash(&mut header, &self.previous_batch_hash)?;
+        let version = self.format_version();
+        if version == FORMAT_VERSION {
+            header.push(self.provenance.map_or(0, Provenance::tag));
+            match (&self.origin, self.partition) {
+                (None, None) => header.push(ORIGIN_TAG_NONE),
+                (None, Some(partition)) => {
+                    header.push(ORIGIN_TAG_PARTITION);
+                    write_u32(&mut header, partition);
+                }
+                (Some(origin), Some(partition)) if partition != origin.partition => {
+                    return Err(Error::invalid(format!(
+                        "the batch names partition {partition} and its broker origin names \
+                         partition {}; one append lands in one partition, so restamp it",
+                        origin.partition
+                    )));
+                }
+                (Some(origin), _) => {
+                    header.push(ORIGIN_TAG_PRESENT);
+                    write_string(&mut header, &origin.region)?;
+                    write_u32(&mut header, origin.partition);
+                    write_string(&mut header, &origin.principal)?;
+                }
+            }
+        }
 
         let record_count = u32::try_from(self.records.len()).map_err(|_| {
             Error::invalid(format!(
@@ -436,7 +581,7 @@ impl Batch {
 
         let mut out = Vec::with_capacity(PREFIX_LEN + body.len());
         out.extend_from_slice(&BATCH_MAGIC);
-        out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        out.extend_from_slice(&version.to_le_bytes());
         out.extend_from_slice(&body_len.to_le_bytes());
         // The prefix CRC covers exactly the bytes just written (magic,
         // version, length) and nothing else — it is computed here, once
@@ -531,10 +676,10 @@ fn decode_frame(bytes: &[u8]) -> Result<Frame> {
         )));
     }
     let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    if version != FORMAT_VERSION {
+    if version != FORMAT_VERSION && version != FORMAT_VERSION_WITHOUT_ORIGIN {
         return Err(Error::schema(format!(
             "batch at byte offset 0 is format version {version}, this build reads \
-             version {FORMAT_VERSION}"
+             versions {FORMAT_VERSION_WITHOUT_ORIGIN} and {FORMAT_VERSION}"
         )));
     }
     let declared_len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]) as usize;
@@ -583,6 +728,34 @@ fn decode_frame(bytes: &[u8]) -> Result<Frame> {
     let physical_ns = cursor.read_i64()?;
     let logical = cursor.read_u32()?;
     let previous_batch_hash = decode_previous_hash(&mut cursor)?;
+    let (provenance, origin, partition) = if version == FORMAT_VERSION {
+        let provenance_pos = cursor.pos;
+        let provenance = Provenance::from_tag(cursor.read_u8()?, cursor.absolute(provenance_pos))?;
+        let origin_pos = cursor.pos;
+        let origin = match cursor.read_u8()? {
+            ORIGIN_TAG_NONE => (None, None),
+            ORIGIN_TAG_PRESENT => {
+                let origin = BrokerOrigin {
+                    region: cursor.read_string()?,
+                    partition: cursor.read_u32()?,
+                    principal: cursor.read_string()?,
+                };
+                let partition = origin.partition;
+                (Some(Box::new(origin)), Some(partition))
+            }
+            ORIGIN_TAG_PARTITION => (None, Some(cursor.read_u32()?)),
+            other => {
+                return Err(Error::schema(format!(
+                    "corrupt batch at byte offset {}: origin tag {other} is neither absent (0), \
+                     present (1) nor partition-only (2)",
+                    cursor.absolute(origin_pos)
+                )));
+            }
+        };
+        (provenance, origin.0, origin.1)
+    } else {
+        (None, None, None)
+    };
     let record_count = cursor.read_u32()?;
     let header_end = cursor.pos;
     let header_bytes = cursor.slice(header_start, header_end);
@@ -627,6 +800,9 @@ fn decode_frame(bytes: &[u8]) -> Result<Frame> {
                 logical,
             },
             previous_batch_hash,
+            origin,
+            partition,
+            provenance,
         },
         end,
     ))
@@ -686,6 +862,22 @@ pub fn stamp_broker(
     batch.leader_epoch = leader_epoch;
     batch.logical_timestamp = logical_timestamp;
     batch.previous_batch_hash = previous_batch_hash;
+}
+
+/// The broker's origin stamp (ADR 0129 §1): its own region, the partition
+/// it is appending to, and the principal the producing session
+/// authenticated as. Touches no other field; the batch CRC is recomputed by
+/// [`Batch::encode`] as for every stamp.
+pub fn stamp_broker_origin(batch: &mut Batch, origin: BrokerOrigin) {
+    batch.partition = Some(origin.partition);
+    batch.origin = Some(Box::new(origin));
+}
+
+/// The broker's partition stamp (R12-FABRIC-8084), made on every append,
+/// including one from a producer with no authenticated session, for which
+/// [`stamp_broker_origin`] has no principal to name.
+pub fn stamp_broker_partition(batch: &mut Batch, partition: u32) {
+    batch.partition = Some(partition);
 }
 
 fn encode_previous_hash(out: &mut Vec<u8>, hash: &Option<ContentHash>) -> Result<()> {

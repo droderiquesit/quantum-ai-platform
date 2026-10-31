@@ -44,9 +44,11 @@
 //! * **And it is invented only where governance permits it**
 //!   (R12-COVERAGE-5107). Listing on demand brings an instrument into
 //!   existence at the venue, so it asks the gateway's own
-//!   `CreationPermissions` register for an admission to list exactly that
-//!   instrument here, which needs a recorded venue, product and
-//!   jurisdiction permission. [`SimulatedGateway::new`] gives it no
+//!   `CreationPermissions` register for an admission to create and an
+//!   admission to list exactly that instrument here, each of which needs a
+//!   recorded venue, product and jurisdiction permission. Until 2026-10-24
+//!   it asked for `List` alone, and the venue invented the instrument's
+//!   record under no permission to create it. [`SimulatedGateway::new`] gives it no
 //!   register at all, so a gateway nobody has handed permissions to refuses
 //!   every instrument it does not already list, whether it arrives by
 //!   placement, by a seeded touch or from a tape.
@@ -78,7 +80,7 @@ use qip_brokers::exchange::{ExchangeSettings, SimulatedDepth, SimulatedExchange}
 use qip_brokers::rest::{RestOrderEntryAdapter, RestOrderStats};
 use qip_contracts::message::BookSide;
 use qip_contracts::replay::ReplayAssumptions;
-use qip_contracts::venue::VenueId;
+use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
@@ -223,9 +225,6 @@ pub struct SimulatedGateway {
     /// [`MAX_WORKING_ORDERS`] with the working set, because a held order is
     /// one this gateway has promised to follow.
     held: BTreeMap<Timestamp, Vec<HeldOrder>>,
-    /// Orders withdrawn at release because their instant was further past
-    /// than [`Self::release_tolerance`], awaiting collection by the cell.
-    unreleased: Vec<UnreleasedOrder>,
     /// See [`DEFAULT_RELEASE_TOLERANCE`].
     release_tolerance: Duration,
     /// What every listing, placement and seed is admitted against, at the
@@ -235,6 +234,24 @@ pub struct SimulatedGateway {
     /// `NodeGateway` variant holding it, grow by a pointer rather than by a
     /// register.
     listing: Option<Box<ListingAuthority>>,
+    /// The trading status this venue declares per instrument, where it has
+    /// declared one other than open (R12-TICK-2044): what the feed
+    /// publishes as a status line beside the depth. Bounded by the listed
+    /// instruments, since only a listed instrument has a status to declare.
+    /// Held in [`Notices`] with the unreleased orders.
+    notices: Box<Notices>,
+}
+
+/// What the venue holds for the cell outside the order path: orders
+/// withdrawn at release, and the statuses it has declared. Boxed together
+/// so the `NodeGateway` variant holding the gateway grows by a pointer.
+#[derive(Debug, Default)]
+struct Notices {
+    /// Orders withdrawn at release because their instant was further past
+    /// than the gateway's `release_tolerance`, awaiting collection by
+    /// the cell.
+    unreleased: Vec<UnreleasedOrder>,
+    statuses: BTreeMap<ObjectId, VenueStatus>,
 }
 
 /// The recorded permissions a gateway lists on demand under, and the
@@ -326,9 +343,9 @@ impl SimulatedGateway {
             working: BTreeMap::new(),
             now: at,
             held: BTreeMap::new(),
-            unreleased: Vec::new(),
             release_tolerance: DEFAULT_RELEASE_TOLERANCE,
             listing: None,
+            notices: Box::default(),
         })
     }
 
@@ -397,7 +414,10 @@ impl SimulatedGateway {
     /// same `now` the cell is handed. An order held for an instant at or
     /// before `now` is submitted on this pass if `now` is within the release
     /// tolerance of it, and withdrawn — reported through
-    /// [`Placer::unreleased`], never sent late — if not. Held orders are
+    /// [`Placer::unreleased`], never sent late — if not. An order the
+    /// gateway refuses at its release, because the register it is admitted
+    /// against no longer admits its instrument, is withdrawn through the same
+    /// seam carrying the refusal, and the pass goes on. Held orders are
     /// released in instant order, and within one instant in the order they
     /// were placed.
     ///
@@ -416,13 +436,17 @@ impl SimulatedGateway {
         }
         self.now = now;
         let due: Vec<Timestamp> = self.held.range(..=now).map(|(at, _)| *at).collect();
-        // A refusal at release no longer ends the release. Until 2026-10-24
-        // the first one returned here with the rest of its instant already
-        // out of the hold, so the orders behind it were neither sent nor
-        // reported and the cell went on believing them sent; a lapsed listing
-        // permission made that reachable from an ordinary pass. Every other
-        // due order is released on time, and the refusals are returned after.
-        let mut refused: Vec<(String, Error)> = Vec::new();
+        // A refusal at release neither ends the release nor stops the pass.
+        // Until 2026-10-24 the first one returned here with the rest of its
+        // instant already out of the hold, so the orders behind it were
+        // neither sent nor reported; the next fix released them and returned
+        // the refusal as error text, which `run_pass` propagated — the pass
+        // stopped before the cell was asked anything, and the cell's record
+        // kept the refused order open as sent, with no refusal journaled and
+        // nothing on its series. Each refused order is now withdrawn through
+        // the same structured seam a late one is, [`Placer::unreleased`],
+        // carrying the gateway's refusal, so the cell closes it, journals it
+        // under its own gate, counts it and stops (R12-COVERAGE-5107).
         for scheduled in due {
             let Some(orders) = self.held.remove(&scheduled) else {
                 continue;
@@ -430,12 +454,13 @@ impl SimulatedGateway {
             let lag = now.since(scheduled);
             for order in orders {
                 if lag > self.release_tolerance {
-                    self.unreleased.push(UnreleasedOrder {
+                    self.notices.unreleased.push(UnreleasedOrder {
                         order_id: order.order_id,
                         venue: order.venue,
                         scheduled,
                         lag,
                         tolerance: self.release_tolerance,
+                        refused: None,
                     });
                     continue;
                 }
@@ -444,27 +469,20 @@ impl SimulatedGateway {
                 // instant nobody matched at would make the fill time read as
                 // zero on a leg the gateway held for a whole pass.
                 let order_id = order.order_id.clone();
+                let venue = order.venue.clone();
                 if let Err(refusal) = self.submit_now(order, now) {
-                    refused.push((order_id, refusal));
+                    self.notices.unreleased.push(UnreleasedOrder {
+                        order_id,
+                        venue,
+                        scheduled,
+                        lag,
+                        tolerance: self.release_tolerance,
+                        refused: Some(refusal.message().to_string()),
+                    });
                 }
             }
         }
-        let others = refused.len().saturating_sub(1);
-        match refused.into_iter().next() {
-            None => Ok(()),
-            Some((order_id, refusal)) => {
-                let message = format!(
-                    "held order {order_id} was refused at release{}: {}",
-                    if others == 0 {
-                        String::new()
-                    } else {
-                        format!(" (and {others} more held order(s) beside it)")
-                    },
-                    refusal.message()
-                );
-                Err(refusal.relabelled(message))
-            }
-        }
+        Ok(())
     }
 
     /// The venue's clock: the latest pass instant this gateway has been
@@ -613,11 +631,16 @@ impl SimulatedGateway {
         quantity: Decimal,
         at: Timestamp,
     ) -> Result<Decimal> {
-        if self.exchange.is_listed(object_id) {
-            self.admission(CreationAction::List, object_id)?;
+        if !self.exchange.is_listed(object_id) {
+            return Err(Error::not_found(format!(
+                "{} does not list {}, so there is no book to take from",
+                self.venue.as_str(),
+                object_id.as_str()
+            )));
         }
+        let admission = self.admission(CreationAction::List, object_id)?;
         self.exchange
-            .seed_aggressor(object_id, side, price, quantity, at)
+            .seed_aggressor(object_id, side, price, quantity, at, &admission)
     }
 
     /// The venue's own account of what it holds for the cell, from the
@@ -740,6 +763,46 @@ impl SimulatedGateway {
         self.exchange.quotes()
     }
 
+    /// Declare `object_id`'s trading status at this venue: a halt, a
+    /// circuit breaker, an auction, or open again (R12-TICK-2044).
+    ///
+    /// The simulated venue's own announcement, published by `crate::feed`
+    /// as a typed status line the cell decodes like any venue's status
+    /// message, so a breaker reaches the book and the tick lake through the
+    /// same capture path a depth change does. Like seeding, this exists for
+    /// a test or a replay and is never on the order path; it refuses an
+    /// instrument the venue does not list, because a status for a market
+    /// that does not exist is an announcement nobody could have made.
+    pub fn declare_status(&mut self, object_id: &ObjectId, status: VenueStatus) -> Result<()> {
+        if !self
+            .exchange
+            .quotes()
+            .iter()
+            .any(|depth| &depth.object_id == object_id)
+        {
+            return Err(Error::invalid(format!(
+                "{} does not list {object_id}; a status is declared for a listed instrument",
+                self.venue
+            )));
+        }
+        if status == VenueStatus::Open {
+            self.notices.statuses.remove(object_id);
+        } else {
+            self.notices.statuses.insert(object_id.clone(), status);
+        }
+        Ok(())
+    }
+
+    /// The status this venue declares for `object_id`: open unless declared
+    /// otherwise.
+    pub fn status_of(&self, object_id: &ObjectId) -> VenueStatus {
+        self.notices
+            .statuses
+            .get(object_id)
+            .copied()
+            .unwrap_or(VenueStatus::Open)
+    }
+
     /// Admit `action` on `object_id` at this venue, in this gateway's
     /// jurisdiction, against the register it holds *now*.
     ///
@@ -786,7 +849,7 @@ impl SimulatedGateway {
 
     /// List `object_id` on demand if the venue does not list it yet — and,
     /// either way, refuse unless the current register admits listing it
-    /// here.
+    /// here, and, when the listing would invent it, creating it too.
     fn ensure_listed(
         &mut self,
         object_id: &ObjectId,
@@ -802,6 +865,9 @@ impl SimulatedGateway {
         if self.exchange.is_listed(object_id) {
             return Ok(());
         }
+        // Not listed, so the listing below invents the instrument, and that
+        // is `create` as well as `list` (R12-COVERAGE-5107).
+        let creation = self.admission(CreationAction::Create, object_id)?;
         self.exchange.list_synthetic(
             object_id.clone(),
             object_id.as_str(),
@@ -810,6 +876,7 @@ impl SimulatedGateway {
             SYNTHETIC_STEP,
             invented_listing_liquidity(),
             at,
+            &creation,
             &admission,
         )
     }
@@ -899,7 +966,7 @@ impl Placer for SimulatedGateway {
     }
 
     fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
-        std::mem::take(&mut self.unreleased)
+        std::mem::take(&mut self.notices.unreleased)
     }
 
     /// The currency the venue's own listing quotes the instrument in, read

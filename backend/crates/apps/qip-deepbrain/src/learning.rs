@@ -129,10 +129,12 @@ use qip_core::{ObjectId, Timestamp};
 use qip_evolution::scoring::{Outcome, Scoreboard};
 use qip_kernel::Platform;
 use qip_kernel::central::models::{ModelRegistration, register_fit, require_calibrated_baseline};
+use qip_kernel::model_serving::{MIN_SHADOW_ROUNDS, ModelProducer};
 use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
 use qip_training::ConformalInterval;
+use qip_training::adversarial::PerturbationPolicy;
 use qip_training::campaign::{CampaignDraft, TrainingCampaign};
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
@@ -141,6 +143,9 @@ use qip_training::job::TrainingSpec;
 use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher};
 use qip_training::serve::InTreeProvider;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use qip_storage::BlobStore;
 
 /// The prefix every dataset this desk fits under carries, ahead of the
 /// subject's own identifier.
@@ -334,6 +339,14 @@ fn card_subject(card: &ModelCard) -> Option<&str> {
     found
 }
 
+/// The instrument a promoted model's name says it is of: this desk names
+/// every model `bar-{family}-{subject}`, and no family name holds a `-`.
+fn promotion_subject(name: &str) -> Option<&str> {
+    name.strip_prefix("bar-")?
+        .split_once('-')
+        .map(|(_, subject)| subject)
+}
+
 /// A standing model's fitted feature sample, and the instrument it is of.
 ///
 /// The subject is held beside the columns rather than derived when needed: the
@@ -497,12 +510,24 @@ pub enum PromotionOutcome {
     },
     /// The candidate stays at development stage, and why.
     NotPromoted { reference: String, reason: String },
+    /// The model is in shadow: it runs beside production on data that
+    /// arrived after its fit, acted on by nothing, and is promoted only
+    /// once it has won `required` rounds (R12-EXPAND-6070).
+    Shadowed {
+        reference: String,
+        rounds_won: u32,
+        required: u32,
+        /// What this round did: entered shadow, or won a round, and on what.
+        reason: String,
+    },
 }
 
 impl PromotionOutcome {
     pub fn reference(&self) -> &str {
         match self {
-            Self::Promoted { reference, .. } | Self::NotPromoted { reference, .. } => reference,
+            Self::Promoted { reference, .. }
+            | Self::NotPromoted { reference, .. }
+            | Self::Shadowed { reference, .. } => reference,
         }
     }
 
@@ -510,7 +535,7 @@ impl PromotionOutcome {
     pub fn published(&self) -> Option<&PublishedArtifact> {
         match self {
             Self::Promoted { published, .. } => Some(published),
-            Self::NotPromoted { .. } => None,
+            Self::NotPromoted { .. } | Self::Shadowed { .. } => None,
         }
     }
 
@@ -546,6 +571,14 @@ impl PromotionOutcome {
             ),
             Self::NotPromoted { reference, reason } => {
                 format!("{reference} not promoted: {reason}")
+            }
+            Self::Shadowed {
+                reference,
+                rounds_won,
+                required,
+                reason,
+            } => {
+                format!("{reference} in shadow, {rounds_won} of {required} round(s) won: {reason}")
             }
         }
     }
@@ -714,7 +747,27 @@ pub struct LearningStats {
     pub refused_at_door: u64,
     /// Rounds whose candidate the promote stage promoted.
     pub promoted: u64,
+    /// Candidates that passed every check and entered shadow.
+    pub shadowed: u64,
 }
+
+/// A model in its shadow period: what the desk needs to score it on each
+/// later round and to promote it once it has won enough (R12-EXPAND-6070).
+#[derive(Clone, Debug)]
+struct Shadowing {
+    reference: String,
+    artifact: ModelArtifact,
+    distillation: Option<Distillation>,
+    /// The latest instant any row its fit, its holdout or a won round has
+    /// read. A round scores only rows strictly after it, and a won round
+    /// moves it forward, so no round is a win on data the model has seen.
+    seen_through: Timestamp,
+}
+
+/// Rows after `seen_through` a shadow round needs before it is scored. Fewer
+/// is a window that has not moved on enough to say anything new, and the
+/// round waits rather than being judged on a handful of bars.
+pub const MIN_FRESH_SHADOW_ROWS: usize = 20;
 
 /// Fits models from observed bars and watches the ones it has fitted age.
 pub struct LearningDesk {
@@ -724,6 +777,10 @@ pub struct LearningDesk {
     /// This round's candidate for the promote stage; see
     /// [`PromotionCandidate`].
     candidate: Option<PromotionCandidate>,
+    /// Per subject, the model in shadow, if any. One at a time: a subject
+    /// with a model in shadow scores that model on each new window and
+    /// fits nothing new into production until it is decided.
+    shadowing: BTreeMap<String, Shadowing>,
     /// The artifact of every model this desk promoted, by reference, so an
     /// incumbent can be rescored on a later candidate's held-out rows by
     /// the same provider. Bounded by the registry: a displaced reference is
@@ -733,7 +790,8 @@ pub struct LearningDesk {
     promoted_artifacts: BTreeMap<String, ModelArtifact>,
     /// Artifacts of models a promotion displaced, kept so a rollback can put
     /// the incumbent back in the position to be rescored (MODEL-045). Bounded
-    /// by the number of references ever displaced in this process, one entry
+    /// by the number of references ever displaced — in this process, and
+    /// since R12-MODEL-9003 in the log a restart restores from — one entry
     /// each, and an entry leaves when its model is reactivated.
     displaced_artifacts: BTreeMap<String, ModelArtifact>,
     /// Per registered model, the feature columns it was fitted on and the
@@ -801,6 +859,19 @@ pub struct LearningDesk {
     /// bounded by construction and does not grow with uptime. Read by
     /// [`choose_class`] before a round's own fits are scored onto it.
     classes: Scoreboard,
+    /// Where a promoted model's bytes are stored, written before its
+    /// promotion record (R12-MODEL-9003). `None` keeps them only in memory,
+    /// which is what a desk under test does; the deep brain's root installs
+    /// its blob store.
+    artifact_store: Option<Arc<dyn BlobStore>>,
+    /// The adversarial perturbation suite every candidate must survive before
+    /// promotion (R12-MODEL-4021).
+    perturbation: PerturbationPolicy,
+    /// Whether the registry has been refilled from the log's registration
+    /// records this process (R12-MODEL-9003). Done once, before the first
+    /// round, so a restart does not lose the cards it registered and never
+    /// promoted.
+    restored: bool,
     /// Fits attempted, which is what a model's version is drawn from.
     fits: u64,
     seed: u64,
@@ -817,6 +888,10 @@ impl std::fmt::Debug for LearningDesk {
     }
 }
 
+/// What [`LearningDesk::restore_artifacts`] fetched: the references whose
+/// artifact came back, and those that did not, each with why.
+pub type ArtifactRestore = (Vec<String>, Vec<(String, String)>);
+
 impl LearningDesk {
     pub fn new(config: LearningConfig, seed: u64) -> Self {
         Self {
@@ -824,6 +899,7 @@ impl LearningDesk {
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
             candidate: None,
+            shadowing: BTreeMap::new(),
             promoted_artifacts: BTreeMap::new(),
             displaced_artifacts: BTreeMap::new(),
             reference: BTreeMap::new(),
@@ -831,10 +907,72 @@ impl LearningDesk {
             require_provenance: false,
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
+            artifact_store: None,
+            perturbation: PerturbationPolicy::default(),
+            restored: false,
             fits: 0,
             seed,
             stats: LearningStats::default(),
         }
+    }
+
+    /// Fetch the artifact of every model the platform's log says was
+    /// promoted, by the digest its promotion record names, and hold it as
+    /// this desk's own (R12-MODEL-9003): the promoted set's under
+    /// `promoted_artifacts`, so a restored incumbent can be rescored against
+    /// a later candidate, and the rest under `displaced_artifacts`, so a
+    /// rollback can reactivate a predecessor. Returns the references fetched
+    /// and those that could not be, with why; a missing artifact is reported
+    /// rather than assumed, and its incumbent blocks promotion by name.
+    pub fn restore_artifacts(
+        &mut self,
+        platform: &Platform,
+        fetch: impl Fn(&str) -> Result<ModelArtifact>,
+    ) -> Result<ArtifactRestore> {
+        let promoted = platform.model_promotions();
+        let mut fetched = Vec::new();
+        let mut missing = Vec::new();
+        let mut seen = BTreeSet::new();
+        for record in platform.model_promotion_history()?.into_iter().rev() {
+            if !seen.insert(record.reference.clone()) {
+                continue;
+            }
+            match fetch(&record.artifact_digest) {
+                Ok(artifact) => {
+                    if promoted.contains_key(&record.reference) {
+                        self.promoted_artifacts
+                            .insert(record.reference.clone(), artifact);
+                    } else {
+                        self.displaced_artifacts
+                            .insert(record.reference.clone(), artifact);
+                    }
+                    fetched.push(record.reference);
+                }
+                Err(error) => missing.push((record.reference, error.message().to_string())),
+            }
+        }
+        Ok((fetched, missing))
+    }
+
+    /// Store every candidate's artifact in `store`, under the digest-named
+    /// key the store's reader fetches by, before its promotion record is
+    /// written (R12-MODEL-9003). A promoted incumbent whose bytes were never
+    /// stored could not be rescored after a restart, which stopped promotion
+    /// on its subject; written first, a refused write refuses the promotion
+    /// instead.
+    pub fn with_artifact_store(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.artifact_store = Some(store);
+        self
+    }
+
+    /// Attack every candidate under `policy` before promotion instead of the
+    /// default (R12-MODEL-4021). Refuses a policy that is not one.
+    pub fn with_perturbation_policy(mut self, policy: PerturbationPolicy) -> Result<Self> {
+        // Validated by attacking a trivially smooth function: the suite's own
+        // check, rather than a second copy of it here.
+        qip_training::adversarial::attack(|row| Ok(row[0]), &[vec![0.0], vec![1.0]], &policy)?;
+        self.perturbation = policy;
+        Ok(self)
     }
 
     /// Refuse to promote a card that cannot be traced to a research campaign
@@ -872,6 +1010,182 @@ impl LearningDesk {
 
     pub const fn stats(&self) -> LearningStats {
         self.stats
+    }
+
+    /// Refill the registry from the cards the platform's log holds, once
+    /// per process, and return how many were registered (R12-MODEL-9003).
+    /// A card already in the registry is left as it is: the in-memory card
+    /// is never older than the log's.
+    ///
+    /// Production cards are restored like any other: the strictly-better
+    /// gate in `promote_candidate` reads its incumbents from this registry,
+    /// so a production card left out would let any candidate that clears
+    /// the skill bar in unopposed, beside the incumbent it never displaced.
+    /// An incumbent is rescored by its artifact, which
+    /// [`Self::restore_artifacts`] fetches by the digest its promotion
+    /// record names; an incumbent whose artifact could not be fetched blocks
+    /// promotion on its subject by name, the fail-closed direction. Paired with
+    /// `Platform::journal_model_registry` after every round, this is what
+    /// makes a registered-but-unpromoted version and its evaluations survive
+    /// the restart that rebuilds this desk's registry empty.
+    pub fn restore_registry(&mut self, platform: &Platform) -> usize {
+        if self.restored {
+            return 0;
+        }
+        self.restored = true;
+        let mut restored = 0;
+        // The promotion records are the source of truth for what is in
+        // production; the registration records are a mirror written beside
+        // them, and a process can die between the two writes. So each
+        // restored card's stage is reconciled against the promoted set: a
+        // card the log promoted is Production, one it promoted and has since
+        // displaced is Retired, and a Production card the log never promoted
+        // goes back to Validation. Without this a crash between the writes
+        // restored a displaced model as the incumbent, which no artifact
+        // could rescore, and stopped promotion on its subject for good.
+        let promoted: BTreeSet<String> = platform.model_promotions().keys().cloned().collect();
+        // When each reference last went into production and last came out of
+        // it, by the promotion records' own instants: what a card's lifecycle
+        // fields are reconciled to when its stage is.
+        let history = platform.model_promotion_history().unwrap_or_default();
+        let mut promoted_at: BTreeMap<String, Timestamp> = BTreeMap::new();
+        let mut displaced_at: BTreeMap<String, Timestamp> = BTreeMap::new();
+        for record in &history {
+            promoted_at.insert(record.reference.clone(), record.at);
+            for displaced in &record.displaced {
+                displaced_at.insert(displaced.clone(), record.at);
+            }
+        }
+        let ever_promoted: BTreeSet<String> = promoted_at.keys().cloned().collect();
+        // Versions are also drawn past every promoted one, so a fit after a
+        // crash that lost the promoted version's card does not take its name.
+        for reference in &ever_promoted {
+            if let Some(fit) = reference
+                .rsplit_once('@')
+                .and_then(|(_, version)| version.strip_prefix("0."))
+                .and_then(|rest| rest.strip_suffix(".0"))
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                self.fits = self.fits.max(fit);
+            }
+        }
+        for card in platform.registered_model_cards() {
+            let reference = card.reference();
+            let mut card = card.clone();
+            // The lifecycle instants follow the stage, from the same records,
+            // so a reconciled card does not read as retired while it is in
+            // production (decision_eligibility refuses a retired card) or
+            // as deployed when it never was.
+            if promoted.contains(&reference) {
+                card.stage = ModelStage::Production;
+                card.retired_at = None;
+                card.deployed_at = promoted_at.get(&reference).copied().or(card.deployed_at);
+            } else if ever_promoted.contains(&reference) {
+                if card.stage == ModelStage::Production {
+                    card.stage = ModelStage::Retired;
+                }
+                if card.stage == ModelStage::Retired {
+                    card.retired_at = card.retired_at.or(displaced_at.get(&reference).copied());
+                }
+            } else if card.stage == ModelStage::Production {
+                card.stage = ModelStage::Validation;
+                card.deployed_at = None;
+                card.retired_at = None;
+            }
+            // What every promotion record says about this card, replayed in
+            // log order: the artifact it was promoted with, the alias move it
+            // was promoted or displaced by, and on its first promotion the
+            // version it displaced. A card written before its record lacks
+            // these, and without them a later rollback to it is refused as
+            // "never promoted with an artifact" and its alias history
+            // contradicts the log. A move the card already holds (same
+            // instant, same direction) is not added twice.
+            //
+            // The displaced card's move is worded as the kernel worded it
+            // live: "displaced by <promoted>: <evidence>" on a promotion, the
+            // bare evidence on a rollback, whose two moves share one reading.
+            // A rollback record re-promotes a reference an earlier record
+            // already promoted, which is how the two are told apart; read
+            // bare, a restored history said the displaced model was moved on
+            // its successor's evaluation, and what it said depended on where
+            // the crash fell.
+            let mut first_promotion = true;
+            let mut promoted_before: BTreeSet<&str> = BTreeSet::new();
+            for record in &history {
+                let rollback = !promoted_before.insert(record.reference.as_str());
+                let moved_by = record
+                    .moved_by
+                    .clone()
+                    .unwrap_or_else(|| "the promotion log".to_string());
+                let evidence = record
+                    .evidence
+                    .clone()
+                    .unwrap_or_else(|| format!("promotion record at {}", record.at));
+                let note = |card: &mut ModelCard, assigned: bool| {
+                    let held = card
+                        .alias_moves
+                        .iter()
+                        .any(|m| m.at == record.at && m.assigned == assigned);
+                    if !held {
+                        let evidence = if assigned || rollback {
+                            evidence.clone()
+                        } else {
+                            format!("displaced by {}: {evidence}", record.reference)
+                        };
+                        card.alias_moves.push(qip_ai::registry::AliasMove {
+                            alias: qip_ai::registry::PRODUCTION_ALIAS.to_string(),
+                            assigned,
+                            moved_by: moved_by.clone(),
+                            evidence,
+                            at: record.at,
+                        });
+                    }
+                };
+                if record.reference == reference {
+                    card.artifact_digest = Some(record.artifact_digest.clone());
+                    // The parent the registry chose live, when the record
+                    // carries it: the most recently deployed of the
+                    // displaced, which differs from the first of them when a
+                    // promotion displaces two production cards. A record
+                    // written before the field existed falls back to the
+                    // first displaced reference, as before.
+                    if let (Some(parent), false) = (&record.rollback_parent, rollback) {
+                        card.rollback_parent = Some(parent.clone());
+                    } else if first_promotion && card.rollback_parent.is_none() {
+                        card.rollback_parent = record.displaced.first().cloned();
+                    }
+                    first_promotion = false;
+                    note(&mut card, true);
+                } else if record.displaced.contains(&reference) {
+                    note(&mut card, false);
+                }
+            }
+            card.alias_moves.sort_by_key(|m| m.at);
+            let excess = card
+                .alias_moves
+                .len()
+                .saturating_sub(qip_ai::registry::ALIAS_MOVES_RETAINED);
+            card.alias_moves.drain(..excess);
+            let card = &card;
+            // The fit count is what versions are drawn from, and it restarts
+            // at zero with the process; left there, the next fit would reuse
+            // a restored card's version and `register` would replace it,
+            // drift score and evaluations with it. Continue past the highest
+            // version the log holds instead.
+            if let Some(fit) = card
+                .version
+                .strip_prefix("0.")
+                .and_then(|rest| rest.strip_suffix(".0"))
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                self.fits = self.fits.max(fit);
+            }
+            if self.registry.get(&card.reference()).is_none() {
+                self.registry.register(card.clone());
+                restored += 1;
+            }
+        }
+        restored
     }
 
     pub const fn enabled(&self) -> bool {
@@ -935,6 +1249,9 @@ impl LearningDesk {
         let Some(candidate) = self.candidate.take() else {
             return Ok(None);
         };
+        if let Some(shadow) = self.shadowing.get(&candidate.subject).cloned() {
+            return self.shadow_round(platform, shadow, &candidate, now);
+        }
         let reference = candidate.teacher.reference();
         let not_promoted = |reason: String| {
             Ok(Some(PromotionOutcome::NotPromoted {
@@ -998,6 +1315,29 @@ impl LearningDesk {
             }
             candidate_scores.push(score);
         }
+        // Validated adversarially before acceptance (R12-MODEL-4021): the
+        // served model, attacked on the held-out rows by nudging each feature
+        // a fraction of its spread either way, must not swing its output on
+        // more rows than the policy tolerates. A suite that cannot run (a
+        // constant model, too few rows) is a refusal too: robustness that
+        // could not be measured was not shown.
+        let attacked =
+            qip_training::adversarial::attack(|row| served.score(row), rows, &self.perturbation);
+        match attacked {
+            Ok(report) => {
+                if let Some(why) = report.refusal(&self.perturbation) {
+                    return not_promoted(format!(
+                        "it failed the adversarial perturbation suite: {why}"
+                    ));
+                }
+            }
+            Err(error) => {
+                return not_promoted(format!(
+                    "the adversarial perturbation suite could not run: {}",
+                    error.message()
+                ));
+            }
+        }
         let candidate_rmse = rmse(&candidate_scores, targets);
         // Every production model on this subject, rescored by the same
         // provider on the same rows. Strictly lower error or nothing: on a
@@ -1010,6 +1350,21 @@ impl LearningDesk {
             .filter(|card| card_subject(card) == Some(candidate.subject.as_str()))
             .map(ModelCard::reference)
             .collect();
+        // An incumbent the promotion log names on this subject with no card
+        // in the registry — a crash between the promotion record and its
+        // cards — is still the incumbent. It is refused by name rather than
+        // ignored: ignoring it would let the candidate in unopposed beside a
+        // model it never displaced.
+        if let Some(orphan) = platform.model_promotions().values().find(|promotion| {
+            promotion_subject(&promotion.name) == Some(candidate.subject.as_str())
+                && self.registry.get(&promotion.reference).is_none()
+        }) {
+            return not_promoted(format!(
+                "incumbent {} is promoted on this subject by the log but its card is not in the \
+                 registry; a candidate cannot be shown better than a model the desk cannot read",
+                orphan.reference
+            ));
+        }
         let mut best_incumbent: Option<f64> = None;
         let mut baseline_name = "the held-out mean predictor (skill bar)".to_string();
         for incumbent in &incumbents {
@@ -1057,7 +1412,211 @@ impl LearningDesk {
             best_incumbent =
                 Some(best_incumbent.map_or(incumbent_rmse, |best| best.min(incumbent_rmse)));
         }
-        let student = candidate.distillation.as_ref().and_then(|distillation| {
+        // R12-EXPAND-6070: every check above is a check on the past the fit
+        // was handed. The candidate now runs beside production, acted on by
+        // nothing (`ModelStage::Shadow` allows no decision), and is promoted
+        // only after it beats production on [`MIN_SHADOW_ROUNDS`] later
+        // windows (`Self::shadow_round`). The kernel refuses a self-fitted
+        // promotion that skipped this stage, so the desk cannot.
+        if let Err(error) = self.registry.enter_shadow(&reference, now) {
+            return not_promoted(error.message().to_string());
+        }
+        self.shadowing.insert(
+            candidate.subject.clone(),
+            Shadowing {
+                reference: reference.clone(),
+                artifact,
+                distillation: candidate.distillation.clone(),
+                seen_through: candidate
+                    .holdout
+                    .times()
+                    .iter()
+                    .copied()
+                    .max()
+                    .unwrap_or(now),
+            },
+        );
+        self.stats.shadowed += 1;
+        let against = match best_incumbent {
+            Some(rmse) => format!("{baseline_name} at rmse {rmse:.6}"),
+            None => "no incumbent".to_string(),
+        };
+        Ok(Some(PromotionOutcome::Shadowed {
+            reference,
+            rounds_won: 0,
+            required: MIN_SHADOW_ROUNDS,
+            reason: format!(
+                "passed holdout (rmse {candidate_rmse:.6} on {} row(s) against {against}), \
+                 adversarial and verifier checks, and entered shadow",
+                rows.len()
+            ),
+        }))
+    }
+
+    /// One shadow round for the model in shadow on `candidate`'s subject,
+    /// scored on the rows the new window held out (R12-EXPAND-6070).
+    ///
+    /// Won when the shadowed model's error on those rows is strictly below
+    /// production's — every incumbent on the subject, rescored by the same
+    /// provider on the same rows — or, with no incumbent, below the
+    /// zero-return predictor's. A martingale is the honest no-skill
+    /// baseline here: the held-out mean would be computed from the very
+    /// targets it is scored on. A lost round retires the shadowed model; the
+    /// last of [`MIN_SHADOW_ROUNDS`] won promotes it as
+    /// [`ModelProducer::SelfFitted`]. The new window's own fit is not
+    /// promoted this round: one model per subject is decided at a time.
+    fn shadow_round(
+        &mut self,
+        platform: &mut Platform,
+        shadow: Shadowing,
+        candidate: &PromotionCandidate,
+        now: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
+        let reference = shadow.reference.clone();
+        // Only rows after everything the shadowed model has read: the fit's
+        // window, its holdout, and every round it already won. Without this a
+        // window that moved on by less than its holdout share scores the
+        // model on rows it was trained on, and a win there is an in-sample
+        // win counted as a round.
+        let fresh: Vec<usize> = candidate
+            .holdout
+            .times()
+            .iter()
+            .enumerate()
+            .filter(|(_, at)| **at > shadow.seen_through)
+            .map(|(index, _)| index)
+            .collect();
+        if fresh.len() < MIN_FRESH_SHADOW_ROWS {
+            return Ok(Some(PromotionOutcome::Shadowed {
+                reference: reference.clone(),
+                rounds_won: self
+                    .registry
+                    .get(&reference)
+                    .and_then(|card| card.shadow.as_ref())
+                    .map_or(0, |record| record.rounds_won),
+                required: MIN_SHADOW_ROUNDS,
+                reason: format!(
+                    "waiting: the new window holds {} row(s) after {}, the latest the shadowed \
+                     model has read, and a round needs {MIN_FRESH_SHADOW_ROWS}",
+                    fresh.len(),
+                    shadow.seen_through.as_secs()
+                ),
+            }));
+        }
+        let scored = candidate.holdout.select(&fresh)?;
+        let latest = scored.times().iter().copied().max().unwrap_or(now);
+        let rows = scored.rows();
+        let targets = scored.targets();
+        let lost = |desk: &mut Self, reason: String| -> Result<Option<PromotionOutcome>> {
+            desk.shadowing.remove(&candidate.subject);
+            desk.registry.retire(&reference, now)?;
+            Ok(Some(PromotionOutcome::NotPromoted {
+                reference: reference.clone(),
+                reason: format!("lost its shadow round and is retired: {reason}"),
+            }))
+        };
+        if rows.is_empty() {
+            return Ok(Some(PromotionOutcome::NotPromoted {
+                reference: reference.clone(),
+                reason: "the new window holds no row to score the shadowed model on".to_string(),
+            }));
+        }
+        let served = match platform.serve_model(&shadow.artifact) {
+            Ok(served) => served,
+            Err(error) => return lost(self, error.message().to_string()),
+        };
+        let mut scores = Vec::with_capacity(rows.len());
+        for row in rows {
+            match served.score(row) {
+                Ok(score) => scores.push(score),
+                Err(error) => return lost(self, error.message().to_string()),
+            }
+        }
+        let shadow_rmse = rmse(&scores, targets);
+        let incumbents: Vec<String> = self
+            .registry
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .filter(|card| card_subject(card) == Some(candidate.subject.as_str()))
+            .map(ModelCard::reference)
+            .collect();
+        let mut production: Option<(String, f64)> = None;
+        for incumbent in &incumbents {
+            let Some(held) = self.promoted_artifacts.get(incumbent) else {
+                return lost(
+                    self,
+                    format!("incumbent {incumbent} has no artifact this desk can rescore"),
+                );
+            };
+            let served_incumbent = match platform.serve_model(held) {
+                Ok(served) => served,
+                Err(error) => return lost(self, error.message().to_string()),
+            };
+            let mut incumbent_scores = Vec::with_capacity(rows.len());
+            for row in rows {
+                match served_incumbent.score(row) {
+                    Ok(score) => incumbent_scores.push(score),
+                    Err(error) => return lost(self, error.message().to_string()),
+                }
+            }
+            let incumbent_rmse = rmse(&incumbent_scores, targets);
+            if production
+                .as_ref()
+                .is_none_or(|(_, best)| incumbent_rmse < *best)
+            {
+                production = Some((incumbent.clone(), incumbent_rmse));
+            }
+        }
+        let (against, baseline_rmse) = production.clone().unwrap_or_else(|| {
+            (
+                "the zero-return predictor".to_string(),
+                rmse(&vec![0.0; targets.len()], targets),
+            )
+        });
+        // Strictly less, as a `partial_cmp`: an incomparable pair (a NaN
+        // error) is a lost round, never a won one.
+        if !matches!(
+            shadow_rmse.partial_cmp(&baseline_rmse),
+            Some(std::cmp::Ordering::Less)
+        ) {
+            return lost(
+                self,
+                format!(
+                    "rmse {shadow_rmse:.6} against {against}'s {baseline_rmse:.6} on {} row(s) \
+                     the fit never saw",
+                    rows.len()
+                ),
+            );
+        }
+        let evidence = format!(
+            "rmse {shadow_rmse:.6} against {against}'s {baseline_rmse:.6} on {} new row(s) of {}",
+            rows.len(),
+            candidate.subject
+        );
+        let rounds_won = match self
+            .registry
+            .record_shadow_round(&reference, &evidence, now)
+        {
+            Ok(rounds) => rounds,
+            Err(error) => {
+                return Ok(Some(PromotionOutcome::NotPromoted {
+                    reference: reference.clone(),
+                    reason: error.message().to_string(),
+                }));
+            }
+        };
+        if let Some(held) = self.shadowing.get_mut(&candidate.subject) {
+            held.seen_through = latest;
+        }
+        if rounds_won < MIN_SHADOW_ROUNDS {
+            return Ok(Some(PromotionOutcome::Shadowed {
+                reference,
+                rounds_won,
+                required: MIN_SHADOW_ROUNDS,
+                reason: format!("won a shadow round: {evidence}"),
+            }));
+        }
+        let student = shadow.distillation.as_ref().and_then(|distillation| {
             distillation
                 .approved_student(&FidelityPolicy::default())
                 .ok()
@@ -1067,37 +1626,71 @@ impl LearningDesk {
         // same name every time; a platform some other desk already named
         // refuses, and that refusal is this candidate's verdict.
         if let Err(error) = platform.name_model_desk(MODEL_DESK) {
-            return not_promoted(error.message().to_string());
+            return Ok(Some(PromotionOutcome::NotPromoted {
+                reference,
+                reason: error.message().to_string(),
+            }));
         }
-        let published = match platform.promote_model(
+        // The bytes first (R12-MODEL-9003): a promotion whose artifact is not
+        // stored could not be rescored after a restart, so a store that
+        // refuses the write refuses the promotion. Rendered as the registry
+        // renders a published artifact, under the key its reader fetches by.
+        if let Some(store) = &self.artifact_store {
+            let stored = serde_json::to_string_pretty(&shadow.artifact)
+                .map_err(|error| Error::schema(format!("the artifact cannot be rendered: {error}")))
+                .and_then(|contents| {
+                    store.put(
+                        &format!("{}.json", shadow.artifact.digest),
+                        contents.into_bytes(),
+                    )
+                });
+            if let Err(error) = stored {
+                return Ok(Some(PromotionOutcome::NotPromoted {
+                    reference,
+                    reason: format!(
+                        "its artifact could not be stored before promotion: {}",
+                        error.message()
+                    ),
+                }));
+            }
+        }
+        let published = match platform.promote_model_from(
+            ModelProducer::SelfFitted,
             &mut self.registry,
-            &artifact,
+            &shadow.artifact,
             student,
             &incumbents,
             now,
         ) {
             Ok(published) => published,
-            Err(error) => return not_promoted(error.message().to_string()),
+            Err(error) => {
+                return Ok(Some(PromotionOutcome::NotPromoted {
+                    reference,
+                    reason: error.message().to_string(),
+                }));
+            }
         };
+        self.shadowing.remove(&candidate.subject);
         for incumbent in &incumbents {
             if let Some(artifact) = self.promoted_artifacts.remove(incumbent) {
                 self.displaced_artifacts.insert(incumbent.clone(), artifact);
             }
         }
         self.promoted_artifacts
-            .insert(reference.clone(), artifact.clone());
+            .insert(reference.clone(), shadow.artifact.clone());
         self.stats.promoted += 1;
         Ok(Some(PromotionOutcome::Promoted {
             reference,
             published,
             distilled: student.map(|model| model.digest()),
             displaced: incumbents,
-            candidate_rmse,
-            incumbent_rmse: best_incumbent,
+            candidate_rmse: shadow_rmse,
+            incumbent_rmse: production.map(|(_, rmse)| rmse),
             holdout_rows: rows.len(),
-            baseline: baseline_name,
+            baseline: against,
             benchmark: format!(
-                "rmse on the {} held-out row(s) of {}",
+                "rmse on the {} held-out row(s) of {}, the newest window's, after {rounds_won} \
+                 shadow round(s)",
                 rows.len(),
                 candidate.subject
             ),
@@ -1611,6 +2204,7 @@ impl LearningDesk {
             lineage.record_on(card);
             record_validation_scope(card, regime, &dataset)?;
             stamp_provenance(card, &provenance);
+            card.self_fitted = true;
         }
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
         // Skill is judged by the evaluator from the predictions each class
@@ -1669,6 +2263,7 @@ impl LearningDesk {
                     lineage.record_on(card);
                     record_validation_scope(card, regime, &dataset)?;
                     stamp_provenance(card, &provenance);
+                    card.self_fitted = true;
                 }
                 registration
             }
@@ -1855,6 +2450,83 @@ mod tests {
     /// `Platform::regime_context`; the pair shape is the platform's.
     const REGIME: &str = "trending/calm";
 
+    /// Record a completed shadow stage for a desk-fitted card, for a test that
+    /// stages a promotion by hand to reach a branch past it. The registry
+    /// refuses to promote a self-fitted card any other way (R12-EXPAND-6070).
+    fn completed_shadow(registry: &mut ModelRegistry, reference: &str) -> Result<()> {
+        registry.enter_shadow(reference, at())?;
+        for round in 1..=i64::from(MIN_SHADOW_ROUNDS) {
+            registry.record_shadow_round(
+                reference,
+                "staged by the test",
+                at().saturating_add(qip_core::Duration::from_secs(round)),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Drive the candidate `desk` holds through its shadow stage
+    /// (R12-EXPAND-6070): the first call enters shadow, and each round fits
+    /// the same learnable series extended by `SHADOW_STEP` bars per round, a
+    /// minute apart, so every round holds rows after everything the shadowed
+    /// model has read. `bars` must be `tests_support::learnable(n)`; only its
+    /// length is read. Returns the last outcome: `Promoted` after
+    /// `MIN_SHADOW_ROUNDS` won rounds, or whatever stopped it first.
+    fn through_shadow(
+        desk: &mut LearningDesk,
+        platform: &mut Platform,
+        bars: &[Bar],
+        from_cycle: u64,
+        start: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
+        let len = bars.len();
+        through_shadow_on(
+            desk,
+            platform,
+            |step| super::tests_support::learnable(len + step)[step..].to_vec(),
+            from_cycle,
+            start,
+        )
+    }
+
+    /// Bars per shadow round: each round's window has moved on by this many.
+    const SHADOW_STEP: usize = 150;
+
+    /// [`through_shadow`] over any window: round `n` fits the bars
+    /// `window(n * SHADOW_STEP)` returns, which must be the same window moved
+    /// on by that many bars. For a test whose premise needs a later fit to
+    /// beat an earlier one, the window must make that true by construction
+    /// (`learnable_regimes`, with each fit's window inside one regime),
+    /// because on a stationary series the rounds are a coin flip between two
+    /// fits of the same model.
+    fn through_shadow_on(
+        desk: &mut LearningDesk,
+        platform: &mut Platform,
+        window: impl Fn(usize) -> Vec<Bar>,
+        from_cycle: u64,
+        start: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
+        let Some(entered) = desk.promote_candidate(platform, start)? else {
+            return Ok(None);
+        };
+        if !matches!(entered, PromotionOutcome::Shadowed { .. }) {
+            return Ok(Some(entered));
+        }
+        let mut last = entered;
+        for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
+            let at = start.saturating_add(qip_core::Duration::from_mins(round as i64));
+            let moved = window(SHADOW_STEP * round as usize);
+            desk.maybe_learn(&subject(), &moved, REGIME, from_cycle + round, at)?;
+            last = desk
+                .promote_candidate(platform, at)?
+                .ok_or_else(|| Error::not_found("a shadow round's candidate"))?;
+            if !matches!(last, PromotionOutcome::Shadowed { .. }) {
+                break;
+            }
+        }
+        Ok(Some(last))
+    }
+
     fn learning_desk() -> LearningDesk {
         LearningDesk::new(
             LearningConfig {
@@ -1900,7 +2572,7 @@ mod tests {
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference
             .clone();
-        desk.promote_candidate(&mut platform, at())?
+        through_shadow(&mut desk, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a candidate"))?;
 
         // Premise: healthy, and nothing is named.
@@ -1947,7 +2619,7 @@ mod tests {
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference
             .clone();
-        desk.promote_candidate(&mut platform, at())?
+        through_shadow(&mut desk, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a first candidate"))?;
 
         // A successor the platform promotes over it, as a better fit would be.
@@ -1968,6 +2640,7 @@ mod tests {
                 .teacher,
         )?;
         let later = at().saturating_add(qip_core::Duration::from_mins(1));
+        completed_shadow(&mut desk.registry, &second_reference)?;
         platform.promote_model(
             &mut desk.registry,
             &second_artifact,
@@ -2033,6 +2706,836 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-4021: acceptance runs the adversarial perturbation suite on
+    /// the served candidate, and a model whose output moves beyond tolerance
+    /// is refused. The same fit is promoted under the default policy and
+    /// refused under one that tolerates no movement at all, so the refusal is
+    /// the suite and not a broken fit. Mutation: delete the attack in
+    /// `promote_candidate` — the strict desk promotes and the refusal
+    /// assertion fails.
+    #[test]
+    fn a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted() -> Result<()> {
+        let bars = super::tests_support::learnable(400);
+        let mut lenient = learning_desk();
+        let mut platform = serving_platform()?;
+        lenient.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        let promoted = through_shadow(&mut lenient, &mut platform, &bars, 1, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(promoted, PromotionOutcome::Promoted { .. }),
+            "premise: the fit survives the default suite: {}",
+            promoted.describe()
+        );
+
+        let strict = qip_training::adversarial::PerturbationPolicy {
+            max_movement_sd: 1e-9,
+            max_fragile_share: 0.0,
+            ..qip_training::adversarial::PerturbationPolicy::default()
+        };
+        let mut desk = learning_desk().with_perturbation_policy(strict)?;
+        let mut platform = serving_platform()?;
+        desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        let refused = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(&refused, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("adversarial perturbation suite")),
+            "{}",
+            refused.describe()
+        );
+        assert!(platform.model_promotions().is_empty());
+        Ok(())
+    }
+
+    /// R12-MODEL-9003: a process that dies anywhere around a promotion
+    /// restarts able to read every version and still promote on the subject.
+    /// The cards a promotion moves are journaled before its record, and the
+    /// promoted bytes are stored before either; the crash is reproduced by
+    /// truncating the log file, which leaves a valid prefix of the hash
+    /// chain. Cut before v2's promotion record: its cards claim a promotion
+    /// the log does not hold, so v2 comes back in Validation and v1 is the
+    /// incumbent. Cut just after it: v2 is the incumbent. Either way a better
+    /// candidate is promoted against the true incumbent, displacing it, and
+    /// the next fit does not take a version already on the log. Four
+    /// skeptic rounds found a stuck subject, an unopposed promotion and a
+    /// lost card in earlier cuts of this restore; this is their scenario.
+    ///
+    /// Mutations: journal the cards after the record in `promote_model_from`
+    /// — the cut after it loses v2's card and the subject blocks; drop the
+    /// stage reconciliation — the cut before it restores v2 in production
+    /// with v1 also there; store no bytes before promotion — the restarted
+    /// desk cannot rescore its incumbent.
+    #[test]
+    fn a_crash_around_a_promotion_leaves_every_version_readable_and_the_subject_promotable()
+    -> Result<()> {
+        for cut_after_record in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "qip-deepbrain-promotion-crash-{}-{}-{cut_after_record}",
+                std::process::id(),
+                at().as_nanos()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+            let path = directory.join("events.jsonl");
+            let file_platform = || -> Result<Platform> {
+                let config = qip_kernel::PlatformConfig::default().with_event_log_file(&path);
+                let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+                Platform::new_serving(
+                    config,
+                    context,
+                    qip_observability::Telemetry::silent(),
+                    qip_financial::universe::Universe::new(),
+                    qip_risk::limits::LimitSet::conservative_default(),
+                    Box::new(InTreeProvider),
+                )
+            };
+            let store: Arc<dyn BlobStore> = Arc::new(qip_storage::MemoryBlobStore::new());
+            let (v1, v2) = {
+                let mut platform = file_platform()?;
+                let mut desk = learning_desk().with_artifact_store(store.clone());
+                // One window per regime of `learnable_regimes`, so each fit
+                // displaces the one before it by construction: the model from
+                // the regime before predicts the wrong sign on the rows after.
+                let window = |offset: usize, len: usize| {
+                    move |step: usize| {
+                        super::tests_support::learnable_regimes(offset + len + step)
+                            [offset + step..]
+                            .to_vec()
+                    }
+                };
+                desk.maybe_learn(&subject(), &window(0, 400)(0), REGIME, 1, at())?;
+                // Each fit is driven through its shadow stage (R12-EXPAND-6070),
+                // the second an hour after the first so its rounds are new ones.
+                let first = through_shadow_on(&mut desk, &mut platform, window(0, 400), 1, at())?
+                    .ok_or_else(|| Error::not_found("a first candidate"))?;
+                let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
+                desk.maybe_learn(
+                    &subject(),
+                    &window(1_000, 1_200)(0),
+                    REGIME,
+                    10,
+                    second_start,
+                )?;
+                let second = through_shadow_on(
+                    &mut desk,
+                    &mut platform,
+                    window(1_000, 1_200),
+                    10,
+                    second_start,
+                )?
+                .ok_or_else(|| Error::not_found("a second candidate"))?;
+                match (&first, &second) {
+                    (
+                        PromotionOutcome::Promoted { reference: v1, .. },
+                        PromotionOutcome::Promoted {
+                            reference: v2,
+                            displaced,
+                            ..
+                        },
+                    ) if displaced.contains(v1) => (v1.clone(), v2.clone()),
+                    _ => {
+                        return Err(Error::invalid(format!(
+                            "premise: v2 displaced v1: {} / {}",
+                            first.describe(),
+                            second.describe()
+                        )));
+                    }
+                }
+            };
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| Error::io(format!("read the log: {e}")))?;
+            let lines: Vec<&str> = text.lines().collect();
+            let record = lines
+                .iter()
+                .rposition(|line| line.contains(qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN))
+                .ok_or_else(|| Error::not_found("v2's promotion record"))?;
+            assert!(
+                lines[..record].iter().any(|line| line.contains(&v2)
+                    && line.contains(qip_kernel::model_serving::MODEL_REGISTRATION_ORIGIN)),
+                "premise: v2's card precedes its promotion record"
+            );
+            let keep = if cut_after_record { record + 1 } else { record };
+            std::fs::write(&path, lines[..keep].join("\n") + "\n")
+                .map_err(|e| Error::io(format!("truncate the log: {e}")))?;
+
+            let mut platform = file_platform()?;
+            let incumbent = if cut_after_record { &v2 } else { &v1 };
+            assert!(
+                platform.model_promotions().contains_key(incumbent),
+                "premise: the log promotes {incumbent}"
+            );
+            let mut restarted = learning_desk().with_artifact_store(store.clone());
+            let (_, missing) = restarted.restore_artifacts(&platform, |digest| {
+                crate::artifacts::read_model_artifact(store.as_ref(), digest)
+            })?;
+            assert!(missing.is_empty(), "{missing:?}");
+            restarted.restore_registry(&platform);
+            for version in [&v1, &v2] {
+                let card = restarted.registry().get(version).ok_or_else(|| {
+                    Error::not_found(format!("{version} is not readable after the crash"))
+                })?;
+                assert!(
+                    card.latest_evaluation().is_some(),
+                    "{version} lost its evaluation"
+                );
+            }
+            let production: Vec<String> = restarted
+                .registry()
+                .iter()
+                .filter(|card| card.stage == ModelStage::Production)
+                .map(ModelCard::reference)
+                .collect();
+            assert_eq!(
+                &production,
+                &vec![incumbent.clone()],
+                "cut after record: {cut_after_record}"
+            );
+            // The restored incumbent is not read as retired (the lifecycle
+            // follows the reconciled stage). Its drift is the fixture's real
+            // reading against its own fit, so eligibility is checked for the
+            // retirement alone.
+            let incumbent_card = restarted
+                .registry()
+                .get(incumbent)
+                .ok_or_else(|| Error::not_found("the incumbent"))?;
+            assert_eq!(incumbent_card.retired_at, None);
+            if let Err(why) = incumbent_card.decision_eligibility(at()) {
+                assert!(!why.contains("retired"), "{why}");
+            }
+            // The card carries what its promotion records say: the artifact
+            // it was promoted with and the alias move that put it there, even
+            // when the card on the log was written before the record.
+            let history = platform.model_promotion_history()?;
+            let last = history
+                .iter()
+                .rev()
+                .find(|record| &record.reference == incumbent)
+                .ok_or_else(|| Error::not_found("the incumbent's promotion record"))?;
+            assert_eq!(
+                incumbent_card.artifact_digest.as_deref(),
+                Some(last.artifact_digest.as_str()),
+                "the restored incumbent lost its artifact digest"
+            );
+            assert!(
+                incumbent_card
+                    .alias_moves
+                    .iter()
+                    .any(|m| m.assigned && m.at == last.at),
+                "the restored incumbent's alias history lacks its promotion"
+            );
+            if cut_after_record {
+                let displaced = restarted
+                    .registry()
+                    .get(&v1)
+                    .ok_or_else(|| Error::not_found("v1"))?;
+                let moved = displaced
+                    .alias_moves
+                    .iter()
+                    .find(|m| !m.assigned && m.at == last.at)
+                    .ok_or_else(|| {
+                        Error::not_found(
+                            "v1's alias history lacks the displacement the log records",
+                        )
+                    })?;
+                // Worded as the uncrashed kernel wrote it, so the history
+                // does not depend on where the crash fell.
+                let evidence = last
+                    .evidence
+                    .as_deref()
+                    .ok_or_else(|| Error::not_found("premise: the record carries evidence"))?;
+                assert_eq!(moved.evidence, format!("displaced by {v2}: {evidence}"));
+                assert_eq!(Some(moved.moved_by.as_str()), last.moved_by.as_deref());
+                // The lifecycle the moved cards would have carried, from the
+                // record: the card on the log for each is the one written
+                // before the move.
+                assert_eq!(displaced.retired_at, Some(last.at), "v1's retirement");
+                let promoted = restarted
+                    .registry()
+                    .get(&v2)
+                    .ok_or_else(|| Error::not_found("v2"))?;
+                assert_eq!(promoted.deployed_at, Some(last.at), "v2's deployment");
+                assert_eq!(
+                    promoted.rollback_parent.as_deref(),
+                    Some(v1.as_str()),
+                    "v2's rollback parent"
+                );
+            }
+            // And nothing on the log claims a move the promotion records do
+            // not hold: the card written before the record is the unmoved one.
+            if !cut_after_record {
+                let other = restarted
+                    .registry()
+                    .get(&v2)
+                    .ok_or_else(|| Error::not_found("v2"))?;
+                assert_eq!(other.artifact_digest, None, "v2 reads as promoted");
+                let incumbent_card = restarted
+                    .registry()
+                    .get(incumbent)
+                    .ok_or_else(|| Error::not_found("the incumbent"))?;
+                assert!(
+                    incumbent_card
+                        .alias_moves
+                        .iter()
+                        .all(|alias| !format!("{alias:?}").contains(&v2)),
+                    "the incumbent's alias history names a displacement that never happened"
+                );
+            }
+
+            // Promotable means it can complete the shadow stage after the
+            // restart (R12-EXPAND-6070), at an instant past every round above.
+            let third_start = at().saturating_add(qip_core::Duration::from_hours(3));
+            let window = |step: usize| {
+                super::tests_support::learnable_regimes(2_700 + 2_400 + step)[2_700 + step..]
+                    .to_vec()
+            };
+            restarted.maybe_learn(&subject(), &window(0), REGIME, 20, third_start)?;
+            let after = through_shadow_on(&mut restarted, &mut platform, window, 20, third_start)?
+                .ok_or_else(|| Error::not_found("a candidate after the crash"))?;
+            let PromotionOutcome::Promoted {
+                reference,
+                displaced,
+                ..
+            } = &after
+            else {
+                return Err(Error::invalid(format!(
+                    "the subject is not promotable after the crash (cut after record: \
+                     {cut_after_record}): {}",
+                    after.describe()
+                )));
+            };
+            assert!(displaced.contains(incumbent), "{}", after.describe());
+            assert!(
+                reference != &v1 && reference != &v2,
+                "the next fit took a version already on the log"
+            );
+            // And the restored incumbent is a known-good version a rollback
+            // can return to. (The fixture's windows drift it against its own
+            // fit; a rollback needs it to read as known-good.)
+            let reference = reference.clone();
+            restarted.registry_mut().record_drift(incumbent, 0.0)?;
+            let later = at().saturating_add(qip_core::Duration::from_mins(1));
+            let back = platform.rollback_model(restarted.registry_mut(), &reference, later)?;
+            assert_eq!(
+                &back, incumbent,
+                "the rollback did not return to the restored incumbent"
+            );
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+        Ok(())
+    }
+
+    /// R12-MODEL-9003: a crash just after a rollback record. The reactivated
+    /// predecessor's card on the log is the one written before the record:
+    /// Retired, with its retirement instant. The restore puts it back in
+    /// production from the promotion log, and with it clears the retirement,
+    /// so the model the log says is in production is not read as retired.
+    /// Mutation: keep `retired_at` when the log forces a card to Production —
+    /// the card reads as retired and the assertion fails.
+    /// R12-MODEL-9003: a crash just after a promotion that displaced two
+    /// production cards restores the rollback parent the live registry
+    /// chose — the more recently deployed of the two — not the first
+    /// displaced reference. The card on the log is the one written before the
+    /// move, with no parent, so the restored parent can only come from the
+    /// record. Mutation: replay `displaced.first()` in `restore_registry`
+    /// regardless of the record's parent — the restored card names v1.
+    #[test]
+    fn a_crash_after_a_promotion_displacing_two_production_cards_restores_the_parent_chosen_live()
+    -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-two-parents-{}-{}",
+            std::process::id(),
+            at().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let file_platform = || -> Result<Platform> {
+            let config = qip_kernel::PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+            Platform::new_serving(
+                config,
+                context,
+                qip_observability::Telemetry::silent(),
+                qip_financial::universe::Universe::new(),
+                qip_risk::limits::LimitSet::conservative_default(),
+                Box::new(InTreeProvider),
+            )
+        };
+        let (v1, v2, v3) = {
+            let mut platform = file_platform()?;
+            platform.name_model_desk("two-parents/model-desk")?;
+            let mut desk = learning_desk();
+            let bars = super::tests_support::learnable(400);
+            let fit = |desk: &mut LearningDesk, round: u64| -> Result<(String, ModelArtifact)> {
+                let reference = desk
+                    .maybe_learn(&subject(), &bars, REGIME, round, at())?
+                    .ok_or_else(|| Error::not_found("a learning round"))?
+                    .registration
+                    .ok_or_else(|| Error::not_found("a registration"))?
+                    .reference;
+                let artifact = InTreeProvider::pack(
+                    &desk
+                        .candidate
+                        .as_ref()
+                        .ok_or_else(|| Error::not_found("a candidate"))?
+                        .teacher,
+                )?;
+                completed_shadow(&mut desk.registry, &reference)?;
+                Ok((reference, artifact))
+            };
+            let (v1, a1) = fit(&mut desk, 1)?;
+            let (v2, a2) = fit(&mut desk, 2)?;
+            let (v3, a3) = fit(&mut desk, 3)?;
+            let minute = |n| at().saturating_add(qip_core::Duration::from_mins(n));
+            platform.promote_model(&mut desk.registry, &a1, None, &[], minute(1))?;
+            platform.promote_model(&mut desk.registry, &a2, None, &[], minute(2))?;
+            // Older first, so the first displaced reference is not the
+            // registry's choice.
+            platform.promote_model(
+                &mut desk.registry,
+                &a3,
+                None,
+                &[v1.clone(), v2.clone()],
+                minute(3),
+            )?;
+            assert_eq!(
+                desk.registry
+                    .get(&v3)
+                    .and_then(|card| card.rollback_parent.as_deref()),
+                Some(v2.as_str()),
+                "premise: live, the parent is the more recently deployed card"
+            );
+            (v1, v2, v3)
+        };
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| Error::io(format!("read the log: {e}")))?;
+        let lines: Vec<&str> = text.lines().collect();
+        let record = lines
+            .iter()
+            .rposition(|line| line.contains(qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN))
+            .ok_or_else(|| Error::not_found("the third promotion's record"))?;
+        std::fs::write(&path, lines[..=record].join("\n") + "\n")
+            .map_err(|e| Error::io(format!("truncate the log: {e}")))?;
+
+        let platform = file_platform()?;
+        assert!(
+            platform
+                .registered_model_cards()
+                .any(|card| card.reference() == v3 && card.rollback_parent.is_none()),
+            "premise: v3's card on the log is the one written before the move"
+        );
+        let mut restarted = learning_desk();
+        restarted.restore_registry(&platform);
+        let restored = restarted
+            .registry()
+            .get(&v3)
+            .ok_or_else(|| Error::not_found("v3"))?;
+        assert_eq!(
+            restored.rollback_parent.as_deref(),
+            Some(v2.as_str()),
+            "restored {v3} names {:?} as its parent; live it named {v2}, not {v1}",
+            restored.rollback_parent
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    #[test]
+    fn a_crash_just_after_a_rollback_restores_the_reactivated_model_not_as_retired() -> Result<()> {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-deepbrain-rollback-crash-{}-{}",
+            std::process::id(),
+            at().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let file_platform = || -> Result<Platform> {
+            let config = qip_kernel::PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+            Platform::new_serving(
+                config,
+                context,
+                qip_observability::Telemetry::silent(),
+                qip_financial::universe::Universe::new(),
+                qip_risk::limits::LimitSet::conservative_default(),
+                Box::new(InTreeProvider),
+            )
+        };
+        let (v1, v2) = {
+            let mut platform = file_platform()?;
+            let mut desk = learning_desk();
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(400),
+                REGIME,
+                1,
+                at(),
+            )?;
+            // Each fit is driven through its shadow stage (R12-EXPAND-6070),
+            // the second an hour after the first so its rounds are new ones.
+            let first = through_shadow(
+                &mut desk,
+                &mut platform,
+                &super::tests_support::learnable(400),
+                1,
+                at(),
+            )?
+            .ok_or_else(|| Error::not_found("a first candidate"))?;
+            let second_start = at().saturating_add(qip_core::Duration::from_hours(1));
+            desk.maybe_learn(
+                &subject(),
+                &super::tests_support::learnable(1_200),
+                REGIME,
+                10,
+                second_start,
+            )?;
+            let second = through_shadow(
+                &mut desk,
+                &mut platform,
+                &super::tests_support::learnable(1_200),
+                10,
+                second_start,
+            )?
+            .ok_or_else(|| Error::not_found("a second candidate"))?;
+            let (
+                PromotionOutcome::Promoted { reference: v1, .. },
+                PromotionOutcome::Promoted { reference: v2, .. },
+            ) = (&first, &second)
+            else {
+                return Err(Error::invalid(format!(
+                    "premise: both fits were promoted: {} / {}",
+                    first.describe(),
+                    second.describe()
+                )));
+            };
+            let later = second_start.saturating_add(qip_core::Duration::from_hours(1));
+            // The fixture's second window drifted v1 against its own fit; a
+            // rollback needs a known-good predecessor, so it reads as one.
+            desk.registry_mut().record_drift(v1, 0.0)?;
+            let reactivated = platform.rollback_model(desk.registry_mut(), v2, later)?;
+            assert_eq!(&reactivated, v1, "premise: the rollback reactivates v1");
+            (v1.clone(), v2.clone())
+        };
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| Error::io(format!("read the log: {e}")))?;
+        let lines: Vec<&str> = text.lines().collect();
+        let record = lines
+            .iter()
+            .rposition(|line| line.contains(qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN))
+            .ok_or_else(|| Error::not_found("the rollback record"))?;
+        std::fs::write(&path, lines[..=record].join("\n") + "\n")
+            .map_err(|e| Error::io(format!("truncate the log: {e}")))?;
+
+        let platform = file_platform()?;
+        assert!(
+            platform.model_promotions().contains_key(&v1),
+            "premise: the log says v1 is back in production"
+        );
+        assert!(
+            platform
+                .registered_model_cards()
+                .any(|card| card.reference() == v1 && card.retired_at.is_some()),
+            "premise: v1's card on the log is the retired one written before the record"
+        );
+        let mut restarted = learning_desk();
+        restarted.restore_registry(&platform);
+        assert_eq!(
+            restarted.registry().get(&v1).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        // Not read as retired. (Its drift is the value at its last kept
+        // change, a recorded limit, so eligibility is checked for the
+        // retirement alone.)
+        let card = restarted
+            .registry()
+            .get(&v1)
+            .ok_or_else(|| Error::not_found("v1"))?;
+        assert_eq!(card.retired_at, None);
+        if let Err(why) = card.decision_eligibility(at()) {
+            assert!(!why.contains("retired"), "{why}");
+        }
+        // The degraded model's move off the alias carries the rollback's own
+        // reading, bare, as the kernel wrote it live: a rollback is not a
+        // displacement by a successor, and replayed as one it would say so.
+        let rollback = platform
+            .model_promotion_history()?
+            .into_iter()
+            .next_back()
+            .ok_or_else(|| Error::not_found("the rollback record"))?;
+        let degraded = restarted
+            .registry()
+            .get(&v2)
+            .ok_or_else(|| Error::not_found("v2"))?;
+        let moved = degraded
+            .alias_moves
+            .iter()
+            .find(|m| !m.assigned && m.at == rollback.at)
+            .ok_or_else(|| Error::not_found("v2's move off the alias at the rollback"))?;
+        assert_eq!(Some(moved.evidence.as_str()), rollback.evidence.as_deref());
+        // And the lifecycle the rollback set: the degraded model retired,
+        // and the reactivated one deployed, at the rollback's own instant.
+        assert_eq!(degraded.retired_at, Some(rollback.at), "v2's retirement");
+        assert_eq!(card.deployed_at, Some(rollback.at), "v1's redeployment");
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    /// R12-MODEL-9003: a restarted desk restores every card the log holds,
+    /// production ones included, and holds its restored incumbent to the
+    /// same strictly-better gate as a desk that never restarted.
+    ///
+    /// The first cut restored the production card with no artifact to
+    /// rescore it, which blocked promotion on the subject for good; the
+    /// second left production cards out, which let any candidate in
+    /// unopposed beside an incumbent it never displaced. Both were found by
+    /// independent skeptics. Now: without its artifact the restored
+    /// incumbent blocks promotion by name (fail closed); with it fetched by
+    /// digest, an equal candidate is refused as not strictly better and a
+    /// better one is promoted and displaces it, leaving one production card.
+    ///
+    /// Mutations: leave production cards out of `restore_registry` — the
+    /// equal candidate is promoted unopposed; skip the promoted set in
+    /// `restore_artifacts` — the better candidate is refused for want of an
+    /// artifact.
+    #[test]
+    fn a_restarted_desk_holds_its_restored_incumbent_to_the_strictly_better_gate() -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        let first = through_shadow(&mut desk, &mut platform, &bars, 1, at())?
+            .ok_or_else(|| Error::not_found("a first candidate"))?;
+        let PromotionOutcome::Promoted {
+            reference: incumbent,
+            ..
+        } = &first
+        else {
+            return Err(Error::invalid(format!(
+                "premise: the first fit was promoted: {}",
+                first.describe()
+            )));
+        };
+        let incumbent = incumbent.clone();
+        let published = first
+            .published()
+            .ok_or_else(|| Error::not_found("the promoted artifact"))?;
+        let stored = ModelArtifact::from_json(&published.contents)?;
+        // The promotion journaled the cards it moved in the same step.
+        assert!(
+            platform
+                .registered_model_cards()
+                .any(|card| card.reference() == incumbent && card.stage == ModelStage::Production),
+            "premise: the promoted card is on the log"
+        );
+        let fetch = |digest: &str| -> Result<ModelArtifact> {
+            if digest == stored.digest {
+                Ok(stored.clone())
+            } else {
+                Err(Error::not_found(format!("{digest} is not stored")))
+            }
+        };
+
+        // Without the artifact: the restored incumbent blocks by name.
+        let mut blind = learning_desk();
+        assert!(blind.restore_registry(&platform) > 0);
+        assert_eq!(
+            blind.registry().get(&incumbent).map(|card| card.stage),
+            Some(ModelStage::Production),
+            "the production card is restored"
+        );
+        blind.maybe_learn(&subject(), &bars, REGIME, 3, at())?;
+        let refused = blind
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(&refused, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("holds no artifact")),
+            "{}",
+            refused.describe()
+        );
+
+        // With it: an equal candidate is refused on the gate itself.
+        let mut restarted = learning_desk();
+        let (fetched, missing) = restarted.restore_artifacts(&platform, fetch)?;
+        assert_eq!((fetched, missing.len()), (vec![incumbent.clone()], 0));
+        restarted.restore_registry(&platform);
+        restarted.maybe_learn(&subject(), &bars, REGIME, 3, at())?;
+        let equal = restarted
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("an equal candidate"))?;
+        assert!(
+            matches!(&equal, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("not strictly better")),
+            "{}",
+            equal.describe()
+        );
+        // And a better one is promoted and displaces the incumbent.
+        let bigger = super::tests_support::learnable(1_200);
+        restarted.maybe_learn(&subject(), &bigger, REGIME, 4, at())?;
+        let better = through_shadow(&mut restarted, &mut platform, &bigger, 4, at())?
+            .ok_or_else(|| Error::not_found("a better candidate"))?;
+        assert!(
+            matches!(&better, PromotionOutcome::Promoted { displaced, .. }
+                if displaced.contains(&incumbent)),
+            "{}",
+            better.describe()
+        );
+        let production = restarted
+            .registry()
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .count();
+        assert_eq!(production, 1, "one production card per subject");
+        Ok(())
+    }
+
+    /// R12-EXPAND-6070: the desk's own fit runs in shadow before it may
+    /// replace anything. Passing every holdout check enters shadow and
+    /// promotes nothing; each later window it beats production on is one
+    /// round won; the third promotes it, as `SelfFitted`, under a signed
+    /// record whose first stage is the shadow period. A shadowed model that
+    /// loses a round on a window it cannot predict is retired, never
+    /// promoted.
+    ///
+    /// Mutations: promote at entry instead of entering shadow (the kernel
+    /// refuses `SelfFitted` and the first outcome is `NotPromoted`, failing
+    /// the `Shadowed` match); count a lost round as won in `shadow_round`
+    /// (the unpredictable window promotes and the retirement assertion
+    /// fails).
+    #[test]
+    fn a_self_fitted_candidate_runs_in_shadow_and_is_promoted_only_after_winning_its_rounds()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        let entered = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(entered, PromotionOutcome::Shadowed { rounds_won: 0, .. }),
+            "{}",
+            entered.describe()
+        );
+        assert_eq!(
+            desk.registry().get(&reference).map(|card| card.stage),
+            Some(ModelStage::Shadow)
+        );
+        assert!(
+            platform.model_promotions().is_empty(),
+            "shadow promoted nothing"
+        );
+
+        // A round on the very same bars holds nothing after what the model
+        // has read: it waits, and is neither won nor lost.
+        let later = at().saturating_add(qip_core::Duration::from_mins(1));
+        desk.maybe_learn(&subject(), &bars, REGIME, 2, later)?;
+        let stale = desk
+            .promote_candidate(&mut platform, later)?
+            .ok_or_else(|| Error::not_found("a shadow round"))?;
+        assert!(
+            matches!(&stale, PromotionOutcome::Shadowed { rounds_won: 0, reason, .. }
+                if reason.contains("waiting")),
+            "a round on rows the model had read was scored: {}",
+            stale.describe()
+        );
+
+        let mut outcomes = Vec::new();
+        for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
+            let later = at().saturating_add(qip_core::Duration::from_mins(10 + round as i64));
+            let step = 150 * round as usize;
+            let longer = super::tests_support::learnable(400 + step);
+            desk.maybe_learn(&subject(), &longer[step..], REGIME, 2 + round, later)?;
+            outcomes.push(
+                desk.promote_candidate(&mut platform, later)?
+                    .ok_or_else(|| Error::not_found("a shadow round"))?,
+            );
+            if round == 1 {
+                // The window just won holds nothing new: re-running it waits,
+                // and the round is not counted twice.
+                let again = later.saturating_add(qip_core::Duration::from_secs(1));
+                desk.maybe_learn(&subject(), &longer[step..], REGIME, 90, again)?;
+                let repeat = desk
+                    .promote_candidate(&mut platform, again)?
+                    .ok_or_else(|| Error::not_found("a repeated round"))?;
+                assert!(
+                    matches!(&repeat, PromotionOutcome::Shadowed { rounds_won: 1, reason, .. }
+                        if reason.contains("waiting")),
+                    "a won window was scored again: {}",
+                    repeat.describe()
+                );
+            }
+        }
+        for (index, outcome) in outcomes.iter().take(outcomes.len() - 1).enumerate() {
+            assert!(
+                matches!(outcome, PromotionOutcome::Shadowed { rounds_won, .. }
+                    if *rounds_won == index as u32 + 1),
+                "{}",
+                outcome.describe()
+            );
+        }
+        let last = outcomes
+            .last()
+            .ok_or_else(|| Error::not_found("a last round"))?;
+        assert!(
+            matches!(last, PromotionOutcome::Promoted { reference: promoted, .. }
+                if promoted == &reference),
+            "{}",
+            last.describe()
+        );
+        let record = platform
+            .model_promotions()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the promotion record"))?;
+        assert_eq!(record.producer, ModelProducer::SelfFitted);
+        assert!(
+            record
+                .stages
+                .first()
+                .is_some_and(|s| s.starts_with("shadow since"))
+        );
+        assert!(platform.promotion_verifies(record));
+
+        // A second subject's fit shadows, then meets a window it cannot
+        // predict: the round is lost and the model retired.
+        let other = ObjectId::from_string("OBJ0000000000000000000BBB");
+        desk.maybe_learn(&other, &bars, REGIME, 10, at())?;
+        let shadowed = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(shadowed, PromotionOutcome::Shadowed { .. }),
+            "{}",
+            shadowed.describe()
+        );
+        let doomed = shadowed.reference().to_string();
+        let noise = super::tests_support::unlearnable(700);
+        let later = at().saturating_add(qip_core::Duration::from_mins(30));
+        desk.maybe_learn(&other, &noise, REGIME, 11, later)?;
+        let lost = desk
+            .promote_candidate(&mut platform, later)?
+            .ok_or_else(|| Error::not_found("a shadow round"))?;
+        assert!(
+            matches!(&lost, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("lost its shadow round")),
+            "{}",
+            lost.describe()
+        );
+        assert_eq!(
+            desk.registry().get(&doomed).map(|card| card.stage),
+            Some(ModelStage::Retired)
+        );
+        assert!(!platform.model_promotions().contains_key(&doomed));
+        Ok(())
+    }
+
     #[test]
     fn a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not()
     -> Result<()> {
@@ -2075,8 +3578,7 @@ mod tests {
             "premise: nothing named the desk before it acted"
         );
 
-        let first = desk
-            .promote_candidate(&mut platform, at())?
+        let first = through_shadow(&mut desk, &mut platform, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a candidate from the first round"))?;
         let PromotionOutcome::Promoted {
             reference,
@@ -2097,10 +3599,12 @@ mod tests {
         assert_eq!(reference, &first_reference);
         assert_eq!(*incumbent_rmse, None, "there was no incumbent to score");
         // EXPAND-055: the record itself says what was beaten and on what.
-        // With no incumbent the baseline named is the mean predictor the
-        // skill bar's R-squared is measured against, not a blank.
+        // With no incumbent the baseline named is the one the final shadow
+        // round beat (R12-EXPAND-6070): the zero-return predictor, because
+        // the held-out mean would be computed from the targets it is scored
+        // on. Not a blank.
         assert!(
-            baseline.contains("mean predictor"),
+            baseline.contains("zero-return predictor"),
             "the promotion does not name its baseline: {baseline}"
         );
         assert!(
@@ -2238,8 +3742,7 @@ mod tests {
         let bigger = super::tests_support::learnable(1_200);
         desk.maybe_learn(&subject(), &bigger, REGIME, 3, at())?
             .ok_or_else(|| Error::not_found("the third round"))?;
-        let third = desk
-            .promote_candidate(&mut platform, at())?
+        let third = through_shadow(&mut desk, &mut platform, &bigger, 3, at())?
             .ok_or_else(|| Error::not_found("a candidate from the third round"))?;
         let PromotionOutcome::Promoted {
             baseline,
@@ -2844,6 +4347,7 @@ mod tests {
 
         // Promote it. Refused unless the fit actually cleared the skill bar,
         // which is the point: this cannot be staged for a model with no signal.
+        completed_shadow(desk.registry_mut(), &reference)?;
         if desk.registry_mut().promote(&reference, at()).is_err() {
             return Err(Error::invalid(
                 "the fit did not clear the skill bar, so this test cannot reach the drift \
@@ -2896,6 +4400,7 @@ mod tests {
             .and_then(|round| round.registration)
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference;
+        completed_shadow(desk.registry_mut(), &reference)?;
         if desk.registry_mut().promote(&reference, at()).is_err() {
             return Err(Error::invalid(
                 "the fit did not clear the skill bar, so this test cannot reach a promoted card",
@@ -3052,8 +4557,8 @@ mod tests {
             card.code_version.as_deref(),
             Some("qip-kernel 0.1.0 (test)")
         );
-        let outcome = noted
-            .promote_candidate(&mut serving_platform()?, at())?
+        let mut serving = serving_platform()?;
+        let outcome = through_shadow(&mut noted, &mut serving, &bars, 1, at())?
             .ok_or_else(|| Error::not_found("a candidate"))?;
         assert!(
             matches!(outcome, PromotionOutcome::Promoted { .. }),
@@ -3937,19 +5442,60 @@ mod tests_support {
     /// variance, so there is nothing for a holdout R-squared to be a share of,
     /// and a model that "passed" on it would have passed on nothing.
     pub(super) fn learnable(count: usize) -> Vec<Bar> {
+        autoregressive(count, |_| 0.6)
+    }
+
+    /// [`learnable`] in three regimes: `r(t+1) = 0.6 * r(t) + noise` to bar
+    /// 1000, `-0.6 * r(t) + noise` to bar 2700, and `0.9 * r(t) + noise`
+    /// after. The shocks are the same draws, so the first 1000 bars are
+    /// byte-identical to `learnable`'s.
+    ///
+    /// For a test whose premise is that a later fit displaces an earlier one.
+    /// On the stationary series two fits are the same model to within
+    /// sampling error, and under fresh-row shadow scoring (R12-EXPAND-6070)
+    /// which of them wins a round is decided by the draw: the crash tests'
+    /// "promotable after the restart" once lost by an rmse of 0.002230
+    /// against 0.002220 on 150 rows, a coin flip reading as a recovery
+    /// verdict. A fit that straddles a change is no better: it lost 0.003383
+    /// to 0.003365. So each fit's window here lies wholly inside one regime
+    /// (`through_shadow_on` takes the window's offset), and a model from the
+    /// regime before is actively wrong on the rows after, not merely less
+    /// precise: the sign of what it predicts is wrong. The regime borders
+    /// leave each fit's three rounds (`SHADOW_STEP` bars each) inside its own
+    /// regime: a 400-bar fit at offset 0 scores on bars 400 to 850, a
+    /// 1200-bar fit at offset 1000 on bars 2200 to 2650.
+    pub(super) fn learnable_regimes(count: usize) -> Vec<Bar> {
+        autoregressive(count, |i| match i {
+            0..1000 => 0.6,
+            1000..2700 => -0.6,
+            _ => 0.9,
+        })
+    }
+
+    /// `rising(count)` re-priced as an AR(1) return series with the given
+    /// per-bar coefficient and a fixed seed, so every caller reads the same
+    /// shocks in the same order.
+    fn autoregressive(count: usize, coefficient: impl Fn(usize) -> f64) -> Vec<Bar> {
         let mut rng = Xoshiro256::seeded(0x1EA2);
         let mut bars = rising(count);
         let mut level = 100.0_f64;
         let mut previous = 0.0_f64;
-        for bar in bars.iter_mut() {
+        for (i, bar) in bars.iter_mut().enumerate() {
             let shock = rng.uniform(-0.004, 0.004);
-            let ret = 0.6 * previous + shock;
+            let ret = coefficient(i) * previous + shock;
             previous = ret;
             level *= 1.0 + ret;
             bar.close = Decimal::from_f64(level).unwrap_or(Decimal::ONE);
             bar.open = Decimal::from_f64(level * (1.0 - ret / 2.0)).unwrap_or(Decimal::ONE);
             bar.high = Decimal::from_f64(level * 1.001).unwrap_or(Decimal::ONE);
             bar.low = Decimal::from_f64(level * 0.999).unwrap_or(Decimal::ONE);
+            // Stationary volume. `rising`'s `1000 + i` makes `volume_share` a
+            // deterministic ratio that shrinks with the index, so any later
+            // window of the same series read as drifted by construction, and
+            // a shadow round (R12-EXPAND-6070), which is a later window by
+            // definition, was refuted for a property of the fixture.
+            bar.volume =
+                Decimal::from_f64(1_000.0 * (1.0 + rng.uniform(-0.2, 0.2))).unwrap_or(Decimal::ONE);
         }
         bars
     }

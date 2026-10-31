@@ -261,3 +261,219 @@ fn a_restarted_platform_rebuilds_every_promoted_version_with_its_evaluation_and_
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
+
+/// R12-MODEL-9003: a registered card is journaled when it is new and again
+/// when something the registry must keep changes, and not for a drift
+/// reading alone. The deep brain re-measures drift on every earlier fit of a
+/// subject each round, so a record per reading would grow the never-evicted
+/// Learn group with the square of the rounds. Mutation: compare whole cards
+/// in `Platform::journal_model_registry` (drop `same_but_drift`) — the drift
+/// change is written and the second count fails.
+#[test]
+fn a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let reference = registered(&mut registry, &teacher("journal-a", "0.1.0", 1e-6)?)?;
+    assert_eq!(platform.journal_model_registry(&registry, start())?, 1);
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        0,
+        "premise: an unchanged card is not written twice"
+    );
+
+    // Under the card's threshold, so the reading changes no decision.
+    let threshold = registry
+        .get(&reference)
+        .map(|card| card.drift_threshold)
+        .ok_or_else(|| Error::not_found("the card"))?;
+    registry.record_drift(&reference, threshold * 0.5)?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        0,
+        "a drift reading alone was journaled"
+    );
+
+    registry.retire(&reference, start())?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        1,
+        "a stage move was not journaled"
+    );
+    let card = platform
+        .registered_model_cards()
+        .find(|card| card.reference() == reference)
+        .ok_or_else(|| Error::not_found("the journaled card"))?;
+    assert_eq!(card.stage, qip_ai::registry::ModelStage::Retired);
+    Ok(())
+}
+
+/// R12-MODEL-9003: a drift reading that crosses the card's threshold is
+/// journaled, because it changes whether the model may inform a decision; a
+/// restart that kept the last journaled reading would otherwise restore a
+/// drifted model as healthy, or a recovered one as drifted. Mutation: compare
+/// drift readings without the threshold side in `same_but_drift` — the
+/// crossing is not written and the count fails.
+#[test]
+fn a_drift_reading_that_crosses_the_threshold_is_journaled() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let reference = registered(&mut registry, &teacher("journal-b", "0.1.0", 1e-6)?)?;
+    assert_eq!(platform.journal_model_registry(&registry, start())?, 1);
+    let threshold = registry
+        .get(&reference)
+        .map(|card| card.drift_threshold)
+        .ok_or_else(|| Error::not_found("the card"))?;
+    registry.record_drift(&reference, threshold * 0.5)?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        0,
+        "premise: a reading under the threshold is not a record"
+    );
+    registry.record_drift(&reference, threshold * 2.0)?;
+    assert_eq!(
+        platform.journal_model_registry(&registry, start())?,
+        1,
+        "a crossing of the threshold was not journaled"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-9003, eighth review: a version the log has taken out of
+/// production cannot be promoted again — only rolled back to. Promoted
+/// again, it skipped the rollback's checks, stood in production with its
+/// retirement on the card, and a restarted desk replayed the record as a
+/// rollback, restoring a history that differed from the live one. The
+/// refusal writes nothing, and the version still in production may be
+/// published again under the same bytes, which a restarted desk does.
+/// Mutation: delete the out-of-production refusal in `promote_model_from` —
+/// the re-promotion is admitted and the first assertion fails.
+#[test]
+fn a_version_taken_out_of_production_returns_only_through_a_rollback() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let old = teacher("returning-a", "0.1.0", 1e-6)?;
+    let new = teacher("returning-a", "0.2.0", 1.0)?;
+    let old_reference = registered(&mut registry, &old)?;
+    let new_reference = registered(&mut registry, &new)?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        &[],
+        start(),
+    )?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        std::slice::from_ref(&old_reference),
+        start().saturating_add(qip_core::Duration::from_mins(1)),
+    )?;
+    assert!(
+        !platform.model_promotions().contains_key(&old_reference),
+        "premise: the old version is out of production"
+    );
+    let records = promotion_records(&platform);
+
+    let again = platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        std::slice::from_ref(&new_reference),
+        start().saturating_add(qip_core::Duration::from_mins(2)),
+    );
+    let refusal = match again {
+        Ok(_) => panic!("{old_reference} went back into production without a rollback"),
+        Err(error) => error.message().to_string(),
+    };
+    assert!(refusal.contains("only through a rollback"), "{refusal}");
+    assert_eq!(
+        promotion_records(&platform),
+        records,
+        "the refusal wrote a record"
+    );
+    assert!(platform.model_promotions().contains_key(&new_reference));
+
+    // The version in production is still admitted under its own bytes.
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        &[],
+        start().saturating_add(qip_core::Duration::from_mins(3)),
+    )?;
+    Ok(())
+}
+
+/// R12-MODEL-9003: a promotion that displaces two production cards records
+/// the rollback parent the registry chose — the more recently deployed of
+/// them — so a desk restoring from the log takes the same one. The replay
+/// used to take the first displaced reference, which here is the older
+/// card. Mutation: record `displaced.first()` as the parent in
+/// `promote_model_from` — the record names the older card and the first
+/// assertion fails.
+#[test]
+fn a_promotion_displacing_two_production_cards_records_the_parent_the_registry_chose() -> Result<()>
+{
+    let mut platform = platform(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let old = teacher("two-parents-a", "0.1.0", 1e-6)?;
+    let middle = teacher("two-parents-a", "0.2.0", 1e-2)?;
+    let new = teacher("two-parents-a", "0.3.0", 1.0)?;
+    let old_reference = registered(&mut registry, &old)?;
+    let middle_reference = registered(&mut registry, &middle)?;
+    let new_reference = registered(&mut registry, &new)?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        &[],
+        start(),
+    )?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&middle)?,
+        None,
+        &[],
+        start().saturating_add(qip_core::Duration::from_mins(1)),
+    )?;
+    assert!(
+        platform.model_promotions().contains_key(&old_reference)
+            && platform.model_promotions().contains_key(&middle_reference),
+        "premise: two versions are in production at once"
+    );
+    // Listed older first, so the first displaced reference is not the
+    // registry's choice and the two rules disagree.
+    let displaced = vec![old_reference.clone(), middle_reference.clone()];
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        &displaced,
+        start().saturating_add(qip_core::Duration::from_mins(2)),
+    )?;
+    let live = registry
+        .get(&new_reference)
+        .and_then(|card| card.rollback_parent.clone());
+    assert_eq!(
+        live.as_deref(),
+        Some(middle_reference.as_str()),
+        "premise: the registry chose the more recently deployed card"
+    );
+    let history = promotion_history(&platform)?;
+    let record = history
+        .iter()
+        .rev()
+        .find(|record| record.reference == new_reference)
+        .ok_or_else(|| qip_core::error::Error::not_found("the third promotion's record"))?;
+    assert_eq!(
+        record.rollback_parent, live,
+        "the record does not carry the parent the registry chose"
+    );
+    assert_ne!(
+        record.displaced.first(),
+        live.as_ref(),
+        "premise: the first displaced reference is not the registry's choice"
+    );
+    Ok(())
+}

@@ -27,6 +27,12 @@ use crate::resolution_source::ResolutionSourceClaim;
 use crate::state::{Change, ChangeKind, WorldDiff, WorldState};
 use crate::vocabulary::{AltMetric, MacroSeries, SubjectKind, names};
 
+/// The share of its confidence a stale source's statements keep once the
+/// source is retired (R12-RES-7097). Half, so a belief that rested only on
+/// it falls below whatever it previously cleared without being thrown away:
+/// staleness is a reason to trust a figure less, not evidence it was false.
+pub const STALE_SOURCE_CONFIDENCE: f64 = 0.5;
+
 /// Published when the world model absorbs something material.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorldModelUpdated {
@@ -280,6 +286,33 @@ impl WorldModel {
             ));
         }
         keys.len()
+    }
+
+    /// Hold what a stale source said less firmly (R12-RES-7097).
+    ///
+    /// The counterpart of [`Self::quarantine_source`] for a source retired
+    /// because its data went stale rather than because it was poisoned:
+    /// every fact it stated is restated at [`STALE_SOURCE_CONFIDENCE`] of
+    /// its confidence from `at`, and each relationship touched is journaled
+    /// as a revised belief naming the source. Returns how many relationships
+    /// moved.
+    pub fn mark_source_stale(&mut self, source: &str, at: Timestamp) -> Result<usize> {
+        let keys = self
+            .graph
+            .downweight_source(source, STALE_SOURCE_CONFIDENCE, at)?;
+        for key in &keys {
+            self.journal.push(Change::new(
+                ChangeKind::BeliefRevised,
+                key.clone(),
+                format!(
+                    "source `{source}` retired as stale; its statement is held at \
+                     {STALE_SOURCE_CONFIDENCE} of its confidence"
+                ),
+                0.5,
+                at,
+            ));
+        }
+        Ok(keys.len())
     }
 
     /// Assert a relationship, adding it to the graph.

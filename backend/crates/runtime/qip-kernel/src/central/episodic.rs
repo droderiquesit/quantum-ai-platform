@@ -85,6 +85,15 @@ pub enum EpisodicOutcome {
     Produced {
         episodes: u64,
         newest_knowable: Timestamp,
+        /// Of those, the episodes whose outcome went against their claim
+        /// (R12-WORLD-1016). Each one keeps the claim as it was made and
+        /// carries the disagreement beside it
+        /// ([`qip_ai::memory::EpisodeContradiction`]). Counted here so a memory
+        /// that has been wrong in half its episodes does not read the same as
+        /// one that has not, in the record of every issue. Absent from issues
+        /// journaled before it was counted, and read there as zero.
+        #[serde(default)]
+        contradicted: u64,
     },
 }
 
@@ -171,6 +180,10 @@ impl EpisodicIssue {
             outcome: EpisodicOutcome::Produced {
                 episodes: episodes.len() as u64,
                 newest_knowable,
+                contradicted: episodes
+                    .iter()
+                    .filter(|episode| episode.contradiction().is_some())
+                    .count() as u64,
             },
         })
     }
@@ -203,9 +216,11 @@ impl EpisodicIssue {
             EpisodicOutcome::Produced {
                 episodes,
                 newest_knowable,
+                contradicted,
             } => format!(
-                "episodic digest: {episodes} episode(s), newest knowable at {newest_knowable:?}, \
-                 which is the instant the slot's freshness is measured from"
+                "episodic digest: {episodes} episode(s), {contradicted} of them contradicted by \
+                 their outcome and kept beside their claim, newest knowable at \
+                 {newest_knowable:?}, which is the instant the slot's freshness is measured from"
             ),
         }
     }
@@ -386,6 +401,51 @@ mod tests {
                 .narrowing(later)
                 .pauses(StrategyClass::SituationalRecognition),
             "a digest older than its time to live must stop excusing the pause"
+        );
+    }
+
+    /// R12-WORLD-1016: the issue counts the knowable episodes whose outcome
+    /// went against their claim, and says so on the operator line. Mutation:
+    /// count every resolved episode instead of the contradicted ones -- the
+    /// agreeing episode is then counted and the count reads 2.
+    #[test]
+    fn an_issue_counts_the_episodes_whose_outcome_contradicted_their_claim() {
+        let resolved = |id: &str, known_at: Timestamp, moved: f64| {
+            let mut e = episode(id, known_at);
+            e.outcome = Some(qip_ai::memory::EpisodeOutcome {
+                resolved_at: known_at,
+                realised_move_bps: moved,
+                realised_pnl: 0.0,
+                expected_move_bps: None,
+                fills: Vec::new(),
+            });
+            e
+        };
+        let against = resolved("against", at(100), -25.0);
+        let agreed = resolved("agreed", at(200), 25.0);
+        let open = episode("open", at(300));
+        assert!(against.contradiction().is_some(), "premise");
+        assert!(agreed.contradiction().is_none(), "premise");
+        let issue = EpisodicIssue::derive([&against, &agreed, &open].into_iter(), 3, at(1_000))
+            .expect("three knowable episodes");
+        assert!(
+            matches!(
+                issue.outcome,
+                EpisodicOutcome::Produced {
+                    episodes: 3,
+                    contradicted: 1,
+                    ..
+                }
+            ),
+            "{:?}",
+            issue.outcome
+        );
+        assert!(
+            issue
+                .describe()
+                .contains("1 of them contradicted by their outcome"),
+            "{}",
+            issue.describe()
         );
     }
 }

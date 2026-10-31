@@ -49,7 +49,7 @@
 #
 # ## Why `down` is not `destroy`
 #
-# `down` destroys `module.execution_node` — the C3 machines, which bill by
+# `down` destroys `module.execution_node` — the C4 machines, which bill by
 # the hour whenever an environment declares any — and leaves the Cloud Run
 # services, identity, KMS, secrets, the registry and the state bucket
 # standing. That asymmetry is deliberate. What it is *not* is a claim that
@@ -190,6 +190,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      # Read-only, for the ci gate below: which ci runs this commit has.
+      actions: read
     steps:
       # No agent starts this workflow (R12 GOV-9067): it plans, applies and
       # tears down infrastructure under a cloud credential, and a
@@ -263,6 +265,41 @@ jobs:
             echo "A person runs scripts/bootstrap-deploy.sh prod." >&2
             exit 1
           fi
+
+      # Infrastructure goes through the same tests as code (R12-CICD-9066).
+      # Without this an apply took whatever commit the dispatch named — any
+      # branch, any state — while deploy.yml refused a commit ci had not
+      # passed; an agent's Terraform change could reach a project without a
+      # test having run on it. `up` and `apps` are the actions that change
+      # the environment toward this commit's configuration, so they need a
+      # successful ci run started by a push of this repository's commit (a
+      # pull request's run carries a fork's head as `head_sha` and succeeds
+      # like any other). plan, diagnose and urls change nothing; suspend,
+      # down and teardown remove things and must stay available to recover
+      # from a commit that cannot pass. A count that is not a number is a
+      # refusal, not a pass, as in deploy.yml (R12 CICD-9106).
+      - name: ci succeeded for this commit
+        if: inputs.action == 'up' || inputs.action == 'apps'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_REPOSITORY: ${{ github.repository }}
+          THIS_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          runs=$(gh api \
+            "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${THIS_SHA}&status=success&event=push" \
+            --jq '.total_count')
+          case "$runs" in
+            ''|*[!0-9]*)
+              echo "ci's run count for ${THIS_SHA} is not a number ('${runs}'); nothing is applied." >&2
+              exit 1
+              ;;
+          esac
+          if [ "$runs" -lt 1 ]; then
+            echo "no successful ci run for ${THIS_SHA}; nothing is applied. Push the commit, let ci pass, then dispatch this again." >&2
+            exit 1
+          fi
+          echo "ci succeeded for ${THIS_SHA}"
 
       - uses: actions/checkout@v4
 
@@ -492,6 +529,21 @@ jobs:
           # assertion, which is the thing this repository refuses most often.
           # It is gone rather than reworded, because a redundant grant that
           # exists to make a comment true is worse than no grant at all.
+          #
+          # No BigQuery or Cloud Asset role is self-granted here either, and
+          # that is a decision, not an omission. The research dataset and the
+          # asset-change feeds need `bigquery.datasets.*` and
+          # `cloudasset.feeds.*`, which modules/cicd now grants through the
+          # custom role `qipInfraWarehouseFeeds_<env>`, holding exactly those
+          # verbs. The predefined roles that carry them here would be far
+          # wider: `roles/bigquery.dataOwner` reads and writes every row, and
+          # `roles/cloudasset.owner` runs exports and searches over the whole
+          # inventory. The cost is a race on the first `up` after the role
+          # lands: the same apply creates the role, its binding, the dataset
+          # and the feeds, so a 403 naming one of those permissions can stop
+          # it once while IAM propagates. Re-dispatch `up`. To avoid the race
+          # instead, apply once with `scripts/bootstrap-deploy.sh <env>`,
+          # whose identity holds owner.
           for role in roles/cloudkms.publicKeyViewer roles/binaryauthorization.attestorsAdmin roles/run.admin roles/dns.admin roles/iap.admin roles/identityplatform.admin roles/container.clusterAdmin; do
             held="$(gcloud projects get-iam-policy "$project" \
               --flatten="bindings[].members" \
@@ -1115,6 +1167,24 @@ jobs:
             -out=tfplan \
             ${VAR_FILES}
           terraform -chdir=infrastructure/terraform show -no-color tfplan
+
+      # A plan that changes a core resource — the hierarchy, a network, a
+      # database — is applied only inside a committed change window
+      # (R12-GCP-9120; infrastructure/change-windows.json). Judged on the
+      # saved plan this job applies, so what is judged is what lands, by the
+      # operator command line (`qip change-window`, Rust like every other
+      # gate; exit 3 is the refusal, 1 a plan or policy it could not read).
+      - name: a core change lands only inside its change window
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          terraform -chdir=infrastructure/terraform show -json tfplan > "$RUNNER_TEMP/plan.json"
+          # In backend/, where rust-toolchain.toml pins the toolchain, as
+          # ci.yml does: run at the root, rustup installs nothing pinned.
+          cd backend
+          rustup show active-toolchain || rustup toolchain install
+          cargo run --locked --quiet -p qip-cli --bin qip -- change-window \
+            --plan "$RUNNER_TEMP/plan.json" --policy ../infrastructure/change-windows.json
 
       - name: keep the applied plan
         if: inputs.action == 'up'

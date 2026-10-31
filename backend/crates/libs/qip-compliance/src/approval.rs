@@ -121,6 +121,10 @@ pub struct CapitalRequest {
     /// approval for the same money unbounded — the issuing plane compares the
     /// two payloads and refuses a difference.
     pub exposure: Option<qip_contracts::ExposureBounds>,
+    /// The drawdown stop, reserve and ADV share the grant is asked under
+    /// (ADR 0126), carried into the approved envelope for the same reason
+    /// as `exposure`: the issuing plane compares the two payloads.
+    pub drawdown: Option<qip_contracts::DrawdownBounds>,
 }
 
 impl CapitalRequest {
@@ -438,6 +442,10 @@ impl ApprovalChain {
         let envelope = match &request.exposure {
             None => envelope,
             Some(exposure) => envelope.with_exposure(exposure.clone())?,
+        };
+        let envelope = match &request.drawdown {
+            None => envelope,
+            Some(drawdown) => envelope.with_drawdown(drawdown.clone())?,
         };
         Ok(envelope.signed(signature))
     }
