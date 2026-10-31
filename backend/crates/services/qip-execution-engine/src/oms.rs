@@ -983,6 +983,13 @@ impl OrderManager {
                         ));
                     }
                 }
+                // ADR 0285: a desk fill is the other side of a layering
+                // pattern on this instrument, at any venue. The desk has no
+                // replace path, so nothing here records a requote; a replace
+                // path added later must call `ConductWatch::requoted`.
+                if !order.fills.is_empty() {
+                    self.conduct.filled(&order.object_id, book_side, at);
+                }
                 self.reconciliation_breaks.extend(breaks.iter().cloned());
                 let result = SubmissionResult {
                     order_id: order.order_id.clone(),

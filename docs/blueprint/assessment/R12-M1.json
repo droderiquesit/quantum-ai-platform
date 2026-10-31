@@ -1624,26 +1624,29 @@
   {
     "id": "R12-EXEC-1068",
     "status": "PARTIAL",
-    "current": "Spoofing is a whole-word conduct phrase class (qip-contracts action.rs); and the edge cell now refuses a place-and-cancel pattern before the next order of its shape exists: GATE_CONDUCT_SPOOFING in place_net, on the cell's own record of placements and unfilled time-to-live withdrawals per venue, instrument and side.",
+    "current": "The cancel-before-fill gate (GATE_CONDUCT_SPOOFING) refuses a place-and-cancel pattern at the cell's pass, at admit_replacement and at the desk's submit gate. Since ADR 0285 a second arm sits beside it in qip_execution_engine::conduct::ConductWatch::refusal, under the same policy values (60 s, four, three quarters). It refuses the next order on one side of one book once at least four of that side's requotes moved the order away from the touch, those are more than three quarters of the side's requotes, and the instrument filled on the opposite side at any venue. Cell::record_replacement judges away-from-touch against the cell's own book and records the requote. The cell's fill confirmation and the desk OrderManager's submit fill path record fills. The existing GOV-6126 count of an unfilled requote is unchanged.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/conduct.rs:42 ConductPolicy (default: 4 unfilled withdrawals in 60 s, above 0.75 of placements) and :151 ConductWatch::refusal, keyed by venue, instrument and side, bounded by the window and MAX_EVENTS_PER_KEY",
-      "backend/crates/edge/qip-edge/src/cell.rs:215 GATE_CONDUCT_SPOOFING; :5278 place_net refuses through Cell::refuse before pricing builds the order; :5536 Cell::send records each accepted placement; :6261 withdraw_all records an order withdrawn at its time to live with nothing filled, after the last reports",
-      "backend/crates/edge/qip-edge/tests/pricing.rs:659 a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
-      "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
-      "backend/crates/libs/qip-contracts/src/action.rs:93 whole-word matcher"
+      "backend/crates/services/qip-execution-engine/src/conduct.rs::ConductWatch::requoted",
+      "backend/crates/services/qip-execution-engine/src/conduct.rs::ConductWatch::filled",
+      "backend/crates/services/qip-execution-engine/src/conduct.rs::ConductWatch::layering_refusal",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::record_replacement and Cell::requote_moved_away",
+      "backend/crates/edge/qip-edge/src/cell.rs::crossing_tests::a_cell_that_layers_its_bids_by_requoting_them_away_from_the_touch_while_its_asks_fill_is_refused_a_further_bid",
+      "backend/crates/edge/qip-edge/tests/pricing.rs::a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
+      "backend/crates/services/qip-execution-engine/src/oms.rs (submit fill path records ConductWatch::filled)",
+      "docs/adr/0285-requote-layering-is-refused-beside-the-cancel-before-fill-gate-at-the-cell-and-the-desk-under-that-gates-own-bound-with-an-opposite-side-fill-at-any-venue-counted.md"
     ],
-    "gap": "Requote layering is defined by ADR 0155 section 13 (requotes that move an order away from the touch and whose order is then withdrawn unfilled, keyed by venue, instrument and side, judged against an opposite-side fill; a requote at or inside the touch or one a venue or halt forced never counts) and has no control: the window, minimum and ratio are not declared, so no gate is built and GATE_CONDUCT_SPOOFING is unchanged. Requotes beneath the placer seam (Cell::spend_requote) are deliberately not counted by it. Cross-venue and momentum-ignition patterns have no control, and neither does the desk order path in qip-execution-engine. Needs a declared bound (a risk value, owner decision).",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-31 (lane L5-EDGE, ADR 0285): the desk half cannot fire. The desk's OrderManager has no replace path, so no desk requote is ever recorded; it records its fills, and a replace path added later must call ConductWatch::requoted (ADR 0285 decision 5). The row stays PARTIAL on the ruling's 'and at the desk' clause until that path exists. Momentum ignition is graded under R12-RISK-4103's market-conduct domain, not here.",
+    "implemented": true,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
+    "verification": "cargo test -p qip-edge --lib a_cell_that_layers; cargo test -p qip-edge --test pricing",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 13: gap restated, PARTIAL kept; no code. Counting requotes would convict ordinary market making, so the measure needs its own bound. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Requote layering is refused at the cell and at the desk, beside the cancel-before-fill gate and never in its place. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Requote layering is refused beside the cancel-before-fill gate, at the cell and the desk, under that gate's own 60-second, four-withdrawal, three-quarters bound, with an opposite-side fill at any venue of the instrument counted.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "2026-10-24 ADR 0155 section 13: gap restated, PARTIAL kept; no code. Counting requotes would convict ordinary market making, so the measure needs its own bound. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Requote layering is refused at the cell and at the desk, beside the cancel-before-fill gate and never in its place. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Requote layering is refused beside the cancel-before-fill gate, at the cell and the desk, under that gate's own 60-second, four-withdrawal, three-quarters bound, with an opposite-side fill at any venue of the instrument counted.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L5-EDGE: ADR 0285 accepted and the cell half implemented. The test sits in cell.rs crossing_tests rather than tests/pricing.rs, because it drives a sell through place_net and its fill through confirm_execution_reports. Its twin with no opposite fill is admitted, so the cancel-before-fill gate does not refuse the pattern (4 withdrawals against 8 placements). Mutations, each restored byte-for-byte (cmp): the arm ignoring the opposite-side fill (cell.rs:13911), no requote counted as away (:13918), the cell's fill path recording no fill (:13917). No desk twin: the desk has no replace path. conduct.rs's module doc was corrected: it said requotes were not counted, which GOV-6126 had made untrue."
   },
   {
     "id": "R12-AGENCY-1069",
