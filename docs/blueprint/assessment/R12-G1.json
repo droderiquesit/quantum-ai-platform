@@ -309,12 +309,14 @@
   },
   {
     "id": "R12-DATA-8014",
-    "status": "MISSING",
-    "current": "Manifests exist only embedded in NewsItem events; no registry type or store. Spanner/AlloyDB adapters are refused.",
+    "status": "PARTIAL",
+    "current": "qip_storage::gcp::manifest_registry::SourceManifestRegistry holds SourceManifest records over SpannerKv (ADR 0113), keyed by canonical URI (source length, source, locator) under a source-manifest/ prefix: register (idempotent for the same manifest, refusing a changed original naming both hashes, in one read-write transaction), lookup by canonical URI, and listing by source.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner/AlloyDB refused"
+      "backend/crates/libs/qip-storage/src/gcp/manifest_registry.rs",
+      "backend/crates/libs/qip-storage/tests/manifest_registry.rs (a_registry_write_and_lookup_by_canonical_uri_round_trip_through_spanner; a_changed_original_is_refused_naming_both_hashes_and_the_first_manifest_stands)",
+      "backend/crates/libs/qip-storage/tests/support/spanner_double.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No Source Manifest Registry type or store exists: qip_financial::manifest::SourceManifest lives only inside NewsItem/intelligence records, and nothing writes or looks it up by canonical URI or provider ID. ADR 0113 unblocks Spanner and qip_storage::gcp::spanner::SpannerKv (proven in qip-ledgerd/tests/spanner.rs against an in-process double) could back it, so the code needs no ADR or crate. It does not meet the bar alone: enable_spanner=false in every env, so it also needs a tfvar flip, a deploy, and a shipped binary writing the registry on its default path.",
+    "gap": "2026-10-31 (owner-delegated ruling of 2026-10-31, decision 10): the registry round-trips by canonical URI through SpannerKv against the in-process REST double. It is not on a default path: enable_spanner is false in every environment until the ledger's Spanner is funded (decision 5), no shipped binary constructs the registry, and the double does not prove Google answers the same way. Remaining: wire a binary that registers the manifests it ingests once enable_spanner is flipped (protected, billed), and run the round-trip against a real instance.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -324,10 +326,10 @@
       "R12-DATA-8013"
     ],
     "blocked_by": "",
-    "verification": "integration test of the registry against an emulator",
+    "verification": "integration: qip-storage tests/manifest_registry.rs over SpannerKv against an in-process Spanner REST double; mutations: keying register by manifest.sha256() fails the round-trip (store not keyed by canonical URI); treating any held row as idempotent fails the changed-original refusal; both restored with cp and cmp.",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113)."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113). | 2026-10-31 lane L3-DATA: built the registry the ruling named (decision 10); status PARTIAL by the ruling, pending enable_spanner."
   },
   {
     "id": "R12-DATA-8015",
