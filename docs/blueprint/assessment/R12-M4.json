@@ -393,13 +393,15 @@
   {
     "id": "R12-QUANT-4018",
     "status": "PARTIAL",
-    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family Foundry::platform() holds as Registered and a calibrated classical baseline card exists. ADR 0150 decision 5 keeps the producer unbuilt; qip-acceptance arch_033 no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate fails on any production mention of the variant or its serde tag quantum_informed outside the seam's declaration and match arm, reading every src/ tree and build.rs with only #[cfg(test)] mod blocks skipped.",
+    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family Foundry::platform() holds as Registered, a calibrated classical baseline card exists, and (since 2026-10-31) the candidate's latest holdout_rmse is strictly lower than the baseline's on the same dataset (central::models::require_beats_baseline). resume_model_promotions applies the same workload check to every quantum-informed record it restores and stops the restart on a failure. ADR 0150 decision 5 keeps the producer unbuilt; qip-acceptance arch_033 no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate fails on any production mention of the variant or its serde tag outside model_serving.rs's declaration and match arms.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/model_serving.rs::require_eligible_workload",
       "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built",
-      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs::no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate (mutants killed: construction in qip-deepbrain main.rs; construction at learning.rs promote_model_from; quantum_informed JSON literal in main.rs; token blinded; old truncating read)"
+      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs::no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate (mutants killed: construction in qip-deepbrain main.rs; construction at learning.rs promote_model_from; quantum_informed JSON literal in main.rs; token blinded; old truncating read)",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_that_does_not_beat_its_baseline_is_refused_by_the_comparison (mutant: require_beats_baseline call removed, killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::a_restored_quantum_informed_promotion_naming_an_unbuilt_family_is_refused_at_restart (mutant: require_restorable call in resume_model_promotions removed, killed)"
     ],
-    "gap": "Skeptic 2026-10-31 REFUTED (COMPLETE refused): the seam checks that a calibrated baseline card exists but never compares the candidate against it, though the requirement asks for evaluation against the calibrated classical baseline; ADR 0150 decision 5 declines building the variant, so under bar part 4 the clause stays unmet. Promotions restored from the log (resume_model_promotions, rollback) skip require_eligible_workload. The scan cannot see a ModelProducer deserialized from JSON assembled at runtime, nor benches/ or macro-generated code. The first scan stopped at each file's first #[cfg(test)] and missed qip-deepbrain/src/learning.rs past line 1016; fixed in the follow-up commit.",
+    "gap": "Open: ADR 0150 decision 5 declines building the quantum-informed variant, so under bar part 4 the requirement's evaluation of quantum variants on eligible workloads stays unmet (no candidate exists to evaluate). The guard scan cannot see a ModelProducer deserialized from JSON assembled at runtime, nor benches/ or macro-generated code. Closed 2026-10-31 under decision 12: the seam compares the candidate against its baseline, and a restored promotion passes the live workload check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -407,10 +409,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test serving; cargo test -p qip-acceptance --test arch_033_quantum_path",
+    "verification": "cargo test -p qip-kernel --test serving; cargo test -p qip-kernel --lib a_restored_quantum_informed; cargo test -p qip-acceptance --test arch_033_quantum_path",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open."
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open. 2026-10-31 decision 12 (parent): not overruled; decision 10's proposed gap \"none open; producer optional and unbuilt by ADR 0150 d5\" is superseded by the skeptic's findings, which were closed as tightenings: the baseline comparison and the restore check. Rollback needs no check of its own: every record it reads passed the live seam in-process or the resume check at start."
   },
   {
     "id": "R12-MODEL-4019",
@@ -656,13 +658,15 @@
       "backend/crates/libs/qip-quantum/tests/solvers.rs::a_hosted_provider_is_refused_a_synchronous_solve_and_enters_the_benchmark_only_through_the_gateway (mutations: remove the refusal; claim the recomputed objective instead of the provider's energy - each fails it)",
       "backend/crates/libs/qip-quantum/tests/hosted.rs::a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline (moved onto GatewayEntrant; also asserts the hosted adapter is refused a synchronous solve)",
       "backend/crates/libs/qip-quantum/tests/gateway.rs:80 an_inline_quantum_job_is_refused_and_the_provider_is_never_called",
-      "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
-      "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings"
+      "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings",
+      "backend/crates/runtime/qip-kernel/src/config.rs quantum_enabled defaults false (lines 252, 592); qip-deepbrain sets it through ComputeSettings::apply when QIP_QUANTUM_PROVIDER=simulated, which committed dev and test tfvars set (deepbrain_quantum_provider = \"simulated\")",
+      "backend/crates/libs/qip-quantum/tests/gateway.rs::an_inline_quantum_job_is_refused_and_the_provider_is_never_called and tests/foundry.rs::a_job_of_each_eligible_class_is_admitted_and_anything_else_is_refused_naming_the_classes (2026-10-31 mutant: admit_job never refuses synchronous; both fail, no hang; optimization.rs and solvers.rs do not catch it because the router submits Delivery::Polled)",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs::a_provider_that_never_returns_does_not_stall_a_cycle_and_the_classical_answer_stands (2026-10-31 mutant: QuantumGateway::submit calls solve_qubo inline instead of on the worker thread; fails at the 20 s bound with \"the call is inline\")"
     ],
-    "gap": "Unchanged on 2026-10-24: GatewayEntrant has no production caller. SolverBenchmark is driven by tests only, quantum_enabled (qip-kernel/src/config.rs) defaults false, no apps/*/src config sets it, and no app wires a HostedProvider. Closing needs an owner decision to enable the quantum arm with a named vendor and its billing (ADR 0006: a quantum path runs only where a measured benefit over the classical baseline is demonstrable). No in-repo slice is left, so nothing was changed.",
+    "gap": "Skeptic 2026-10-31 PARTIAL (COMPLETE refused): every production call to a provider goes through QuantumGateway, which submits on a worker thread, refuses Inline and polls with try_recv, and both the submit line and the synchronous refusal are now mutation-verified; but the slow-provider proof drives ComputeRouter::solve, not a Platform cycle (platform.rs hardwires SimulatedProvider, so no kernel-cycle test with a slow provider exists), and the boundary is a convention, not a type: QuantumProvider::solve_qubo is a public trait method any future caller can reach, and ProviderSolver trusts the provider's own capabilities().simulated flag.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -670,7 +674,7 @@
     "verification": "cd backend && cargo test -p qip-quantum --test solvers a_hosted_provider_is_refused_a_synchronous_solve_and_enters_the_benchmark_only_through_the_gateway && cargo test -p qip-quantum --test hosted a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
     "work_item": "",
     "size": "M",
-    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S). Lane RT-C 2026-10-18: seam closed in code and mutation-verified; kept PARTIAL because the closed seam has no deployed caller (quantum_enabled false everywhere). The hosted.rs test used a loopback test service, never a vendor; the new test uses an in-tree stand-in device with no transport or credential. 2026-10-24 (lane T8-RESIDUAL): re-read against the code, no change; graded DESIGN_OPEN."
+    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S). Lane RT-C 2026-10-18: seam closed in code and mutation-verified; kept PARTIAL because the closed seam has no deployed caller (quantum_enabled false everywhere). The hosted.rs test used a loopback test service, never a vendor; the new test uses an in-tree stand-in device with no transport or credential. 2026-10-24 (lane T8-RESIDUAL): re-read against the code, no change; graded DESIGN_OPEN. 2026-10-31 L4-quant re-triage (parent: ALREADY_COMPLETE): the three cited tests pass, but the parent's proposed proof was wrong: mutating admit_job's synchronous refusal does not fail the bounded optimization.rs test (it survived) and gateway.rs fails rather than hangs. Earlier evidence citing config.rs:534 and \"no app config sets it\" was false and is corrected. Skeptic verdict PARTIAL."
   },
   {
     "id": "R12-QUANT-4030",
