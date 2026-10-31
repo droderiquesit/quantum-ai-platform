@@ -1747,25 +1747,26 @@
   },
   {
     "id": "R12-EXEC-5073",
-    "status": "PARTIAL",
-    "current": "qip_execution_engine::quoting::quote (backend/crates/services/qip-execution-engine/src/quoting.rs:674) with every component tested in-file; consumed by kernel quote_loop::review in ACT (backend/crates/runtime/qip-kernel/src/platform.rs:14548), which prices and never sends.",
+    "status": "COMPLETE",
+    "current": "qip_execution_engine::quoting::quote derives fair value, spread, skew and size from volatility, inventory, queue value, adverse selection and confidence, each with an in-file test. It runs on the default path: qip-fastbrain and qip-deepbrain run_cycle reach Platform ACT, whose exits call crate::quote_loop::review with QuoteLoopReview's default policy; it prices and never sends.",
     "evidence": [
-      "backend/crates/services/qip-execution-engine/src/quoting.rs:674",
-      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:309",
-      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs:326"
+      "backend/crates/services/qip-execution-engine/src/quoting.rs::quote",
+      "backend/crates/services/qip-execution-engine/src/quoting.rs::tests::a_long_book_is_quoted_lower_on_both_sides_so_the_position_mean_reverts",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::review",
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs::the_act_stage_carries_the_quote_loop_so_the_wiring_and_not_only_the_module_is_proven"
     ],
-    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
+    "gap": "None against the requirement's text. Placing quotes on the simulator (owner decision O15) goes beyond it and is carried by R12-EXEC-5045.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
-    "verification": "cargo test -p qip-execution-engine; qip-acceptance quote_loop",
+    "blocked_by": "",
+    "verification": "cargo test -p qip-execution-engine --lib quoting::tests::a_long_book_is_quoted_lower_on_both_sides_so_the_position_mean_reverts; qip-acceptance quote_loop::the_act_stage_carries_the_quote_loop_so_the_wiring_and_not_only_the_module_is_proven",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Quotes are never placed (even on the simulator); no edge quote engine."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Quotes are never placed (even on the simulator); no edge quote engine. 2026-10-31 lane L5-EDGE (wave1031 triage ALREADY_COMPLETE, skeptic recorded in wave1031-triage-2026-10-31.json): PARTIAL -> COMPLETE. Mutation: quote's skew computed from a zero deviation (inventory ignored) fails a_long_book_is_quoted_lower_on_both_sides_so_the_position_mean_reverts at quoting.rs:1056; restored byte-for-byte (cmp). O15 dropped from the gap; R12-EXEC-5045 carries it."
   },
   {
     "id": "R12-EXEC-5074",

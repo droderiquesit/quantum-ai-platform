@@ -2311,12 +2311,16 @@
   {
     "id": "R12-RES-7099",
     "status": "PARTIAL",
-    "current": "Capital fabric tracks unsettled instructions and corridors with revoke; no custody-unavailable mode wired into sizing.",
+    "current": "2026-10-31 (lane L5-EDGE, ADR 0242): qip_edge::custody::CustodyWatch reads custody's freshness from the venue's own custody statements alone (newest as_of wins; Stale past two statement periods, Unavailable past four or with none since start). A cell built with CellConfig::with_custody_statements records a Custody row from the reading handed to Cell::observe_custody and compounds the §6.2 custody multiplier into pass sizing, so either state only narrows; a cell built without it records no row and sizes as before, and observe_custody refuses on it.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/gate.rs:273",
-      "backend/crates/services/qip-capital-fabric/src/corridor.rs:615"
+      "backend/crates/edge/qip-edge/src/custody.rs::CustodyWatch::freshness",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::observe_custody",
+      "backend/crates/edge/qip-edge/src/cell.rs (custody multiplier in pass sizing)",
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs::with_custody_statements_stopped_the_cell_sizes_at_the_unavailable_multiplier",
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs::custody_reads_stale_past_two_statement_periods_and_unavailable_past_four_or_none",
+      "docs/adr/0242-custody-reads-stale-after-two-missed-statements-and-unavailable-after-four-or-none-and-only-narrows.md"
     ],
-    "gap": "2026-10-24 (ADR 0159 E): no custody-availability signal exists and none is asserted by an operator: the venue is the custodian (ADR 0130 decision 4) and custody unavailability can only be read from the staleness of its position statement, whose record does not exist. Capability::Custody has no producer and stays unobserved, contributing to dependency_multiplier. TransferGate::assess takes no custody input and none is added, since an input with no producer always passes. Needs the venue position-statement record and a freshness threshold (RISK).",
+    "gap": "2026-10-31 (lane L5-EDGE): the reading has no production producer yet: no node constructs a CustodyWatch or arms with_custody_statements, because the simulated venue emits no custody statement record (LEDGER-10185's statement has not landed), and the reading is not yet carried in the replay pass marker, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2324,10 +2328,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "capital-fabric integration test",
+    "verification": "cargo test -p qip-edge --test journal_pressure custody",
     "work_item": "",
     "size": "M",
-    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: grep finds Capability::Custody only in qip-contracts degradation.rs and its tests, no producer; no code change, no grade change. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Custody is read from the simulated venue's own statement and from nothing else. A statement older than two statement periods makes custody Stale. Handed to lane L5 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Custody reads stale after two missed custody statements and unavailable after four or none since start, the node hands it to the cell, and it only narrows."
+    "notes": "Lane W8-159 2026-10-19 (ADR 0159). Lane T4-LEDGER 2026-10-24: grep finds Capability::Custody only in qip-contracts degradation.rs and its tests, no producer; no code change, no grade change. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Custody is read from the simulated venue's own statement and from nothing else. A statement older than two statement periods makes custody Stale. Handed to lane L5 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Custody reads stale after two missed custody statements and unavailable after four or none since start, the node hands it to the cell, and it only narrows. 2026-10-31 lane L5-EDGE: ADR 0242 accepted and implemented at the cell (CustodyWatch, observe_custody, custody multiplier). Mutations fired (3), each restored byte-for-byte (cmp): freshness always Fresh; observe_custody drops the reading; custody multiplier forced to one. No skeptic run; the row is not promoted."
   },
   {
     "id": "R12-RES-7100",
