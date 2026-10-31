@@ -352,6 +352,157 @@ fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series() -
     Ok(())
 }
 
+/// R12-MODEL-10123, on the default path: the cycle whose LEARN grades a
+/// thesis journals each panel agent's hit rate beside the Brier score, the
+/// figures `calibrate_resolved` computed and not a copy taken elsewhere.
+///
+/// The failure this prevents: the only test of the scores reaching the log
+/// called `CalibrationJournal::of` directly, so the write in
+/// `calibrate_resolved` could journal a calibration without them, with
+/// every qip-kernel test green, and the one figure that tells an auditor
+/// which agent was wrong would be absent from the record. Ten graded theses
+/// argued by one analyst are seeded first, so the window holds a rate that
+/// clears the feedback engine's sample. Mutation: journal
+/// `CalibrationJournal { hit_rate_by_agent: BTreeMap::new(), ..CalibrationJournal::of(..) }`
+/// in `calibrate_resolved` — the journaled map is empty and the last
+/// assertion fails.
+#[test]
+fn the_cycle_that_grades_a_thesis_journals_each_agents_hit_rate() -> Result<()> {
+    use qip_learning_engine::evaluation::{Outcome as ThesisOutcome, ThesisClaim};
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+
+    // Premise: the first cycle made a claim, and nothing has been graded.
+    // Without this the assertions below could pass against a registry that
+    // was never empty.
+    assert!(
+        !platform.predictions().is_empty(),
+        "no claim was written, so there is nothing to resolve:\n{}",
+        first.summarise()
+    );
+    let prediction = platform.predictions()[0].clone();
+    assert!(prediction.is_open(), "a fresh claim must be open");
+    let claim = prediction
+        .claim
+        .clone()
+        .expect("a claim records the confidence it was made at, or it cannot be graded");
+    assert!(
+        (0.0..=1.0).contains(&claim.confidence),
+        "confidence {} is not a probability",
+        claim.confidence
+    );
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        snapshot.counter_total(names::THESES_EVALUATED),
+        0,
+        "a claim was graded before its horizon passed"
+    );
+    assert!(
+        snapshot
+            .gauge(names::BELIEF_BRIER_SCORE, &labels([]))
+            .is_none(),
+        "a Brier score exists before anything resolved"
+    );
+    assert!(
+        platform.calibration().is_none(),
+        "the platform reports a calibration it has not computed"
+    );
+
+    // The world moves far enough past the reference that the verdict is
+    // informative either way — a move inside the noise floor would grade as
+    // inconclusive and calibrate nothing, which is the honest result for a
+    // quiet tape and not the one under test. Twenty swinging bars move every
+    // observable a claim here can name at once: the last close ends fifty
+    // percent above where the series stood, and the realised volatility over
+    // the detector's window is an order of magnitude larger than anything the
+    // fixture's tape showed.
+    let horizon = prediction.proposition.resolves_at;
+    assert!(
+        horizon > start(),
+        "a claim resolving in the past is not a claim"
+    );
+    let metric = prediction
+        .proposition
+        .criteria
+        .metrics()
+        .first()
+        .cloned()
+        .expect("a threshold names its metric");
+    assert!(
+        metric.starts_with("close:") || metric.starts_with("volatility:"),
+        "the claim is about {metric}; this test moves the close and the volatility"
+    );
+    let swings: Vec<SensedRecord> = (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
+            bar("AAA", at, open, close)
+        })
+        .collect();
+    platform.observe(swings);
+
+    // Ten misses argued by one analyst, graded before the cycle, so the
+    // window the cycle's calibration covers holds a rate for it.
+    let analyst = "macro-analyst";
+    let seeded_at = start().saturating_add(Duration::from_mins(1));
+    for n in 1..=10 {
+        let id = format!("hyp-seeded-{n}");
+        let claim = ThesisClaim {
+            hypothesis_id: id.clone(),
+            class: "price_dislocation".to_string(),
+            subject: "obj-AAA".to_string(),
+            formed_at: start(),
+            resolves_at: seeded_at,
+            direction: 1.0,
+            expected_move_bps: 200.0,
+            confidence: 0.7,
+            falsifiers: vec!["it reverts".to_string()],
+            contributors: vec![format!("run-{analyst}-{n}")],
+        };
+        let outcome = ThesisOutcome {
+            hypothesis_id: id,
+            observed_at: seeded_at,
+            realised_move_bps: -180.0,
+            realised_pnl: 0.0,
+            falsifiers_triggered: Vec::new(),
+            mechanism_confirmed: None,
+        };
+        platform.learn_from(&[claim], &[outcome], seeded_at)?;
+    }
+
+    let second = platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    let learn = second.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("graded"),
+        "premise: LEARN graded the cycle's own claim: {}",
+        learn.detail
+    );
+    let calibration = platform
+        .calibration()
+        .expect("premise: the cycle calibrated")
+        .clone();
+    assert!(
+        calibration.hit_rate_by_agent.contains_key(analyst),
+        "premise: the window scores {analyst}: {:?}",
+        calibration.hit_rate_by_agent
+    );
+    let entries = platform.journal_entries()?;
+    let journaled = entries
+        .last()
+        .and_then(|entry| entry.calibration.as_ref())
+        .expect("the cycle that graded a thesis journals the calibration");
+    assert_eq!(
+        journaled.hit_rate_by_agent, calibration.hit_rate_by_agent,
+        "the journal dropped the scores the calibration computed"
+    );
+    Ok(())
+}
+
 // --- counterfactual scoring of declined paths -------------------------------
 
 /// Offer an order the controls refuse — it traces to no hypothesis — and hand
