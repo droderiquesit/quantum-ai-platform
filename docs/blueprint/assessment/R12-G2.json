@@ -3080,20 +3080,21 @@
     "current": "Two SHA custom modules and a mute config; enable_security_command_center=false in dev; organisation-level SCC not configured.",
     "evidence": [
       "infrastructure/terraform/modules/scc/main.tf:41,80,114",
-      "infrastructure/environments/dev/terraform.tfvars:294"
+      "infrastructure/environments/dev/terraform.tfvars:294",
+      "infrastructure/terraform/modules/scc/tests/detectors.tftest.hcl::the_two_detectors_plan_only_when_switched_on_and_watch_binary_authorization_and_the_private_endpoint and ::with_the_switch_off_no_detector_and_no_mute_config_plans"
     ],
-    "gap": "Enable; org activation. Corrected 2026-10-24: enable_security_command_center=false in dev (protected tfvars); organisation-level SCC activation is an organisation-managed setting outside this repository.",
+    "gap": "2026-10-31 lane L6-platform, under decision 14: what remains is, first, the organisation's activation of a paid Security Command Center tier, whose monthly cost must be named before anything else (the organisation administrator's act; declined under decision 5 of 2026-10-25, as R12-GCP-9086 ruled); then the protected dev tfvars flip of enable_security_command_center; then a check that findings appear for the project. Aggregation, threat detection and response integration exist only once a paid tier is active. What the repository declares at no cost is now plan-tested: both custom detectors and the mute configs plan only when switched on, and each detector reads the cluster field it is named for. Previous gap: Enable; org activation. Corrected 2026-10-24: enable_security_command_center=false in dev (protected tfvars); organisation-level SCC activation is an organisation-managed setting outside this repository.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "terraform test in infrastructure/terraform/modules/scc (mocked provider, scratch copy)",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31, second pass (IMPLEMENT): I do not buy the Security Command Center tier. Premium or Enterprise is a billed activation made at the organisation, and it stays declined under decision 5 of 2026-10-25, as R12-GCP-9086 already ruled. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Owner ruling 2026-10-31, second pass (IMPLEMENT): I do not buy the Security Command Center tier. Premium or Enterprise is a billed activation made at the organisation, and it stays declined under decision 5 of 2026-10-25, as R12-GCP-9086 already ruled. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L6-platform: modules/scc/tests/detectors.tftest.hcl added, terraform 1.9.8 in a scratch copy, 2 passed, fmt clean. Both runs declare one muted finding so 'no mute config when off' is not vacuous (the skeptic's caveat). Mutations, each failing one run (1 passed, 1 failed) and restored with cmp: either detector's count guard set to 1; the mute config's for_each guard dropped; the Binary Authorization predicate moved off evaluationMode; the private-endpoint predicate moved to enablePrivateNodes. Status stays PARTIAL."
   },
   {
     "id": "R12-SEC-9133",
