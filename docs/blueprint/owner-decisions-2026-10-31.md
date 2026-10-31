@@ -432,3 +432,19 @@ that narrows a security scanner, whatever the owner has delegated.
 
    - R12-GOV-9075 — APPLY_PATCH: Approved as written. The learning agent may write only under docs/proposals/**, and the guard refuses its edits to the deploy workflow, the promotion code and the agent policy, so promotion stays… [docs/blueprint/lanes/l5-edge-GOV-9075.patch]
    - R12-RES-8026 — APPLY_PATCH: Apply the patch as written: it documents the three series the cell now publishes and changes no value, and because it edits .claude/rules, which the permission layer refuses an agent, I apply it… [docs/blueprint/lanes/l6-res-8026-observability-rule.patch]
+
+11. **`qip-streaming`'s dormant `MeshTransport` is deleted, and ADR 0128 is
+    not amended** (R12-FABRIC-10177, lane L1b, decided 04:23 UTC). The
+    cross-process-send scan L1b built for that row found a socket-opening
+    type in `qip-streaming` that nothing calls and that ADR 0128 does not
+    name. The scan's allow-list and the ADR can be made to agree in two ways:
+    amend the ADR to admit a site with no caller, or remove the site. The
+    second is taken. A socket-opening type nothing calls is a cross-process
+    send the scan must either admit or see removed, and admitting an unused
+    one would make the ADR describe a path that does not exist, which is the
+    error the scan exists to catch. L1b deletes it with its own unit tests,
+    after confirming by grep that no production path and no other crate's
+    test constructs or names it, and keeps the allow-list at its eight sites
+    so the deletion stays a finding the scan would have raised. ADR 0128 is
+    not edited: a lane never edits an existing ADR, and nothing in it becomes
+    false by the deletion.
