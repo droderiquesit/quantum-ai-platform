@@ -98,6 +98,7 @@ fn commerce_plan() -> Result<CommercePlan> {
         days_on_market: 2,
         daily_capital_cost: dec!("0.0001"),
         purchase_tax_rate: Decimal::ZERO,
+        chargeback_rate: Decimal::ZERO,
         account: AccountEntry {
             id: "paper-account".to_string(),
             identity_class: "desk".to_string(),
