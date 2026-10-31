@@ -1630,3 +1630,82 @@ fn a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledge
     );
     Ok(())
 }
+
+/// The committed paper commerce plan (`data/breadth/dev-commerce-paper.json`,
+/// R12-COMMERCE-1087..1094, ruling decision 10 of 2026-10-31) parses under
+/// the plan's own unknown-field refusal and, run through the cycle,
+/// discovers, buys, receives, lists and sells on paper, with its customs
+/// duty and purchase tax journaled on every viable assessment.
+///
+/// This is the plan dev's committed deep-brain configuration is to mount.
+/// Until that mount lands (a protected root variable and tfvars value, and a
+/// config-file secret per file in `modules/cloudrun`), this test proves the
+/// file and not a deployment.
+///
+/// Mutation: set `duty_rate` to `"0"` in the committed plan and the test
+/// fails on its premise that the plan states a duty and a tax.
+#[test]
+fn the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax()
+-> Result<()> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../../data/breadth/dev-commerce-paper.json"
+    );
+    let text = std::fs::read_to_string(path).expect("the committed plan is readable");
+    let plan = BreadthPlan::from_json(&text)?;
+    let commerce = plan
+        .commerce
+        .clone()
+        .expect("the plan carries a commerce section");
+    assert!(
+        commerce.terms.customs.duty_rate.is_positive() && commerce.purchase_tax_rate.is_positive(),
+        "premise: the committed plan states a customs duty and a purchase tax"
+    );
+    assert!(
+        plan.market_factory.is_none() && plan.event_markets.is_none(),
+        "commerce only"
+    );
+    let mut platform = platform()?;
+    platform.install_breadth(&plan, start())?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let mut runs = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+        if let Ok(decoded) = StreamEnvelope::from_frame(event)?.decode::<CommerceSimulated>() {
+            runs.push(decoded.body);
+        }
+    }
+    let research = platform.commerce_research().expect("installed");
+    assert!(
+        runs.iter().any(|run| !run.purchases.is_empty()),
+        "no paper purchase journaled"
+    );
+    assert!(
+        !research.ledger().units().is_empty(),
+        "the inventory ledger holds no unit"
+    );
+    assert!(
+        runs.iter().any(|run| !run.listed.is_empty()),
+        "nothing listed"
+    );
+    assert!(!research.cycles().is_empty(), "nothing sold");
+    let viable: Vec<_> = runs
+        .iter()
+        .flat_map(|run| run.assessed.iter())
+        .filter(|assessed| assessed.viable)
+        .collect();
+    assert!(
+        !viable.is_empty(),
+        "premise: a viable candidate was assessed"
+    );
+    assert!(
+        viable
+            .iter()
+            .all(|assessed| assessed.duty.is_positive() && assessed.purchase_tax.is_positive()),
+        "a viable assessment journaled no duty or tax: {viable:?}"
+    );
+    Ok(())
+}

@@ -2647,6 +2647,31 @@ impl Cell {
         policy.payload().cycle_whitelist.value()
     }
 
+    /// The opportunity manifest the last applied payload carries (ADR 0149
+    /// decision 7), read three ways: `None` when the slot is unproduced (or
+    /// no payload is applied), which narrows nothing; `Some(None)` when it
+    /// was produced and is no longer fresh, which a reader treats as naming
+    /// nothing, since a manifest the centre stopped vouching for cannot
+    /// widen; and `Some(Some(manifest))` while it is fresh.
+    pub fn opportunity_manifest(
+        &self,
+        now: Timestamp,
+    ) -> Option<Option<&qip_contracts::policy::OpportunityManifest>> {
+        let policy = self.policy.as_ref()?;
+        let slot = &policy.payload().opportunity_definitions;
+        if slot.is_unproduced() {
+            return None;
+        }
+        if slot.freshness(
+            qip_contracts::policy::PolicyItem::OpportunityDefinitions,
+            now,
+        ) != qip_contracts::degradation::Freshness::Fresh
+        {
+            return Some(None);
+        }
+        Some(slot.value())
+    }
+
     /// The compiled plan the last applied payload names (§41.5 item 2),
     /// while that slot is fresh.
     ///

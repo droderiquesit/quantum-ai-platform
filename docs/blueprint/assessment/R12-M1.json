@@ -1029,7 +1029,7 @@
     "verification": "cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-edge; cargo test -p qip-capital-fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed. 2026-10-31 lane L1-MONEY, triage regrade check: disabling the per-transfer cap (gate.rs, `if amount > caps.max_per_transfer()` in TransferGate::assess) fails qip-api tests/fabric.rs for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_and_every_one_under_all_of_them_is_admitted_at_the_amount_asked; restored with cp+cmp. No model is in the path. Independent security-engineer skeptic REFUTED the COMPLETE regrade. Bar 2: capital_fabric_file is null in every tfvars, so on every default root no TransferIntent is built and the gate never runs; \"the unset file is not a bypass\" is true and is not a default path. Bar 3 is unproven: the gate covers only the declared-command path, and paper orders and capital grants are bounded by other controls. Kept PARTIAL."
   },
   {
     "id": "R12-RISK-1044",
@@ -2088,7 +2088,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1088",
@@ -2112,7 +2112,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1089",
@@ -2136,7 +2136,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1090",
@@ -2160,7 +2160,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1091",
@@ -2184,7 +2184,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1092",
@@ -2233,7 +2233,7 @@
     "verification": "cargo test -p qip-deepbrain --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: the ledger half is closed by a_received_units_cost_basis_carries_its_duty_and_purchase_tax (mutation: self.duty dropped from LandedCost::total; the basis rose over the duty-free assessment by the tax alone, 36.824 vs 55.236; restored). Kept PARTIAL with its siblings 1090/1091/1094 because the plane runs only under the owner switch QIP_DEEPBRAIN_BREADTH_PLAN."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: the ledger half is closed by a_received_units_cost_basis_carries_its_duty_and_purchase_tax (mutation: self.duty dropped from LandedCost::total; the basis rose over the duty-free assessment by the tax alone, 36.824 vs 55.236; restored). Kept PARTIAL with its siblings 1090/1091/1094 because the plane runs only under the owner switch QIP_DEEPBRAIN_BREADTH_PLAN. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-COMMERCE-1094",
@@ -2257,7 +2257,7 @@
     "verification": "cargo test -p qip-financial --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-CAPITAL-1095",

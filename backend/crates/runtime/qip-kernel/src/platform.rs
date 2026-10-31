@@ -635,6 +635,11 @@ pub struct Platform {
     /// Where each released strategy's divergence evidence starts again: the
     /// instant of the re-promotion that released it. Resumed with the holds.
     replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
+    /// The latest concluded microstructure delta per venue, re-admitted
+    /// through its contract (ADR 0226). Read only by the release of a
+    /// replay-divergence hold, which it may keep and never lift.
+    microstructure_deltas:
+        BTreeMap<(String, String), qip_contracts::microstructure_delta::MicrostructureDelta>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -6372,6 +6377,7 @@ impl Platform {
             tactical: None,
             replay_divergence_holds: replay_divergence_resumed.0,
             replay_divergence_windows: replay_divergence_resumed.1,
+            microstructure_deltas: BTreeMap::new(),
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -26121,6 +26127,64 @@ impl Platform {
         Ok(decision)
     }
 
+    /// Admit a concluded microstructure delta (ADR 0226, R12-CONTRACT-7074).
+    ///
+    /// Re-admitted through [`qip_contracts::microstructure_delta::MicrostructureDelta`]'s
+    /// contract, because the fields arrive from another process's journal
+    /// and a delta that does not validate is not evidence. Refused for a
+    /// venue no registered strategy trades at, so a venue string nobody
+    /// configured cannot take a slot. Kept per venue and cell, and only if it
+    /// is that pair's latest by window end, so one cell's campaign cannot
+    /// displace another's and an older one read late cannot overwrite a
+    /// newer one. Refused past [`crate::replay_divergence::MAX_DELTA_VENUES`]
+    /// pairs. Returns whether it became the pair's latest.
+    pub fn admit_microstructure_delta(
+        &mut self,
+        fields: qip_contracts::microstructure_delta::MicrostructureDeltaFields,
+    ) -> Result<bool> {
+        let delta = qip_contracts::microstructure_delta::MicrostructureDelta::new(fields)?;
+        let venue = delta.venue.as_str().to_string();
+        if !self
+            .central
+            .factory()
+            .candidates()
+            .any(|candidate| candidate.venue().as_str() == venue)
+        {
+            return Err(Error::denied(format!(
+                "no registered strategy trades at {venue}; a delta for it holds nothing and is \
+                 refused rather than taking a slot"
+            )));
+        }
+        let key = (venue, delta.cell.clone());
+        match self.microstructure_deltas.get(&key) {
+            Some(held) if held.window_end >= delta.window_end => return Ok(false),
+            None if self.microstructure_deltas.len()
+                >= crate::replay_divergence::MAX_DELTA_VENUES =>
+            {
+                return Err(Error::denied(format!(
+                    "the platform holds deltas for {} venue-cell pairs; a delta for {} from {} is \
+                     refused rather than growing the set",
+                    crate::replay_divergence::MAX_DELTA_VENUES,
+                    key.0,
+                    key.1
+                )));
+            }
+            _ => {}
+        }
+        self.microstructure_deltas.insert(key, delta);
+        Ok(true)
+    }
+
+    /// The latest concluded microstructure delta for `venue` from `cell`.
+    pub fn microstructure_delta(
+        &self,
+        venue: &str,
+        cell: &str,
+    ) -> Option<&qip_contracts::microstructure_delta::MicrostructureDelta> {
+        self.microstructure_deltas
+            .get(&(venue.to_string(), cell.to_string()))
+    }
+
     /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
     /// has answered, then hold every registered strategy whose venue the
     /// twin now diverges from. Each change is journaled before the state
@@ -26138,6 +26202,7 @@ impl Platform {
         let mut problems = Vec::new();
         let mut restored = 0usize;
         let mut reduced = 0usize;
+        let mut kept: Vec<String> = Vec::new();
 
         let held: Vec<DivergenceHold> = self.replay_divergence_holds.values().cloned().collect();
         for hold in held {
@@ -26148,6 +26213,22 @@ impl Platform {
             .cloned() else {
                 continue;
             };
+            // Any cell's latest delta at the venue that is past the
+            // threshold, or silent at a full sample, keeps the hold
+            // (ADR 0226): the re-promotion was argued on the model the
+            // venue's own residuals say is still wrong, or have not cleared.
+            if let Some(reason) = self
+                .microstructure_deltas
+                .iter()
+                .filter(|((venue, _), _)| *venue == hold.venue)
+                .find_map(|(_, delta)| crate::replay_divergence::residual_keeps_hold(delta))
+            {
+                kept.push(format!(
+                    "{}'s hold stands past its re-promotion: {reason}",
+                    hold.strategy
+                ));
+                continue;
+            }
             let entry = ReplayDivergenceEntry::restored(&hold, &repromotion, now);
             if let Err(error) = self.journal_record(entry, REPLAY_DIVERGENCE_ORIGIN, now) {
                 problems.push(format!(
@@ -26223,14 +26304,15 @@ impl Platform {
         if reduced == 0 && restored == 0 && self.replay_divergence_holds.is_empty() {
             return (None, problems);
         }
-        (
-            Some(format!(
-                "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
-                 re-promotion, {} held",
-                self.replay_divergence_holds.len()
-            )),
-            problems,
-        )
+        let mut summary = format!(
+            "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
+             re-promotion, {} held",
+            self.replay_divergence_holds.len()
+        );
+        if !kept.is_empty() {
+            summary.push_str(&format!("; {}", kept.join("; ")));
+        }
+        (Some(summary), problems)
     }
 
     /// The last Lane 2 refresh, `None` before the first cycle
@@ -28883,6 +28965,73 @@ mod decide_tests {
                 .count(),
             3,
             "a reaction was applied twice or not at all"
+        );
+    }
+
+    /// R12-QUANT-4018: a promotion restored from the log passes the workload
+    /// check a live one does. A quantum-informed record naming a family the
+    /// foundry holds as not built is the record the live seam would refuse,
+    /// and a restart that put it back would serve a model nobody could have
+    /// promoted. The same record naming the built family restores, which
+    /// keeps the check from refusing every quantum-informed record.
+    ///
+    /// Mutation: drop the `require_restorable` call in
+    /// `resume_model_promotions` — the unbuilt record is restored.
+    #[test]
+    fn a_restored_quantum_informed_promotion_naming_an_unbuilt_family_is_refused_at_restart() {
+        use crate::model_serving::{
+            MODEL_PROMOTION_ORIGIN, ModelProducer, ModelPromotion, resume_model_promotions,
+        };
+        let record = |reference: &str, workload: &str| ModelPromotion {
+            reference: reference.to_string(),
+            name: reference.to_string(),
+            format: qip_ai::serving::ModelFormat::TeacherLinear,
+            artifact_digest: "0".repeat(64),
+            arity: 2,
+            distilled: None,
+            displaced: Vec::new(),
+            producer: ModelProducer::QuantumInformed {
+                baseline: "bar-baseline@0.1.0".to_string(),
+                workload: Some(workload.to_string()),
+            },
+            moved_by: None,
+            evidence: None,
+            permitted_locations: None,
+            stages: Vec::new(),
+            rollback_parent: None,
+            signature: None,
+            at: Timestamp::from_secs(1_760_000_000),
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut built = small_book_platform();
+        built
+            .journal_record(
+                record("qi-built@0.1.0", "PortfolioAllocation"),
+                MODEL_PROMOTION_ORIGIN,
+                now,
+            )
+            .expect("journaled");
+        let restored = resume_model_promotions(built.event_log()).expect("a built family restores");
+        assert!(
+            restored.contains_key("qi-built@0.1.0"),
+            "premise: {restored:?}"
+        );
+
+        let mut unbuilt = small_book_platform();
+        unbuilt
+            .journal_record(
+                record("qi-unbuilt@0.1.0", "GraphSearch"),
+                MODEL_PROMOTION_ORIGIN,
+                now,
+            )
+            .expect("journaled");
+        let refused = resume_model_promotions(unbuilt.event_log())
+            .expect_err("an unbuilt family was restored");
+        assert!(
+            refused.message().contains("qi-unbuilt@0.1.0")
+                && refused.message().contains("not built"),
+            "{}",
+            refused.message()
         );
     }
 

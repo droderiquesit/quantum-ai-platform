@@ -756,3 +756,110 @@ fn each_package_the_node_activates_is_counted_once_and_a_rollback_apart() -> Res
     );
     Ok(())
 }
+
+/// [`policy`], with the opportunity-definitions slot carrying `manifest`.
+fn policy_naming(
+    sequence: u64,
+    issued_at: Timestamp,
+    digest: &str,
+    strategies: u64,
+    manifest: std::collections::BTreeMap<String, String>,
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(sequence, CELL, issued_at);
+    payload.compiled_plan = Slot::produced(
+        PlanDigest {
+            digest: digest.to_string(),
+            strategies,
+        },
+        issued_at,
+    );
+    payload.opportunity_definitions = Slot::produced(
+        qip_contracts::policy::OpportunityManifest {
+            opportunities: manifest,
+        },
+        issued_at,
+    );
+    VerifiedPolicy::verify(payload.signed(KEY)?, KEY, CELL, issued_at)
+}
+
+/// R12-REFLEX-5030, ADR 0149 decision 7: a produced opportunity manifest is
+/// a narrowing filter on what the signed plan may activate. Mutation: drop
+/// the `unnamed_opportunity` check from `StrategyInstaller::reconcile`, or
+/// make it ignore the digest, and the strategy the manifest leaves out (or
+/// names with another definition) is activated.
+#[test]
+fn a_strategy_the_produced_manifest_does_not_name_is_not_activated() -> Result<()> {
+    const OTHER: &str = "also-enter";
+    let named = spec(STRATEGY, "10");
+    let unnamed = spec(OTHER, "10");
+    let opportunities = |spec: &StrategySpec| {
+        let (compiled, program) = StrategyInstaller::compile(spec)?;
+        compiled.opportunities(&program)
+    };
+    let named_opportunities = opportunities(&named)?;
+    assert_eq!(
+        named_opportunities.len(),
+        1,
+        "premise: the strategy has one entry rule to name"
+    );
+
+    // Premise: with the slot unproduced, both strategies the plan names are
+    // activated, as before a manifest existed.
+    let dir = scratch("manifest-unproduced");
+    let (path, digest, count) = plan_file(&dir, &[named.clone(), unnamed.clone()]);
+    let (mut node, _gateway, _feed) = node_with_feed()?;
+    let mut installer = StrategyInstaller::new(Some(path), Some(PricingPolicy::Marketable));
+    installer.offer(grant(STRATEGY)?)?;
+    installer.offer(grant(OTHER)?)?;
+    node.cell
+        .apply_policy(policy(1, t(10), &digest, count)?, t(10))?;
+    let outcome = installer.install(&mut node.cell, t(10));
+    assert_eq!(outcome.deployed.len(), 2, "{}", outcome.describe());
+
+    // A produced manifest naming only the first: the second is refused by
+    // name and its grant stays held; the first is activated.
+    let dir = scratch("manifest-produced");
+    let (path, digest, count) = plan_file(&dir, &[named.clone(), unnamed.clone()]);
+    let (mut node, _gateway, _feed) = node_with_feed()?;
+    let mut installer = StrategyInstaller::new(Some(path), Some(PricingPolicy::Marketable));
+    installer.offer(grant(STRATEGY)?)?;
+    installer.offer(grant(OTHER)?)?;
+    node.cell.apply_policy(
+        policy_naming(1, t(10), &digest, count, named_opportunities.clone())?,
+        t(10),
+    )?;
+    let outcome = installer.install(&mut node.cell, t(10));
+    assert_eq!(
+        outcome.deployed,
+        vec![STRATEGY.to_string()],
+        "{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome
+            .refused
+            .iter()
+            .any(|(strategy, reason)| strategy == OTHER && reason.contains("does not name")),
+        "{}",
+        outcome.describe()
+    );
+    assert_eq!(node.cell.deployed_strategies(), vec![STRATEGY]);
+    assert_eq!(installer.held_grants(), vec![OTHER]);
+
+    // And a manifest naming the strategy under another definition is not
+    // a name for what this plan compiles: refused too.
+    let dir = scratch("manifest-other-definition");
+    let (path, digest, count) = plan_file(&dir, std::slice::from_ref(&named));
+    let (mut node, _gateway, _feed) = node_with_feed()?;
+    let mut installer = StrategyInstaller::new(Some(path), Some(PricingPolicy::Marketable));
+    installer.offer(grant(STRATEGY)?)?;
+    let wrong = named_opportunities
+        .keys()
+        .map(|key| (key.clone(), "0".repeat(64)))
+        .collect();
+    node.cell
+        .apply_policy(policy_naming(1, t(10), &digest, count, wrong)?, t(10))?;
+    let outcome = installer.install(&mut node.cell, t(10));
+    assert!(outcome.deployed.is_empty(), "{}", outcome.describe());
+    Ok(())
+}
