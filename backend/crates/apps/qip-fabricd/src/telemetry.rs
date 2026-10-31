@@ -8,6 +8,8 @@ use qip_streaming::event_fabric::broker::LeaseReport;
 use qip_streaming::event_fabric::managed::CommitOutcome;
 use std::sync::Arc;
 
+use crate::mirror::MirrorLabel;
+
 /// Managed partitions by this instance's role in each (ADR 0111): `leading`,
 /// `following` or `failed`. Named here rather than in `qip-observability`'s
 /// registry because this binary is its only writer; the label is a source
@@ -110,6 +112,17 @@ impl FabricdTelemetry {
         m.describe(
             SEGMENTS_RETAINED,
             "archived segments whose local copy was deleted; their history hydrates from the archive",
+        );
+
+        m.describe(
+            names::FABRIC_MIRROR_LAG_RECORDS,
+            "committed source records the cross-region mirror has not had acknowledged by the \
+             target, by source_region and stream",
+        );
+        m.describe(
+            names::FABRIC_MIRROR_LAG_SECONDS,
+            "age by the mirror's clock of the oldest committed source record not yet copied, \
+             by source_region and stream; zero when nothing is uncopied",
         );
 
         m.describe(
@@ -373,6 +386,24 @@ impl FabricdTelemetry {
             critical_paths::FABRIC_CONSUMER_LAG_OBJECTIVE,
             lag as f64,
         );
+    }
+
+    /// The cross-region mirror's lag for one `(source_region, stream)`.
+    ///
+    /// Takes a [`MirrorLabel`] rather than two strings because a label value
+    /// from a runtime string is how a bounded series becomes an unbounded
+    /// one: a `MirrorLabel` exists only for a region and stream the mirror's
+    /// configuration admitted (see [`crate::mirror::MirrorConfig`]), so this
+    /// method cannot be called with anything else. The record count crosses
+    /// from `u64` to the gauge's `f64` here, exact to 2^53.
+    pub fn mirror_lag(&self, label: &MirrorLabel, records: u64, seconds: f64) {
+        self.metrics.gauge(
+            names::FABRIC_MIRROR_LAG_RECORDS,
+            label.labels(),
+            records as f64,
+        );
+        self.metrics
+            .gauge(names::FABRIC_MIRROR_LAG_SECONDS, label.labels(), seconds);
     }
 }
 

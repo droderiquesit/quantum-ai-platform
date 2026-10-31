@@ -3430,23 +3430,28 @@
   },
   {
     "id": "R12-OBS-9148",
-    "status": "MISSING",
-    "current": "Mirroring refused by ADR 0100 §3; no mirror-lag metric.",
+    "status": "PARTIAL",
+    "current": "qip_fabricd::mirror::Mirror drives plan_copy from one in-process Broker to another, copying committed source batches into <source-region>.<stream> and advancing its checkpoint only on the target's acknowledgement. Every pass records qip_fabric_mirror_lag_records (source committed bound minus checkpoint, summed over partitions) and qip_fabric_mirror_lag_seconds (age by the injected clock of the oldest uncopied committed record) labelled {source_region, stream}, bounded structurally: only Mirror::new mints a MirrorLabel, after checking MirrorConfig's region list and committed stream set.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:136"
+      "backend/crates/apps/qip-fabricd/src/mirror.rs",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs FabricdTelemetry::mirror_lag",
+      "backend/crates/libs/qip-observability/src/metrics.rs names::FABRIC_MIRROR_LAG_RECORDS, names::FABRIC_MIRROR_LAG_SECONDS",
+      "backend/crates/apps/qip-fabricd/tests/mirror.rs::while_the_link_is_cut_the_source_keeps_acknowledging_and_both_mirror_lag_series_grow",
+      "backend/crates/apps/qip-fabricd/tests/mirror.rs::a_mirror_naming_a_region_or_stream_outside_its_configuration_is_refused_at_construction",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_wire_format.rs PINNED_MIRROR_ROLE"
     ],
-    "gap": "qip_fabric_mirror_lag_records and qip_fabric_mirror_lag_seconds from the fabric mirror (ADR 0120), labels bounded by region list and committed stream set, with a test.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-31 lane L6-platform, under the owner's ruling (ADR 0119 §3; second region parked, decision 4): the role and both series are built and proven on two brokers on one host, and the row rises to PARTIAL and no further. No environment starts the role (main.rs untouched, no env var), and StreamPolicy still refuses every mirroring policy (C8, 'fabric-mirror is not built'), so the series reach no deployed process. Not built: the ADR 0119 Gap record journal (the role refuses to copy past a gap), a durable checkpoint (in memory; restart re-sends and relies on the target's producer dedup, untested), the mTLS MirrorSource, the managed committed bound. Previous gap: qip_fabric_mirror_lag_records and qip_fabric_mirror_lag_seconds from the fabric mirror (ADR 0120), labels bounded by region list and committed stream set, with a test.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-fabricd --test mirror; cargo test -p qip-acceptance --test event_fabric_wire_format",
     "work_item": "",
     "size": "S",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-31 lane L6-platform: mutation-verified. Deleting the mirror_lag call in Mirror::pass fails the link-cut test (records gauge 'left: None right: Some(0.0)'); deleting the seconds gauge alone fails it at the seconds assert; advancing the checkpoint without an acknowledgement fails 'a copy crossed a cut link'; disabling the region or stream bound fails the construction test; an .encode( in the role fails event_fabric_wire_format (FABRIC-038)."
   },
   {
     "id": "R12-OBS-9149",
