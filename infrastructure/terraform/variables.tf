@@ -355,6 +355,23 @@ variable "execution_nodes" {
     # list that decides that, and the binary refuses a declaration naming a
     # venue outside it rather than adding one.
     cross_region_mirror_path = optional(string, "")
+    # ADR 0116: the peer Reflex Mesh this node joins, or null for a node that
+    # coordinates with no other cell directly — which is every node, because
+    # a peer needs a stable address and whatever fronts a managed instance
+    # group's machine with one is billed infrastructure declined by decision
+    # 5 of 2026-10-25. The module validates every field against what
+    # `qip-edge-node` would refuse at start (modules/execution-node, variable
+    # `peer_mesh`), and renders the three QIP_PEER_MESH_* lines only when this
+    # is set. Null here cannot be mistaken for an empty mesh: the module
+    # refuses a map naming no peer.
+    peer_mesh = optional(object({
+      listen_port    = number
+      clock_bound_ms = optional(number)
+      peers = map(object({
+        address = string
+        port    = number
+      }))
+    }))
   }))
 
   default = {}

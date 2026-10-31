@@ -2159,7 +2159,7 @@
       "backend/crates/services/qip-lifecycle/src/demotion.rs",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595"
     ],
-    "gap": "VerificationResult contract driving demotion/retirement and solver policy weights.",
+    "gap": "2026-10-30 (lane L2-INTEL): a per-round re-verification that rolled back refuted production models was built and reverted unpushed, because its skeptic showed it would demote healthy models. RegimeShiftCritic::attack_model refutes any card whose evaluation predates the latest regime crossing, and Platform::latest_regime_crossing is the maximum over every subject. Card evaluations are written once at registration, so after any subject crossed, every production model would be refuted and rolled back round after round. The remaining step is per-subject regime crossings and a renewed evaluation before re-verifying, then demotion on refutation. The VerificationResult contract exists (qip-contracts challenge.rs) and the row's earlier text saying otherwise is stale.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2318,7 +2318,7 @@
       "backend/crates/runtime/qip-kernel/tests/learning.rs::the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
       "backend/crates/runtime/qip-kernel/tests/learning.rs::a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual"
     ],
-    "gap": "2026-10-25: Platform::score_filled (LEARN, default path) now records on every scored fill the realised and the twin-predicted slippage against the order's arrival price and the outcome residual (twin return to the horizon's close less the realised one), all in basis points, journaled through fill_outcomes beside the existing per-venue fill error. Remaining against the requirement's text: no episode is emitted per scored fill (the residuals sit on FillScore, not in an episodic-memory record), and a cell's fills carry no arrival price, so their slippage is None.",
+    "gap": "2026-10-25: skeptic REFUTED the first residual (it was the entry error rescaled); 7a10bf8c reworks it as predicted versus realised outcome net of entry costs, mutation-verified, but no second skeptic round has run and the episodes clause (a FillScore is a residual, not an episode) is unmet; handed to lane L3b with that step.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2329,7 +2329,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill. 2026-10-25 lane L3-DATA (wave580): residuals added. Mutation fired: recording outcome_error_bps as None - 'the horizon closed, so the outcome residual exists'. Not promoted (episodes not emitted); no skeptic run."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill. 2026-10-25 lane L3-DATA (wave580): residuals added. Mutation fired: recording outcome_error_bps as None - 'the horizon closed, so the outcome residual exists'. Not promoted (episodes not emitted); no skeptic run. 2026-10-25: skeptic (code-reviewer) REFUTED d51cad76: outcome_error marked two gross returns at one close, so it read zero whenever the twin's entry matched the fill. 7a10bf8c: both sides marked at the twin's printed exit, per unit, net of entry costs (SimulatedOutcome::simulated_entry_costs; FillScore predicted_outcome_bps, realised_outcome_bps). Mutations: drop the venue's costs (fails -2.999 vs -3.999 bps); drop the twin's entry costs (predicted equals gross). Row handed to L3b 2026-10-25."
   },
   {
     "id": "R12-MODEL-10104",
@@ -4041,10 +4041,12 @@
     "status": "PARTIAL",
     "current": "Compute/attention market, specialist proposals and cognitive compiler (unsigned packages) exist in deepbrain.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero",
+      "backend/crates/services/qip-expansion",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
-      "backend/crates/services/qip-expansion"
+      "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs"
     ],
-    "gap": "VOI urgency unmeasured; no phase exit test.",
+    "gap": "Phase exit test exists (qip-acceptance/tests/phase_16_exit.rs) but drives neither a specialist proposal nor an information request (info_launched stays zero on its fixture), so VOI acquisition is not proven end to end on the phase exit; the signal's own urgency_bp is now derived from its deadline (was literal 0) but nothing on a decision path reads it — VOI ranking reads AcquisitionCriteria.urgency_bp set in admit; deployable stays false.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4719,7 +4721,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595-680",
       "backend/crates/services/qip-lifecycle/src/gates.rs"
     ],
-    "gap": "Replay and envelope-compatibility gates. No replay-evidence record or envelope-compatibility result is produced anywhere upstream of Platform::promote_model: qip-deepbrain rescoring held-out rows is a fit check, not a replay of journalled cycles, and no model output feeds RiskLimits, so there is no envelope for a candidate to be incompatible with. A kernel gate requiring either would refuse every promotion; the producers (a replay harness over the log and a risk-envelope probe) come first.",
+    "gap": "Replay and envelope-compatibility gates. No replay-evidence record or envelope-compatibility result is produced anywhere upstream of Platform::promote_model: qip-deepbrain rescoring held-out rows is a fit check, not a replay of journalled cycles, and no model output feeds RiskLimits, so there is no envelope for a candidate to be incompatible with. A kernel gate requiring either would refuse every promotion; the producers (a replay harness over the log and a risk-envelope probe) come first. 2026-10-30 (lane L2-INTEL), one sentence: still not built; a kernel gate requiring replay and envelope evidence would refuse every promotion until its producers exist (a replay of the candidate over the journaled tape, and an envelope-compatibility record), and no model output feeds a risk limit today, so the envelope check has no consumer to be compatible with.",
     "implemented": true,
     "tested": true,
     "integrated": true,

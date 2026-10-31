@@ -1,0 +1,98 @@
+diff --git a/scripts/agent-policy.json b/scripts/agent-policy.json
+index b020836..8e02df3 100644
+--- a/scripts/agent-policy.json
++++ b/scripts/agent-policy.json
+@@ -67,6 +67,7 @@
+     "backend-engineer": { "kind": "coder", "may_edit": ["backend/crates/libs/**", "backend/crates/services/**", "backend/crates/runtime/**", "backend/crates/edge/**", "backend/crates/agents/**", "backend/crates/quant/**"] },
+     "cloud-platform-engineer": { "kind": "coder", "may_edit": ["infrastructure/**", ".github/workflows/**", "scripts/**"] },
+     "data-ai-engineer": { "kind": "coder", "may_edit": ["backend/crates/services/qip-market-ingestion/**", "qip-data-finder/**", "qip-world-model/**", "qip-opportunity-engine/**", "qip-cost-router/**", "qip-training/**", "backend/crates/libs/qip-quantum/**"] },
++    "learning-agent": { "kind": "coder", "may_edit": ["docs/proposals/**"] },
+     "frontend-engineer": { "kind": "coder", "may_edit": ["frontend/**"] },
+     "sre-release-engineer": { "kind": "coder", "may_edit": [".github/workflows/**", "infrastructure/environments/**/images.tfvars", "docs/operations/**"] },
+     "technical-writer": { "kind": "coder", "may_edit": ["docs/**", "README.md", "ops/**/*.md", ".claude/**/*.md"] },
+diff --git a/scripts/agent-guard.test.mjs b/scripts/agent-guard.test.mjs
+index 0427e84..6db6caf 100644
+--- a/scripts/agent-guard.test.mjs
++++ b/scripts/agent-guard.test.mjs
+@@ -79,6 +79,34 @@ test("a coder outside its own paths is refused", () => {
+   assert.match(refusals[0], /infrastructure\/terraform\/main\.tf/);
+ });
+ 
++// R12-GOV-9075 (GCP v2.1 §13): the learning agent proposes capability
++// changes and never promotes one. Its grant is the proposals directory, so a
++// change from it to a promotion gate — the deploy workflow, the strategy
++// lifecycle's promotion code, the agent policy itself — is refused by the
++// role check before any review is weighed. Mutation: widen learning-agent's
++// may_edit to "docs/**" plus "backend/**", or skip the role check.
++test("a learning agent's proposal is admitted and its edit to a promotion gate is refused", () => {
++  const judge = (files) => judgeChange({
++    policy: POLICY, permissions: PERMS, headRef: "claude/learn", headSha: HEAD,
++    files, commits: [agentCommit("learning-agent")], reviews: [approval("dana")],
++  });
++  // Premise: the role exists and its own paths pass with nothing protected.
++  assert.equal(POLICY.roles["learning-agent"]?.kind, "coder");
++  assert.deepEqual(judge(["docs/proposals/2026-10-30-fill-model-recalibration.md"]).refusals, []);
++  for (const gate of [
++    ".github/workflows/deploy.yml",
++    "backend/crates/services/qip-lifecycle/src/gate.rs",
++    "scripts/agent-policy.json",
++  ]) {
++    const { agent, refusals } = judge(["docs/proposals/x.md", gate]);
++    assert.ok(agent);
++    assert.ok(
++      refusals.some((r) => r.includes("learning-agent role (coder) may not change") && r.includes(gate)),
++      `${gate}: ${JSON.stringify(refusals)}`,
++    );
++  }
++});
++
+ test("an undeclared role is refused rather than ignored", () => {
+   const { refusals } = judgeChange({
+     policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+diff --git a/.claude/agents/learning-agent.md b/.claude/agents/learning-agent.md
+new file mode 100644
+index 0000000..8b039a1
+--- /dev/null
++++ b/.claude/agents/learning-agent.md
+@@ -0,0 +1,41 @@
++---
++name: learning-agent
++description: Turn incidents, reviews and benchmark results into written capability proposals. Proposes only; every promotion stays behind the gates a person owns (R12-GOV-9075, GCP v2.1 §13).
++tools: Read, Grep, Glob, Write, Edit
++---
++
++# Learning Agent
++
++## Mission
++
++Read what went wrong or underperformed — an incident, a review finding, a
++benchmark that regressed — and write down the capability change it argues
++for, with the evidence, so a person can decide whether to build it.
++
++## Inputs required
++
++The incident record, the review or the benchmark output; the code and ADRs
++the proposal would touch.
++
++## Paths you may change
++
++`docs/proposals/**`
++
++A proposal is a document and nothing else. Code, workflows, the agents'
++own definitions, the policy and every promotion gate are outside this list,
++so `scripts/agent-guard.mjs` refuses a change from this role that touches
++them, and a protected path needs a person's approval besides.
++
++## Never
++
++- Never edit a promotion gate, a workflow, an agent definition or the agent policy, even to "apply" your own proposal.
++- Never mark a proposal accepted. Acceptance is a person's decision, recorded outside this role's paths.
++- Never cite a benchmark or incident you did not read; link the record.
++
++## Output format
++
++One proposal per file: the trigger (incident, review or benchmark, linked), the change proposed, the evidence, what would show it was wrong, and the gates it must still pass.
++
++## Evidence rule
++
++Never report a check as passing unless you ran it and read its output.

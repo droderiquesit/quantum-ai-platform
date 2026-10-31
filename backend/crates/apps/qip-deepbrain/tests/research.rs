@@ -198,6 +198,37 @@ fn a_raised_gap_flows_from_ambient_signal_through_attention_event_to_a_complete_
     );
 }
 
+/// R12-AMBIENT-10175: a raised gap's signal states the urgency of its own
+/// deadline rather than zero. The loop stated `urgency_bp: 0` on every
+/// signal it emitted while `admit` derived the same gap's urgency from that
+/// deadline, so the journaled signal and the information request it became
+/// disagreed about how much the gap wanted attention, and the signal said
+/// "none". Mutation: restore the literal `urgency_bp: 0` in
+/// `ResearchLoop::emit`; the emitted signal's urgency is zero and both
+/// assertions fail.
+#[test]
+fn a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero() {
+    let platform = platform();
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A", "obj-B"])]));
+    let round = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(round.raised, 1, "premise: one gap raised: {round:?}");
+    let signal = round
+        .signals
+        .iter()
+        .find(|s| s.id() == "ambient-1")
+        .unwrap_or_else(|| panic!("premise: the raised gap was emitted: {round:?}"));
+    let ttl = ResearchConfig::default().signal_ttl;
+    assert_eq!(signal.expiry(), start().saturating_add(ttl), "premise");
+    let expected = qip_deepbrain::research::urgency_bp(start(), signal.expiry(), ttl);
+    assert!(
+        expected > 0,
+        "premise: a deadline ahead is not without urgency"
+    );
+    assert_eq!(signal.urgency_bp(), expected, "{signal:?}");
+}
+
 #[test]
 fn an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router() {
     let platform = platform();
