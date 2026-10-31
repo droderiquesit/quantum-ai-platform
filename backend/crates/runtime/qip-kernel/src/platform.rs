@@ -15122,6 +15122,25 @@ impl Platform {
             .collect()
     }
 
+    /// The latest fixing per currency series readable at `now`, for the
+    /// macro member (ADR 0232). A fixing from a synthetic tape is marked
+    /// simulated by the same source tag as a surprise.
+    fn currency_views(&self, now: Timestamp) -> Vec<crate::federation_stage::CurrencyView> {
+        let world = self.world.read();
+        qip_world_model::now::currency_levels(&world, now)
+            .into_iter()
+            .map(|reading| crate::federation_stage::CurrencyView {
+                simulated: reading
+                    .sources
+                    .iter()
+                    .any(|s| s == qip_world_model::now::MACRO_SIMULATED_SOURCE),
+                series: reading.subject,
+                level: reading.value,
+                valid_at: reading.valid_at,
+            })
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15184,6 +15203,7 @@ impl Platform {
             }),
             capital: self.capital_view(),
             macros: self.macro_views(now),
+            currencies: self.currency_views(now),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
         // so a material disagreement on a held name issues the contract

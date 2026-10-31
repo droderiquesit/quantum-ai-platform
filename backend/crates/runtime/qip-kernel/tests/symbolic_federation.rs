@@ -1874,5 +1874,46 @@ fn a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_
         resolution.outcome,
         "a same-direction surprise resolved false"
     );
+
+    // A currency fixing states no consensus; the member reads its move
+    // through the default path's `currencies` input. Two fixings that move
+    // give one move forecast.
+    let fixing = |period: Timestamp, level: f64| {
+        SensedRecord::Macro(Box::new(MacroObservation {
+            series_id: "FX.EUR.USD".to_string(),
+            region: "EU".to_string(),
+            value: level,
+            unit: "USD per EUR".to_string(),
+            reference_date: period,
+            consensus: None,
+            previous: None,
+            is_revision: false,
+            provenance: Provenance::new("ecb", period, period),
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        }))
+    };
+    platform.observe(vec![fixing(
+        later.saturating_sub(Duration::from_days(1)),
+        1.10,
+    )]);
+    platform.run_cycle(later.saturating_add(Duration::from_hours(1)));
+    platform.observe(vec![fixing(later, 1.12)]);
+    platform.run_cycle(later.saturating_add(Duration::from_hours(2)));
+    let reviews = federation_stage::replay(&platform)?;
+    let moved = reviews.last().is_some_and(|r| {
+        r.arbitrations
+            .iter()
+            .any(|a| a.proposition.starts_with("macro:FX.EUR.USD:move-persists@"))
+    });
+    assert!(
+        moved,
+        "a currency fixing that moved gave the macro member no forecast: {:?}",
+        reviews.last().map(|r| r
+            .arbitrations
+            .iter()
+            .map(|a| a.proposition.clone())
+            .collect::<Vec<_>>())
+    );
     Ok(())
 }

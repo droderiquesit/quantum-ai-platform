@@ -41,9 +41,20 @@ says it is silent until then.
 3. **Resolved by the series' next reading.** The forecast resolves true when
    the next release of the series surprises its consensus in the same
    direction, and false otherwise. A release of exactly consensus counts as
-   false. Releases are monthly at best and cycles daily, so a macro forecast
-   waits `MACRO_PENDING_CYCLES` (90) passes before it is abandoned, not the
-   instrument members' 8.
+   false. A macro forecast waits `MACRO_PATIENCE` (60 days) of elapsed time
+   before it is abandoned. It is measured in time, not passes, because a
+   deployed cycle runs every 300 s on the deep brain and every 100 ms on the
+   fast brain. The first draft counted 90 passes on the premise of daily
+   cycles, so every monthly forecast would have been abandoned within hours.
+   The in-lane skeptic caught it.
+3a. **Currencies are read by their move.** A currency fixing
+   (`FX.<base>.<quote>`, the ECB reference rates) states no consensus, so
+   it has no surprise. `Platform::currency_views` reads each series'
+   `macro_level` through `now::currency_levels`. The first fixing of a
+   series seeds its level. Each later fixing that moved is forecast, at the
+   same declared 0.6, to be followed by a move the same way
+   (`macro:<series>:move-persists@<cycle>`). The next fixing answers it, and
+   a fixing equal to the last states no direction.
 4. **A synthetic tape's surprise is labelled simulated.** A release whose
    provenance is `LicensingClass::Synthetic` records its surprise with the
    source tag `simulated` (`now::MACRO_SIMULATED_SOURCE`). The tag reaches
@@ -68,7 +79,22 @@ says it is silent until then.
   3. dropping the synthetic tag in the world model;
   4. inverting the resolver.
 - `WorldReading` gains `sources`, the feature value's own source list. Its
-  four construction sites carry it.
+  four construction sites carry it. A synthetic release tags its level and
+  its surprise alike.
+- The test also drives two currency fixings on the default path, which give
+  one move forecast. Dropping the `currencies` input fails it.
+  `a_macro_forecast_waits_for_its_next_release_in_time_not_in_passes` runs
+  200 passes inside a day and resolves the forecast on a release 30 days
+  later. Counting patience in passes fails it.
+  `a_currency_fixing_that_moves_is_forecast_to_keep_moving_and_the_next_fixing_answers_it`
+  fails when the move is recorded inverted.
+- **What a catalogued connector gives the member today.** All three
+  catalogued macro connectors state no consensus: `ecb_key_rates`,
+  `frankfurter_rates` and `nyfed_effr`. Switching one on therefore yields
+  no surprise. The Frankfurter fixings reach the member through the
+  currency path. The ECB and New York Fed rate series reach it only once a
+  source states a consensus. Until then, surprises come from the narrative
+  vendor adapter or the synthetic tape.
 
 ## What it costs
 

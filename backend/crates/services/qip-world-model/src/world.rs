@@ -848,13 +848,20 @@ impl WorldModel {
     /// where the refusal stops being about one map and becomes about the
     /// record.
     pub fn absorb_macro(&mut self, observation: &MacroObservation) {
+        // A synthetic tape's release is labelled at its source, so every
+        // reader of its level or surprise can tell it was simulated
+        // (ADR 0232).
+        let mut sources = vec!["world_stream:macro".to_string()];
+        if observation.provenance.licensing == qip_financial::quality::LicensingClass::Synthetic {
+            sources.push(crate::now::MACRO_SIMULATED_SOURCE.to_string());
+        }
         let value = FeatureValue {
             value: observation.value,
             valid_at: observation.reference_date,
             available_at: observation.provenance.ingestion_time,
             confidence: observation.quality.score(),
             imputed: observation.quality.is_imputed,
-            sources: vec!["world_stream:macro".to_string()],
+            sources: sources.clone(),
         };
         if self
             .features
@@ -868,13 +875,6 @@ impl WorldModel {
                 .record(series.feature(), &observation.region, value);
         }
         if let Some(surprise) = observation.surprise() {
-            // A synthetic tape's release is labelled at its source, so every
-            // reader of the surprise can tell it was simulated (ADR 0232).
-            let mut sources = vec!["world_stream:macro".to_string()];
-            if observation.provenance.licensing == qip_financial::quality::LicensingClass::Synthetic
-            {
-                sources.push(crate::now::MACRO_SIMULATED_SOURCE.to_string());
-            }
             self.features.record(
                 names::MACRO_SURPRISE,
                 &observation.series_id,

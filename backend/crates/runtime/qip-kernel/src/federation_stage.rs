@@ -91,10 +91,11 @@ pub const MACRO: &str = "macro.surprise-persistence.global";
 /// It speaks the day one is switched on at the deploy and is silent until.
 pub const MACRO_SOURCE: &str = "sense:macro-connectors";
 
-/// Passes a macro forecast waits for its series' next release. Releases are
-/// monthly at best and cycles daily, so the instrument members' patience
-/// would abandon every macro forecast before reality could answer it.
-pub const MACRO_PENDING_CYCLES: u64 = 90;
+/// How long a macro forecast waits for its series' next release, in time
+/// and not in passes. Releases are monthly at best and a deployed cycle runs
+/// every few minutes or faster, so any count of passes would abandon every
+/// macro forecast before reality could answer it.
+pub const MACRO_PATIENCE: Duration = Duration::from_days(60);
 
 /// Series the macro member remembers a last release for. A bound on top of
 /// the catalogue, because the readings arrive from the feature store.
@@ -258,6 +259,24 @@ pub struct MacroView {
     pub simulated: bool,
 }
 
+/// One currency series' latest fixing, as the macro member reads it
+/// (ADR 0232): a fixing states no consensus, so the member reads its move
+/// from the previous fixing instead of a surprise.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurrencyView {
+    pub series: String,
+    pub level: f64,
+    pub valid_at: Timestamp,
+    pub simulated: bool,
+}
+
+/// The proposition one fixing's move forecast answers: the next fixing
+/// moves the same way as this one did.
+pub fn currency_proposition(series: &str, cycle: u64, simulated: bool) -> String {
+    let label = if simulated { ":simulated" } else { "" };
+    format!("macro:{series}{label}:move-persists@{cycle}")
+}
+
 /// The proposition one release's persistence forecast answers. A simulated
 /// release's proposition carries the label, so the journal never records a
 /// synthetic surprise's forecast as one about a real economy.
@@ -301,6 +320,8 @@ pub struct FederationInputs {
     pub capital: Option<CapitalView>,
     /// The latest macro surprise per series readable this pass (ADR 0232).
     pub macros: Vec<MacroView>,
+    /// The latest currency fixing per series readable this pass (ADR 0232).
+    pub currencies: Vec<CurrencyView>,
 }
 
 /// One member as the population check read it.
@@ -528,6 +549,15 @@ enum Pending {
         positive: bool,
         valid_at: Timestamp,
         cycle: u64,
+        since: Timestamp,
+    },
+    Currency {
+        series: String,
+        level: f64,
+        up: bool,
+        valid_at: Timestamp,
+        cycle: u64,
+        since: Timestamp,
     },
 }
 
@@ -538,15 +568,20 @@ impl Pending {
             | Self::Halted { cycle }
             | Self::Chain { cycle, .. }
             | Self::Funding { cycle, .. }
-            | Self::Macro { cycle, .. } => *cycle,
+            | Self::Macro { cycle, .. }
+            | Self::Currency { cycle, .. } => *cycle,
         }
     }
 
-    /// Passes this forecast may wait before it is abandoned unscored.
-    fn patience(&self) -> u64 {
+    /// Whether this forecast has waited past its patience: a macro or
+    /// currency forecast by elapsed time ([`MACRO_PATIENCE`]), every other by
+    /// passes ([`FEDERATION_PENDING_CYCLES`]).
+    fn exhausted(&self, cycle: u64, now: Timestamp) -> bool {
         match self {
-            Self::Macro { .. } => MACRO_PENDING_CYCLES,
-            _ => FEDERATION_PENDING_CYCLES,
+            Self::Macro { since, .. } | Self::Currency { since, .. } => {
+                now.since(*since) >= MACRO_PATIENCE
+            }
+            _ => cycle.saturating_sub(self.cycle()) >= FEDERATION_PENDING_CYCLES,
         }
     }
 }
@@ -563,6 +598,9 @@ pub struct FederationStage {
     /// series (ADR 0232): a release is fed once, not every pass it stays
     /// readable. Bounded by [`MAX_MACRO_SERIES`].
     last_macro: BTreeMap<String, Timestamp>,
+    /// The last fixing the macro member read per currency series: its level
+    /// and period. Bounded by [`MAX_MACRO_SERIES`] with `last_macro`.
+    last_fixing: BTreeMap<String, (f64, Timestamp)>,
     /// Account-currency exposure per subject, as the composition root last
     /// stated it ([`Self::set_stakes`]); what a disagreement's value of
     /// information is scaled by. Empty means nothing is at stake anywhere
@@ -1561,10 +1599,20 @@ impl FederationStage {
                 .last_macro
                 .get(&view.series)
                 .is_none_or(|read| view.valid_at > *read);
-            if !newer
-                || (!self.last_macro.contains_key(&view.series)
-                    && self.last_macro.len() >= MAX_MACRO_SERIES)
+            if !newer {
+                continue;
+            }
+            if !self.last_macro.contains_key(&view.series)
+                && self.last_macro.len() + self.last_fixing.len() >= MAX_MACRO_SERIES
             {
+                refused.push((
+                    MACRO.to_string(),
+                    format!(
+                        "{} is a new series past the {MAX_MACRO_SERIES}-series bound; its \
+                         release is not read",
+                        view.series
+                    ),
+                ));
                 continue;
             }
             self.last_macro.insert(view.series.clone(), view.valid_at);
@@ -1592,6 +1640,68 @@ impl FederationStage {
                         positive: view.surprise > 0.0,
                         valid_at: view.valid_at,
                         cycle: inputs.cycle,
+                        since: now,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
+        // Currencies (ADR 0232): a fixing has no consensus and so no
+        // surprise; the member reads its move from the previous fixing and
+        // forecasts, at the same declared persistence, that the next fixing
+        // moves the same way. The first fixing of a series only seeds the
+        // level; a fixing equal to the last states no direction.
+        for view in inputs.currencies.iter().filter(|v| v.level.is_finite()) {
+            let previous = self.last_fixing.get(&view.series).copied();
+            if previous.is_some_and(|(_, at)| view.valid_at <= at) {
+                continue;
+            }
+            if previous.is_none()
+                && self.last_macro.len() + self.last_fixing.len() >= MAX_MACRO_SERIES
+            {
+                refused.push((
+                    MACRO.to_string(),
+                    format!(
+                        "{} is a new series past the {MAX_MACRO_SERIES}-series bound; its \
+                         fixing is not read",
+                        view.series
+                    ),
+                ));
+                continue;
+            }
+            self.last_fixing
+                .insert(view.series.clone(), (view.level, view.valid_at));
+            let Some((last, _)) = previous.filter(|(last, _)| (*last - view.level).abs() > 0.0)
+            else {
+                continue;
+            };
+            let proposition = currency_proposition(&view.series, inputs.cycle, view.simulated);
+            if feed(
+                &mut self.federation,
+                MACRO,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability: 0.6,
+                    evidence_fit: if view.simulated { 0.15 } else { 0.3 },
+                    causal_coherence: 0.4,
+                    uncertainty: 0.7,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Currency {
+                        series: view.series.clone(),
+                        level: view.level,
+                        up: view.level > last,
+                        valid_at: view.valid_at,
+                        cycle: inputs.cycle,
+                        since: now,
                     },
                 );
                 propositions.push(proposition);
@@ -1934,6 +2044,18 @@ impl FederationStage {
                     .iter()
                     .find(|v| &v.series == series && v.valid_at > *valid_at)
                     .map(|v| Some((v.surprise > 0.0) == *positive && v.surprise != 0.0)),
+                // Answered by the series' next fixing: did it move the same way?
+                Pending::Currency {
+                    series,
+                    level,
+                    up,
+                    valid_at,
+                    ..
+                } => inputs
+                    .currencies
+                    .iter()
+                    .find(|v| &v.series == series && v.valid_at > *valid_at)
+                    .map(|v| Some((v.level > *level) == *up && (v.level - *level).abs() > 0.0)),
             };
             match answer {
                 Some(Some(outcome)) => {
@@ -1955,7 +2077,7 @@ impl FederationStage {
                     self.federation.abandon(&proposition, now);
                     abandoned.push(proposition);
                 }
-                None if inputs.cycle.saturating_sub(waiting.cycle()) >= waiting.patience() => {
+                None if waiting.exhausted(inputs.cycle, now) => {
                     self.federation.abandon(&proposition, now);
                     abandoned.push(proposition);
                 }
@@ -2054,6 +2176,7 @@ mod tests {
             chain: chain.map(|confirmed_trades| ChainView { confirmed_trades }),
             capital: None,
             macros: Vec::new(),
+            currencies: Vec::new(),
         }
     }
 
@@ -2096,6 +2219,7 @@ mod tests {
         fed_inputs.capital = Some(book(1_000.0, 0));
         // The macro member produces state only for a release that surprised
         // its consensus (ADR 0232), so this pass reads one.
+        fed_inputs.currencies = Vec::new();
         fed_inputs.macros = vec![MacroView {
             series: "US.CPI.YOY".into(),
             surprise: 0.3,
@@ -2631,6 +2755,100 @@ mod tests {
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
         assert_eq!(stage.federation().live_specs(day(0)).len(), 15);
+    }
+
+    /// ADR 0232: a macro forecast waits for its series' next release in
+    /// time, not in passes. The skeptic's finding: patience was 90 passes on
+    /// the premise of daily cycles, and a deployed cycle runs every 300 s on
+    /// the deep brain and every 100 ms on the fast brain, so every monthly
+    /// forecast was abandoned within hours and nothing was ever scored.
+    /// Mutation: count a macro forecast's patience in passes
+    /// (`FEDERATION_PENDING_CYCLES`) — it is abandoned before the release.
+    #[test]
+    fn a_macro_forecast_waits_for_its_next_release_in_time_not_in_passes() {
+        let mut stage = FederationStage::new();
+        let release = |surprise: f64, period: i64| MacroView {
+            series: "US.CPI.YOY".into(),
+            surprise,
+            valid_at: day(period),
+            simulated: false,
+        };
+        let mut first = inputs(1, 100.0, day(0), None);
+        first.macros = vec![release(0.3, -20)];
+        stage.run(&first, day(0));
+        let proposition = macro_proposition("US.CPI.YOY", 1, false);
+        // Two hundred passes inside one day, no new release.
+        for cycle in 2..202 {
+            let mut quiet = inputs(cycle, 100.0, day(0), None);
+            quiet.macros = vec![release(0.3, -20)];
+            let review = stage.run(
+                &quiet,
+                day(0).saturating_add(Duration::from_mins(cycle as i64)),
+            );
+            assert!(
+                !review.abandoned.contains(&proposition),
+                "abandoned after {cycle} passes inside one day"
+            );
+        }
+        // The next release, thirty days on, answers it.
+        let mut next = inputs(202, 100.0, day(0), None);
+        next.macros = vec![release(0.4, 10)];
+        let review = stage.run(&next, day(30));
+        let resolution = review
+            .resolved
+            .iter()
+            .find(|r| r.proposition == proposition)
+            .expect("the next release answered the forecast");
+        assert!(resolution.outcome);
+    }
+
+    /// ADR 0232: a currency fixing states no consensus, so the macro member
+    /// reads its move. The first fixing seeds the level, the second's move is
+    /// forecast to persist, and the third answers it. Mutation: record the
+    /// move inverted (`view.level < last`) — the forecast resolves false.
+    #[test]
+    fn a_currency_fixing_that_moves_is_forecast_to_keep_moving_and_the_next_fixing_answers_it() {
+        let mut stage = FederationStage::new();
+        let fixing = |level: f64, period: i64| CurrencyView {
+            series: "FX.EUR.USD".into(),
+            level,
+            valid_at: day(period),
+            simulated: false,
+        };
+        let pass = |stage: &mut FederationStage, cycle: u64, level: f64, period: i64| {
+            let mut i = inputs(cycle, 100.0, day(0), None);
+            i.currencies = vec![fixing(level, period)];
+            stage.run(&i, day(period))
+        };
+        let seeded = pass(&mut stage, 1, 1.10, 0);
+        assert!(
+            !seeded
+                .arbitrations
+                .iter()
+                .any(|a| a.proposition.starts_with("macro:FX.EUR.USD")),
+            "a first fixing has no move to forecast"
+        );
+        let moved = pass(&mut stage, 2, 1.12, 1);
+        let proposition = currency_proposition("FX.EUR.USD", 2, false);
+        assert!(
+            moved
+                .arbitrations
+                .iter()
+                .any(|a| a.proposition == proposition),
+            "a fixing that moved was not forecast: {:?}",
+            moved
+                .arbitrations
+                .iter()
+                .map(|a| a.proposition.clone())
+                .collect::<Vec<_>>()
+        );
+        let answered = pass(&mut stage, 3, 1.13, 2);
+        let resolution = answered
+            .resolved
+            .iter()
+            .find(|r| r.proposition == proposition)
+            .expect("the next fixing answered the move forecast");
+        assert!(resolution.outcome, "a move that persisted resolved false");
     }
 
     #[test]
