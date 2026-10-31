@@ -49,9 +49,16 @@ output "interconnect_attachments" {
 }
 
 output "cloud_routers" {
-  description = "Region to the Cloud Router created for it, or empty when partner interconnect is off."
+  description = "Region to the partner interconnect's Cloud Router (Google's ASN 16550), or empty when partner interconnect is off."
   value = {
     for region, router in google_compute_router.interconnect : region => router.name
+  }
+}
+
+output "vpn_routers" {
+  description = "Region to the HA VPN fallback's Cloud Router (the private cloud_router_asn), or empty when no fallback is planned."
+  value = {
+    for region, router in google_compute_router.vpn : region => router.name
   }
 }
 

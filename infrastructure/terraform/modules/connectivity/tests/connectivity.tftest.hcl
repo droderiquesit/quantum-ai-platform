@@ -52,8 +52,13 @@ run "two_attachments_in_one_region_share_one_router_with_bgp_and_stay_administra
   }
 
   assert {
-    condition     = google_compute_router.interconnect["us-central1"].bgp[0].asn == 64514 && google_compute_router.interconnect["us-central1"].bgp[0].advertise_mode == "DEFAULT"
-    error_message = "the router must run BGP with the private ASN and advertise only the VPC's own subnets"
+    condition     = google_compute_router.interconnect["us-central1"].bgp[0].asn == 16550 && google_compute_router.interconnect["us-central1"].bgp[0].advertise_mode == "DEFAULT"
+    error_message = "the partner attachments' router must run BGP on Google's required ASN 16550 (R12-GCP-10010) and advertise only the VPC's own subnets"
+  }
+
+  assert {
+    condition     = google_compute_router.vpn["us-central1"].bgp[0].asn == 64514 && google_compute_router.vpn["us-central1"].bgp[0].advertise_mode == "DEFAULT"
+    error_message = "the HA VPN fallback's router must stay on the private cloud_router_asn, apart from the partner router"
   }
 
   assert {
@@ -169,6 +174,23 @@ run "each_interconnect_region_gets_a_vpn_gateway_with_two_tunnels_and_bgp_peers"
   assert {
     condition     = length(google_compute_ha_vpn_gateway.fallback) == 1
     error_message = "one region with attachments must plan exactly one HA VPN gateway"
+  }
+
+  assert {
+    condition     = length(google_compute_router.vpn) == 1 && google_compute_router.vpn["us-central1"].bgp[0].asn == 64514 && google_compute_router.interconnect["us-central1"].bgp[0].asn == 16550
+    error_message = "the fallback's tunnels need their own router on the private ASN, beside the partner router on 16550"
+  }
+
+  # The BGP sessions are what speak the ASN: every VPN interface and peer sits
+  # on the VPN router, never the partner one. (A tunnel's router is the
+  # router's computed id, unknown at plan; its interface and peer carry the
+  # router's name, which is known.)
+  assert {
+    condition = alltrue(concat(
+      [for i in values(google_compute_router_interface.vpn_fallback) : i.router == google_compute_router.vpn["us-central1"].name],
+      [for p in values(google_compute_router_peer.vpn_fallback) : p.router == google_compute_router.vpn["us-central1"].name],
+    ))
+    error_message = "a VPN BGP session sits on the partner router, which speaks Google's 16550 rather than the VPC's private ASN"
   }
 
   assert {

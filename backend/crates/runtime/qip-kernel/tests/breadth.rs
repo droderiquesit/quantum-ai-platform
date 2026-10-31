@@ -826,6 +826,26 @@ fn a_reported_event_is_proposed_until_its_dispute_window_closes_and_only_then_fi
             .map(|resolution| resolution.state().as_str().to_string())
     };
     assert_eq!(state(&platform).as_deref(), Some("proposed"));
+    // Since ADR 0151 decision 10 a report is proposed only when the market's
+    // criteria, over what its named source published, agree with it — so the
+    // proposal above stands on observations the plane holds, not on the
+    // oracle's word.
+    {
+        let plane = platform.event_markets().expect("installed");
+        let market = plane.markets().next().expect("listed");
+        let observations = plane
+            .observations(&market.market_id)
+            .expect("the proposal stands on the source's observations");
+        let Some(ResolutionState::Proposed { report, .. }) =
+            plane.resolution(&market.market_id).map(|r| r.state())
+        else {
+            panic!("proposed, as asserted above");
+        };
+        assert_eq!(
+            market.evaluate(observations),
+            qip_prediction::MarketVerdict::Resolved(report.outcome.clone())
+        );
+    }
     platform.run_cycle(resolves.saturating_add(Duration::from_hours(3)));
     assert_eq!(state(&platform).as_deref(), Some("final"));
     let plane = platform.event_markets().expect("installed");

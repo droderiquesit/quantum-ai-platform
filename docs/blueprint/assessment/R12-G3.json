@@ -93,12 +93,16 @@
   },
   {
     "id": "R12-GOV-10005",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No cloud_asset resource in Terraform.",
-    "evidence": [],
-    "gap": "Declare an asset feed/export for each project.",
-    "implemented": false,
-    "tested": false,
+    "evidence": [
+      "infrastructure/terraform/audit-logs.tf google_cloud_asset_project_feed.changes (RESOURCE and IAM_POLICY), google_pubsub_topic.asset_changes",
+      "infrastructure/terraform/tests/security.tftest.hcl::the_asset_change_feed_plans_resource_and_iam_policy_changes_to_the_change_topic",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_asset_change_feed_publishes_to_the_change_topic"
+    ],
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): the row's 'no cloud_asset resource' was out of date; audit-logs.tf declares the feed. The plan now asserts both content types (mocked terraform test) and the configuration holds the feed-to-topic link (the topic id is computed and unknown at plan). Completes on an owner-dispatched dev plan quoting the two feeds and an operator reading one change message off the topic. Earlier: Declare an asset feed/export for each project.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -107,7 +111,7 @@
     "verification": "terraform plan shows google_cloud_asset_project_feed",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): The feed exists, so the row's 'no cloud_asset resource' is out of date. What is missing is the plan assertion the requirement names, so a lane adds it and corrects the text. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
+    "notes": "2026-10-31 lane L6: terraform 1.9.8 test (scratch copy of infrastructure/, mock providers), security.tftest.hcl 14 passed. Mutations: deleting the IAM_POLICY content type failed the new run; repointing the feed's topic failed the acceptance test at 'publishes somewhere other than the asset change topic'. Both restored and checked with cmp.Owner ruling 2026-10-31 (IMPLEMENT): The feed exists, so the row's 'no cloud_asset resource' is out of date. What is missing is the plan assertion the requirement names, so a lane adds it and corrects the text. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
   },
   {
     "id": "R12-SEC-10006",
@@ -207,9 +211,11 @@
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:59 google_compute_router interconnect",
       "infrastructure/terraform/modules/connectivity/main.tf:243 google_compute_router_peer vpn_fallback",
-      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl",
+      "infrastructure/terraform/modules/connectivity/main.tf google_compute_router.interconnect (local.partner_interconnect_asn = 16550), google_compute_router.vpn (var.cloud_router_asn)",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (16550 on the partner router, the private ASN on the VPN router and its sessions)"
     ],
-    "gap": "2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then.",
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): the defect the 2026-10-11 apply found is fixed in code: PARTNER attachments get their own per-region Cloud Router at Google's required ASN 16550 (a constant), and the HA VPN fallback has its own router, interfaces and peers on the private cloud_router_asn, whose validation is unchanged. No circuit is ordered (a partner contract is a term and a monthly charge the owner declined); the row waits on the partner circuit in modules/connectivity/NOT-ORDERED.md. Earlier: 2026-10-24: a partner contract and physical circuit are out of band (modules/connectivity/NOT-ORDERED.md); no BGP session can establish until then.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -220,7 +226,7 @@
     "verification": "terraform test modules/connectivity",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): No circuit is ordered: a partner contract is a term and a monthly charge for cells that run in shadow in one region, and I am not buying it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-31 lane L6: terraform 1.9.8 fmt -check clean; terraform test in a scratch copy, mock provider, 11 passed. Mutations: the partner router back on var.cloud_router_asn failed two runs; the VPN interfaces and peers moved onto the partner router failed the new session assertion. A tunnel's router is a computed id unknown at plan, so moving the tunnel alone is not caught at plan (stated in the test). Each restored and checked with cmp.Owner ruling 2026-10-31 (IMPLEMENT): No circuit is ordered: a partner contract is a term and a monthly charge for cells that run in shadow in one region, and I am not buying it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-GCP-10011",
@@ -3881,12 +3887,14 @@
   {
     "id": "R12-CICD-10168",
     "status": "PARTIAL",
-    "current": "Fleet dispatcher/workers with budgets; CI/GitOps path; no sandbox or reviewer/release/SRE agents in code.",
+    "current": "The requirement's seven roles are the development agents under .claude/agents (planner: product-manager, chief-orchestrator, solution-architect; coder: backend/frontend/data-ai/cloud-platform engineers; test, security, reviewer; release and SRE: sre-release-engineer), each acting only through a pull request that ci and agent boundary gate; a release is a person's dispatch of deploy.yml. ADR 0102's fleet keeps its eight roles with no security, merge or release role; agent-sandbox.yml and the fleet's daily budget ceiling exist; deploy.yml, infra.yml and fleet.yml are refused to agent identities. Phase 9's exit test is named in the phase register.",
     "evidence": [
       "scripts/fleet/dispatch.mjs",
-      "scripts/model-gateway.mjs"
+      "scripts/model-gateway.mjs",
+      "backend/crates/tests/qip-acceptance/tests/development_roles.rs::phase_9_roles_are_development_agents_that_act_only_through_ci",
+      "docs/architecture/phase-register.json phase 9 exit_tests"
     ],
-    "gap": "Sandbox and agent roles.",
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): ADR 0102 is not amended; the roles are the development agents and the exit test is named. Stays PARTIAL while phase 9 is not_entered (it is entered only after phase 8 exits). Earlier: Sandbox and agent roles.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3900,7 +3908,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): ADR 0102 is not amended. The fleet keeps its eight roles, and security, merge and release stay out of it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-31 lane L6: mutation: adding a 'release' role to scripts/fleet/worker.mjs ROLES failed the test at 'the fleet's roster names a release role'; restored, cmp clean, passed. The ruling's named mutations (dropping deploy.yml from agent-policy.json, removing an agent file) edit protected paths, so they were not run; the test asserts both by name.Owner ruling 2026-10-31 (IMPLEMENT): ADR 0102 is not amended. The fleet keeps its eight roles, and security, merge and release stay out of it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-QUANT-10169",
