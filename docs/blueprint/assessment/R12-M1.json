@@ -990,14 +990,16 @@
   },
   {
     "id": "R12-GOV-1042",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Edge cells trade only under verified, unexpired signed capital envelopes; the downlink refuses to build without a key. Central autonomy is bounded by the ceiling. Not deployed.",
     "evidence": [
-      "backend/crates/edge/qip-edge/tests/cell.rs:144 expired envelope stops the cell",
-      "backend/crates/edge/qip-edge/tests/envelope_expiry.rs:244 expired envelope keeps refusing",
-      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:240 only the cell's own verification can mint a verified grant"
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::work: the per-use envelope_expiry refusal (`if !deployed.envelope.is_live(now)`)",
+      "backend/crates/edge/qip-edge/tests/envelope_expiry.rs::an_expired_envelope_keeps_refusing_on_every_later_pass (drives Cell::work)",
+      "backend/crates/edge/qip-edge/tests/cell.rs::an_expired_envelope_stops_the_cell_rather_than_letting_it_continue (VerifiedEnvelope::verify/is_live; builds no Cell)",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_grant_and_the_peer_protocol_cannot_name_one",
+      "backend/crates/apps/qip-edge-node/src/trust.rs:87 (None, None): the node refuses to start with nothing to verify a grant against"
     ],
-    "gap": "Deployment of an envelope-bounded cell.",
+    "gap": "None for the requirement (2026-10-31 lane L6-platform, under the 2026-10-31 re-triage's ALREADY_COMPLETE ruling). The only gap the row carried was deployment, and the AUDIT-5 bar part 2 counts a shipped binary's default path: qip-edge-node refuses to start without a trust root, deploys a strategy only under a grant that the cell's own verification mints, and its Cell refuses an expired envelope at every use. Not deployed: execution_nodes is empty in every environment. Previous gap: Deployment of an envelope-bounded cell.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1005,10 +1007,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test cell --test envelope_expiry",
+    "verification": "cargo test -p qip-edge --test envelope_expiry --test cell; cargo test -p qip-acceptance --test downward_signed_path",
     "work_item": "",
     "size": "S",
-    "notes": "Nothing is deployed: execution_nodes = {} in every environment (infrastructure/environments/*/terraform.tfvars)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every environment (infrastructure/environments/*/terraform.tfvars). 2026-10-31 lane L6-platform: regraded COMPLETE after the mutation run the ruling asked for. Mutation: `if false && !deployed.envelope.is_live(now)` in Cell::work's envelope_expiry check failed envelope_expiry 0 passed 3 failed (an_expired_envelope_keeps_refusing_on_every_later_pass at envelope_expiry.rs:279, 'the expired envelope did not refuse'; when_an_envelopes_expiry_is_reached_its_strategy_is_refused_new_intents at :218; one_strategys_expired_envelope_stops_that_strategy_and_not_the_one_beside_it at :332), restored with cmp, then envelope_expiry 3 passed and cell 28 passed. The mutation did not fail tests/cell.rs, which checks VerifiedEnvelope::verify/is_live and builds no Cell, as the triage skeptic noted; envelope_expiry.rs is the Cell proof. downward_signed_path's mutation is the one recorded 2026-10-04."
   },
   {
     "id": "R12-RISK-1043",
