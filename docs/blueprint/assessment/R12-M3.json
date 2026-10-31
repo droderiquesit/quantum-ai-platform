@@ -1790,9 +1790,13 @@
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::new",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::the_graph_estimator_reads_the_containing_scopes_belief_and_disagrees_with_the_kalman_filter",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::two_estimators_on_one_variable_both_contribute_and_their_disagreement_is_recorded",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests (four estimators registered)"
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests (four estimators registered)",
+      "backend/crates/services/qip-world-model/src/now.rs CausalFilter, CausalParent, NowBrain::set_causal_parents",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::now_causal_parents",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::a_causal_estimator_contributes_beside_the_kalman_and_their_disagreement_is_recorded",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism"
     ],
-    "gap": "EstimatorKind::Causal has no implementation: a causal estimator needs the CausalGraph at the NOW step, which NowInputs does not carry (a call site in platform.rs). EstimatorKind::Neural has no model in qip-numerics. The graph estimator reads the region and global scopes only; sector membership is not known to the brain, so an instrument is not shrunk toward its sector.",
+    "gap": "2026-10-31 (L4, commits 7585d30f and its follow-up, skeptic REFUTED). Closed: a causal estimator (now::CausalFilter) exists, proposes a scope's state from its causal parents' promoted beliefs, and contributes beside the Kalman filter with the disagreement recorded (unit test); the kernel builds each priced instrument's signed causal parents (Platform::now_causal_parents) and NowStage hands them to the brain. Still open: the filter is not registered in NowBrain::standard, because the graph's edge strength is a Granger partial R² (fit, not slope) without its lag, and fusing R²·parent into every variable by default would bias every promoted belief; it joins once edges carry a fitted coefficient used with its lag, restricted to return; EstimatorKind::Neural has no implementation and no symbolic estimator proposes estimates (constraints only veto), so two of the requirement's named kinds are absent; no full-cycle test shows the causal candidate in the fused set.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1805,7 +1809,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test now_brain the_graph_estimator && cargo +1.94.1 test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL."
+    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL. 2026-10-31 (L4): two mutants killed (CausalFilter always abstains; drop the mechanism sign), restored sha256-identical. Skeptic REFUTED and found the default registration would bias promoted beliefs; the filter was taken out of standard() in the follow-up commit. Stays PARTIAL."
   },
   {
     "id": "R12-AMBIENT-3079",
