@@ -9547,3 +9547,112 @@ fn every_capital_agent_plan_is_recorded_before_the_choice_and_only_narrows_the_a
     );
     Ok(())
 }
+
+#[test]
+fn competing_proposals_never_sum_past_the_grant() -> Result<()> {
+    // R12-CAPITAL-9047 (ADR 0230): liquidity, collateral and funding claims
+    // each sized against a cell's share, beside the plan's own allocation
+    // line, together ask for more than the share. Settled independently
+    // they over-commit it; the coordinator settles them in waterfall order
+    // and cuts from the bottom, so what is granted sums to the share and
+    // never past it, and the allocation line is the one cut.
+    use qip_capital::coordinator::{CapitalProposal, Claim, granted_total};
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    issue(&mut plane, &id, CELL, start())?;
+    let share = plane.allocate(0.0, start())?.for_cell(CELL);
+    assert!(
+        share.is_positive(),
+        "the premise: the plan allocates to the cell"
+    );
+    let membership =
+        qip_kernel::central::RegionMembership::parse(&format!("europe-west2={share}:{CELL}"))?;
+    // A quarter each, so the three claims fit the share exactly with room
+    // left and only the allocation line can overflow it; a third each would
+    // round past the share and cut a funding claim on rounding alone.
+    let quarter = |amount: Decimal| {
+        amount
+            .checked_div(Decimal::from(4_i64))
+            .expect("a quarter of a positive share")
+    };
+    let claims = vec![
+        CapitalProposal {
+            claim: Claim::Funding,
+            source: "funding-plan".to_string(),
+            amount: quarter(share),
+        },
+        CapitalProposal {
+            claim: Claim::Liquidity,
+            source: "liquidity-ladder".to_string(),
+            amount: quarter(share),
+        },
+        CapitalProposal {
+            claim: Claim::Collateral,
+            source: "collateral-graph".to_string(),
+            amount: quarter(share),
+        },
+    ];
+    let asked = claims.iter().fold(share, |sum, claim| sum + claim.amount);
+    assert!(
+        asked > share,
+        "the premise: the claims and the allocation line together ask for {asked}, past the \
+         share of {share}"
+    );
+    plane.set_coordinator_claims(BTreeMap::from([(CELL.to_string(), claims)]))?;
+
+    let manifests = plane.grant_manifests([CELL], &membership, 0.0, start());
+    assert!(
+        matches!(
+            manifests.for_cell(CELL),
+            Some(qip_kernel::central::ManifestDecision::Ship(_))
+        ),
+        "the premise: the cell was shipped its share"
+    );
+    let settled = match plane.coordination().get(CELL) {
+        Some(Ok(settled)) => settled.clone(),
+        other => panic!("the cell's claims were not settled: {other:?}"),
+    };
+    assert_eq!(settled.len(), 4, "every claim is settled, none dropped");
+    let granted = granted_total(&settled);
+    assert!(
+        granted <= share,
+        "the coordinator granted {granted} against a share of {share}"
+    );
+    let order: Vec<Claim> = settled.iter().map(|line| line.proposal.claim).collect();
+    assert_eq!(
+        order,
+        [
+            Claim::Liquidity,
+            Claim::Collateral,
+            Claim::Funding,
+            Claim::Allocation
+        ],
+        "claims are settled in the survival waterfall's order"
+    );
+    for line in &settled[..3] {
+        assert!(
+            !line.cut(),
+            "{} was cut ahead of the allocation line",
+            line.proposal.source
+        );
+    }
+    assert!(
+        settled[3].cut(),
+        "the allocation line, last in the waterfall, is the one cut"
+    );
+
+    // A cell the partition withheld has no share, so every claim on it is
+    // cut to nothing rather than paid from a share it was not given.
+    let short = qip_kernel::central::RegionMembership::parse(&format!(
+        "europe-west2={}:{CELL}",
+        share - Decimal::ONE
+    ))?;
+    plane.grant_manifests([CELL], &short, 0.0, start());
+    match plane.coordination().get(CELL) {
+        Some(Ok(settled)) => assert_eq!(granted_total(settled), Decimal::ZERO),
+        other => panic!("the withheld cell's claims were not settled: {other:?}"),
+    }
+    Ok(())
+}

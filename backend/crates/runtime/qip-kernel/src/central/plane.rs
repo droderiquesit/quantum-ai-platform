@@ -26,7 +26,7 @@ use super::factory::StrategyFactory;
 use super::horizon::{HorizonArming, HorizonPolicy, PoolReconciler, UnarmedHorizons};
 use super::learning::CellOutcome;
 use super::realised::{RealisedCalendar, RealisedSeries};
-use super::regions::{GrantManifests, RegionMembership, RegionShares, partition};
+use super::regions::{GrantManifests, ManifestDecision, RegionMembership, RegionShares, partition};
 use super::whitelist::{ArbitragePolicy, WhitelistIssue, WhitelistOutcome};
 use crate::venue_review::{FeasibilityRefusal, FeasibilitySeam, RefusalStanding};
 use qip_capital::allocation::{
@@ -798,6 +798,15 @@ pub struct CentralPlane {
     /// acted on was chosen. Behind a mutex because `allocate` is a read of
     /// the plane: recording what it was told is not a change to its state.
     society: std::sync::Mutex<Vec<qip_capital::society::CapitalPlan>>,
+    /// The liquidity, collateral and funding claims on each cell's grant the
+    /// coordinator settles beside the plan's allocation lines
+    /// (R12-CAPITAL-9047, ADR 0230). Empty until a caller hands them over;
+    /// an empty set leaves the allocation lines alone.
+    coordinator_claims: BTreeMap<String, Vec<qip_capital::coordinator::CapitalProposal>>,
+    /// Every cell's settlement from the last manifest decision, in cell
+    /// order, or why that cell's claims could not be settled.
+    coordination:
+        BTreeMap<String, std::result::Result<Vec<qip_capital::coordinator::Settled>, String>>,
     issuer: EnvelopeIssuer,
     compliance: CompliancePlane,
     /// Kept alongside the compliance plane's copy so a DNA can be sealed
@@ -1051,6 +1060,8 @@ impl CentralPlane {
             allocator: CapitalAllocator::new(limits, config.drawdown.clone()),
             society_inputs: qip_capital::society::SocietyInputs::default(),
             society: std::sync::Mutex::new(Vec::new()),
+            coordinator_claims: BTreeMap::new(),
+            coordination: BTreeMap::new(),
             issuer: EnvelopeIssuer::new(signing_secret.to_vec(), CENTRAL_KEY_ID)?,
             compliance: CompliancePlane::new(
                 key.clone(),
@@ -1892,6 +1903,92 @@ impl CentralPlane {
         self.society_inputs = inputs;
     }
 
+    /// The non-allocation claims the coordinator settles from the next
+    /// manifest decision on, keyed by cell. Allocation is not accepted here:
+    /// the plan's own lines are the allocation claims, and a second source
+    /// for them would be two figures for one fact. A negative claim is
+    /// refused here rather than at settlement, so a bad figure never
+    /// replaces a good set.
+    pub fn set_coordinator_claims(
+        &mut self,
+        claims: BTreeMap<String, Vec<qip_capital::coordinator::CapitalProposal>>,
+    ) -> Result<()> {
+        for (cell, proposals) in &claims {
+            for proposal in proposals {
+                if proposal.claim == qip_capital::coordinator::Claim::Allocation {
+                    return Err(Error::invalid(format!(
+                        "an allocation claim from {} was handed to the coordinator for {cell}; \
+                         the plan's lines are the allocation claims, so hand over liquidity, \
+                         collateral or funding claims only",
+                        proposal.source
+                    )));
+                }
+                if proposal.amount.is_negative() {
+                    return Err(Error::invalid(format!(
+                        "the {} claim from {} on {cell} is {}; a claim is zero or more",
+                        proposal.claim.as_str(),
+                        proposal.source,
+                        proposal.amount
+                    )));
+                }
+            }
+        }
+        self.coordinator_claims = claims;
+        Ok(())
+    }
+
+    /// Every cell's settlement from the last manifest decision.
+    pub fn coordination(
+        &self,
+    ) -> &BTreeMap<String, std::result::Result<Vec<qip_capital::coordinator::Settled>, String>>
+    {
+        &self.coordination
+    }
+
+    /// Settle each decided cell's claims against its share (ADR 0230): the
+    /// coordinator's claims for the cell, then the plan's allocation lines
+    /// for it, in waterfall order. A withheld cell settles against zero, so
+    /// every claim on it is cut: a cell with no share has nothing to pay
+    /// anything from.
+    fn coordinate(
+        &self,
+        manifests: &GrantManifests,
+        plan: Option<&AllocationPlan>,
+    ) -> BTreeMap<String, std::result::Result<Vec<qip_capital::coordinator::Settled>, String>> {
+        use qip_capital::coordinator::{CapitalProposal, Claim, settle};
+        manifests
+            .decisions()
+            .iter()
+            .map(|(cell, decision)| {
+                let grant = match decision {
+                    ManifestDecision::Ship(share) => share.amount(),
+                    ManifestDecision::Withhold(_) => Decimal::ZERO,
+                };
+                let mut proposals = self
+                    .coordinator_claims
+                    .get(cell)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(plan) = plan {
+                    proposals.extend(
+                        plan.allocations
+                            .iter()
+                            .filter(|line| &line.cell == cell)
+                            .map(|line| CapitalProposal {
+                                claim: Claim::Allocation,
+                                source: line.strategy.as_str().to_string(),
+                                amount: line.notional,
+                            }),
+                    );
+                }
+                (
+                    cell.clone(),
+                    settle(grant, proposals).map_err(|refusal| refusal.message().to_string()),
+                )
+            })
+            .collect()
+    }
+
     /// Every agent's plan for the last allocation, in the order recorded.
     pub fn society(&self) -> Vec<qip_capital::society::CapitalPlan> {
         self.society
@@ -2144,10 +2241,18 @@ impl CentralPlane {
         drawdown: f64,
         now: Timestamp,
     ) -> GrantManifests {
-        let partitioned = self
-            .allocate(drawdown, now)
-            .and_then(|plan| self.region_shares(&plan, membership, now));
-        GrantManifests::decide(cells, partitioned)
+        let (plan, partitioned) = match self.allocate(drawdown, now) {
+            Ok(plan) => {
+                let partitioned = self.region_shares(&plan, membership, now);
+                (Some(plan), partitioned)
+            }
+            Err(refusal) => (None, Err(refusal)),
+        };
+        let manifests = GrantManifests::decide(cells, partitioned);
+        // The coordinator settles against the manifests just decided, so the
+        // grant it reads is the share that ships, never a second reading.
+        self.coordination = self.coordinate(&manifests, plan.as_ref());
+        manifests
     }
 
     /// Issue a grant.
