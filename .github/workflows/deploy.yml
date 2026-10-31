@@ -115,7 +115,7 @@ jobs:
       # are `scripts/agent-policy.json`, checked out from the default branch
       # so the commit being deployed cannot loosen the rule it is judged by.
       - name: no development agent starts this workflow
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .agent-guard
@@ -445,12 +445,12 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -467,12 +467,12 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -545,7 +545,7 @@ jobs:
             dockerfile: infrastructure/docker/portal.Dockerfile
             context: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
@@ -694,12 +694,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           install_components: beta
 
@@ -1010,7 +1010,7 @@ jobs:
       # be compared off the runner with tools the runner does not have.
       - name: keep both builds when they differ
         if: failure() && steps.reproducibility.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: reproducibility-${{ matrix.binary }}-${{ env.DEPLOY_SHA }}
           path: ${{ runner.temp }}/reproducibility
@@ -1163,7 +1163,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
@@ -1255,12 +1255,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ steps.identity.outputs.provider }}
           service_account: ${{ steps.identity.outputs.account }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
 
       # The catalogue's workloads, by the names catalogue.tf gives them, and
       # the binary each runs. Read out of the committed catalogue rather than

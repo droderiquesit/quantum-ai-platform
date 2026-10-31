@@ -4086,13 +4086,20 @@ fn the_gcloud_beta_component_is_installed_because_the_iap_gates_update_fallback_
         .iter()
         .filter(|step| {
             step.lines()
-                .any(|line| line.trim() == "- uses: google-github-actions/setup-gcloud@v2")
+                // The ref is a pinned SHA (action_pins.rs holds that); the
+                // tag comment still names the major version, so a downgrade
+                // fails.
+                .any(|line| {
+                    let line = line.trim();
+                    line.starts_with("- uses: google-github-actions/setup-gcloud@")
+                        && line.ends_with("# v2")
+                })
         })
         .collect();
     assert_eq!(
         setup.len(),
         1,
-        "infra.yml has {} setup-gcloud@v2 step(s); one, or the install list below is \
+        "infra.yml has {} setup-gcloud step(s); one, or the install list below is \
          ambiguous",
         setup.len()
     );
