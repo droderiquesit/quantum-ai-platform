@@ -125,11 +125,66 @@ fn a_link_the_twin_cannot_carry_honestly_is_refused_and_a_cycle_stays_bounded() 
         Vec::new(),
     )?;
     let response = cycle.shock_entity("A", -0.1, 8)?;
+    // The fixed point: A = -0.1 + 0.5 B and B = 0.5 A, so A = -0.1 / 0.75.
     let a = response.effects["A"].change;
-    assert!(a.is_finite() && a.abs() <= 0.2, "a cycle amplified: {a}");
+    let b = response.effects["B"].change;
+    assert!(
+        (a - -0.1 / 0.75).abs() < 1e-3,
+        "A did not reach its fixed point: {a}"
+    );
+    assert!(
+        (b - -0.05 / 0.75).abs() < 1e-3,
+        "B did not reach its fixed point: {b}"
+    );
     assert!(
         cycle.shock_entity("A", -0.1, 9).is_err(),
         "the hop cap was not held"
+    );
+    assert!(
+        cycle.shock_entity("A", -0.1, 0).is_err(),
+        "a shock carried nowhere was accepted"
+    );
+    Ok(())
+}
+
+/// An output cannot fall by more than all of itself, and a linear twin that
+/// reported -150% would be read as a real loss. A shock below -100%, a
+/// macro move whose elasticity lands one there, and a full-share cycle that
+/// grows past it are each refused. `truncated` says whether effects were
+/// still moving at the cap: a chain exactly as deep as the cap has
+/// converged, and one deeper has not.
+///
+/// Mutations: drop the per-round check on a change past -100% (it also
+/// holds a seeded change, since every seeded entity is in each round); read
+/// `truncated` as true whenever the cap was reached.
+#[test]
+fn a_change_past_all_of_an_output_is_refused_and_truncated_says_whether_effects_still_moved()
+-> Result<()> {
+    let twin = chain()?;
+    assert!(
+        twin.shock_entity("FOUNDRY", -1.5, 4).is_err(),
+        "-150% was accepted"
+    );
+    assert!(
+        twin.shock_macro("rates", 0.6, 4).is_err(),
+        "-120% from an elasticity was accepted"
+    );
+    let full = BusinessTwin::new(
+        vec![supplies("A", "B", 1.0), supplies("B", "A", 1.0)],
+        Vec::new(),
+    )?;
+    assert!(
+        full.shock_entity("A", -0.5, 8).is_err(),
+        "a full-share cycle grew past -100% and was reported"
+    );
+    // FOUNDRY -> CHIPS -> DEVICES is two hops deep.
+    assert!(
+        !twin.shock_entity("FOUNDRY", -0.1, 2)?.truncated,
+        "a converged chain read truncated"
+    );
+    assert!(
+        twin.shock_entity("FOUNDRY", -0.1, 1)?.truncated,
+        "a cut chain read complete"
     );
     Ok(())
 }

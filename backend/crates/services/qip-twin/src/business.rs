@@ -26,8 +26,11 @@
 //! taking 40% of its input from a supplier that loses 10% of its output
 //! loses 4%. Effects are computed as a bounded fixed point over at most
 //! `max_hops` rounds, so a cycle in the network cannot run unbounded.
-//! Because a customer's shares are refused if they sum to more than one,
-//! each round attenuates rather than amplifies. The arithmetic is
+//! A customer's shares are refused if they sum to more than one, so a chain
+//! whose shares sum to less than one attenuates; a cycle whose shares reach
+//! one does not, and grows round by round until the cap. An output cannot
+//! fall by more than all of itself, so a shock or a carried change below
+//! -100% is refused rather than reported. The arithmetic is
 //! statistics over fractions; no money amount crosses here.
 //!
 //! Everything is deterministic: the same links and shock give the same
@@ -244,11 +247,18 @@ impl BusinessTwin {
                 "a shock of {change} to {origin} is not a number"
             )));
         }
-        if max_hops > MAX_TWIN_HOPS {
+        if max_hops == 0 || max_hops > MAX_TWIN_HOPS {
             return Err(Error::invalid(format!(
-                "a shock carried {max_hops} hops is more than the twin's cap of {MAX_TWIN_HOPS}"
+                "a shock is carried between 1 and {MAX_TWIN_HOPS} hops, not {max_hops}"
             )));
         }
+        let below_all = |entity: &str, delta: f64| {
+            Error::invalid(format!(
+                "the shock to {origin} would take {entity}'s output down by {:.1}%, more than \
+                 all of it; the twin is linear and cannot carry a change that large",
+                -delta * 100.0
+            ))
+        };
         let floor = EFFECT_FLOOR * change.abs();
         let mut effects: BTreeMap<String, EntityEffect> = seed
             .iter()
@@ -264,7 +274,9 @@ impl BusinessTwin {
             })
             .collect();
         let mut truncated = false;
-        for round in 1..=max_hops {
+        // One round past the cap only measures whether effects were still
+        // moving; its result is not kept.
+        for round in 1..=max_hops + 1 {
             let mut next: BTreeMap<String, EntityEffect> = BTreeMap::new();
             for (customer, links) in &self.supply {
                 let mut delta = seed.get(customer).map_or(0.0, |(d, _)| *d);
@@ -303,11 +315,17 @@ impl BusinessTwin {
                         .get(entity)
                         .is_none_or(|old| (old.change - effect.change).abs() > floor)
                 });
+            if round > max_hops {
+                truncated = moved;
+                break;
+            }
+            if let Some((entity, effect)) = next.iter().find(|(_, e)| e.change < -1.0) {
+                return Err(below_all(entity, effect.change));
+            }
             effects = next;
             if !moved {
                 break;
             }
-            truncated = round == max_hops;
         }
         Ok(TwinResponse {
             origin: origin.to_string(),

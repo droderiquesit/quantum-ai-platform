@@ -14956,11 +14956,6 @@ impl Platform {
             .collect()
     }
 
-    /// Each instrument's issuer's latest fundamental surprise readable at
-    /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
-    /// newest by availability per entity, carried to every instrument the
-    /// entity issues in the knowledge graph. An instrument whose issuer is not
-    /// in the graph, or has reported no surprise, is absent.
     /// A company twin over the supply relationships the world graph holds as
     /// true and known at `now` (R12-WORLD-9037). Each `Supplies` fact
     /// becomes a supply link whose share is the fact's weight (the graph's
@@ -15004,11 +14999,23 @@ impl Platform {
             );
         }
         qip_twin::business::BusinessTwin::new(
-            latest.into_values().map(|(_, link)| link).collect(),
+            latest
+                .into_values()
+                .map(|(_, link)| link)
+                // A supply stated at a weight of nothing carries nothing; the
+                // graph admits it, and the twin, which refuses a zero share,
+                // would otherwise refuse every other link with it.
+                .filter(|link| link.share > 0.0)
+                .collect(),
             Vec::new(),
         )
     }
 
+    /// Each instrument's issuer's latest fundamental surprise readable at
+    /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
+    /// newest by availability per entity, carried to every instrument the
+    /// entity issues in the knowledge graph. An instrument whose issuer is not
+    /// in the graph, or has reported no surprise, is absent.
     fn fundamental_surprises(&self, now: Timestamp) -> BTreeMap<String, f64> {
         use qip_world_model::relationship::RelationshipKind;
         let world = self.world.read();
@@ -29064,8 +29071,11 @@ mod decide_tests {
     /// reaches the companies it supplies, at each customer's share, and a
     /// supply fact not yet known is not in the twin.
     ///
-    /// Mutation: build the twin from no facts (or from every relationship
-    /// kind) in `business_twin`.
+    /// A supply stated at a weight of nothing carries nothing and is left
+    /// out, rather than making the twin refuse every other link with it.
+    ///
+    /// Mutations: build the twin from no facts, from every relationship
+    /// kind, or from facts not yet known; keep the zero-weight supply.
     #[test]
     fn the_platforms_company_twin_carries_a_suppliers_shock_to_its_customers_from_the_graph() {
         use qip_world_model::relationship::{Relationship, RelationshipKind};
@@ -29084,6 +29094,8 @@ mod decide_tests {
                     0.9,
                     later,
                 ),
+                // A supply the graph admits at a weight of nothing.
+                ("FARM", "DEVICES", RelationshipKind::Supplies, 0.0, t0),
             ] {
                 world
                     .relate(
