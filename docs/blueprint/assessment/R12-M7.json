@@ -3580,7 +3580,7 @@
       "backend/crates/libs/qip-agents/src/memory.rs:371 ResearchMemory::record_procedure",
       "backend/crates/libs/qip-agents/tests/memory.rs:119 a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
     ],
-    "gap": "The procedural store exists and nothing on a running path distils a procedure into it: no caller of ResearchMemory::record_procedure outside tests, so the Platform's desk memory holds none. No acceptance suite proves the composite.",
+    "gap": "2026-10-31 (lane L5-EDGE, correcting a stale gap): procedural memory is now distilled on the default path — Platform::write_research_memory calls distil_procedure (R12-WORLD-3034, ad473767), recording an analyst's procedure once MINIMUM_PROCEDURE_SUPPORT of its calls resolved correct. What remains is the row's own check: every constituent obligation (world model, causal graph, episodic, semantic and procedural memory, counterfactuals, self-model) COMPLETE and one acceptance suite proving the composite; neither holds, and a composite suite over PARTIAL constituents would assert nothing the rows do not.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3591,7 +3591,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-10-18 lane L23: mutations fired - recording on one correct episode admitted the two-episode procedure; counting a resolved wrong episode as support admitted it."
+    "notes": "2026-10-18 lane L23: mutations fired - recording on one correct episode admitted the two-episode procedure; counting a resolved wrong episode as support admitted it. 2026-10-31 lane L5-EDGE: re-read after the merge of 21c3e050; the distillation the earlier gap said was missing landed under R12-WORLD-3034. No code changed for this row; ADR 0201, claimed for it, is withdrawn unused."
   },
   {
     "id": "R12-COVERAGE-7154",
