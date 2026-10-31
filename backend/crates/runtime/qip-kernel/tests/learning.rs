@@ -2693,6 +2693,47 @@ fn a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_
     Ok(())
 }
 
+// --- the fill's participation reaches the twin's calibration (R12-TICK-2080)
+
+/// R12-TICK-2080: the LEARN stage hands the twin's calibration each scored
+/// fill's participation in its bar's volume beside the fill error, so the
+/// twin can tell an impact misfit from a spread misfit; without it every
+/// error was charged to the spread. Mutation: pass `None` for the
+/// participation in `score_filled` — the calibration counts no fill with a
+/// size and the assertion fails.
+#[test]
+fn a_scored_fill_reaches_the_twins_calibration_with_its_participation() -> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-participation", start())?;
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1, "premise: the fill was priced");
+    assert!(
+        scores[0].trade_error_bps.is_some(),
+        "premise: the twin priced an entry to compare the fill with"
+    );
+    let venue = platform
+        .fill_calibration()
+        .venue(&scores[0].venue)
+        .expect("the venue was calibrated from the fill");
+    assert_eq!(venue.observations, 1);
+    assert_eq!(
+        venue.participation_observations, 1,
+        "the fill reached the calibration without its participation"
+    );
+    Ok(())
+}
+
 // --- measured decision latency reaches the capacity probe (R12-TICK-2074) --
 
 /// The shortfall against the decision-time mark the SIMULATE stage's

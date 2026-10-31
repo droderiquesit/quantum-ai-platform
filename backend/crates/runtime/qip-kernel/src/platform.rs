@@ -25041,10 +25041,18 @@ impl Platform {
                             error_bps,
                             Histogram::signed_basis_points,
                         );
-                        if let Err(error) = self
-                            .fill_calibration
-                            .observe(path.venue.as_str(), error_bps)
-                        {
+                        // R12-TICK-2080: the fill's share of the bar it filled
+                        // in, so the calibration can split the error between
+                        // spread and impact. Unknown — no order on the desk, no
+                        // bar covering the fill, a bar with no volume — leaves
+                        // the spread to take the whole error, as before, rather
+                        // than a participation nobody measured.
+                        let participation = self.fill_participation(&order_id, &path);
+                        if let Err(error) = self.fill_calibration.observe_with_participation(
+                            path.venue.as_str(),
+                            error_bps,
+                            participation,
+                        ) {
                             problems.push(format!("fill calibration: {}", error.message()));
                         }
                     }
@@ -25330,6 +25338,44 @@ impl Platform {
         }
         stage.detail.push_str(&format!("; {}", refresh.describe()));
         self.tactical = Some(refresh);
+    }
+
+    /// The share of its bar's volume a scored fill took (R12-TICK-2080): the
+    /// quantity the desk's order filled, or the cell's reported fill
+    /// quantity, over the volume of the held bar whose session covers the
+    /// decision instant. `None` when any of the three is unknown, so the
+    /// calibration charges the error to the spread alone rather than to a
+    /// size nobody measured. Money to statistic at the one place it happens
+    /// for this path: a participation is a ratio of two quantities.
+    fn fill_participation(&self, order_id: &OrderId, path: &FilledPath) -> Option<f64> {
+        let quantity = match &path.cell {
+            Some(origin) => origin.quantity,
+            None => self
+                .orders
+                .order(order_id)?
+                .fills
+                .iter()
+                .try_fold(Decimal::ZERO, |sum, fill| sum.checked_add(fill.quantity))?,
+        };
+        if quantity <= Decimal::ZERO {
+            return None;
+        }
+        let bars = self.bar_history.get(path.object_id.as_str())?;
+        let bar = bars
+            .iter()
+            .find(|bar| bar.open_time <= path.decided_at && path.decided_at < bar.close_time())
+            .or_else(|| {
+                bars.iter()
+                    .rev()
+                    .find(|bar| bar.close_time() <= path.decided_at)
+            })?;
+        if bar.volume <= Decimal::ZERO {
+            return None;
+        }
+        let participation = quantity.to_f64() / bar.volume.to_f64();
+        (0.0..=1.0)
+            .contains(&participation)
+            .then_some(participation)
     }
 
     /// The twin's per-venue fill calibration, as the scored fills have moved

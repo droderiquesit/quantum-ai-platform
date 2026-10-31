@@ -1932,13 +1932,14 @@
   {
     "id": "R12-TICK-2080",
     "status": "PARTIAL",
-    "current": "FillCalibration moves a per-venue half-spread bias toward each observed fill error and the twin prices with the calibrated cost model; tested through the cycle.",
+    "current": "FillCalibration (qip-twin calibration.rs) now carries two parameters per venue: the half-spread bias and an impact slope. FillCalibration::observe_with_participation(venue, error_bps, Option<participation>) fits the slope as the exponentially weighted least-squares slope of the fill error on sqrt(participation) over the sized fills (SizeStatistics; held still below SIZE_VARIANCE_FLOOR, a root-participation standard deviation of five percent, so one-size fills cannot fit a size law), and the bias takes the exponentially weighted residual; cost_model moves impact_coefficient_bps by the slope beside half_spread_bps. The kernel's LEARN stage (Platform::score_filled, default path) passes each scored fill's participation from Platform::fill_participation: the desk order's filled quantity or the cell's reported quantity over the volume of the held bar covering the decision instant, None when unknown so the error is charged to the spread alone. Latency and queue models have no calibration input: the simulated venue does not time acknowledgements and the twin's CostModel has no queue term.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:884 the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:935 a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue",
-      "backend/crates/services/qip-twin/src/calibration.rs::FillCalibration"
+      "backend/crates/services/qip-twin/src/calibration.rs FillCalibration::observe_with_participation, SizeStatistics, SIZE_VARIANCE_FLOOR, cost_model (impact_coefficient_bps)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs score_filled (observe_with_participation call) and fill_participation (grep -n 'fill_participation\\|observe_with_participation' backend/crates/runtime/qip-kernel/src/platform.rs)",
+      "backend/crates/services/qip-twin/tests/futures.rs after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficient_moves_toward_the_observed_fills",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_scored_fill_reaches_the_twins_calibration_with_its_participation, the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue, a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue"
     ],
-    "gap": "Only the half-spread moves: Platform::score_filled (LEARN, default path) feeds FillCalibration::observe one aggregate signed fill error per fill, and FillCalibration::cost_model adjusts half_spread_bps alone. Impact cannot be separated from spread without the fill's participation reaching the calibration (the kernel does not pass it; an online two-parameter fit of error on participation would). Latency has no input at all: the simulated venue does not time acknowledgements (the LEARN stage says so), so there is no ack delay to calibrate against. Queue position is not modelled by the twin's CostModel.",
+    "gap": "2026-10-31 lane L3b: skeptic REFUTED on the COMPLETE bar: the error score_filled feeds is the twin's printed mark against the fill (realised slippage), not the twin's charged cost against reality's, so with a base near reality the fitted slope charges impact twice and the fit never closes on the simulator (the same flaw the half-spread already had); the slope is fitted in sqrt(quantity / one bar's volume) while the twin prices impact in sqrt(quantity / twenty-bar mean volume) scaled by volatility, so the units differ by (sigma/sigma_ref)*sqrt(bar_vol/mean_vol); the slope has no upper bound, and a correction past MAX_TRADE_COST_BPS leaves the venue Unpriceable with no further calibration; R12-RES-7104's misfit read uses bias_bps only, so a size-dependent misfit now hides in the slope; queue and latency models remain uncalibrated (no acknowledgement timing, no queue term). Remaining step: fit against the twin's own predicted cost in the twin's units, bound or refuse an unpriceable slope, read the slope in twin_misfit, and a kernel test converging the impact coefficient to the simulator's true value on the default tape.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1948,10 +1949,10 @@
       "R12-TICK-2047"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-twin --test futures; cargo test -p qip-kernel --test learning a_scored_fill_reaches",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/calibration.rs and the score_filled calibration site in qip-kernel/src/platform.rs; no code changed. Closing needs participation passed from score_filled (a platform.rs change in L01's file), a per-venue impact term in FillCalibration, and an acknowledgement-latency measurement from a venue that produces one."
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/calibration.rs and the score_filled calibration site in qip-kernel/src/platform.rs; no code changed. Closing needs participation passed from score_filled (a platform.rs change in L01's file), a per-venue impact term in FillCalibration, and an acknowledgement-latency measurement from a venue that produces one. 2026-10-31 lane L3b (wave580): participation passed from score_filled and a per-venue impact term landed; latency still has no input. Mutations fired, each restored by cp + cmp: slope never fitted (twin test: impact coefficient 40 -> 40); cost_model ignores the slope (same failure); kernel passes None (kernel test: participation_observations 0). First draft stepped the slope by a normalised gradient and needed about a thousand fills to reach a size law two fills can state; replaced by the weighted least-squares fit. First floor (1e-9) let one-share fills on bars of slightly different volume fit a slope of thousands of basis points and broke valuation_seam's sizing fixture; raised to a five-percent root-participation standard deviation with a one-size assertion in the twin test. Gates: cargo test -p qip-twin -p qip-kernel --no-fail-fast 73 binaries all ok; fmt and clippy -D warnings clean on both crates. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-TICK-2081",

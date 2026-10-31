@@ -340,3 +340,84 @@ fn a_scenario_world_yields_a_portfolio_outcome_distribution_whose_weights_sum_to
     );
     Ok(())
 }
+
+/// R12-TICK-2080: the twin's impact model is calibrated from the platform's
+/// own fills, not only its spread. Fills whose error grows with the square
+/// root of their participation — a purely size-dependent misfit, no bias —
+/// move the impact coefficient toward what the fills charged and leave the
+/// spread where it was; fills with no participation beside them move the
+/// spread alone, as before.
+///
+/// Mutation: make `observe_with_participation` ignore the participation and
+/// update the bias alone — the impact coefficient never moves and the first
+/// assertion fails.
+#[test]
+fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficient_moves_toward_the_observed_fills()
+-> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut calibration = FillCalibration::default();
+    // Reality charged 20 bps more impact per unit of sqrt(participation)
+    // than the twin priced, on fills of four sizes, forty times over.
+    let participations: [f64; 4] = [0.01, 0.04, 0.09, 0.16];
+    for round in 0..40 {
+        let participation = participations[round % participations.len()];
+        let error_bps = -20.0 * participation.sqrt();
+        calibration.observe_with_participation("XLON", error_bps, Some(participation))?;
+    }
+    let calibrated = calibration.cost_model(&base, "XLON");
+    assert!(
+        calibrated.impact_coefficient_bps > base.impact_coefficient_bps + 10.0,
+        "the impact coefficient did not move toward the observed fills: {} -> {}",
+        base.impact_coefficient_bps,
+        calibrated.impact_coefficient_bps
+    );
+    assert!(
+        (calibrated.half_spread_bps - base.half_spread_bps).abs() < 3.0,
+        "a size-dependent error was charged to the spread: {} -> {}",
+        base.half_spread_bps,
+        calibrated.half_spread_bps
+    );
+    let venue = calibration.venue("XLON").expect("calibrated");
+    assert_eq!(venue.participation_observations, 40);
+    assert_eq!(venue.observations, 40);
+
+    // Without participation the slope is untouched and the spread moves.
+    let mut blind = FillCalibration::default();
+    for _ in 0..20 {
+        blind.observe_with_participation("XLON", -12.0, None)?;
+    }
+    let venue = blind.venue("XLON").expect("calibrated");
+    assert_eq!(venue.impact_slope_bps, 0.0);
+    assert_eq!(venue.participation_observations, 0);
+    assert!(blind.cost_model(&base, "XLON").half_spread_bps > base.half_spread_bps + 10.0);
+
+    assert!(
+        calibration
+            .observe_with_participation("XLON", -1.0, Some(1.5))
+            .is_err(),
+        "a fill that took more than the bar traded is refused"
+    );
+
+    // Fills that are one size for the twin's purposes — a share against bars
+    // of slightly different volume — carry no size law however wild their
+    // errors, and the slope holds still while the spread takes them. Before
+    // the identifiability floor two such fills fitted a slope of thousands of
+    // basis points per unit root and the twin's impact term left the earth.
+    let mut one_size = FillCalibration::default();
+    one_size.observe_with_participation("XLON", -30.0, Some(1.0e-6))?;
+    one_size.observe_with_participation("XLON", 25.0, Some(2.0e-6))?;
+    one_size.observe_with_participation("XLON", -40.0, Some(1.5e-6))?;
+    let venue = one_size.venue("XLON").expect("calibrated");
+    assert_eq!(venue.participation_observations, 3);
+    assert_eq!(
+        venue.impact_slope_bps, 0.0,
+        "fills of one size fitted a size law: {}",
+        venue.impact_slope_bps
+    );
+    assert!(
+        (one_size.cost_model(&base, "XLON").impact_coefficient_bps - base.impact_coefficient_bps)
+            .abs()
+            < 1e-12
+    );
+    Ok(())
+}
