@@ -1348,24 +1348,26 @@
   {
     "id": "R12-GCP-8060",
     "status": "PARTIAL",
-    "current": "Restricted-VIP private DNS zones on the networks; subnets set private_ip_google_access; PSC endpoint for Google APIs exists but gated off.",
+    "current": "Private Google Access is the private route (owner ruling 2026-10-31): every subnet sets private_ip_google_access, and every googleapis.com zone (the shared VPC's, the Data VPC's and the Engineering VPC's) sends *.googleapis.com to restricted.googleapis.com at the restricted VIP 199.36.153.4/30, the one range the egress firewalls admit. The PSC endpoint for Google APIs exists and stays gated off.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:213-241 restricted VIP zone",
-      "infrastructure/terraform/modules/execution-node/main.tf:122 subnet",
-      "infrastructure/terraform/modules/connectivity/main.tf:133-149 PSC google_apis"
+      "infrastructure/terraform/modules/network/main.tf google_dns_record_set.restricted_vip, data_restricted_vip, engineering_restricted_vip and the three *_googleapis_wildcard records",
+      "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl::every_googleapis_zone_resolves_to_the_restricted_vip",
+      "infrastructure/terraform/modules/trust-zones/tests/zone-model.tftest.hcl::every_zone_subnet_has_private_google_access",
+      "infrastructure/terraform/modules/execution-node/main.tf google_compute_subnetwork.node",
+      "infrastructure/terraform/modules/connectivity/main.tf PSC google_apis (gated off)"
     ],
-    "gap": "Enable PSC; prove archiver/fabric reach GCS privately once wired.",
+    "gap": "2026-10-31 lane L6-platform, regraded under the owner's ruling: the PSC endpoint is needed only once an interconnect exists (decision 4 declined the hubs), so 'Enable PSC' is no longer a gap. What remains: no dev plan has been recorded showing every subnet with private_ip_google_access and the googleapis zones resolving to restricted.googleapis.com. Billing is paused and no lane may plan against a real project, so the owner dispatches infra.yml (action plan, environment dev) or drift.yml for dev and the row cites that run. Archiver and fabric GCS calls reaching 199.36.153.4/30 are proven only once those are wired and deployed. Previous gap: Enable PSC; prove archiver/fabric reach GCS privately once wired.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "terraform test in modules/network and modules/trust-zones (mocked provider, scratch copy); then an owner-dispatched dev plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-31 lane L6-platform: fixed a defect found while asserting the route. The Data and Engineering VPC zones answered restricted.googleapis.com with 199.36.153.8-11, the private VIP, which no egress firewall admits, so a workload there would have resolved Google APIs to addresses it could not reach. They now answer 199.36.153.4-7. Mutation-verified in a scratch copy: putting the Data record back on the private VIP fails every_googleapis_zone_resolves_to_the_restricted_vip; pointing a wildcard at private.googleapis.com fails it; setting private_ip_google_access = false on the zone subnet fails every_zone_subnet_has_private_google_access. Status unchanged: PARTIAL."
   },
   {
     "id": "R12-GCP-8061",
