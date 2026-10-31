@@ -52,21 +52,25 @@ in the platform with a risk argument behind its figure.
    refused, never clamped. A grouping that names a name in no thesis, or a
    cap on a group with no member, is refused rather than ignored, as a
    sizing cap on an absent name already is.
-4. **No figure is invented.** The kernel's DECIDE stage groups the
-   asset-class dimension, from the universe's own asset classes, with every
-   class capped at the mandate's gross target, which narrows nothing. A class
-   or region budget below that is a risk number and lands only with its own
-   risk record. Strategy, region and horizon are not keys an
-   `ApprovedThesis` carries today, so the kernel cannot group them yet; the
-   constructor accepts them when it can.
+4. **No figure is invented, and no placeholder group is passed.** No
+   class, region, strategy or horizon budget has a risk record, so the
+   kernel's DECIDE stage passes no group and calls the constructor exactly
+   as before. A class cap at the gross target was tried and is not inert:
+   on the fast-brain tape the extra row, which cannot bind, turned the
+   solver's "no feasible solution found" into "solved classically" for a
+   single thesis, so a row that sizes nothing still changed what the
+   default path records. A budget is passed through `construct_grouped`
+   only with its own risk record. Strategy, region and horizon are also not
+   keys an `ApprovedThesis` carries today, so the kernel could not group
+   them yet in any case.
 
 ## Consequences
 
 - One run, one budget: a joint cap cannot be breached by two sleeves each
   inside their own. A set of caps that cannot hold together stops the
   cycle's proposal, and the refusal names the group and what it held.
-- On every path today the plan is the plan it was, because no cap below the
-  gross target is on record.
+- On every path today the plan is the plan it was, because the kernel
+  passes no group.
 - A group bounds the *net* summed weight of its names. Under a long-only
   mandate that is the gross; under a mandate that allows shorts, a long and
   a short in one group offset. A gross group cap needs split long and short
@@ -75,8 +79,9 @@ in the platform with a risk argument behind its figure.
 ## What it costs
 
 - One linear constraint per capped group in the problem the router solves.
-- A reader must know that a class cap at the gross target is a placeholder
-  that binds nothing, and that the constraint's presence is not a budget.
+- The capability is in the constructor and not yet on a default path; the
+  requirement is not met in a shipped binary until a budget with a record
+  is passed.
 
 ## What would make this wrong
 
