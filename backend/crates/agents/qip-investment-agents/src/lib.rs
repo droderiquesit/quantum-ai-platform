@@ -27,6 +27,7 @@ pub mod fast;
 pub mod learning;
 pub mod manifests;
 pub mod poisoning;
+pub mod portfolio_brain;
 pub mod reasoning;
 pub mod review;
 pub mod simulation;

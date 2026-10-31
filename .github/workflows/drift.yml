@@ -1,0 +1,153 @@
+# Drift: does dev still match the configuration on main? (R12-CICD-8032,
+# R12-GCP-9086.)
+#
+# Nothing compared the two before this. infra.yml plans only when a person
+# dispatches it, so a change made by hand in the console, by a Config
+# Connector reconcile or by a workflow that died half way stays invisible
+# until the next person-dispatched plan, and that person reads it as their
+# own change. Security Command Center custom modules would find some of it,
+# but they need the organisation on SCC Premium, which is paid, and owner
+# decision 5 of 2026-10-25 declined new billed infrastructure.
+#
+# Once a day, and on demand, this plans dev with `-detailed-exitcode` and
+# fails on exit 2. A failed scheduled run emails whoever GitHub notifies for
+# this workflow, which is the alert. "Drift" here means "dev differs from
+# main", and a commit merged but not yet applied is that too: the failure
+# names the plan, and reading it says which.
+#
+# What it never does, by construction:
+#   * Change anything. `plan` only, `-lock=false` so it cannot hold the state
+#     lock infra.yml needs, no `-out` file, no apply, import, state or
+#     destroy subcommand. It grants nothing to itself; infra.yml's self-grant
+#     step is not copied here. If a grant is missing the plan 403s, and that
+#     failure is a finding too.
+#   * Plan an environment it was not told to. The environment is the literal
+#     `dev` below, not an input. test, stage and prod are `unprovisioned`, and
+#     prod is never touched from a workflow.
+#   * Run for an agent. The same guard as infra.yml refuses an agent actor,
+#     and this file is listed in scripts/agent-policy.json's
+#     `dispatch_refused_for_agents`. A scheduled run's actor is whoever last
+#     edited the cron, so an agent-authored schedule cannot start it either.
+#
+# It authenticates as qip-infra-dev, the identity infra.yml plans with. A
+# narrower plan-only identity is R12-CICD-9103's.
+name: drift
+
+on:
+  schedule:
+    # 07:23 UTC daily, off the hour so it does not queue behind every other
+    # repository's midnight and top-of-hour cron.
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # infra.yml's group for dev, so a drift plan waits for an apply to finish
+  # rather than reading state mid-apply, and never cancels one.
+  group: infra-dev
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: drift plan dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: dev
+    steps:
+      - name: no development agent starts this workflow
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .agent-guard
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: refuse an agent actor
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          for who in "$ACTOR" "$TRIGGERING_ACTOR"; do
+            node .agent-guard/scripts/agent-guard.mjs dispatch \
+              --policy .agent-guard/scripts/agent-policy.json \
+              --actor "$who" --workflow drift.yml
+          done
+          rm -rf .agent-guard
+
+      - uses: actions/checkout@v4
+
+      # The identity is derived from the committed tfvars, as infra.yml
+      # derives it and for the same reason: a repository variable set from a
+      # broken shell once carried an apt advisory into the audience.
+      - name: derive the identity from the tfvars
+        id: identity
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          [ -n "$project" ] && [ -n "$number" ] && [ "$number" != "0" ] || {
+            echo "$tfvars carries no usable project_id/project_number; nothing to plan." >&2
+            exit 1
+          }
+          case "$project" in
+            unprovisioned|*[!a-z0-9-]*)
+              echo "$tfvars names '$project', which is unprovisioned or not a project id; nothing to plan." >&2
+              exit 1
+              ;;
+          esac
+          {
+            echo "project=$project"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${ENVIRONMENT}/providers/github"
+            echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          # The wrapper rewrites how the exit status reaches the shell, and
+          # this job's whole verdict is that status.
+          terraform_wrapper: false
+
+      - name: terraform init
+        env:
+          PROJECT: ${{ steps.identity.outputs.project }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=infrastructure/terraform init -input=false \
+            -backend-config="bucket=${PROJECT}-qip-tfstate"
+
+      # 0: dev matches main. 2: it does not, and this run fails so somebody
+      # is told. Anything else: the plan itself failed, which is a failure
+      # too, because a drift check that cannot plan is not checking.
+      - name: plan, and fail on drift
+        run: |
+          set -uo pipefail
+          terraform -chdir=infrastructure/terraform plan -input=false \
+            -lock=false -detailed-exitcode \
+            -var-file="../environments/${ENVIRONMENT}/terraform.tfvars"
+          status=$?
+          case "$status" in
+            0)
+              echo "no drift: ${ENVIRONMENT} matches the configuration on this commit."
+              ;;
+            2)
+              echo "::error title=drift in ${ENVIRONMENT}::the plan above is non-empty: ${ENVIRONMENT} differs from this commit's configuration. Read it, then either apply through infra.yml or revert the change that was made by hand."
+              exit 1
+              ;;
+            *)
+              echo "::error title=drift check failed::terraform plan exited ${status}; the check did not complete, so drift is unknown."
+              exit 1
+              ;;
+          esac

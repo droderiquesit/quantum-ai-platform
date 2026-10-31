@@ -56,6 +56,7 @@ pub mod attestation;
 pub mod brains;
 pub mod breadth;
 pub mod campaign;
+pub mod cognition;
 pub mod config;
 pub mod connectors;
 pub mod discovery;
