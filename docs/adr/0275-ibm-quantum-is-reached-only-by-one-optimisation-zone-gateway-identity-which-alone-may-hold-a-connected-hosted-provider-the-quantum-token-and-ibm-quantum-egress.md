@@ -58,6 +58,13 @@ IBM, and what refuses a second one.
    in-tree simulator. When the gateway workload exists, the deep brain's
    provider becomes a client of that workload, never a connected
    `HostedProvider` of its own.
+
+   "No route" is the zone's, not the sidecar's. The deep brain's egress
+   sidecar does declare IBM listeners (`catalogue.tf`'s `deepbrain` block,
+   and `infrastructure/egress/envoy.yaml`), and the IBM hosts are in the
+   allowed-host list in `variables.tf`. What stops them is that
+   `cognition` holds no external-egress entry, so those listeners reach
+   nothing (`modules/trust-zones/NOT-ENFORCED-HERE.md`).
 3. **The second caller is refused by a guard built now.**
    `qip-acceptance`'s `arch_033_quantum_path` test
    `only_the_optimisation_zone_gateway_identity_may_build_a_connected_hosted_provider_or_mount_the_quantum_token`
@@ -90,6 +97,16 @@ IBM, and what refuses a second one.
   workload blocks by their layout, so a reformatting of that file can make
   the guard refuse to run. It fails closed in that case: its premises
   assert it found the known workloads before it judges anything.
+- A guard that reads text, so it can be evaded on purpose. It matches only
+  a literal `HostedProvider::connected(` and a literal
+  `secret_ids["qip-quantum-token"]` in `catalogue.tf`. An alias, a function
+  pointer, a public factory inside `qip-quantum` that wraps `connected`, a
+  mount named through a variable, or a GitOps-only volume all pass it. It
+  catches the change made in good faith, not one made to get past it, and
+  review still has to catch the second kind.
+- Egress by zone, not by identity. Any binary placed in `optimisation`
+  gets IBM egress and passes the guard. Nothing yet makes that zone hold
+  exactly one gateway.
 
 ## What would make this wrong
 
