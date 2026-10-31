@@ -32,7 +32,7 @@
       "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {} (same in stage:49, test:49, prod:51)",
       "docs/adr/0211-the-execution-planes-c3-class-is-the-c4-and-c4d-high-cpu-shapes-and-every-other-family-is-refused-at-plan.md"
     ],
-    "gap": "No node is declared in any environment (execution_nodes = {} in stage/test/prod; dev declares newyork-1 with execution_nodes_enabled = false) and there is no plan showing a node rendered. Needs infrastructure/environments/** and execution-nodes-enabled.tf, both protected, and a real plan.",
+    "gap": "2026-10-31 (lane L6): prerequisite now named. execution_nodes_enabled = true is refused at plan unless artefact_trust_bundle_file, google_tls_roots_file and certificate_authority are all set (execution-nodes-enabled.tf). google_tls_roots_file's file now exists (infrastructure/trust/google-roots.pem, GTS Root R1/R3/R4, pinned by qip-tls's the_committed_google_roots_are_the_pinned_gts_roots_and_build_a_client); the trust bundle needs the owner's billed artefact_signing apply and a rendered infrastructure/trust/dev.json; the CA pool is certificate_authority applied (billed). The dev tfvars lines are docs/blueprint/lanes/l6-node-prereqs-protected.patch; the order is in docs/ops/runbooks/owner-switches.md. Earlier: No node is declared in any environment (execution_nodes = {} in stage/test/prod; dev declares newyork-1 with execution_nodes_enabled = false) and there is no plan showing a node rendered. Needs infrastructure/environments/** and execution-nodes-enabled.tf, both protected, and a real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,

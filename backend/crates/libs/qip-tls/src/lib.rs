@@ -996,6 +996,49 @@ impl LinkSecurity {
 mod tests {
     use super::*;
 
+    /// The committed Google roots (`infrastructure/trust/google-roots.pem`,
+    /// named by `google_tls_roots_file`) are exactly the Google Trust
+    /// Services roots this repository pinned, each one a CA a client can be
+    /// built on. The file is the trust decision for every call to KMS and CA
+    /// Service; a root swapped, added or dropped in it changes whom the
+    /// platform believes is Google, and must fail here in review rather than
+    /// at a node's first boot.
+    ///
+    /// The fingerprints are the SHA-256 of each root's DER, identical in the
+    /// Mozilla store this host ships and in the copies pki.goog publishes
+    /// (checked 2026-10-31). GTS Root R2 is left out: only one of the two
+    /// sources carried it.
+    ///
+    /// Mutation: append any other certificate to the file, or drop one. The
+    /// fingerprint assertion fails.
+    #[test]
+    fn the_committed_google_roots_are_the_pinned_gts_roots_and_build_a_client() {
+        const PINNED: [&str; 3] = [
+            // GTS Root R1
+            "d947432abde7b7fa90fc2e6b59101b1280e0e1c7e4e40fa3c6887fff57a7f4cf",
+            // GTS Root R3
+            "34d8a73ee208d9bcdb0d956520934b4e40e69482596e8b6f73c8426b010a6f48",
+            // GTS Root R4
+            "349dfa4058c5e263123b398ae795573c4e1313c83fe68f93556cd5e8031b3c7d",
+        ];
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../infrastructure/trust/google-roots.pem");
+        let pem = std::fs::read(&path).expect("the committed Google roots are readable");
+        let fingerprints: Vec<String> = CertificateDer::pem_slice_iter(&pem)
+            .map(|certificate| {
+                qip_core::hash::sha256_hex(certificate.expect("each root parses").as_ref())
+            })
+            .collect();
+        assert_eq!(
+            fingerprints, PINNED,
+            "infrastructure/trust/google-roots.pem is not the pinned GTS root set"
+        );
+        assert!(
+            server_authenticated_client(&pem).is_ok(),
+            "the pinned roots do not build a client"
+        );
+    }
+
     /// Mutation: let `plaintext` through in any deployment (drop the
     /// `permits_plaintext_links` check) and this fails.
     #[test]
