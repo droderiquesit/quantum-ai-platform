@@ -73,6 +73,7 @@ use qip_expansion::detectors::{
     contested_evidence, contradictions, coverage, cross_domain_links, incompetent_specialists,
     low_confidence, missing_causal_links, model_drift, model_error_rate, refusal_clusters,
     repeated_vetoes_priced, split_by_wanting, theory_contradictions, unexplained_residuals_priced,
+    world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
