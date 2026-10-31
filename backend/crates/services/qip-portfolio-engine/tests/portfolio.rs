@@ -1201,3 +1201,90 @@ fn one_construction_run_respects_strategy_class_region_and_horizon_caps_together
     );
     Ok(())
 }
+
+/// Two dimensions that each reach the budget alone but cannot reach it
+/// together. The budget is pinned per dimension, so the solve came back
+/// breaching both groups and a proposal was drafted anyway, with the breach
+/// only as a compromise line; an independent review found it with this exact
+/// case. A breached group is now refused. Also refused: a grouping that
+/// names a name in no thesis, and a cap on a group with no member.
+///
+/// Mutation: remove the post-solve group check and the breach is drafted.
+#[test]
+fn grouped_caps_that_cannot_hold_together_refuse_the_proposal_rather_than_breach() -> Result<()> {
+    use qip_portfolio_engine::construction::GroupCaps;
+    let theses = [
+        thesis("AAA", 0.9, 0.04),
+        thesis("BBB", 0.8, 0.038),
+        thesis("CCC", 0.7, 0.036),
+        thesis("DDD", 0.6, 0.034),
+    ];
+    let mandate = Mandate {
+        position_cap: 0.25,
+        target_gross: 0.8,
+        ..Mandate::default()
+    };
+    let dimension = |name: &str, pairs: &[(&str, &str)], caps: &[(&str, f64)]| GroupCaps {
+        dimension: name.to_string(),
+        group_of: pairs
+            .iter()
+            .map(|(asset, group)| (object(asset).as_str().to_string(), group.to_string()))
+            .collect(),
+        caps: caps
+            .iter()
+            .map(|(group, cap)| (group.to_string(), *cap))
+            .collect(),
+    };
+    let run = |groups: &[GroupCaps]| {
+        constructor(mandate)?.construct_grouped(
+            &theses,
+            &covariance(theses.len()),
+            &BTreeMap::new(),
+            equity(),
+            equity(),
+            &BTreeMap::new(),
+            groups,
+            now(),
+            now(),
+            ProposalId::from_string("prop-grouped"),
+        )
+    };
+    let strategy = dimension(
+        "strategy",
+        &[("AAA", "s1"), ("BBB", "s1"), ("CCC", "s2"), ("DDD", "s2")],
+        &[("s1", 0.1)],
+    );
+    let region = dimension(
+        "region",
+        &[("AAA", "na"), ("BBB", "na"), ("CCC", "eu"), ("DDD", "eu")],
+        &[("eu", 0.1)],
+    );
+    // The premise: each dimension alone is met.
+    run(std::slice::from_ref(&strategy))?;
+    run(std::slice::from_ref(&region))?;
+
+    let refusal = match run(&[strategy, region]) {
+        Ok(outcome) => panic!(
+            "two caps that cannot hold together drafted a proposal: {:?}",
+            outcome.proposal.legs
+        ),
+        Err(refusal) => refusal,
+    };
+    assert!(
+        refusal.message().contains("above its cap"),
+        "refused for the wrong reason: {}",
+        refusal.message()
+    );
+
+    let absent = dimension("class", &[("AAA", "eq"), ("ZZZ", "eq")], &[("eq", 0.5)]);
+    assert!(
+        run(&[absent]).is_err(),
+        "a grouping naming a name in no thesis was ignored"
+    );
+    let empty = dimension("class", &[("AAA", "eq")], &[("eq", 0.5), ("nobody", 0.1)]);
+    assert!(
+        run(&[empty]).is_err(),
+        "a cap on a group with no member was ignored"
+    );
+    Ok(())
+}

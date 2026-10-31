@@ -513,7 +513,33 @@ impl PortfolioConstructor {
         // ungrouped names can carry. The budget equality is pinned no higher,
         // or the run would be asked for a gross the grouped caps forbid.
         let mut grouped = Vec::new();
+        // Each capped group as checked after the solve: its label, members
+        // and cap. Pinning the budget per dimension is not the joint bound —
+        // two dimensions can each reach a gross that together they cannot —
+        // so the solve can come back breaching a group, and a breached
+        // group is refused rather than drafted.
+        let mut group_checks: Vec<(String, Vec<usize>, f64)> = Vec::new();
         for dimension in groups {
+            for asset in dimension.group_of.keys() {
+                if !assets.iter().any(|name| name == asset) {
+                    return Err(Error::invalid(format!(
+                        "the {} grouping names {asset}, which is in no thesis of this \
+                         construction; a group key on an absent name is a caller that \
+                         computed the wrong key, and it is refused rather than ignored",
+                        dimension.dimension
+                    )));
+                }
+            }
+            for group in dimension.caps.keys() {
+                if !dimension.group_of.values().any(|named| named == group) {
+                    return Err(Error::invalid(format!(
+                        "the {} cap on {group} names a group with no member in this \
+                         construction; a cap that cannot bind anything is refused rather than \
+                         read as protection",
+                        dimension.dimension
+                    )));
+                }
+            }
             let mut reachable = 0.0;
             let mut by_group: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
             for (index, asset) in assets.iter().enumerate() {
@@ -533,6 +559,11 @@ impl PortfolioConstructor {
                         grouped.push(PortfolioConstraint::at_most(
                             format!("{}:{group}", dimension.dimension),
                             coefficients,
+                            *cap,
+                        ));
+                        group_checks.push((
+                            format!("{}:{group}", dimension.dimension),
+                            members.clone(),
                             *cap,
                         ));
                     }
@@ -568,6 +599,31 @@ impl PortfolioConstructor {
         }
 
         let routing = self.router.solve(&problem)?;
+
+        // The guard on the only path from the solve to a proposal: every
+        // capped group, at the weights the legs will carry (after the
+        // minimum-position drop), sums to at most its cap. A solver that
+        // returned its best infeasible result, or a discrete path that does
+        // not encode the group rows, is refused here rather than drafted
+        // with a compromise line nobody acts on.
+        let carried = |index: usize| {
+            let weight = routing.weights.get(index).copied().unwrap_or(0.0);
+            if weight.abs() < self.mandate.minimum_position {
+                0.0
+            } else {
+                weight
+            }
+        };
+        for (label, members, cap) in &group_checks {
+            let held: f64 = members.iter().map(|index| carried(*index)).sum();
+            if !held.is_finite() || held > cap + 1e-9 {
+                return Err(Error::denied(format!(
+                    "the sizing holds {held:.6} in {label}, above its cap of {cap}; the grouped \
+                     caps could not be met together in one run, so no proposal is drafted \
+                     rather than one that breaches a cap"
+                )));
+            }
+        }
 
         // Build the legs. Anything below the minimum is dropped rather than
         // held: a 0.1% position costs the same in operational overhead as a 5%
