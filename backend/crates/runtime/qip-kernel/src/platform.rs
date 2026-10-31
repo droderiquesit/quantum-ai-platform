@@ -15102,6 +15102,26 @@ impl Platform {
         }
     }
 
+    /// The latest macro surprise per series readable at `now`, for the
+    /// macro member (ADR 0232). A surprise exists only where the release
+    /// stated a consensus; one whose sources carry the synthetic tag is
+    /// marked simulated.
+    fn macro_views(&self, now: Timestamp) -> Vec<crate::federation_stage::MacroView> {
+        let world = self.world.read();
+        qip_world_model::now::macro_surprises(&world, now)
+            .into_iter()
+            .map(|reading| crate::federation_stage::MacroView {
+                simulated: reading
+                    .sources
+                    .iter()
+                    .any(|s| s == qip_world_model::now::MACRO_SIMULATED_SOURCE),
+                series: reading.subject,
+                surprise: reading.value,
+                valid_at: reading.valid_at,
+            })
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15163,6 +15183,7 @@ impl Platform {
                 confirmed_trades: view.state().trades(),
             }),
             capital: self.capital_view(),
+            macros: self.macro_views(now),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
         // so a material disagreement on a held name issues the contract

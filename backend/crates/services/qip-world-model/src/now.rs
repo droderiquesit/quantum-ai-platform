@@ -1967,6 +1967,10 @@ pub struct WorldReading {
     pub valid_at: Timestamp,
     /// When it became knowable here: the feature store's `available_at`.
     pub available_at: Timestamp,
+    /// The streams the feature value drew from, as the store recorded them.
+    /// A macro release from a synthetic tape carries `MACRO_SIMULATED_SOURCE`
+    /// here, so a reader can label its surprise simulated (ADR 0232).
+    pub sources: Vec<String>,
 }
 
 /// Every feature value readable at `now` in both time dimensions, keyed
@@ -1997,6 +2001,7 @@ fn world_reading(feature: &str, subject: &str, value: &crate::FeatureValue) -> W
         value: value.value,
         valid_at: value.valid_at,
         available_at: value.available_at,
+        sources: value.sources.clone(),
     }
 }
 
@@ -2026,6 +2031,9 @@ pub fn company_features(world: &WorldModel, now: Timestamp) -> Vec<WorldReading>
         })
         .collect()
 }
+
+/// The source tag a macro surprise from a synthetic tape carries (ADR 0232).
+pub const MACRO_SIMULATED_SOURCE: &str = "simulated";
 
 /// Macro surprises readable at `now`, one per series, the series id as the
 /// subject.
@@ -2162,6 +2170,7 @@ mod tests {
                 value: 3.4 - 3.1,
                 valid_at: reference,
                 available_at: ingested,
+                sources: Vec::new(),
             }],
             "the macro reading does not carry the instants the store holds for it"
         );

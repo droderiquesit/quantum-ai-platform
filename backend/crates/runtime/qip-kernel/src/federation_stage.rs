@@ -83,6 +83,23 @@ pub const MOMENTUM: &str = "markets.momentum.global.micro";
 /// later replaces the source and not the member.
 pub const ORDER_FLOW: &str = "markets.order-flow.global.micro";
 
+/// The macro member (ADR 0232, R12-WORLD-3043): whether each series' next
+/// release surprises its consensus in the same direction as its last one.
+pub const MACRO: &str = "macro.surprise-persistence.global";
+
+/// The source the macro member declares: the catalogued macro connectors.
+/// It speaks the day one is switched on at the deploy and is silent until.
+pub const MACRO_SOURCE: &str = "sense:macro-connectors";
+
+/// Passes a macro forecast waits for its series' next release. Releases are
+/// monthly at best and cycles daily, so the instrument members' patience
+/// would abandon every macro forecast before reality could answer it.
+pub const MACRO_PENDING_CYCLES: u64 = 90;
+
+/// Series the macro member remembers a last release for. A bound on top of
+/// the catalogue, because the readings arrive from the feature store.
+pub const MAX_MACRO_SERIES: usize = 1_024;
+
 /// The source the order-flow member declares: the simulated tape's
 /// aggressor side, named as simulated wherever the member is listed.
 pub const ORDER_FLOW_SOURCE: &str = "sense:trade-aggressor:simulated";
@@ -226,6 +243,29 @@ pub struct ChainView {
     pub confirmed_trades: u64,
 }
 
+/// One macro series' latest surprise against its consensus, as the macro
+/// member reads it (ADR 0232). Only a release that stated a consensus has a
+/// surprise, so a series without one is absent rather than read as zero.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MacroView {
+    pub series: String,
+    /// Value minus consensus, as the world model recorded it.
+    pub surprise: f64,
+    /// The release's reference period: what tells a new release from one
+    /// already read.
+    pub valid_at: Timestamp,
+    /// The release came from a synthetic tape, and its proposition says so.
+    pub simulated: bool,
+}
+
+/// The proposition one release's persistence forecast answers. A simulated
+/// release's proposition carries the label, so the journal never records a
+/// synthetic surprise's forecast as one about a real economy.
+pub fn macro_proposition(series: &str, cycle: u64, simulated: bool) -> String {
+    let label = if simulated { ":simulated" } else { "" };
+    format!("macro:{series}{label}:surprise-persists@{cycle}")
+}
+
 /// What the capital member reads (R12-WORLD-3048, ADR 0194): the paper
 /// book's funding and leverage, as statistics. Built only where equity is
 /// positive, because a share of nothing is not a number; the member is
@@ -259,6 +299,8 @@ pub struct FederationInputs {
     /// The paper book's funding state, for the capital member; `None` where
     /// equity is not positive.
     pub capital: Option<CapitalView>,
+    /// The latest macro surprise per series readable this pass (ADR 0232).
+    pub macros: Vec<MacroView>,
 }
 
 /// One member as the population check read it.
@@ -481,6 +523,12 @@ enum Pending {
         cash: f64,
         cycle: u64,
     },
+    Macro {
+        series: String,
+        positive: bool,
+        valid_at: Timestamp,
+        cycle: u64,
+    },
 }
 
 impl Pending {
@@ -489,7 +537,16 @@ impl Pending {
             Self::Instrument { cycle, .. }
             | Self::Halted { cycle }
             | Self::Chain { cycle, .. }
-            | Self::Funding { cycle, .. } => *cycle,
+            | Self::Funding { cycle, .. }
+            | Self::Macro { cycle, .. } => *cycle,
+        }
+    }
+
+    /// Passes this forecast may wait before it is abandoned unscored.
+    fn patience(&self) -> u64 {
+        match self {
+            Self::Macro { .. } => MACRO_PENDING_CYCLES,
+            _ => FEDERATION_PENDING_CYCLES,
         }
     }
 }
@@ -502,6 +559,10 @@ pub struct FederationStage {
     pending: BTreeMap<String, Pending>,
     /// The confirmed trade count the on-chain member last read.
     last_chain_trades: Option<u64>,
+    /// The reference period of the last release the macro member read, per
+    /// series (ADR 0232): a release is fed once, not every pass it stays
+    /// readable. Bounded by [`MAX_MACRO_SERIES`].
+    last_macro: BTreeMap<String, Timestamp>,
     /// Account-currency exposure per subject, as the composition root last
     /// stated it ([`Self::set_stakes`]); what a disagreement's value of
     /// information is scaled by. Empty means nothing is at stake anywhere
@@ -1139,6 +1200,17 @@ impl FederationStage {
                 0.25,
             ),
             declare(
+                MACRO.into(),
+                "macro",
+                "global",
+                30,
+                Abstraction::Macro,
+                "surprise-persistence",
+                ModelKind::Observational,
+                &[MACRO_SOURCE],
+                0.25,
+            ),
+            declare(
                 ON_CHAIN.into(),
                 "crypto/on-chain",
                 "global",
@@ -1476,6 +1548,56 @@ impl FederationStage {
             }
         }
 
+        // The macro member (ADR 0232): a release that surprised its
+        // consensus is read as likelier than not to be followed by a surprise
+        // the same way — persistence, declared not fitted, at 0.6. Fed once
+        // per release; a pass with no new release leaves it silent.
+        for view in inputs
+            .macros
+            .iter()
+            .filter(|v| v.surprise.is_finite() && v.surprise != 0.0)
+        {
+            let newer = self
+                .last_macro
+                .get(&view.series)
+                .is_none_or(|read| view.valid_at > *read);
+            if !newer
+                || (!self.last_macro.contains_key(&view.series)
+                    && self.last_macro.len() >= MAX_MACRO_SERIES)
+            {
+                continue;
+            }
+            self.last_macro.insert(view.series.clone(), view.valid_at);
+            let proposition = macro_proposition(&view.series, inputs.cycle, view.simulated);
+            if feed(
+                &mut self.federation,
+                MACRO,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability: 0.6,
+                    evidence_fit: if view.simulated { 0.15 } else { 0.3 },
+                    causal_coherence: 0.4,
+                    uncertainty: 0.7,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Macro {
+                        series: view.series.clone(),
+                        positive: view.surprise > 0.0,
+                        valid_at: view.valid_at,
+                        cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
         if let Some(chain) = inputs.chain {
             // Persistence: activity that rose last pass is read as likelier
             // to rise again. A first sighting has no previous count and says
@@ -1800,6 +1922,18 @@ impl FederationStage {
                     inputs.capital.map(|c| Some(c.cash < *cash))
                 }
                 Pending::Funding { .. } => None,
+                // Answered by the series' next release: did it surprise the
+                // same way? A release of exactly consensus answers `false`.
+                Pending::Macro {
+                    series,
+                    positive,
+                    valid_at,
+                    ..
+                } => inputs
+                    .macros
+                    .iter()
+                    .find(|v| &v.series == series && v.valid_at > *valid_at)
+                    .map(|v| Some((v.surprise > 0.0) == *positive && v.surprise != 0.0)),
             };
             match answer {
                 Some(Some(outcome)) => {
@@ -1821,9 +1955,7 @@ impl FederationStage {
                     self.federation.abandon(&proposition, now);
                     abandoned.push(proposition);
                 }
-                None if inputs.cycle.saturating_sub(waiting.cycle())
-                    >= FEDERATION_PENDING_CYCLES =>
-                {
+                None if inputs.cycle.saturating_sub(waiting.cycle()) >= waiting.patience() => {
                     self.federation.abandon(&proposition, now);
                     abandoned.push(proposition);
                 }
@@ -1921,6 +2053,7 @@ mod tests {
             },
             chain: chain.map(|confirmed_trades| ChainView { confirmed_trades }),
             capital: None,
+            macros: Vec::new(),
         }
     }
 
@@ -1961,9 +2094,17 @@ mod tests {
         // The capital member produces state only for a book with positive
         // equity, so this one has one (R12-WORLD-3048).
         fed_inputs.capital = Some(book(1_000.0, 0));
+        // The macro member produces state only for a release that surprised
+        // its consensus (ADR 0232), so this pass reads one.
+        fed_inputs.macros = vec![MacroView {
+            series: "US.CPI.YOY".into(),
+            surprise: 0.3,
+            valid_at: day(0),
+            simulated: false,
+        }];
         let review = stage.run(&fed_inputs, day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 13, "{review:?}");
+        assert_eq!(review.population.len(), 14, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -1975,8 +2116,8 @@ mod tests {
         assert!(review.silent.is_empty(), "{:?}", review.silent);
         // One instrument proposition with ten views (seven tape members, the
         // company member, the order-flow member and the causal model), plus
-        // self, capital and chain.
-        assert_eq!(review.arbitrations.len(), 4);
+        // self, capital, macro and chain.
+        assert_eq!(review.arbitrations.len(), 5);
         let instrument = &review.arbitrations[0];
         assert_eq!(instrument.disagreement.views.len(), 10);
         // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
@@ -2353,9 +2494,10 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: thirteen members (the order-flow member, ADR 0231, among
-        // them), no branch, and nothing scored yet to decide on.
-        assert_eq!(first.population.len(), 13);
+        // Premise: fourteen members (the order-flow member, ADR 0231, and the
+        // macro member, ADR 0232, among them), no branch, and nothing scored
+        // yet to decide on.
+        assert_eq!(first.population.len(), 14);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -2363,7 +2505,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 14);
+        assert_eq!(second.population.len(), 15);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -2466,7 +2608,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 15);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 16);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -2475,20 +2617,20 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 15 live, two branches merged away, one result: 14, every root kept.
+        // 16 live, two branches merged away, one result: 15, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 14, "{live:?}");
+        assert_eq!(live.len(), 15, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 14);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 15);
     }
 
     #[test]

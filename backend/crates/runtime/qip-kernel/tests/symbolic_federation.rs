@@ -149,13 +149,13 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    // Thirteen members (the company member, R12-WORLD-3044, the capital
-    // member, R12-WORLD-3048, and the order-flow member, ADR 0231, among
-    // them) plus the one domain member the
+    // Fourteen members (the company member, R12-WORLD-3044, the capital
+    // member, R12-WORLD-3048, the order-flow member, ADR 0231, and the macro
+    // member, ADR 0232, among them) plus the one domain member the
     // platform now declares for the universe's single asset class
     // (MODEL-4009): the composition names the classes itself, so a deployed
     // cycle carries the member too.
-    assert_eq!(first.population.len(), 14, "{:?}", first.population);
+    assert_eq!(first.population.len(), 15, "{:?}", first.population);
     // The platform hands the capital member its paper book every cycle
     // (ADR 0194): a funded book with positive equity is never silent.
     // Mutation: build `FederationInputs` with `capital: None`.
@@ -179,15 +179,17 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
             "{family} uncovered"
         );
     }
-    // No chain was observed, no issuer reported a surprise and no print
-    // stated an aggressor, so the company, on-chain and order-flow members
-    // are the silent ones — present, unexpired, and honest that they
-    // produced nothing (R12-WORLD-3044, ADR 0231).
+    // No chain was observed, no issuer reported a surprise, no print stated
+    // an aggressor and no macro release surprised its consensus, so the
+    // company, on-chain, macro and order-flow members are the silent ones —
+    // present, unexpired, and honest that they produced nothing
+    // (R12-WORLD-3044, ADR 0231, ADR 0232).
     assert_eq!(
         first.silent,
         vec![
             federation_stage::COMPANY.to_string(),
             ON_CHAIN.to_string(),
+            federation_stage::MACRO.to_string(),
             federation_stage::ORDER_FLOW.to_string()
         ]
     );
@@ -1748,6 +1750,129 @@ fn signed_trade_flow_gives_the_order_flow_member_a_view() -> Result<()> {
             .contains(&federation_stage::ORDER_FLOW.to_string()),
         "the member was fed again on a cycle with no new prints: {:?}",
         next.silent
+    );
+    Ok(())
+}
+
+/// ADR 0232, R12-WORLD-3043: a cycle with a macro surprise feeds the macro
+/// member a persistence forecast on that series, a cycle without a new
+/// release reports it silent, and the series' next release answers the
+/// forecast.
+///
+/// The failure this prevents: macro releases reached the NOW stage and the
+/// world model, and the federation had no member that read the economy, so
+/// a surprise in a policy-relevant series changed no member's view.
+/// Mutation: build `FederationInputs` with `macros: Vec::new()` in
+/// `Platform::understand_federation`. The member is silent on the release
+/// cycle, and the first assertion fails.
+#[test]
+fn a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_reports_it_silent()
+-> Result<()> {
+    use qip_financial::intelligence::MacroObservation;
+    let mut platform = platform()?;
+    let mut records = bars("AAA", 120);
+    records.extend(bars("BBB", 120));
+    platform.observe(records);
+    let release_of = |series: &str, period: Timestamp, value: f64, provenance: Provenance| {
+        SensedRecord::Macro(Box::new(MacroObservation {
+            series_id: series.to_string(),
+            region: "US".to_string(),
+            value,
+            unit: "percent".to_string(),
+            reference_date: period,
+            consensus: Some(3.1),
+            previous: None,
+            is_revision: false,
+            provenance,
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        }))
+    };
+    let release = |period: Timestamp, ingested: Timestamp, value: f64| {
+        release_of(
+            "US.CPI.YOY",
+            period,
+            value,
+            Provenance::new("wire", period, ingested),
+        )
+    };
+    let first_period = start().saturating_sub(Duration::from_days(20));
+    // A wire release, and a synthetic tape's release of another series.
+    platform.observe(vec![
+        release(
+            first_period,
+            start().saturating_sub(Duration::from_days(1)),
+            3.4,
+        ),
+        release_of(
+            "US.PPI.YOY",
+            first_period,
+            2.9,
+            Provenance::synthetic(
+                "tape:fixture",
+                start().saturating_sub(Duration::from_days(1)),
+            ),
+        ),
+    ]);
+    platform.run_cycle(start());
+    platform.run_cycle(start().saturating_add(Duration::from_hours(1)));
+    let reviews = federation_stage::replay(&platform)?;
+    let macro_member = federation_stage::MACRO.to_string();
+    assert!(
+        !reviews[0].silent.contains(&macro_member),
+        "a cycle with a macro surprise left the macro member silent: {:?}",
+        reviews[0].silent
+    );
+    let proposition = federation_stage::macro_proposition("US.CPI.YOY", 1, false);
+    assert!(
+        reviews[0]
+            .arbitrations
+            .iter()
+            .any(|a| a.proposition == proposition),
+        "no arbitration on {proposition}: {:?}",
+        reviews[0]
+            .arbitrations
+            .iter()
+            .map(|a| a.proposition.clone())
+            .collect::<Vec<_>>()
+    );
+    // The synthetic tape's surprise is labelled simulated in the journal.
+    let simulated = federation_stage::macro_proposition("US.PPI.YOY", 1, true);
+    assert!(
+        reviews[0]
+            .arbitrations
+            .iter()
+            .any(|a| a.proposition == simulated),
+        "the synthetic release's forecast is not labelled simulated: {:?}",
+        reviews[0]
+            .arbitrations
+            .iter()
+            .map(|a| a.proposition.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reviews[1].silent.contains(&macro_member),
+        "the macro member was fed again with no new release: {:?}",
+        reviews[1].silent
+    );
+
+    // The next release surprises the same way: the forecast resolves true.
+    let next_period = first_period.saturating_add(Duration::from_days(30));
+    let later = start().saturating_add(Duration::from_days(15));
+    platform.observe(vec![release(
+        next_period,
+        later.saturating_sub(Duration::from_hours(1)),
+        3.5,
+    )]);
+    platform.run_cycle(later);
+    let reviews = federation_stage::replay(&platform)?;
+    let resolution = reviews
+        .last()
+        .and_then(|r| r.resolved.iter().find(|x| x.proposition == proposition))
+        .unwrap_or_else(|| panic!("the next release did not answer {proposition}"));
+    assert!(
+        resolution.outcome,
+        "a same-direction surprise resolved false"
     );
     Ok(())
 }
