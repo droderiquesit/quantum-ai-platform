@@ -1,4 +1,4 @@
-# ADR 0239: Custody reads stale after two missed custody statements and unavailable after four or none since start; the node hands it to the cell, and it only narrows
+# ADR 0242: Custody reads stale after two missed custody statements and unavailable after four or none since start; the node hands it to the cell, and it only narrows
 
 - **Status**: **Accepted 2026-10-31 under the owner's 2026-10-31 delegation**,
   relayed by the wave parent to lane L5-EDGE (decision 10 of the 2026-10-31

@@ -824,7 +824,7 @@ fn try_send_refuses_when_broker_queue_is_full() -> Result<()> {
     Ok(())
 }
 
-/// A cell armed for custody statements (ADR 0239), with the strategy
+/// A cell armed for custody statements (ADR 0242), with the strategy
 /// deployed as [`cell`] deploys it.
 fn custody_cell() -> Result<Cell> {
     let config = CellConfig::new(CELL, REGION)
@@ -843,7 +843,7 @@ fn custody_cell() -> Result<Cell> {
     Ok(cell)
 }
 
-/// R12-RES-7099, ADR 0239: custody read from the venue's own statements
+/// R12-RES-7099, ADR 0242: custody read from the venue's own statements
 /// narrows the cell when they stop. Two armed cells identical but for the
 /// statements: the one whose venue went quiet past four periods sizes at the
 /// contract's custody-unavailable multiplier (one half) of the one whose
@@ -891,7 +891,7 @@ fn with_custody_statements_stopped_the_cell_sizes_at_the_unavailable_multiplier(
     Ok(())
 }
 
-/// ADR 0239 decisions 1 and 2, the reading on its own: unavailable with no
+/// ADR 0242 decisions 1 and 2, the reading on its own: unavailable with no
 /// statement since the watch was made, fresh within two periods, stale past
 /// two, unavailable past four, and an older statement arriving late moves
 /// nothing. A cell built without custody statements refuses a reading.

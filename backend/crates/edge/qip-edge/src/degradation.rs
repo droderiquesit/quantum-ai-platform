@@ -66,7 +66,7 @@ pub enum FreshnessBound {
     /// [`Capability::Ledger`] and has no duration of its own to state.
     SpoolReading,
     /// The node judges the venue's custody statements by their age in
-    /// statement periods and hands the cell the reading (ADR 0239); the cell
+    /// statement periods and hands the cell the reading (ADR 0242); the cell
     /// reads no clock for [`Capability::Custody`].
     StatementReading,
     /// Derived from the policy-fed rows, so it ages as they do; the duration

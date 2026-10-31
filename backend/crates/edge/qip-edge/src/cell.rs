@@ -673,7 +673,7 @@ pub struct CellConfig {
     /// writes. Only [`Self::with_journal_wire`] turns it on.
     pub journal_wire: bool,
     /// Whether the node hands this cell a custody reading derived from the
-    /// venue's own custody statements (ADR 0239, R12-RES-7099). Armed only
+    /// venue's own custody statements (ADR 0242, R12-RES-7099). Armed only
     /// by [`Self::with_custody_statements`]; a cell without it records no
     /// custody row and sizes on none, as before.
     pub custody_statements: bool,
@@ -925,7 +925,7 @@ impl CellConfig {
         self
     }
 
-    /// Arm the custody reading (ADR 0239): the node derives custody's
+    /// Arm the custody reading (ADR 0242): the node derives custody's
     /// freshness from the venue's custody statements and hands it to the
     /// cell, which records the row and sizes by it.
     pub fn with_custody_statements(mut self) -> Self {
@@ -1662,7 +1662,7 @@ pub struct Cell {
     /// touches it, for the same reason the polled wire keeps its own
     /// release.
     journal_pressure: Option<JournalPressure>,
-    /// The custody reading the node last handed in (ADR 0239), or `None`
+    /// The custody reading the node last handed in (ADR 0242), or `None`
     /// before one arrives or on a cell built without custody statements.
     custody: Option<Freshness>,
     dropcopy: DropCopyReconciler,
@@ -3205,12 +3205,12 @@ impl Cell {
     ///   one.
     ///
     /// Custody is recorded only once the node has handed in a reading
-    /// ([`Self::observe_custody`], ADR 0239): until then a cell has no
+    /// ([`Self::observe_custody`], ADR 0242): until then a cell has no
     /// reading of it, and a row without a reading would be a number nobody
     /// computed.
     pub fn narrowing(&self, now: Timestamp) -> DegradationState {
         let mut state = self.narrowing_without_custody(now);
-        // ADR 0239: the custody reading the node handed in, recorded only
+        // ADR 0242: the custody reading the node handed in, recorded only
         // once one was; a cell nobody hands a reading records no row.
         if let Some(custody) = self.custody {
             state.observe(Capability::Custody, custody);
@@ -3219,7 +3219,7 @@ impl Cell {
     }
 
     /// Hand the cell custody's freshness as the node derived it from the
-    /// venue's own custody statements (ADR 0239, R12-RES-7099): stale past
+    /// venue's own custody statements (ADR 0242, R12-RES-7099): stale past
     /// two statement periods, unavailable past four or with none since the
     /// node started. The cell records the row and sizes by it, so it can
     /// only narrow.
@@ -5441,7 +5441,7 @@ impl Cell {
         // which §6.2 answers with a smaller size. Only this dependency row is
         // compounded here — the ledger is already the journal wire's, and the
         // feed and session rows act per venue through their own gates.
-        // And custody, on a cell armed for it (ADR 0239): a position the
+        // And custody, on a cell armed for it (ADR 0242): a position the
         // cell cannot confirm the venue still holds is sized smaller.
         let custody = if self.config.custody_statements {
             self.degradation

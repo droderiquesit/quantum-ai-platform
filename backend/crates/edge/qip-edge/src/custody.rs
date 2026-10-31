@@ -1,5 +1,5 @@
 //! Custody's freshness, read from the venue's own custody statements (ADR
-//! 0239, R12-RES-7099).
+//! 0242, R12-RES-7099).
 //!
 //! The §6.2 table priced a custody row and nothing read custody, so a cell
 //! that could not confirm the venue still held its positions sized as if it
@@ -29,7 +29,7 @@ pub const UNAVAILABLE_AFTER_PERIODS: i64 = 4;
 ///
 /// Defined here because R12-LEDGER-10185's custody statement has not landed;
 /// when it does, the simulated venue's statement is recorded through
-/// [`CustodyWatch::record`] and nothing else here changes (ADR 0239
+/// [`CustodyWatch::record`] and nothing else here changes (ADR 0242
 /// decision 5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustodyStatement {
@@ -70,7 +70,7 @@ impl CustodyWatch {
     }
 
     /// Custody's freshness at `now`: unavailable with no statement since the
-    /// watch was made (ADR 0239 decision 2), else by the newest statement's
+    /// watch was made (ADR 0242 decision 2), else by the newest statement's
     /// age — stale past [`STALE_AFTER_PERIODS`] periods, unavailable past
     /// [`UNAVAILABLE_AFTER_PERIODS`].
     pub fn freshness(&self, now: Timestamp) -> Freshness {
