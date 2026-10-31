@@ -2,7 +2,7 @@
 //! questions about what the platform believes.
 
 use crate::evidence::EvidenceRecord;
-use crate::fabric::{EvidenceFabric, EvidenceVerdict, KeyOutcome};
+use crate::fabric::{EvidenceFabric, EvidenceVerdict, JournaledClaim, KeyOutcome};
 use qip_ai::embedding::{Embedder, HashingEmbedder};
 use qip_ai::retrieval::{Document, RetrievalResult, SearchIndex};
 use qip_core::error::{Error, Result};
@@ -194,6 +194,27 @@ impl WorldModel {
     /// stage read claims, contests and source records from.
     pub fn evidence(&self) -> &EvidenceFabric {
         &self.evidence
+    }
+
+    /// Derive the evidence fabric again from the claims a journal holds as
+    /// admitted, in journal order (R12-EVID-2038).
+    ///
+    /// A restarted process that skipped this began with a fabric that had
+    /// seen nothing: every contest the evidence had raised, both sides of
+    /// every contradiction and the claim that resolved each, gone from the
+    /// first cycle, and a later claim on either side admitted as if it were
+    /// the first. Refused when the fabric already holds claims, because
+    /// replaying the journal onto them would corroborate it with itself;
+    /// the fabric is left as it was on any refusal.
+    pub fn rebuild_evidence(&mut self, claims: Vec<JournaledClaim>) -> Result<()> {
+        if !self.evidence.is_empty() || self.evidence.version() != 0 {
+            return Err(Error::invalid(
+                "the evidence fabric is rebuilt from the journal at assembly, before any claim \
+                 is admitted; this one already holds claims",
+            ));
+        }
+        self.evidence = EvidenceFabric::default().rebuild(claims)?;
+        Ok(())
     }
 
     /// Admit one world-source claim through the evidence fabric — the
@@ -424,14 +445,9 @@ impl WorldModel {
     /// caused three stages downstream, and why refusing here rather than
     /// absorbing it is the smaller failure.
     pub fn claim_causal(&mut self, edge: CausalEdge) -> Result<()> {
+        // `validate` refuses an edge citing a quantum result, as `add` and
+        // `reestimate` do (R12-QUANT-4044).
         edge.validate()?;
-        for evidence_id in &edge.evidence {
-            if evidence_id.starts_with("quantum:") {
-                return Err(Error::denied(
-                    "no quantum result is treated as causal proof",
-                ));
-            }
-        }
         let description = format!(
             "{} affects {} via {}",
             edge.cause,

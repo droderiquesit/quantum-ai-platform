@@ -72,7 +72,9 @@ use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service};
 use qip_transport::cas::CasIdentity;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::Route;
-use qip_transport::server::{Handler, Method, Request, Response, Server, ServerLimits};
+use qip_transport::server::{
+    AdmissionClass, Handler, Method, Request, Response, Server, ServerLimits,
+};
 use qip_transport::tls::{PeerNames, TlsServer, TlsSource, WorkloadIdentity};
 
 use crate::config::{ArchiveTarget, Config, ManagedBackend, ManagedConfig};
@@ -191,12 +193,26 @@ fn open_archive(target: &ArchiveTarget, clock: Arc<dyn Clock>) -> Result<Arc<dyn
     }
 }
 
+/// Connection slots held back for callers the catalogue grants a P0 or P1
+/// stream (R12-FABRIC-8089): a quarter of the transport's default cap of 64.
+///
+/// Before this the cap was class-blind. Every stream quota could hold while
+/// enough telemetry producers held every connection slot, and a cell's fill
+/// or the controller's grant was answered 503 at the accept loop — starved
+/// by traffic that is allowed to be shed, without a single quota having been
+/// crossed. A quarter is enough for every P0/P1 identity a region runs (a
+/// handful of cells, one controller, one ledger) to hold a connection at
+/// once while three quarters of the pool stays open to everyone.
+pub const PRIORITY_RESERVED_CONNECTIONS: usize = 16;
+
 /// The protocol listener's limits: the transport's defaults — among them
 /// the connection cap, past which a connection is answered 503 rather than
-/// queued — with the body ceiling raised to the broker's own.
+/// queued — with the body ceiling raised to the broker's own and
+/// [`PRIORITY_RESERVED_CONNECTIONS`] of the cap held for P0/P1 callers.
 pub fn data_plane_limits() -> ServerLimits {
     ServerLimits {
         max_body: MAXIMUM_REQUEST_BYTES,
+        reserved_for_priority: PRIORITY_RESERVED_CONNECTIONS,
         ..ServerLimits::default()
     }
 }
@@ -283,6 +299,16 @@ impl DataPlane {
 }
 
 impl Handler for DataPlane {
+    /// R12-FABRIC-8089: the caller's class from its credential alone — the
+    /// body is unread here, and that is the point. The service decides from
+    /// the catalogue's grants, so nothing a producer sends can class it.
+    fn admission_class(&self, request: &Request) -> AdmissionClass {
+        self.service.admission_class(
+            request.header(auth::HEADER),
+            request.header(qip_transport::server::PEER_IDENTITY_HEADER),
+        )
+    }
+
     fn handle(&self, request: &Request) -> Response {
         if request.method != Method::Post {
             return Response::json(

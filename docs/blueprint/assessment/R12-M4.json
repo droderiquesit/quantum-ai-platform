@@ -925,9 +925,12 @@
     "status": "MISSING",
     "current": "No hypothesis-space exploration path exists (JobClass::HypothesisSearch is a label).",
     "evidence": [
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-210"
+      "backend/crates/libs/qip-quantum/src/foundry.rs:192-210",
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs EvidenceKind::QuantumExploration",
+      "backend/crates/services/qip-reasoning-engine/src/redteam.rs ResearchOnlySupport",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_hypothesis_whose_only_support_is_a_quantum_exploration_result_is_rejected_by_adversarial_review"
     ],
-    "gap": "Everything.",
+    "gap": "2026-10-30 (L4, commit 8d4f0bb1, skeptic REFUTED). Closed: EvidenceKind::QuantumExploration exists (not primary, ceiling no higher than a rumour) and RedTeam::review raises a Fatal ResearchOnlySupport challenge when every supporting item is one. Still open: the guard is on one path only, since Hypothesis.status is a pub field any holder can set to Approved; a quantum result reaching an agent finding is typed Computation by engine.rs evidence_from_finding, so the all-exploration check never sees it and NoPrimarySource is only Serious within the default tolerance; one trivial primary item beside exploration clears the check, however much weight exploration carries; qip-expansion validated paths are unaudited; no producer exists (ADR 0150 A2), so the guard has run only in its test.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -938,7 +941,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-30 (L4), commit 8d4f0bb1: mutant (disable the check) killed at the challenge-kind assertion, restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-QUANT-4043",
@@ -970,9 +973,11 @@
     "current": "WorldModel::claim_causal (qip-world-model world.rs) refuses, with 'no quantum result is treated as causal proof', a causal edge any of whose evidence ids starts with `quantum:`. tests/quantum_causal_refusal.rs proves both the refusal and the acceptance of classical evidence. No quantum branch-selection path exists to produce such a citation.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/world.rs::WorldModel::claim_causal",
-      "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs::world_model_claim_causal_refuses_edges_with_quantum_sourced_evidence"
+      "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs::world_model_claim_causal_refuses_edges_with_quantum_sourced_evidence",
+      "backend/crates/services/qip-world-model/src/causal.rs refuse_quantum_evidence, CausalGraph::refused",
+      "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs::a_causal_edge_citing_quantum_evidence_is_refused_on_every_insertion_path"
     ],
-    "gap": "2026-10-24 (L4): the row said MISSING; a guard exists. It is not structural and not on the only path. (1) It matches a `quantum:` id prefix, so a quantum result cited under any other id passes. Evidence ids carry no typed provenance. (2) CausalGraph::add (causal.rs) is public, performs no such check, and is called directly (qip-kernel shared_cause.rs and causal_review.rs build graphs with CausalGraph::new and add). Closing it: typed evidence provenance on CausalEdge, refused inside CausalGraph::add or CausalEdge::validate, so no path inserts an edge citing a quantum result. The branch-selection producer itself is blocked by ADR 0150 A2, like the other quantum families.",
+    "gap": "2026-10-30 (L4, commit 954b55b4, skeptic REFUTED). Closed: the quantum-citation refusal sits on every insertion path into the causal graph (CausalEdge::validate, CausalGraph::add, reestimate; edges is private with no mutable accessor), not only claim_causal. Still open: the guard keys on the string prefix quantum:, a convention no producer is bound to (no quantum branch-selection producer exists), so a relabelled id passes; evidence needs a typed origin owned by the producer; CausalGraph::refused has no production reader, and the kernel folds claim_causal denials into one undifferentiated refused count.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -983,7 +988,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test quantum_causal_refusal",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed."
+    "notes": "2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. 2026-10-30 (L4), commit 954b55b4: three mutants killed (remove the check in reestimate, add and validate), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-QUANT-4045",
@@ -1533,9 +1538,12 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:15507 attribution periods",
       "backend/crates/services/qip-learning-engine/src/attribution.rs:142-155 residual/reconciles",
-      "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan"
+      "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan",
+      "docs/adr/0183-a-position-is-opened-only-with-an-exit-plan-its-instruments-stated-terms-admit.md",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::exit_plan_for, position_exit_plan)",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held"
     ],
-    "gap": "2026-10-25: owner decision needed: refusing to open a position without an exit plan breaks four private-fund lockup tests, because a short-horizon thesis on a locked-up asset has no admissible exit unless a secondary sale escapes the lockup; the owner must say whether such a thesis is refused or the secondary exit counts as its plan (attempted diff kept outside the tree).",
+    "gap": "2026-10-30: skeptic REFUTED: construct_from now dates an exit plan for every leg and refuses any leg whose plan falls inside a declared lockup (ADR 0183), but Platform::submit_order is public and checks no plan, resumed positions carry none, and the attribution half has no per-position reconciliation test; remaining step is the plan check inside submit_order, plans rebuilt on resume, and a per-position attribution test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1543,10 +1551,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect. 2026-10-30: ADR 0183 decides the owner question under the 2026-10-24 delegation: a declared lockup is a term the exit plan respects, so a thesis shorter than a running lockup is refused at construction. Mutation: pass None for the lockup in exit_plan_for; the locked-up fund is sized and the test fails. Five mark-focused fixtures' lockups shortened to an expired one year; the ASSET-4067 held-record assertion moved from the lockup's dated return to the catalogue exit for an expired lockup (the running-lockup return stays tested in valuation_plane.rs); the skeptic counts that restatement as lost held-record coverage. Skeptic (security-engineer) REFUTED as in the gap."
   },
   {
     "id": "R12-ASSET-4070",
@@ -1576,9 +1584,13 @@
     "current": "LifeStage implements the nine stages with only legal edges and tests; it has no caller outside its crate. The kernel tracks PositionLifecycle (Opened/Held/Flagged/Unwinding/Closed) instead.",
     "evidence": [
       "backend/crates/libs/qip-portfolio/src/life_stage.rs:15-27 LifeStage",
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)"
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)",
+      "backend/crates/runtime/qip-kernel/src/position_life.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::book_desk_fill, register_settlement, stage_learn settle_and_attribute)",
+      "backend/crates/runtime/qip-kernel/tests/position_life.rs an_exited_unsettled_position_is_not_attributed",
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs exit_cannot_reach_attribute_without_settling_first"
     ],
-    "gap": "2026-10-24 (re-read against the tree): qip_portfolio::LifeStage is named outside its crate only as a display string (qip-kernel asset_class_registry.rs LifeStage::Discover.as_str()); no kernel position moves through it. The kernel's Portfolio tracks PositionLifecycle instead and never calls flag_position or begin_unwind. Missing caller: the kernel cycle advancing a per-position LifeStage with its checked transitions - acquire/resize/exit on fills, settle from SettlementBook (register_settlement), attribute only in LEARN after settle - with a kernel test that an exited, unsettled position is not attributed. Plain code.",
+    "gap": "2026-10-25: skeptic REFUTED on part 2: the kernel walks every desk position discover to attribute through LifeStage::transition and attributes only settled lives, but on the default simulated broker no position reaches Exit (immediate_fill_fraction 0.6 never takes a sale to flat, and a flip needs a borrow reading observe_borrow has no production caller for), so Exit/Settle/Attribute run only in a test; remaining step is a default-path way to exit in full (a fill rule that can reach flat or a production borrow source).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1586,10 +1598,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test position_life; cargo test -p qip-portfolio life_stage",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path."
   },
   {
     "id": "R12-ASSET-4072",
@@ -2652,9 +2664,14 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:14502",
       "backend/crates/runtime/qip-kernel/src/tail.rs::tests::generated_worlds_exceed_the_books_history_and_replay_for_the_same_cycle",
       "backend/crates/runtime/qip-kernel/src/survival.rs::tests::every_survival_world_the_book_fails_withholds_a_reserve_named_for_it",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces"
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces",
+      "backend/crates/runtime/qip-kernel/src/tail.rs SYNTHETIC_JOINT, JOINT_CORRELATION_MAGNITUDE, synthetic_joint",
+      "backend/crates/runtime/qip-kernel/src/tail.rs tests a_generated_joint_world_lies_outside_every_library_world_for_a_hedged_pair, the_joint_world_stays_past_the_regime_flip_by_its_correlation_floor_on_a_diversified_book, a_joint_variance_that_overflows_is_an_infinite_loss_not_a_free_world",
+      "backend/crates/runtime/qip-kernel/src/tail.rs joint_world (advisory, outside survival_worlds)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs StressReport.advisory_worlds/advisory_reserve, Platform::set_joint_tail_reserve_applied (off by default, no composition root sets it), Platform::applied_stress_reserve",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before"
     ],
-    "gap": "Synthetic generation only scales each position's own worst excursion; no joint or structural novelty (new correlations, regime combinations) beyond history.",
+    "gap": "2026-10-30 (lane L1-MONEY, 89af653c, 8a6f1903): every cycle's SIMULATE now appends a generated joint world: regime-flip volatility times a seeded amplification, with every pair correlated against the book at a drawn magnitude in [0.75, 1]. It reaches the stress report through run_cycle on qip-api's default path. Kept PARTIAL on one skeptic round (REFUTED):\n- \"Outside the library's bounds\" is proven on a hedged pair and as a floor over the regime flip, not against the qip_simulation_engine factor library, nor for capped-long or single-position books.\n- The new world often becomes the worst world, so the survival governor withholds more capital. No limit value or threshold changed, but the owner must decide whether that counts as a risk-limit change.\n- The fail-open overflow path the skeptic found is fixed in 8a6f1903.\n2026-10-30, parent hold: applying the joint-tail reserve raises the survival reserve; owner authorisation required (decision pending). On the shipped default the joint world is computed every cycle and reported as advisory, with its would-be reserve, in the stress report, the SIMULATE stage detail and the stress gauge. The reserve actually applied, and hedge selection, read only the worlds applied before 89af653c. Applying it is Platform::set_joint_tail_reserve_applied, which no composition root calls.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2662,10 +2679,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --lib tail:: (\"ok. 15 passed; 0 failed\"); cargo test -p qip-kernel (1091 passed, 0 failed, on 89af653c); qip-kernel --test stress the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap ('continuous generation') is now partly closed: generation is per-cycle and seeded. The generated worlds are scalar amplifications of single-asset history. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Old gap ('continuous generation') is now partly closed: generation is per-cycle and seeded. The generated worlds are scalar amplifications of single-asset history. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 lane L1-MONEY: mutations fired, each restored with cp+cmp: calm-signed correlation (both tail tests); push removed (stress test); correlation range (0,0) (floor test); 0.0 for a non-finite variance (overflow test). Independent security-engineer skeptic REFUTED (see gap). Kept PARTIAL; owner decision needed on the reserve effect. 2026-10-30 hold: mutation \"apply_joint_tail_reserve defaults to true\" fails a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before (\"the joint world was not reported\"). It survived the first version, which set the flag to false explicitly; the test now uses the platform as built. Restored with cp+cmp."
   },
   {
     "id": "R12-RISK-4117",

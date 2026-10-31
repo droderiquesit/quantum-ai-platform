@@ -17,9 +17,11 @@
 //! with, so a test can assert both, and `main` is left with nothing to do
 //! but print and exit.
 
+pub mod adapter_proposals;
 pub mod agency;
 pub mod blueprint;
 pub mod change_window;
+pub mod control_pack;
 pub mod demo;
 pub mod event_fabric;
 pub mod model_pack;

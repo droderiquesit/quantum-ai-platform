@@ -1488,3 +1488,104 @@ fn a_hypothesis_on_a_future_that_expires_before_its_horizon_is_ruled_against_on_
     );
     Ok(())
 }
+
+/// R12-WORLD-1181, "detect contradictions": a contradiction is recorded as a
+/// finding of its own, distinct from a wide spread, on a real pass. On a
+/// trending tape the momentum member says the next close is up and the
+/// reversion member says it is down, each past `CONTRADICTION_MARGIN`. The
+/// review journals the pair, both views as recorded, and replay recomputes
+/// it from the recorded views. Every proposition the review names has views
+/// on both sides; none whose views all lean one way is named.
+///
+/// Mutation: in `FederationStage::run`, record no contradictions -- the
+/// replay then finds the recorded list is not the one the recorded views
+/// contain and refuses the record. The one-sided case this tape cannot pose
+/// is the unit test
+/// `only_views_on_opposite_sides_past_the_margin_are_a_contradiction`.
+#[test]
+fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_a_wide_spread()
+-> Result<()> {
+    use federation_stage::CONTRADICTION_MARGIN;
+    let mut platform = platform()?;
+    platform.observe(trend("AAA", 120));
+    platform.run_cycle(start());
+    let reviews = federation_stage::replay(&platform)?;
+    let review = reviews.first().expect("one review, read from the log");
+    let arbitration = review
+        .arbitrations
+        .iter()
+        .find(|a| a.proposition.contains(":next-close-up@"))
+        .expect("the instrument was arbitrated");
+    let probability = |model: &str| {
+        arbitration
+            .disagreement
+            .views
+            .iter()
+            .find(|v| v.model == model)
+            .map(|v| v.probability)
+            .unwrap_or_else(|| panic!("{model} has no view"))
+    };
+    let (up, down) = (
+        probability(federation_stage::MOMENTUM),
+        probability(federation_stage::REVERSION),
+    );
+    assert!(
+        up >= 0.5 + CONTRADICTION_MARGIN && down <= 0.5 - CONTRADICTION_MARGIN,
+        "premise: the members are on opposite sides past the margin: {up} vs {down}"
+    );
+
+    let found = review
+        .contradictions
+        .iter()
+        .find(|c| c.proposition == arbitration.proposition)
+        .unwrap_or_else(|| panic!("no contradiction recorded: {:?}", review.contradictions));
+    assert!(found.for_probability >= up, "{found:?}");
+    assert!(found.against_probability <= down, "{found:?}");
+    assert!(found.for_probability >= 0.5 + CONTRADICTION_MARGIN);
+    assert!(found.against_probability <= 0.5 - CONTRADICTION_MARGIN);
+
+    // Distinct from a spread: every named proposition straddles even odds,
+    // and at least one arbitration whose views do not straddle is not named.
+    for c in &review.contradictions {
+        let a = review
+            .arbitrations
+            .iter()
+            .find(|a| a.proposition == c.proposition)
+            .expect("a contradiction names an arbitrated proposition");
+        assert!(
+            a.disagreement
+                .views
+                .iter()
+                .any(|v| v.probability >= 0.5 + CONTRADICTION_MARGIN)
+                && a.disagreement
+                    .views
+                    .iter()
+                    .any(|v| v.probability <= 0.5 - CONTRADICTION_MARGIN),
+            "{} is named but its views do not straddle: {:?}",
+            c.proposition,
+            a.disagreement.views
+        );
+    }
+    let unopposed = review.arbitrations.iter().filter(|a| {
+        a.disagreement
+            .views
+            .iter()
+            .any(|v| v.probability >= 0.5 + CONTRADICTION_MARGIN)
+            && !a
+                .disagreement
+                .views
+                .iter()
+                .any(|v| v.probability <= 0.5 - CONTRADICTION_MARGIN)
+    });
+    for a in unopposed {
+        assert!(
+            review
+                .contradictions
+                .iter()
+                .all(|c| c.proposition != a.proposition),
+            "{} has one confident side only and was named a contradiction",
+            a.proposition
+        );
+    }
+    Ok(())
+}

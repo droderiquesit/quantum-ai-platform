@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 serde_json.workspace = true
 qip-core.workspace = true
+qip-data-finder.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
 qip-observability.workspace = true
@@ -106,6 +107,10 @@ qip-simulation-engine.workspace = true
 # with it through `qip-transport/tests/support/certs.rs`: that file names it
 # as `qip_transport::ring`, the re-export of the one pin in `qip-tls`, and
 # `cargo deny`'s workspace-duplicate check refuses a second pin.
+
+[dev-dependencies]
+# The replay test writes a journal from sensed bars (R12-REASON-9005).
+qip-market.workspace = true
 
 [lints]
 workspace = true

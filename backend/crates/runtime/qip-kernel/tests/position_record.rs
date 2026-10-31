@@ -268,10 +268,17 @@ fn every_held_position_resolves_to_a_mandate_and_target_or_is_flagged() -> Resul
     );
     Ok(())
 }
-/// A private fund with an undrawn commitment the commitment book will hold:
+/// A private fund with an undrawn commitment the commitment book will hold,
+/// whose one-year lockup expired before `start()` — a fund inside its lockup
+/// cannot be sized on a twenty-day thesis (ADR 0183):
 /// 400,000 promised against 150,000 drawn, and a residual the valuation
 /// plane marks from.
 fn private_fund(symbol: &str) -> Result<FinancialObject> {
+    private_fund_locked_for(symbol, 1.0)
+}
+
+/// [`private_fund`] with a stated lockup term, in years from its vintage.
+fn private_fund_locked_for(symbol: &str, lockup_years: f64) -> Result<FinancialObject> {
     FinancialObject::builder(
         object(symbol),
         symbol,
@@ -288,7 +295,7 @@ fn private_fund(symbol: &str) -> Result<FinancialObject> {
         distributed_capital: Decimal::ZERO,
         residual_value: dec!("160000"),
         stage: "buyout".to_string(),
-        lockup_years: 7.0,
+        lockup_years,
         capital_call_notice_days: 10,
         call_schedule: None,
     }))
@@ -440,8 +447,14 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
 /// them cannot be stated.
 ///
 /// The private fund is the case that carries meaning: its confidence is the
-/// decayed mark's, below one, and its expected exit is the lockup's dated
-/// return of capital, years rather than the catalogue's ninety days. The
+/// decayed mark's, below one, and its expected exit is read from its terms.
+/// Since ADR 0183 a fund still inside its lockup cannot be sized on a thesis
+/// shorter than the lockup (the exit plan would be dated inside it), so the
+/// fixture's lockup has expired and the expected exit is the catalogue's
+/// ninety days; the lockup's dated return for a fund still locked up is
+/// proven in `valuation_plane.rs`
+/// (`a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word`).
+/// The
 /// horizon is the approved hypothesis's own, the one the thesis's prediction
 /// is dated from. A second process resumed from the same log holds the same
 /// position with no hypothesis on record, and its record refuses naming the
@@ -507,10 +520,12 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
             record.valuation_confidence() < Decimal::ONE,
             "premise: the fund's mark is decayed, so the confidence is not trivially one"
         );
-        // The lockup's dated return: years, not the catalogue's ninety days.
+        // The lockup has expired, so the expected exit is the catalogue's
+        // ninety days (ADR 0183: a live lockup longer than the thesis is
+        // refused at construction and never reaches a held record).
         assert!(
-            record.expected_exit_days() > 365.0,
-            "the expected exit {} days is the catalogue's estimate, not the lockup's return",
+            (record.expected_exit_days() - 90.0).abs() < 1e-9,
+            "a fund whose lockup has expired exits on the catalogue's estimate: {} days",
             record.expected_exit_days()
         );
         assert!(
@@ -542,5 +557,64 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
     );
     // And a holding nobody has is refused, not recorded.
     assert!(second.position_holding("obj-NONE", later).is_err());
+    Ok(())
+}
+
+/// R12-ASSET-4069 (ADR 0183): a position cannot be opened without an exit
+/// plan its instrument's stated terms admit. The same fund on the same tape
+/// is sized when its lockup has expired, and refused at construction when
+/// its seven-year lockup is still running — the thesis is twenty days, so
+/// any exit it could plan falls inside the lockup — with the lockup named,
+/// and nothing is held.
+///
+/// The failure prevented: before this, a short thesis on a locked-up fund
+/// opened a position whose only exit was one the fund's terms forbid, and
+/// the platform carried no plan saying when or how it would leave.
+///
+/// Mutation: in `Platform::exit_plan_for`, pass `None` for the lockup — the
+/// locked-up fund is sized and the refusal assertion fails.
+#[test]
+fn a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held()
+-> Result<()> {
+    let fund = "obj-PRIV";
+    let run = |lockup_years: f64| -> Result<(Platform, String)> {
+        let mut universe = Universe::new();
+        universe.insert(private_fund_locked_for("PRIV", lockup_years)?)?;
+        let mut platform = in_memory(universe, config())?;
+        platform.observe(tape("PRIV"));
+        let report = platform.run_cycle(start());
+        assert!(report.traversed_every_stage(), "{}", report.summarise());
+        let summary = report.summarise();
+        Ok((platform, summary))
+    };
+
+    // Premise: with the lockup expired, the same thesis sizes the fund and
+    // dates an exit plan for it.
+    let (free, summary) = run(1.0)?;
+    assert!(
+        free.positions_at_cost().contains_key(fund),
+        "premise: an unlocked fund is sized: {summary}"
+    );
+    let plan = free
+        .position_exit_plan(fund)
+        .expect("a sized leg carries the exit plan it was admitted with");
+    assert!(
+        plan.exit_at() > start(),
+        "the plan is dated after the decision"
+    );
+
+    let (locked, summary) = run(7.0)?;
+    assert!(
+        !locked.positions_at_cost().contains_key(fund),
+        "a fund inside its lockup was sized on a thesis shorter than the lockup: {summary}"
+    );
+    assert!(
+        locked.position_exit_plan(fund).is_none(),
+        "no exit plan is recorded for a refused leg"
+    );
+    assert!(
+        summary.contains("falls inside the lockup"),
+        "the refusal names the lockup: {summary}"
+    );
     Ok(())
 }

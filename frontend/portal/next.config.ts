@@ -4,6 +4,26 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   /**
+   * One build id per commit, not a random one per build (R12-CICD-10117).
+   * Next names `/_next/static/<id>/` and writes `BUILD_ID` from this, so a
+   * random id made two builds of one commit differ in every page and
+   * manifest that cites it: 453 of 2,921 output files, measured
+   * 2026-10-25. deploy.yml passes the commit's `SOURCE_DATE_EPOCH`, so the
+   * id follows the commit. It is not a constant, because every path here is
+   * served `immutable` for a year and a constant id would pin browsers to
+   * the first deploy's manifests. Without the variable (a local build) Next
+   * keeps its random default.
+   *
+   * This is not the whole of reproducibility. With the id pinned, two
+   * builds still differ in four files, and those are per-build secrets:
+   * the preview-mode keys in prerender-manifest.json and
+   * server/preview-props.json, and the Server Actions key in
+   * server/server-reference-manifest.{js,json}. Pinning those in a public
+   * repository would publish them, so that half stays open.
+   */
+  generateBuildId: async () =>
+    process.env.SOURCE_DATE_EPOCH ? `qip-${process.env.SOURCE_DATE_EPOCH}` : null,
+  /**
    * Cloud Run serves the portal from the standalone output: a self-contained
    * server.js plus only the node_modules the trace proves are reached. The
    * tracing root is the frontend/ workspace root, not this app — without it

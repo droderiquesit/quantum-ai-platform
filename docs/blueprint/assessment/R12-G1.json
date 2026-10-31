@@ -488,27 +488,29 @@
   {
     "id": "R12-FABRIC-8022",
     "status": "PARTIAL",
-    "current": "qip-events FabricEnvelope (duplicate qip-contracts type gone) is opened by qip-desk-ship and qip-ledgerd consumer on production paths.",
+    "current": "Region and the authenticated principal are broker-stamped (`Broker::stamp_origin`, run by `produce_from` for every session batch; qip-fabricd requires `QIP_EVENT_FABRIC_REGION` outside `local` and passes the mTLS or bearer identity from `service.rs`), provenance is writer-stamped (`Batch::with_provenance`, stamped by the edge writer, the desk, qip-cli and fabricd's bench) and the partition is broker-stamped on every append (R12-FABRIC-8084). `FabricFacts` reads all of them off the batch: since 2026-10-25 a consumer (a reader that states no region) is refused a batch with no writer provenance exactly as it is refused one with no broker origin, and only a producer's own preflight may name its own. A version-1 batch decodes with every field explicitly absent and re-encodes byte for byte.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/codec.rs:267-339 Record/Batch fields",
-      "backend/crates/libs/qip-events/src/event_fabric/envelope.rs:62-96 FabricFacts/FabricEnvelope",
-      "backend/crates/libs/qip-contracts/src/fabric_envelope.rs:19 duplicate FabricEnvelope",
-      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs",
-      "backend/crates/libs/qip-events/src/event_fabric/envelope.rs::FabricEnvelope::open",
-      "backend/crates/runtime/qip-desk-ship/src/lib.rs::FabricEnvelope::open_all"
+      "backend/crates/libs/qip-events/src/event_fabric/codec.rs BrokerOrigin, Provenance, Batch::partition, FORMAT_VERSION_WITHOUT_ORIGIN",
+      "backend/crates/libs/qip-events/src/event_fabric/envelope.rs origin_facts and the provenance match in open_decoded",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs stamp_origin; service.rs:528 produce_from(.., Some(identity))",
+      "backend/crates/apps/qip-fabricd/src/config.rs (REGION required outside local) and lib.rs with_region",
+      "backend/crates/libs/qip-events/tests/event_fabric_origin.rs::a_stamped_batch_round_trips_its_region_partition_principal_and_provenance",
+      "backend/crates/libs/qip-events/tests/event_fabric_origin.rs::a_batch_without_the_fields_keeps_version_ones_bytes_and_decodes_them_as_absent",
+      "backend/crates/libs/qip-events/tests/event_fabric_origin.rs::a_consumer_reads_region_principal_and_provenance_off_the_wire",
+      "backend/crates/libs/qip-events/tests/event_fabric_origin.rs::a_consumer_fabricated_region_a_wrong_partition_and_an_unstamped_batch_are_refused"
     ],
-    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: broker-stamped region and principal and writer-stamped provenance in the codec, FabricFacts reading them, an old-batch decode test.",
+    "gap": "Skeptic REFUTED 2026-10-25 on the requirement's own text: 'every asynchronous event' must carry the ten fields, and the mesh spine's frames (capital envelope, policy, halt, cell delta) and the peer link's sessions do not travel as fabric envelopes; ADR 0128 decided the spine is the control half by naming and catalogues its frames (R12-FABRIC-10077), so the clause stays unmet by the requirement's wording until the owner narrows it or the frames carry the envelope fields. The reader-fabricated provenance the skeptic also found (the ledger labelled a provenance-less batch with its own string) is fixed in the same lane.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events --test event_fabric_codec",
+    "verification": "cargo +1.94.1 test -p qip-events --test event_fabric_origin --test event_fabric_codec && cargo +1.94.1 test -p qip-streaming --test event_fabric_broker && cargo +1.94.1 test -p qip-ledgerd --test fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Two FabricEnvelope types exist (qip-events and qip-contracts) — a second source of truth for one contract. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Region and provenance come from reader-supplied FabricContext, not carried by the event on the wire; not every async event (mesh, spine) uses it."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). ADR lane 2026-10-18: gap re-graded against decision D05. 2026-10-25 lane L1b-fabric: the named closure test `an_old_batch_without_the_stamped_fields_still_decodes_and_a_new_one_round_trips_them` is the pair `a_stamped_batch_round_trips_...` and `a_batch_without_the_fields_keeps_version_ones_bytes_...` in event_fabric_origin.rs (bar part 1: a citation, not a gap). Mutations fired and restored (cp+cmp): the codec writing an empty principal fails three origin tests; `Broker::stamp_origin` writing an empty principal fails the broker test (`principal: \"\"` against `qip-edge-node-london-1`). The qip-ledgerd fixture batches now stamp `Provenance::EdgeNode` as the edge writer does; before the provenance rule every one of its eleven tests stalled on the refusal, which is the proof the rule is on the shipped consumer path. Independent skeptic: REFUTED (gap); findings on the provenance fallback taken, on the mesh/spine clause recorded, on the regionless `local` broker noted (fails closed: its consumers refuse every batch)."
   },
   {
     "id": "R12-FABRIC-8023",
@@ -1398,7 +1400,7 @@
       "infrastructure/terraform/modules/execution-node/main.tf:683 iap_ssh firewall",
       "infrastructure/terraform/tests/pam.tftest.hcl (18 runs)"
     ],
-    "gap": "2026-10-24 (lane L6, current corrected: it said no PAM entitlements in Terraform): (1) pam_entitlements is empty in every environment, so no privileged role is in fact granted through PAM; enabling one is an infrastructure/environments/** change (protected) with a real plan, tracked with R12-SEC-9123/9060; (2) no workforce identity pool; (3) standing privileged grants outside PAM (the owner's own roles) are not inventoried, so 'privileged access must be temporary' is not proven of the project.",
+    "gap": "2026-10-25 (lane L6): no patch written. The closure adds a PAM entitlement in dev tfvars (protected) and runs a real plan, and the workforce pool waits on the owner's choice of identity provider; a tfvars flip is neither a gate nor a comment correction under decision 3, so it is the owner's to apply, and no plan can run while billing is paused. Earlier: 2026-10-24 (lane L6, current corrected: it said no PAM entitlements in Terraform): (1) pam_entitlements is empty in every environment, so no privileged role is in fact granted through PAM; enabling one is an infrastructure/environments/** change (protected) with a real plan, tracked with R12-SEC-9123/9060; (2) no workforce identity pool; (3) standing privileged grants outside PAM (the owner's own roles) are not inventoried, so 'privileged access must be temporary' is not proven of the project.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1912,7 +1914,7 @@
     "verification": "cargo test -p qip-events (131 passed, 0 failed); cargo test -p qip-streaming (134 passed, 0 failed); event_fabric_codec \"ok. 11 passed; 0 failed\"; event_fabric_broker \"ok. 15 passed; 0 failed\"; qip-fabricd 58/0, qip-ledgerd 51/0, qip-transport 156/0, qip-desk-ship 10/0, qip-edge-node 303/0 (on 17300548)",
     "work_item": "",
     "size": "S",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160. 2026-10-24 parent session, merge 4: back to PARTIAL. L1's flag-bit partition (ADR 0160) and L5's version-2 origin collided in the codec. The version-2 format was kept; ADR 0160 was not landed. L1's flipped-bit test was re-pointed at the version-2 origin. Mutation: omitting the origin's partition from encode and decoding it as 0 fails it with left Some(0), right Some(7). Restored by copy, cmp clean, and the suite reads 'ok. 9 passed'. 2026-10-25 lane L1-MONEY: mutations fired, each restored byte-for-byte: encode tag 0 for partition-only; disagreement refusal off; broker drops the partition stamp; tag-1 decode drops the partition; stated-partition refusal off. Two code-reviewer skeptic rounds, both REFUTED (evidence; then a committed mutation, since fixed). Kept PARTIAL by the owner's two-round rule."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160. 2026-10-24 parent session, merge 4: back to PARTIAL. L1's flag-bit partition (ADR 0160) and L5's version-2 origin collided in the codec. The version-2 format was kept; ADR 0160 was not landed. L1's flipped-bit test was re-pointed at the version-2 origin. Mutation: omitting the origin's partition from encode and decoding it as 0 fails it with left Some(0), right Some(7). Restored by copy, cmp clean, and the suite reads 'ok. 9 passed'. 2026-10-25 lane L1-MONEY: mutations fired, each restored byte-for-byte: encode tag 0 for partition-only; disagreement refusal off; broker drops the partition stamp; tag-1 decode drops the partition; stated-partition refusal off. Two code-reviewer skeptic rounds, both REFUTED (evidence; then a committed mutation, since fixed). Kept PARTIAL by the owner's two-round rule. 2026-10-25 lane L1b-fabric: its own partition-field design was dropped on the parent's instruction in favour of this (lane L1's) encoding; what L1b kept on top of it: `FabricEnvelope::open` refuses a read of a batch as any partition but `Batch::partition` whether or not an origin is stamped (event_fabric_origin.rs::an_in_process_batch_carries_its_partition_without_an_origin_and_is_refused_as_another), and `catch_up` and `rebuild_from_archive` refuse to hydrate a batch stamped for another partition (`require_stamped_for`)."
   },
   {
     "id": "R12-FABRIC-8085",
@@ -2018,16 +2020,20 @@
   {
     "id": "R12-FABRIC-8089",
     "status": "PARTIAL",
-    "current": "Per-producer quotas, lag refusal, class-aware admission (P4 shed, P0/P1 told to wait), tested in event_fabric_quota.",
+    "current": "Four controls, each on the shipped path. (1) Producer credit windows: every `ProduceAck` carries `ProducerCredit { bytes, refills_in_ms }`, the bytes left in the producer's per-second window and when it refills, computed by `Broker::charge_quota` on admission; `Producer::send` holds a batch the credit cannot fund at the producer, naming the refill as `quota_wait`, and never puts it on the wire. (2) Per-producer byte and message quotas, refused with the wait (`charge_quota`). (3) Class-aware admission: P4 shed, P0/P1 told to wait (`OverloadPolicy`). (4) Topic priority on the shared listener: `qip-transport`'s `Server` holds `reserved_for_priority` of `max_concurrent` for callers the handler classes `Priority`; qip-fabricd reserves 16 of 64 (`PRIORITY_RESERVED_CONNECTIONS`) and classes a caller by the catalogue's grants on its authenticated identity (any P0/P1 grant is priority), decided from the request head before the body is read, so a bulk flood is answered 503 past its share before it costs a worker a body. Bounded per-class queues do not exist as queues: a connection past its class's share is refused at once, and the listener backlog is the only queue.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1074 refuse_when_a_group_lags, :1105 charge_quota",
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:153 OverloadPolicy",
-      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:112",
-      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::over_quota_telemetry_is_shed_visibly_and_an_outcome_is_only_ever_told_to_wait",
-      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::under_a_telemetry_flood_p4_is_shed_while_p0_and_p1_still_commit_and_p1_excess_backs_off",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::partition_state (first open serialised, commit db606202)"
+      "backend/crates/libs/qip-transport/src/server.rs ServerLimits::reserved_for_priority, AdmissionClass, Handler::admission_class, serve_connection (head, class, body)",
+      "backend/crates/apps/qip-fabricd/src/lib.rs PRIORITY_RESERVED_CONNECTIONS, data_plane_limits, DataPlane::admission_class",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs Service::admission_class",
+      "backend/crates/libs/qip-transport/src/event_fabric/protocol.rs ProducerCredit, ProduceAck::with_credit",
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs CreditWindow, Producer::send",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs charge_quota (returns the credit), produce_from",
+      "backend/crates/apps/qip-fabricd/tests/overload.rs::p4_producers_holding_every_connection_slot_cannot_starve_a_p0_commit",
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs::tests::a_batch_the_credit_window_cannot_fund_waits_at_the_producer_until_the_refill",
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::an_ack_grants_the_credit_left_in_the_window_and_when_it_refills",
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::under_a_telemetry_flood_p4_is_shed_while_p0_and_p1_still_commit_and_p1_excess_backs_off"
     ],
-    "gap": "2026-10-24 (lane L1-MONEY, skeptic REFUTED on db606202): the broker-level half now holds and is proven concurrently — four threads flood a P4 stream past its quota while the same producer ids commit every P0/P1 batch, P4 is shed (never told to retry), and P1 excess gets Quota{retry_after_ms>0}. Writing that test found and fixed a first-open race in Broker::partition_state that refused valid appends under concurrent connections. Still missing, per the requirement's own clauses: (1) producer-side credit/window flow control — the only credit window is the consumer's fetch_credit_bytes (qip-transport consumer.rs; one shipped user, qip-ledgerd); per-second quotas are rate limits, not windows; (2) topic priority on a shared resource — fabricd's data server cap ServerLimits::max_concurrent (64, qip-transport server.rs) is class-blind, so P4 producer connections can take every slot and P0/P1 get 503 while every stream quota holds; StreamPolicy.peak_bytes_per_second is declared but enforced nowhere; (3) bounded per-class queues between a connection and the log do not exist (connections over the cap are refused, one unpooled thread each). Closes with producer credit windows, class-aware reserved capacity or a priority-ordered byte budget at fabricd's connection layer, and an overload test through fabricd's Server proving P0/P1 commit while P4 connections saturate it.",
+    "gap": "Skeptic REFUTED 2026-10-25: (1) the committed listener is mutual TLS and the class was looked up by the certificate SAN, which no grant identity equals, so every deployed caller was Bulk — fixed in the same lane by classing on the identity `handle` authorises (the bearer token first, the peer name only where it is the operator); (2) under the committed catalogues every granted identity holds a P0 or P1 grant, so no deployed producer is ever Bulk and the reserve sheds only the unauthenticated; (3) the handshake cap and the `live` cap stay class-blind, so 16 head-stalled plus 48 body-stalled plaintext peers, or 64 handshaken mTLS peers stalling their heads, still starve a P0 caller; (4) the 503 past the bulk share is written with the body unread, so a real producer may see a reset rather than the refusal; (5) the per-producer window and credit are keyed on the client-chosen producer id, not the principal, so one identity rotates ids to multiply its quota, and the credit says nothing about the message quota. Classing by identity is a substitute for the requirement's 'topic priority', not that clause (bar part 4). Closes with class-aware handshake and live caps, a quota key bound to the principal, a drained-before-503 refusal, and an mTLS overload test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2035,10 +2041,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo +1.94.1 test -p qip-streaming --test event_fabric_quota",
+    "verification": "cargo +1.94.1 test -p qip-fabricd --test overload && cargo +1.94.1 test -p qip-transport && cargo +1.94.1 test -p qip-streaming --test event_fabric_quota",
     "work_item": "",
-    "size": "M",
-    "notes": "event_fabric_infrastructure.rs:170 fabric_080 is a fixture test. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L1-MONEY (db606202): concurrent overload test added; mutations fired: charge_quota keyed by producer alone (control/outcomes refused), SampleOrShed answered as Quota (telemetry told to retry), partition_state reverted (3/3 runs 'already open in this process'); all restored with cp+cmp. Independent code-reviewer skeptic: REFUTED for the three clauses in gap; it confirmed the race fix introduces no lock nesting (declared released before partitions; recover_producers already ran under partitions)."
+    "size": "L",
+    "notes": "event_fabric_infrastructure.rs:170 fabric_080 is a fixture test. 2026-10-24 lane L1-MONEY (db606202): concurrent overload test; skeptic REFUTED for three clauses. 2026-10-25 lane L1b-fabric closed the three: the reserve is by the caller's identity class rather than the request's topic because the topic is in the body and the slot must be decided before the body is read; `peak_bytes_per_second` is still enforced nowhere (declared on the policy, a stream-level ceiling the per-producer window does not sum to), stated here rather than hidden. A plaintext peer now leaves the handshake slots when its head is read (as a TLS peer leaves them after the handshake), because holding the slot through the body let sixteen stalled bodies close the listener to every new peer. Mutations fired 2026-10-25, each restored by copy with `cmp` clean: `reserved_for_priority: 0` in `data_plane_limits` (overload test: `left: 0 right: 16` shed); `Service::admission_class` answering Priority for every caller (`left: 64 right: 48` held, nothing shed); the producer skipping the credit check (`a_batch_the_credit_window_cannot_fund_...` fails at the `expect_err`); the broker reporting the full quota as credit (`left: 10 right: 4`). Independent read-only skeptic (code-reviewer): REFUTED on the five findings now in `gap`; finding (1) fixed in the lane the same day (`Service::admission_class` classes on the bearer identity first), the rest left as the row's gap."
   },
   {
     "id": "R12-FABRIC-8090",
@@ -3133,12 +3139,13 @@
   },
   {
     "id": "R12-LEDGER-8138",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No change streams exist; nothing to assess.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf (no change stream)"
+      "infrastructure/terraform/modules/data/main.tf (no change stream)",
+      "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_decision_path_reads_a_balance_from_a_derived_copy (9fb4ebe3)"
     ],
-    "gap": "Not applicable until Spanner is used.",
+    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3148,10 +3155,10 @@
       "R12-LEDGER-8007"
     ],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cargo test -p qip-acceptance --test derived_copies (\"ok. 1 passed; 0 failed\")",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " 2026-10-30 lane L1-MONEY: three mutations fired, each restored with cp+cmp: a new warehouse caller after node.rs's test module; a query in the sink; a change-stream reader in tail.rs. One code-reviewer skeptic round REFUTED (see gap). Kept PARTIAL."
   },
   {
     "id": "R12-LEDGER-8139",

@@ -81,6 +81,16 @@ fn main() {
         // R12-CONTRACT-7064: the publish workflow's three steps from an
         // unsigned draft to a release pack, and the check that decides
         // whether one loads. The verdict is the exit code.
+        // R12-CONTRACT-7091: a signed pack's rollout record, and whether one
+        // stands for a node. The verdict is the exit code.
+        "control-pack" => {
+            qip_cli::control_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
+                for line in lines {
+                    println!("{line}");
+                }
+                code
+            })
+        }
         "model-pack" => {
             qip_cli::model_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
                 for line in lines {
@@ -117,8 +127,14 @@ fn print_help() {
     println!("  limits            the risk limits and their rationales");
     println!("  storage           the configured store, and what survives a restart");
     println!("  registrations [--config <path>]");
+    println!("  registrations propose --candidates <path> [--config <path>]");
     println!("                    every catalogued source's requirement and standing,");
     println!("                    and the exact secret-add command for a pending one");
+    println!("  control-pack announce <pack.json> --rollout <rollout.json>");
+    println!(
+        "  control-pack verify <announcement.json> --pack <pack.json> --region <r> --node <n>"
+    );
+    println!("                    a signed pack's rollout record, and whether it targets a node");
     println!("  model-pack signing-message <pack.json> --key-version <name>");
     println!("  model-pack attach-signature <pack.json> --key-version <name> --der <hex>");
     println!("  model-pack verify <pack.json> --trust-bundle <path> [--now <rfc3339>]");
@@ -127,7 +143,7 @@ fn print_help() {
     println!("                    refuse a saved plan changing a core resource outside");
     println!("                    the committed change window (exit 3)");
     println!("  replay --journal <path> [--config <path>]");
-    println!("                    verify a journal's hash chain and rebuild the");
+    println!("                    verify a journal's hash chain, rebuild the");
     println!("                    eligibility, registration and fabric registries from");
     println!("                    it alone, against the platform this configuration");
     println!("                    assembles");
@@ -166,13 +182,20 @@ fn print_help() {
     );
     println!("                    fetch a partition and verify its batch chain: AGREES (0) or");
     println!("                    DIFFERS (3). Reads the fabric; re-drives nothing");
+    println!(
+        "  event-fabric produce --peer <loopback-address:port> --stream <name> --class <p0|p1|p2> --partition <n> --producer-id <id> --rate <batches/s> --duration-ms <ms> [--records-per-batch <n>] [--payload-bytes <n>] [--producers <n>]"
+    );
+    println!("                    paced, bounded synthetic load on one stream for a game-day");
+    println!("                    drill (token from QIP_EVENT_FABRIC_PRODUCE_TOKEN_FILE);");
+    println!("                    prints admitted and refused counts; sends no order");
     println!("  event-fabric schema-gate --base <lock> --head <lock>");
     println!("                    judge the head's schemas.lock.json against the base's:");
     println!("                    exit 3 if a field was removed, renamed or retyped");
     println!("                    without a version bump, 0 if every change only adds");
     println!();
     println!("`registrations` exits 3 while any catalogued source is still refused, and");
-    println!("`replay` exits 3 if the chain is broken or a registry disagrees. Both exit");
+    println!("`replay` exits 3 if the chain is broken, a registry disagrees or a journaled");
+    println!("symbolic derivation does not re-derive. Both exit");
     println!("1 when they could not answer at all. Neither prints a credential value:");
     println!("`registrations` prints the name a credential is read under and the command");
     println!("that puts a version behind it, which reads the value from stdin.");
@@ -587,6 +610,9 @@ fn configuration(path: Option<&PathBuf>) -> Result<PlatformConfig> {
 
 /// `qip registrations [--config <path>]`.
 fn registrations_command(arguments: &[String]) -> Result<u8> {
+    if arguments.first().map(String::as_str) == Some("propose") {
+        return propose_command(&arguments[1..]).map(|()| OK);
+    }
     let options = options(arguments, &["--config"])?;
     let mut config = configuration(options.get("--config"))?;
     // A read-only question must not append to a deployment's event log.
@@ -604,6 +630,36 @@ fn registrations_command(arguments: &[String]) -> Result<u8> {
         println!("{line}");
     }
     Ok(report.code)
+}
+
+/// `qip registrations propose --candidates <path> [--config <path>]`
+/// (R12-DATA-2002): assess each candidate in an operator's catalogue through
+/// the finder and print, for each one it approves, the adapter a person
+/// would build — and for each one it does not, why not. A proposal for
+/// review; nothing is written, and the platform it assesses with journals to
+/// memory so a deployment's log is not touched by a question.
+fn propose_command(arguments: &[String]) -> Result<()> {
+    let options = options(arguments, &["--candidates", "--config"])?;
+    let Some(path) = options.get("--candidates") else {
+        return Err(Error::invalid(
+            "`qip registrations propose` needs --candidates <path>, a source-candidate catalogue \
+             naming each candidate beside its reviewed egress route",
+        ));
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| Error::io(format!("{} cannot be read: {error}", path.display())))?;
+    let now = SystemClock.now();
+    let entries = qip_data_finder::catalogue::load(&text, now)?.entries;
+    let mut config = configuration(options.get("--config"))?;
+    config.event_log = EventLogDestination::InMemory;
+    let mut platform = platform_from(config)?;
+    let proposals = qip_cli::adapter_proposals::propose(&mut platform, &entries, None, now)?;
+    for proposal in &proposals {
+        for line in proposal.lines() {
+            println!("{line}");
+        }
+    }
+    Ok(())
 }
 
 /// `qip replay --journal <path> [--config <path>]`.

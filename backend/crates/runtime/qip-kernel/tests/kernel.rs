@@ -2136,3 +2136,85 @@ fn a_lapsed_panel_is_deferred_to_a_bounded_backlog_and_the_cycle_still_acts() ->
     }
     Ok(())
 }
+
+/// R12-REASON-3023 on the default cycle: the self-exploitation probe reads
+/// the platform's own fills, and the kernel is what puts them there —
+/// `brief_the_desk_on_executions`, before every REASON. An order filled on
+/// one cycle is on the desk when the next panel convenes, and the probe's
+/// finding counts it. Without the feed the probe would report nothing
+/// examined on every cycle of every deployment while the organisation test
+/// above, on a hand-built desk, kept passing.
+///
+/// Mutation: delete `self.brief_the_desk_on_executions();` from
+/// `stage_reason` — the probe reports no data on every cycle and the
+/// `fills_scanned` assertion fails. Verified and restored.
+#[test]
+fn a_fill_the_platform_made_is_on_the_desk_for_the_self_exploitation_probe_next_cycle() -> Result<()>
+{
+    use qip_investment_agents::ids;
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    assert!(
+        !first
+            .stage(Stage::Reason)
+            .expect("REASON reports")
+            .detail
+            .contains("nothing in the queue"),
+        "premise: the panel convenes on this fixture"
+    );
+    let probe_findings = |platform: &Platform| -> Vec<f64> {
+        platform
+            .organisation()
+            .audit()
+            .for_agent(ids::SELF_EXPLOITATION)
+            .iter()
+            .filter_map(|run| run.finding.as_ref())
+            .filter_map(|finding| {
+                finding
+                    .facts
+                    .iter()
+                    .find(|fact| fact.label == "fills_scanned")
+                    .map(|fact| fact.value)
+            })
+            .collect()
+    };
+    // Premise: before any fill the probe examined nothing.
+    assert!(
+        probe_findings(&platform).is_empty(),
+        "the probe counted fills before the platform made any: {:?}",
+        probe_findings(&platform)
+    );
+
+    let later = start().saturating_add(Duration::from_days(1));
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-probe",
+        vec!["hyp-probe".to_string()],
+        later,
+    );
+    platform
+        .submit_order(order, later)
+        .map_err(|error| qip_core::error::Error::invalid(error.message().to_string()))?;
+    let mut counted = Vec::new();
+    for day in 1..=4i64 {
+        platform.observe(bars("AAA", 120 + day as usize));
+        platform.run_cycle(start().saturating_add(Duration::from_days(day)));
+        counted = probe_findings(&platform);
+        if counted.iter().any(|fills| *fills >= 1.0) {
+            break;
+        }
+    }
+    assert!(
+        !platform.orders().fills().is_empty(),
+        "premise: the order filled, so there is an execution to show the probe"
+    );
+    assert!(
+        counted.iter().any(|fills| *fills >= 1.0),
+        "the probe never saw the platform's own fill: {counted:?}"
+    );
+    Ok(())
+}

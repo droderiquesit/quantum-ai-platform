@@ -309,12 +309,14 @@ dependencies = [
  "qip-compliance",
  "qip-contracts",
  "qip-core",
+ "qip-data-finder",
  "qip-edge",
  "qip-events",
  "qip-execution-engine",
  "qip-feature-dag",
  "qip-financial",
  "qip-kernel",
+ "qip-market",
  "qip-market-ingestion",
  "qip-mesh",
  "qip-observability",
@@ -887,9 +889,11 @@ dependencies = [
 name = "qip-portfolio-engine"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-optimization-engine",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

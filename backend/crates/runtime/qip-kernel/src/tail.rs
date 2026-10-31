@@ -284,6 +284,24 @@ pub const UNMEASURED_DAILY_VOLATILITY: f64 = 0.05;
 /// world is outside the history the book has actually seen.
 pub const SYNTHETIC_AMPLIFICATION: (f64, f64) = (1.25, 2.0);
 
+/// The generated joint world (R12-RISK-4116): a regime flip and a
+/// correlation structure no history supplied, drawn together. Each position's
+/// volatility is [`REGIME_FLIP_VOL_MULTIPLE`] times its measured figure times
+/// a draw in [`SYNTHETIC_AMPLIFICATION`], and every pair is given a drawn
+/// correlation of magnitude in [`JOINT_CORRELATION_MAGNITUDE`] with the sign
+/// that hurts the book: positive between two longs or two shorts, negative
+/// between a long and a short, so a hedge loses on both legs at once.
+pub const SYNTHETIC_JOINT: &str = "synthetic-joint";
+
+/// The range a generated joint world's pairwise correlation magnitude is
+/// drawn from. The floor is what keeps the world past the regime flip: with
+/// every pair at least this correlated against the book, the joint loss is at
+/// least `sqrt(0.75)` of the undiversified sum of the amplified legs, and the
+/// amplification floor of 1.25 times `sqrt(0.75)` is above one — so wherever
+/// no long's move is capped at its whole notional, this world is worse than
+/// [`REGIME_FLIP`] for every book.
+pub const JOINT_CORRELATION_MAGNITUDE: (f64, f64) = (0.75, 1.0);
+
 /// One position as the generated worlds read it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TailPosition {
@@ -609,6 +627,124 @@ pub fn survival_worlds(book: &TailBook<'_>, at: Timestamp) -> Vec<TailWorld> {
         ));
     }
     out
+}
+
+/// The generated joint world over `book` ([`SYNTHETIC_JOINT`]), or `None`
+/// for no equity or no position, as [`survival_worlds`] is.
+///
+/// Deliberately **not** one of [`survival_worlds`]: the survival reserve and
+/// hedge selection read those, and this world is usually the worst of them,
+/// so applying it raises the capital the survival governor withholds. That
+/// is a change to a financial risk control and awaits the owner's
+/// authorisation; until then the platform computes it, reports it and its
+/// would-be reserve as advisory, and applies it only where a composition
+/// root has turned on `Platform::set_joint_tail_reserve_applied`, which none
+/// does.
+pub fn joint_world(book: &TailBook<'_>, at: Timestamp) -> Option<TailWorld> {
+    let equity = book.equity;
+    if !(equity.is_finite() && equity > 0.0) || book.positions.is_empty() {
+        return None;
+    }
+    let held: Vec<&TailPosition> = book
+        .positions
+        .iter()
+        .filter(|position| position.notional != 0.0 && position.notional.is_finite())
+        .collect();
+    let mut unmeasured = Vec::new();
+    let vols: Vec<f64> = held
+        .iter()
+        .map(|position| {
+            match book
+                .price_history
+                .get(&position.object)
+                .map(Vec::as_slice)
+                .and_then(daily_volatility)
+            {
+                Some(vol) => vol,
+                None => {
+                    unmeasured.push(position.object.clone());
+                    UNMEASURED_DAILY_VOLATILITY
+                }
+            }
+        })
+        .collect();
+    Some(synthetic_joint(book, &held, &vols, &unmeasured, at))
+}
+
+/// See [`SYNTHETIC_JOINT`]. Statistics, so `f64`. The pairwise
+/// correlations are drawn independently, so together they need not form a
+/// valid correlation matrix: the world is a conservative bound on a joint
+/// move, not a coherent market, and every pair term is added as a loss.
+/// Like every survival world it is skipped where SIMULATE skips the stress
+/// (too little history for the factor model, no equity, no position).
+///
+/// The generator is seeded
+/// from the cycle as the other generated worlds are, but on its own stream,
+/// so adding this world did not move the draws behind theirs.
+fn synthetic_joint(
+    book: &TailBook<'_>,
+    held: &[&TailPosition],
+    vols: &[f64],
+    unmeasured: &[String],
+    at: Timestamp,
+) -> TailWorld {
+    let mut state = book.seed ^ 0xD1B5_4A32_D192_ED03;
+    if state == 0 {
+        state = 0x2545_F491_4F6C_DD1D;
+    }
+    let (low, high) = SYNTHETIC_AMPLIFICATION;
+    // Each leg's stressed loss on its own, as the regime flip charges it.
+    let legs: Vec<f64> = held
+        .iter()
+        .zip(vols)
+        .map(|(position, vol)| {
+            let amplification = low + (high - low) * next_unit(&mut state);
+            let move_ = TAIL_QUANTILE
+                * (REGIME_FLIP_VOL_MULTIPLE * amplification * vol)
+                * CORRELATION_HORIZON_DAYS.sqrt();
+            let move_ = if position.notional > 0.0 {
+                move_.min(1.0)
+            } else {
+                move_
+            };
+            position.notional.abs() * move_
+        })
+        .collect();
+    let (floor, ceiling) = JOINT_CORRELATION_MAGNITUDE;
+    // Every term is a loss: the drawn correlation takes the sign that makes
+    // the pair's co-movement adverse, so the product of two leg losses is
+    // added, never netted.
+    let mut variance = 0.0;
+    for (i, a) in legs.iter().enumerate() {
+        variance += a * a;
+        for b in &legs[i + 1..] {
+            let magnitude = floor + (ceiling - floor) * next_unit(&mut state);
+            variance += 2.0 * magnitude * a * b;
+        }
+    }
+    // Fail closed: a variance that overflowed, or that a non-finite input
+    // poisoned, is a world too large to measure, not one that costs nothing.
+    // It reads as infinite, which `survival::worst_world` treats as the worst
+    // world, rather than vanishing from the reserve as zero would.
+    let loss = if variance.is_finite() {
+        variance.max(0.0).sqrt()
+    } else {
+        f64::INFINITY
+    };
+    world(
+        SYNTHETIC_JOINT,
+        at,
+        loss,
+        book.equity,
+        unmeasured.to_vec(),
+        format!(
+            "generated for cycle seed {}: volatility {REGIME_FLIP_VOL_MULTIPLE}x times a draw in \
+             [{low}, {high}] per position, and every pair correlated against the book at a \
+             drawn magnitude in [{floor}, {ceiling}], so hedges lose on both legs in a \
+             correlation structure the book's history never showed",
+            book.seed
+        ),
+    )
 }
 
 /// The correlation-inversion world: the book's variance with every
@@ -1045,6 +1181,23 @@ mod tests {
         );
     }
 
+    fn joint_of(
+        positions: &[TailPosition],
+        history: &BTreeMap<String, Vec<f64>>,
+        seed: u64,
+    ) -> TailWorld {
+        joint_world(
+            &TailBook {
+                positions,
+                price_history: history,
+                equity: 1_000_000.0,
+                seed,
+            },
+            at(),
+        )
+        .expect("premise: a held book with equity has a joint world")
+    }
+
     fn series(start: f64, moves: &[f64]) -> Vec<f64> {
         let mut prices = vec![start];
         for move_ in moves {
@@ -1231,6 +1384,136 @@ mod tests {
                 .iter()
                 .any(|name| (world(&first, name).loss - world(&next, name).loss).abs() > 1e-6),
             "two cycles generated the same worlds"
+        );
+    }
+
+    /// R12-RISK-4116: for a hedged pair whose history says the legs move
+    /// together, the generated joint world is worse than every named world
+    /// the same stress produces — the regime flip, the correlation inversion
+    /// and the contagion cascade included — and than the counterparty and
+    /// model-failure worlds, so SIMULATE stresses the book outside the
+    /// library's bounds. It replays for the same cycle and differs across
+    /// cycles.
+    ///
+    /// Mutation: give the pair a calm, history-signed correlation instead of
+    /// the adverse one (`variance -= 2.0 * magnitude * a * b`) and the hedge
+    /// nets, so the joint world falls inside the library.
+    #[test]
+    fn a_generated_joint_world_lies_outside_every_library_world_for_a_hedged_pair() {
+        let a = series(
+            100.0,
+            &[0.03, -0.025, 0.02, -0.03, 0.025, -0.02, 0.03, -0.025],
+        );
+        let b = series(
+            50.0,
+            &[0.028, -0.024, 0.021, -0.029, 0.026, -0.019, 0.031, -0.024],
+        );
+        let history = BTreeMap::from([("obj-AAA".to_string(), a), ("obj-BBB".to_string(), b)]);
+        let positions = [held("obj-AAA", 500_000.0), held("obj-BBB", -500_000.0)];
+        let generated = book_of(&positions, &history, 11);
+        let joint = joint_of(&positions, &history, 11);
+        let library = worlds(
+            &[
+                ("obj-AAA".into(), 500_000.0),
+                ("obj-BBB".into(), -500_000.0),
+            ],
+            &history,
+            1_000_000.0,
+            at(),
+        );
+        let others: Vec<&TailWorld> = generated
+            .iter()
+            .chain(library.iter())
+            .filter(|w| !SYNTHETIC_WORLDS.contains(&w.scenario.as_str()))
+            .collect();
+        assert!(
+            others.iter().any(|w| w.scenario == REGIME_FLIP)
+                && others.iter().any(|w| w.scenario == CORRELATION_INVERSION)
+                && others.iter().any(|w| w.scenario == CONTAGION_CASCADE)
+                && others.iter().any(|w| w.scenario == MODEL_FAILURE),
+            "premise: the library worlds were generated: {:?}",
+            others.iter().map(|w| &w.scenario).collect::<Vec<_>>()
+        );
+        assert!(
+            joint.unmeasured.is_empty(),
+            "premise: both legs are measured"
+        );
+        for other in &others {
+            assert!(
+                joint.loss > other.loss,
+                "the joint world ({}) is inside {} ({})",
+                joint.loss,
+                other.scenario,
+                other.loss
+            );
+        }
+        assert!(
+            generated.iter().all(|w| w.scenario != SYNTHETIC_JOINT),
+            "the joint world is advisory and never one of the applied survival worlds"
+        );
+        assert_eq!(joint, joint_of(&positions, &history, 11));
+        assert!(
+            (joint.loss - joint_of(&positions, &history, 12).loss).abs() > 1e-6,
+            "two cycles generated the same joint world"
+        );
+    }
+
+    /// R12-RISK-4116, the bound `JOINT_CORRELATION_MAGNITUDE` documents: on a
+    /// book where no long's move is capped, the joint world is at least
+    /// `1.25 * sqrt(0.75)` times the regime flip, because every pair is at
+    /// least that correlated against the book. Eight independent longs are
+    /// where a diversified correlation would undercut it most — at zero
+    /// correlation the joint loss is about `sqrt(8)/8` of the summed legs —
+    /// so this is the book that tells the drawn correlation from none.
+    ///
+    /// Mutation: set `JOINT_CORRELATION_MAGNITUDE` to `(0.0, 0.0)` and the
+    /// joint world falls below the bound.
+    #[test]
+    fn the_joint_world_stays_past_the_regime_flip_by_its_correlation_floor_on_a_diversified_book() {
+        let names: Vec<String> = (0..8).map(|i| format!("obj-L{i}")).collect();
+        let history: BTreeMap<String, Vec<f64>> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+                let moves: Vec<f64> = (0..8)
+                    .map(|k| sign * if k % 2 == 0 { 0.01 } else { -0.008 })
+                    .collect();
+                (name.clone(), series(100.0, &moves))
+            })
+            .collect();
+        let positions: Vec<TailPosition> = names.iter().map(|name| held(name, 100_000.0)).collect();
+        for seed in [3, 17, 99] {
+            let generated = book_of(&positions, &history, seed);
+            let flip = world(&generated, REGIME_FLIP).loss;
+            let joint = joint_of(&positions, &history, seed).loss;
+            assert!(flip > 0.0, "premise: the regime flip charges the book");
+            // The floor written out, not read from the constants it checks.
+            let bound = 1.25 * 0.75_f64.sqrt() * flip;
+            assert!(
+                joint >= bound - 1e-6,
+                "seed {seed}: the joint world {joint} is below its documented floor {bound}"
+            );
+        }
+    }
+
+    /// A book so large its joint variance overflows reads as an infinite
+    /// loss, the worst world, rather than a free one.
+    ///
+    /// Mutation: return `0.0` for a non-finite variance and the world reads
+    /// as costing nothing.
+    #[test]
+    fn a_joint_variance_that_overflows_is_an_infinite_loss_not_a_free_world() {
+        let history = BTreeMap::from([
+            ("obj-AAA".to_string(), series(100.0, &[0.03, -0.02, 0.025])),
+            ("obj-BBB".to_string(), series(100.0, &[-0.02, 0.03, -0.025])),
+        ]);
+        let positions = [held("obj-AAA", -1.0e200), held("obj-BBB", -1.0e200)];
+        let joint = joint_of(&positions, &history, 5);
+        assert!(
+            joint.loss.is_infinite() && joint.loss > 0.0,
+            "an overflowed joint world read as {}",
+            joint.loss
         );
     }
 

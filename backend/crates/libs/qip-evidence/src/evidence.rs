@@ -57,6 +57,31 @@ pub struct EvidenceRecord {
     pub metadata: BTreeMap<String, String>,
 }
 
+/// The longest a claim's statement may be, in bytes (R12-DATA-1041).
+///
+/// A statement is what a source asserted — a headline, a figure, a fix —
+/// and it is journaled with the claim into the hash-chained event log,
+/// which is durable. Nothing bounded it, so a vendor that put a whole body
+/// in its headline field put the document into the durable record, past
+/// every guard on the stores themselves. Past this length it is an excerpt,
+/// and the source is re-fetched by manifest rather than kept (ADR 0180
+/// decision 4).
+pub const MAX_STATEMENT_BYTES: usize = 2_048;
+
+/// The refusal for a statement past [`MAX_STATEMENT_BYTES`], shared by the
+/// constructor and the fabric's admission so the two cannot disagree.
+pub fn check_statement_length(id: &str, statement: &str) -> Result<()> {
+    if statement.len() > MAX_STATEMENT_BYTES {
+        return Err(Error::invalid(format!(
+            "evidence `{id}` states {} bytes, past the {MAX_STATEMENT_BYTES}-byte bound; a claim \
+             states what the source asserted, not the document it appeared in — extract the \
+             assertion, and cite the document by manifest",
+            statement.len()
+        )));
+    }
+    Ok(())
+}
+
 impl EvidenceRecord {
     /// Create a new evidence record. Refuses any missing mandatory field.
     pub fn new(
@@ -90,6 +115,7 @@ impl EvidenceRecord {
                 "statement is required; a claim without it has no provenance",
             ));
         }
+        check_statement_length(&id, &statement)?;
         if !(0.0..=1.0).contains(&confidence) {
             return Err(Error::invalid(format!(
                 "confidence must be in [0, 1], got {confidence}"

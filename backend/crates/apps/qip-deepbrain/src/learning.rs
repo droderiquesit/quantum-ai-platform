@@ -771,6 +771,15 @@ pub const MIN_FRESH_SHADOW_ROWS: usize = 20;
 
 /// Fits models from observed bars and watches the ones it has fitted age.
 pub struct LearningDesk {
+    /// Cards the restore could not re-register because the registry was at
+    /// `qip_ai::registry::MAX_CARDS`, with the refusal, for the caller to
+    /// count and journal (R12-MODEL-9003). Drained by
+    /// [`Self::take_cap_refusals`].
+    cap_refusals: Vec<(String, String)>,
+    /// References already reported refused, so a restore that runs before
+    /// every round reports each one once rather than once a round. Bounded
+    /// by the cards the log holds.
+    cap_reported: BTreeSet<String>,
     config: LearningConfig,
     policy: SkillPolicy,
     registry: ModelRegistry,
@@ -895,6 +904,8 @@ pub type ArtifactRestore = (Vec<String>, Vec<(String, String)>);
 impl LearningDesk {
     pub fn new(config: LearningConfig, seed: u64) -> Self {
         Self {
+            cap_refusals: Vec::new(),
+            cap_reported: BTreeSet::new(),
             config,
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
@@ -1181,8 +1192,18 @@ impl LearningDesk {
                 self.fits = self.fits.max(fit);
             }
             if self.registry.get(&card.reference()).is_none() {
-                self.registry.register(card.clone());
-                restored += 1;
+                // The same cap the live registry refused at, so a restored
+                // registry refuses where the run did: a replay that admitted
+                // what the run refused would not be a replay.
+                match self.registry.register(card.clone()) {
+                    Ok(()) => restored += 1,
+                    Err(refusal) => {
+                        if self.cap_reported.insert(card.reference()) {
+                            self.cap_refusals
+                                .push((card.reference(), refusal.message().to_string()));
+                        }
+                    }
+                }
             }
         }
         restored
@@ -1760,6 +1781,17 @@ impl LearningDesk {
     /// Bars a subject needs before a fit is worth attempting.
     pub const fn minimum_bars(&self) -> usize {
         self.config.minimum_bars
+    }
+
+    /// The cards the restore refused at the registry's cap since the last
+    /// call, each with its refusal, for the caller to count and journal.
+    pub fn take_cap_refusals(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.cap_refusals)
+    }
+
+    /// Whether the registry is at its cap, so the next fit would be refused.
+    pub fn registry_full(&self) -> bool {
+        self.registry.len() >= qip_ai::registry::MAX_CARDS
     }
 
     /// Note a round that opened no campaign because the door refused it.
@@ -2525,6 +2557,52 @@ mod tests {
             }
         }
         Ok(Some(last))
+    }
+
+    /// R12-MODEL-9003: a restore applies the live registry's cap. A log
+    /// holding more cards than the cap (two registries journaled into it)
+    /// restores up to the cap and reports each card it refused once, for
+    /// the engine to count and journal. Mutation: drop the push in
+    /// `restore_registry`'s refusal arm — the overflow card is refused
+    /// silently and the report assertion fails.
+    #[test]
+    fn a_restore_past_the_cap_refuses_the_overflow_and_reports_it_once() -> Result<()> {
+        use qip_ai::registry::{MAX_CARDS, ModelCard};
+        let mut platform = serving_platform()?;
+        let card = |n: usize| {
+            ModelCard::new(
+                qip_core::ModelId::from_string(format!("m-overflow-{n}")),
+                "overflow",
+                format!("7.{n}.0"),
+                "research",
+                at(),
+            )
+        };
+        let mut first = ModelRegistry::new();
+        for n in 0..MAX_CARDS {
+            first.register(card(n))?;
+        }
+        let mut second = ModelRegistry::new();
+        second.register(card(MAX_CARDS))?;
+        platform.journal_model_registry(&first, at())?;
+        platform.journal_model_registry(&second, at())?;
+        assert_eq!(
+            platform.registered_model_cards().count(),
+            MAX_CARDS + 1,
+            "premise: the log holds one card past the cap"
+        );
+
+        let mut desk = learning_desk();
+        desk.restore_registry(&platform);
+        assert_eq!(desk.registry().len(), MAX_CARDS);
+        let refused = desk.take_cap_refusals();
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].1.contains("its cap"), "{:?}", refused[0]);
+        // Reported once: a second restore finds the same overflow and stays
+        // quiet about it.
+        desk.restore_registry(&platform);
+        assert!(desk.take_cap_refusals().is_empty());
+        Ok(())
     }
 
     fn learning_desk() -> LearningDesk {
@@ -4271,7 +4349,7 @@ mod tests {
         .with_training_data(vec![dataset_name(&subject())]);
         let stranger_reference = stranger.reference();
         let tracked_before = desk.tracked();
-        desk.registry_mut().register(stranger);
+        desk.registry_mut().register(stranger)?;
 
         // Premise, in three parts: the desk kept exactly one fitted sample,
         // the registry now holds two cards -- so one of them has no sample
@@ -4498,7 +4576,7 @@ mod tests {
             .cloned()
             .ok_or_else(|| Error::not_found("the card"))?;
         stripped.feature_lineage.clear();
-        desk.registry_mut().register(stripped);
+        desk.registry_mut().register(stripped)?;
         let outcome = desk
             .promote_candidate(&mut platform, at())?
             .ok_or_else(|| Error::not_found("a candidate"))?;
@@ -5123,7 +5201,7 @@ mod tests {
         )
         .with_features(FEATURES.iter().map(|f| (*f).to_string()).collect());
         let orphan_reference = orphan.reference();
-        desk.registry_mut().register(orphan);
+        desk.registry_mut().register(orphan)?;
 
         // The premise: the card really does name no instrument, and really is
         // in the registry the round walks.
