@@ -90,6 +90,57 @@ pub enum Op {
 }
 
 impl Op {
+    /// This operation with every child position set to zero, so its encoding
+    /// says what it does and not where its operands happen to sit.
+    fn positions_blanked(&self) -> Self {
+        let z = NodeRef::new(0);
+        match self {
+            Self::Literal(_) | Self::Feature(_) => self.clone(),
+            Self::Negate(_) => Self::Negate(z),
+            Self::Magnitude(_) => Self::Magnitude(z),
+            Self::Invert(_) => Self::Invert(z),
+            Self::Widen(_) => Self::Widen(z),
+            Self::Ratio { .. } => Self::Ratio {
+                numerator: z,
+                denominator: z,
+            },
+            Self::Arithmetic { op, .. } => Self::Arithmetic {
+                op: *op,
+                left: z,
+                right: z,
+            },
+            Self::Compare { op, .. } => Self::Compare {
+                op: *op,
+                left: z,
+                right: z,
+            },
+            Self::Logical { op, .. } => Self::Logical {
+                op: *op,
+                left: z,
+                right: z,
+            },
+            Self::Select { .. } => Self::Select {
+                condition: z,
+                when_true: z,
+                when_false: z,
+            },
+            Self::Bounded { .. } => Self::Bounded {
+                value: z,
+                low: z,
+                high: z,
+            },
+            Self::Extremum { op, .. } => Self::Extremum {
+                op: *op,
+                left: z,
+                right: z,
+            },
+            Self::Model { model, inputs } => Self::Model {
+                model: model.clone(),
+                inputs: vec![z; inputs.len()],
+            },
+        }
+    }
+
     /// The nodes this one reads.
     pub fn children(&self) -> Vec<NodeRef> {
         match self {
@@ -182,6 +233,44 @@ impl Program {
 
     pub fn node(&self, node: NodeRef) -> Option<&Node> {
         self.nodes.get(node.index())
+    }
+
+    /// The digest of the expression rooted at `node`, by its structure and
+    /// never by where it sits in this arena (ADR 0149 decision 7).
+    ///
+    /// Two compilations of one specification against one vocabulary put the
+    /// same expression at different indices whenever anything else was
+    /// compiled first, so a digest over the node as stored would differ
+    /// between the centre that publishes an opportunity manifest and the
+    /// node that reads it, and every strategy would read as unnamed. Each
+    /// node is digested as its operation with its children's positions
+    /// blanked, its proven type, and its children's digests in order, bottom
+    /// up: children always sit below their parent, so one pass suffices.
+    pub fn structural_digest(&self, node: NodeRef) -> Result<String> {
+        let root = node.index();
+        if root >= self.nodes.len() {
+            return Err(Error::invalid(format!(
+                "node {root} is outside a program of {} nodes",
+                self.nodes.len()
+            )));
+        }
+        let mut digests: Vec<String> = Vec::with_capacity(root + 1);
+        for stored in &self.nodes[..=root] {
+            let mut text =
+                serde_json::to_string(&(stored.op.positions_blanked(), &stored.value_type))
+                    .map_err(|error| Error::invalid(format!("a node does not encode: {error}")))?;
+            for child in stored.op.children() {
+                let digest = digests.get(child.index()).ok_or_else(|| {
+                    Error::invalid("a node refers forwards; the program is not topological")
+                })?;
+                text.push('|');
+                text.push_str(digest);
+            }
+            digests.push(qip_core::sha256_hex(text.as_bytes()));
+        }
+        digests
+            .pop()
+            .ok_or_else(|| Error::invalid("an empty program has no node to digest"))
     }
 
     pub fn nodes(&self) -> &[Node] {

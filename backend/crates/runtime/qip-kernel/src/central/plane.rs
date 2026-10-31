@@ -790,6 +790,14 @@ impl IssuedCapital {
 pub struct CentralPlane {
     factory: StrategyFactory,
     allocator: CapitalAllocator,
+    /// The figures on record the capital society's agents read
+    /// (R12-CAPITAL-4085, ADR 0229). Empty until a caller hands one over, and
+    /// an agent whose figure is absent abstains.
+    society_inputs: qip_capital::society::SocietyInputs,
+    /// Every agent's plan for the last allocation, recorded before the plan
+    /// acted on was chosen. Behind a mutex because `allocate` is a read of
+    /// the plane: recording what it was told is not a change to its state.
+    society: std::sync::Mutex<Vec<qip_capital::society::CapitalPlan>>,
     issuer: EnvelopeIssuer,
     compliance: CompliancePlane,
     /// Kept alongside the compliance plane's copy so a DNA can be sealed
@@ -1041,6 +1049,8 @@ impl CentralPlane {
             factory: StrategyFactory::new()
                 .with_promotion_eligibility(config.promotion_eligibility.clone()),
             allocator: CapitalAllocator::new(limits, config.drawdown.clone()),
+            society_inputs: qip_capital::society::SocietyInputs::default(),
+            society: std::sync::Mutex::new(Vec::new()),
             issuer: EnvelopeIssuer::new(signing_secret.to_vec(), CENTRAL_KEY_ID)?,
             compliance: CompliancePlane::new(
                 key.clone(),
@@ -1865,7 +1875,29 @@ impl CentralPlane {
             .iter()
             .filter_map(|strategy| self.proposals.get(strategy).cloned())
             .collect();
-        self.allocator.allocate(&proposals, drawdown, now)
+        let plan = self.allocator.allocate(&proposals, drawdown, now)?;
+        // R12-CAPITAL-4085 (ADR 0229): every agent's plan is recorded before
+        // the plan acted on is chosen, and the plan acted on is the
+        // allocator's narrowed to the per-line minimum, so no agent can
+        // widen a line.
+        let plans = qip_capital::society::propose_all(&plan, &self.society_inputs)?;
+        let settled = qip_capital::society::settle(&plan, &plans);
+        *self.society.lock().unwrap_or_else(|e| e.into_inner()) = plans;
+        Ok(settled)
+    }
+
+    /// The figures on record the capital society reads from the next
+    /// allocation on. Only narrows: see [`qip_capital::society::settle`].
+    pub fn set_society_inputs(&mut self, inputs: qip_capital::society::SocietyInputs) {
+        self.society_inputs = inputs;
+    }
+
+    /// Every agent's plan for the last allocation, in the order recorded.
+    pub fn society(&self) -> Vec<qip_capital::society::CapitalPlan> {
+        self.society
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Arm the blueprint §23.4 pool gate over this plane's lifecycle ledger,

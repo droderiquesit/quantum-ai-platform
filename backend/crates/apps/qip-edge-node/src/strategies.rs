@@ -233,6 +233,62 @@ struct ReadPlan {
     specs: BTreeMap<String, StrategySpec>,
 }
 
+/// Why the produced opportunity manifest does not let `compiled` be
+/// activated, or `None` when it may be (ADR 0149 decision 7, R12-REFLEX-5030).
+///
+/// A narrowing filter and nothing more: an unproduced slot changes nothing,
+/// which is how a node ran before a manifest existed; a produced one must
+/// name every `Enter` rule of the strategy with the digest of the predicate
+/// this node compiled, or the strategy is not activated; and a produced
+/// manifest gone stale names nothing, because a manifest the centre stopped
+/// vouching for cannot be what lets a strategy start. It can only withhold a
+/// strategy the signed plan contains, never add one, and it does not
+/// withdraw a strategy already running.
+fn unnamed_opportunity(
+    cell: &Cell,
+    now: Timestamp,
+    compiled: &CompiledStrategy,
+    program: &Program,
+) -> Option<String> {
+    let manifest = match cell.opportunity_manifest(now)? {
+        Some(manifest) => manifest,
+        None => {
+            return Some(
+                "the opportunity manifest the payload carried is no longer fresh, and a \
+                 manifest the centre stopped vouching for activates nothing"
+                    .to_string(),
+            );
+        }
+    };
+    let carried = match compiled.opportunities(program) {
+        Ok(carried) => carried,
+        Err(error) => {
+            return Some(format!(
+                "its opportunity definitions could not be digested: {}",
+                error.message()
+            ));
+        }
+    };
+    for (opportunity, digest) in &carried {
+        match manifest.opportunities.get(opportunity) {
+            None => {
+                return Some(format!(
+                    "the produced opportunity manifest does not name {opportunity}, so it is \
+                     not activated"
+                ));
+            }
+            Some(named) if named != digest => {
+                return Some(format!(
+                    "the produced opportunity manifest names {opportunity} with definition \
+                     {named} and the plan compiles it to {digest}, so it is not activated"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    None
+}
+
 /// Holds grants until a plan that spends them arrives, and deploys what the
 /// plan names.
 #[derive(Debug)]
@@ -538,6 +594,10 @@ impl StrategyInstaller {
                     continue;
                 }
             };
+            if let Some(reason) = unnamed_opportunity(cell, now, &compiled, &program) {
+                outcome.refused.push((strategy.clone(), reason));
+                continue;
+            }
             // The suite the strategy was compiled against, registered into
             // the engine it will be evaluated against — the same call to
             // `standard_suite` that built the compiler's catalogue, so the

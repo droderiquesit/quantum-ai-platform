@@ -253,6 +253,35 @@ pub fn model_drift(drifted: &[String]) -> Vec<Observation> {
         .collect()
 }
 
+/// One gap per world-model partition whose `WorldModelState` passed its
+/// expiry with no successor (ADR 0227, R12-CONTRACT-7075): `expired` names
+/// the partition's scope and the model that last stated it. An expired
+/// state is a model that stopped describing its data — the same want as a
+/// drifted one, a re-estimation — so it raises the same trigger. The gap
+/// queues work; it moves no size and chooses no action.
+pub fn world_state_expired(expired: &[(String, String)]) -> Vec<Observation> {
+    let distinct: BTreeSet<(&str, &str)> = expired
+        .iter()
+        .map(|(scope, model)| (scope.as_str(), model.as_str()))
+        .collect();
+    distinct
+        .into_iter()
+        .map(|(scope, model)| {
+            observe(
+                Origin::ModelDrift,
+                GapTrigger::ModelDrift,
+                Wanting::Model,
+                format!(
+                    "the world-model state of `{scope}` from `{model}` expired with no newer state"
+                ),
+                "models",
+                vec![format!("world_state:{scope}"), format!("model:{model}")],
+                1.0,
+            )
+        })
+        .collect()
+}
+
 /// A hosted model whose refused or malformed replies exceed `max_rate` of at
 /// least `min_replies`, as one surprise wanting a specialist: a model that
 /// hallucinates is a question for whoever owns that seat, not a reason to

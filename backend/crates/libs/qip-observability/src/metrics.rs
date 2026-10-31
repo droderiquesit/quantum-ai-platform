@@ -1408,6 +1408,16 @@ pub mod names {
     /// `outcome` (`committed`, `fenced`, `conflict`, `error`). The series
     /// the `fabric-publish-quorum-p99` objective is read from.
     pub const EVENT_FABRIC_QUORUM_ACK_MS: &str = "qip_event_fabric_quorum_ack_ms";
+    /// Committed source records the cross-region mirror has not yet had
+    /// acknowledged by the target, by `source_region` and `stream` (ADR 0119
+    /// §2, R12-OBS-9148). Both labels come from the mirror's configured
+    /// region list and committed stream set, refused at construction
+    /// otherwise, so the series cannot grow a label value at runtime.
+    pub const FABRIC_MIRROR_LAG_RECORDS: &str = "qip_fabric_mirror_lag_records";
+    /// Seconds by which the oldest committed source record the mirror has
+    /// not yet copied is older than the mirror's clock, by the same labels
+    /// as [`FABRIC_MIRROR_LAG_RECORDS`]; zero when nothing is uncopied.
+    pub const FABRIC_MIRROR_LAG_SECONDS: &str = "qip_fabric_mirror_lag_seconds";
 
     // Edge journal metrics (edge-node)
     pub const EDGE_JOURNAL_RING_DEPTH: &str = "qip_edge_journal_ring_depth";

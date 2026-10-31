@@ -309,12 +309,14 @@
   },
   {
     "id": "R12-DATA-8014",
-    "status": "MISSING",
-    "current": "Manifests exist only embedded in NewsItem events; no registry type or store. Spanner/AlloyDB adapters are refused.",
+    "status": "PARTIAL",
+    "current": "qip_storage::gcp::manifest_registry::SourceManifestRegistry holds SourceManifest records over SpannerKv (ADR 0113), keyed by canonical URI (source length, source, locator) under a source-manifest/ prefix: register (idempotent for the same manifest, refusing a changed original naming both hashes, in one read-write transaction), lookup by canonical URI, and listing by source.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner/AlloyDB refused"
+      "backend/crates/libs/qip-storage/src/gcp/manifest_registry.rs",
+      "backend/crates/libs/qip-storage/tests/manifest_registry.rs (a_registry_write_and_lookup_by_canonical_uri_round_trip_through_spanner; a_changed_original_is_refused_naming_both_hashes_and_the_first_manifest_stands)",
+      "backend/crates/libs/qip-storage/tests/support/spanner_double.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No Source Manifest Registry type or store exists: qip_financial::manifest::SourceManifest lives only inside NewsItem/intelligence records, and nothing writes or looks it up by canonical URI or provider ID. ADR 0113 unblocks Spanner and qip_storage::gcp::spanner::SpannerKv (proven in qip-ledgerd/tests/spanner.rs against an in-process double) could back it, so the code needs no ADR or crate. It does not meet the bar alone: enable_spanner=false in every env, so it also needs a tfvar flip, a deploy, and a shipped binary writing the registry on its default path.",
+    "gap": "2026-10-31 (owner-delegated ruling of 2026-10-31, decision 10): the registry round-trips by canonical URI through SpannerKv against the in-process REST double. It is not on a default path: enable_spanner is false in every environment until the ledger's Spanner is funded (decision 5), no shipped binary constructs the registry, and the double does not prove Google answers the same way. Remaining: wire a binary that registers the manifests it ingests once enable_spanner is flipped (protected, billed), and run the round-trip against a real instance.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -324,10 +326,10 @@
       "R12-DATA-8013"
     ],
     "blocked_by": "",
-    "verification": "integration test of the registry against an emulator",
+    "verification": "integration: qip-storage tests/manifest_registry.rs over SpannerKv against an in-process Spanner REST double; mutations: keying register by manifest.sha256() fails the round-trip (store not keyed by canonical URI); treating any held row as idempotent fails the changed-original refusal; both restored with cp and cmp.",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113). Owner ruling 2026-10-31 (IMPLEMENT): Build the Source Manifest Registry on the store ADR 0113 already admitted. It is a registry over SpannerKv, keyed by canonical URI, proven now against the in-process double. enable_spanner stays false until the ledger's Spanner is funded (decision 5), so the row stays PARTIAL. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'Spanner/AlloyDB adapters are refused' is partly stale: StorageProvider still refuses Spanner/AlloyDB as general targets (qip-storage/src/provider.rs), but SpannerKv exists in qip-storage/src/gcp/spanner.rs and is used by qip-ledgerd (ADR 0113). Owner ruling 2026-10-31 (IMPLEMENT): Build the Source Manifest Registry on the store ADR 0113 already admitted. It is a registry over SpannerKv, keyed by canonical URI, proven now against the in-process double. enable_spanner stays false until the ledger's Spanner is funded (decision 5), so the row stays PARTIAL. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. | 2026-10-31 lane L3-DATA: built the registry the ruling named (decision 10); status PARTIAL by the ruling, pending enable_spanner."
   },
   {
     "id": "R12-DATA-8015",
@@ -2487,7 +2489,7 @@
     "verification": "unit: evolution.rs test drives the engine main.rs builds with the cadence read from an unset variable and asserts the log holds exactly the scored round and no empty round; mutations: unset cadence returning 0 (no round), dropping the journal call (log empty, left: []), dropping the empty-round filter (arm-less round journaled).",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). | 2026-10-31 lane L3-DATA: implemented the ruling's closure (default cadence already on via R12-EXPAND-6027; rounds journaled; named test). Skeptic REFUTED promotion on the three steps in the gap; it also found an empty round journaled every cycle, now fixed by journaling only rounds that scored a pair. Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. | 2026-10-31 lane L3-DATA: implemented the ruling's closure (default cadence already on via R12-EXPAND-6027; rounds journaled; named test). Skeptic REFUTED promotion on the three steps in the gap; it also found an empty round journaled every cycle, now fixed by journaling only rounds that scored a pair."
   },
   {
     "id": "R12-FABRIC-8109",
