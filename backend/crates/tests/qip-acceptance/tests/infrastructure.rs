@@ -15139,3 +15139,58 @@ fn every_asset_change_feed_publishes_to_the_change_topic() {
         "the asset change feed publishes somewhere other than the asset change topic"
     );
 }
+
+// --- committed-use discounts ------------------------------------------------
+
+/// The measurement rows of `docs/ops/execution-measurements.md` taken on a
+/// provisioned execution node: a table row naming an execution node that
+/// does not carry the document's "Not a deployment measurement." caveat,
+/// which every in-process row carries by rule.
+fn execution_node_measurements(document: &str) -> Vec<String> {
+    document
+        .lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| Capability |"))
+        .filter(|line| !line.contains("Not a deployment measurement"))
+        .filter(|line| line.contains("execution node"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// R12-FINOPS-10137. A committed-use discount buys a fixed amount of a
+/// machine shape for one or three years, and the shape the hot path needs is
+/// a number nobody has measured: every row in the execution measurements is
+/// an in-process figure on a shared container. So no
+/// `google_compute_region_commitment` may be declared anywhere under
+/// `infrastructure/terraform` until that document holds a row measured on a
+/// provisioned execution node. A refusal now rather than a promise.
+///
+/// Mutation: declare a `google_compute_region_commitment` in any `.tf` file
+/// under `infrastructure/terraform` and this test names it.
+#[test]
+fn no_committed_use_discount_is_declared_before_a_sizing_record_measured_on_an_execution_node() {
+    let document = read("docs/ops/execution-measurements.md");
+    let rows = document
+        .lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| Capability |"))
+        .count();
+    assert!(
+        rows > 0,
+        "premise: docs/ops/execution-measurements.md holds no measurement row"
+    );
+    let measured_on_a_node = execution_node_measurements(&document);
+
+    let declared: Vec<String> = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .filter(|path| {
+            let text = std::fs::read_to_string(path).expect("readable");
+            without_comments(&text).contains("resource \"google_compute_region_commitment\"")
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    assert!(
+        declared.is_empty() || !measured_on_a_node.is_empty(),
+        "{declared:?} declare a committed-use discount, and docs/ops/execution-measurements.md \
+         holds no row measured on a provisioned execution node; a commitment sized from an \
+         in-process figure buys a year of a shape nobody measured"
+    );
+}
