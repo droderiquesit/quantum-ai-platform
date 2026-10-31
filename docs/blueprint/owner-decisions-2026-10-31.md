@@ -858,3 +858,22 @@ that narrows a security scanner, whatever the owner has delegated.
     **APPLY_PATCH (0)**
 
     None in this pass.
+
+15. **ADR numbers are allocated to lanes in blocks** (decided 09:25 UTC).
+    The register's rule is to claim a number in the shared index, in its own
+    pushed commit, after re-reading the index. On 2026-10-31 that rule
+    collided twice within the hour: lanes L5 and L3 both claimed 0239,
+    eighteen seconds apart, and lane L2 claimed 0231 and 0232 three minutes
+    after lane L6 had claimed 0231 to 0238. Re-reading the index cannot
+    prevent this. Each lane reads its own fetch, and a claim pushed after
+    the fetch is invisible until the next one. So the integration branch
+    now allocates a block to each lane, and a lane takes numbers only from
+    its own block, in order, still pushing each claim alone before the body:
+    L1 0245-0254, L2 0255-0264, L3 0265-0274, L4 0275-0284, L5 0242 then
+    0285-0294, L6 0295-0314. The lanes stopped by their model's weekly limit
+    get theirs when they resume: L1b 0315-0324, L2b 0325-0334, L3b
+    0335-0344, L4b 0345-0354, L5b 0355-0364. The numbers already claimed
+    and pushed stand where the first push holds them: 0228 to 0230 for L1,
+    0231 to 0238 for L6, 0239 to 0241 for L3. L5 moves to 0242, and L2's two
+    claims move to 0255 and 0256. A block running out is extended by the
+    orchestrator, never by the lane.
