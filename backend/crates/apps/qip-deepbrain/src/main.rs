@@ -1036,6 +1036,23 @@ fn run() -> Result<()> {
         println!("    {reference}: {why}");
     }
 
+    // The research backlog (ADR 0214): while the AI platform is lost —
+    // this node's own readiness reporting stalled, persistently failing,
+    // halted or stopping — the search, learning, research and tick rounds
+    // due on a cycle are held here instead of run, journaled in order beside
+    // the event log, and drained when the node is ready again. Always
+    // attached: a broken chain or a journal over its bound stops the process
+    // here rather than running a gate with nowhere to queue.
+    let backlog_destination =
+        qip_deepbrain::cognition::BacklogDestination::beside(&config.event_log);
+    let mut backlog = qip_deepbrain::cognition::ResearchBacklog::open(&backlog_destination)?;
+    println!(
+        "  research backlog: {} ({} held round(s) restored, capacity {})",
+        backlog_destination.describe(),
+        backlog.len(),
+        backlog.capacity()
+    );
+
     let run = node::run_with(
         &mut platform,
         &archive,
@@ -1054,6 +1071,7 @@ fn run() -> Result<()> {
             agency: Some(&mut agency),
             warehouse: warehouse.as_mut(),
             desk: Some(&mut desk_shipper),
+            backlog: Some(&mut backlog),
         },
         |outcome| {
             println!();
@@ -1130,6 +1148,9 @@ fn run() -> Result<()> {
                             .join(", ")
                     );
                 }
+            }
+            if !outcome.cognition.is_quiet() {
+                println!("  {}", outcome.cognition.describe());
             }
             if let Some(round) = &outcome.tick {
                 println!("  {}", round.describe());

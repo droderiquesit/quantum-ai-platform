@@ -30,9 +30,12 @@
       "backend/crates/services/qip-data-finder/src/ingestion.rs:52 plan_for",
       "backend/crates/services/qip-data-finder/src/ingestion.rs:79 descriptor_for",
       "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs registration does not imply ingestion",
-      "backend/crates/services/qip-market-ingestion/src/connectors/manifests/ seven hand-written shipped manifests"
+      "backend/crates/services/qip-market-ingestion/src/connectors/manifests/ seven hand-written shipped manifests",
+      "backend/crates/apps/qip-cli/src/adapter_proposals.rs (propose)",
+      "backend/crates/apps/qip-cli/src/main.rs (qip registrations propose)",
+      "backend/crates/apps/qip-cli/tests/adapter_proposals.rs"
     ],
-    "gap": "No path from a discovered registration to a running adapter: the descriptor is not consumed by any composition root, and connectors are only the seven shipped by hand.",
+    "gap": "2026-10-25: owner decision (skeptic REFUTED on part 4): qip registrations propose prints, for each candidate the finder registers, the adapter plan and descriptor matching its access mechanism (refused ones get the finder's reason), but ADR 0157 §4/§5 and ADR 0180 decision 3 decline generated adapters and the requirement names the Scout, so whether an operator-run printed proposal meets 'the Scout ... proposes for review' is the owner's call.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -40,10 +43,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test registration_is_not_ingestion",
+    "verification": "cargo test -p qip-cli --test adapter_proposals",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-25: qip registrations propose --candidates <path> assesses each catalogue entry through Platform::assess_sources (reviewed egress route per entry, in-memory event log, print-only) and proposes plan_for/descriptor_for for registered sources. Mutation: route Rejected into the adapter arm; test fails. Skeptic (security-engineer): parts 1-3 hold; REFUTED on part 4 (ADR 0180 decision 3); only REST is exercised."
   },
   {
     "id": "R12-DATA-2003",
@@ -479,7 +482,7 @@
       "backend/crates/services/qip-data-finder/tests/sandbox_lifecycle.rs:11-35 test records strings into Reasoning and asserts them back",
       "backend/crates/services/qip-data-finder/src/decision.rs LifecycleStage enum"
     ],
-    "gap": "2026-10-24 (re-read against the tree): There is no sandbox: DataFinder::assess goes from Register straight into the registry and nothing records LifecycleStage::Sandbox or Promote (decision.rs); Platform::observe has no gate holding a new source's records out of the world model; no promotion event or topic exists in qip-events; ADR 0157 §4 makes every connector a hand-written reviewed change, so no generated adapter exists to sandbox. Needs code (a kernel gate and a promotion topic) for the integration test, and for a default path a connector enabled by tfvar (deepbrain_connector, market_data_connector null in every env) and the owner's egress decision.",
+    "gap": "2026-10-30: owner decision: a source the finder registers never gets an adapter (ADR 0157 §4, ADR 0180 decision 3), and the connectors that do feed the world model are hand-written licensed arms off in every committed tfvars, so there is no sandboxed output for a promotion gate to hold back; the requirement needs restating to the hand-written-connector model (or generated adapters admitted by ADR) before a gate would guard anything that runs.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -492,7 +495,7 @@
     "verification": "a test that ingests from a sandboxed source and asserts the world model is unchanged",
     "work_item": "",
     "size": "M",
-    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: tests/sandbox_lifecycle.rs now drives the real DataFinder (a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded) and pins the absence of a Sandbox stage."
+    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: tests/sandbox_lifecycle.rs now drives the real DataFinder (a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded) and pins the absence of a Sandbox stage. 2026-10-30: lane L3-data read admit_world_records/absorb_evidence: records are tied to connector claim ids, never to finder registrations, so a kernel sandbox gate keyed on registered sources would match nothing. No code written; no skeptic round (nothing to grade)."
   },
   {
     "id": "R12-DATA-2022",
@@ -896,9 +899,13 @@
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
       "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
-      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
+      "backend/crates/services/qip-world-model/src/world.rs (WorldModel::rebuild_evidence)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::new rebuilds the evidence fabric; stage_understand contest detail)",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs a_contest_and_its_resolving_evidence_survive_a_restart_from_the_event_log",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "2026-10-24 (re-read): the earlier 'unjournaled' is stale - since ADR 0152 §2 every admitted claim is journaled to evidence.admitted (Platform::absorb_evidence, EvidenceAdmittedRecord), Platform::journaled_evidence reads them back in log order and EvidenceFabric::rebuild re-admits them, so contests and resolutions are derivable from the log (kernel tests/evidence_intake.rs). What remains: no composition root restores the event log at start-up or calls EvidenceFabric::rebuild over journaled_evidence, so a restarted process starts with an empty fabric and no contest survives a restart on any default path; nothing outside qip-evidence and tests reads contests (grep of .contests() finds no production reader); and a fabric whose every held claim is contested still evicts the oldest contested claim. Closing needs a start-up restore of the journal (from the chain archive) in qip-deepbrain/qip-fastbrain/qip-api with a rebuild of the world fabric and a restart test proving a contest and its resolving id survive.",
+    "gap": "2026-10-25: deploy dependence (skeptic REFUTED on part 2): the fabric's contests now survive a restart and are reported on UNDERSTAND, but claims reach the fabric only through Platform::admit_world_records draining the fastbrain/api connector arm, which exists only under QIP_CONNECTOR_* and which every committed tfvars leaves off, so no committed deployment forms a contest; remaining step is evidence admission on a default path (or an operator qip-cli route).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -908,10 +915,10 @@
       "R12-EVID-2032"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test evidence_fabric",
+    "verification": "cargo test -p qip-kernel --test evidence_intake; cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed). 2026-10-24 lane L3-DATA: gap corrected in both directions (journal and rebuild exist; start-up restore and a downstream reader do not). Kept PARTIAL."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed). 2026-10-24 lane L3-DATA: gap corrected in both directions (journal and rebuild exist; start-up restore and a downstream reader do not). Kept PARTIAL. 2026-10-25: Platform::new now rebuilds the world's evidence fabric from the journaled EvidenceAdmitted claims, so contests, both hypotheses and the resolving claim survive a restart; UNDERSTAND reports open and resolved contests. Mutations: skip rebuild_evidence (restarted contests differ, test fails); drop contest_detail from the stage line (stage assertion fails). Skeptic (security-engineer) REFUTED on default path only; it also noted the rebuild fails closed: a later release whose EvidenceFabric::default differs from the writer's stops Platform::new on an existing log, by design (Principle 3), with no operator recovery path documented yet."
   },
   {
     "id": "R12-EVID-2039",
@@ -1068,7 +1075,7 @@
     "verification": "cargo test -p qip-contracts --test contracts a_circuit_breaker; cargo test -p qip-protocols --test itch a_breaker_reason; cargo test -p qip-orderbook --test venue a_circuit_breaker",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent). 2026-10-25 lane L3-DATA (wave580): status capture path landed. Mutations fired: publish skipping wire.status (left [], right [CircuitBreaker, Open]); decoder losing the status arm (pass fails 'published 3 level(s) and the cell decoded 2'). Independent skeptic (code-reviewer) verdict REFUTED; per-type reasons in gap. Kept PARTIAL."
+    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent). 2026-10-25 lane L3-DATA (wave580): status capture path landed. Mutations fired: publish skipping wire.status (left [], right [CircuitBreaker, Open]); decoder losing the status arm (pass fails 'published 3 level(s) and the cell decoded 2'). Independent skeptic (code-reviewer) verdict REFUTED; per-type reasons in gap. Kept PARTIAL. 2026-10-31: lane L3-data (taking L3b's rows): not reworked; every remaining clause (a default session schedule declaring status, typed reject and ack records) lands in qip-edge-node, whose feed and passes run only under QIP_VENUE_FEED=simulated, set in an execution-node template no committed environment renders, so finishing them would not change the part-2 verdict."
   },
   {
     "id": "R12-TICK-2045",
@@ -1159,7 +1166,7 @@
     "verification": "cargo test -p qip-edge-node --test lake_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached. 2026-10-25: 367f8451 stamps region, cell, clock_source and cross_partition (bounded at MAX_ALIGNED_PARTITIONS) on every lake line; three mutations in the commit. Skeptic (code-reviewer) REFUTED, and found a live defect: the spool floors instants to the millisecond, so two ticks a microsecond apart on 50 us clocks were stamped 'before'; fixed in the following commit by widening each side by half the spool quantum."
+    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached. 2026-10-25: 367f8451 stamps region, cell, clock_source and cross_partition (bounded at MAX_ALIGNED_PARTITIONS) on every lake line; three mutations in the commit. Skeptic (code-reviewer) REFUTED, and found a live defect: the spool floors instants to the millisecond, so two ticks a microsecond apart on 50 us clocks were stamped 'before'; fixed in the following commit by widening each side by half the spool quantum. 2026-10-25: 68d92f3b fixes the skeptic's sub-millisecond false order (SPOOL_TRUNCATION_HALF_WIDTH); test ticks_the_spool_floored_to_different_milliseconds_are_not_ordered_by_the_floor; mutation (drop the widening) fails both alignment tests. Row handed to L3b 2026-10-25."
   },
   {
     "id": "R12-TICK-2049",
@@ -1786,9 +1793,11 @@
       "backend/crates/services/qip-simulation-engine/src/conditions.rs MarketCondition::latency_from_measured, delayed_feed_from_measured",
       "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs conditions_calibrated_from_measured_samples_reproduce_the_sample_median",
       "backend/crates/runtime/qip-kernel/src/platform.rs calibrated_feed_delay and the capacity probe's DelayedFeed",
-      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency"
+      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (decision_latencies, observe_decision_latency, capacity_probe latency condition and shortfall_bps)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_measured_decision_latency_pushes_the_simulated_execution_later_and_worsens_its_fill"
     ],
-    "gap": "No binary measures decision-to-arrival latency (the paper venue stamps a declared latency, which venue_measurement refuses as untimed), so latency_from_measured has no production sample set to calibrate from; closing needs a timed acknowledgement path and a caller passing its samples into the replay or capacity probe.",
+    "gap": "2026-10-31: skeptic REFUTED on part 2: every cycle's SENSE-to-ACT latency is measured on the real clock and the SIMULATE stage's capacity probe runs under a latency calibrated from it and reports arrival time and shortfall from the decision mark, but a real cycle's milliseconds move nothing on the probe's one-minute steps, the default synthetic feed stamps no publication delay, and the tick replay still uses a fixed declared latency; remaining step is wiring the measured latency and delay into a simulation where they move a fill on the default path (finer probe steps or the replay's model.latency), proven from run_cycle's own samples.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1796,10 +1805,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-simulation-engine --test market_conditions",
+    "verification": "cargo test -p qip-kernel --test learning a_measured_decision_latency",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay)."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay). 2026-10-31: mutation: calibrate from an empty sample set; no latency condition, test fails. First test draft on a noisy tape saw the slow probe fill 22bps better (latency worsens a fill only against an adverse move), so the test uses a rising tape. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-TICK-2075",
@@ -2162,18 +2171,19 @@
   {
     "id": "R12-TICK-2090",
     "status": "PARTIAL",
-    "current": "The kernel holds a UniverseHistory (qip-financial history.rs) on its default path: Platform::new lists every assembled instrument from the assembly instant; queue_corporate_action ends a listing at the ex-date of every terminal action (CorporateAction::is_terminal: Delisting, Merger) and opens a new symbol era on Renamed; withdraw_venue opens a venue outage (UniverseHistory::open_outage, until Timestamp::MAX) and reinstate_venue_at_seams closes it; a venue the log says was withdrawn before the process started is an open outage from assembly. Backtester::run_with_history (qip-simulation-engine backtest.rs) rejects an order for a name the history knows but that was not a member at the fill instant, rejects an order at a venue the history holds out at that instant, and reports every outage inside the run's span in BacktestResult.outages; Backtester::run delegates with no history. EvolutionEngine::turn (qip-deepbrain) snapshots platform.universe_history() before judging candidates and evaluate() backtests through run_with_history, so the deep brain's default search (node::run_with -> maybe_turn) judges against the history. Platform::universe_history() exposes it.",
+    "current": "The kernel holds a UniverseHistory (qip-financial history.rs) on its default path, written by two lanes merged 2026-10-31: Platform::new lists every assembled instrument from the assembly instant and note_listing moves a listing back to the first bar the platform sees dated before it (UniverseHistory::backdate_listing); queue_corporate_action ends a listing at the ex-date of every terminal action (CorporateAction::is_terminal: Delisting, Merger) and opens a new symbol era on Renamed, recorded once at queue time; withdraw_venue opens a venue outage (UniverseHistory::open_outage, until Timestamp::MAX) and reinstate_venue_at_seams closes it; a venue the log says was withdrawn before the process started is an open outage from assembly. Backtester::run_with_history (qip-simulation-engine backtest.rs) refuses an order for a name the history knows that was not a member at the rebalance instant, refuses an order at a venue the history holds out at that instant naming the outage, and reports every outage overlapping the run at the universe's venues in BacktestResult.outages; Backtester::run delegates with no history. EvolutionEngine::maybe_turn (qip-deepbrain) snapshots platform.universe_history() once per round before any candidate is judged and evaluate() backtests through run_with_history, so the deep brain's default search (node::run_with -> maybe_turn, every_cycles 4) judges against the history. Platform::universe_history() exposes it.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/history.rs::UniverseHistory::{open_outage,close_outage,listing,outages}",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::{universe_history,queue_corporate_action,withdraw_venue,reinstate_venue_at_seams} (grep -n 'universe_history' backend/crates/runtime/qip-kernel/src/platform.rs)",
-      "backend/crates/services/qip-simulation-engine/src/backtest.rs::Backtester::run_with_history, ::not_a_member_at, BacktestResult::outages",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs::EvolutionEngine::turn (universe_history snapshot), ::evaluate (run_with_history)",
-      "backend/crates/libs/qip-financial/tests/history.rs::an_open_outage_overlaps_every_later_window_until_it_is_closed",
-      "backend/crates/services/qip-simulation-engine/tests/simulation.rs::a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports_the_outage",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_is_an_outage",
-      "backend/crates/apps/qip-deepbrain/tests/universe_history.rs::an_evolution_round_judges_candidates_against_the_platforms_historical_universe"
+      "backend/crates/libs/qip-financial/src/history.rs UniverseHistory::{list,backdate_listing,delist,rename,open_outage,close_outage,outages_overlapping,is_member_at}",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::{universe_history,note_listing,queue_corporate_action,withdraw_venue,reinstate_venue_at_seams} (grep -n 'universe_history' backend/crates/runtime/qip-kernel/src/platform.rs)",
+      "backend/crates/services/qip-simulation-engine/src/backtest.rs Backtester::run_with_history, run_inner (membership and outage refusals), BacktestResult::outages",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs EvolutionEngine::maybe_turn (universe_history snapshot), ::evaluate (run_with_history)",
+      "backend/crates/libs/qip-financial/tests/history.rs a_universe_as_of_a_past_date_includes_an_instrument_delisted_afterwards, a_replay_window_across_a_venue_outage_reports_the_outage, an_open_outage_overlaps_every_later_window_until_it_is_closed",
+      "backend/crates/services/qip-simulation-engine/tests/universe_history.rs and tests/simulation.rs a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports_the_outage",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_traded",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_is_an_outage",
+      "backend/crates/apps/qip-deepbrain/tests/universe_history.rs an_evolution_round_judges_candidates_against_the_platforms_historical_universe"
     ],
-    "gap": "2026-10-31 (wave580 lane L3b, skeptic-refuted promotion): the history cannot describe the past before the process started - every listing opens at the assembly instant because the catalogue (FinancialObject) carries no listing date, so members_as_of(a date before start) is empty and a delisting dated at or before assembly is refused by UniverseHistory::delist and only captured as a problem; delistings and renamings are not rebuilt from the event log at resume (a resumed withdrawn venue's outage opens at assembly, not at its logged instant). Clauses not represented: spinoff products are never listed; 'failed products' only where they arrive as a Delisting or Merger; venue outages only from the platform's own feasibility withdrawals - VenueStatus halts/breakers the feed carries and cell halts the centre ingests never reach the history. On the default synthetic path no corporate action is sensed (CorporateAction records come only from the tape behind QIP_DEEPBRAIN_TAPE_PATH); venue withdrawal is a default-path fact. The deep-brain test pins the snapshot only, not that a round's backtest refused a delisted name or reported an outage (evaluate passing None would survive it). Closing needs a catalogue listing date (or an admission arm for names older than the process), log-rebuilt membership at resume, outage windows from VenueStatus changes and cell halts, and a deep-brain round test over a recorded delisting.",
+    "gap": "2026-10-30 (lane L3-data) and 2026-10-31 (lane L3b), both skeptic REFUTED on the COMPLETE bar, merged 2026-10-31: no shipped feed emits Delisting or Renamed actions (tape.rs builds only CashDividend; on the default synthetic path no corporate action is sensed), nothing calls UniverseHistory::record_outage outside tests, failed products have no state and spinoff products are never listed; the history describes the past only as far back as the first bar the process saw (the catalogue carries no listing date), membership is in memory and not rebuilt from the event log at resume (a resumed withdrawn venue's outage opens at assembly, not at its logged instant); venue outages come only from the platform's own feasibility withdrawals, so VenueStatus halts and cell halts never reach the history; the deep-brain test pins the snapshot only, not that a round's backtest refused a delisted name. Remaining step: production writers for delistings, renames and venue-status outages, a failed-product state, log-rebuilt membership at resume, and a deep-brain round test over a recorded delisting.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2181,10 +2191,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test history; cargo test -p qip-simulation-engine --test simulation a_backtest_over_a_past_date; cargo test -p qip-kernel --test learning a_delisting_on_the_tape; cargo test -p qip-deepbrain --test universe_history",
+    "verification": "cargo test -p qip-financial --test history; cargo test -p qip-simulation-engine --test universe_history --test simulation; cargo test -p qip-kernel --test position_record --test learning a_delisting_on_the_tape; cargo test -p qip-deepbrain --test universe_history",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corporate-action evidence line stale: corporate_action_class (Delisting, Renamed) now sits near platform.rs:24168; platform.rs:19350 is borrow-availability code. 2026-10-31 lane L3b (wave580): kernel-held history, backtester and evolution wiring landed. Mutations fired, each restored by cp + cmp: delist call dropped (kernel test: membership after the ex-date still names BBB); open_outage dropped in withdraw_venue (kernel test: no outage); not_a_member_at returning None (simulation test: the delisted name filled after its ex-date); outage report dropped (simulation test: outages empty); engine snapshot dropped (deep-brain test: engine history empty); open_outage writing until near from (history test). cargo test -p qip-financial -p qip-simulation-engine -p qip-deepbrain --no-fail-fast: 41 binaries, 802 passed, 0 failed; -p qip-kernel: 67 binaries, 1124 passed, 0 failed. Independent skeptic (code-reviewer) verdict REFUTED for COMPLETE: listed_from is the assembly instant, so the past before the process cannot be described; mergers were not delisted (fixed after the review via CorporateAction::is_terminal); spinoffs, venue-status outages and cell halts not represented; in-memory only; the deep-brain pin does not reach the backtest result. Kept PARTIAL."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Corporate-action evidence line stale: corporate_action_class (Delisting, Renamed) now sits near platform.rs:24168; platform.rs:19350 is borrow-availability code. 2026-10-30: UniverseHistory gets its first production caller. Mutations, each failing: drop the membership refusal in rebalance; report no outages; drop the kernel's delist arm. Skeptic (code-reviewer): evolution loop is on the default path (every_cycles 4); REFUTED on the missing writers and failed products. 2026-10-31 lane L3b (wave580): the same row landed in parallel; merged keeping both lanes' behaviour: L3-data's first-bar listing (note_listing) and L3b's assembly listing, reconciled by UniverseHistory::backdate_listing so an assembled name listed at the assembly instant moves back to its first bar; L3-data's apply-time delist/rename arm removed in favour of L3b's queue-time one (a listing delisted twice is refused and would have reported a tape fault that was not one); L3b's venue-outage refusal added beside L3-data's membership refusal in run_inner; L3b's not_a_member_at dropped for UniverseHistory::is_member_at. L3b mutations fired before the merge, each restored by cp + cmp: delist call dropped (kernel test: membership after the ex-date still names BBB); open_outage dropped in withdraw_venue (kernel test: no outage); membership refusal returning none (simulation test: the delisted name filled after its ex-date); outage report dropped (simulation test: outages empty); engine snapshot dropped (deep-brain test: engine history empty); open_outage writing until near from (history test). Skeptic (code-reviewer) verdict for L3b: REFUTED as in the gap; mergers were not delisted (fixed after the review via CorporateAction::is_terminal). Kept PARTIAL."
   },
   {
     "id": "R12-TICK-2091",

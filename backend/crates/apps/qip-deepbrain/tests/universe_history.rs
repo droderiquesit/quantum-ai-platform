@@ -116,6 +116,7 @@ fn an_evolution_round_judges_candidates_against_the_platforms_historical_univers
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             manual.advance(Duration::from_mins(1));

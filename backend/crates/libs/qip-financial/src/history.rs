@@ -111,6 +111,35 @@ impl UniverseHistory {
         Ok(())
     }
 
+    /// Move a listing's start back to `at` when `at` is earlier than the
+    /// start the history holds, and say whether it moved. The first symbol
+    /// era moves with it, since the instrument traded under that symbol then.
+    /// A later `at` changes nothing: a listing's start is the earliest
+    /// evidence the instrument existed, and later evidence does not shorten
+    /// it. For the platform that lists its assembled universe from the
+    /// instant it assembled and then meets a bar dated before that: a
+    /// history that kept the assembly instant would say the instrument did
+    /// not exist on a date it visibly traded (R12-TICK-2090). Refused for an
+    /// instrument the history does not name — listing it is `list`'s job —
+    /// and for a start at or after the delisting, which would be a listing
+    /// of no duration.
+    pub fn backdate_listing(&mut self, object_id: &ObjectId, at: Timestamp) -> Result<bool> {
+        let listing = self.listing_mut(object_id)?;
+        if at >= listing.listed_from {
+            return Ok(false);
+        }
+        if listing.delisted_at.is_some_and(|end| at >= end) {
+            return Err(Error::invalid(format!(
+                "{object_id} cannot be listed from {at}: it was delisted by then"
+            )));
+        }
+        listing.listed_from = at;
+        if let Some(first) = listing.symbols.first_mut() {
+            first.from = at;
+        }
+        Ok(true)
+    }
+
     /// Record a symbol change. The instrument keeps its object id.
     pub fn rename(
         &mut self,
@@ -276,6 +305,20 @@ impl UniverseHistory {
             .iter()
             .filter(|o| o.venue == venue && o.from < until && from < o.until)
             .collect()
+    }
+
+    /// Whether the history names `object_id` at all.
+    pub fn is_named(&self, object_id: &ObjectId) -> bool {
+        self.listings.contains_key(object_id.as_str())
+    }
+
+    /// Whether `object_id` was listed at `at`: false for one the history
+    /// does not name, so a caller asks [`Self::is_named`] first where an
+    /// unnamed instrument should be judged some other way.
+    pub fn is_member_at(&self, object_id: &ObjectId, at: Timestamp) -> bool {
+        self.listings
+            .get(object_id.as_str())
+            .is_some_and(|listing| listing.is_member_at(at))
     }
 
     fn listing_mut(&mut self, object_id: &ObjectId) -> Result<&mut Listing> {

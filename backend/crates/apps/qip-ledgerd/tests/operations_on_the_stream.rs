@@ -186,3 +186,85 @@ fn a_conflicting_operation_is_refused_noted_and_does_not_stall_the_partition() {
         "the refusal is not on the record: {notes:?}"
     );
 }
+
+/// R12-LEDGER-8137, the keys half: consecutive journal notes are never
+/// written under keys that sort in write order, so on Spanner no single key
+/// range takes every commit; and the journal still reads oldest first,
+/// because the reader orders by the sequence each key names.
+///
+/// Eight refusals are noted one after another. Their raw keys, read from the
+/// store underneath the ledger, must not be in ascending order, and must
+/// spread over more than one shard. `LedgerStore::journal` must return the
+/// eight in the offsets they were noted at.
+///
+/// Mutation: write `journal/<sequence>` without the shard prefix and the raw
+/// keys sort in write order.
+#[test]
+fn consecutive_commits_never_write_sequence_keys_that_sort_in_write_order() {
+    let dir = temp_dir("hotspot");
+    {
+        let store = open(&dir);
+        store
+            .apply_operation(&at(
+                0,
+                "h0",
+                funding("desk:treasury-funding:0", dec!("1000")),
+            ))
+            .unwrap();
+        for offset in 1..=8 {
+            let applied = store
+                .apply_operation(&at(
+                    offset,
+                    &format!("h{offset}"),
+                    funding("desk:treasury-funding:0", dec!("2000")),
+                ))
+                .unwrap();
+            assert!(
+                matches!(applied, OperationApplied::Refused { .. }),
+                "premise: each conflicting operation is refused and noted: {applied:?}"
+            );
+        }
+        let offsets: Vec<u64> = store
+            .journal()
+            .unwrap()
+            .iter()
+            .filter(|note| note.event == "operation_refused")
+            .map(|note| note.offset)
+            .collect();
+        assert_eq!(
+            offsets,
+            (1..=8).collect::<Vec<u64>>(),
+            "the journal does not read oldest first"
+        );
+    }
+    let raw = qip_storage::DurableStore::open(
+        &dir,
+        EngineConfig::new(Arc::new(ManualClock::new(Timestamp::from_secs(
+            1_790_000_000,
+        )))),
+    )
+    .unwrap();
+    let keys: Vec<String> = raw
+        .scan_prefix("journal/")
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(keys.len(), 8, "premise: eight notes were written: {keys:?}");
+    let sequences: Vec<u64> = keys
+        .iter()
+        .map(|key| key.rsplit('/').next().unwrap().parse().unwrap())
+        .collect();
+    assert!(
+        sequences.windows(2).any(|pair| pair[0] > pair[1]),
+        "the journal's keys sort in the order they were written: {keys:?}"
+    );
+    let shards: std::collections::BTreeSet<&str> = keys
+        .iter()
+        .filter_map(|key| key.split('/').nth(1))
+        .collect();
+    assert!(
+        shards.len() > 1,
+        "every note landed in one key range: {keys:?}"
+    );
+}

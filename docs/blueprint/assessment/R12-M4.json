@@ -108,7 +108,7 @@
       "backend/crates/services/qip-training/tests/training.rs a_distillation_reports_the_gap_its_student_actually_has_on_every_axis (a linear student of a boosted teacher on a humped target: mean and max gap, R2, Spearman rank and decision agreement recomputed independently from both models' outputs and required to equal the report; premises assert the gap is nonzero on every axis)",
       "backend/crates/services/qip-training/tests/training.rs each_fidelity_bar_alone_refuses_a_student_that_misses_only_it (R2, rank, decision agreement and mean gap each fire alone, by name)"
     ],
-    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED): the fidelity clause is closed (measured values asserted against an independent recomputation; each of R2, rank, decision agreement and mean gap refuses alone), but 'evaluable ... in hot/warm lanes' is met on no default path. model_serving.rs:47-50 says no stage of the cycle reads a served score; qip-api main.rs:265-270 says a served score reaches no filter; the deep brain promotes the teacher (learning.rs InTreeProvider::pack(&candidate.teacher)) and passes the student only as a manifest entry; no non-test code builds an Expr::Model, so Cell::work never evaluates one. Remaining step: a shipped binary's default path that evaluates a promoted distilled student in a hot or warm lane (an approved student compiled into a plan as Expr::Model and run by the edge node's simulated pass, or a warm brain serving the promoted DistilledLinear artifact on its default cycle), with a test that fails when that call is removed. Also: the deep brain judges under FidelityPolicy::default(), whose maximum_mean_gap is infinite, so the mean-gap bar never fires there.",
+    "gap": "2026-10-24 (lane L2-INTEL, skeptic REFUTED): the fidelity clause is closed (measured values asserted against an independent recomputation; each of R2, rank, decision agreement and mean gap refuses alone), but 'evaluable ... in hot/warm lanes' is met on no default path. model_serving.rs:47-50 says no stage of the cycle reads a served score; qip-api main.rs:265-270 says a served score reaches no filter; the deep brain promotes the teacher (learning.rs InTreeProvider::pack(&candidate.teacher)) and passes the student only as a manifest entry; no non-test code builds an Expr::Model, so Cell::work never evaluates one. Remaining step: a shipped binary's default path that evaluates a promoted distilled student in a hot or warm lane (an approved student compiled into a plan as Expr::Model and run by the edge node's simulated pass, or a warm brain serving the promoted DistilledLinear artifact on its default cycle), with a test that fails when that call is removed. Also: the deep brain judges under FidelityPolicy::default(), whose maximum_mean_gap is infinite, so the mean-gap bar never fires there. 2026-10-30 (lane L2-INTEL), one sentence: deploy-dependent; Expr::Model compiles and the edge pass evaluates it, but the hot/warm lanes that would evaluate a distilled student run passes only in test (execution_nodes = {} in every environment), so wiring the foundry to emit it cannot reach a default path until a node is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -277,14 +277,17 @@
   },
   {
     "id": "R12-MODEL-4013",
-    "status": "MISSING",
-    "current": "No uplift/heterogeneous-effect estimator; qip-agency plan.rs accepts a caller-supplied effect estimate beside a plan and ranks after hard-constraint refusal.",
+    "status": "PARTIAL",
+    "current": "qip-agency's estimators carry an identification label (estimate.rs). Since 2026-10-30 the back-door criterion is checked against a declared structural model's graph: StructuralModel::backdoor_open_path refuses an adjustment set containing a descendant of the treatment, or one that leaves a back-door path open (d-separation on the moral ancestral graph with the treatment's outgoing edges cut). estimate::backdoor_adjusted returns the covariate-adjusted effect labelled with the set it checked, or abstains with the reason and no number.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs header: learned effect estimate is an input"
+      "backend/crates/services/qip-agency/src/causal.rs StructuralModel::backdoor_open_path",
+      "backend/crates/services/qip-agency/src/estimate.rs backdoor_adjusted",
+      "backend/crates/services/qip-agency/tests/causal.rs::an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set",
+      "backend/crates/services/qip-agency/tests/causal.rs::adjusting_for_a_collider_opens_the_path_it_was_meant_to_close"
     ],
-    "gap": "Everything.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-30 (lane L2-INTEL): the unit clause is built; the in-lane skeptic HELD the PARTIAL status. Its one finding, that the moralisation and ancestral steps were untested, is closed by an M-bias test with both mutations firing. Open: no composition root calls backdoor_adjusted, and heterogeneity is not modelled (one effect per design, not per entity, audience, market or horizon).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -293,7 +296,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " 2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: backdoor_open_path short-circuited to None; its descendant check disabled. Each fails an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set. Also: the parent-marriage step disabled, and the moral graph built over the whole model instead of the ancestral set; each fails adjusting_for_a_collider_opens_the_path_it_was_meant_to_close."
   },
   {
     "id": "R12-MODEL-4014",
@@ -327,7 +330,7 @@
       "backend/crates/apps/qip-deepbrain/src/campaign.rs:308 assemble",
       "backend/crates/apps/qip-deepbrain/src/main.rs:608-640 learning rounds through the campaign"
     ],
-    "gap": "Retained internal episodes are not a campaign input, and naming one in the manifest alone would be false: campaign::assemble builds the window from the subject's bars (or the platform's fallback bars) and LearningDesk::learn fits only bars, so an episode set listed in the manifest would describe data the fit never read. Closing this needs the learning dataset to admit episode-derived rows (learning.rs, lane L20's file) and then an episode-set DataReference hashed into the FetchCampaign manifest; external references remain market streams only.",
+    "gap": "Retained internal episodes are not a campaign input, and naming one in the manifest alone would be false: campaign::assemble builds the window from the subject's bars (or the platform's fallback bars) and LearningDesk::learn fits only bars, so an episode set listed in the manifest would describe data the fit never read. Closing this needs the learning dataset to admit episode-derived rows (learning.rs, lane L20's file) and then an episode-set DataReference hashed into the FetchCampaign manifest; external references remain market streams only. 2026-10-30 (lane L2-INTEL), one sentence: needs a target decision first; the deep brain's bar model predicts next-bar return while a retained episode's realised outcome is a decision's result, so episode rows belong to a model of their own, and choosing it is an ADR (this lane holds 0171-0176) before code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -485,7 +488,7 @@
       "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
       "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
     ],
-    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record. The only validation before promotion is the deep brain held-out rmse comparison; score_filled scores fills of cycles that already ran, with no per-candidate shadow run, so no PaperGate-style trial record exists to require. Needs a shadow-scoring stage that runs a candidate beside the incumbent over simulated or paper fills and journals the result before the kernel can refuse a promotion lacking it.",
+    "gap": "2026-10-30 (lane L2-INTEL): the gap above is stale. ModelStage::Shadow with MIN_SHADOW_ROUNDS = 3 exists, and the deep brain's own candidates (ModelProducer::SelfFitted) cannot be promoted without it (require_completed_shadow). Open: ModelProducer::TrainingPipeline, the producer Platform::promote_model uses, skips the shadow stage. Requiring it was tried and reverted unpushed: 21 kernel and qip-api tests promote TrainingPipeline fixtures, and nine of them assert exact card stages or exercise the shadow refusal itself, so each needs reworking rather than a shared helper. Shadow rounds also score rmse on later bars, not twin-priced paper fills, so whether the shadow is 'simulation and paper trading' stands under bar part 4.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -511,7 +514,7 @@
       "backend/crates/edge/qip-edge/tests/model_release.rs",
       ".github/workflows/model-pack-publish.yml"
     ],
-    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member. 2026-10-25 (lane L2-INTEL): not built, and not completable in code here. (1) The draft's calibration has no producer: LocalTrainer::fit sets TrainedTeacher.calibration to Calibration::default(), and no evaluation metric is a calibration in [0,1], so a drafted figure would be a guess (refuse rather than guess). Allowed universes have no source on the promotion record either. (2) Signing and attestation are the two-person KMS workflow (model-pack-publish.yml), which only a deploy exercises. Next step: a calibration producer in qip-training (e.g. a holdout reliability measure recorded on the card), then the ModelPack draft with an additive tagged lineage tail (the inline_model pattern, so signed bytes of existing packs do not move).",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member. 2026-10-25 (lane L2-INTEL): not built, and not completable in code here. (1) The draft's calibration has no producer: LocalTrainer::fit sets TrainedTeacher.calibration to Calibration::default(), and no evaluation metric is a calibration in [0,1], so a drafted figure would be a guess (refuse rather than guess). Allowed universes have no source on the promotion record either. (2) Signing and attestation are the two-person KMS workflow (model-pack-publish.yml), which only a deploy exercises. Next step: a calibration producer in qip-training (e.g. a holdout reliability measure recorded on the card), then the ModelPack draft with an additive tagged lineage tail (the inline_model pattern, so signed bytes of existing packs do not move). 2026-10-30 (lane L2-INTEL), one sentence: the signable draft is not built because the card has no producer for two of the pack's required fields, a calibration figure in [0,1] (Calibration is a linear rescale) and the allowed universes, and signing is the deploy-time two-person KMS workflow; defining both fields is an ADR (this lane holds 0171-0176) plus a card field.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1538,9 +1541,12 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:15507 attribution periods",
       "backend/crates/services/qip-learning-engine/src/attribution.rs:142-155 residual/reconciles",
-      "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan"
+      "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan",
+      "docs/adr/0183-a-position-is-opened-only-with-an-exit-plan-its-instruments-stated-terms-admit.md",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::exit_plan_for, position_exit_plan)",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held"
     ],
-    "gap": "2026-10-25: owner decision needed: refusing to open a position without an exit plan breaks four private-fund lockup tests, because a short-horizon thesis on a locked-up asset has no admissible exit unless a secondary sale escapes the lockup; the owner must say whether such a thesis is refused or the secondary exit counts as its plan (attempted diff kept outside the tree).",
+    "gap": "2026-10-30: skeptic REFUTED: construct_from now dates an exit plan for every leg and refuses any leg whose plan falls inside a declared lockup (ADR 0183), but Platform::submit_order is public and checks no plan, resumed positions carry none, and the attribution half has no per-position reconciliation test; remaining step is the plan check inside submit_order, plans rebuilt on resume, and a per-position attribution test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1548,10 +1554,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect. 2026-10-30: ADR 0183 decides the owner question under the 2026-10-24 delegation: a declared lockup is a term the exit plan respects, so a thesis shorter than a running lockup is refused at construction. Mutation: pass None for the lockup in exit_plan_for; the locked-up fund is sized and the test fails. Five mark-focused fixtures' lockups shortened to an expired one year; the ASSET-4067 held-record assertion moved from the lockup's dated return to the catalogue exit for an expired lockup (the running-lockup return stays tested in valuation_plane.rs); the skeptic counts that restatement as lost held-record coverage. Skeptic (security-engineer) REFUTED as in the gap."
   },
   {
     "id": "R12-ASSET-4070",
@@ -1581,9 +1587,13 @@
     "current": "LifeStage implements the nine stages with only legal edges and tests; it has no caller outside its crate. The kernel tracks PositionLifecycle (Opened/Held/Flagged/Unwinding/Closed) instead.",
     "evidence": [
       "backend/crates/libs/qip-portfolio/src/life_stage.rs:15-27 LifeStage",
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)"
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)",
+      "backend/crates/runtime/qip-kernel/src/position_life.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::book_desk_fill, register_settlement, stage_learn settle_and_attribute)",
+      "backend/crates/runtime/qip-kernel/tests/position_life.rs an_exited_unsettled_position_is_not_attributed",
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs exit_cannot_reach_attribute_without_settling_first"
     ],
-    "gap": "2026-10-24 (re-read against the tree): qip_portfolio::LifeStage is named outside its crate only as a display string (qip-kernel asset_class_registry.rs LifeStage::Discover.as_str()); no kernel position moves through it. The kernel's Portfolio tracks PositionLifecycle instead and never calls flag_position or begin_unwind. Missing caller: the kernel cycle advancing a per-position LifeStage with its checked transitions - acquire/resize/exit on fills, settle from SettlementBook (register_settlement), attribute only in LEARN after settle - with a kernel test that an exited, unsettled position is not attributed. Plain code.",
+    "gap": "2026-10-25: skeptic REFUTED on part 2: the kernel walks every desk position discover to attribute through LifeStage::transition and attributes only settled lives, but on the default simulated broker no position reaches Exit (immediate_fill_fraction 0.6 never takes a sale to flat, and a flip needs a borrow reading observe_borrow has no production caller for), so Exit/Settle/Attribute run only in a test; remaining step is a default-path way to exit in full (a fill rule that can reach flat or a production borrow source).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1591,10 +1601,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test position_life; cargo test -p qip-portfolio life_stage",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path."
   },
   {
     "id": "R12-ASSET-4072",
@@ -1931,9 +1941,10 @@
       "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::the_kernel_installs_the_survival_limit_and_it_vetoes_an_order_past_the_ceiling",
       "backend/crates/runtime/qip-kernel/src/survival.rs::tests::a_waterfall_that_disagrees_with_the_ledger_is_refused",
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
-      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases"
+      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases",
+      "backend/crates/apps/qip-ledgerd/src/read_api.rs GET /api/v1/ledger/obligations; test the_obligations_route_answers_the_ledgers_fold_at_the_callers_instant"
     ],
-    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.",
+    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.\n2026-10-31 (lane L1-MONEY): qip-ledgerd now serves its LedgerObligations fold at GET /api/v1/ledger/obligations?unit=&as_of=; the caller's instant is required, never defaulted. Remaining: a qip-api reader with an explicit timeout that calls it each cycle and feeds Platform::observe_ledger_obligations (qip-api has no ledgerd client today), the survival_gate.rs refusal test the closure names, and a default deployment of qip-ledgerd (variable \"ledgerd\" is null everywhere), so bar part 2 stays unmet.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1947,7 +1958,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL. 2026-10-31 lane L1-MONEY: mutation (route arm unreachable, so 404) fired and was restored with cp+cmp. No skeptic was run: the row cannot be promoted without the reader and a deployment."
   },
   {
     "id": "R12-CAPITAL-4087",

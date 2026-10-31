@@ -457,6 +457,7 @@ fn the_run_loop_runs_the_tick_desk_on_its_cadence() -> Result<()> {
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             assert!(
@@ -961,6 +962,7 @@ fn the_run_loop_hands_the_platforms_own_orders_to_the_tick_desk() -> Result<()> 
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             assert!(

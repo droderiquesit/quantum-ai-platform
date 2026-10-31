@@ -142,3 +142,60 @@ fn history_records_that_would_rewrite_it_are_refused() -> Result<()> {
     );
     Ok(())
 }
+
+/// A platform lists its assembled universe from the instant it assembled,
+/// the earliest it can say it knew the name, and then meets bars dated
+/// before that. The listing moves back to the earliest evidence and never
+/// forward: a history that kept the assembly instant would say an
+/// instrument did not exist on a date it visibly traded, and a backtest as
+/// of that date would find an empty universe (R12-TICK-2090). Moving it
+/// forward on later evidence would shorten a listing on no fact at all.
+///
+/// Mutation: make `backdate_listing` leave `listed_from` alone — the
+/// membership-before-assembly assertion fails. Mutation: let a later `at`
+/// move the start forward — the never-forward assertion fails.
+#[test]
+fn a_listing_moves_back_to_earlier_evidence_and_never_forward() -> Result<()> {
+    let mut h = UniverseHistory::new();
+    h.list(id("obj-assembled"), "ASMB", day(100))?;
+    assert!(
+        !h.is_member_at(&id("obj-assembled"), day(40)),
+        "the premise: before any earlier evidence the name is listed from assembly only"
+    );
+
+    assert!(
+        h.backdate_listing(&id("obj-assembled"), day(40))?,
+        "earlier evidence must move the listing back"
+    );
+    assert!(h.is_member_at(&id("obj-assembled"), day(40)));
+    assert_eq!(
+        h.listing(&id("obj-assembled")).map(|l| l.listed_from),
+        Some(day(40))
+    );
+    assert_eq!(
+        h.resolve("ASMB", day(40)).map(|o| o.as_str().to_string()),
+        Some("obj-assembled".to_string()),
+        "the first symbol era moves back with the listing"
+    );
+
+    assert!(
+        !h.backdate_listing(&id("obj-assembled"), day(70))?,
+        "later evidence must not move the listing"
+    );
+    assert_eq!(
+        h.listing(&id("obj-assembled")).map(|l| l.listed_from),
+        Some(day(40)),
+        "a listing's start moved forward"
+    );
+
+    assert!(
+        h.backdate_listing(&id("obj-unknown"), day(1)).is_err(),
+        "a name the history does not hold is list's job, not a backdate"
+    );
+    h.delist(&id("obj-assembled"), day(60))?;
+    assert!(
+        h.backdate_listing(&id("obj-assembled"), day(30))?,
+        "a delisted name still moves back to evidence before its listing"
+    );
+    Ok(())
+}

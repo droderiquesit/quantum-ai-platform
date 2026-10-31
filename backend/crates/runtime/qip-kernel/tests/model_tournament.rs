@@ -429,6 +429,93 @@ fn each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that
     Ok(())
 }
 
+/// R12-MODEL-6021: the capital each forecaster's forecasts informed is
+/// attributed beside its P&L share. Each order's deployed notional is split
+/// across the same forecasters, in the same equal shares, the shares sum to
+/// the notional the pass deployed, and the attribution record LEARN journals
+/// carries the split. Mutations: key the split by `Dimension::Belief` in
+/// `capital_by_forecaster` — the keys are hypothesis ids, not the credited
+/// forecasters, and the key-set assertion fails; sum the quantity alone
+/// into `AttributionPass::deployed` — the notional assertion fails.
+#[test]
+fn each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional()
+-> Result<()> {
+    let (platform, order_id, _hypothesis) = a_filled_order_citing_a_formed_hypothesis()?;
+    let pass = platform
+        .last_attribution()
+        .ok_or_else(|| Error::not_found("LEARN attributed nothing"))?;
+    let deployed = pass
+        .deployed
+        .get(&order_id)
+        .copied()
+        .ok_or_else(|| Error::not_found("the order deployed nothing"))?;
+    assert!(
+        deployed.is_positive(),
+        "premise: the order deployed capital"
+    );
+    // Against an independent account of the same fills: the outcome
+    // capture's record of what filled, which the attribution never reads.
+    // Mutation: sum the quantity alone into `deployed` — the figure is
+    // still positive and still splits and sums against itself, and only
+    // this equality catches it.
+    let traded: Decimal = platform
+        .outcomes()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision.action {
+            qip_twin::capture::Action::Filled {
+                order_id: filled,
+                quantity,
+                price,
+                ..
+            } if filled.as_str() == order_id => Some((*quantity * *price).abs()),
+            _ => None,
+        })
+        .sum();
+    assert_eq!(
+        deployed, traded,
+        "the order's deployed notional is not its fills' quantity times price"
+    );
+
+    let credited = qip_kernel::attribution::by_forecaster(pass)?;
+    let capital = qip_kernel::attribution::capital_by_forecaster(pass)?;
+    assert_eq!(
+        capital.keys().collect::<Vec<_>>(),
+        credited.keys().collect::<Vec<_>>(),
+        "the capital is not attributed to the forecasters the P&L was: {capital:?}"
+    );
+    assert!(
+        capital.values().all(|share| share.is_positive()),
+        "a forecaster that informed an order was attributed no capital: {capital:?}"
+    );
+    let total: Decimal = pass.deployed.values().copied().sum();
+    let sum = capital
+        .values()
+        .fold(Decimal::ZERO, |sum, share| sum + *share);
+    assert_eq!(
+        sum, total,
+        "the capital shares do not sum to the notional deployed"
+    );
+
+    let journaled = platform
+        .event_log()
+        .records()
+        .iter()
+        .filter_map(|record| {
+            qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)
+                .ok()?
+                .decode::<qip_kernel::attribution::AttributionRecorded>()
+                .ok()
+        })
+        .next_back()
+        .ok_or_else(|| Error::not_found("no attribution record on the log"))?;
+    assert_eq!(
+        journaled.body.capital_by_forecaster, capital,
+        "the journaled record does not carry the capital split"
+    );
+    Ok(())
+}
+
 // --- W3.3: the tournament through the cycle --------------------------------
 
 /// R12-MODEL-7198 from a composition root's call: a cycle that forms a

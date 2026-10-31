@@ -1578,7 +1578,7 @@ fn a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports
         &mut Alternating { step: 0 },
         &mut clock,
         &universe,
-        Some(&history),
+        &history,
     )?;
     let bbb_fills = result
         .fills
@@ -1629,7 +1629,7 @@ fn a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports
         &mut Alternating { step: 0 },
         &mut clock,
         &universe,
-        Some(&early),
+        &early,
     )?;
     let bbb_before: Vec<&SimulatedFill> = result
         .fills
@@ -1644,7 +1644,7 @@ fn a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports
         result.rejected.iter().any(|rejected| {
             rejected.object_id == object("BBB").as_str()
                 && rejected.at >= day(10)
-                && rejected.reason.contains("was delisted at")
+                && rejected.reason.contains("was not listed at")
         }),
         "an order after the delisting was not refused naming it: {:?}",
         result.rejected

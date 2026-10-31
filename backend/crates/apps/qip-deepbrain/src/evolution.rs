@@ -341,11 +341,14 @@ pub struct EvolutionEngine {
     /// equity curve -- which the gate then reads as a strategy with no
     /// volatility rather than as a strategy that never traded.
     universe: Universe,
-    /// The platform's historical universe as of the last round
-    /// (R12-TICK-2090): membership by instant and venue outages, taken from
-    /// the platform at the start of every `turn`, so a backtest over a past
-    /// window judges a candidate against the names and venues that existed
-    /// then rather than the survivors the present universe holds.
+    /// The platform's universe history as it stood when the current round
+    /// began (R12-TICK-2090): membership by instant, delistings and venue
+    /// outages, snapshotted in [`Self::maybe_turn`] so every candidate of one
+    /// round is backtested against the same account of what was listed and
+    /// which venue was out, a round never reads a delisting a later round
+    /// learned of, and a backtest over a past window judges a candidate
+    /// against the names that existed then rather than the survivors the
+    /// present universe holds.
     universe_history: UniverseHistory,
     history: BTreeMap<String, Vec<Bar>>,
     foundries: BTreeMap<String, StrategyFoundry>,
@@ -628,7 +631,7 @@ impl EvolutionEngine {
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<LearningRound>> {
-        if !self.learning.due(cycle) {
+        if !self.learning_due(cycle) {
             return Ok(None);
         }
         // A restarted process's registry is empty; the log is not
@@ -890,13 +893,26 @@ impl EvolutionEngine {
         self.priors = priors;
     }
 
+    /// Whether a search round is due on `cycle`. The one statement of the
+    /// cadence, read by [`Self::maybe_turn`] and by the run loop when it
+    /// holds a due round in the research backlog instead (ADR 0214): two
+    /// copies would let the loop queue a round the engine would not have run.
+    pub fn search_due(&self, cycle: u64) -> bool {
+        self.config.every_cycles != 0 && cycle.is_multiple_of(self.config.every_cycles)
+    }
+
+    /// Whether a learning round is due on `cycle`; see [`Self::search_due`].
+    pub fn learning_due(&self, cycle: u64) -> bool {
+        self.learning.due(cycle)
+    }
+
     pub fn maybe_turn(
         &mut self,
         platform: &mut Platform,
         cycle: u64,
         now: Timestamp,
     ) -> Result<Option<RoundSummary>> {
-        if self.config.every_cycles == 0 || !cycle.is_multiple_of(self.config.every_cycles) {
+        if !self.search_due(cycle) {
             return Ok(None);
         }
         let Some((subject, bars)) = self
@@ -922,6 +938,7 @@ impl EvolutionEngine {
             return Ok(None);
         };
 
+        self.universe_history = platform.universe_history().clone();
         let summary = self.turn(platform, &subject, bars, now)?;
         self.stats.rounds += 1;
         self.stats.registered += summary.registered as u64;
@@ -937,10 +954,6 @@ impl EvolutionEngine {
         now: Timestamp,
     ) -> Result<RoundSummary> {
         let object = ObjectId::from_string(subject);
-        // The universe as the platform's history has it, taken once per
-        // round before any candidate is judged, so every backtest in the
-        // round reads one account of what was listed and which venue was out.
-        self.universe_history = platform.universe_history().clone();
         // §22.3's table, and §56.3's rule 31: "a data class with only one
         // viable source is a concentration risk, and a universe with fewer
         // than two cannot be promoted past validation." The verdict is taken
@@ -1407,7 +1420,7 @@ impl EvolutionEngine {
             &mut harness,
             &mut clock,
             &self.universe,
-            Some(&self.universe_history),
+            &self.universe_history,
         )?;
 
         // A run that never traded is not a strategy with no volatility; it is

@@ -145,9 +145,10 @@ pub struct BacktestResult {
     /// perfectly flat equity curve looked exactly like a strategy that chose
     /// not to trade. Counting it is what tells the two apart.
     pub superseded: usize,
-    /// The venue outages the historical universe records inside this run's
-    /// span, for every venue an instrument of the universe trades on
-    /// (R12-TICK-2090). Empty when the run was given no history, which is
+    /// Venue outages in the universe history that overlap the run, at the
+    /// venues of the instruments the universe trades on (R12-TICK-2090). A
+    /// replay across a period a venue published nothing is reported, not
+    /// read as a quiet market. Empty for a run given no history, which is
     /// not the same as a run across no outage; `Backtester::run_with_history`
     /// is the call that can tell them apart.
     #[serde(default)]
@@ -294,19 +295,32 @@ impl Backtester {
         clock: &mut SimulationClock,
         universe: &Universe,
     ) -> Result<BacktestResult> {
-        self.run_with_history(strategy, clock, universe, None)
+        self.run_inner(strategy, clock, universe, None)
     }
 
-    /// Run one strategy over one clock against the universe as it was at each
-    /// instant (R12-TICK-2090). With a history, an order for an instrument the
-    /// history knows and that was not a member at the fill instant — delisted
-    /// by then, or not yet listed — is rejected naming the fact, an order at a
-    /// venue the history holds out at that instant is rejected naming the
-    /// outage, and the result reports every outage inside the run's span. An
-    /// instrument the history does not know is judged by the present universe
-    /// alone: the history is evidence added to the universe, never a second
-    /// universe that could disagree with it about contract terms.
+    /// [`Self::run`] against the universe as it stood at each instant
+    /// (R12-TICK-2090): an instrument the history says was not listed at a
+    /// rebalance — delisted earlier, or not yet listed — is refused there
+    /// rather than traded on a membership it did not have, an instrument
+    /// delisted after the window is a member throughout it, an order at a
+    /// venue the history holds out at that instant is refused naming the
+    /// outage, and every venue outage overlapping the run at a venue the
+    /// universe trades on is reported on the result. An instrument the
+    /// history does not name is judged by the universe alone, as
+    /// [`Self::run`] judges everything: the history is evidence added to the
+    /// universe, never a second universe that could disagree with it about
+    /// contract terms.
     pub fn run_with_history<S: BacktestStrategy>(
+        &self,
+        strategy: &mut S,
+        clock: &mut SimulationClock,
+        universe: &Universe,
+        history: &UniverseHistory,
+    ) -> Result<BacktestResult> {
+        self.run_inner(strategy, clock, universe, Some(history))
+    }
+
+    fn run_inner<S: BacktestStrategy>(
         &self,
         strategy: &mut S,
         clock: &mut SimulationClock,
@@ -456,6 +470,29 @@ impl Backtester {
             })
             .collect();
 
+        // Outages at the venues of every instrument the run asked for or
+        // held, overlapping the run's span.
+        let outages = match history {
+            Some(history) => {
+                let venues: std::collections::BTreeSet<&str> = fills
+                    .iter()
+                    .map(|fill: &SimulatedFill| fill.object_id.as_str())
+                    .chain(rejected.iter().map(|order| order.object_id.as_str()))
+                    .filter_map(|object| {
+                        universe
+                            .get(&ObjectId::from_string(object))
+                            .map(|record| record.venue.as_str())
+                    })
+                    .collect();
+                venues
+                    .into_iter()
+                    .flat_map(|venue| history.outages_overlapping(venue, started_at, finished_at))
+                    .cloned()
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+
         Ok(BacktestResult {
             strategy: strategy.name().to_string(),
             started_at,
@@ -494,6 +531,7 @@ impl Backtester {
 
     /// Trade toward the target weights, applying costs.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn rebalance(
         &self,
         portfolio: &mut Portfolio,
@@ -530,21 +568,29 @@ impl Backtester {
                 });
                 continue;
             };
-            // The universe as it was at `at`, not as it is now (R12-TICK-2090):
-            // a name the history says was not listed at this instant, or whose
-            // venue the history holds out at it, is refused with the fact
-            // named, so a survivor-only present cannot fill a backtest's past
-            // and an outage is a window nothing trades through.
+            // Not a member at this instant by the history's account: refused
+            // rather than traded on a listing it did not have then, which is
+            // the survivorship and the look-ahead a static universe hides.
+            if let Some(history) = history
+                && history.is_named(&object_id)
+                && !history.is_member_at(&object_id, at)
+            {
+                rejected.push(RejectedOrder {
+                    at,
+                    object_id: object_key.clone(),
+                    quantity: Decimal::ZERO,
+                    reason: format!(
+                        "the instrument was not listed at {}; it was delisted before then or \
+                         listed after",
+                        at.to_rfc3339()
+                    ),
+                });
+                continue;
+            }
+            // A venue the history holds out at this instant is refused with
+            // the outage named (R12-TICK-2090): an outage is a window nothing
+            // trades through, not a quiet market a backtest may fill in.
             if let Some(history) = history {
-                if let Some(reason) = not_a_member_at(history, &object_id, at) {
-                    rejected.push(RejectedOrder {
-                        at,
-                        object_id: object_key.clone(),
-                        quantity: Decimal::ZERO,
-                        reason,
-                    });
-                    continue;
-                }
                 let instant_after = Timestamp::from_nanos(at.as_nanos().saturating_add(1));
                 if let Some(outage) = history
                     .outages_overlapping(&object.venue, at, instant_after)
@@ -755,28 +801,6 @@ fn equity_returns(curve: &[(Timestamp, Decimal)]) -> Vec<f64> {
             (pair[1].1.to_f64() - previous) / previous
         })
         .collect()
-}
-
-/// Why `object_id` could not be traded at `at` according to `history`, or
-/// `None` when it was a member then or the history does not know the name.
-fn not_a_member_at(
-    history: &UniverseHistory,
-    object_id: &ObjectId,
-    at: Timestamp,
-) -> Option<String> {
-    let listing = history.listing(object_id)?;
-    if listing.listed_from > at {
-        return Some(format!(
-            "{object_id} was not listed until {}; at {at} it was not in the universe",
-            listing.listed_from
-        ));
-    }
-    match listing.delisted_at {
-        Some(delisted_at) if delisted_at <= at => Some(format!(
-            "{object_id} was delisted at {delisted_at}; at {at} it was no longer in the universe"
-        )),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
