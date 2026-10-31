@@ -15066,8 +15066,14 @@ impl Platform {
     /// Add `trade`'s signed volume to this cycle's order flow (ADR 0231). A
     /// trade whose venue stated no aggressor contributes nothing: guessing a
     /// side from the quote would be the platform inventing the flow it then
-    /// forecasts from.
+    /// forecasts from. Nor does a print that formed no price — a late
+    /// report, a correction, an off-exchange cross — because a block crossed
+    /// away from the book says who traded, not who was taking the spread,
+    /// and `qip_market::microstructure` counts only price-forming prints too.
     fn record_order_flow(&mut self, trade: &qip_market::quote::Trade) {
+        if !trade.condition.is_price_forming() {
+            return;
+        }
         let Some(side) = trade.aggressor else {
             return;
         };

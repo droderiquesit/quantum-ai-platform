@@ -28,7 +28,11 @@ snapshot and nothing modelled it.
    signed flow per instrument and venue. It reads only `Trade::aggressor`.
    A trade whose venue stated no side contributes nothing. Inferring a side
    from the quote would be the platform inventing the flow it then forecasts
-   from. UNDERSTAND takes the cycle's flow, so the member reads one cycle's
+   from. Neither does a print that formed no price: a late report, a
+   correction or an off-exchange cross. A block crossed away from the book
+   says who traded, not who was taking the spread, and
+   `qip_market::microstructure` counts only price-forming prints too.
+   UNDERSTAND takes the cycle's flow, so the member reads one cycle's
    prints and never an accumulating history. The member declares its source
    as `sense:trade-aggressor:simulated` (`ORDER_FLOW_SOURCE`), so every
    listing of the population says where its evidence comes from.
@@ -52,9 +56,14 @@ snapshot and nothing modelled it.
 ## Consequences
 
 - `qip-kernel/tests/symbolic_federation.rs::signed_trade_flow_gives_the_order_flow_member_a_view`
-  feeds AAA sell-dominated prints and BBB prints that name no side. The
-  member gives AAA one view below 0.5 and gives BBB none. Reading every print
-  as a buy fails the test: BBB gains a view and AAA leans up.
+  feeds AAA sell-dominated prints. It feeds BBB prints that name no side,
+  plus a large off-exchange cross that does name one. The member gives AAA
+  one view below 0.5 and gives BBB none. The next cycle has no new prints
+  and finds the member silent. Three mutations each fail the test: reading
+  every print as a buy, dropping the price-forming filter, and reading the
+  flow by `clone` instead of `take`. That the member can only narrow follows
+  from the federation's narrowing (decision 3). This test does not exercise
+  it.
 - The population grows by one member. The counts in the federation tests
   move with it, and on a tape with no signed prints the member is listed
   among the silent ones.

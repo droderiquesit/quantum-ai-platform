@@ -1645,16 +1645,21 @@ fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_
 
 /// ADR 0231, R12-WORLD-3046: the paper feed's signed aggressor flow gives
 /// the order-flow member a view of the instrument it traded, leaning with
-/// the side that dominated, and a print that stated no aggressor gives it
-/// nothing. The member may only narrow, because the federation's one power
-/// over DECIDE is a narrowing.
+/// the side that dominated. A print that stated no aggressor, or formed no
+/// price, gives it nothing, and a cycle with no new prints finds it silent
+/// again, because each cycle's flow is taken, not accumulated. (That the
+/// member can only narrow follows from the federation's narrowing, which
+/// this test does not exercise.)
 ///
 /// The failure this prevents: each trade's aggressor side reached the
 /// market snapshot and nothing modelled it, so the population had no member
 /// that read who was crossing the spread. Mutation: ignore the aggressor in
 /// `Platform::record_order_flow`, reading every print as a buy. BBB's
 /// unattributed prints then give the member a view, and AAA's
-/// sell-dominated flow leans up; both assertions fail.
+/// sell-dominated flow leans up; both assertions fail. Dropping the
+/// `is_price_forming` filter counts BBB's off-exchange cross and gives BBB a
+/// view; reading the flow by `clone` instead of `take` keeps the member fed
+/// on the second cycle.
 #[test]
 fn signed_trade_flow_gives_the_order_flow_member_a_view() -> Result<()> {
     use qip_market::book::Side;
@@ -1663,28 +1668,37 @@ fn signed_trade_flow_gives_the_order_flow_member_a_view() -> Result<()> {
     let mut records = bars("AAA", 120);
     records.extend(bars("BBB", 120));
     platform.observe(records);
-    let print = |symbol: &str, n: i64, size: i64, aggressor: Option<Side>| {
-        let at = start().saturating_sub(Duration::from_mins(60 - n));
-        SensedRecord::Trade(Trade {
-            object_id: object(symbol),
-            venue: "XNYS".to_string(),
-            at,
-            capture_time: at,
-            sequence: Some(n as u64),
-            price: dec!("100"),
-            size: Decimal::from_int(size),
-            aggressor,
-            condition: TradeCondition::Regular,
-            trade_id: Some(format!("{symbol}-{n}")),
-            quality: DataQuality::default(),
-        })
-    };
-    // AAA: three times as much selling as buying. BBB: prints naming no side.
+    let print =
+        |symbol: &str, n: i64, size: i64, aggressor: Option<Side>, condition: TradeCondition| {
+            let at = start().saturating_sub(Duration::from_mins(60 - n));
+            SensedRecord::Trade(Trade {
+                object_id: object(symbol),
+                venue: "XNYS".to_string(),
+                at,
+                capture_time: at,
+                sequence: Some(n as u64),
+                price: dec!("100"),
+                size: Decimal::from_int(size),
+                aggressor,
+                condition,
+                trade_id: Some(format!("{symbol}-{n}")),
+                quality: DataQuality::default(),
+            })
+        };
+    // AAA: three times as much selling as buying. BBB: prints naming no
+    // side, and a block crossed off the exchange that does name one.
     platform.observe(vec![
-        print("AAA", 1, 100, Some(Side::Buy)),
-        print("AAA", 2, 300, Some(Side::Sell)),
-        print("BBB", 3, 200, None),
-        print("BBB", 4, 200, None),
+        print("AAA", 1, 100, Some(Side::Buy), TradeCondition::Regular),
+        print("AAA", 2, 300, Some(Side::Sell), TradeCondition::Regular),
+        print("BBB", 3, 200, None, TradeCondition::Regular),
+        print("BBB", 4, 200, None, TradeCondition::Regular),
+        print(
+            "BBB",
+            5,
+            5_000,
+            Some(Side::Buy),
+            TradeCondition::OffExchange,
+        ),
     ]);
     platform.run_cycle(start());
     let reviews = federation_stage::replay(&platform)?;
@@ -1722,6 +1736,18 @@ fn signed_trade_flow_gives_the_order_flow_member_a_view() -> Result<()> {
     assert!(
         *probability < 0.5,
         "sell-dominated flow leaned the next close up: {probability}"
+    );
+    // A cycle with no new prints: the last cycle's flow was taken.
+    platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    let reviews = federation_stage::replay(&platform)?;
+    let next = reviews
+        .last()
+        .expect("premise: the second cycle journaled a review");
+    assert!(
+        next.silent
+            .contains(&federation_stage::ORDER_FLOW.to_string()),
+        "the member was fed again on a cycle with no new prints: {:?}",
+        next.silent
     );
     Ok(())
 }
