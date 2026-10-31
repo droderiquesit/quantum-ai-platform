@@ -12,11 +12,16 @@
 //! # A citation, never state
 //!
 //! A snapshot is written after the cycle and never read back as the domain's
-//! content: the facts and edges are rebuilt from the log as they always
-//! were. The only thing read back is each domain's last version and digest,
-//! so that a restarted process continues the version sequence rather than
-//! starting it again. The topic is in the Learn group, which the log never
-//! evicts, so that sequence survives.
+//! content. The only thing read back is each domain's last version and
+//! digest, so that a restarted process continues the version sequence
+//! rather than starting it again. The topic's retention class is Episodic,
+//! which the log keeps indefinitely, so that sequence survives.
+//!
+//! What a version does not promise: that the content behind it survives a
+//! restart. A restarted platform starts from an empty world model and does
+//! not rebuild the graphs from the log, so the first snapshot after a
+//! restart describes what the new process has learned since, at the next
+//! version. The digest makes that visible; it does not prevent it.
 //!
 //! # Bounded by change
 //!
@@ -120,6 +125,30 @@ pub fn resume(log: &EventLog) -> Result<BTreeMap<String, (u64, String)>> {
     Ok(last)
 }
 
+/// Record what journaling `version` of `domain` did. A snapshot that reached
+/// the log takes its digest as the domain's last. One that failed still
+/// takes its version, keeping the previous digest, because the record may
+/// already be in the log (the log is appended before the journal is
+/// published) and journaling the same version twice would let two records
+/// claim it. The cost of a failed publish is therefore a skipped version,
+/// never a repeated one, and the next cycle retries at the next number.
+pub fn settle(
+    last: &mut BTreeMap<String, (u64, String)>,
+    domain: String,
+    version: u64,
+    digest: String,
+    journaled: bool,
+) {
+    let kept = if journaled {
+        digest
+    } else {
+        last.get(&domain)
+            .map(|(_, previous)| previous.clone())
+            .unwrap_or_default()
+    };
+    last.insert(domain, (version, kept));
+}
+
 /// The snapshots one cycle owes: each domain whose digest differs from the
 /// last journaled for it, at the next version.
 pub fn due(
@@ -143,4 +172,43 @@ pub fn due(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed journal may still have left its record in the log, so the
+    /// version it used is taken and never reused; its digest is not, so the
+    /// next cycle snapshots the domain again, at the next version.
+    ///
+    /// Mutation: leave the version unadvanced on a failed journal.
+    #[test]
+    fn a_failed_journal_takes_its_version_so_no_two_snapshots_claim_one() {
+        let mut last = BTreeMap::from([(CAUSAL_GRAPH.to_string(), (3, "old".to_string()))]);
+        settle(
+            &mut last,
+            CAUSAL_GRAPH.to_string(),
+            4,
+            "new".to_string(),
+            false,
+        );
+        assert_eq!(last[CAUSAL_GRAPH], (4, "old".to_string()));
+        let at = Timestamp::from_secs(1_760_000_000);
+        let again = due(
+            vec![(CAUSAL_GRAPH.to_string(), BTreeMap::new(), "new".to_string())],
+            &last,
+            at,
+        );
+        assert_eq!(again.len(), 1, "the unjournaled change was not retried");
+        assert_eq!(again[0].version, 5, "a failed journal's version was reused");
+        settle(
+            &mut last,
+            CAUSAL_GRAPH.to_string(),
+            5,
+            "new".to_string(),
+            true,
+        );
+        assert_eq!(last[CAUSAL_GRAPH], (5, "new".to_string()));
+    }
 }

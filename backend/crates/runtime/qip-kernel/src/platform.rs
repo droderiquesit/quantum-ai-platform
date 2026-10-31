@@ -13385,10 +13385,11 @@ impl Platform {
     /// domain, its next version, its counts and a digest of its content as
     /// true and known at `now`. A domain whose digest is unchanged adds
     /// nothing to the log. A snapshot that cannot be read or journaled is a
-    /// capture problem, and its version is not advanced, so the next cycle
-    /// tries it again at the same number.
+    /// capture problem; a failed journal still takes its version
+    /// ([`crate::world_snapshot::settle`]), so the retry next cycle uses the
+    /// next number and no two records claim one.
     fn snapshot_world(&mut self, now: Timestamp) {
-        use crate::world_snapshot::{WORLD_SNAPSHOT_ORIGIN, domains_of, due};
+        use crate::world_snapshot::{WORLD_SNAPSHOT_ORIGIN, domains_of, due, settle};
         let domains = match domains_of(&self.world.read(), now) {
             Ok(domains) => domains,
             Err(error) => {
@@ -13405,15 +13406,23 @@ impl Platform {
                 snapshot.version,
                 snapshot.digest.clone(),
             );
-            match self.journal_record(snapshot, WORLD_SNAPSHOT_ORIGIN, now) {
-                Ok(()) => {
-                    self.world_snapshots.insert(domain, (version, digest));
+            let journaled = match self.journal_record(snapshot, WORLD_SNAPSHOT_ORIGIN, now) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.capture_problems.push(format!(
+                        "the {domain} snapshot at version {version} was not journaled: {}",
+                        error.message()
+                    ));
+                    false
                 }
-                Err(error) => self.capture_problems.push(format!(
-                    "the {domain} snapshot at version {version} was not journaled: {}",
-                    error.message()
-                )),
-            }
+            };
+            settle(
+                &mut self.world_snapshots,
+                domain,
+                version,
+                digest,
+                journaled,
+            );
         }
     }
 
