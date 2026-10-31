@@ -1262,12 +1262,15 @@
   {
     "id": "R12-EXPAND-6055",
     "status": "PARTIAL",
-    "current": "qip-data-finder SourceRegistryEntry exposes provenance, cost, licence, freshness and utility as a view over RegisteredSource; integrated via qip-api registration views and deep-brain connectors.",
+    "current": "qip-data-finder SourceRegistryEntry exposes provenance, cost, licence, freshness and utility as a view over RegisteredSource; integrated via qip-api registration views and deep-brain connectors. Since 2026-10-31 Platform::assess_sources consults RegisteredSource::entry for every registration it makes and carries one SourceRegistryView per registration on the SourceAssessment (source id, where it was discovered and when, monthly fee, the licence identifier the registration was decided on, declared update frequency, routing class and composite); a registration the registry does not hold, or whose entry names no licence, is recorded as a catalogue problem and not catalogued. The deep brain's DiscoveryDesk merges the views across its per-candidate passes.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/decision.rs:464-476",
-      "backend/crates/apps/qip-api/src/registration_views.rs"
+      "backend/crates/apps/qip-api/src/registration_views.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::SourceRegistryView, assess_sources (the entry consult before the catalogue)",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs maybe_run (merged.entries)",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::every_registration_carries_its_source_registry_entry_on_the_assessment"
     ],
-    "gap": "RegisteredSource::entry (decision.rs) is read only by tests/source_registry.rs: no binary consults the Source Registry entry on a running path, and discovery itself runs in the deep brain only when QIP_DEEPBRAIN_DISCOVER_EVERY is set (unset in every committed environment). Discovery method is already recorded and required: SourceCandidate::validate refuses an empty discovered_from and SourceLineage carries it into the entry's provenance. Sensors have no category of their own: §7.6.1's table has eight and a physical sensor feed classifies as PhysicalAndGeospatial; adding a ninth variant to qip_financial::SourceCategory would contradict the table it encodes, so the grader's closure (SourceCategory::Sensor) is not taken.",
+    "gap": "The switch is still off: DiscoveryConfig::default is every_cycles 0, QIP_DEEPBRAIN_DISCOVER_EVERY and QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH are unset in every committed environment (deepbrain_discover_every tfvar and infrastructure/gitops/envs/dev/deepbrain.yaml), and a discovery pass probes the network, which needs the egress proxy that is not applied; turning the cadence on with no candidate catalogue would run over nothing, so the default stays off until a candidate catalogue is committed to an environment (owner decision, billed egress). The refusal of an entry with no declared licence is defensive: the finder admits no source with an unknown legality, so it fires only if the registry and its own decision disagree. No skeptic round ran on this slice; the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1275,10 +1278,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-kernel --test source_lifecycle; cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L22 after reading source.rs:146 (SourceCandidate::validate), source.rs:315 (SourceLineage) and decision.rs (entry, SourceRegistryEntry); no code changed. Closing needs a production reader of the entry (for example the qip-api registration view rendering provenance, cost, licence, freshness and utility from RegisteredSource::entry) and discovery on by default or committed in an environment."
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading source.rs:146 (SourceCandidate::validate), source.rs:315 (SourceLineage) and decision.rs (entry, SourceRegistryEntry); no code changed. Closing needs a production reader of the entry (for example the qip-api registration view rendering provenance, cost, licence, freshness and utility from RegisteredSource::entry) and discovery on by default or committed in an environment. 2026-10-31 L4b-expand: the production reader of RegisteredSource::entry landed in assess_sources. Mutation fired: dropping the entries push failed every_registration_carries_its_source_registry_entry_on_the_assessment at entries.len() (0, expected 4); restored byte-for-byte (sha256 checked). Default wiring not changed: discovery stays off by default because no environment commits a candidate catalogue or an egress path. Kept PARTIAL; no skeptic."
   },
   {
     "id": "R12-EXPAND-6056",
