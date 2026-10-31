@@ -299,7 +299,11 @@ fn tape(symbol: &str) -> Vec<SensedRecord> {
 /// test whose premise is a cycle that sizes something drives this scenario;
 /// [`tape`] stays as it was for the tests that never needed one.
 fn eligible_tape(symbol: &str) -> Vec<SensedRecord> {
-    let mut price = 100.0_f64;
+    // Started below 100 so that the drift brings the tape to about 100 by
+    // its last quiet bar: the drop then lands where `tape`'s does, and a
+    // test that prices later bars off that level (the compounding test's
+    // plateau) sees the same geometry it was written against.
+    let mut price = 100.0_f64 / (1.0 + eligible_panel::DRIFT).powi(TAPE as i32 - 1);
     let mut records: Vec<SensedRecord> = (0..TAPE)
         .map(|i| {
             let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
@@ -796,7 +800,7 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         universe
     };
     let mut platform = platform_over(universe, leverage_only())?;
-    platform.observe(tape("AAA"));
+    platform.observe(eligible_tape("AAA"));
 
     // The reference: the same cycle on the same tape before any evidence.
     let report = platform.run_cycle(start());
@@ -1293,8 +1297,8 @@ fn a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk
         LimitSet::conservative_default(),
         desk,
     )?;
-    illiquid.observe(tape("FAST"));
-    liquid.observe(tape("FAST"));
+    illiquid.observe(eligible_tape("FAST"));
+    liquid.observe(eligible_tape("FAST"));
 
     let (illiquid_accepted, illiquid_refusals) = offer_the_same_book(&mut illiquid);
     let (liquid_accepted, liquid_refusals) = offer_the_same_book(&mut liquid);
@@ -1432,38 +1436,21 @@ fn a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk
     Ok(())
 }
 
-/// The number the stage reported after `marker`, so a test reads the
-/// platform's own account rather than recomputing one beside it.
-fn reported_number(detail: &str, marker: &str) -> f64 {
-    let (_, rest) = detail
-        .split_once(marker)
-        .unwrap_or_else(|| panic!("REASON reported no `{marker}` in: {detail}"));
-    let digits: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    digits.parse().unwrap_or_else(|error| {
-        panic!("`{marker}` was followed by `{digits}`, which is not a number: {error}")
-    })
-}
-
 #[test]
-fn a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_than_admitted_it()
--> Result<()> {
-    // §11.2, and the same shape as the rest of this file: the narrowing is
-    // asserted at the seam a cycle crosses, not at the accessor beside it.
-    // `qip-reasoning-engine`'s own tests prove `confidence_for_sizing`
-    // narrows a contradicted thesis; every one of them calls it directly, so
-    // all of them would still pass if `thesis_from` went on reading
-    // `effective_confidence` and no position were ever sized on the narrowed
-    // number. That is the `mark_confidence_multiplier` failure this file was
-    // written about, one level up — a control whose firing nothing checks —
-    // and the mutation was run: reverting that one call site broke nothing in
-    // this crate before this test existed.
+fn a_thesis_whose_evidence_contradicts_itself_is_unresolved_and_not_sized() -> Result<()> {
+    // §11.2 as ADR 0238 left it. This test used to assert that a thesis
+    // whose evidence contradicts itself is sized on a conviction narrower
+    // than the confidence it was admitted on, read at the seam a cycle
+    // crosses. ADR 0238 removed that property on purpose (owner decision
+    // 20): evidence contradicts a thesis only through a finding against it,
+    // which is dissent, and a contested thesis is now unresolved and never
+    // sized. Not sized at all is stricter than sized small, so the subject
+    // stays and the assertion follows the rule.
     //
-    // What is asserted is the platform's own two accounts of one cycle: the
-    // confidence the thesis was admitted on, and the conviction it was sized
-    // on, both read out of the stage's sentence rather than recomputed here.
+    // The failure prevented: a thesis whose own evidence is split reaching
+    // DECIDE because nothing in its reasoning collided. Mutation: queue an
+    // unresolved thesis in `stage_reason` (skip the `symbolic_unresolved`
+    // arm); the thesis is sized and the assertions below fail.
     let universe = {
         let mut universe = Universe::new();
         universe.insert(listed("AAA")?)?;
@@ -1476,41 +1463,47 @@ fn a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_
         .stage(Stage::Reason)
         .expect("every cycle records a REASON stage");
 
-    // Premise one: a thesis was approved. A rejected hypothesis is never
-    // turned into a thesis, so there would be no conviction to narrow and the
-    // assertion below would be about a sentence that was never written.
+    // Premise one: review approved it, so what stops it is the rule and not
+    // the review.
     assert!(
         reason.detail.contains("hypothesis approved at confidence "),
-        "the premise failed: no thesis was approved, so nothing was sized: {}",
+        "the premise failed: no thesis was approved: {}",
         reason.detail
     );
-    // Premise two: the evidence contradicts itself. On unopposed evidence the
-    // narrowing is exactly one and the two numbers coincide *correctly* — so
-    // without this assertion a cycle that drifted to an undisputed panel
-    // would fail this test for a reason that is not a defect, and a reader
-    // would go looking for a bug in the sizing path.
+    // Premise two: the evidence contradicts itself. Without this the test
+    // would pass on a quiet panel for a reason that is not the one it names.
     assert!(
         reason.detail.contains(" on conflicted evidence"),
-        "the premise failed: the panel did not contradict itself, so there was \
-         nothing for the conflict narrowing to narrow: {}",
+        "the premise failed: the panel did not contradict itself: {}",
         reason.detail
     );
 
-    let admitted = reported_number(&reason.detail, "hypothesis approved at confidence ");
-    let sized_on = reported_number(&reason.detail, "; sized on conviction ");
-
-    // The admission figure is reported to two decimals, so it stands for a
-    // number anywhere within half of its last place. Requiring the gap to
-    // clear that envelope is what stops this passing on rounding alone, which
-    // it would if it only asserted `sized_on < admitted`.
-    const ADMISSION_ROUNDING: f64 = 0.005;
+    // Unresolved, reported in its own words, and nothing sized.
     assert!(
-        sized_on < admitted - ADMISSION_ROUNDING,
-        "a contested thesis was sized on {sized_on}, which is not materially below the \
-         {admitted} it was admitted on — the conflict narrowing did not reach the \
-         conviction DECIDE sizes: {}",
+        reason
+            .problems
+            .iter()
+            .any(|p| p
+                .starts_with("symbolically unresolved, scored in shadow, no proposal formed: ")),
+        "a thesis whose evidence contradicts itself was not reported unresolved: {:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.detail.contains("; sized on conviction "),
+        "a thesis whose evidence contradicts itself was sized: {}",
         reason.detail
     );
+    let proposal = platform
+        .proposals()
+        .last()
+        .cloned()
+        .expect("every cycle records a proposal, even a quiet one");
+    assert!(
+        proposal.is_empty(),
+        "a thesis whose evidence contradicts itself reached a proposal: {}",
+        proposal.rationale
+    );
+    assert!(platform.positions_at_cost().is_empty());
     Ok(())
 }
 

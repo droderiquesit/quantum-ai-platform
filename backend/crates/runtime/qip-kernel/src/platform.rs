@@ -16579,7 +16579,15 @@ impl Platform {
                     pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                     unresolved: symbolic_unresolved,
-                } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                } = self.reason_symbolically(
+                    &opportunity,
+                    &reasoned,
+                    // Dissent about the thesis, not every negative finding:
+                    // a limit report and a re-argument objection on a held
+                    // position are not contest (ADR 0238, owner decision 20).
+                    report.contests_the_thesis(),
+                    now,
+                );
                 // ADR 0212: a derivation that contradicts itself is a
                 // conclusion no money may rest on, whatever review said, so
                 // it is demoted here beside the veto and the decision below
@@ -16629,7 +16637,7 @@ impl Platform {
                         report.findings.len(),
                         report.runs.len(),
                         report.coverage() * 100.0,
-                        if report.is_contested() {
+                        if report.contests_the_thesis() {
                             ", contested"
                         } else {
                             ""
@@ -29720,6 +29728,89 @@ mod decide_tests {
         assert!(
             narrowed < modelled,
             "Lane 2's intervention did not narrow AAPL: {narrowed} vs {modelled}"
+        );
+    }
+
+    /// Owner decision 20: ACT's kill-switch gate stays a control somebody
+    /// can reach. Since ADR 0238 a globally tripped switch stops every
+    /// thesis in REASON (`r10-eligible` requires `kill_switch = false`), so
+    /// no cycle hands ACT a leg while halted, and the gate behind it — the
+    /// order manager's halt check, which also guards every order a road
+    /// other than REASON sends — would otherwise be proven by nothing. This
+    /// drives it directly: legs sized while trading was allowed, the switch
+    /// tripped before release, and ACT refuses every one under the
+    /// `kill-switch` gate with nothing filled.
+    ///
+    /// Mutation: skip the halt check in `OrderManager`'s pre-trade sequence
+    /// (`qip-execution-engine/src/oms.rs`); the orders are released and the
+    /// refusal assertions fail.
+    #[test]
+    fn acts_kill_switch_gate_refuses_every_sized_leg_once_the_switch_trips_and_fills_nothing() {
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+        let legs = platform
+            .proposals
+            .last()
+            .expect("a proposal is recorded")
+            .legs
+            .len();
+        assert!(
+            legs > 0,
+            "premise: legs were sized while trading was allowed"
+        );
+
+        platform.autonomy.kill_switch_mut().trip_global(
+            now,
+            "operator",
+            "an operator halted the platform",
+        );
+        let outcome = platform.stage_act(now, &CorrelationId::from_string("corr-kill-switch-gate"));
+
+        assert_eq!(outcome.produced, 0, "an order was released while halted");
+        assert!(
+            platform.orders.fills().is_empty(),
+            "a halted ACT filled an order"
+        );
+        let refusals = platform.orders.refusals();
+        assert_eq!(
+            refusals.len(),
+            legs,
+            "not every sized leg met the gate: {refusals:?}"
+        );
+        assert!(
+            refusals.iter().all(|order| matches!(
+                order.refusal,
+                Some(qip_execution_engine::oms::RefusalReason::Halted { .. })
+            )),
+            "a leg was refused by something other than the halt: {refusals:?}"
+        );
+        assert!(
+            outcome
+                .problems
+                .iter()
+                .any(|problem| problem.contains("trading is halted for platform")),
+            "ACT did not say why: {:?}",
+            outcome.problems
+        );
+        let gates: Vec<String> = platform
+            .outcomes()
+            .refusals()
+            .iter()
+            .filter_map(|row| match &row.decision.action {
+                qip_twin::capture::Action::Rejected { gate, .. } => Some(gate.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !gates.is_empty() && gates.iter().all(|gate| gate == "kill-switch"),
+            "the refusals were not journaled under the kill-switch gate: {gates:?}"
         );
     }
 

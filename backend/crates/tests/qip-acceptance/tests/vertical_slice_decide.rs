@@ -762,16 +762,37 @@ fn a_tripped_kill_switch_halts_the_cycle_before_anything_trades() -> Result<()> 
     );
     assert_nothing_moved(&run);
     assert_eq!(run.platform.reservations().reserved_total(), Decimal::ZERO);
-    assert_eq!(
-        refusal_gates(&run.platform),
-        vec!["kill-switch".to_string()]
-    );
+    // The halt is journaled wherever it stops the cycle (owner decision 20).
+    // Since ADR 0238 that is REASON: `r10-eligible` requires
+    // `kill_switch = false`, so the thesis is unresolved and names the
+    // switch, and ACT is handed nothing to refuse. Before it, it was ACT's
+    // `kill-switch` gate. Either is the halt on the record; what this test
+    // holds is that the cycle stops before anything trades and says why.
+    // ACT's own gate, which still guards every order sent by any road, is
+    // driven directly by `qip-kernel`'s
+    // `acts_kill_switch_gate_refuses_every_sized_leg_once_the_switch_trips_and_fills_nothing`.
     assert!(
-        stage(&run, Stage::Act)
+        run.report.halted,
+        "the cycle report does not say it was halted"
+    );
+    let gates = refusal_gates(&run.platform);
+    assert!(
+        gates.iter().all(|gate| gate == "kill-switch"),
+        "something other than the halt refused an order: {gates:?}"
+    );
+    let stopped_in_reason = stage(&run, Stage::Reason).problems.iter().any(|problem| {
+        problem.starts_with("symbolically unresolved, scored in shadow, no proposal formed: ")
+            && problem.contains("kill_switch = false (recorded true)")
+    });
+    let stopped_at_act = gates == vec!["kill-switch".to_string()]
+        && stage(&run, Stage::Act)
             .problems
             .iter()
-            .any(|problem| problem.contains("trading is halted for platform")),
-        "{:?}",
+            .any(|problem| problem.contains("trading is halted for platform"));
+    assert!(
+        stopped_in_reason || stopped_at_act,
+        "the halt is not on the record at either stop: reason {:?}, act {:?}, gates {gates:?}",
+        stage(&run, Stage::Reason).problems,
         stage(&run, Stage::Act).problems
     );
     Ok(())

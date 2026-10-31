@@ -987,4 +987,22 @@ mod tests {
         );
         assert!(config.event_log.survives_power_loss());
     }
+
+    /// Owner decision 20 (B): test fixtures may license the alternative data
+    /// their own scenario supplies (`tests/support/eligible_panel.rs`), and
+    /// the shipped default licenses exactly what it did before ADR 0238 —
+    /// nothing. The failure prevented: a fixture convenience leaking into
+    /// the default, so a deployed platform reads vendor data for decisions
+    /// no licence record admitted (rule: licensing is checked before a
+    /// source is used, not after). Mutation: default `licensed_datasets` to
+    /// any dataset and this fails.
+    #[test]
+    fn the_default_configuration_licenses_no_dataset_for_decisions() {
+        let config = PlatformConfig::default();
+        assert_eq!(
+            config.licensed_datasets,
+            Vec::<String>::new(),
+            "the default licenses a dataset it did not license before ADR 0238"
+        );
+    }
 }

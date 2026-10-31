@@ -42,6 +42,14 @@ pub struct Objection {
     pub finding: String,
 }
 
+/// What the re-argument objection is raised against: the thesis is about a
+/// position the book already holds.
+pub const HOLDING_OBJECTION: &str = "novelty";
+
+/// The fact on the reviewer's finding counting its [`HOLDING_OBJECTION`]s,
+/// beside `objection_count`, which counts all of them.
+pub const HOLDING_OBJECTION_COUNT: &str = "holding_objection_count";
+
 impl Agent for AdversarialReviewer {
     fn manifest(&self) -> &AgentManifest {
         &self.manifest
@@ -118,7 +126,7 @@ impl Agent for AdversarialReviewer {
                 && !position.quantity().is_zero()
             {
                 objections.push(Objection {
-                    against: "novelty".to_string(),
+                    against: HOLDING_OBJECTION.to_string(),
                     finding: format!(
                         "the book already holds {} of {}; this is a re-argument of an existing position, not a new one",
                         position.quantity(),
@@ -195,6 +203,21 @@ impl Agent for AdversarialReviewer {
             objections.len() as f64,
             "count",
             &["memory", "portfolio", "library"],
+        ))
+        // How many of those objections are only that the book already holds
+        // the subject. ADR 0238 does not count that objection as dissent
+        // about the thesis (see `OrganisationReport::contests_the_thesis`),
+        // so the panel needs to tell it apart from the others by a number
+        // the finding states, not by parsing its sentence.
+        .fact(computed(
+            ctx,
+            HOLDING_OBJECTION_COUNT,
+            objections
+                .iter()
+                .filter(|o| o.against == HOLDING_OBJECTION)
+                .count() as f64,
+            "count",
+            &["portfolio"],
         ))
         .evidence(evidence)
         .falsifiers(vec![

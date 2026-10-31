@@ -7,7 +7,11 @@
   (ADR_THEN_IMPLEMENT). The limits of that delegation hold here. This
   record sets no risk number, changes no limit, threshold or limit set,
   edits no rule of the shipped pack, and touches no paper-trading layer. It
-  only removes a road to sizing.
+  only removes a road to sizing. Owner rulings 18 and 20 on the same day
+  settled how it lands: the tests change their scenarios rather than the
+  pack, the record version marks the rule change, and "contested" is read
+  narrowly (decisions 7 to 11). Against main this record is a tightening,
+  because contested theses used to be sized small.
 - **Date**: 2026-10-31
 - **Amends**: ADR 0212 decision 1, and ADR 0150 decision 14 as ADR 0212
   scoped it. A contested thesis is no longer sized small; it is unresolved
@@ -137,7 +141,9 @@ a second mark for exactly this case.
    the chain. `SymbolicDerivation` is not in any schema lock: not in
    `qip-events/schemas.lock.json`, `qip-api`'s `COMMITTED_SCHEMAS` or
    `qip-kernel`'s `body_schema_lock.rs`. So no locked body changed
-   version.
+   version. The owner accepted this on 2026-10-31 (decision 20 (A)). The
+   version bump marks the rule change and nothing else, and the body is
+   not to be added to a schema lock on its account.
 
 8. **Fixtures, not the pack (owner decision 18, option 1).** The rule
    pack and `r10-eligible`'s premises stay as shipped. There is no
@@ -159,9 +165,63 @@ a second mark for exactly this case.
    declines anything that is not equity. The licence list is fixture
    configuration, not scenario data, and it is named here so that nobody
    mistakes it for data. It admits only the vendor data the scenario
-   itself supplies. The acceptance vertical slice already carried the
-   macro calendar and a declared catalyst, so it needed only a drift of
-   five basis points a day.
+   itself supplies. The owner accepted it for fixtures only (decision 20
+   (B)). The default `PlatformConfig` licenses exactly what it did before
+   this record, which is nothing.
+   `config::tests::the_default_configuration_licenses_no_dataset_for_decisions`
+   holds that. The acceptance vertical slice already carried the macro
+   calendar and a declared catalyst, so it needed only a drift of five
+   basis points a day.
+
+9. **What "contested" means (owner decision 20 (C), fixed before this
+   record lands).** A contested thesis is one the panel disputes on its
+   evidence or its direction: an analyst's finding against it,
+   conflicting evidence, a contradiction. Two negative findings are
+   objections, but they are not dissent about the thesis, and
+   `OrganisationReport::contests_the_thesis` does not count them:
+   - **(a) Risk control reporting a blocking limit.** Its direction is
+     negative exactly when a limit blocks, and that limit still refuses at
+     its own gate. Counting the limit a second time in REASON would remove
+     the reduce-only exit and every hedge on a limited book.
+   - **(b) The adversarial reviewer's re-argument objection.** It is
+     raised only because the book already holds the subject. Counting it
+     would mean never adding to, hedging or planning the exit of a held
+     position. The reviewer now states the count
+     (`holding_objection_count` beside `objection_count`). A review that
+     raises any other objection is still dissent.
+
+   The kernel feeds `contests_the_thesis` to the symbolic stage and to
+   the REASON detail line's `contested` clause. The raw two-sided
+   `is_contested` stays for the episode records that report it.
+   The tests in `qip-investment-agents`'s `chief::contest_tests` are:
+   - `a_risk_control_limit_report_alone_does_not_contest_the_thesis`;
+   - `a_reviewer_objecting_only_that_the_book_holds_the_name_does_not_contest_the_thesis`;
+   - `a_genuine_opposing_finding_still_contests_the_thesis`.
+
+   The last one's kernel half, that such a thesis is unresolved and forms
+   no proposal, is
+   `symbolic_federation::a_cycle_whose_panel_is_contested_forms_no_proposal_and_journals_its_routing_as_unresolved`.
+
+10. **A thesis whose own evidence contradicts it is unresolved and not
+    sized.** That is stricter than ADR 0150 decision 14's "sized small".
+    Evidence contradicts a thesis only through a finding against it,
+    which is dissent, so the conflict narrowing in
+    `Hypothesis::confidence_for_sizing` no longer narrows anything that
+    gets sized on the default cycle. That property was removed on
+    purpose. `valuation_seam` now asserts the new one, under the name
+    `a_thesis_whose_evidence_contradicts_itself_is_unresolved_and_not_sized`.
+
+11. **A tripped kill switch halts the cycle before anything trades,
+    wherever it stops.** Since this record that stop is REASON, because
+    `r10-eligible` requires `kill_switch = false`. `qip-acceptance`'s
+    `a_tripped_kill_switch_halts_the_cycle_before_anything_trades`
+    asserts the property itself: nothing moves, the report says halted,
+    and the halt is on the record either as REASON's unresolved stop
+    naming the switch or as ACT's `kill-switch` gate. ACT's gate still
+    guards every order sent by any road, and it stays a control somebody
+    can reach.
+    `platform::decide_tests::acts_kill_switch_gate_refuses_every_sized_leg_once_the_switch_trips_and_fills_nothing`
+    drives it directly.
 
 ## What changes and what does not
 
@@ -200,43 +260,18 @@ a second mark for exactly this case.
   equity reached 0.54 to 0.61 and traded. The owner accepted this in the
   ruling: "If that empties the paper book, that is what the eligibility
   rule says, and it is no reason to size what the rule refuses."
-- **Thirty-three of the thirty-eight tests this record broke are restored
-  by their inputs (decision 8).** Five cannot be, under the shipped pack,
-  without changing an assertion. Each case is a structural consequence of
-  this record, not a fixture gap, and the owner should read each one:
-  1. **A sized thesis is never conflicted.** Evidence contradicts a claim
-     only through a finding opposite to it. Any such finding beside a
-     supporting one makes the panel contested, so the thesis is
-     unresolved. `Hypothesis::confidence_for_sizing`'s conflict narrowing
-     is still in the code, but on the default cycle it now narrows
-     nothing that gets sized.
-     `valuation_seam::a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_than_admitted_it`
-     asserts that narrowing reaches DECIDE, and it cannot pass.
-  2. **A blocking limit makes the risk-control agent dissent.** It reports
-     `Negative` at conviction 1.0 whenever any limit blocks, so a book the
-     monitor holds at `reduce_only` contests every thesis. ACT's
-     `new risk is blocked: reduce_only` refusal of a *sized* proposal is
-     therefore unreachable through the cycle.
-     `valuation_seam::a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk`
-     asserts that refusal.
-  3. **A name the book already holds draws the adversarial reviewer's
-     objection.** The objection is "a re-argument of an existing
-     position", reported `Negative`. So the cycle never adds to a held
-     position.
-     `valuation_seam::a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_budget_with_a_halved_bound`
-     and
-     `catalogue_hedge_candidates::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue`
-     each need a thesis on a held name.
-  4. **A globally tripped kill switch stops the thesis in REASON**, so
-     ACT's `kill-switch` gate never records the refusal.
-     `qip-acceptance`'s
-     `vertical_slice_decide::a_tripped_kill_switch_halts_the_cycle_before_anything_trades`
-     asserts that refusal. Its stop in REASON is pinned instead by
-     `symbolic_federation::a_tripped_kill_switch_stops_an_eligible_thesis_in_reason_as_unresolved_and_nothing_moves`.
-
-  These five stay failing, unchanged. Points 2 and 3 are the most
-  consequential: the platform no longer adds to a position it holds, and
-  a book under a blocking limit forms no new thesis at all.
+- **Every test this record broke is resolved, and none was loosened.**
+  Thirty-three were restored by their inputs under decision 8. Decision 9
+  restored three more by their inputs: the illiquid-book test, the
+  compounding test and the catalogue hedge test. Their assertions are
+  byte-identical, and their scenarios only had to stop counting a limit
+  report or a holding objection as dissent. Two tests changed what they
+  assert, and each change is a decision of this record, not a test
+  weakened to pass: the conflict-narrowing test (decision 10) and the
+  kill-switch test (decision 11). Before decision 9 those three tests
+  showed what a broader reading of "contested" would have cost: the
+  platform could never add to, hedge or exit-plan a held position, and a
+  book under any blocking limit formed no new thesis at all.
 - ADR 0150 decision 14's learning argument, that the platform learns most
   from the questions it was least sure of, is now served by shadow scoring
   alone. A contested claim is still written, graded and calibrated. What
