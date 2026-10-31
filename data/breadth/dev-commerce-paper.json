@@ -1,0 +1,75 @@
+{
+  "market_factory": null,
+  "event_markets": null,
+  "commerce": {
+    "source": "synthetic",
+    "owner": "desk",
+    "terms": {
+      "route": [
+        {
+          "from": "Rotterdam",
+          "to": "London",
+          "mode": "Road",
+          "days": 1,
+          "freight_per_unit": "1",
+          "freight_per_shipment": "0"
+        }
+      ],
+      "customs": {
+        "duty_rate": "0.02",
+        "clearance_fee": "0",
+        "clearance_days": 0
+      },
+      "spoilage": {
+        "per_day": "0",
+        "source": "durable goods, stated by the desk"
+      },
+      "storage_per_unit_per_day": "0",
+      "storage_days": 0,
+      "fees": {
+        "ad_valorem": "0.05",
+        "per_unit": "0",
+        "per_consignment": "0"
+      },
+      "returns": {
+        "rate": "0",
+        "cost_per_unit": "0",
+        "recovery_rate": "1"
+      }
+    },
+    "quantity": "2",
+    "days_on_market": 2,
+    "daily_capital_cost": "0.0001",
+    "purchase_tax_rate": "0.05",
+    "account": {
+      "id": "paper-account",
+      "identity_class": "desk",
+      "merchants": [
+        "synthetic-auction",
+        "synthetic-liquidation",
+        "synthetic-retail",
+        "synthetic-wholesale"
+      ],
+      "per_purchase_limit": "10000"
+    },
+    "total_ceiling": "100000",
+    "fraud_merchants": [],
+    "counterfeit_gtins": [],
+    "counterfeit_sellers": [
+      "synthetic-counterfeit-seller"
+    ],
+    "logistics": {
+      "carrier": "paper-carrier",
+      "warehouse": "paper-warehouse",
+      "consolidate_with": null,
+      "insurance": null,
+      "decline_reason": "goods under the insured threshold",
+      "delivery_risk": "0.01"
+    },
+    "resale": {
+      "floor_per_unit": "1",
+      "markdown_after_days": 3,
+      "markdown_rate": "0.05"
+    }
+  }
+}
