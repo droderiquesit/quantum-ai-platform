@@ -51,6 +51,21 @@
 //! the record with what contradicted what and the revision tasks the pack's
 //! own contradiction search offers as alternates; the kernel reads
 //! [`SymbolicDerivation::infeasibility`] and forms no proposal on it.
+//!
+//! # An unsatisfiable acting problem is unresolved (ADR 0238)
+//!
+//! A fourth case sits beside those three. When the acting constraints are
+//! unsatisfiable and the parts do not collide, the derivation is not
+//! contradictory: the pack and the constraints agree that the platform may
+//! not act. ADR 0212 read that as feasible and let a contested thesis be
+//! sized small; R12-RES-7106's requirement says a conclusion on unsatisfied
+//! constraints is unresolved, and the owner ruled on 2026-10-31 that it
+//! stands as written. [`Feasibility::Unresolved`] marks it with the
+//! constraints that block acting and the premises that would have to change
+//! for them not to; the kernel reads [`SymbolicDerivation::unresolved`],
+//! scores the claim in shadow and never queues it to be sized. Dissent still
+//! never makes a contradiction: a contested thesis is `Unresolved`, not
+//! `Infeasible`, because nothing in its reasoning collided.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -360,6 +375,30 @@ pub struct CounterfactualExplanation {
 pub enum Feasibility {
     /// No part contradicts another.
     Feasible,
+    /// The acting problem is unsatisfiable and nothing in the derivation
+    /// collided (ADR 0238, R12-RES-7106): the pack and the constraints agree
+    /// that the platform may not act on this conclusion. Not a contradiction
+    /// — a contested thesis lands here, never in [`Self::Infeasible`] — and
+    /// not a licence either: the conclusion is scored in shadow and no money
+    /// may rest on it.
+    Unresolved {
+        /// The constraints that leave acting unsatisfiable, as
+        /// `constraint: <id>`, in the solver's order. The same lines the
+        /// record's own `violated_assumptions` holds for its acting part,
+        /// kept on the mark so it names what it rests on. Never empty.
+        violated_assumptions: Vec<String>,
+        /// The alternates searched: each premise of the pack that would have
+        /// to change for the acting problem to become satisfiable, as
+        /// `<rule>: needs <condition> (recorded <value>)` for a premise of a
+        /// rule concluding `eligible` that did not hold, and
+        /// `<rule>: needs not (<condition>)` for a rule concluding `halted`
+        /// that fired. Read by the engine's own [`Cond::holds`], so the list
+        /// cannot disagree with the evaluation that produced the verdict.
+        /// Advisory, like [`Self::Infeasible`]'s: nothing reads it to decide.
+        /// Refused when the pack's verdict was refused, because then there
+        /// are no evaluated facts to search.
+        alternates: Step<Vec<String>>,
+    },
     /// The derivation contradicts itself.
     Infeasible {
         /// What contradicted what, in the fixed order [`contradictions`]
@@ -446,6 +485,14 @@ impl SymbolicDerivation {
     /// by the conflict. Vetoing on them would reverse that decision and
     /// refuse every contested thesis the review approved at a size the
     /// platform chose to allow.
+    ///
+    /// ADR 0238 changed what happens next and not this method: those two
+    /// conditions still do not veto, and the thesis still keeps its review's
+    /// approval, but its acting problem is unsatisfiable, so its record is
+    /// marked [`Feasibility::Unresolved`] and the kernel scores it in shadow
+    /// instead of sizing it ([`Self::unresolved`]). A veto demotes and names
+    /// a hard stop; an unresolved mark withholds sizing and names the
+    /// premises that did not hold. Neither enlarges anything.
     ///
     /// `None` too for a hypothesis review did not approve (nothing to
     /// subtract from), for one the pack finds eligible, and for a pack that
@@ -534,7 +581,7 @@ impl SymbolicDerivation {
     /// contradiction (ADR 0150 decision 14 stands).
     pub fn infeasibility(&self) -> Option<String> {
         match &self.feasibility {
-            Some(Feasibility::Feasible) => None,
+            Some(Feasibility::Feasible | Feasibility::Unresolved { .. }) => None,
             Some(Feasibility::Infeasible { contradictions, .. }) => Some(format!(
                 "the symbolic derivation contradicts itself ({})",
                 contradictions.join("; ")
@@ -545,6 +592,36 @@ impl SymbolicDerivation {
                     .to_string(),
             ),
         }
+    }
+
+    /// ADR 0238: why this conclusion is unresolved and so scored in shadow
+    /// rather than sized, or `None` when it is not.
+    ///
+    /// Separate from [`Self::infeasibility`] because the two send an
+    /// operator to different places: an infeasible derivation is a rule pack
+    /// to fix, an unresolved one is the pack working — the thesis did not
+    /// meet the eligibility the platform acts on, and the message names the
+    /// premises that would have to change. `None` for an infeasible record
+    /// too: the contradiction outranks it and is reported in its own words.
+    pub fn unresolved(&self) -> Option<String> {
+        let Some(Feasibility::Unresolved {
+            violated_assumptions,
+            alternates,
+        }) = &self.feasibility
+        else {
+            return None;
+        };
+        let alternates = match alternates {
+            Step::Derived(list) if list.is_empty() => {
+                "the pack names no premise that would change it".to_string()
+            }
+            Step::Derived(list) => format!("it would need {}", list.join("; ")),
+            Step::Refused(why) => format!("no alternate could be searched: {why}"),
+        };
+        Some(format!(
+            "the acting constraints are unsatisfiable ({}); {alternates}",
+            violated_assumptions.join("; ")
+        ))
     }
 
     /// The derivation as one clause for the REASON stage's detail line.
@@ -601,15 +678,24 @@ impl SymbolicDerivation {
             Some(Step::Refused(_)) => ", subject untyped".to_string(),
             None => String::new(),
         };
+        // The unresolved clause sits beside the acting part it follows from
+        // (ADR 0238), not at the end of the line: the line's tail is the
+        // subject typing and the contradiction count, and readers already
+        // anchor on that tail.
+        let unresolved = match &self.feasibility {
+            Some(Feasibility::Unresolved { .. }) => ", unresolved, scored in shadow",
+            Some(Feasibility::Infeasible { .. } | Feasibility::Feasible) | None => "",
+        };
         let feasibility = match &self.feasibility {
             Some(Feasibility::Infeasible { contradictions, .. }) => {
                 format!(", infeasible ({} contradiction(s))", contradictions.len())
             }
-            Some(Feasibility::Feasible) | None => String::new(),
+            Some(Feasibility::Feasible | Feasibility::Unresolved { .. }) | None => String::new(),
         };
         format!(
             "; symbolic: rules {eligibility}{review}, lifecycle {lifecycle}, timeline {temporal}, \
-             P(claim) {posterior}, acting {acting}, abduction {abduction}{typed}{feasibility}"
+             P(claim) {posterior}, acting {acting}{unresolved}, abduction {abduction}{typed}\
+             {feasibility}"
         )
     }
 }
@@ -977,7 +1063,10 @@ pub fn violated_assumptions(
 ///   unsatisfiable: the two parts answer "may the platform act" both ways.
 ///   An unsatisfiable acting problem on an *ineligible* verdict is the two
 ///   parts agreeing and is not a contradiction — that is how a contested or
-///   low-confidence thesis reads, and listing it would block dissent.
+///   low-confidence thesis reads. Listing it here would file dissent as a
+///   contradiction; [`feasibility_of`] marks it [`Feasibility::Unresolved`]
+///   instead (ADR 0238), which stops it being sized without saying its
+///   reasoning collided.
 ///
 /// A refused timeline link is not listed either: it is a finding about the
 /// evidence, which ADR 0150 decision 13 narrows rather than blocks.
@@ -1007,9 +1096,14 @@ pub fn contradictions(rules: &RuleDerivation, acting: &Step<Answer>) -> Vec<Stri
     out
 }
 
-/// The feasibility mark for a derivation's parts, under `pack`: feasible
-/// when [`contradictions`] finds nothing, and otherwise infeasible with the
-/// pack's own revision search over the facts it was given as the alternates.
+/// The feasibility mark for a derivation's parts, under `pack`: infeasible
+/// when [`contradictions`] finds anything, with the pack's own revision
+/// search over the facts it was given as the alternates; otherwise
+/// unresolved when the acting problem is unsatisfiable (ADR 0238), with the
+/// premises that would make it satisfiable as the alternates; otherwise
+/// feasible. A contradiction outranks an unsatisfiable acting problem: the
+/// pack finding acting eligible against unsatisfiable constraints is both,
+/// and the collision is the finding a reviewer must act on.
 ///
 /// The search cites the derivation's own idempotency key as its evidence,
 /// because the record is what a reviewer reads the task against.
@@ -1021,12 +1115,116 @@ pub fn feasibility_of(
 ) -> Feasibility {
     let contradictions = contradictions(rules, acting);
     if contradictions.is_empty() {
-        return Feasibility::Feasible;
+        return match acting {
+            Step::Derived(Answer::Unsatisfiable { conflict }) => Feasibility::Unresolved {
+                violated_assumptions: conflict
+                    .iter()
+                    .map(|id| format!("constraint: {id}"))
+                    .collect(),
+                alternates: resolutions(pack, rules, conflict),
+            },
+            Step::Derived(Answer::Satisfied(_)) | Step::Refused(_) => Feasibility::Feasible,
+        };
     }
     let evidence = [format!("{IDEMPOTENCY_PREFIX}{hypothesis_id}")];
     Feasibility::Infeasible {
         contradictions,
         alternates: Step::of(pack.contradictions(&rules.inputs, &evidence)),
+    }
+}
+
+/// The alternates an unresolved mark carries (ADR 0238): what would have to
+/// change, in the pack's own premises, for the acting constraints in
+/// `conflict` to stop blocking. In the pack's rule order, so a replay lists
+/// them identically.
+///
+/// - `acting-requires-eligibility` in the conflict: every top-level premise
+///   of each rule concluding `eligible = true` that does not hold on the
+///   verdict's facts — on a contested thesis, `contested = false`.
+/// - `a-halt-forbids-acting` in the conflict: each rule concluding
+///   `halted = true` that fired, as the condition that would have to stop
+///   holding. A halt the kernel supplied directly with no rule firing names
+///   nothing here; the constraint line on the mark still says it.
+fn resolutions(pack: &RulePack, rules: &RuleDerivation, conflict: &[String]) -> Step<Vec<String>> {
+    let Step::Derived(verdict) = &rules.verdict else {
+        return Step::Refused(
+            "the rule pack refused its input, so no evaluated facts exist to search for the \
+             premise that would let the platform act"
+                .to_string(),
+        );
+    };
+    let facts = &verdict.facts;
+    let in_conflict = |id: &str| conflict.iter().any(|c| c == id);
+    let mut out = Vec::new();
+    if in_conflict("acting-requires-eligibility") {
+        for rule in pack
+            .rules
+            .iter()
+            .filter(|r| r.fact == "eligible" && r.value == Value::Bool(true))
+        {
+            let premises: Vec<&Cond> = match &rule.when {
+                Cond::And(parts) => parts.iter().collect(),
+                other => vec![other],
+            };
+            for premise in premises.into_iter().filter(|p| !p.holds(facts)) {
+                let recorded = match premise {
+                    Cond::Cmp { fact, .. } => facts
+                        .get(fact)
+                        .map_or_else(|| "absent".to_string(), describe_value),
+                    _ => "otherwise".to_string(),
+                };
+                out.push(format!(
+                    "{}: needs {} (recorded {recorded})",
+                    rule.id,
+                    describe(premise)
+                ));
+            }
+        }
+    }
+    if in_conflict("a-halt-forbids-acting") {
+        for rule in pack
+            .rules
+            .iter()
+            .filter(|r| r.fact == "halted" && r.value == Value::Bool(true) && r.when.holds(facts))
+        {
+            out.push(format!("{}: needs not ({})", rule.id, describe(&rule.when)));
+        }
+    }
+    Step::Derived(out)
+}
+
+/// A rule condition as one line a reviewer reads, e.g. `contested = false`.
+fn describe(cond: &Cond) -> String {
+    match cond {
+        Cond::Cmp { fact, op, value } => {
+            let op = match op {
+                Op::Eq => "=",
+                Op::Ne => "!=",
+                Op::Lt => "<",
+                Op::Le => "<=",
+                Op::Gt => ">",
+                Op::Ge => ">=",
+            };
+            format!("{fact} {op} {}", describe_value(value))
+        }
+        Cond::Present { fact } => format!("{fact} present"),
+        Cond::And(parts) => format!(
+            "({})",
+            parts.iter().map(describe).collect::<Vec<_>>().join(" and ")
+        ),
+        Cond::Or(parts) => format!(
+            "({})",
+            parts.iter().map(describe).collect::<Vec<_>>().join(" or ")
+        ),
+        Cond::Not(inner) => format!("not {}", describe(inner)),
+    }
+}
+
+fn describe_value(value: &Value) -> String {
+    match value {
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Text(t) => format!("{t:?}"),
     }
 }
 
@@ -1403,8 +1601,8 @@ pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<(
         && feasibility_of(&pack, id, &derivation.rules, &derivation.acting) != *recorded
     {
         return Err(Error::invalid(format!(
-            "derivation for {id}: the contradictions its parts hold, or the pack's revision \
-             search over its facts, do not match its journaled feasibility; the feasibility \
+            "derivation for {id}: the contradictions its parts hold, the constraints that \
+             leave it unresolved, or the alternates searched over its facts, do not match its journaled feasibility; the feasibility \
              mark is not reproducible"
         )));
     }
