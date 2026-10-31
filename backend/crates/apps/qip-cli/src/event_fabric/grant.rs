@@ -300,6 +300,12 @@ pub struct Fixture {
     /// bytes rather than copied into the fixture, so the payload cannot name
     /// a plan other than the one on disk.
     pub plan: PlanDigest,
+    /// Each entry rule the plan's strategies carry, keyed
+    /// `{strategy}/{rule}`, to the structural digest of its compiled
+    /// predicate (ADR 0149 decision 7, R12-REFLEX-5030), computed here from
+    /// the same plan file. Published as the payload's opportunity manifest,
+    /// which the node reads as a narrowing filter on what it activates.
+    pub opportunities: BTreeMap<String, String>,
 }
 
 /// The local slice's one P0 control stream (SLICE-53's catalogue).
@@ -429,8 +435,10 @@ pub fn load_fixture(path: &Path) -> Result<Fixture> {
         .parent()
         .map_or_else(|| PathBuf::from(&plan_path), |dir| dir.join(&plan_path));
     let plan = digest_plan(&plan_path, &strategy)?;
+    let opportunities = plan_opportunities(&read_bounded(&plan_path, "plan")?)?;
 
     Ok(Fixture {
+        opportunities,
         cell,
         region,
         strategy,
@@ -488,6 +496,40 @@ fn digest_plan(path: &Path, strategy: &str) -> Result<PlanDigest> {
         digest: sha256_hex(text.as_bytes()),
         strategies: count,
     })
+}
+
+/// The opportunity definitions of every strategy a plan's text names: each
+/// compiled against the standard feature suite of its own subject, the
+/// vocabulary `qip_edge_node::standard_engine_and_catalogue` builds for the
+/// node, so a definition digested here is the one the node computes. The
+/// acceptance suite holds the two producers to the same digest.
+pub fn plan_opportunities(text: &str) -> Result<BTreeMap<String, String>> {
+    #[derive(serde::Deserialize)]
+    struct Plan {
+        strategies: Vec<qip_strategy::ir::StrategySpec>,
+    }
+    let plan: Plan = serde_json::from_str(text)
+        .map_err(|error| Error::schema(format!("the plan is not a strategy plan: {error}")))?;
+    let mut out = BTreeMap::new();
+    for spec in &plan.strategies {
+        let mut catalogue = qip_strategy::catalogue::FeatureCatalogue::new();
+        for definition in qip_feature_dag::features::standard_suite(&spec.subject) {
+            let value_type = match definition.value_kind() {
+                qip_feature_dag::definition::ValueKind::Exact => qip_strategy::ir::Type::Exact,
+                qip_feature_dag::definition::ValueKind::Statistic => {
+                    qip_strategy::ir::Type::Statistic
+                }
+                qip_feature_dag::definition::ValueKind::Count => qip_strategy::ir::Type::Count,
+                qip_feature_dag::definition::ValueKind::Flag => qip_strategy::ir::Type::Flag,
+            };
+            catalogue.declare(definition.key(), value_type)?;
+        }
+        let mut compiler = qip_strategy::compile::StrategyCompiler::new(catalogue);
+        let compiled = compiler.compile(spec)?;
+        let program = compiler.into_program();
+        out.extend(compiled.opportunities(&program)?);
+    }
+    Ok(out)
 }
 
 fn read_bounded(path: &Path, what: &str) -> Result<String> {
@@ -1001,6 +1043,15 @@ pub fn sign(fixture: &Fixture, signer: &FixtureSigner, now: Timestamp) -> Result
     // funds.
     policy.valid_for = Duration::from_secs(fixture.valid_for_secs);
     policy.compiled_plan = Slot::produced(fixture.plan.clone(), now);
+    // Beside the plan, from the same file: the node activates only a
+    // strategy whose every entry rule this names with the definition it
+    // compiles (ADR 0149 decision 7).
+    policy.opportunity_definitions = Slot::produced(
+        qip_contracts::policy::OpportunityManifest {
+            opportunities: fixture.opportunities.clone(),
+        },
+        now,
+    );
     policy.capital_grants = Slot::produced(
         GrantManifest {
             live_grants: vec![grant.signature().to_string()],
