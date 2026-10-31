@@ -713,12 +713,33 @@ fn evaluation_evidence(registry: &ModelRegistry, reference: &str) -> Result<Stri
 
 /// Rebuild the promoted set from the log alone, in log order, applying
 /// each record exactly as [`Platform::promote_model`] applied it.
+///
+/// A restored promotion passes the same workload check a live one does
+/// (R12-QUANT-4018): a quantum-informed record naming a family the foundry
+/// does not hold as built stops the restart, rather than putting back a
+/// model the live seam would refuse. No legitimate record of that kind can
+/// exist today (ADR 0150 decision 5), so the refusal names the record.
+/// [`Platform::rollback_model`] restores a record from the same log and
+/// needs no check of its own: every record it can read either passed
+/// [`Platform::promote_model_from`] in this process or passed this one at
+/// start.
 pub(crate) fn resume_model_promotions(log: &EventLog) -> Result<BTreeMap<String, ModelPromotion>> {
     let mut promoted = BTreeMap::new();
     for record in promotions_in(log)? {
+        require_restorable(&record)?;
         apply_promotion(&mut promoted, record);
     }
     Ok(promoted)
+}
+
+/// The live seam's workload check, for a promotion read back from the log.
+fn require_restorable(record: &ModelPromotion) -> Result<()> {
+    match &record.producer {
+        ModelProducer::QuantumInformed { workload, .. } => {
+            require_eligible_workload(&record.reference, workload.as_deref())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The newest Model Pack the log's promotion records make, for a restarted
@@ -1060,6 +1081,20 @@ impl Platform {
                         ))
                     },
                 )?;
+                // A baseline on record is not a comparison: the candidate
+                // must also have beaten it (R12-QUANT-4018).
+                crate::central::models::require_beats_baseline(
+                    registry,
+                    &artifact.reference,
+                    baseline,
+                )
+                .map_err(|error| {
+                    Error::denied(format!(
+                        "{} is not promoted: {}",
+                        artifact.reference,
+                        error.message()
+                    ))
+                })?;
             }
         }
         // A version names one artifact for good (MODEL-034). The log is the

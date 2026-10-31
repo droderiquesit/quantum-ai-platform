@@ -87,6 +87,63 @@ pub fn require_calibrated_baseline(registry: &ModelRegistry, reference: &str) ->
     }
 }
 
+/// The measured error a candidate must beat its baseline on: the holdout
+/// root-mean-square error [`register_fit`] writes on every card. Lower is
+/// better.
+const COMPARED_METRIC: &str = "holdout_rmse";
+
+/// Refuse a candidate whose measured result does not beat its calibrated
+/// classical baseline (ADR 0006, R12-QUANT-4018).
+///
+/// [`require_calibrated_baseline`] proves the baseline is on record and
+/// calibrated; it never compared the two, so a candidate that lost to its
+/// baseline was promoted all the same and "it was evaluated against the
+/// baseline" was true of a candidate the baseline beat. This compares each
+/// card's latest [`COMPARED_METRIC`] and admits only a strictly lower error.
+/// The two must be measured on the same dataset: an error on different data
+/// is not a comparison. A missing card, evaluation or figure, or one that is
+/// not finite, is refused rather than read as a win or a loss.
+pub fn require_beats_baseline(
+    registry: &ModelRegistry,
+    candidate: &str,
+    baseline: &str,
+) -> Result<()> {
+    let measured = |reference: &str| -> Result<(String, f64)> {
+        let evaluation = registry
+            .get(reference)
+            .and_then(|card| card.latest_evaluation())
+            .ok_or_else(|| {
+                Error::denied(format!(
+                    "{reference} has no evaluation on record, so it cannot be compared; \
+                     register its fit before comparing it"
+                ))
+            })?;
+        match evaluation.metrics.get(COMPARED_METRIC) {
+            Some(value) if value.is_finite() => Ok((evaluation.dataset.clone(), *value)),
+            _ => Err(Error::denied(format!(
+                "{reference}'s latest evaluation states no finite {COMPARED_METRIC}, so it \
+                 cannot be compared"
+            ))),
+        }
+    };
+    let (candidate_data, candidate_error) = measured(candidate)?;
+    let (baseline_data, baseline_error) = measured(baseline)?;
+    if candidate_data != baseline_data {
+        return Err(Error::denied(format!(
+            "{candidate} was measured on {candidate_data} and its baseline {baseline} on \
+             {baseline_data}; measure both on the same dataset before comparing them"
+        )));
+    }
+    if candidate_error < baseline_error {
+        Ok(())
+    } else {
+        Err(Error::denied(format!(
+            "{candidate} does not beat its baseline {baseline}: {COMPARED_METRIC} \
+             {candidate_error} against {baseline_error} on {candidate_data}"
+        )))
+    }
+}
+
 /// What registering a fit produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelRegistration {
