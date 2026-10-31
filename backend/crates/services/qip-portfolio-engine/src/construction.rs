@@ -196,6 +196,23 @@ impl Mandate {
     }
 }
 
+/// One dimension of grouped caps for a construction (R12-ASSET-4070, ADR
+/// 0228): which group each name belongs to, and the most of equity each group
+/// may hold. A name the map omits is not bounded by this dimension.
+///
+/// Each cap enters the one optimiser run as an inequality on the group's
+/// summed weight, so the strategy, class, region and horizon budgets are
+/// respected together rather than one after another. A cap only narrows: a
+/// cap above the mandate's gross target would loosen nothing and is refused
+/// as a caller that computed the wrong figure, as is a cap of zero or less,
+/// which is a halt written as a budget.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupCaps {
+    pub dimension: String,
+    pub group_of: BTreeMap<String, String>,
+    pub caps: BTreeMap<String, f64>,
+}
+
 /// What the construction produced, and how.
 #[derive(Clone, Debug)]
 pub struct ConstructionOutcome {
@@ -347,6 +364,49 @@ impl PortfolioConstructor {
         now: Timestamp,
         proposal_id: ProposalId,
     ) -> Result<ConstructionOutcome> {
+        self.construct_grouped(
+            theses,
+            covariance,
+            current,
+            equity,
+            reference_equity,
+            caps,
+            &[],
+            as_of,
+            now,
+            proposal_id,
+        )
+    }
+
+    /// [`Self::construct_referenced`] with grouped caps (R12-ASSET-4070, ADR
+    /// 0228): every group of every dimension in `groups` bounds the summed
+    /// weight of its names, inside the same optimiser run. With no groups
+    /// this is exactly `construct_referenced`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn construct_grouped(
+        &self,
+        theses: &[ApprovedThesis],
+        covariance: &[Vec<f64>],
+        current: &BTreeMap<String, f64>,
+        equity: Money,
+        reference_equity: Money,
+        caps: &BTreeMap<String, f64>,
+        groups: &[GroupCaps],
+        as_of: Timestamp,
+        now: Timestamp,
+        proposal_id: ProposalId,
+    ) -> Result<ConstructionOutcome> {
+        for dimension in groups {
+            for (group, cap) in &dimension.caps {
+                if !cap.is_finite() || *cap <= 0.0 || *cap > self.mandate.target_gross {
+                    return Err(Error::invalid(format!(
+                        "the {} cap {cap} on {group} is outside (0, {}]; a grouped cap only \
+                         narrows the mandate's gross target, and is refused rather than clamped",
+                        dimension.dimension, self.mandate.target_gross
+                    )));
+                }
+            }
+        }
         if reference_equity.currency != equity.currency || reference_equity.amount < equity.amount {
             return Err(Error::invalid(
                 "the reference budget is the budget before narrowing, so it is in the sizing \
@@ -447,7 +507,71 @@ impl PortfolioConstructor {
             .iter()
             .map(|(_, _, bound, _)| self.mandate.position_cap - bound)
             .sum();
-        let achievable = (cap_only - reduction).max(0.0);
+        let mut achievable = (cap_only - reduction).max(0.0);
+        // Each dimension can carry at most the sum, over its groups, of the
+        // smaller of the group's cap and its names' own bounds, plus what its
+        // ungrouped names can carry. The budget equality is pinned no higher,
+        // or the run would be asked for a gross the grouped caps forbid.
+        let mut grouped = Vec::new();
+        // Each capped group as checked after the solve: its label, members
+        // and cap. Pinning the budget per dimension is not the joint bound —
+        // two dimensions can each reach a gross that together they cannot —
+        // so the solve can come back breaching a group, and a breached
+        // group is refused rather than drafted.
+        let mut group_checks: Vec<(String, Vec<usize>, f64)> = Vec::new();
+        for dimension in groups {
+            for asset in dimension.group_of.keys() {
+                if !assets.iter().any(|name| name == asset) {
+                    return Err(Error::invalid(format!(
+                        "the {} grouping names {asset}, which is in no thesis of this \
+                         construction; a group key on an absent name is a caller that \
+                         computed the wrong key, and it is refused rather than ignored",
+                        dimension.dimension
+                    )));
+                }
+            }
+            for group in dimension.caps.keys() {
+                if !dimension.group_of.values().any(|named| named == group) {
+                    return Err(Error::invalid(format!(
+                        "the {} cap on {group} names a group with no member in this \
+                         construction; a cap that cannot bind anything is refused rather than \
+                         read as protection",
+                        dimension.dimension
+                    )));
+                }
+            }
+            let mut reachable = 0.0;
+            let mut by_group: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+            for (index, asset) in assets.iter().enumerate() {
+                match dimension.group_of.get(asset) {
+                    Some(group) => by_group.entry(group.as_str()).or_default().push(index),
+                    None => reachable += upper[index],
+                }
+            }
+            for (group, members) in by_group {
+                let room: f64 = members.iter().map(|index| upper[*index]).sum();
+                match dimension.caps.get(group) {
+                    Some(cap) => {
+                        reachable += room.min(*cap);
+                        let coefficients = (0..n)
+                            .map(|index| if members.contains(&index) { 1.0 } else { 0.0 })
+                            .collect();
+                        grouped.push(PortfolioConstraint::at_most(
+                            format!("{}:{group}", dimension.dimension),
+                            coefficients,
+                            *cap,
+                        ));
+                        group_checks.push((
+                            format!("{}:{group}", dimension.dimension),
+                            members.clone(),
+                            *cap,
+                        ));
+                    }
+                    None => reachable += room,
+                }
+            }
+            achievable = achievable.min(reachable);
+        }
         let mut problem = PortfolioProblem::new(assets.clone(), covariance.to_vec())?
             .with_objective(Objective::MeanVariance)
             .with_expected_returns(expected_returns)
@@ -458,6 +582,9 @@ impl PortfolioConstructor {
                 vec![1.0; n],
                 achievable,
             ));
+        for constraint in grouped {
+            problem = problem.with_constraint(constraint);
+        }
 
         if let Some(maximum) = self.mandate.maximum_holdings {
             problem = problem.with_cardinality(maximum.min(n));
@@ -472,6 +599,31 @@ impl PortfolioConstructor {
         }
 
         let routing = self.router.solve(&problem)?;
+
+        // The guard on the only path from the solve to a proposal: every
+        // capped group, at the weights the legs will carry (after the
+        // minimum-position drop), sums to at most its cap. A solver that
+        // returned its best infeasible result, or a discrete path that does
+        // not encode the group rows, is refused here rather than drafted
+        // with a compromise line nobody acts on.
+        let carried = |index: usize| {
+            let weight = routing.weights.get(index).copied().unwrap_or(0.0);
+            if weight.abs() < self.mandate.minimum_position {
+                0.0
+            } else {
+                weight
+            }
+        };
+        for (label, members, cap) in &group_checks {
+            let held: f64 = members.iter().map(|index| carried(*index)).sum();
+            if !held.is_finite() || held > cap + 1e-9 {
+                return Err(Error::denied(format!(
+                    "the sizing holds {held:.6} in {label}, above its cap of {cap}; the grouped \
+                     caps could not be met together in one run, so no proposal is drafted \
+                     rather than one that breaches a cap"
+                )));
+            }
+        }
 
         // Build the legs. Anything below the minimum is dropped rather than
         // held: a 0.1% position costs the same in operational overhead as a 5%

@@ -143,6 +143,7 @@ pub mod bank;
 pub mod capacity;
 pub mod collateral;
 pub mod compounding;
+pub mod coordinator;
 pub mod dated_ladder;
 pub mod envelope;
 pub mod exploration;

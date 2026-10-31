@@ -149,13 +149,14 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    // Thirteen members (the company member, R12-WORLD-3044, the capital
-    // member, R12-WORLD-3048, and the counterparty member, R12-WORLD-3049,
-    // among them) plus the one domain member the
+    // Fifteen members (the company member, R12-WORLD-3044, the capital
+    // member, R12-WORLD-3048, the counterparty member, R12-WORLD-3049, the
+    // order-flow member, ADR 0255, and the macro member, ADR 0256, among
+    // them) plus the one domain member the
     // platform now declares for the universe's single asset class
     // (MODEL-4009): the composition names the classes itself, so a deployed
     // cycle carries the member too.
-    assert_eq!(first.population.len(), 14, "{:?}", first.population);
+    assert_eq!(first.population.len(), 16, "{:?}", first.population);
     // The platform hands the capital member its paper book every cycle
     // (ADR 0194): a funded book with positive equity is never silent.
     // Mutation: build `FederationInputs` with `capital: None`.
@@ -188,12 +189,19 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
             "{family} uncovered"
         );
     }
-    // No chain was observed and no issuer reported a surprise, so the
-    // company and on-chain members are the silent ones — present, unexpired,
-    // and honest that they produced nothing (R12-WORLD-3044).
+    // No chain was observed, no issuer reported a surprise, no print stated
+    // an aggressor and no macro release surprised its consensus, so the
+    // company, on-chain, macro and order-flow members are the silent ones —
+    // present, unexpired, and honest that they produced nothing
+    // (R12-WORLD-3044, ADR 0255, ADR 0256).
     assert_eq!(
         first.silent,
-        vec![federation_stage::COMPANY.to_string(), ON_CHAIN.to_string()]
+        vec![
+            federation_stage::COMPANY.to_string(),
+            ON_CHAIN.to_string(),
+            federation_stage::MACRO.to_string(),
+            federation_stage::ORDER_FLOW.to_string()
+        ]
     );
     let instrument: Vec<_> = first
         .arbitrations
@@ -1644,5 +1652,278 @@ fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_
             a.proposition
         );
     }
+    Ok(())
+}
+
+/// ADR 0255, R12-WORLD-3046: the paper feed's signed aggressor flow gives
+/// the order-flow member a view of the instrument it traded, leaning with
+/// the side that dominated. A print that stated no aggressor, or formed no
+/// price, gives it nothing, and a cycle with no new prints finds it silent
+/// again, because each cycle's flow is taken, not accumulated. (That the
+/// member can only narrow follows from the federation's narrowing, which
+/// this test does not exercise.)
+///
+/// The failure this prevents: each trade's aggressor side reached the
+/// market snapshot and nothing modelled it, so the population had no member
+/// that read who was crossing the spread. Mutation: ignore the aggressor in
+/// `Platform::record_order_flow`, reading every print as a buy. BBB's
+/// unattributed prints then give the member a view, and AAA's
+/// sell-dominated flow leans up; both assertions fail. Dropping the
+/// `is_price_forming` filter counts BBB's off-exchange cross and gives BBB a
+/// view; reading the flow by `clone` instead of `take` keeps the member fed
+/// on the second cycle.
+#[test]
+fn signed_trade_flow_gives_the_order_flow_member_a_view() -> Result<()> {
+    use qip_market::book::Side;
+    use qip_market::quote::{Trade, TradeCondition};
+    let mut platform = platform()?;
+    let mut records = bars("AAA", 120);
+    records.extend(bars("BBB", 120));
+    platform.observe(records);
+    let print =
+        |symbol: &str, n: i64, size: i64, aggressor: Option<Side>, condition: TradeCondition| {
+            let at = start().saturating_sub(Duration::from_mins(60 - n));
+            SensedRecord::Trade(Trade {
+                object_id: object(symbol),
+                venue: "XNYS".to_string(),
+                at,
+                capture_time: at,
+                sequence: Some(n as u64),
+                price: dec!("100"),
+                size: Decimal::from_int(size),
+                aggressor,
+                condition,
+                trade_id: Some(format!("{symbol}-{n}")),
+                quality: DataQuality::default(),
+            })
+        };
+    // AAA: three times as much selling as buying. BBB: prints naming no
+    // side, and a block crossed off the exchange that does name one.
+    platform.observe(vec![
+        print("AAA", 1, 100, Some(Side::Buy), TradeCondition::Regular),
+        print("AAA", 2, 300, Some(Side::Sell), TradeCondition::Regular),
+        print("BBB", 3, 200, None, TradeCondition::Regular),
+        print("BBB", 4, 200, None, TradeCondition::Regular),
+        print(
+            "BBB",
+            5,
+            5_000,
+            Some(Side::Buy),
+            TradeCondition::OffExchange,
+        ),
+    ]);
+    platform.run_cycle(start());
+    let reviews = federation_stage::replay(&platform)?;
+    let review = reviews
+        .last()
+        .expect("premise: the cycle journaled a federation review");
+    assert!(
+        !review
+            .silent
+            .contains(&federation_stage::ORDER_FLOW.to_string()),
+        "the order-flow member was silent on a cycle with signed prints: {:?}",
+        review.silent
+    );
+    let flow_views: Vec<(String, f64)> = review
+        .arbitrations
+        .iter()
+        .flat_map(|a| {
+            a.disagreement
+                .views
+                .iter()
+                .filter(|v| v.model == federation_stage::ORDER_FLOW)
+                .map(|v| (a.proposition.clone(), v.probability))
+        })
+        .collect();
+    assert_eq!(
+        flow_views.len(),
+        1,
+        "one view, on the instrument with signed prints and not on BBB: {flow_views:?}"
+    );
+    let (proposition, probability) = &flow_views[0];
+    assert!(
+        proposition.starts_with(object("AAA").as_str()),
+        "{proposition}"
+    );
+    assert!(
+        *probability < 0.5,
+        "sell-dominated flow leaned the next close up: {probability}"
+    );
+    // A cycle with no new prints: the last cycle's flow was taken.
+    platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    let reviews = federation_stage::replay(&platform)?;
+    let next = reviews
+        .last()
+        .expect("premise: the second cycle journaled a review");
+    assert!(
+        next.silent
+            .contains(&federation_stage::ORDER_FLOW.to_string()),
+        "the member was fed again on a cycle with no new prints: {:?}",
+        next.silent
+    );
+    Ok(())
+}
+
+/// ADR 0256, R12-WORLD-3043: a cycle with a macro surprise feeds the macro
+/// member a persistence forecast on that series, a cycle without a new
+/// release reports it silent, and the series' next release answers the
+/// forecast.
+///
+/// The failure this prevents: macro releases reached the NOW stage and the
+/// world model, and the federation had no member that read the economy, so
+/// a surprise in a policy-relevant series changed no member's view.
+/// Mutation: build `FederationInputs` with `macros: Vec::new()` in
+/// `Platform::understand_federation`. The member is silent on the release
+/// cycle, and the first assertion fails.
+#[test]
+fn a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_reports_it_silent()
+-> Result<()> {
+    use qip_financial::intelligence::MacroObservation;
+    let mut platform = platform()?;
+    let mut records = bars("AAA", 120);
+    records.extend(bars("BBB", 120));
+    platform.observe(records);
+    let release_of = |series: &str, period: Timestamp, value: f64, provenance: Provenance| {
+        SensedRecord::Macro(Box::new(MacroObservation {
+            series_id: series.to_string(),
+            region: "US".to_string(),
+            value,
+            unit: "percent".to_string(),
+            reference_date: period,
+            consensus: Some(3.1),
+            previous: None,
+            is_revision: false,
+            provenance,
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        }))
+    };
+    let release = |period: Timestamp, ingested: Timestamp, value: f64| {
+        release_of(
+            "US.CPI.YOY",
+            period,
+            value,
+            Provenance::new("wire", period, ingested),
+        )
+    };
+    let first_period = start().saturating_sub(Duration::from_days(20));
+    // A wire release, and a synthetic tape's release of another series.
+    platform.observe(vec![
+        release(
+            first_period,
+            start().saturating_sub(Duration::from_days(1)),
+            3.4,
+        ),
+        release_of(
+            "US.PPI.YOY",
+            first_period,
+            2.9,
+            Provenance::synthetic(
+                "tape:fixture",
+                start().saturating_sub(Duration::from_days(1)),
+            ),
+        ),
+    ]);
+    platform.run_cycle(start());
+    platform.run_cycle(start().saturating_add(Duration::from_hours(1)));
+    let reviews = federation_stage::replay(&platform)?;
+    let macro_member = federation_stage::MACRO.to_string();
+    assert!(
+        !reviews[0].silent.contains(&macro_member),
+        "a cycle with a macro surprise left the macro member silent: {:?}",
+        reviews[0].silent
+    );
+    let proposition = federation_stage::macro_proposition("US.CPI.YOY", 1, false);
+    assert!(
+        reviews[0]
+            .arbitrations
+            .iter()
+            .any(|a| a.proposition == proposition),
+        "no arbitration on {proposition}: {:?}",
+        reviews[0]
+            .arbitrations
+            .iter()
+            .map(|a| a.proposition.clone())
+            .collect::<Vec<_>>()
+    );
+    // The synthetic tape's surprise is labelled simulated in the journal.
+    let simulated = federation_stage::macro_proposition("US.PPI.YOY", 1, true);
+    assert!(
+        reviews[0]
+            .arbitrations
+            .iter()
+            .any(|a| a.proposition == simulated),
+        "the synthetic release's forecast is not labelled simulated: {:?}",
+        reviews[0]
+            .arbitrations
+            .iter()
+            .map(|a| a.proposition.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reviews[1].silent.contains(&macro_member),
+        "the macro member was fed again with no new release: {:?}",
+        reviews[1].silent
+    );
+
+    // The next release surprises the same way: the forecast resolves true.
+    let next_period = first_period.saturating_add(Duration::from_days(30));
+    let later = start().saturating_add(Duration::from_days(15));
+    platform.observe(vec![release(
+        next_period,
+        later.saturating_sub(Duration::from_hours(1)),
+        3.5,
+    )]);
+    platform.run_cycle(later);
+    let reviews = federation_stage::replay(&platform)?;
+    let resolution = reviews
+        .last()
+        .and_then(|r| r.resolved.iter().find(|x| x.proposition == proposition))
+        .unwrap_or_else(|| panic!("the next release did not answer {proposition}"));
+    assert!(
+        resolution.outcome,
+        "a same-direction surprise resolved false"
+    );
+
+    // A currency fixing states no consensus; the member reads its move
+    // through the default path's `currencies` input. Two fixings that move
+    // give one move forecast.
+    let fixing = |period: Timestamp, level: f64| {
+        SensedRecord::Macro(Box::new(MacroObservation {
+            series_id: "FX.EUR.USD".to_string(),
+            region: "EU".to_string(),
+            value: level,
+            unit: "USD per EUR".to_string(),
+            reference_date: period,
+            consensus: None,
+            previous: None,
+            is_revision: false,
+            provenance: Provenance::new("ecb", period, period),
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        }))
+    };
+    platform.observe(vec![fixing(
+        later.saturating_sub(Duration::from_days(1)),
+        1.10,
+    )]);
+    platform.run_cycle(later.saturating_add(Duration::from_hours(1)));
+    platform.observe(vec![fixing(later, 1.12)]);
+    platform.run_cycle(later.saturating_add(Duration::from_hours(2)));
+    let reviews = federation_stage::replay(&platform)?;
+    let moved = reviews.last().is_some_and(|r| {
+        r.arbitrations
+            .iter()
+            .any(|a| a.proposition.starts_with("macro:FX.EUR.USD:move-persists@"))
+    });
+    assert!(
+        moved,
+        "a currency fixing that moved gave the macro member no forecast: {:?}",
+        reviews.last().map(|r| r
+            .arbitrations
+            .iter()
+            .map(|a| a.proposition.clone())
+            .collect::<Vec<_>>())
+    );
     Ok(())
 }
