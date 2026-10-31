@@ -148,11 +148,23 @@ pub fn proposition_subject(proposition: &str) -> &str {
 /// it resolved true. A resolution with no arbitrated number, or one at
 /// exactly one half, took no side and says nothing; a later resolution on
 /// the federation's side clears the subject.
+///
+/// "Latest" is by the proposition's `@<cycle>`, not by the order given: a
+/// review lists its resolutions in proposition order, so `x@10` comes
+/// before `x@9`, and reading that order would let the older question decide.
 pub fn belief_discrepancies<'a>(
     resolutions: impl IntoIterator<Item = &'a Resolution>,
 ) -> BTreeMap<String, Vec<String>> {
+    let cycle_of = |proposition: &str| {
+        proposition
+            .rsplit_once('@')
+            .and_then(|(_, cycle)| cycle.parse::<u64>().ok())
+    };
+    let mut ordered: Vec<&Resolution> = resolutions.into_iter().collect();
+    // Stable, so resolutions of one cycle keep the order they were given.
+    ordered.sort_by_key(|resolution| cycle_of(&resolution.proposition));
     let mut latest: BTreeMap<String, (bool, Vec<String>)> = BTreeMap::new();
-    for resolution in resolutions {
+    for resolution in ordered {
         let Some(p) = resolution
             .ensemble
             .filter(|p| p.is_finite() && p.total_cmp(&0.5).is_ne())
@@ -191,8 +203,11 @@ pub fn belief_discrepancies<'a>(
 #[derive(Debug, Clone)]
 pub struct BeliefWatch {
     tracker: PersistenceTracker,
-    /// The newest review cycle already read.
-    seen: Option<u64>,
+    /// How many reviews, in log order, have already been read. A count and
+    /// not a cycle number, because a restarted platform numbers its cycles
+    /// from zero again over the same journal, and a cycle cursor would then
+    /// skip every new review until the old maximum was passed.
+    seen: usize,
     /// The propositions resolved against the federation during each
     /// flagged subject's current run, newest kept.
     runs: BTreeMap<String, Vec<String>>,
@@ -202,23 +217,21 @@ impl BeliefWatch {
     pub fn new() -> Result<Self> {
         Ok(Self {
             tracker: PersistenceTracker::new(PERSIST_SWEEPS)?,
-            seen: None,
+            seen: 0,
             runs: BTreeMap::new(),
         })
     }
 
-    /// One sweep over every review the log holds, as `(cycle, resolved)`:
-    /// only reviews after the newest cycle already read are new.
-    pub fn feed(&mut self, reviews: &[(u64, &[Resolution])]) -> Vec<Observation> {
-        let seen = self.seen;
+    /// One sweep over every review the log holds, oldest first, as each
+    /// review's resolutions: those past the count already read are new.
+    pub fn feed(&mut self, reviews: &[&[Resolution]]) -> Vec<Observation> {
         let fresh = reviews
+            .get(self.seen..)
+            .unwrap_or_default()
             .iter()
-            .filter(|(cycle, _)| seen.is_none_or(|last| *cycle > last))
-            .flat_map(|(_, resolved)| resolved.iter());
+            .flat_map(|resolved| resolved.iter());
         let against = belief_discrepancies(fresh);
-        if let Some(newest) = reviews.iter().map(|(cycle, _)| *cycle).max() {
-            self.seen = Some(seen.map_or(newest, |cycle| cycle.max(newest)));
-        }
+        self.seen = reviews.len();
         self.runs.retain(|subject, _| against.contains_key(subject));
         for (subject, propositions) in &against {
             let run = self.runs.entry(subject.clone()).or_default();
@@ -2117,9 +2130,9 @@ impl ResearchLoop {
         // and the watch is not fed, so a refused read does not reset a run.
         match federation_stage::replay(platform) {
             Ok(reviews) => {
-                let read: Vec<(u64, &[Resolution])> = reviews
+                let read: Vec<&[Resolution]> = reviews
                     .iter()
-                    .map(|review| (review.cycle, review.resolved.as_slice()))
+                    .map(|review| review.resolved.as_slice())
                     .collect();
                 let raised = self.beliefs.feed(&read);
                 round.belief_discrepancies = raised.len();

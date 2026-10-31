@@ -47,7 +47,9 @@ belief the market disagrees with. That is the discrepancy, in probability.
    one subject.
 4. **A subject is flagged in a sweep** when a resolution new since the last
    sweep went against the federation and none after it, in that sweep,
-   went its way (`belief_discrepancies`, the latest resolution decides).
+   went its way (`belief_discrepancies`). "After" is by the proposition's
+   cycle, not by list order: a review lists its resolutions in proposition
+   order, so `@10` would otherwise come before `@9`.
 5. **The second `PersistenceTracker`.** `BeliefWatch` feeds the flagged
    subjects to a tracker of its own, with `PERSIST_SWEEPS`. A subject
    flagged on that many consecutive sweeps raises one specialist research
@@ -59,7 +61,9 @@ belief the market disagrees with. That is the discrepancy, in probability.
    `federation_stage::replay`, which refuses a review whose arbitrations do
    not follow from its own recorded views. A refused read is reported on
    the round (`belief_reviews_refused`) and the watch is not fed, so a bad
-   read does not reset a run.
+   read does not reset a run. The watch counts the reviews it has read, in
+   log order, and never a cycle number: a restarted platform numbers its
+   cycles from zero again over the same journal.
 7. **It moves nothing.** The item asks whether the federation is wrong about
    the subject. Testing that with a specialist or a simulator is
    R12-EXPAND-6049's executor work, not this decision's.
@@ -81,10 +85,20 @@ belief the market disagrees with. That is the discrepancy, in probability.
 - A second read of the federation's reviews per sweep, through the replay
   that re-derives every arbitration. It grows with the log, as the
   knowledge-delta read already does.
-- A flag needs a fresh resolution in every sweep of the run. A subject the
+- Persistence is counted in sweeps, not in the resolutions the ruling
+  names. A flag needs a fresh resolution against the federation in every
+  sweep of the run, and several in one sweep count once. A subject the
   federation resolves less often than the deep brain sweeps never
-  persists, however wrong it is. That is the price of counting
-  resolutions rather than sweeps that merely saw an old one.
+  persists, however wrong it is. That is the price of reusing the sweep
+  tracker rather than counting each resolution, and it never counts a
+  sweep that merely saw an old resolution.
+- The replay is all or nothing. One review anywhere in the log that does
+  not follow from its own views refuses every later read, and the detector
+  stays off, reported only on the round.
+- "Price" is wider than the name. The federation also resolves
+  propositions about the platform's own halts, funding draws,
+  counterparties and on-chain flows, and the watch reads those too. A
+  discrepancy there is still a belief the world kept contradicting.
 
 ## What would make this wrong
 

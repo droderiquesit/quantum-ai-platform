@@ -63,10 +63,17 @@ by a field nobody set.
 
 ## Consequences
 
-- The deep brain's sweep raises a coverage gap for a driver whose effects
+- `ResearchLoop`'s sweep raises a coverage gap for a driver whose effects
   lack history. `evidence_gaps.rs`
   `a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming_its_dimension`
-  drives it through `ResearchLoop::sweep`.
+  drives it through `ResearchLoop::sweep`, with claims seeded through
+  `Platform::claim_causal`.
+- On a shipped deep brain it cannot fire yet. The only causal-edge writer a
+  shipped binary reaches is the temporal-precedence discovery, which claims
+  edges only between subjects that already have price history, and no app
+  calls `Platform::claim_causal`. Every shipped driver's effects are
+  therefore covered. The dimension is wired and waits for a writer that
+  claims an edge into an instrument the platform cannot price.
 - The ontology seeding (`sweep_ontology_over`) reads the static map, so it
   registers no causal-driver type. A driver is a claim in the graph, not an
   ontology type, and this decision does not make it one.
@@ -78,8 +85,10 @@ by a field nobody set.
   same instruments. The two name different things to research: the class
   asks for a source of prices, the driver for the instruments that driver
   moves.
-- A sweep-time pass over the causal graph's edges. The graph is bounded by
-  its own capacity, and the pass is one filter and one map insert per edge.
+- A sweep-time pass over the causal graph's edges: one filter and one map
+  insert per edge. The graph has no edge cap (`CausalGraph::add` keeps every
+  claim), so the pass grows with it. The map it produces is bounded by
+  causes times instruments.
 
 ## What would make this wrong
 
