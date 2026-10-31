@@ -131,7 +131,7 @@
       "backend/crates/services/qip-market-ingestion/src/connectors/nyfed_effr.rs",
       "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Admitted connectors cover only government statistics and central-bank releases (ecb-key-interest-rates, nyfed-effr, frankfurter in qip-data-finder admission.rs catalogue). Filings and earnings rest on NarrativeAdapter, which ships unconfigured with no catalogue entry; regulatory portals, court/docket, procurement, patents and corporate registries have neither a connector nor a RefusedSource (the refusals list only option-quote vendors). Each missing class needs an ADR 0157 licence record or a quoted-terms RefusedSource (owner vendor choice or licence review), a connector and egress route where admitted, and an inspection test failing when a class has neither.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. No vendor yet for filings, regulatory portals, court dockets, procurement, patents or corporate registries. A class enters either with a licence record that quotes its publisher's terms or with a refusal that quotes the refusing clause. Both need someone to read the terms, and none is invented here. The row stays PARTIAL. Closes on: For each class, a licence review produces either an ADR 0157 record or a quoted RefusedSource. Connectors and egress follow where a class is admitted. Add an inspection test that fails when a class has neither, landed first as a shrink-only ratchet of the uncovered classes. Earlier: 2026-10-24 (re-read against the tree): Admitted connectors cover only government statistics and central-bank releases (ecb-key-interest-rates, nyfed-effr, frankfurter in qip-data-finder admission.rs catalogue). Filings and earnings rest on NarrativeAdapter, which ships unconfigured with no catalogue entry; regulatory portals, court/docket, procurement, patents and corporate registries have neither a connector nor a RefusedSource (the refusals list only option-quote vendors). Each missing class needs an ADR 0157 licence record or a quoted-terms RefusedSource (owner vendor choice or licence review), a connector and egress route where admitted, and an inspection test failing when a class has neither.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -142,7 +142,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): No vendor yet for filings, regulatory portals, court dockets, procurement, patents or corporate registries."
   },
   {
     "id": "R12-DATA-2007",
@@ -175,7 +175,7 @@
       "backend/crates/services/qip-chain/src/rpc.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs observe_chain"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No blockchain, mempool, token-flow, smart-contract or governance source has an admitted connector or a documented RefusedSource; qip-chain's RPC adapter and Platform::observe_chain have no caller in any app root; TraceKind::GovernanceProposal exists but qip-chain state.rs discards it. Needs an ADR 0157 licence record or RefusedSource per class (owner vendor choice or licence review), a connector, egress route and tfvar to reach a root, and code to act on governance traces.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. No RPC or indexer vendor yet. qip-chain stays unwired until each class's provider terms are recorded under ADR 0157, as an admission or a quoted refusal. Governance traces stay discarded until ADR 0151 decision 1 names their consumer. The row stays PARTIAL. Closes on: Choose an RPC or indexer vendor, then record its licence or refusal for each class. Wire the qip-chain RPC adapter into a root with an egress route and a tfvar. Act on TraceKind::GovernanceProposal only once a consumer is named. Earlier: 2026-10-24 (re-read against the tree): No blockchain, mempool, token-flow, smart-contract or governance source has an admitted connector or a documented RefusedSource; qip-chain's RPC adapter and Platform::observe_chain have no caller in any app root; TraceKind::GovernanceProposal exists but qip-chain state.rs discards it. Needs an ADR 0157 licence record or RefusedSource per class (owner vendor choice or licence review), a connector, egress route and tfvar to reach a root, and code to act on governance traces.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -186,7 +186,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Governance and token-transfer trace kinds exist (qip-chain block.rs TraceKind::Transfer, GovernanceProposal); the absence is in wiring and admission, not modelling."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Governance and token-transfer trace kinds exist (qip-chain block.rs TraceKind::Transfer, GovernanceProposal); the absence is in wiring and admission, not modelling. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): No RPC or indexer vendor yet. qip-chain stays unwired until each class's provider terms are recorded under ADR 0157, as an admission or a quoted refusal."
   },
   {
     "id": "R12-DATA-2009",
@@ -994,7 +994,7 @@
     "verification": "cargo test -p qip-acceptance --test cognitive_no_raw_ticks; cargo test -p qip-acceptance --test lane_placement replay_training",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: cognitive_no_raw_ticks.rs added (commit 6b224f94). Mutations fired, restored by cp + cmp: observe_ticks(Vec<MarketMessage>) on impl Platform fails it naming platform.rs; qip-training added to qip-edge-node's dependencies fails lane_placement ('qip-edge-node links qip-training'). Independent skeptic (security-engineer) verdict REFUTED: the kernel already consumes qip_market::quote::Tick via SensedRecord::Tick; reasons and remaining steps in gap. Kept PARTIAL."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: cognitive_no_raw_ticks.rs added (commit 6b224f94). Mutations fired, restored by cp + cmp: observe_ticks(Vec<MarketMessage>) on impl Platform fails it naming platform.rs; qip-training added to qip-edge-node's dependencies fails lane_placement ('qip-edge-node links qip-training'). Independent skeptic (security-engineer) verdict REFUTED: the kernel already consumes qip_market::quote::Tick via SensedRecord::Tick; reasons and remaining steps in gap. Kept PARTIAL. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The central `Tick` is a raw print, and the cognitive layer does not take it. ADR 0151 decision 9 already says the centre has no clock discipline behind a `Tick`, so a `Tick` cannot be the time-aligned state the requirement names. Handed to lane L3b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The central Tick is a raw print: the cognitive layer takes a price only as time-aligned state built at the ingestion seam, and the no-raw-tick guard refuses Tick and SensedRecord::Tick."
   },
   {
     "id": "R12-TICK-2042",
@@ -1111,7 +1111,7 @@
       "backend/crates/services/qip-chain/src/amm.rs",
       "backend/crates/services/qip-chain/src/mempool.rs"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No typed record or capture path for crypto order books (only coinbase_ticker spot), liquidations, or dealer rates quotes (ecb_key_rates and nyfed_effr are policy reference rates). Perp funding has a typed qip_edge::funding::FundingRate but no capture path (only tests call Cell::set_funding_rate); mempool and AMM state have typed models in qip-chain but no capture connector. Each source needs an ADR 0157 licence record (owner/vendor decision) plus connector code. The row's verification command (qip-twin --test twin) tests none of this.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. Crypto order books, perpetual funding, liquidations, dealer rate quotes, and mempool and venue state are not captured until each has an ADR 0157 licence record. That holds even for a free public feed: it enters only as a record that quotes the terms it was read from. No agent accepts a venue's terms in my name. The row stays PARTIAL. Closes on: Once each source is licensed under ADR 0157: a connector per feed under ConnectorFeed KNOWN_SOURCES, and a typed-record test per event type. Also replace the row's verification command (qip-twin --test twin), which tests none of this, with that inspection. Earlier: 2026-10-24 (re-read against the tree): No typed record or capture path for crypto order books (only coinbase_ticker spot), liquidations, or dealer rates quotes (ecb_key_rates and nyfed_effr are policy reference rates). Perp funding has a typed qip_edge::funding::FundingRate but no capture path (only tests call Cell::set_funding_rate); mempool and AMM state have typed models in qip-chain but no capture connector. Each source needs an ADR 0157 licence record (owner/vendor decision) plus connector code. The row's verification command (qip-twin --test twin) tests none of this.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1122,7 +1122,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): Crypto order books, perpetual funding, liquidations, dealer rate quotes, and mempool and venue state are not captured until each has an ADR 0157 licence record."
   },
   {
     "id": "R12-TICK-2047",
@@ -1396,7 +1396,7 @@
       "backend/crates/libs/qip-storage/tests/segment_archive.rs:425 a_manifest_alone_proves_the_hash_a_contiguous_range_its_entitlements_and_a_replay_index",
       "backend/crates/apps/qip-fabricd/src/archiver.rs:25 Archiver"
     ],
-    "gap": "Ranged archive reads are not built, by decision: a ranged read trusts the manifest's digests exactly as far as the manifest is trusted, where the whole-segment path trusts it only for the hash, so it proves less; that weakening is stated and the build waits on a committed measurement of hydrate bytes and latency per read_indexed on the broker's replay path showing the whole-segment cost is the problem. Segment size is bounded by roll_after_bytes and the last hydrated segment is cached, so no such measurement exists. tick_hot_replay_indexes.rs must drive the real archiver (a separate test lane). (Restated 2026-10-19.)",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. ADR 0156 §2.4 stands. read_indexed keeps proving the whole segment. No ranged read that trusts the manifest further is built on a cost nobody has measured. The deferral is revisited only on a committed measurement of hydrate bytes and latency per read_indexed on the running broker's replay path. The row stays PARTIAL until that measurement exists. Closes on: After the dev deploy, commit hydrate bytes and latency per read_indexed from qip-fabricd's replay path against the GCS archive. Build only if that shows whole-segment cost beyond what a larger roll_after_bytes can remove. In that case, a record superseding ADR 0156 §2.4 adds the separately named ranged read that proves a batch digest, with a test that drives the real Archiver. Earlier: Ranged archive reads are not built, by decision: a ranged read trusts the manifest's digests exactly as far as the manifest is trusted, where the whole-segment path trusts it only for the hash, so it proves less; that weakening is stated and the build waits on a committed measurement of hydrate bytes and latency per read_indexed on the broker's replay path showing the whole-segment cost is the problem. Segment size is bounded by roll_after_bytes and the last hydrated segment is cached, so no such measurement exists. tick_hot_replay_indexes.rs must drive the real archiver (a separate test lane). (Restated 2026-10-19.)",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1409,7 +1409,7 @@
     "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "",
     "size": "M",
-    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted (the 2026-10-18 triage reports it rewritten to drive the real archiver; not re-read by lane L23). 2026-10-18 lane L23: kept PARTIAL - a get_range that served bytes before the whole-segment hash was re-proved would break read_indexed's documented guarantee that it never returns unverified bytes; the per-batch digest is the missing design step. Lane W8-156, 2026-10-19 (ADR 0156) §2.4. Decision and register restatement only; no code changed, and the capability the requirement names (fetching only a byte range) is not built, so the row stays PARTIAL."
+    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted (the 2026-10-18 triage reports it rewritten to drive the real archiver; not re-read by lane L23). 2026-10-18 lane L23: kept PARTIAL - a get_range that served bytes before the whole-segment hash was re-proved would break read_indexed's documented guarantee that it never returns unverified bytes; the per-batch digest is the missing design step. Lane W8-156, 2026-10-19 (ADR 0156) §2.4. Decision and register restatement only; no code changed, and the capability the requirement names (fetching only a byte range) is not built, so the row stays PARTIAL. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): ADR 0156 §2.4 stands. read_indexed keeps proving the whole segment. No ranged read that trusts the manifest further is built on a cost nobody has measured."
   },
   {
     "id": "R12-TICK-2059",
@@ -1885,7 +1885,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01) after reading capture_unworked and the qip-twin Action variants: the earlier text said missed opportunities are captured; only expired ones are, unpriced by design."
+    "notes": "Gap corrected 2026-10-18 (lane L01) after reading capture_unworked and the qip-twin Action variants: the earlier text said missed opportunities are captured; only expired ones are, unpriced by design. Owner ruling 2026-10-31 (IMPLEMENT): ADR 0148 decided this on 2026-10-19 and it stands. A missed opportunity is a claim graded in basis points over its own horizon, and it is never priced at a side nobody proposed. Handed to lane L3b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-TICK-2078",
