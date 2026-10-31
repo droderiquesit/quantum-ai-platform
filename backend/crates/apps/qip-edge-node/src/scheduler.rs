@@ -76,7 +76,8 @@ use crate::strategies::StrategyInstaller;
 use crate::telemetry::PeerSeries;
 use qip_contracts::market_event::MarketEvent;
 use qip_contracts::replay::{
-    AppliedReadings, ControlPosition, PassMarker, PressureRecord, WireRecord,
+    AppliedReadings, ControlPosition, FeatureDigest, FeatureReading, InstrumentDigest, PassMarker,
+    PressureRecord, WireRecord,
 };
 use qip_core::canonical::canonical_json;
 use qip_core::error::{Error, Result};
@@ -537,10 +538,12 @@ impl DecisionLoop {
                 None => pass(),
             };
             self.pass_log.write(now, &outcome, &mut self.log_sink);
+            let mut fed = None;
             match outcome {
-                Ok(PassOutcome::Ran { report, .. }) => {
+                Ok(PassOutcome::Ran { feed, report, .. }) => {
                     self.last_report = *report;
                     ran_pass = true;
+                    fed = Some(feed);
                 }
                 Ok(PassOutcome::Halted { .. }) => self.last_report = WorkReport::default(),
                 // The journal holds the refusal; the loop keeps turning so
@@ -550,11 +553,18 @@ impl DecisionLoop {
             let applied = feed.take_captured();
             captured = applied.len();
             let marker = self.marker(now, &readings, pressure, &applied)?;
+            // ADR 0132 decision 4: on a turn that ran a pass, one digest of
+            // what it sized against, with the ticks counted — never shipped.
+            let digest = fed.map(|fed| self.feature_digest(&marker, fed.messages, &applied));
             // A recorder that cannot hand off — the writer has gone — is
             // reported and the turn goes on to the flush: returning here
             // would also skip the flush and the health publication, and the
             // writer's stopped heartbeat already halts new exposure.
-            recorded = match self.outbox.inputs.record(PassInputs { marker, applied }) {
+            recorded = match self.outbox.inputs.record(PassInputs {
+                marker,
+                applied,
+                digest,
+            }) {
                 Ok(outcome) => {
                     if outcome == Recorded::Dropped {
                         self.telemetry.input_gap();
@@ -779,6 +789,65 @@ impl DecisionLoop {
         }
         self.last_pressure = Some(pressure);
         Ok(pressure)
+    }
+
+    /// The digest of what the pass just run sized against (ADR 0132
+    /// decision 4, R12-FABRIC-10102): the feature vector the cell evaluated,
+    /// grouped by instrument, and the feed's messages counted. Bounded by the
+    /// instruments the plan registered features for — the vector has one
+    /// entry per registered feature whatever the feed did — so its size is
+    /// configuration's, not the market's.
+    fn feature_digest(
+        &self,
+        marker: &PassMarker,
+        ticks: usize,
+        applied: &[MarketEvent],
+    ) -> FeatureDigest {
+        let mut by_subject: std::collections::BTreeMap<String, Vec<FeatureReading>> =
+            std::collections::BTreeMap::new();
+        for (key, value, revision) in self.last_report.features.iter() {
+            let name = if key.parameters.is_empty() {
+                key.name.clone()
+            } else {
+                format!("{}[{}]", key.name, key.parameters.join(","))
+            };
+            by_subject
+                .entry(key.subject.to_string())
+                .or_default()
+                .push(FeatureReading {
+                    name,
+                    value,
+                    revision: revision.get(),
+                });
+        }
+        let mut hashes = String::new();
+        for event in applied {
+            hashes.push_str(event.source_hash());
+            hashes.push('\n');
+        }
+        FeatureDigest {
+            cell: marker.cell.clone(),
+            session: marker.session.clone(),
+            pass: marker.pass,
+            now_ns: marker.now_ns,
+            instruments: by_subject
+                .into_iter()
+                .map(|(subject, features)| InstrumentDigest { subject, features })
+                .collect(),
+            ticks: ticks as u64,
+            applied: applied.len() as u64,
+            applied_from_ns: applied
+                .iter()
+                .map(|event| event.event_time().as_nanos())
+                .min()
+                .unwrap_or(0),
+            applied_to_ns: applied
+                .iter()
+                .map(|event| event.event_time().as_nanos())
+                .max()
+                .unwrap_or(0),
+            applied_digest: sha256_hex(hashes.as_bytes()),
+        }
     }
 
     /// The marker of the pass just run: every field read from something

@@ -33,7 +33,7 @@ use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass, StreamPolicy};
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_streaming::event_fabric::broker::Broker;
-use qip_streaming::event_fabric::service::{SegmentConfigFor, Service};
+use qip_streaming::event_fabric::service::{SegmentConfigFor, Service, TopiclessStreams};
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::server::{Handler, Request, Response, Server, ServerLimits};
 use qip_transport::tls::LinkSecurity;
@@ -128,7 +128,17 @@ impl Fabric {
         let segments: SegmentConfigFor = Arc::new(move |policy: &StreamPolicy| {
             SegmentLogConfig::new(clock.clone()).with_archive_required(policy.archive_required())
         });
-        let service = Arc::new(Service::new(broker, identities, &catalogue, 1, segments).unwrap());
+        let service = Arc::new(
+            Service::new(
+                broker,
+                identities,
+                &catalogue,
+                1,
+                segments,
+                TopiclessStreams::AdmitAll,
+            )
+            .unwrap(),
+        );
         let armed = Arc::new(std::sync::atomic::AtomicBool::new(lose));
         let handler: Arc<dyn Handler> = if lose {
             Arc::new(LostFirstProduceReply {

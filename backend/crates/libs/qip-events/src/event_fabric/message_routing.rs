@@ -100,6 +100,7 @@ impl MessageTypeRouter {
         // (P1), and reflex-journal.local (P2) per streams.local.json.
 
         routes.insert(Topic::ReflexPassMarked, FabricPath::LocalJournal);
+        routes.insert(Topic::ReflexFeatureDigested, FabricPath::LocalJournal);
         routes.insert(Topic::ReflexJournalRecorded, FabricPath::LocalJournal);
         routes.insert(Topic::MarketEventApplied, FabricPath::LocalJournal);
         routes.insert(Topic::ReflexChainSpan, FabricPath::LocalJournal);
@@ -194,6 +195,7 @@ mod tests {
         for topic in [
             Topic::ReflexJournalRecorded,
             Topic::ReflexPassMarked,
+            Topic::ReflexFeatureDigested,
             Topic::MarketEventApplied,
             Topic::ReflexChainSpan,
             Topic::EventFabricGap,

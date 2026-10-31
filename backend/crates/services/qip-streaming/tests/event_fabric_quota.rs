@@ -123,6 +123,51 @@ fn a_producer_past_its_message_quota_is_refused_with_the_wait_and_others_are_not
     b.produce("orders", "k", batch("p2", 0, b"x")).unwrap();
 }
 
+/// R12-FABRIC-8089: the per-producer window is charged to the authenticated
+/// principal where the session has one, not to the producer id the client
+/// chose, so one identity cannot multiply its quota by minting ids. Two
+/// producer ids under one principal share a window of ten bytes; the second
+/// id's first batch is refused for the first id's spend.
+///
+/// Mutation: key the window on `batch.producer_id` alone again — the second
+/// id has a fresh window, its batch is acknowledged, and the `expect_err`
+/// fires.
+#[test]
+fn two_producer_ids_under_one_principal_share_one_quota_window() {
+    let (b, _clock) = broker(10, 1_000);
+    b.produce_from(
+        "orders",
+        0,
+        batch("p1", 0, b"123456"),
+        Some("qip-edge-node-london-1"),
+    )
+    .unwrap()
+    .expect("the first producer id's six bytes fit the window");
+    let refused = b
+        .produce_from(
+            "orders",
+            0,
+            batch("p2", 0, b"123456"),
+            Some("qip-edge-node-london-1"),
+        )
+        .unwrap()
+        .expect_err("a second producer id under the same principal was given its own window");
+    assert!(
+        refused.error.message().contains("over its quota"),
+        "{:?}",
+        refused.error
+    );
+    // Another principal's window is untouched, so the key is the principal.
+    b.produce_from(
+        "orders",
+        0,
+        batch("p3", 0, b"123456"),
+        Some("qip-edge-node-paris-1"),
+    )
+    .unwrap()
+    .expect("a different principal has its own window");
+}
+
 /// Mutation: change `over_bytes` to `false` — the oversized second batch is
 /// acknowledged and this fails.
 #[test]

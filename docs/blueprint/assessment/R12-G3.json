@@ -2288,12 +2288,19 @@
   {
     "id": "R12-FABRIC-10102",
     "status": "PARTIAL",
-    "current": "qip-edge-node main constructs SpoolWriter, Drain and relay; every journal entry reaches P2 and every outcome P1 (outbox test). Evidence text 'outbox not constructed by main.rs' is stale. Ticks are count-only (Ingested) or in the tape/lake; no feature snapshot record.",
+    "current": "qip-edge-node main constructs SpoolWriter, Drain and relay; every journal entry reaches P2 and every outcome P1 (outbox test). Since 2026-10-31 (ADR 0132 decision 4) every turn that runs a pass also records one `FeatureDigest` P2 record (`reflex.feature_digested`, schema version 1, locked in schemas.lock.json and inventoried in consumers.lock.json; admitted on reflex-journal.local in both committed catalogues): per instrument the cell registered features for, the feature values the pass evaluated and the revision each was computed at (`WorkReport::features`, the vector `Cell::work` sized against), with the feed's messages counted and the applied tape events counted, ranged and digested over their source hashes. Ticks are counted, never shipped. The record is bounded by the registered instruments, not by market activity: `Scheduler::feature_digest` groups the evaluated vector by subject, so a busy pass and a quiet one write the same shape.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open; :1095 Drain::open",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:330 every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
+      "backend/crates/libs/qip-contracts/src/replay.rs FeatureDigest, InstrumentDigest, FeatureReading",
+      "backend/crates/libs/qip-events/src/topic.rs Topic::ReflexFeatureDigested; bindings.rs REFLEX_FEATURE_DIGESTED; message_routing.rs",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs Scheduler::feature_digest (built every turn that ran a pass, handed over in PassInputs)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs SpoolWriter::pass (RecordKind::FeatureDigested on P2), feature_digest",
+      "backend/crates/edge/qip-edge/src/cell.rs WorkReport::features (the vector Cell::work evaluated)",
+      "backend/crates/libs/qip-events/schemas.lock.json and consumers.lock.json rows for reflex.feature_digested",
+      "infrastructure/event-fabric/streams.local.json and streams.managed.json: reflex-journal.local admits reflex.feature_digested",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
     ],
-    "gap": "Per-pass FeatureSnapshot P2 record from the node, bounded by configured instruments, with a test that ticks are counted and not shipped (ADR 0132; corrected 2026-10-24): a new topic needs qip-events schemas.lock.json and consumers.lock.json entries and the fabric catalogue stream list, and Decision is a hash-chained enum, so it is a multi-crate change with acceptance suites, not a node-only slice.",
+    "gap": "Skeptic REFUTED 2026-10-31: (1) the P2 stream still carries one `reflex.market_event_applied` record per applied tape event (writer.rs `SpoolWriter::pass`, the replay input ADR 0100 §8 records), so ADR 0132 decision 4's 'does not produce one record per tick' does not hold on the default path while the requirement's own text ('tick ... appended to Fabric P1/P2') is met by those records; the owner decides which governs, and until then the digest is an addition beside the per-event records, not a replacement; (2) `Scheduler::feature_digest` and `WorkReport::features` are reached by no test — the outbox test hands the writer hand-built digests — so bar part 1 holds for the writer only; (3) `ticks` is the feed's message count (status messages included) while the hash covers the applied events, and the time range is of the applied events, not of every tick a windowed value rests on. Closes with a node-level turn test with registered features and a non-empty tape asserting one digest per pass, and the owner's reading of decision 4.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2303,10 +2310,10 @@
       "R12-FABRIC-10076"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
+    "verification": "cargo +1.94.1 test -p qip-edge-node --test event_fabric_outbox && cargo +1.94.1 test -p qip-acceptance --test event_fabric_schema_lock --test event_fabric_catalogue",
     "work_item": "",
-    "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement names ticks and feature snapshots, which are not appended as records. ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Per-tick and feature-snapshot records on P1/P2; fabric partition only drains when a URL is configured. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
+    "size": "L",
+    "notes": "Re-graded 2026-10-17; ADR lane 2026-10-18 against D08; lane T1-EDGE 2026-10-24 kept PARTIAL. 2026-10-31 lane L1b-fabric: the digest landed as a seventh reflex binding. Mutation: `SpoolWriter::pass` never pushing the digest record — `a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped` fails with `left: []` against the two digests; restored by copy, `cmp` clean. Independent skeptic: REFUTED (gap); the time range was changed from first/last to min/max and the record's doc narrowed to what this pass applied in answer to its findings. Limit stated: the digest carries the feature vector as evaluated, which is bounded by registered features; a cell with no registered features writes a digest with no instruments, which is a true statement about that pass."
   },
   {
     "id": "R12-TICK-10103",
