@@ -4025,11 +4025,11 @@
   {
     "id": "R12-EXPAND-1174",
     "status": "PARTIAL",
-    "current": "Cells report outcomes to the centre and the LEARN stage learns from cells; no episode/residual/lesson exchange between brains.",
+    "current": "Cells report outcomes to the centre and the LEARN stage learns from cells; the kernel journals one validated KnowledgeDeltaRecord per admissible claim (R12-EXPAND-6039) and the deep brain's research sweep reads those records off the log, which is the one exchange of typed knowledge between two components with both a producer and a reader (2026-10-25). Residuals reach the sweep as fill scores; lessons stay in the LEARN stage's own memory; a cell's RegionalEpisodes stay in cell memory.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:8524 learn_from_cells"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Decided by ADR 0199 (2026-10-31), confirming ADR 0151 d4: a cell's RegionalEpisodes are carried on CellReport only when a central consumer names the decision they feed, in a frame designed for it over the mesh spine (ADR 0128), and none has; no SharedEpisode is built; lessons and residuals cross no brain boundary as typed artifacts. The scope items unbuilt are episode and lesson exchange between brains and any exchange with reflex cells beyond the report. The row stays PARTIAL citing the record.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4040,7 +4040,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: ADR 0199 confirms ADR 0151 d4 and names the one working exchange (KnowledgeDeltaRecord read by the deep brain sweep); no code changed."
   },
   {
     "id": "R12-TICK-1175",
