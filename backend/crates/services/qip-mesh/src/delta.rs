@@ -97,6 +97,10 @@ pub struct DeltaRefusal {
     /// edge's serde attributes exactly, for the reason `WireDelta` gives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub venue: Option<String>,
+    /// The legs of a refused arbitrage cycle; empty for every other gate.
+    /// Mirrors the edge's serde attributes exactly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legs: Vec<qip_contracts::wire::RefusedLeg>,
 }
 
 /// The wire shape of a cell's state delta, private to the decode.

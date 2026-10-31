@@ -110,6 +110,33 @@ pub struct FillRecord {
     pub shares: Vec<FillShare>,
 }
 
+/// One leg of a cycle a cell refused, as the cell would have sent it
+/// (R12-MESH-5068, blueprint §17.2).
+///
+/// A refusal on the wire used to carry only its gate and reason, so the
+/// centre could count a declined cycle and never price it: re-pricing a
+/// path needs the instrument, the side and the size that were proposed.
+/// The leg is what was proposed, not what was sent; nothing about it is
+/// an order, and the centre never books it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefusedLeg {
+    pub object_id: ObjectId,
+    pub venue: VenueId,
+    /// `Ask` would have bought, `Bid` would have sold — the convention
+    /// [`FillRecord::side`] uses.
+    pub side: BookSide,
+    /// Positive: the size of the leg, its direction being `side`.
+    pub quantity: Decimal,
+    /// The price the leg was priced at when the cycle was refused.
+    pub reference_price: Decimal,
+}
+
+/// Legs one refusal carries. A cycle has two to twenty
+/// (`qip-edge-node`'s leg bound); a refusal past this carries none, and the
+/// centre counts it unpriced rather than pricing a cycle cut short.
+pub const MAX_REFUSED_LEGS: usize = 20;
+
 /// How many fills one delta carries before it starts counting instead.
 ///
 /// Bounded like the crosses, and counted beside the list for the same

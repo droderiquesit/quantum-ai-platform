@@ -2529,3 +2529,135 @@ fn a_resolved_prediction_updates_the_calibration_report() -> Result<()> {
     );
     Ok(())
 }
+
+/// A report from a cell that refused one two-leg cycle on `AAA` whole.
+fn report_refusing_a_cycle(cell: &str, at: Timestamp) -> qip_kernel::central::CellReport {
+    report_refusing_a_cycle_on(cell, "AAA", at)
+}
+
+/// The same, on `symbol`.
+fn report_refusing_a_cycle_on(
+    cell: &str,
+    symbol: &str,
+    at: Timestamp,
+) -> qip_kernel::central::CellReport {
+    use qip_contracts::message::BookSide;
+    use qip_contracts::venue::VenueId;
+    use qip_contracts::wire::RefusedLeg;
+    let leg = |side| RefusedLeg {
+        object_id: object(symbol),
+        venue: VenueId::new("XNYS"),
+        side,
+        quantity: dec!("10"),
+        reference_price: dec!("100"),
+    };
+    qip_kernel::central::CellReport::new(cell, at).with_refusals(vec![
+        // A refusal with no legs: counted at the cell, nothing to price.
+        qip_mesh::delta::DeltaRefusal {
+            gate: "arbitrage_cap".to_string(),
+            reason: "past the per-pass cap".to_string(),
+            venue: None,
+            legs: Vec::new(),
+        },
+        qip_mesh::delta::DeltaRefusal {
+            gate: "arbitrage_cycle".to_string(),
+            reason: "cycle c-1 is refused whole: its leg is not admitted".to_string(),
+            venue: None,
+            legs: vec![leg(BookSide::Ask), leg(BookSide::Bid)],
+        },
+    ])
+}
+
+#[test]
+fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate() -> Result<()> {
+    // The failure this guards (R12-MESH-5068, blueprint §17.2): a cell's
+    // refusal reached the centre as a gate and a sentence, so a declined
+    // cycle was counted and never priced, and nothing could say whether the
+    // coordination rule that refused it was too conservative.
+    let mut platform = platform()?;
+    // Flat at 100 before the refusal and rising to 105 after it, so the
+    // direction of the move is known and the sign of each leg is checkable.
+    platform.observe(quiet_bars("AAA", 90));
+    platform.ingest_cell_report(report_refusing_a_cycle("cell-a", start()), start())?;
+    // Premise: a replay of the same report queues nothing twice, and nothing
+    // is priced before the horizon has passed.
+    platform.ingest_cell_report(report_refusing_a_cycle("cell-a", start()), start())?;
+    assert_eq!(
+        platform.cell_declined_awaiting_score(),
+        2,
+        "one queued path per leg of the refused cycle, and none for the replay"
+    );
+    // A cycle on an instrument the centre holds no bars for could never fall
+    // due and would hold its window slots for good: counted, not queued.
+    platform.ingest_cell_report(
+        report_refusing_a_cycle_on("cell-b", "ZZZ", start()),
+        start(),
+    )?;
+    assert_eq!(platform.cell_declined_awaiting_score(), 2);
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_UNSCORED,
+            &labels([("reason", "unobserved_instrument")])
+        ),
+        2
+    );
+    platform.run_cycle(start());
+    assert!(
+        platform.cell_declined_scores().is_empty(),
+        "a refused leg was priced before its horizon passed"
+    );
+
+    platform.observe(bars_after("AAA", start(), 5));
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn
+            .detail
+            .contains("leg(s) of cells' refused cycles priced"),
+        "LEARN did not report pricing a cell's refusal ({} still waiting): {}",
+        platform.cell_declined_awaiting_score(),
+        learn.detail
+    );
+    let scores = platform.cell_declined_scores();
+    assert_eq!(scores.len(), 2, "one score per leg, once each: {scores:?}");
+    assert!(scores.iter().all(|score| score.gate == "arbitrage_cycle"
+        && score.cell == "cell-a"
+        && score.object_id == object("AAA")));
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_SCORED,
+            &labels([("gate", "cell_cycle")])
+        ),
+        2,
+        "the scores are not counted under the one central label"
+    );
+    // The cell's gate string is kept on the score and never minted into a
+    // label: it arrives on a wire that authenticates nobody.
+    assert_eq!(
+        recorded(&platform).counter(
+            names::COUNTERFACTUALS_SCORED,
+            &labels([("gate", "arbitrage_cycle")])
+        ),
+        0
+    );
+    // The direction is the leg's own. The tape sat at 100 and rose to 105
+    // after the refusal, so the leg that would have bought earns more than the leg that
+    // would have sold — and earns something. The wire says `Ask` for a buy
+    // and the twin reads `Bid` as long; a seam that passed the side through
+    // unchanged scored every leg in the direction it did not propose.
+    let earned = |side: &str| {
+        scores
+            .iter()
+            .find(|score| score.order_id.as_str().ends_with(side))
+            .map(|score| score.would_have_earned)
+            .expect("a score for the leg")
+    };
+    let (bought, sold) = (earned("leg-0"), earned("leg-1"));
+    assert!(
+        bought.is_positive() && (bought - sold).is_positive(),
+        "the buy leg earned {bought} and the sell leg {sold} on a rising tape"
+    );
+    // And kept out of the desk's own declined sample, which sizes the desk.
+    assert!(platform.declined_scores().is_empty());
+    Ok(())
+}
