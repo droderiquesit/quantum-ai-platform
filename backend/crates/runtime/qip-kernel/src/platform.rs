@@ -627,7 +627,7 @@ pub struct Platform {
     /// through its contract (ADR 0226). Read only by the release of a
     /// replay-divergence hold, which it may keep and never lift.
     microstructure_deltas:
-        BTreeMap<String, qip_contracts::microstructure_delta::MicrostructureDelta>,
+        BTreeMap<(String, String), qip_contracts::microstructure_delta::MicrostructureDelta>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -25582,40 +25582,58 @@ impl Platform {
     ///
     /// Re-admitted through [`qip_contracts::microstructure_delta::MicrostructureDelta`]'s
     /// contract, because the fields arrive from another process's journal
-    /// and a delta that does not validate is not evidence. Kept only if it
-    /// is the venue's latest by its window's end, so an older campaign read
-    /// late cannot overwrite a newer one. Refused past
-    /// [`crate::replay_divergence::MAX_DELTA_VENUES`] venues. Returns whether
-    /// it became the venue's latest.
+    /// and a delta that does not validate is not evidence. Refused for a
+    /// venue no registered strategy trades at, so a venue string nobody
+    /// configured cannot take a slot. Kept per venue and cell, and only if it
+    /// is that pair's latest by window end, so one cell's campaign cannot
+    /// displace another's and an older one read late cannot overwrite a
+    /// newer one. Refused past [`crate::replay_divergence::MAX_DELTA_VENUES`]
+    /// pairs. Returns whether it became the pair's latest.
     pub fn admit_microstructure_delta(
         &mut self,
         fields: qip_contracts::microstructure_delta::MicrostructureDeltaFields,
     ) -> Result<bool> {
         let delta = qip_contracts::microstructure_delta::MicrostructureDelta::new(fields)?;
         let venue = delta.venue.as_str().to_string();
-        match self.microstructure_deltas.get(&venue) {
+        if !self
+            .central
+            .factory()
+            .candidates()
+            .any(|candidate| candidate.venue().as_str() == venue)
+        {
+            return Err(Error::denied(format!(
+                "no registered strategy trades at {venue}; a delta for it holds nothing and is \
+                 refused rather than taking a slot"
+            )));
+        }
+        let key = (venue, delta.cell.clone());
+        match self.microstructure_deltas.get(&key) {
             Some(held) if held.window_end >= delta.window_end => return Ok(false),
             None if self.microstructure_deltas.len()
                 >= crate::replay_divergence::MAX_DELTA_VENUES =>
             {
                 return Err(Error::denied(format!(
-                    "the platform holds deltas for {} venues; a delta for {venue} is refused \
-                     rather than growing the set",
-                    crate::replay_divergence::MAX_DELTA_VENUES
+                    "the platform holds deltas for {} venue-cell pairs; a delta for {} from {} is \
+                     refused rather than growing the set",
+                    crate::replay_divergence::MAX_DELTA_VENUES,
+                    key.0,
+                    key.1
                 )));
             }
             _ => {}
         }
-        self.microstructure_deltas.insert(venue, delta);
+        self.microstructure_deltas.insert(key, delta);
         Ok(true)
     }
 
-    /// The latest concluded microstructure delta for `venue`, if any.
+    /// The latest concluded microstructure delta for `venue` from `cell`.
     pub fn microstructure_delta(
         &self,
         venue: &str,
+        cell: &str,
     ) -> Option<&qip_contracts::microstructure_delta::MicrostructureDelta> {
-        self.microstructure_deltas.get(venue)
+        self.microstructure_deltas
+            .get(&(venue.to_string(), cell.to_string()))
     }
 
     /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
@@ -25646,13 +25664,15 @@ impl Platform {
             .cloned() else {
                 continue;
             };
-            // A concluded residual still past the threshold keeps the hold
+            // Any cell's latest delta at the venue that is past the
+            // threshold, or silent at a full sample, keeps the hold
             // (ADR 0226): the re-promotion was argued on the model the
-            // venue's own residuals say is still wrong.
+            // venue's own residuals say is still wrong, or have not cleared.
             if let Some(reason) = self
                 .microstructure_deltas
-                .get(&hold.venue)
-                .and_then(crate::replay_divergence::residual_keeps_hold)
+                .iter()
+                .filter(|((venue, _), _)| *venue == hold.venue)
+                .find_map(|(_, delta)| crate::replay_divergence::residual_keeps_hold(delta))
             {
                 kept.push(format!(
                     "{}'s hold stands past its re-promotion: {reason}",

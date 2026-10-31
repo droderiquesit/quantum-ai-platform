@@ -8997,10 +8997,12 @@ fn a_twin_that_diverges_from_a_venue_halves_the_grant_of_the_strategy_trading_th
 /// The failure this prevents: a cell's residuals reached the deep brain's
 /// ambient journal and nothing read them, so a strategy re-promoted on the
 /// twin's replays got its full size back while the venue's own residuals
-/// said the twin was still wrong there. Mutation: drop the
-/// `microstructure_deltas` lookup in `Platform::review_replay_divergence`
-/// (the receive call) — the hold releases under the diverging delta and the
-/// first assertion after the re-promotion fails.
+/// said the twin was still wrong there. Mutations: drop the
+/// `microstructure_deltas` lookup in `Platform::review_replay_divergence` —
+/// the hold releases under the diverging delta; key the deltas by venue
+/// alone — cell-b's clean delta displaces this cell's and releases it; let a
+/// silent delta pass in `residual_keeps_hold` — the LeadLag-only delta
+/// releases it.
 #[test]
 fn a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold() -> Result<()> {
     let mut platform = platform()?;
@@ -9139,26 +9141,41 @@ fn a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold() -> Result
         dec!("0.5"),
         "the hold was released before LEARN read the re-promotion"
     );
-    let delta = |id: &str, ends: Timestamp, observed: i64| {
+    let delta = |id: &str, cell: &str, ends: Timestamp, kind, observed: i64, samples: u64| {
         qip_contracts::microstructure_delta::MicrostructureDeltaFields {
             schema_version: 1,
             delta_id: id.to_string(),
-            cell: CELL.to_string(),
+            cell: cell.to_string(),
             venue: desk.clone(),
             model_version: "twin-fill-v1".to_string(),
             window_start: ends.saturating_sub(Duration::from_days(1)),
             window_end: ends,
             residuals: vec![qip_contracts::microstructure_delta::Residual {
-                kind: qip_contracts::microstructure_delta::ResidualKind::Slippage,
+                kind,
                 instrument: "AAA".to_string(),
                 modelled: dec!("5"),
                 observed: Decimal::from_int(observed),
-                samples: qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE as u64,
+                samples,
             }],
         }
     };
+    use qip_contracts::microstructure_delta::ResidualKind::{LeadLag, Slippage};
+    let full = qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE as u64;
+
+    // A venue no registered strategy trades at takes no slot.
+    let mut stray = delta("delta-x", CELL, countersigned_at, Slippage, 5, full);
+    stray.venue = VenueId::new("XNOWHERE");
+    assert!(platform.admit_microstructure_delta(stray).is_err());
+
     // The campaign concluded the venue is still 150 bps off the model.
-    assert!(platform.admit_microstructure_delta(delta("delta-1", countersigned_at, 155))?);
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-1",
+        CELL,
+        countersigned_at,
+        Slippage,
+        155,
+        full
+    ))?);
     let released_at = countersigned_at.saturating_add(Duration::from_hours(1));
     let report = platform.run_cycle(released_at);
     assert_eq!(
@@ -9174,20 +9191,69 @@ fn a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold() -> Result
         report.summarise()
     );
 
-    // An older delta read late does not displace the newer one.
+    // An older delta read late does not displace the newer one, and another
+    // cell's clean delta does not stand in for this cell's.
     assert!(!platform.admit_microstructure_delta(delta(
         "delta-0",
+        CELL,
         countersigned_at.saturating_sub(Duration::from_days(2)),
-        5
+        Slippage,
+        5,
+        full
     ))?);
-    // A later campaign inside the threshold lets the re-promotion release it.
-    let later = released_at.saturating_add(Duration::from_hours(1));
-    assert!(platform.admit_microstructure_delta(delta("delta-2", released_at, 25))?);
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-b",
+        "cell-b",
+        released_at,
+        Slippage,
+        25,
+        full
+    ))?);
+    let mut later = released_at.saturating_add(Duration::from_hours(1));
+    platform.run_cycle(later);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "one cell's clean delta released a hold another cell's residual still keeps"
+    );
+
+    // This cell's next campaign clears the venue, but a third cell's latest
+    // delta says nothing about slippage at a full sample: silence keeps it.
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-2",
+        CELL,
+        released_at,
+        Slippage,
+        25,
+        full
+    ))?);
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-c",
+        "cell-c",
+        released_at,
+        LeadLag,
+        25,
+        full
+    ))?);
+    later = later.saturating_add(Duration::from_hours(1));
+    platform.run_cycle(later);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a delta silent on slippage released the hold as if it had cleared the venue"
+    );
+
+    // Every cell's latest delta inside the threshold: the re-promotion releases it.
+    assert!(
+        platform
+            .admit_microstructure_delta(delta("delta-c2", "cell-c", later, Slippage, 25, full))?
+    );
+    later = later.saturating_add(Duration::from_hours(1));
     platform.run_cycle(later);
     assert_eq!(
         platform.replay_divergence_multiplier(&dependent),
         Decimal::ONE,
-        "a residual inside the threshold kept the hold the re-promotion answered"
+        "residuals inside the threshold kept the hold the re-promotion answered"
     );
     Ok(())
 }

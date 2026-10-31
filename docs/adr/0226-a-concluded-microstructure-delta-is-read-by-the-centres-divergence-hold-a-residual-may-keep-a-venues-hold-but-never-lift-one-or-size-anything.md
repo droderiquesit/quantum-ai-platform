@@ -36,14 +36,20 @@ venue's own residuals still say the model prices some other market.
 1. **The receiver is the centre's divergence hold, and only its release.**
    `Platform::admit_microstructure_delta` re-admits each delta through
    `MicrostructureDelta::new`, because the fields come from another
-   process's journal and a delta that does not validate is not evidence. The
-   platform keeps the latest delta per venue, ordered by the end of its
-   window. An older campaign read late never displaces a newer one, and the
-   set is bounded at `MAX_DELTA_VENUES`.
+   process's journal and a delta that does not validate is not evidence. A
+   delta is refused for a venue no registered strategy trades at, so a venue
+   string nobody configured cannot take a slot. The platform keeps the
+   latest delta per venue and cell, ordered by the end of its window. One
+   cell's campaign never displaces another's, an older campaign read late
+   never displaces a newer one, and the set is bounded at
+   `MAX_DELTA_VENUES` pairs.
 2. **A residual may keep a hold.** A re-promotion releases a venue's hold
-   only when that venue's latest delta passes `residual_keeps_hold`. The
-   check fails when any slippage or impact residual has `|observed -
-   modelled|` past the threshold on at least the minimum sample. Those two
+   only when no cell's latest delta at that venue fails
+   `residual_keeps_hold`. A delta fails it when any slippage or impact
+   residual on at least the minimum sample has `|observed - modelled|` past
+   the threshold. It also fails when the delta states no such residual at
+   all: a delta silent on slippage at a full sample has not cleared the
+   venue, and reading it as if it had would fail open. Those two
    families are the ones stated in basis points, the twin's own unit. The
    kept hold is named on the LEARN summary, with the delta, the residual and
    its window.
@@ -64,12 +70,17 @@ venue's own residuals still say the model prices some other market.
   wire from being written honestly today. First, `EventLog::open` takes an
   exclusive advisory lock, so qip-api cannot open the journal while the deep
   brain holds it. Second, the two run as separate Cloud Run services with
-  no shared file. No transport carries a delta from the producer's process
-  to the process whose Platform holds cell-fed grants. Until one does,
+  no shared file. The one thing both processes do reach is the blob store,
+  `storage.blobs(LAKE_NAMESPACE)`, which each opens in its `main.rs`. No
+  transport carries a delta from the producer's process to the process
+  whose Platform holds cell-fed grants. Until one does,
   `admit_microstructure_delta` has no production caller, and
   R12-CONTRACT-7074 stays PARTIAL on that clause. The transport is the
-  remaining work: a read-only frame reader over a shipped journal, or the
-  delta riding an existing mesh or policy payload. Choosing between them
+  remaining work: the deep brain writing concluded deltas to the shared blob
+  store for qip-api to read, a read-only frame reader over a shipped
+  journal (`EventLog::inspect_with_capacity` exists, but it refuses while
+  the writer holds the file), or the delta riding an existing mesh or
+  policy payload. Choosing between them
   needs its own record, because either one moves a contract across a
   process boundary.
 

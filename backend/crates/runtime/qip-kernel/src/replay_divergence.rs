@@ -118,9 +118,9 @@ const _: () = assert!(REPLAY_DIVERGENCE_MIN_SAMPLE >= 1);
 /// reads as protection and cannot narrow anything.
 pub const REPLAY_DIVERGENCE_MULTIPLIER: Decimal = Decimal::from_raw(500_000_000);
 
-/// Venues whose latest [`MicrostructureDelta`] the platform keeps. A bound,
-/// because the deltas arrive from another process's journal and a venue
-/// string the centre never configured must not grow a working set.
+/// (venue, cell) pairs whose latest [`MicrostructureDelta`] the platform
+/// keeps. A bound on top of admitting only venues a registered strategy
+/// trades at, because the deltas arrive from another process's journal.
 pub const MAX_DELTA_VENUES: usize = 1_024;
 
 /// Why `delta` keeps a hold its re-promotion would otherwise release, or
@@ -136,12 +136,32 @@ pub const MAX_DELTA_VENUES: usize = 1_024;
 /// residual releases one, raises one, or sizes anything.
 pub fn residual_keeps_hold(delta: &MicrostructureDelta) -> Option<String> {
     use qip_contracts::microstructure_delta::ResidualKind;
-    let threshold = Decimal::from_f64(REPLAY_DIVERGENCE_THRESHOLD_BPS)?;
-    delta
+    let Some(threshold) = Decimal::from_f64(REPLAY_DIVERGENCE_THRESHOLD_BPS) else {
+        // Unreachable for the constant, and fail closed if it ever is not.
+        return Some(format!(
+            "the {REPLAY_DIVERGENCE_THRESHOLD_BPS} bps threshold has no decimal form"
+        ));
+    };
+    let informative: Vec<_> = delta
         .residuals
         .iter()
         .filter(|r| matches!(r.kind, ResidualKind::Slippage | ResidualKind::Impact))
         .filter(|r| r.samples >= REPLAY_DIVERGENCE_MIN_SAMPLE as u64)
+        .collect();
+    // A delta that says nothing about slippage or impact at a full sample
+    // is not inside the thresholds: it is silent, and a silent latest delta
+    // must not read as one that cleared the venue.
+    if informative.is_empty() {
+        return Some(format!(
+            "{}'s latest delta {} (window ending {}) states no slippage or impact residual over \
+             {REPLAY_DIVERGENCE_MIN_SAMPLE} samples or more",
+            delta.venue.as_str(),
+            delta.delta_id,
+            delta.window_end.to_rfc3339()
+        ));
+    }
+    informative
+        .into_iter()
         .find(|r| r.error().abs() > threshold)
         .map(|r| {
             format!(
