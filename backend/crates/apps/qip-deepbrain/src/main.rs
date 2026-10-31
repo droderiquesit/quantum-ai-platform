@@ -962,11 +962,13 @@ fn run() -> Result<()> {
         "  agency outbox:    {} (drafts only; external action stays refused)",
         outbox_destination.describe()
     );
-    // The research warehouse (`warehouse.rs`, R12-DATA-9054): resolved
-    // outcomes streamed to BigQuery. Off, and printed as off, in every
+    // The research warehouse (`warehouse.rs`, R12-DATA-9054, ADR 0240):
+    // resolved outcomes staged in Cloud Storage and batch-loaded into
+    // BigQuery; nothing streams rows. Off, and printed as off, in every
     // environment that names no QIP_BIGQUERY_PROJECT and
-    // QIP_BIGQUERY_DATASET; a half-named or unreachable target stops the
-    // process here rather than reading as a warehouse that is quietly absent.
+    // QIP_BIGQUERY_DATASET; a half-named, unstaged or unreachable target
+    // stops the process here rather than reading as a warehouse that is
+    // quietly absent.
     let mut warehouse = qip_deepbrain::warehouse::OutcomeSink::from_lookup(
         &|name| std::env::var(name).ok(),
         clock.clone(),
@@ -976,8 +978,9 @@ fn run() -> Result<()> {
         "  warehouse:        {}",
         if warehouse.is_some() {
             format!(
-                "resolved outcomes stream to {}",
-                qip_deepbrain::warehouse::OUTCOMES_TABLE
+                "resolved outcomes batch-loaded into {} from {}",
+                qip_deepbrain::warehouse::OUTCOMES_TABLE,
+                qip_deepbrain::warehouse::STAGING_PREFIX
             )
         } else {
             "off (QIP_BIGQUERY_PROJECT and QIP_BIGQUERY_DATASET unset)".to_string()

@@ -61,6 +61,18 @@ held in a streaming buffer that a load does not have.
    `enable_cloud_storage` are both true, which is no environment today. A
    half-configured target still stops the process at start-up.
 
+7. **A load runs in the dataset's location, and only the load path's grants
+   are added.** Every load job is sent with the dataset's location and its
+   state is read in that location, because BigQuery cannot find a regional
+   job without it; a load with no location configured is refused before it is
+   sent. The writer gains `roles/bigquery.jobUser` on the project (job
+   creation has no narrower role) and object create and view on the segment
+   bucket conditioned to `warehouse-staging/`, so it can neither read nor add
+   a segment; all three exist only when both stores do.
+8. **A grade whose load keeps failing is quarantined.** After three failed
+   loads a grade is held out of every later batch and reported, rather than
+   reloaded every cycle as a billed job that fails the same way.
+
 ## Consequences
 
 - R12-DATA-8127 is graded on a staged batch load. It stays PARTIAL until the

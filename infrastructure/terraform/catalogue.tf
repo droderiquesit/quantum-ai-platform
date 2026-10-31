@@ -45,6 +45,20 @@ locals {
   # Read from the proxy module so the port is written once, in the bootstrap.
   gcp_endpoint = module.egress_proxy.endpoints["gcp"]
 
+  # The deep brain's research-warehouse target (ADR 0240), or null. Only when
+  # both storage switches are on: a load needs the dataset and the staging
+  # bucket. The names are computed as `modules/data` computes them, because
+  # reading its outputs would be a cycle (that module grants this workload's
+  # service account on the dataset). Nothing probes them at start-up, so a
+  # drift would fail the first upload or load rather than the start;
+  # `infrastructure.rs` holds the two spellings equal.
+  deepbrain_warehouse = var.enable_bigquery && var.enable_cloud_storage ? {
+    project        = var.project_id
+    dataset        = replace("qip-${var.environment}_research", "-", "_")
+    staging_bucket = "qip-${var.environment}-segments-${var.region}"
+    location       = var.region
+  } : null
+
   # The instrument universe the three central roots assemble the desk from,
   # read at start-up from `QIP_UNIVERSE_PATH`. Configuration, not a secret,
   # and committed: it is read here with `file()` so the bytes a revision
@@ -609,6 +623,18 @@ locals {
         var.deepbrain_connector == null ? {} : {
           QIP_CONNECTOR_SOURCE   = join(",", var.deepbrain_connector.sources)
           QIP_CONNECTOR_BASE_URL = var.deepbrain_connector.base_url
+        },
+        # The research warehouse (ADR 0240): resolved outcomes staged in the
+        # regional segment bucket and batch-loaded into the research dataset,
+        # only where `local.deepbrain_warehouse` names a target (both storage
+        # switches on, which is no environment today).
+        local.deepbrain_warehouse == null ? {} : {
+          QIP_BIGQUERY_PROJECT        = local.deepbrain_warehouse.project
+          QIP_BIGQUERY_DATASET        = local.deepbrain_warehouse.dataset
+          QIP_BIGQUERY_STAGING_BUCKET = local.deepbrain_warehouse.staging_bucket
+          QIP_BIGQUERY_LOCATION       = local.deepbrain_warehouse.location
+          QIP_GCP_ENDPOINT            = local.gcp_endpoint
+          QIP_GCP_METADATA_SERVER     = "1"
         },
       )
       # The universe every root reads, and whatever optional files the

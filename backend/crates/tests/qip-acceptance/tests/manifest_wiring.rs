@@ -1494,18 +1494,16 @@ const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
      key ring's class keys and the bundle are applied and mounted.";
 
 /// The deep brain's research-warehouse sink (R12-DATA-9054).
-const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain streams \
-     graded theses to BigQuery only when `QIP_BIGQUERY_PROJECT` and \
-     `QIP_BIGQUERY_DATASET` are both set (`warehouse::OutcomeSink::from_lookup`), and \
-     refuses a half-named target. Every environment sets `enable_bigquery = false`, so \
-     there is no dataset to name, no TLS-terminating proxy applied for \
-     `QIP_GCP_ENDPOINT` to point at, and no credential for the others to carry; the \
-     banner prints the warehouse as off. `ManagedSettings::from_env` is asked for the \
-     BigQuery target only, so the Cloud Storage bucket and the Memorystore pair it also \
-     names are never read by this binary, though the source walk counts them with the \
-     rest of the family. The entries end together when an environment sets \
-     `enable_bigquery` and the catalogue names the deep brain's project, dataset, \
-     endpoint and one credential.";
+const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain loads \
+     graded theses into BigQuery by batch load from Cloud Storage (ADR 0240), and the \
+     catalogue names its project, dataset, staging bucket, location, the proxy endpoint \
+     and the metadata-server credential only where `local.deepbrain_warehouse` is \
+     non-null, which needs both `enable_bigquery` and `enable_cloud_storage` and is no \
+     environment today. The remaining credential spellings stay unset because the \
+     catalogue chooses the metadata server, and `ManagedSettings::from_env` is asked \
+     for the BigQuery target only, so the Cloud Storage bucket and the Memorystore pair \
+     it also names are never read by this binary, though the source walk counts them \
+     with the rest of the family.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
@@ -1722,32 +1720,12 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
-        "QIP_BIGQUERY_DATASET",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_BIGQUERY_PROJECT",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
         "QIP_CLOUD_STORAGE_BUCKET",
         NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
     ),
     (
         "qip-deepbrain",
         "QIP_GCP_ACCESS_TOKEN",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_ENDPOINT",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_METADATA_SERVER",
         NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
     ),
     (

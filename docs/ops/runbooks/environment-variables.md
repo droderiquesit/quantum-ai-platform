@@ -27,6 +27,9 @@ it is applied, and no runbook asks for a hand edit on a running service.
 | `QIP_ALPACA_API_KEY_ID_FILE`, `QIP_ALPACA_API_SECRET_KEY_FILE` | The `_FILE` form of the two halves of the Alpaca market-data credential: paths to Secret Manager mounts. Terraform creates the empty containers; a person writes the version out of band (ADR 0040). A mount is not a registration: the source stays refused by the licensing and registration gates until a record is committed. |
 | `QIP_QUANTUM_PROVIDER` | The quantum provider the compute router attaches. Unset runs the classical router. Dev and test name the simulator; stage and prod leave it unset. A simulator's answer validates a formulation and is never evidence of advantage. |
 | `QIP_QUANTUM_INSPIRED` | Whether the quantum-inspired rung of the compute router is enabled. Unset leaves it off. |
+| `QIP_BIGQUERY_PROJECT`, `QIP_BIGQUERY_DATASET` | The deep brain's research-warehouse target (ADR 0240): the project the load jobs are billed to and the dataset `resolved_outcomes` lives in. Set only when `enable_bigquery` and `enable_cloud_storage` are both true (`local.deepbrain_warehouse`), which is no environment today; unset, the warehouse is off and the banner says so. Half a target stops the process. |
+| `QIP_BIGQUERY_STAGING_BUCKET` | The bucket the deep brain stages each batch of resolved outcomes in, under `warehouse-staging/`, before loading it: the regional segment bucket, which shares the dataset's region and expires the prefix at seven days. Set with the two above; a requested warehouse without it stops the process, because there is no streaming fallback. |
+| `QIP_BIGQUERY_LOCATION` | The research dataset's location (`var.region`). Every load job is sent with it and its state read in it; BigQuery cannot find a regional job without it, so a requested warehouse without it stops the process. |
 
 ## Execution node (`startup.sh.tftpl`)
 
