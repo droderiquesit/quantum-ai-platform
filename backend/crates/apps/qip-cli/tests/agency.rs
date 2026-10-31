@@ -694,6 +694,7 @@ fn the_binary_simulates_a_pass_against_the_futures_of_the_twin_the_document_desc
     };
     let drivers = vec![WorldDriver {
         id: "evt-rates".into(),
+        family: None,
         sensitivities: BTreeMap::from([("EURUSD".to_string(), 1.0)]),
         evidence: vec!["doc-1".into()],
     }];
