@@ -502,9 +502,11 @@
     "current": "Lane placement test proves world-model crates are lane three and absent from the reflex node; edge-node has no cognitive deps.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11,40 edge node has no compile-time dependency on cognitive crates; separate binaries"
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11,40 edge node has no compile-time dependency on cognitive crates; separate binaries",
+      "backend/crates/runtime/qip-kernel/src/world_snapshot.rs::WorldModelSnapshot, domains_of, resume, due, settle; unit test a_failed_journal_takes_its_version_so_no_two_snapshots_claim_one (mutant killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::snapshot_world, each_world_model_domain_is_snapshotted_at_a_version_that_rises_only_when_it_changes_across_restarts (mutants: call dropped, journaled regardless of digest, versions not resumed; all killed)"
     ],
-    "gap": "2026-10-24 (L4, wave580): decided by ADR 0191 under the delegation. The central brains are the long-running world-model services, and the domain stores are the log's records by journalling stage. Still to do: (1) code: a versioned per-domain snapshot record on the world_model.snapshot topic, which has no producer today; (2) deploy: a separate world-model service with its own store, deferred to the deployment phase because it is billed infrastructure.",
+    "gap": "Decided by ADR 0191. Decision 3 is partly in code (8e6aeb06, 0dde23aa): every central brain's run_cycle journals a versioned knowledge-graph and causal-graph snapshot on world_model.snapshot when the domain's digest changes, with versions resumed from the log. Skeptic 2026-10-31 PARTIAL: the graphs are not rebuilt from the log (ADR 0191 corrected, 3fea6a89), so after a restart the version rises over relearned content; features, entities, contradictions and episodic memory have no snapshot; no reader cites a version; all three brains write under one origin, so their versions cannot be told apart. Decision 4 (a separately deployed world-model service) is deferred to the deployment phase as billed infrastructure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -515,7 +517,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement --test arch_001_independent_reflex",
     "work_item": "",
     "size": "S",
-    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed. 2026-10-24 (L4, wave580): ADR 0191 recorded; no status change."
+    "notes": "The not-on-critical-path half is proven; long-running versioned world-model services with domain stores are not deployed. 2026-10-24 (L4, wave580): ADR 0191 recorded; no status change. 2026-10-31 L4-quant: ADR 0191 decision 3 producer landed (8e6aeb06), corrected on the skeptic's findings (0dde23aa, 3fea6a89). Skeptic verdict PARTIAL."
   },
   {
     "id": "R12-REASON-7024",
