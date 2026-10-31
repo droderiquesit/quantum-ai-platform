@@ -403,6 +403,7 @@ fn the_run_loop_sweeps_research_and_observes_operations_every_cycle() {
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             researched += usize::from(outcome.research.is_some());
@@ -1315,6 +1316,7 @@ fn a_sweep_record_carries_the_evolution_round_that_preceded_it() {
             ambient: None,
             agency: None,
             warehouse: None,
+            backlog: None,
         },
         |outcome| {
             manual.advance(Duration::from_mins(1));
