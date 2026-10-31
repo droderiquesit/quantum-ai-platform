@@ -355,7 +355,7 @@
       "backend/crates/apps/qip-edge-node/tests/pass.rs",
       "backend/crates/edge/qip-edge/tests/unevaluated.rs::a_cell_that_has_been_told_nothing_sizes_at_the_floor_rather_than_in_full (fails under mutation)"
     ],
-    "gap": "Two parts of the bar stay open. (a) Default path: qip-edge-node runs no Cell::work pass when QIP_VENUE_FEED is unset (qip-edge-node/src/feed.rs: None is a node with no feed). The only line that sets it to simulated is modules/execution-node/templates/startup.sh.tftpl, which renders only with execution_nodes_enabled = true, and every committed environment leaves that off or execution_nodes = {}. Closing it needs either passes on the binary's default path or an owner ruling that the template counts, then a game day on a deployed node with the centre unreachable (a tfvar flip, out of lane). (b) Coverage: only the BeliefState capability was mutated; and pauses() stops SituationalRecognition strategies when EpisodicMemory is lost, so a cell running only that class completes passes but places nothing - unstated in the requirement's check.",
+    "gap": "Deployment (decision 19, 2026-10-31): the execution node's startup template is not a default path while no environment renders it (execution_nodes_enabled false or execution_nodes = {} everywhere), and making qip-edge-node run passes with QIP_VENUE_FEED unset would turn a refusal default into a running one, which fail-closed rules out. The row closes on a deployed node running passes, then a game day with the centre unreachable. Also open: only the BeliefState capability was mutated, and pauses() lets a cell of SituationalRecognition strategies complete passes while placing nothing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
