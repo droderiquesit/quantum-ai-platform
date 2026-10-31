@@ -2586,13 +2586,15 @@
   },
   {
     "id": "R12-SEC-9110",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Policy requires attestation and enforces block-and-audit (tested); every deploy signs by digest. Not proven to block an unattested revision in a live environment.",
     "evidence": [
-      "infrastructure/terraform/modules/binaryauthorization/main.tf:199-232",
-      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:74 the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks"
+      "infrastructure/terraform/modules/binaryauthorization/main.tf default_admission_rule: REQUIRE_ATTESTATION, ENFORCED_BLOCK_AND_AUDIT_LOG, require_attestations_by the build attestor; module.binary_authorization (terraform/main.tf) has no count, so it is on dev's committed path",
+      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs::the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs::every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held (useDefault true, no breakglass, every RunService)",
+      "infrastructure/fleet/main.tf google_cloud_run_v2_job.fleet binary_authorization { use_default = true }; infrastructure/fleet/tests/fleet.tftest.hcl the_job_is_held_to_the_projects_binary_authorization_policy"
     ],
-    "gap": "A deployed refusal proof. Corrected 2026-10-24: policy tests pass (security_controls 12 passed); the proof is an attempted deploy of an unattested digest to dev, a deployment run.",
+    "gap": "None for the requirement (2026-10-31 re-triage, ALREADY_COMPLETE). The requirement's verification is the rule's shape ('Default rule is REQUIRE_ATTESTATION with ENFORCED_BLOCK_AND_AUDIT_LOG naming the attestor'); the live-deploy proof was an agent restatement (commit fbeba318), and the AUDIT-5 bar part 4 applies the requirement text. Follow-up done: the fleet Job now asks for the project policy, which fails closed: the worker image must carry the build attestor's attestation or an exact-repository exemption before the Job runs it. Previous gap: A deployed refusal proof. Corrected 2026-10-24: policy tests pass (security_controls 12 passed); the proof is an attempted deploy of an unattested digest to dev, a deployment run.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2600,10 +2602,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "attempt to deploy an unattested digest in dev",
+    "verification": "cargo test -p qip-acceptance --test pipeline_waivers --test gitops; terraform test in infrastructure/fleet (mocked)",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-31 lane L6-platform: regraded COMPLETE. Mutation (scratch worktree): enforcement_mode set to DRYRUN_AUDIT_LOG_ONLY failed pipeline_waivers at pipeline_waivers.rs:85 (5 passed, 1 failed); restored with cmp, passed. The fleet run fails when the binary_authorization block is deleted (14 passed, 1 failed); restored, 15 passed."
   },
   {
     "id": "R12-CICD-9111",
@@ -3097,13 +3099,16 @@
   },
   {
     "id": "R12-SEC-9133",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Container scanning API enabled (tested), Trivy gates, BinAuthz enforced policy; not proven against a live revision.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:70",
-      "infrastructure/terraform/modules/binaryauthorization/main.tf:199"
+      "infrastructure/terraform/modules/services/main.tf containerscanning.googleapis.com in the always-on API map",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf default_admission_rule REQUIRE_ATTESTATION / ENFORCED_BLOCK_AND_AUDIT_LOG",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::the_container_scanning_api_is_enabled_for_the_registry",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_control_plane_binary_authorization_policy_requires_attestation_and_enforces_block",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs::every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held (binaryAuthorization.useDefault true on every RunService)"
     ],
-    "gap": "Live proof. Corrected 2026-10-24: container-scanning and BinAuthz tests pass (security_controls 12 passed); proof against a live revision needs a deployed Cloud Run revision.",
+    "gap": "None for the requirement (2026-10-31 re-triage, ALREADY_COMPLETE). The requirement's verification kind is 'plan: the control exists in Terraform and is asserted by a test or plan'; 'live proof' was the row's restatement, and the AUDIT-5 bar part 4 applies the requirement text. dev is applied (owner-decisions-2026-10-31 decision 5). Previous gap: Live proof. Corrected 2026-10-24: container-scanning and BinAuthz tests pass (security_controls 12 passed); proof against a live revision needs a deployed Cloud Run revision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3111,10 +3116,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-31 lane L6-platform: regraded COMPLETE. Mutations (scratch worktree): deleting the containerscanning.googleapis.com line failed security_controls::the_container_scanning_api_is_enabled_for_the_registry at security_controls.rs:197 (11 passed, 1 failed); useDefault: true set to false in envs/dev/fastbrain.yaml failed gitops::every_run_service_holds_the_invariants... at gitops.rs:2675 (51 passed, 1 failed); each restored with cmp, passed."
   },
   {
     "id": "R12-SEC-9134",

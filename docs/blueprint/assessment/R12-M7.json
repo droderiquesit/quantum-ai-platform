@@ -2833,16 +2833,15 @@
   },
   {
     "id": "R12-CICD-7120",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "deploy.yml gate refuses prod on every trigger and requires a successful CI run (whose test job includes paper_boundary) before images and deploy. The Kargo paper stage now runs the verify-paper-ceiling PromotionTask (papertask.yaml), which fails unless QIP_AUTONOMY_CEILING is exactly paper_trading in stage and prod manifests. The gitops suite pins it.",
     "evidence": [
+      ".github/workflows/deploy.yml job paper-gate (needs gate; runs paper_boundary, arch_007_paper_boundary, prod_guard) and images 'needs: [gate, simulation-gate, paper-gate]'",
+      "backend/crates/tests/qip-acceptance/tests/prod_guard.rs::prod_is_refused_on_every_trigger_by_deploy_and_infra (pins the images needs line and, since 2026-10-31, paper-gate's run line)",
       "infrastructure/gitops/kargo/base/papertask.yaml::verify-paper-ceiling",
-      "infrastructure/gitops/kargo/base/stages.yaml::paper",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs::the_paper_stage_cannot_promote_without_asserting_the_paper_trading_ceiling_first",
-      "backend/crates/tests/qip-acceptance/tests/prod_guard.rs::prod_is_refused_on_every_trigger_by_deploy_and_infra",
-      ".github/workflows/deploy.yml::gate"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs::the_paper_stage_cannot_promote_without_asserting_the_paper_trading_ceiling_first"
     ],
-    "gap": "deploy.yml has no paper-trading job for promotion to depend on. The only paper gate is a Kargo check on committed manifest text (not the image or a paper run), its yaml-parse expression has never been evaluated by a controller (control plane suspended, ADR 0093), and no freight has passed it.",
+    "gap": "None for the requirement (2026-10-31 re-triage, ALREADY_COMPLETE): deploy.yml's paper-gate job runs the paper boundary suites and images cannot build without it; removing the dependency fails prod_guard, the requirement's own check. Limit, stated: paper-gate tests the source at the deploy commit, not the built image. Previous gap: deploy.yml has no paper-trading job for promotion to depend on. The only paper gate is a Kargo check on committed manifest text (not the image or a paper run), its yaml-parse expression has never been evaluated by a controller (control plane suspended, ADR 0093), and no freight has passed it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2850,10 +2849,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test paper_boundary",
+    "verification": "cargo test -p qip-acceptance --test prod_guard --test paper_boundary",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Kargo `paper` stage is a manual person-promoted gate with no automated verification (kargo/README says so) and gates/paper/freight.yaml is empty: no freight has ever passed it. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): Requirement's check is 'deploy.yml cannot promote without the paper-trading job succeeding', and no such job exists. The new check is real, tested statically and fail-closed, but it asserts config rather than running a paper gate, and it is unexercised, so the prior audit's gap is only narrowed."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Kargo `paper` stage is a manual person-promoted gate with no automated verification (kargo/README says so) and gates/paper/freight.yaml is empty: no freight has ever passed it. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): Requirement's check is 'deploy.yml cannot promote without the paper-trading job succeeding', and no such job exists. The new check is real, tested statically and fail-closed, but it asserts config rather than running a paper gate, and it is unexercised, so the prior audit's gap is only narrowed. 2026-10-31 lane L6-platform: regraded COMPLETE. Mutation (scratch worktree): images' needs line without paper-gate failed prod_guard at prod_guard.rs:285 (2 passed, 1 failed); restored with cmp, passed. The skeptic's caveat (no test pinned paper-gate's run line, so 'run: true' passed everything) is closed: prod_guard now asserts the run line, and replacing it with run: \"true\" fails with '`paper-gate` no longer runs the paper boundary and prod guard suites'; restored, 3 passed."
   },
   {
     "id": "R12-OBS-7121",
