@@ -3089,10 +3089,10 @@
     "current": "REASON runs symbolic_stage::derive for each hypothesis; the timeline orders anomaly before hypothesis and is journaled with the instants it was built from (TemporalInputs); symbolic_stage::verify rebuilds the timeline by the same construction at the record's instant and refuses a mismatch.",
     "evidence": [
       "backend/crates/apps/qip-cli/tests/replay.rs::a_journal_with_a_derivation_whose_timeline_cannot_be_rebuilt_fails_qip_replay",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:153 TemporalInputs",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:494 timeline_of",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:654 a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs TemporalInputs",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs timeline_of",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_derivation_with_no_timeline_inputs_is_refused_on_replay_by_name",
       "docs/adr/0150-solver-scope-is-the-portfolio-qubo-and-the-bounded-in-tree-constraint-solver-no-other-quantum-family-without-a-measured-benefit-no-neural-coupling-no-solver-crate.md"
     ],
