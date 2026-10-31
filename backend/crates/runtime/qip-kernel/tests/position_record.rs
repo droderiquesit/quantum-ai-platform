@@ -268,10 +268,17 @@ fn every_held_position_resolves_to_a_mandate_and_target_or_is_flagged() -> Resul
     );
     Ok(())
 }
-/// A private fund with an undrawn commitment the commitment book will hold:
+/// A private fund with an undrawn commitment the commitment book will hold,
+/// whose one-year lockup expired before `start()` — a fund inside its lockup
+/// cannot be sized on a twenty-day thesis (ADR 0183):
 /// 400,000 promised against 150,000 drawn, and a residual the valuation
 /// plane marks from.
 fn private_fund(symbol: &str) -> Result<FinancialObject> {
+    private_fund_locked_for(symbol, 1.0)
+}
+
+/// [`private_fund`] with a stated lockup term, in years from its vintage.
+fn private_fund_locked_for(symbol: &str, lockup_years: f64) -> Result<FinancialObject> {
     FinancialObject::builder(
         object(symbol),
         symbol,
@@ -288,7 +295,7 @@ fn private_fund(symbol: &str) -> Result<FinancialObject> {
         distributed_capital: Decimal::ZERO,
         residual_value: dec!("160000"),
         stage: "buyout".to_string(),
-        lockup_years: 7.0,
+        lockup_years,
         capital_call_notice_days: 10,
         call_schedule: None,
     }))
@@ -440,8 +447,14 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
 /// them cannot be stated.
 ///
 /// The private fund is the case that carries meaning: its confidence is the
-/// decayed mark's, below one, and its expected exit is the lockup's dated
-/// return of capital, years rather than the catalogue's ninety days. The
+/// decayed mark's, below one, and its expected exit is read from its terms.
+/// Since ADR 0183 a fund still inside its lockup cannot be sized on a thesis
+/// shorter than the lockup (the exit plan would be dated inside it), so the
+/// fixture's lockup has expired and the expected exit is the catalogue's
+/// ninety days; the lockup's dated return for a fund still locked up is
+/// proven in `valuation_plane.rs`
+/// (`a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word`).
+/// The
 /// horizon is the approved hypothesis's own, the one the thesis's prediction
 /// is dated from. A second process resumed from the same log holds the same
 /// position with no hypothesis on record, and its record refuses naming the
@@ -507,10 +520,12 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
             record.valuation_confidence() < Decimal::ONE,
             "premise: the fund's mark is decayed, so the confidence is not trivially one"
         );
-        // The lockup's dated return: years, not the catalogue's ninety days.
+        // The lockup has expired, so the expected exit is the catalogue's
+        // ninety days (ADR 0183: a live lockup longer than the thesis is
+        // refused at construction and never reaches a held record).
         assert!(
-            record.expected_exit_days() > 365.0,
-            "the expected exit {} days is the catalogue's estimate, not the lockup's return",
+            (record.expected_exit_days() - 90.0).abs() < 1e-9,
+            "a fund whose lockup has expired exits on the catalogue's estimate: {} days",
             record.expected_exit_days()
         );
         assert!(
@@ -542,5 +557,158 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
     );
     // And a holding nobody has is refused, not recorded.
     assert!(second.position_holding("obj-NONE", later).is_err());
+    Ok(())
+}
+
+/// R12-ASSET-4069 (ADR 0183): a position cannot be opened without an exit
+/// plan its instrument's stated terms admit. The same fund on the same tape
+/// is sized when its lockup has expired, and refused at construction when
+/// its seven-year lockup is still running — the thesis is twenty days, so
+/// any exit it could plan falls inside the lockup — with the lockup named,
+/// and nothing is held.
+///
+/// The failure prevented: before this, a short thesis on a locked-up fund
+/// opened a position whose only exit was one the fund's terms forbid, and
+/// the platform carried no plan saying when or how it would leave.
+///
+/// Mutation: in `Platform::exit_plan_for`, pass `None` for the lockup — the
+/// locked-up fund is sized and the refusal assertion fails.
+#[test]
+fn a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held()
+-> Result<()> {
+    let fund = "obj-PRIV";
+    let run = |lockup_years: f64| -> Result<(Platform, String)> {
+        let mut universe = Universe::new();
+        universe.insert(private_fund_locked_for("PRIV", lockup_years)?)?;
+        let mut platform = in_memory(universe, config())?;
+        platform.observe(tape("PRIV"));
+        let report = platform.run_cycle(start());
+        assert!(report.traversed_every_stage(), "{}", report.summarise());
+        let summary = report.summarise();
+        Ok((platform, summary))
+    };
+
+    // Premise: with the lockup expired, the same thesis sizes the fund and
+    // dates an exit plan for it.
+    let (free, summary) = run(1.0)?;
+    assert!(
+        free.positions_at_cost().contains_key(fund),
+        "premise: an unlocked fund is sized: {summary}"
+    );
+    let plan = free
+        .position_exit_plan(fund)
+        .expect("a sized leg carries the exit plan it was admitted with");
+    assert!(
+        plan.exit_at() > start(),
+        "the plan is dated after the decision"
+    );
+
+    let (locked, summary) = run(7.0)?;
+    assert!(
+        !locked.positions_at_cost().contains_key(fund),
+        "a fund inside its lockup was sized on a thesis shorter than the lockup: {summary}"
+    );
+    assert!(
+        locked.position_exit_plan(fund).is_none(),
+        "no exit plan is recorded for a refused leg"
+    );
+    assert!(
+        summary.contains("falls inside the lockup"),
+        "the refusal names the lockup: {summary}"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-3019: the desk's book slot — the one the Portfolio/Asset Brain
+/// and construction read through `read_portfolio` — holds the position the
+/// cycle opened, marked at its latest close, once the next REASON has run.
+/// Before this the desk held the empty portfolio it was assembled with for
+/// the life of the process, so the brain would have read an empty book in
+/// every running binary.
+///
+/// Mutation: delete `self.brief_the_desk_on_book();` from REASON — the desk
+/// still reads an empty book after the second cycle.
+#[test]
+fn the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close() -> Result<()> {
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("desk-book"), start())?;
+    platform.observe(tape("AAA"));
+    assert_eq!(
+        platform.desk_book_view().portfolio.positions().count(),
+        0,
+        "premise: the desk's book starts empty"
+    );
+    let first = platform.run_cycle(start());
+    assert!(first.traversed_every_stage(), "{}", first.summarise());
+    assert!(
+        platform.positions_at_cost().contains_key(aaa.as_str()),
+        "premise: the cycle opened a position in obj-AAA: {}",
+        first.summarise()
+    );
+    let second = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(second.traversed_every_stage(), "{}", second.summarise());
+    let view = platform.desk_book_view();
+    let held: Vec<&str> = view
+        .portfolio
+        .positions()
+        .map(|position| position.object_id.as_str())
+        .collect();
+    assert_eq!(held, vec![aaa.as_str()], "the desk reads the held book");
+    assert!(
+        view.marks
+            .get(aaa.as_str())
+            .is_some_and(|mark| mark.is_positive()),
+        "the held instrument is marked at its latest close: {:?}",
+        view.marks
+    );
+    Ok(())
+}
+
+/// R12-TICK-2090: the kernel keeps every instrument it has seen trade in a
+/// universe history, and a delisting dates the end of its membership
+/// without removing it — so a date before the delisting still finds the
+/// instrument, and a date after does not. Before this the history type
+/// existed with no caller, and the only universe a backtest could ask was
+/// the current one.
+///
+/// Mutation: drop the `universe_history.delist` arm in
+/// `Platform::apply_corporate_action` — the instrument is still a member
+/// after its delisting and the last assertion fails.
+#[test]
+fn the_kernels_universe_history_keeps_a_delisted_instrument_for_the_dates_it_traded() -> Result<()>
+{
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("universe-history"), start())?;
+    platform.observe(tape("AAA"));
+    let delisted = start().saturating_sub(Duration::from_days(10));
+    platform.observe(vec![SensedRecord::CorporateAction(Box::new(
+        CorporateAction {
+            object_id: aaa.clone(),
+            ex_date: delisted,
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Delisting {
+                reason: "acquired for cash".to_string(),
+            },
+            announced_at: start().saturating_sub(Duration::from_days(40)),
+        },
+    ))]);
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+
+    let history = platform.universe_history();
+    assert!(history.is_named(&aaa), "premise: the instrument is listed");
+    let before = start().saturating_sub(Duration::from_days(20));
+    assert!(
+        history
+            .members_as_of(before)
+            .iter()
+            .any(|listing| listing.object_id == aaa),
+        "a date before the delisting finds the instrument that later went"
+    );
+    assert!(
+        !history.is_member_at(&aaa, start().saturating_sub(Duration::from_days(5))),
+        "a date after the delisting does not"
+    );
     Ok(())
 }

@@ -544,7 +544,7 @@ impl Sink for FabricSink {
         "fabric"
     }
 
-    fn deliver(&mut self, _offset: u64, stream: QosClass, batch: &Batch) -> Result<()> {
+    fn deliver(&mut self, offset: u64, stream: QosClass, batch: &Batch) -> Result<()> {
         let producer = match stream {
             QosClass::P1Outcomes => &mut self.outcomes,
             QosClass::P2MarketJournal => &mut self.journal,
@@ -555,6 +555,21 @@ impl Sink for FabricSink {
                 )));
             }
         };
+        // ADR 0129 §2: the writer stamps the kind of component that produced
+        // the batch, and a consumer refuses a batch carrying none rather than
+        // naming one itself (R12-FABRIC-8022). The preflight below cannot see
+        // that refusal — it opens the batch as the producer, and a producer's
+        // own preflight may name its own provenance — so a spool batch no
+        // writer stamped (the format-version-1 batch an older binary left
+        // behind) is refused here, before anything is sent, instead of being
+        // acknowledged by the broker and stalling the ledger's partition for
+        // ever.
+        if batch.provenance.is_none() {
+            return Err(Error::schema(format!(
+                "the spool batch at offset {offset} carries no writer-stamped provenance; the \
+                 ledger refuses such a batch rather than naming one, so it is not sent"
+            )));
+        }
         // R12-CONTRACT-7089: every record is opened as the `FabricEnvelope` the
         // ledger will open it as, before the producer is touched. A record the
         // consumer would refuse (a version it cannot read, a payload that does

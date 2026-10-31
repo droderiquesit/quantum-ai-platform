@@ -760,3 +760,43 @@ test("a reviewer role commit must name a different model from the coder role com
   assert.equal(unnamed.length, 1);
   assert.match(unnamed[0], /carry no Agent-Model trailer/);
 });
+
+// CICD-9083. An agent commit with no Agent-Lane trailer was held to no lane.
+// Mutation: drop the 1c check in judgeChange (an unlaned commit after the
+// instant is admitted), or compare with `>` against the commit date while a
+// commit at exactly the instant is refused (the boundary moves), or treat an
+// unreadable instant as off.
+test("after the policy's trailer instant, an agent commit with no lane trailer is refused", () => {
+  const at = (date, lane) => ({
+    commit: {
+      author: { name: "Claude", email: "noreply@anthropic.com" },
+      committer: { name: "Claude", email: "noreply@anthropic.com", date },
+      message: `Do a thing\n\n${lane ? `Agent-Lane: ${lane}\n` : ""}Co-Authored-By: Claude <noreply@anthropic.com>\n`,
+    },
+  });
+  const policy = (instant) => ({ ...POLICY, lane_manifest: { ...POLICY.lane_manifest, trailer_required_after: instant } });
+  const judge = (instant, commits) =>
+    judgeChange({
+      policy: policy(instant), permissions: PERMS, lanes: LANES, headRef: "x", headSha: HEAD,
+      files: ["backend/crates/services/qip-risk-engine/src/pretrade.rs"], commits, reviews: [],
+    }).refusals;
+  // Premise: the committed policy leaves the switch off, and off judges nothing.
+  assert.equal(POLICY.lane_manifest.trailer_required_after, null);
+  assert.deepEqual(judge(null, [at("2026-11-01T00:00:00Z")]), []);
+
+  const instant = "2026-11-01T00:00:00Z";
+  // Before the instant: history passes.
+  assert.deepEqual(judge(instant, [at("2026-10-31T23:59:59Z")]), []);
+  // At and after it, with no trailer: refused.
+  for (const date of [instant, "2026-11-02T00:00:00Z", undefined]) {
+    const refusals = judge(instant, [at(date)]);
+    assert.equal(refusals.length, 1, `a commit dated ${date} with no lane trailer was admitted`);
+    assert.match(refusals[0], /carry no Agent-Lane trailer/);
+  }
+  // After it, carrying a lane the manifest defines and owns the file: admitted.
+  assert.deepEqual(judge(instant, [at("2026-11-02T00:00:00Z", "r3-capital-code")]), []);
+  // A merge commit is the merge button's, not a lane's.
+  assert.deepEqual(judge(instant, [{ ...at("2026-11-02T00:00:00Z"), parents: [{}, {}] }]), []);
+  // A switch nobody can read is not off.
+  assert.match(judge("soon", [at("2026-10-01T00:00:00Z", "r3-capital-code")])[0], /is not a date/);
+});
