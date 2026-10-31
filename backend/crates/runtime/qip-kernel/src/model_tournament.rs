@@ -83,6 +83,7 @@ use qip_learning_engine::verifier::{
 use qip_market::bar::Bar;
 use qip_reasoning_engine::evidence::Stance;
 use qip_reasoning_engine::hypothesis::Hypothesis;
+use qip_world_model::{WorldModelBranch, WorldModelSpawner};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -124,11 +125,59 @@ pub const TAIL_WINDOW: usize = 20;
 /// the model-risk critic.
 pub const RECORD_VALIDITY: Duration = Duration::from_days(30);
 
+/// The residual — the probability the tournament's aggregate left on the
+/// outcome that did not happen — above which a resolution spawns a temporary
+/// specialist on its subject (R12-MODEL-7198). At 0.6 the pooled forecasters
+/// gave what happened less than four chances in ten: the standing population
+/// was wrong about that subject, which is the insufficiency
+/// [`WorldModelSpawner`] branches on.
+pub const SPAWN_RESIDUAL: f64 = 0.6;
+
+/// How long a spawned temporary specialist competes before the tournament
+/// retires it. Long enough for several questions on its subject to resolve,
+/// so its record is a record; short enough that a shock's specialist does
+/// not outlive the shock.
+pub const TEMPORARY_LIFETIME: Duration = Duration::from_days(14);
+
+/// The id prefix of a spawned temporary specialist; the subject follows.
+pub const TEMPORARY_PREFIX: &str = "temporary:";
+
+/// The world-model branch a temporary specialist is spawned under names this
+/// as its parent: the standing population whose residual triggered it.
+pub const STANDING_POPULATION: &str = "tournament/standing";
+
+/// A temporary specialist on one subject (R12-MODEL-7198).
+///
+/// Its model is the subject's own outcome frequency since the shock that
+/// spawned it, Laplace-smoothed: `P(up) = (ups + 1) / (n + 2)`, where the
+/// triggering resolution is the first observation. That is a fitted model,
+/// small on purpose — it answers the tournament's question from outcomes the
+/// platform observed and nothing else, so its forecast is one a model made
+/// rather than a figure filled in to give the spawn an entrant. Whether that
+/// persistence carries information is what the tournament then scores; a
+/// specialist with no skill earns no influence and expires.
+#[derive(Clone, Debug, PartialEq)]
+struct TemporarySpecialist {
+    id: String,
+    expires_at: Timestamp,
+    ups: u32,
+    observed: u32,
+}
+
+impl TemporarySpecialist {
+    fn p_up(&self) -> f64 {
+        (f64::from(self.ups) + 1.0) / (f64::from(self.observed) + 2.0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PendingQuestion {
     subject: String,
     reference: f64,
     resolves_at: Timestamp,
+    /// The aggregate's probability of `up` when the question opened, the
+    /// figure a resolution's residual is measured against.
+    aggregate_up: Option<f64>,
 }
 
 /// One question opened this cycle, as the record keeps it.
@@ -212,6 +261,11 @@ pub struct TournamentReview {
     /// every forecaster carried in it (R12-MODEL-9031).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consensus: Vec<ForecastConsensus>,
+    /// The world-model branches this cycle's resolutions spawned, one per
+    /// temporary specialist entered (R12-MODEL-7198): the parent, the
+    /// residual that triggered it and the threshold it exceeded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spawned: Vec<WorldModelBranch>,
 }
 
 /// What every tournament record's idempotency key starts with.
@@ -237,6 +291,7 @@ impl TournamentReview {
             && self.abandoned.is_empty()
             && self.promotions.is_empty()
             && self.retired.is_empty()
+            && self.spawned.is_empty()
     }
 
     /// One clause for the LEARN stage detail.
@@ -347,6 +402,10 @@ pub struct TournamentStage {
     /// Each forecaster's Brier score at every resolution, oldest first and
     /// bounded by [`SCORE_HISTORY`]: the history a [`ModelVote`] stands on.
     scores: BTreeMap<String, Vec<ScorePoint>>,
+    /// Live temporary specialists by subject, at most one each. Bounded by
+    /// the subjects the platform asks questions on, and every entry leaves
+    /// at its expiry.
+    temporaries: BTreeMap<String, TemporarySpecialist>,
 }
 
 /// How many past scores a forecaster's vote carries. Bounded, because the
@@ -548,6 +607,63 @@ impl TournamentStage {
         &self.tournament
     }
 
+    /// A resolution on `pending`'s subject: the live temporary specialist
+    /// there, if any, learns the outcome; and where the aggregate's residual
+    /// exceeds [`SPAWN_RESIDUAL`] and none is live, one is spawned, its
+    /// branch recorded on the review. The aggregate is the population's
+    /// forecast, so a miss by one forecaster alone does not spawn.
+    fn observe_outcome(&mut self, pending: &PendingQuestion, up: bool, cycle: u64, now: Timestamp) {
+        if let Some(live) = self
+            .temporaries
+            .get_mut(&pending.subject)
+            .filter(|t| t.expires_at > now)
+        {
+            live.observed = live.observed.saturating_add(1);
+            live.ups = live.ups.saturating_add(u32::from(up));
+            return;
+        }
+        let Some(aggregate_up) = pending.aggregate_up.filter(|p| p.is_finite()) else {
+            return;
+        };
+        let residual = if up { 1.0 - aggregate_up } else { aggregate_up };
+        // Statistic to the spawner's decimal threshold, at four places — the
+        // basis-point resolution the aggregate was recorded in.
+        let (Some(residual), Some(threshold)) = (
+            Decimal::from_f64((residual * 10_000.0).round() / 10_000.0),
+            Decimal::from_f64(SPAWN_RESIDUAL),
+        ) else {
+            return;
+        };
+        let id = format!("{TEMPORARY_PREFIX}{}", pending.subject);
+        let expires_at = now.saturating_add(TEMPORARY_LIFETIME);
+        let proposed = WorldModelSpawner::new(threshold).and_then(|spawner| {
+            spawner.propose_branch(
+                STANDING_POPULATION,
+                residual,
+                &format!("{id}@{cycle}"),
+                &format!(
+                    "the standing forecasters left {residual} on the outcome {} took; a \
+                     specialist on its own outcome frequency competes until {expires_at}",
+                    pending.subject,
+                ),
+                now,
+            )
+        });
+        // Below the threshold is the ordinary case and records nothing.
+        if let Ok(branch) = proposed {
+            self.temporaries.insert(
+                pending.subject.clone(),
+                TemporarySpecialist {
+                    id,
+                    expires_at,
+                    ups: u32::from(up),
+                    observed: 1,
+                },
+            );
+            self.review.spawned.push(branch);
+        }
+    }
+
     pub fn society(&self) -> &VerifierSociety {
         &self.society
     }
@@ -672,6 +788,31 @@ impl TournamentStage {
                 latency: run.map(|run| run.duration()),
             });
         }
+        // A live temporary specialist on this subject answers too
+        // (R12-MODEL-7198), from its own outcome frequency.
+        let temporary = self
+            .temporaries
+            .get(&subject)
+            .filter(|t| t.expires_at > now)
+            .cloned();
+        if let Some(temporary) = &temporary {
+            let p_up = temporary.p_up();
+            versions.insert(
+                temporary.id.clone(),
+                format!("qip-kernel-{}/outcome-frequency", env!("CARGO_PKG_VERSION")),
+            );
+            entries.push(TournamentForecast {
+                forecaster: temporary.id.clone(),
+                forecast_id: format!("{question}/{}", temporary.id),
+                target: target.clone(),
+                issued_at: now,
+                probabilities_bp: Some(binary(up_bp(p_up))),
+                quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
+                // In-cycle arithmetic over counts, unmetered like a detector.
+                cost: None,
+                latency: None,
+            });
+        }
         let mut forecasts = BTreeMap::new();
         for entry in entries {
             let id = entry.forecaster.clone();
@@ -684,10 +825,16 @@ impl TournamentStage {
                 .as_ref()
                 .and_then(|p| p.get(UP).copied())
                 .unwrap_or(0);
+            let kind = match &temporary {
+                Some(t) if t.id == id => ForecasterKind::Temporary {
+                    expires_at: t.expires_at,
+                },
+                _ => ForecasterKind::Specialist,
+            };
             let admitted = self.tournament.admit(
                 ForecasterSpec {
                     id: id.clone(),
-                    kind: ForecasterKind::Specialist,
+                    kind,
                     horizon: band,
                     lane: band.admitted_lane(),
                 },
@@ -795,6 +942,7 @@ impl TournamentStage {
                 subject,
                 reference,
                 resolves_at,
+                aggregate_up,
             },
         );
         self.review.opened.push(OpenedQuestion {
@@ -1011,6 +1159,7 @@ impl TournamentStage {
                             for score in &resolved.scores {
                                 self.record_score(&score.forecaster, score.brier, now);
                             }
+                            self.observe_outcome(&pending, outcome == UP, cycle, now);
                             scored.extend(resolved.scores.iter().map(|s| s.forecaster.clone()));
                             regimes.insert(resolved.regime.clone());
                             self.review.resolved.push(resolved);
@@ -1063,6 +1212,9 @@ impl TournamentStage {
         }
         self.review.promotions = self.tournament.review_promotions(&self.refuted);
         self.review.retired = self.tournament.retire_expired(now);
+        // The tournament also evicts expired temporaries on its own when
+        // full, so expiry is read off the clock, not off the retired list.
+        self.temporaries.retain(|_, t| t.expires_at > now);
         for forecaster in &self.review.retired {
             self.refuted.remove(forecaster);
         }
@@ -1516,5 +1668,218 @@ mod tests {
                 .contains("tournament refused the question")
         );
         assert_eq!(unapproved.refuted, None);
+    }
+
+    /// R12-MODEL-7198: a resolution the standing population badly missed
+    /// spawns a temporary specialist on its subject, which then competes on
+    /// that subject's next question with a forecast its own model made, and
+    /// leaves at its expiry. One that the population called right spawns
+    /// nothing.
+    ///
+    /// The failure this prevents: the tournament admitted
+    /// `ForecasterKind::Temporary` and the world model carried a spawner, and
+    /// neither had a caller — every entrant was the detector or an analyst,
+    /// so the "thousands of specialist and temporary models" the tournament
+    /// is capped for were none. Mutations: swap the residual's arms in
+    /// `observe_outcome` — the miss spawns nothing and the hit spawns one;
+    /// drop the live temporary from `observe_reasoning`'s entrants (`&&
+    /// false` on its expiry filter) — the next question carries no
+    /// temporary forecast.
+    #[test]
+    fn a_subject_the_population_missed_spawns_a_temporary_specialist_that_competes_until_it_expires()
+     {
+        use qip_core::ids::{EvidenceId, HypothesisId, ObjectId};
+        use qip_market::bar::Interval;
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet};
+        use qip_reasoning_engine::hypothesis::{
+            CausalChain, CausalStep, Claim, HypothesisDraft, UncertaintyType,
+        };
+        use qip_world_model::causal::Mechanism;
+
+        let at = Timestamp::from_secs(1_760_000_000);
+        let hypothesis = |id: &str, formed: Timestamp| {
+            Hypothesis::form(HypothesisDraft {
+                hypothesis_id: HypothesisId::from_string(id),
+                opportunity_id: None,
+                formed_at: formed,
+                as_of: formed,
+                class: "mean-reversion".to_string(),
+                claim: Claim::Undervalued,
+                statement: "AAA fell further than its history explains".to_string(),
+                subjects: vec![ObjectId::from_string("obj-AAA")],
+                chain: CausalChain::new(vec![CausalStep::new(
+                    "order-flow",
+                    "obj-AAA",
+                    Mechanism::CreditConditions,
+                    "the dislocation closes as liquidity returns",
+                    Duration::from_days(2),
+                    0.8,
+                )]),
+                evidence: EvidenceSet::from_items(vec![
+                    Evidence::new(
+                        EvidenceId::from_string("e1"),
+                        EvidenceKind::MarketObservation,
+                        Stance::Supports,
+                        "a nine percent drop on the last bar".to_string(),
+                        "rec-e1".to_string(),
+                        "exchange",
+                        formed,
+                        formed,
+                    )
+                    .with_reliability(0.9)
+                    .with_diagnosticity(0.6),
+                ]),
+                prior: 0.4,
+                uncertainty_type: UncertaintyType::Epistemic,
+                falsifiers: vec!["the price keeps falling for a week".to_string()],
+                leading_alternative: "the drop is news the tape has not finished pricing"
+                    .to_string(),
+                horizon: Duration::from_days(5),
+                contributors: Vec::new(),
+                models: Vec::new(),
+            })
+            .expect("a well-formed draft forms")
+        };
+        let report = OrganisationReport {
+            as_of: at,
+            question: "is AAA undervalued".to_string(),
+            runs: Vec::new(),
+            findings: Vec::new(),
+            deferred: Vec::new(),
+            failed: Vec::new(),
+            missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
+        };
+        let closes: Vec<f64> = (0..30).map(|i| 100.0 + f64::from(i % 3)).collect();
+        let reference = closes[closes.len() - 1];
+        let roster: Vec<String> = Vec::new();
+        let observe = |stage: &mut TournamentStage, hypothesis: &Hypothesis, now: Timestamp| {
+            stage
+                .observe_reasoning(
+                    ReasonObservation {
+                        hypothesis,
+                        report: &report,
+                        roster: &roster,
+                        regime: "trend/calm".to_string(),
+                        closes: &closes,
+                        spread_ratio: Some(1.0),
+                        crossed_recently: Some(false),
+                        expected_move_bps: 100.0,
+                        approved: false,
+                        explaining: BTreeSet::new(),
+                    },
+                    now,
+                )
+                .expect("a directional claim on a subject is observed");
+        };
+        let settle = |opened: Timestamp, close: f64| {
+            let px = |v: f64| Decimal::from_f64(v).expect("a price");
+            BTreeMap::from([(
+                "obj-AAA".to_string(),
+                vec![Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: opened,
+                    open: px(reference),
+                    high: px(reference.max(close)),
+                    low: px(reference.min(close)),
+                    close: px(close),
+                    volume: Decimal::from_int(1_000),
+                    trade_count: 10,
+                    vwap: None,
+                    quality: qip_financial::quality::DataQuality::default(),
+                }],
+            )])
+        };
+        let temporary = format!("{TEMPORARY_PREFIX}obj-AAA");
+
+        // The first question: the detector is the population.
+        let mut stage = TournamentStage::new();
+        observe(&mut stage, &hypothesis("hyp-1-obj-AAA", at), at);
+        let aggregate = stage.review.opened[0]
+            .aggregate_up
+            .expect("premise: the question formed an aggregate");
+        // Settle it the way the aggregate leaned least.
+        let missed_up = aggregate < 0.5;
+        let residual = if missed_up {
+            1.0 - aggregate
+        } else {
+            aggregate
+        };
+        assert!(
+            residual > SPAWN_RESIDUAL,
+            "premise: the aggregate {aggregate} leans far enough to be missed"
+        );
+        let (miss, hit) = if missed_up {
+            (reference * 1.1, reference * 0.9)
+        } else {
+            (reference * 0.9, reference * 1.1)
+        };
+        let resolved_at = at.saturating_add(Duration::from_days(6));
+
+        // A population that called it right spawns nothing.
+        let mut called = TournamentStage::new();
+        observe(&mut called, &hypothesis("hyp-1-obj-AAA", at), at);
+        let review = called
+            .learn(
+                &settle(at.saturating_add(Duration::from_days(5)), hit),
+                None,
+                2,
+                resolved_at,
+            )
+            .expect("learns")
+            .expect("a resolution is a record");
+        assert_eq!(review.resolved.len(), 1, "premise: the question resolved");
+        assert!(review.spawned.is_empty(), "{:?}", review.spawned);
+
+        // The miss spawns one, under the standing population, on the
+        // residual that triggered it.
+        let review = stage
+            .learn(
+                &settle(at.saturating_add(Duration::from_days(5)), miss),
+                None,
+                2,
+                resolved_at,
+            )
+            .expect("learns")
+            .expect("a resolution is a record");
+        assert_eq!(review.resolved.len(), 1, "premise: the question resolved");
+        assert_eq!(review.spawned.len(), 1, "{review:?}");
+        let branch = &review.spawned[0];
+        assert_eq!(branch.parent_id, STANDING_POPULATION);
+        assert_eq!(branch.id, format!("{temporary}@2"));
+        assert!(branch.trigger_residual > branch.insufficiency_threshold);
+
+        // It competes on the subject's next question, at its own model's
+        // forecast: one outcome observed, Laplace-smoothed.
+        let next = resolved_at;
+        observe(&mut stage, &hypothesis("hyp-3-obj-AAA", next), next);
+        let opened = &stage.review.opened[0];
+        let expected = if missed_up { 6_667 } else { 3_333 };
+        assert_eq!(
+            opened.forecasts.get(&temporary),
+            Some(&expected),
+            "{:?} / {:?}",
+            opened.forecasts,
+            stage.review.refused
+        );
+        assert!(stage.tournament.is_admitted(&temporary));
+
+        // And leaves at its expiry: retired, and absent from the next
+        // question.
+        let expired = resolved_at.saturating_add(TEMPORARY_LIFETIME);
+        let review = stage
+            .learn(&BTreeMap::new(), None, 4, expired)
+            .expect("learns")
+            .expect("the retirement is a record");
+        assert!(review.retired.contains(&temporary), "{review:?}");
+        observe(&mut stage, &hypothesis("hyp-5-obj-AAA", expired), expired);
+        assert!(
+            !stage.review.opened[0].forecasts.contains_key(&temporary),
+            "{:?}",
+            stage.review.opened[0].forecasts
+        );
     }
 }
