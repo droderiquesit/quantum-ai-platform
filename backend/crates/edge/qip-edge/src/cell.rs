@@ -6739,8 +6739,38 @@ impl Cell {
         now: Timestamp,
     ) -> Result<()> {
         self.replacement_grounded(order_id, now)?;
+        self.replacement_conduct(venue, object_id, side, now)?;
         self.fence_admit(now)?;
         self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// Refuse under [`GATE_CONDUCT_SPOOFING`] a replacement on a side of a
+    /// book whose recent record is a place-and-cancel pattern (R12-GOV-6126).
+    ///
+    /// A requote is a withdrawal and a placement, so a repricer that
+    /// requoted fast enough was the pattern the pass gate refuses, sent by
+    /// the one path that gate never saw. Journaled and counted here, as
+    /// [`Self::replacement_grounded`] is, because a requote has no report to
+    /// push a refusal onto.
+    fn replacement_conduct(
+        &mut self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        side: BookSide,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(reason) = self.conduct.refusal(venue, object_id, side, now) else {
+            return Ok(());
+        };
+        self.metrics.refusal(GATE_CONDUCT_SPOOFING);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_CONDUCT_SPOOFING.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Refuse under [`GATE_JUSTIFICATION`] a replacement for `order_id` when
@@ -12005,6 +12035,20 @@ impl Cell {
         price: Decimal,
         now: Timestamp,
     ) {
+        // A requote is a withdrawal and a placement on the same side of the
+        // same book (R12-GOV-6126): counted in the conduct window the pass
+        // and `admit_replacement` read, the withdrawal as unfilled when
+        // nothing of the order had traded. Until this was counted, repeated
+        // cancel-and-replace was invisible to that window.
+        if let Some(working) = self.working.get(order_id) {
+            let order = &working.order;
+            let (object_id, side) = (order.object_id.clone(), order.side);
+            if order.filled.is_zero() {
+                self.conduct
+                    .cancelled_unfilled(venue, &object_id, side, now);
+            }
+            self.conduct.placed(venue, &object_id, side, now);
+        }
         if let Some(working) = self.working.get_mut(order_id) {
             working.order.price = price;
         }
@@ -13587,6 +13631,107 @@ mod crossing_tests {
                 "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_unfilled_requotes_on_one_side_of_a_book_refuse_the_next_replacement_before_risk()
+    -> Result<()> {
+        // R12-GOV-6126. The repricer's requote is a withdrawal and a new
+        // placement sent outside `Cell::work`, so a desk that requoted an
+        // unfilled order fast enough was the place-and-cancel pattern the
+        // pass refuses, on the one path the conduct window never saw.
+        let price = Decimal::parse("100").expect("a decimal literal");
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+        let mut report = WorkReport::default();
+        cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
+        let order_id = gateway
+            .placed
+            .first()
+            .cloned()
+            .expect("the premise: one order went out");
+        // The side the order rests on, which a requote keeps.
+        let side = cell
+            .working
+            .get(&order_id)
+            .map(|working| working.order.side)
+            .expect("the premise: the order is working");
+        let other = match side {
+            BookSide::Ask => BookSide::Bid,
+            BookSide::Bid => BookSide::Ask,
+        };
+        let requote = |cell: &mut Cell, second: i64| {
+            cell.admit_replacement(
+                &order_id,
+                &object(),
+                &venue(),
+                side,
+                Decimal::from_int(1),
+                price,
+                at(second),
+            )
+        };
+        // Premise: requotes under the policy's minimum are admitted, each
+        // recorded as the venue accepted it.
+        for second in 11..14 {
+            requote(&mut cell, second)?;
+            cell.record_replacement(
+                &order_id,
+                &venue(),
+                "r",
+                Decimal::from_int(1),
+                price,
+                at(second),
+            );
+        }
+        requote(&mut cell, 14)?;
+        cell.record_replacement(
+            &order_id,
+            &venue(),
+            "r",
+            Decimal::from_int(1),
+            price,
+            at(14),
+        );
+        // Four unfilled withdrawals against five placements inside a minute:
+        // past three in four, so the fifth requote is refused, journaled.
+        let before = cell.journal().entries().len();
+        let error = match requote(&mut cell, 15) {
+            Ok(()) => panic!("a requote continuing a place-and-cancel pattern was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "denied", "{error}");
+        let refused = cell
+            .journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter(|entry| {
+                matches!(&entry.decision, Decision::Refused { gate, .. } if gate == GATE_CONDUCT_SPOOFING)
+            })
+            .count();
+        assert_eq!(
+            refused, 1,
+            "the refusal was not journaled under {GATE_CONDUCT_SPOOFING}"
+        );
+        // The other side of the same book has no such record.
+        cell.admit_replacement(
+            &order_id,
+            &object(),
+            &venue(),
+            other,
+            Decimal::from_int(1),
+            price,
+            at(15),
+        )?;
         Ok(())
     }
 
