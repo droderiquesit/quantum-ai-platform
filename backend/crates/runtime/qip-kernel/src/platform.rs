@@ -1364,7 +1364,18 @@ pub struct Platform {
     /// not see the names that have since gone, which is survivorship hidden
     /// in a lookup.
     universe_history: qip_financial::history::UniverseHistory,
+    /// The platform's own decision latency, SENSE through ACT, one sample per
+    /// cycle on the injected clock and the most recent
+    /// [`DECISION_LATENCY_SAMPLES`] kept (R12-TICK-2074). The capacity probe
+    /// runs behind it, so a simulated execution arrives as late as this
+    /// platform's own decisions do rather than at the instant it decided.
+    decision_latencies: std::collections::VecDeque<Duration>,
 }
+
+/// How many cycles of decision latency the platform keeps: enough for a
+/// median and a tenth-to-ninetieth spread, few enough that one slow hour
+/// leaves the window within the hour.
+const DECISION_LATENCY_SAMPLES: usize = 64;
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
 ///
@@ -6359,6 +6370,7 @@ impl Platform {
             position_horizons: BTreeMap::new(),
             position_exit_plans: BTreeMap::new(),
             universe_history: qip_financial::history::UniverseHistory::new(),
+            decision_latencies: std::collections::VecDeque::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -12623,6 +12635,16 @@ impl Platform {
             }
         }
 
+        // SENSE through ACT, the stages a decision waits on before an order
+        // exists (R12-TICK-2074). Recorded every cycle, zero included: a
+        // window that kept only the slow cycles would calibrate a latency
+        // this platform does not have.
+        let decided_in = stages
+            .iter()
+            .filter(|outcome| outcome.stage != Stage::Learn)
+            .fold(Duration::ZERO, |total, outcome| total + outcome.elapsed);
+        self.observe_decision_latency(decided_in);
+
         let mut report = CycleReport {
             cycle: self.cycle,
             correlation_id,
@@ -18303,6 +18325,13 @@ struct CapacityProbeResult {
     adversity_bps: f64,
     /// The calibrated feed delay the probe ran behind (R12-TICK-2087).
     feed_delay: Duration,
+    /// How long after the decision the order reached the venue, and what
+    /// the fill paid beyond the mark the probe decided against, in basis
+    /// points (R12-TICK-2074). The adversity above is measured from the
+    /// book the order arrived at, so a latency is invisible in it; this is
+    /// where the platform's own slowness shows as cost.
+    latency: Duration,
+    shortfall_bps: Option<f64>,
     /// The conditions the simulator reports it applied to the probe's
     /// arrival, by name — read off the run rather than off the schedule, so
     /// the detail states what the fill saw and not what was requested.
@@ -18320,6 +18349,10 @@ struct CapacityProbeStrategy {
     venue: String,
     quantity: Decimal,
     submitted: bool,
+    /// The mark the probe decided against, at the step it submitted
+    /// (R12-TICK-2074): the reference a latency is paid against, where the
+    /// execution's own reference is the book it arrived at.
+    decided_at_price: Option<Decimal>,
 }
 
 impl SimStrategy for CapacityProbeStrategy {
@@ -18327,11 +18360,14 @@ impl SimStrategy for CapacityProbeStrategy {
         "capacity-probe"
     }
 
-    fn on_step(&mut self, _view: &SimMarketView<'_>) -> Vec<SimOrder> {
+    fn on_step(&mut self, view: &SimMarketView<'_>) -> Vec<SimOrder> {
         if self.submitted {
             return Vec::new();
         }
         self.submitted = true;
+        self.decided_at_price = view
+            .mark(&self.object_id, &self.venue)
+            .and_then(|mark| mark.price);
         vec![SimOrder::market(
             self.object_id.clone(),
             self.venue.clone(),
@@ -18374,6 +18410,13 @@ impl Platform {
                 probe.feed_delay.as_secs_f64(),
                 probe.conditions.join(", ")
             ));
+            if let Some(shortfall) = probe.shortfall_bps {
+                detail.push_str(&format!(
+                    ", arriving {:.0}s after the decision at {shortfall:.1}bps over the mark it \
+                     decided on",
+                    probe.latency.as_secs_f64()
+                ));
+            }
             self.telemetry.metrics.gauge(
                 names::SIMULATION_CAPACITY_ADVERSITY_BPS,
                 labels([("instrument", probe.subject.as_str())]),
@@ -18553,26 +18596,59 @@ impl Platform {
                 .ok()?,
             ])
             .ok()?;
+        // And behind this platform's own measured decision latency
+        // (R12-TICK-2074): a probe that executed at the instant it decided
+        // would read a capacity no order of this platform's could reach.
+        let latencies: Vec<Duration> = self.decision_latencies.iter().copied().collect();
+        let latency = MarketCondition::latency_from_measured(&latencies)
+            .ok()
+            .filter(|condition| match condition {
+                MarketCondition::Latency { base, jitter } => {
+                    *base > Duration::ZERO || *jitter > Duration::ZERO
+                }
+                _ => false,
+            });
+        let mut schedule = ConditionSchedule::new();
+        let mut conditioned = false;
         if feed_delay > Duration::ZERO {
-            run = run
-                .with_conditions(ConditionSchedule::new().with(ConditionWindow::always(
-                    MarketCondition::DelayedFeed { delay: feed_delay },
-                )))
-                .ok()?;
+            schedule = schedule.with(ConditionWindow::always(MarketCondition::DelayedFeed {
+                delay: feed_delay,
+            }));
+            conditioned = true;
+        }
+        if let Some(latency) = latency {
+            schedule = schedule.with(ConditionWindow::always(latency));
+            conditioned = true;
+        }
+        if conditioned {
+            run = run.with_conditions(schedule).ok()?;
         }
         let mut strategy = CapacityProbeStrategy {
             object_id: subject.clone(),
             venue: "XSIM".to_string(),
             quantity,
             submitted: false,
+            decided_at_price: None,
         };
         let outcome = run.run(&mut strategy).ok()?;
         let report = outcome.reports.first()?;
+        // Statistics: the decision mark and the average fill cross to f64
+        // here, for a diagnostic nothing sizes from.
+        let shortfall_bps = strategy
+            .decided_at_price
+            .filter(|price| price.is_positive() && report.filled.is_positive())
+            .and_then(|decided| {
+                let average = report.notional.checked_div(report.filled)?;
+                let decided = decided.to_f64();
+                Some((average.to_f64() - decided) / decided * 10_000.0)
+            });
         Some(CapacityProbeResult {
             subject: subject.clone(),
             quantity,
             adversity_bps: report.adversity_bps(),
             feed_delay,
+            latency: report.latency,
+            shortfall_bps,
             conditions: report.conditions.clone(),
         })
     }
@@ -24138,6 +24214,23 @@ impl Platform {
         if delay > entry.max {
             entry.max = delay;
         }
+    }
+
+    /// Record one decision latency in the bounded window the capacity probe
+    /// calibrates from (R12-TICK-2074). `run_cycle` calls it with each
+    /// cycle's SENSE-through-ACT time; a test calls it to stand in for a
+    /// clock that does not move.
+    #[doc(hidden)]
+    pub fn observe_decision_latency(&mut self, latency: Duration) {
+        self.decision_latencies.push_back(latency);
+        while self.decision_latencies.len() > DECISION_LATENCY_SAMPLES {
+            self.decision_latencies.pop_front();
+        }
+    }
+
+    /// The decision latencies the platform has measured, oldest first.
+    pub fn decision_latencies(&self) -> impl Iterator<Item = &Duration> {
+        self.decision_latencies.iter()
     }
 
     /// The publication delay each source has shown, by source name.
