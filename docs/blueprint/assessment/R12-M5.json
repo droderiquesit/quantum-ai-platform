@@ -790,13 +790,16 @@
   {
     "id": "R12-REFLEX-5034",
     "status": "PARTIAL",
-    "current": "Outcomes and the journal drain asynchronously to the fabric; a policy the cell applied is acknowledged on the fabric spool after the turn (Recorded::PolicyApplied), tested with a mutation. Telemetry leaves only by scrape.",
+    "current": "Outcomes and the journal drain asynchronously to the fabric; a policy the cell applied is acknowledged on the fabric spool after the turn (Recorded::PolicyApplied), tested with a mutation. Telemetry leaves the node only by the scrape and is not a fabric record kind (ADR 0133 decision 4), pinned by a test that drives the decision loop and reads the spool: every spooled record is one of the writer's eight declared kinds on the P1 or P2 stream the drain delivers, none is P4 telemetry, and the turns' metrics are in the registry the scrape serves. Learning reads a fill from the cell report and not the fabric, pinned in qip-kernel.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:66-72",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs (OUTCOMES_STREAM, JOURNAL_STREAM)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs::RecordKind",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn"
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::telemetry_leaves_the_node_only_by_the_scrape_and_no_spool_record_carries_a_metric",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::learning_reads_a_fill_from_the_cell_report_and_the_central_plane_names_no_fabric_fill_type"
     ],
-    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: no new path: a test pinning that telemetry is scrape-only and the register reading the single-source rule as the design.",
+    "gap": "2026-10-31 (lane L5-EDGE, owner ruling decision 14): the single-source rule is the design (ADR 0133 decision 4: telemetry on the scrape, learning on the report) and both halves are now pinned by tests. The row stays PARTIAL because the requirement text still names telemetry as a fabric flow (bar part 4), and because the fabric leg is not deployed until R12-REFLEX-5031 is.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -806,10 +809,10 @@
       "R12-REFLEX-5031"
     ],
     "blocked_by": "",
-    "verification": "node test with in-process qip-streaming broker double",
+    "verification": "cargo test -p qip-edge-node --test decision_loop telemetry_leaves_the_node_only_by_the_scrape a_policy_the_cell_applied; cargo test -p qip-kernel --test central learning_reads_a_fill_from_the_cell_report",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0133 decision 4 already answers this, and it stands: telemetry leaves the node only by the scrape and is not a fabric record kind. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0133 decision 4 already answers this, and it stands: telemetry leaves the node only by the scrape and is not a fabric record kind. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L5-EDGE: pin test added. It lives in tests/decision_loop.rs rather than telemetry_wiring.rs, because the decision-loop rig with a spool and writer thread is defined there and a second copy would be a second rig to keep in step. Mutations, each restored byte-for-byte (cmp): a ninth RecordKind writing a metric snapshot to the spool every pass (fails: a record on a topic none of the eight declare); the same snapshot written under a declared kind's topic (fails: a spooled record carries a metric). decision_loop.rs's doc now reads 'telemetry is not a fabric record (ADR 0133 d4)'. No skeptic run beyond the ruling's; not promoted."
   },
   {
     "id": "R12-MESH-5035",
