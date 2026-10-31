@@ -899,3 +899,39 @@ that narrows a security scanner, whatever the owner has delegated.
     as one patch. The same round applied L6's
     `l6-res-9177-secondary-registry.patch`, which defaults off in every
     environment and bills nothing until a region is named.
+
+17. **R12-CAPITAL-4091's counterfactual menu invents no figures** (lane L1,
+    decided 10:45 UTC). The hedge arm needs an instrument and a ratio, and the
+    venue arm a venue and a taker cost. The committed universe holds six
+    synthetic single names and no index or hedge instrument, so any default
+    would be a figure somebody made up. The declaration therefore ships no
+    hedge arm, with the reason stated. It carries a venue arm only if a venue
+    and its cost are already stated in the tree, and otherwise none. It stays
+    counterfactual-only: it scores fills and is not loaded into the hedge
+    policies, so the hedge review journals no proposal from it. It is
+    embedded under `backend/` in `qip-kernel` and resolved against the loaded
+    universe at assembly. Anything it cannot resolve drops that one arm and
+    never refuses the whole set, because a set refused for one missing
+    instrument would leave every fill unscored. The row stays PARTIAL until a
+    person declares a hedge instrument and ratio.
+
+18. **R12-RES-7106's eligibility rule stands, and the fixtures change**
+    (lane L6, decided 11:00 UTC). Under the ruled ADR 0238 an acting problem
+    the constraints leave unsatisfiable is Unresolved and never sized. With
+    that in place, the default cycle forms no proposal on any fixture tape:
+    the best admitted confidence on 192 single-instrument tapes is 4823 bp,
+    against the 5000 bp `r10-eligible` needs. That breaks 38 tests whose
+    premise is that a cycle trades. Changing `r10-eligible`'s premises would
+    be a threshold change, and a test-only seam to set the rule pack is
+    refused by ADR 0212 decision 7. So the fixtures change: each of the 38
+    keeps every assertion byte-identical, and only its inputs build an
+    uncontested panel at or above eligibility. At least five are spot-checked
+    with a mutation of the code they guard, and a new test pins that a
+    contested panel forms no proposal. Kill-switch tests that reached ACT's
+    gate keep a fixture that still reaches it, and the new stop in REASON
+    gets its own test. A journal sealed before the change must still verify
+    under the rule in force when it was sealed. If that needs a schema
+    change, the lane stops and asks before merging. Lane L6's tightening of
+    the fleet Job to Binary Authorization's default policy is accepted. It
+    fails closed, so the fleet worker image must be attested, or exempted by
+    exact repository, before the next fleet apply. That is the owner's to do.
