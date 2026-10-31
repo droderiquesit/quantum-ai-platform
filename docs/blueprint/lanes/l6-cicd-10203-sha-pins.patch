@@ -722,10 +722,10 @@ index 6a98604c..9505e45c 100644
  
 diff --git a/backend/crates/tests/qip-acceptance/tests/action_pins.rs b/backend/crates/tests/qip-acceptance/tests/action_pins.rs
 new file mode 100644
-index 00000000..90a58a7d
+index 00000000..28d603b0
 --- /dev/null
 +++ b/backend/crates/tests/qip-acceptance/tests/action_pins.rs
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,143 @@
 +//! R12-CICD-10203: every action a workflow uses is pinned by its full commit
 +//! SHA, with the tag it was resolved from kept as a comment.
 +//!
@@ -809,9 +809,11 @@ index 00000000..90a58a7d
 +
 +fn committed_workflows() -> Vec<(String, String)> {
 +    let root = repository_root();
-+    let mut files: Vec<_> = files_with_extension(".github/workflows", "yml")
++    // All of .github, not only workflows: a composite action under
++    // .github/actions runs its own `uses:` steps with the caller's token.
++    let mut files: Vec<_> = files_with_extension(".github", "yml")
 +        .into_iter()
-+        .chain(files_with_extension(".github/workflows", "yaml"))
++        .chain(files_with_extension(".github", "yaml"))
 +        .collect();
 +    files.sort();
 +    files
@@ -837,7 +839,7 @@ index 00000000..90a58a7d
 +    // refusal list is not the empty list of a walk that read nothing.
 +    assert!(
 +        workflows.len() >= 10,
-+        "premise: .github/workflows holds the platform's workflows"
++        "premise: .github holds the platform's workflows"
 +    );
 +    assert!(
 +        seen >= 50,
@@ -868,19 +870,21 @@ index 00000000..90a58a7d
 +    }
 +}
 diff --git a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
-index b1b437c9..91781e23 100644
+index b1b437c9..5bb3788f 100644
 --- a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
 +++ b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
-@@ -4086,13 +4086,18 @@ fn the_gcloud_beta_component_is_installed_because_the_iap_gates_update_fallback_
+@@ -4086,13 +4086,20 @@ fn the_gcloud_beta_component_is_installed_because_the_iap_gates_update_fallback_
          .iter()
          .filter(|step| {
              step.lines()
 -                .any(|line| line.trim() == "- uses: google-github-actions/setup-gcloud@v2")
-+                // The ref is a pinned SHA (action_pins.rs holds that); this
-+                // finds the step, not its ref.
++                // The ref is a pinned SHA (action_pins.rs holds that); the
++                // tag comment still names the major version, so a downgrade
++                // fails.
 +                .any(|line| {
-+                    line.trim()
-+                        .starts_with("- uses: google-github-actions/setup-gcloud@")
++                    let line = line.trim();
++                    line.starts_with("- uses: google-github-actions/setup-gcloud@")
++                        && line.ends_with("# v2")
 +                })
          })
          .collect();
@@ -893,17 +897,19 @@ index b1b437c9..91781e23 100644
          setup.len()
      );
 diff --git a/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs b/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
-index 92cd3c46..cea6ed46 100644
+index 92cd3c46..89d8513f 100644
 --- a/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
 +++ b/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
-@@ -624,7 +624,9 @@ fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
+@@ -624,7 +624,11 @@ fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
      assert!(
          lines
              .iter()
 -            .any(|line| line == "- uses: actions/upload-artifact@v4"),
-+            // The ref is a pinned SHA (action_pins.rs holds that); this
-+            // premise is about the step, not its ref.
-+            .any(|line| line.starts_with("- uses: actions/upload-artifact@")),
++            // The ref is a pinned SHA (action_pins.rs holds that); the tag
++            // comment still names the major version, so a downgrade fails.
++            .any(|line| {
++                line.starts_with("- uses: actions/upload-artifact@") && line.ends_with("# v4")
++            }),
          "premise: the `test` job uploads an artifact at all"
      );
      assert!(
