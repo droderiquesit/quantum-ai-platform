@@ -46,6 +46,7 @@ pub mod commerce_research;
 pub mod compute_routing;
 pub mod confidence;
 pub mod config;
+pub mod counterfactual_alternatives;
 pub mod counterfactual_trial;
 pub mod cross_margin;
 pub mod cycle;
