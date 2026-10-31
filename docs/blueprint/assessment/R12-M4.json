@@ -1931,9 +1931,10 @@
       "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::the_kernel_installs_the_survival_limit_and_it_vetoes_an_order_past_the_ceiling",
       "backend/crates/runtime/qip-kernel/src/survival.rs::tests::a_waterfall_that_disagrees_with_the_ledger_is_refused",
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
-      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases"
+      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases",
+      "backend/crates/apps/qip-ledgerd/src/read_api.rs GET /api/v1/ledger/obligations; test the_obligations_route_answers_the_ledgers_fold_at_the_callers_instant"
     ],
-    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.",
+    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.\n2026-10-31 (lane L1-MONEY): qip-ledgerd now serves its LedgerObligations fold at GET /api/v1/ledger/obligations?unit=&as_of=; the caller's instant is required, never defaulted. Remaining: a qip-api reader with an explicit timeout that calls it each cycle and feeds Platform::observe_ledger_obligations (qip-api has no ledgerd client today), the survival_gate.rs refusal test the closure names, and a default deployment of qip-ledgerd (variable \"ledgerd\" is null everywhere), so bar part 2 stays unmet.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1947,7 +1948,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL. 2026-10-31 lane L1-MONEY: mutation (route arm unreachable, so 404) fired and was restored with cp+cmp. No skeptic was run: the row cannot be promoted without the reader and a deployment."
   },
   {
     "id": "R12-CAPITAL-4087",
