@@ -354,6 +354,13 @@ pub struct CommerceSimulated {
     pub repriced: Vec<PricedUnit>,
     pub sold: Vec<CycleEvent>,
     pub problems: Vec<String>,
+    /// R12-ASSET-4073: a RealAsset position record for each unit received
+    /// this pass, carrying the purchase's landed cost and the unit's state as
+    /// the inventory ledger holds it. A paper research record: it is held
+    /// here, in the commerce research output, and never in the desk's book,
+    /// sizing or capital. Absent from a record written before it existed.
+    #[serde(default)]
+    pub positions: Vec<qip_financial::position_record::PositionRecord>,
 }
 
 impl EventBody for CommerceSimulated {
@@ -599,7 +606,7 @@ impl CommerceResearch {
 
     /// SIMULATE: assess, buy, plan, receive, route, list, reprice and sell,
     /// all on paper.
-    pub fn simulate(&mut self) -> Result<CommerceSimulated> {
+    pub fn simulate(&mut self, now: Timestamp) -> Result<CommerceSimulated> {
         self.day = self.day.saturating_add(1);
         let mut run = CommerceSimulated {
             decision_grade: self.decision_grade(),
@@ -620,7 +627,7 @@ impl CommerceResearch {
         let take = self.queue.len().min(CANDIDATES_PER_PASS);
         let candidates: Vec<Candidate> = self.queue.drain(..take).collect();
         for candidate in candidates {
-            if let Err(error) = self.work_candidate(&candidate, &mut run) {
+            if let Err(error) = self.work_candidate(&candidate, &mut run, now) {
                 run.problems.push(format!(
                     "{} at {}: {}",
                     candidate.product,
@@ -632,7 +639,12 @@ impl CommerceResearch {
         Ok(run)
     }
 
-    fn work_candidate(&mut self, candidate: &Candidate, run: &mut CommerceSimulated) -> Result<()> {
+    fn work_candidate(
+        &mut self,
+        candidate: &Candidate,
+        run: &mut CommerceSimulated,
+        now: Timestamp,
+    ) -> Result<()> {
         let assessment = FeasibilityInput {
             unit_price: Some(candidate.price),
             quantity: Some(self.plan.quantity),
@@ -746,6 +758,13 @@ impl CommerceResearch {
                     factor,
                 },
             );
+            run.positions.push(self.position_record(
+                &unit,
+                cost_basis,
+                &assessment.landed,
+                quote.days_to_sale,
+                now,
+            )?);
             run.listed.push(PricedUnit {
                 unit: unit.clone(),
                 venue: choice.chosen.venue,
@@ -761,6 +780,65 @@ impl CommerceResearch {
             units,
         });
         Ok(())
+    }
+
+    /// The RealAsset position record for a received `unit` (R12-ASSET-4073):
+    /// its landed cost is the purchase's, and its inventory state is read
+    /// from the plane's ledger, so a unit the ledger did not receive has no
+    /// record. Valued at cost, with a zero target exposure because it is
+    /// outside the book, and an exit by sale at the chosen venue's time to
+    /// sale.
+    fn position_record(
+        &self,
+        unit: &str,
+        cost_basis: Decimal,
+        landed: &qip_financial::physical::LandedCost,
+        days_to_sale: u32,
+        now: Timestamp,
+    ) -> Result<qip_financial::position_record::PositionRecord> {
+        use qip_financial::position_record::{
+            Declared, ExitPlan, ExitRoute, PositionRecordBuilder,
+        };
+        let state = self
+            .plane
+            .ledger()
+            .units()
+            .get(unit)
+            .map(|record| record.state.clone())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "unit {unit} is not in the inventory ledger, so it has no position to record"
+                ))
+            })?;
+        let days = i64::from(days_to_sale.max(1));
+        let paper = "a paper research unit, outside the desk's book";
+        PositionRecordBuilder::new()
+            .asset(unit)
+            .class(qip_financial::asset_class::AssetClass::RealAsset)
+            .mandate(self.plan.owner.clone())
+            .target_exposure(Decimal::ZERO)
+            .valuation(qip_financial::valuation::IlliquidValuator::at_cost(
+                unit, cost_basis, now, now,
+            )?)
+            .horizon(Duration::from_days(days))
+            .expected_exit(Duration::from_days(days))
+            .hedges(Declared::NoneApplicable {
+                reason: paper.to_string(),
+            })
+            .corporate_actions(Declared::NoneApplicable {
+                reason: "a physical good has no corporate actions".to_string(),
+            })
+            .commitments(Declared::NoneApplicable {
+                reason: paper.to_string(),
+            })
+            .exit_plan(ExitPlan::new(
+                now.saturating_add(Duration::from_days(days)),
+                ExitRoute::Sale,
+                None,
+            )?)
+            .product_economics(landed.clone())
+            .inventory_state(state)
+            .build()
     }
 
     /// Reprice what is still sitting, and sell what has sat as long as its
