@@ -330,7 +330,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 91] = [
+    pub const ALL: [Self; 92] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
