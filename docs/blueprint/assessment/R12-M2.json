@@ -1075,7 +1075,7 @@
     "verification": "cargo test -p qip-contracts --test contracts a_circuit_breaker; cargo test -p qip-protocols --test itch a_breaker_reason; cargo test -p qip-orderbook --test venue a_circuit_breaker",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent). 2026-10-25 lane L3-DATA (wave580): status capture path landed. Mutations fired: publish skipping wire.status (left [], right [CircuitBreaker, Open]); decoder losing the status arm (pass fails 'published 3 level(s) and the cell decoded 2'). Independent skeptic (code-reviewer) verdict REFUTED; per-type reasons in gap. Kept PARTIAL."
+    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent). 2026-10-25 lane L3-DATA (wave580): status capture path landed. Mutations fired: publish skipping wire.status (left [], right [CircuitBreaker, Open]); decoder losing the status arm (pass fails 'published 3 level(s) and the cell decoded 2'). Independent skeptic (code-reviewer) verdict REFUTED; per-type reasons in gap. Kept PARTIAL. 2026-10-31: lane L3-data (taking L3b's rows): not reworked; every remaining clause (a default session schedule declaring status, typed reject and ack records) lands in qip-edge-node, whose feed and passes run only under QIP_VENUE_FEED=simulated, set in an execution-node template no committed environment renders, so finishing them would not change the part-2 verdict."
   },
   {
     "id": "R12-TICK-2045",
@@ -1790,9 +1790,11 @@
       "backend/crates/services/qip-simulation-engine/src/conditions.rs MarketCondition::latency_from_measured, delayed_feed_from_measured",
       "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs conditions_calibrated_from_measured_samples_reproduce_the_sample_median",
       "backend/crates/runtime/qip-kernel/src/platform.rs calibrated_feed_delay and the capacity probe's DelayedFeed",
-      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency"
+      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (decision_latencies, observe_decision_latency, capacity_probe latency condition and shortfall_bps)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_measured_decision_latency_pushes_the_simulated_execution_later_and_worsens_its_fill"
     ],
-    "gap": "No binary measures decision-to-arrival latency (the paper venue stamps a declared latency, which venue_measurement refuses as untimed), so latency_from_measured has no production sample set to calibrate from; closing needs a timed acknowledgement path and a caller passing its samples into the replay or capacity probe.",
+    "gap": "2026-10-31: skeptic REFUTED on part 2: every cycle's SENSE-to-ACT latency is measured on the real clock and the SIMULATE stage's capacity probe runs under a latency calibrated from it and reports arrival time and shortfall from the decision mark, but a real cycle's milliseconds move nothing on the probe's one-minute steps, the default synthetic feed stamps no publication delay, and the tick replay still uses a fixed declared latency; remaining step is wiring the measured latency and delay into a simulation where they move a fill on the default path (finer probe steps or the replay's model.latency), proven from run_cycle's own samples.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1800,10 +1802,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-simulation-engine --test market_conditions",
+    "verification": "cargo test -p qip-kernel --test learning a_measured_decision_latency",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay)."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay). 2026-10-31: mutation: calibrate from an empty sample set; no latency condition, test fails. First test draft on a noisy tape saw the slow probe fill 22bps better (latency worsens a fill only against an adverse move), so the test uses a rising tape. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-TICK-2075",
