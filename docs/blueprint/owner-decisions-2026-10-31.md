@@ -101,3 +101,29 @@ that narrows a security scanner, whatever the owner has delegated.
    rules above; the first run died on the five-hour limit and re-runs after
    02:00 UTC. Each ruling lands here as a numbered decision when it is made,
    and the OWNER_LIVE row is refused in advance.
+8. **A failed or halted pass still reports what it sent** (R12-MESH-7143,
+   03:53 UTC). Lane L5b found that `qip-edge-node`'s scheduler keeps no
+   `WorkReport` for a pass that returned an error and resets to the default
+   report on a halt, so an order sent to a venue before a cycle broke never
+   rides the mesh delta and is never charged into the aggregate the Hedge
+   Brain plans against; the centre would later meet its fill as a fill on an
+   order it never saw sent. The decision, ADR 0209 claimed by lane L5b: the
+   scheduler keeps the report of a failed or halted pass, marks it with the
+   gate and the pass number, ships it on the next delta exactly once, and
+   sends nothing new after the failure; the centre settles those orders as
+   any other and records the halt beside them. A report the scheduler
+   cannot mark is refused whole, never shipped unmarked. This is the
+   "bill what ran, not what was planned" principle applied to a pass that
+   did not finish.
+9. **The counterfactual twin's direction was inverted** (not a product
+   decision, recorded because it changes every regret figure the register
+   cites). Until 2026-10-31 `qip-twin`'s `ActualTrade::direction` read a
+   trade against the bid as the long while every producer records a buy
+   against the ask, so every declined-path and fill score settled with the
+   opposite sign, and four kernel fixtures, one deep-brain fixture and one
+   acceptance label had been bent to agree with it. The fix flips the twin,
+   turns the fixtures, and removes the cross lane L5 had added to match
+   the old reading. Journaled `DeclinedScore` and `FillScore` records
+   written before the fix carry an inverted `regret` and
+   `would_have_earned`; a register row whose evidence rests on one of
+   those figures is to be re-read before it is promoted.
