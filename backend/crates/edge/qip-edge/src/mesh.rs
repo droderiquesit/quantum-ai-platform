@@ -91,7 +91,8 @@ use qip_contracts::regional_episode::RegionalEpisode;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_contracts::wire::{
-    CrossRecord, FillRecord, MAX_CROSSES_PER_DELTA, MAX_EPISODES_PER_DELTA, MAX_FILLS_PER_DELTA,
+    AdvisoryPosition, CrossRecord, FillRecord, MAX_CROSSES_PER_DELTA, MAX_EPISODES_PER_DELTA,
+    MAX_FILLS_PER_DELTA, MAX_POSITIONS_PER_DELTA,
 };
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, CorrelationId, Decimal, Id, Lineage, ObjectId, Timestamp};
@@ -294,6 +295,25 @@ pub struct CellStateDelta {
     /// [`MAX_EPISODES_PER_DELTA`].
     #[serde(default)]
     pub episodes_omitted: u32,
+    /// The cell's open positions, one per venue and instrument with a
+    /// non-zero signed quantity, from confirmed fills alone (ADR 0208,
+    /// R12-MESH-7143). A view of the cell's book at `positions_as_of`, so a
+    /// delta rebuilt after a failed attempt carries the same positions and
+    /// the centre replaces rather than sums. Advisory: the centre's own
+    /// settled books stay the truth for every balance. Defaulted so a delta
+    /// sealed before the field replays as a cell that stated none.
+    #[serde(default)]
+    pub positions: Vec<AdvisoryPosition>,
+    /// Positions that did not fit in [`MAX_POSITIONS_PER_DELTA`], plus any
+    /// the cell could not state.
+    #[serde(default)]
+    pub positions_omitted: u32,
+    /// The cell's journal sequence the positions were taken at: the last
+    /// entry on its chain, so the centre can tell a newer statement from an
+    /// older one however the deltas arrive, and refuse one that went
+    /// backwards. Zero is a cell with no chain entry yet.
+    #[serde(default)]
+    pub positions_as_of: u64,
 }
 
 impl EventBody for CellStateDelta {
@@ -364,6 +384,15 @@ impl CellStateDelta {
             let omitted = self.episodes.len() - MAX_EPISODES_PER_DELTA;
             self.episodes.drain(..omitted);
             self.episodes_omitted = u32::try_from(omitted).unwrap_or(u32::MAX);
+        }
+        // Positions keep the first in key order — venue then instrument —
+        // which is the cell's own deterministic order, and count the rest.
+        if self.positions.len() > MAX_POSITIONS_PER_DELTA {
+            let omitted = self.positions.len() - MAX_POSITIONS_PER_DELTA;
+            self.positions.truncate(MAX_POSITIONS_PER_DELTA);
+            self.positions_omitted = self
+                .positions_omitted
+                .saturating_add(u32::try_from(omitted).unwrap_or(u32::MAX));
         }
         // Fills have their own budget for the same reason, and the stakes
         // are higher: a fill evicted by a noisy gate would be a trade the
@@ -1849,6 +1878,9 @@ mod tests {
             crosses_omitted: 0,
             episodes: Vec::new(),
             episodes_omitted: 0,
+            positions: Vec::new(),
+            positions_omitted: 0,
+            positions_as_of: 0,
         };
         delta.bound_refusals();
         assert_eq!(delta.refusals.len(), MAX_REFUSALS_PER_DELTA);

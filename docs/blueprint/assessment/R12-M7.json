@@ -3350,7 +3350,7 @@
   {
     "id": "R12-MESH-7143",
     "status": "PARTIAL",
-    "current": "qip-routing path graph, edge quoting, reservations and decomposition exist. Since 2026-10-31 the cross-class hedge map steers the Hedge Brain: HedgeBrainInputs carries the AssetClassRegistry and kernel hedge.rs `plan` admits a resolved candidate to the search only if its asset class is one the registry's hedge map names for a class the book holds, naming every excluded candidate in the journaled `unresolved`; `Platform` passes its shipped registry on the DECIDE path. Saga recovery exists in pieces (Cell::unwind_cycle, the peer saga's unwind) with no end-to-end test.",
+    "current": "qip-routing path graph, edge quoting, reservations and decomposition exist. Since 2026-10-31 the cross-class hedge map steers the Hedge Brain: HedgeBrainInputs carries the AssetClassRegistry and kernel hedge.rs `plan` admits a resolved candidate to the search only if its asset class is one the registry's hedge map names for a class the book holds, naming every excluded candidate in the journaled `unresolved`; `Platform` passes its shipped registry on the DECIDE path. Saga recovery is exercised end to end on the production types since the same day (ADR 0208): a broken two-leg cycle is unwound by Cell::break_cycle (one offset per filled leg, journaled Decision::Hedged, the cell halts), the leftover leg rides the cell's delta as a sequenced statement, and the centre reconciles it against its settled book.",
     "evidence": [
       "backend/crates/edge/qip-routing/src/path.rs",
       "backend/crates/edge/qip-edge/src/quoting.rs",
@@ -3358,9 +3358,15 @@
       "backend/crates/runtime/qip-kernel/src/hedge.rs HedgeBrainInputs::hedge_map, permitted_hedge_classes, candidates.retain in plan",
       "backend/crates/runtime/qip-kernel/src/platform.rs hedge_map: &self.asset_class_registry at the hedge::plan call",
       "backend/crates/runtime/qip-kernel/src/hedge.rs::tests::a_hedge_is_drawn_only_from_a_class_the_hedge_map_names",
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs check_hedge_map, AssetClassRecord::hedge_classes"
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs check_hedge_map, AssetClassRecord::hedge_classes",
+      "docs/adr/0208-a-cells-open-positions-ride-its-mesh-delta-as-a-bounded-sequenced-statement-the-centre-reconciles-against-its-settled-books-and-never-treats-as-a-balance.md",
+      "backend/crates/tests/qip-acceptance/tests/cycle_unwind_hedge.rs::a_broken_cycle_is_unwound_and_hedged_end_to_end",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::state_delta positions, positions_omitted, positions_as_of",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs AdvisoryBook, CentralPlane::advisory_book, advisory_disagreements_of, the backwards-sequence refusal in ingest",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs::tests::a_cells_stated_book_is_reconciled_replaced_by_a_newer_one_and_refused_when_it_goes_backwards",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs the PassOutcome match that keeps no report for an Err pass and resets on Halted (grep -n 'last_report = WorkReport::default()')"
     ],
-    "gap": "2026-10-31 (lane L5b, one slice of an XL row): the hedge-map half is on the DECIDE path and mutation-proven; the saga-recovery half — a broken cycle unwound and hedged end to end (a_broken_cycle_is_unwound_and_hedged_end_to_end over Cell::unwind_cycle, the peer saga's unwind and a hedge drawn through the map) — is not written, LegGroup is still an unused import in cell.rs, and the cycle paths it would exercise run only on an undeployed node behind the peer-mesh switch (decision 5 of 2026-10-25). Read further the same day: the end-to-end half cannot be written on the shipped path yet, because a cell's positions do not ride the mesh delta (CellStateDelta carries utilisation, orders, fills, crosses, refusals, breaks and episodes; qip-api's report_from sets no positions), so a cell's leftover leg after a break never reaches the kernel's risk state that the Hedge Brain plans against; carrying positions on the wire is its own decision and ADR.",
+    "gap": "2026-10-31 (lane L5b, two slices of an XL row): the hedge-map half is on the DECIDE path and mutation-proven, and the saga-recovery half now has its end-to-end suite. The 8c5dbd34 reading of this gap was wrong and is withdrawn: a cell's positions were never unreachable by the kernel, because the delta carries the cell's fills, CentralPlane::settle books them and Platform::charge_cell_fills charges every settled fill into the risk aggregate the Hedge Brain plans against. ADR 0208 adds the cell's own statement of its book (positions, omitted count, journal sequence) as advisory evidence reconciled against the settled book, refused when its sequence goes backwards, never a balance and never read by anything that decides. What the suite found instead is the real remaining gap: a refused leg fails Cell::work, and qip-edge-node's scheduler keeps no WorkReport for a failed pass and resets it on a halted one, so the orders the cell sent before the break never ride the delta; the fill that follows is an UnsentFill break at the centre, nothing settles, nothing is charged, and the statement disagrees with the settled book by exactly the leftover leg. The suite asserts that finding and does not assert a hedge. Carrying a failed pass's sent orders on the wire is its own decision. The cycle paths still run only on an undeployed node behind the peer-mesh switch (decision 5 of 2026-10-25); LegGroup remains an unused import in cell.rs.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3368,10 +3374,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --lib hedge::; cargo test -p qip-kernel --test catalogue_hedge_candidates --test hedge --test asset_classes",
+    "verification": "cargo test -p qip-kernel --lib hedge::; cargo test -p qip-kernel --test catalogue_hedge_candidates --test hedge --test asset_classes; cargo test -p qip-kernel --lib central::plane::tests::a_cells_stated_book; cargo test -p qip-mesh --lib delta::tests; cargo test -p qip-acceptance --test cycle_unwind_hedge",
     "work_item": "",
     "size": "XL",
-    "notes": " Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap. The positions-on-the-wire gap is named so the next slice starts there."
+    "notes": " Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap. The positions-on-the-wire gap is named so the next slice starts there. Lane L5b 2026-10-31, slice 2 (ADR 0208): cycle_unwind_hedge passes. Mutations, each restored byte for byte: Cell::state_delta shipping no positions (split_once filtered to None) fails a_broken_cycle_is_unwound_and_hedged_end_to_end at the delta assertion `delta.positions.len() == 1` (cell.rs restored, sha256 7add12ca402beffe); advisory_disagreements_of reading the stated side twice fails it at 'the centre did not learn the leg the cell holds' and fails the plane unit test; the backwards-sequence check dropped fails the plane unit test. Kept PARTIAL: no hedge is asserted end to end because the failed pass's orders never reach the centre, and no node is deployed."
   },
   {
     "id": "R12-QUANT-7144",

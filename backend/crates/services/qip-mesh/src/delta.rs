@@ -38,7 +38,7 @@ use qip_contracts::message::BookSide;
 use qip_contracts::regional_episode::RegionalEpisode;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_contracts::wire::{CrossRecord, FillRecord};
+use qip_contracts::wire::{AdvisoryPosition, CrossRecord, FillRecord};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_events::{AnyEvent, EventBody, Topic};
@@ -135,6 +135,12 @@ struct WireDelta {
     episodes: Vec<RegionalEpisode>,
     #[serde(default)]
     episodes_omitted: u32,
+    #[serde(default)]
+    positions: Vec<AdvisoryPosition>,
+    #[serde(default)]
+    positions_omitted: u32,
+    #[serde(default)]
+    positions_as_of: u64,
 }
 
 impl EventBody for WireDelta {
@@ -185,6 +191,15 @@ pub struct CellStanding {
     /// Breaks the cell recorded but no longer retains. Non-zero means the
     /// list above understates the incident.
     pub reconciliation_breaks_omitted: u32,
+    /// The cell's open positions as it stated them (ADR 0208): part of the
+    /// standing, replaced not summed, advisory to the centre's own books.
+    /// Absent on a delta sealed before the field, which decodes as none
+    /// stated at sequence zero.
+    pub positions: Vec<AdvisoryPosition>,
+    /// Positions the cell held and did not send.
+    pub positions_omitted: u32,
+    /// The cell's journal sequence the positions were taken at.
+    pub positions_as_of: u64,
 }
 
 /// The incremental half: what happened since the previous delta.
@@ -263,6 +278,9 @@ pub fn decode_cell_delta(frame: &AnyEvent) -> Result<DecodedCellDelta> {
             utilisation: wire.utilisation,
             reconciliation_breaks: wire.reconciliation_breaks,
             reconciliation_breaks_omitted: wire.reconciliation_breaks_omitted,
+            positions: wire.positions,
+            positions_omitted: wire.positions_omitted,
+            positions_as_of: wire.positions_as_of,
         },
         interval: CellInterval {
             orders: wire.orders,
@@ -549,6 +567,35 @@ mod tests {
         assert_eq!(decoded.interval.episodes[0].cell, "london-1");
         assert_eq!(decoded.interval.episodes[0].kind.as_str(), "failure");
         assert_eq!(decoded.interval.episodes_omitted, 3);
+        Ok(())
+    }
+
+    /// ADR 0208: a delta sealed before positions rode the wire decodes as a
+    /// cell that stated none at sequence zero, and one carrying a position
+    /// delivers it whole with its sequence beside it.
+    #[test]
+    fn a_delta_written_before_positions_existed_decodes_as_having_stated_none() -> Result<()> {
+        let payload = wire_payload();
+        assert!(
+            payload.get("positions").is_none(),
+            "the fixture already carries positions, so this proves nothing"
+        );
+        let decoded = decode_cell_delta(&frame_with(payload)?)?;
+        assert!(decoded.standing.positions.is_empty());
+        assert_eq!(decoded.standing.positions_as_of, 0);
+        assert_eq!(decoded.standing.positions_omitted, 0);
+
+        let mut payload = wire_payload();
+        payload["positions"] = serde_json::json!([{
+            "object_id": "obj-ACME",
+            "venue": "XLON",
+            "quantity": "25"
+        }]);
+        payload["positions_as_of"] = serde_json::json!(17);
+        let decoded = decode_cell_delta(&frame_with(payload)?)?;
+        assert_eq!(decoded.standing.positions.len(), 1);
+        assert_eq!(decoded.standing.positions[0].venue.as_str(), "XLON");
+        assert_eq!(decoded.standing.positions_as_of, 17);
         Ok(())
     }
 

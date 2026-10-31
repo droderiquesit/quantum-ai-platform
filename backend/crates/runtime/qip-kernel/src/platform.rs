@@ -7474,6 +7474,14 @@ impl Platform {
                 return Err(error);
             }
         };
+        // ADR 0208: where the cell's own statement of its book disagrees with
+        // what the centre settled from that cell's fills, the disagreement is
+        // a capture problem on the record — not a correction of either side.
+        // The settled book stays the truth for every balance; the statement
+        // is the cell's claim, and a claim the centre cannot reproduce from
+        // the fills it was sent is the thing a reconciler looks at next.
+        self.capture_problems
+            .extend(ingestion.advisory_disagreements.iter().cloned());
         // One observation per report absorbed. `halted` is `None` exactly
         // where the report reconciled — the plane sets it from the union of
         // the cell's own breaks and the settlement's `UnsentFill` findings —
