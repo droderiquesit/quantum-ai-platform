@@ -1025,7 +1025,7 @@
     "verification": "cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-edge; cargo test -p qip-capital-fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed. 2026-10-31 lane L1-MONEY, triage regrade check: disabling the per-transfer cap (gate.rs, `if amount > caps.max_per_transfer()` in TransferGate::assess) fails qip-api tests/fabric.rs for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_and_every_one_under_all_of_them_is_admitted_at_the_amount_asked; restored with cp+cmp. No model is in the path. Independent security-engineer skeptic REFUTED the COMPLETE regrade. Bar 2: capital_fabric_file is null in every tfvars, so on every default root no TransferIntent is built and the gate never runs; \"the unset file is not a bypass\" is true and is not a default path. Bar 3 is unproven: the gate covers only the declared-command path, and paper orders and capital grants are bounded by other controls. Kept PARTIAL."
   },
   {
     "id": "R12-RISK-1044",
