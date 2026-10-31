@@ -50,8 +50,13 @@ vocabulary, and nobody had chosen it.
    - cash as a share of equity;
    - gross exposure over equity (the leverage);
    - net exposure over equity;
-   - the number of approved theses still waiting for construction. These are
-     the book's open claims on capital for the next pass.
+   - the number of approved theses still waiting for construction. These
+     would be the book's open claims on capital for the next pass, but on
+     the shipped cycle the count always reads zero. UNDERSTAND runs before
+     REASON queues theses, and DECIDE drains the queue in the same cycle.
+     The term in decision 3 is therefore inert on the shipped path. It is
+     kept because a caller that holds theses across passes would read it,
+     and it is recorded as a gap rather than presented as working.
 
    Money crosses from `Decimal` to `f64` at that one place, as statistics.
    Nothing comes back out as an amount.
@@ -75,6 +80,12 @@ vocabulary, and nobody had chosen it.
      moves no capital between regions. ADR 0039's region shares are policy,
      not a forecast this member could be scored on.
    - optionality. No option position exists in the book.
+   - liquidity, which the requirement names in its title. This member does
+     not model it; the liquidity read that sign-off uses is a separate
+     control and is not a federation member.
+   - leverage and net exposure as modelled state. The view carries both
+     figures, but nothing reads them yet, so they are recorded and not
+     forecast.
 
    These clauses of the requirement stay open, and the row says so.
 
@@ -82,8 +93,9 @@ vocabulary, and nobody had chosen it.
 
 - The funding member is scored like every other member:
   - by resolution, on the log;
-  - with no path to a decision. The federation's arbitrated view narrows
-    sizing only through ADR 0125's existing disagreement rule.
+  - with no path to a decision. ADR 0125's disagreement rule narrows sizing
+    only for instrument propositions (`narrowings_of`), so a funding view
+    cannot narrow anything.
 - The member cannot move money and cannot place an order. It reads the
   paper book and forecasts that book's own cash.
 - Making this wrong:

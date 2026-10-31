@@ -837,7 +837,7 @@ pub fn halted_proposition(cycle: u64) -> String {
     format!("self:halted-next-pass@{cycle}")
 }
 
-/// The proposition the next confirmed chain view answers.
+/// The proposition the next pass's book cash answers (ADR 0194).
 pub fn funding_proposition(cycle: u64) -> String {
     format!("capital:funding-draw-next-pass@{cycle}")
 }
