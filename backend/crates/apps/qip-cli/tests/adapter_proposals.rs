@@ -49,16 +49,21 @@ fn platform() -> Result<Platform> {
 }
 
 fn entry(id: &str, url: &str) -> Result<CandidateEntry> {
+    entry_over(
+        id,
+        url,
+        AccessMechanism::Rest {
+            auth: AuthRequirement::None,
+            incremental_parameter: None,
+            page_size: 100,
+        },
+    )
+}
+
+fn entry_over(id: &str, url: &str, mechanism: AccessMechanism) -> Result<CandidateEntry> {
     let candidate = SourceCandidate::new(
         SourceIdentity::new(id, format!("{id} feed"), "Example Data Ltd")?,
-        SourceEndpoint::parse(
-            url,
-            AccessMechanism::Rest {
-                auth: AuthRequirement::None,
-                incremental_parameter: None,
-                page_size: 100,
-            },
-        )?,
+        SourceEndpoint::parse(url, mechanism)?,
         SourceCoverage::new(
             [AssetClass::Equity],
             [SourceRegion::UsEast],
@@ -173,6 +178,51 @@ fn an_approved_candidate_yields_an_adapter_proposal_matching_its_access_mechanis
     assert!(
         matches!(closed, Proposal::None { reason, .. } if reason.starts_with("refused")),
         "a source whose robots rules forbid crawling yields no adapter: {closed:?}"
+    );
+    Ok(())
+}
+
+/// The plan follows the access mechanism, not a default: a WebSocket source
+/// the finder approves is proposed as a push adapter that must buffer
+/// arrivals and drain them on poll, at the heartbeat the source declared.
+///
+/// Mutation: in `plan_for`, report `Delivery::Pull` for every mechanism —
+/// the WebSocket proposal claims no buffering and this fails.
+#[test]
+fn an_approved_streaming_source_is_proposed_as_a_buffered_push_adapter() -> Result<()> {
+    const STREAM_URL: &str = "https://stream.example/quotes";
+    let mut platform = platform()?;
+    let mut probe = served(
+        InMemoryProbe::new(),
+        "stream.example",
+        STREAM_URL,
+        "User-agent: *\nAllow: /\n",
+    );
+    let entries = vec![entry_over(
+        "stream",
+        STREAM_URL,
+        AccessMechanism::WebSocket {
+            auth: AuthRequirement::None,
+            subscribe_frame: r#"{"subscribe":"quotes"}"#.to_string(),
+            heartbeat_interval: Duration::from_secs(30),
+        },
+    )?];
+    let proposals = propose(&mut platform, &entries, Some(&mut probe), start())?;
+    let Some(Proposal::Adapter { plan, .. }) = proposals.first() else {
+        panic!("premise: the finder approves the streaming source: {proposals:?}");
+    };
+    assert_eq!(plan.mechanism, "websocket");
+    assert!(
+        plan.requires_buffering(),
+        "a push source's adapter must buffer and drain on poll"
+    );
+    assert!(
+        proposals[0]
+            .lines()
+            .iter()
+            .any(|line| line.contains("must buffer arrivals")),
+        "the reviewer is told: {:?}",
+        proposals[0].lines()
     );
     Ok(())
 }
