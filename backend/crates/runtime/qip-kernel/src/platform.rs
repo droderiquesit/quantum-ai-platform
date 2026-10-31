@@ -26164,6 +26164,19 @@ impl Platform {
         &self.universe_history
     }
 
+    /// The adapter and lifecycle engine `object_id`'s desk position was
+    /// booked through, or `None` where the desk has never held it
+    /// (R12-ASSET-1015).
+    pub fn position_booking(
+        &self,
+        object_id: &str,
+    ) -> Option<(
+        crate::asset_class_registry::ClassAdapter,
+        crate::asset_class_registry::LifecycleEngine,
+    )> {
+        self.position_bookings.get(object_id).copied()
+    }
+
     /// Every withdrawal record this kernel's review has written, oldest
     /// first, with the evidence each was made on.
     ///
