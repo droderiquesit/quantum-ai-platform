@@ -448,3 +448,20 @@ that narrows a security scanner, whatever the owner has delegated.
     so the deletion stays a finding the scan would have raised. ADR 0128 is
     not edited: a lane never edits an existing ADR, and nothing in it becomes
     false by the deletion.
+
+12. **R12-QUANT-4018 keeps the skeptic's gaps, and decision 10's proposed
+    gap text is not applied** (lane L4, decided 06:20 UTC). Decision 10
+    ruled the row IMPLEMENT and proposed regrading its gap to "none open;
+    producer optional and unbuilt by ADR 0150 d5" once the promotion-seam
+    guard landed. The guard landed, and the lane's skeptic then found two
+    defects the ruling did not know about: the promotion seam checks that a
+    calibrated baseline card exists and never compares the candidate against
+    it, and a promotion restored from the log skips
+    `require_eligible_workload`. A ruling written before a finding does not
+    outrank the finding, so the row stays PARTIAL with the skeptic's gaps.
+    Both defects are refusals that are missing, so closing them is a
+    tightening and is handed back to lane L4: the seam refuses a candidate
+    that does not beat its baseline card, and a restored promotion passes the
+    same eligibility check a live one does, each with a test that fails when
+    the check is removed. The ruling's text is kept in the row's notes as the
+    record of what was decided and why it was superseded.
