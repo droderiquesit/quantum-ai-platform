@@ -214,6 +214,29 @@ impl Routing {
         }
     }
 
+    /// ADR 0192: a candidate whose instruments a registered source already
+    /// covers is admitted no higher than `Cold` unless its composite beats
+    /// that incumbent's. The improvement is what earns Hot or Warm routing; a
+    /// source that adds nothing over what is held is collected for history
+    /// and research only, and DATA-018's policy retires it once stale. A
+    /// rejected routing stays rejected, and a routing already at Cold keeps
+    /// its class and gains a basis naming the incumbent.
+    pub fn held_to_incumbent(self, incumbent: &str, incumbent_composite: f64) -> Self {
+        if self.class == RoutingClass::Rejected || self.composite > incumbent_composite {
+            return self;
+        }
+        Self {
+            class: RoutingClass::Cold,
+            composite: self.composite,
+            basis: format!(
+                "cold: composite {:.3} does not beat the registered incumbent `{incumbent}` at \
+                 {incumbent_composite:.3} on the same instruments, so it is collected for \
+                 history and research only (ADR 0192)",
+                self.composite
+            ),
+        }
+    }
+
     pub fn class(&self) -> RoutingClass {
         self.class
     }

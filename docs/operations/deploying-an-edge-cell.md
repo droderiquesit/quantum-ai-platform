@@ -64,6 +64,20 @@ is a resource no plan has yet proposed. Two facts bound what it can promise:
   `backend/crates/apps/qip-edge-node/tests/pass.rs`; run by no deployed
   node, because of the first bullet.
 
+## Before the sequence: three files and a pool every node needs to start
+
+`execution_nodes_enabled = true` is refused at plan unless the environment
+sets all three of `artefact_trust_bundle_file`, `google_tls_roots_file` and
+`certificate_authority` (`infrastructure/terraform/execution-nodes-enabled.tf`).
+None was set anywhere until 2026-10-31, and this runbook did not name them,
+so the nine acts below reached act 9 and stopped at a validation nobody had
+been told about. What each is, where it comes from and what state it is in is
+in `docs/ops/runbooks/owner-switches.md`, under `execution_nodes_enabled`. In
+short: the Google roots are committed at `infrastructure/trust/google-roots.pem`
+and only need naming; the trust bundle is rendered from the applied
+`artefact_signing` keys, and the CA pool is `certificate_authority` applied —
+both billed, both the owner's. Do those before act 1.
+
 ## The exact sequence, for the one node ADR 0035 authorises
 
 `## Do this` below is how each field is chosen. This is the order the acts

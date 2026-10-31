@@ -32,6 +32,45 @@ fn history() -> Result<UniverseHistory> {
     Ok(h)
 }
 
+/// A running platform learns an outage in two halves — the venue went out
+/// now, and came back later — so the history takes an open outage that
+/// overlaps every later window until it is closed. Mutation: make
+/// `open_outage` write `from` as `until`; the open outage overlaps nothing and
+/// the first assertion fails.
+#[test]
+fn an_open_outage_overlaps_every_later_window_until_it_is_closed() -> Result<()> {
+    let mut h = history()?;
+    h.open_outage("XLON", day(20), "withdrawn on feasibility evidence")?;
+    assert_eq!(
+        h.outages_overlapping("XLON", day(400), day(401)).len(),
+        1,
+        "an open outage must overlap a window long after it began"
+    );
+    assert!(
+        h.outages_overlapping("XLON", day(19), day(20)).is_empty(),
+        "an outage does not reach back before it began"
+    );
+    assert!(
+        h.open_outage("XLON", day(21), "twice").is_err(),
+        "one venue is out once at a time"
+    );
+    assert!(
+        h.close_outage("XLON", day(20)).is_err(),
+        "a venue cannot come back before it went"
+    );
+    assert!(
+        h.close_outage("XLON", day(25))?,
+        "the open outage was closed"
+    );
+    assert!(!h.close_outage("XLON", day(26))?, "nothing was left open");
+    assert!(
+        h.outages_overlapping("XLON", day(400), day(401)).is_empty(),
+        "a closed outage no longer overlaps later windows"
+    );
+    assert_eq!(h.outages_overlapping("XLON", day(22), day(23)).len(), 1);
+    Ok(())
+}
+
 #[test]
 fn a_universe_as_of_a_past_date_includes_an_instrument_delisted_afterwards() -> Result<()> {
     let h = history()?;
@@ -100,6 +139,63 @@ fn history_records_that_would_rewrite_it_are_refused() -> Result<()> {
             reason: String::new(),
         })
         .is_err()
+    );
+    Ok(())
+}
+
+/// A platform lists its assembled universe from the instant it assembled,
+/// the earliest it can say it knew the name, and then meets bars dated
+/// before that. The listing moves back to the earliest evidence and never
+/// forward: a history that kept the assembly instant would say an
+/// instrument did not exist on a date it visibly traded, and a backtest as
+/// of that date would find an empty universe (R12-TICK-2090). Moving it
+/// forward on later evidence would shorten a listing on no fact at all.
+///
+/// Mutation: make `backdate_listing` leave `listed_from` alone — the
+/// membership-before-assembly assertion fails. Mutation: let a later `at`
+/// move the start forward — the never-forward assertion fails.
+#[test]
+fn a_listing_moves_back_to_earlier_evidence_and_never_forward() -> Result<()> {
+    let mut h = UniverseHistory::new();
+    h.list(id("obj-assembled"), "ASMB", day(100))?;
+    assert!(
+        !h.is_member_at(&id("obj-assembled"), day(40)),
+        "the premise: before any earlier evidence the name is listed from assembly only"
+    );
+
+    assert!(
+        h.backdate_listing(&id("obj-assembled"), day(40))?,
+        "earlier evidence must move the listing back"
+    );
+    assert!(h.is_member_at(&id("obj-assembled"), day(40)));
+    assert_eq!(
+        h.listing(&id("obj-assembled")).map(|l| l.listed_from),
+        Some(day(40))
+    );
+    assert_eq!(
+        h.resolve("ASMB", day(40)).map(|o| o.as_str().to_string()),
+        Some("obj-assembled".to_string()),
+        "the first symbol era moves back with the listing"
+    );
+
+    assert!(
+        !h.backdate_listing(&id("obj-assembled"), day(70))?,
+        "later evidence must not move the listing"
+    );
+    assert_eq!(
+        h.listing(&id("obj-assembled")).map(|l| l.listed_from),
+        Some(day(40)),
+        "a listing's start moved forward"
+    );
+
+    assert!(
+        h.backdate_listing(&id("obj-unknown"), day(1)).is_err(),
+        "a name the history does not hold is list's job, not a backdate"
+    );
+    h.delist(&id("obj-assembled"), day(60))?;
+    assert!(
+        h.backdate_listing(&id("obj-assembled"), day(30))?,
+        "a delisted name still moves back to evidence before its listing"
     );
     Ok(())
 }

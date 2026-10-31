@@ -484,6 +484,41 @@ impl SymbolicDerivation {
         })
     }
 
+    /// The rule and invariant ids whose firing made [`Self::veto`]
+    /// (R12-EXPAND-6044): the trace steps that derived the two hard-stop
+    /// facts, and the pack's live-authority invariant where the ceiling was
+    /// the stop. Empty when there is no veto. Read from the verdict's own
+    /// trace rather than restated here, so a rule renamed in the pack is
+    /// named by its new id without this function knowing.
+    pub fn veto_rules(&self) -> Vec<String> {
+        if self.veto().is_none() {
+            return Vec::new();
+        }
+        let Step::Derived(verdict) = &self.rules.verdict else {
+            return Vec::new();
+        };
+        let mut rules: Vec<String> = verdict
+            .trace
+            .iter()
+            .filter(|step| {
+                matches!(step.fact.as_str(), "lot_exceeds_budget" | "cash_short")
+                    && step.value == Value::Bool(true)
+            })
+            .map(|step| step.rule.clone())
+            .collect();
+        if self
+            .rules
+            .inputs
+            .iter()
+            .any(|(name, value)| name == "live_authority" && *value == Value::Bool(true))
+        {
+            rules.push("i10-no-eligibility-under-live-authority".to_string());
+        }
+        rules.sort();
+        rules.dedup();
+        rules
+    }
+
     /// ADR 0212: why no money may move on this conclusion, or `None` when
     /// its parts hold together.
     ///

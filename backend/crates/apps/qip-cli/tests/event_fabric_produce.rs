@@ -18,7 +18,7 @@ use qip_core::SystemClock;
 use qip_events::event_fabric::catalogue::Catalogue;
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_streaming::event_fabric::broker::Broker;
-use qip_streaming::event_fabric::service::Service;
+use qip_streaming::event_fabric::service::{Service, TopiclessStreams};
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::retry::ThreadSleeper;
 use qip_transport::server::{Request, Response, Server, ServerLimits};
@@ -68,6 +68,7 @@ impl Fabric {
                     SegmentLogConfig::new(Arc::new(SystemClock))
                         .with_archive_required(policy.archive_required())
                 }),
+                TopiclessStreams::AdmitAll,
             )
             .unwrap(),
         );

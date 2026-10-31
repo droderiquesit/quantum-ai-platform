@@ -835,7 +835,18 @@ impl DataFinder {
             reasoning.record(LifecycleStage::Score, format!("{name} {value:.3}"));
         }
 
-        let routing = Routing::decide(legality.overall(), &scores);
+        let mut routing = Routing::decide(legality.overall(), &scores);
+        // ADR 0192, R12-EXPAND-1014: the recorded benchmark for a source is
+        // the composite of the registered source already covering its
+        // instruments. A candidate every one of whose instruments an
+        // incumbent covers is held to the best such incumbent: it earns Hot or
+        // Warm routing only by beating it, and otherwise enters Cold, where
+        // DATA-018's policy retires it once it is stale. A candidate covering
+        // an instrument nothing holds has no incumbent and is routed on its
+        // own merits.
+        if let Some((incumbent, incumbent_composite)) = self.best_incumbent_for(&source) {
+            routing = routing.held_to_incumbent(&incumbent, incumbent_composite);
+        }
         reasoning.record(LifecycleStage::Route, routing.basis().to_string());
 
         if !routing.class().is_collected() {
@@ -1437,6 +1448,44 @@ impl DataFinder {
     /// Candidates are scored the same way registration scores them, so a
     /// replacement is ranked on the same basis as the source it replaces.
     /// Reports honestly when nothing covers it.
+    /// The registered source a candidate is benchmarked against (ADR 0192):
+    /// the highest-composite registered source whose coverage includes every
+    /// instrument the candidate covers, by id on a tie, and `None` when any
+    /// of the candidate's instruments is covered by no registered source.
+    /// Only a source with instruments to compare on has an incumbent.
+    fn best_incumbent_for(&self, candidate: &Source) -> Option<(String, f64)> {
+        let wanted = candidate.coverage().instruments();
+        if wanted.is_empty() {
+            return None;
+        }
+        let covering: Vec<&RegisteredSource> = self
+            .registry
+            .values()
+            .filter(|held| held.source().id() != candidate.id())
+            .filter(|held| held.quarantine_reason().is_none())
+            .filter(|held| {
+                let theirs = held.source().coverage().instruments();
+                wanted.iter().any(|instrument| theirs.contains(instrument))
+            })
+            .collect();
+        let covered_all = wanted.iter().all(|instrument| {
+            covering
+                .iter()
+                .any(|held| held.source().coverage().instruments().contains(instrument))
+        });
+        if !covered_all {
+            return None;
+        }
+        covering
+            .into_iter()
+            .map(|held| (held.source().id().to_string(), held.routing().composite()))
+            .max_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then_with(|| right.0.cmp(&left.0))
+            })
+    }
+
     pub fn find_replacement(
         &self,
         lost_id: &str,

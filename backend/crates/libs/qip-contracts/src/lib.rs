@@ -28,6 +28,7 @@
 //!   parts do not sum to.
 
 pub mod action;
+pub mod admission;
 pub mod ambient;
 pub mod capital;
 pub mod captured_event;

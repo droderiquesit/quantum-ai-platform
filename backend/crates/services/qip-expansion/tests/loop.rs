@@ -7,7 +7,7 @@
 //! shows the reading would be read, then that the gap was raised.
 
 use qip_agents::tools::{ToolKind, ToolName, ToolRegistry};
-use qip_contracts::expansion::{CapabilityVerb, GapClass};
+use qip_contracts::expansion::{CapabilityVerb, GapClass, TheoryDelta};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_expansion::campaigns::{self, TickCampaignDetector, TickCampaignTrigger};
 use qip_expansion::curriculum::{Budget, State, TaskKind};
@@ -18,7 +18,7 @@ use qip_expansion::detectors::{
     ContestedKey, Decline, Origin, PersistenceTracker, Reading, Refusal, Residual,
     anomaly_clusters, contested_evidence, contradictions, coverage, incompetent_specialists,
     low_confidence, missing_causal_links, model_drift, refusal_clusters, repeated_vetoes,
-    split_by_wanting, unexplained_residuals,
+    split_by_wanting, theory_contradictions, unexplained_residuals,
 };
 use qip_expansion::executor::{CampaignPolicy, FillResidual, run_fill_bias_campaign};
 use qip_expansion::gap::{GapTrigger, Observation, Wanting, classify, raise};
@@ -1224,4 +1224,87 @@ fn a_drifted_model_raises_one_model_drift_gap_per_reference() {
                 .any(|e| *e == format!("model:{reference}"))
         );
     }
+}
+
+/// R12-EXPAND-6044: theory deltas are read as revision tasks, one per rule
+/// the deltas name, wanting the model and never a source or a link; two
+/// deltas against one rule are one task twice as severe as one. Mutation:
+/// make `theory_contradictions` group by delta rather than by rule — the
+/// shared rule is raised twice and the `len() == 2` assertion fails; or make
+/// it want a `Source` — the class assertion fails.
+#[test]
+fn a_theory_delta_is_a_revision_task_naming_the_rule_and_wanting_the_model() {
+    let delta = |hypothesis: &str, rules: &[&str]| TheoryDelta {
+        pack: "kernel-hypothesis-rules".into(),
+        version: 3,
+        rules: rules.iter().map(|r| (*r).to_string()).collect(),
+        hypothesis_id: hypothesis.into(),
+        proposed_change: format!("review {}", rules.join(", ")),
+        contradicting_evidence: vec![
+            format!("hypothesis:{hypothesis}"),
+            "verdict:vindicated".into(),
+        ],
+        proposed_at: Timestamp::from_secs(1_760_000_000),
+    };
+    let deltas = vec![
+        delta("HYP-1", &["r61-cash-short-of-one-lot"]),
+        delta(
+            "HYP-2",
+            &[
+                "r60-lot-exceeds-position-budget",
+                "r61-cash-short-of-one-lot",
+            ],
+        ),
+    ];
+    assert!(
+        deltas.iter().all(|d| d.validate().is_ok()),
+        "premise: both deltas are well-formed"
+    );
+
+    let tasks = theory_contradictions(&deltas);
+    assert_eq!(tasks.len(), 2, "one task per rule named: {tasks:?}");
+    for task in &tasks {
+        assert_eq!(task.trigger, GapTrigger::Contradiction);
+        assert_eq!(class_of(task), GapClass::Model);
+        assert_eq!(task.evidence[0], Origin::TheoryContradiction.as_str());
+        assert!(
+            task.evidence
+                .iter()
+                .any(|e| e == "pack:kernel-hypothesis-rules@v3"),
+            "{:?}",
+            task.evidence
+        );
+    }
+    let cash = tasks
+        .iter()
+        .find(|t| {
+            t.evidence
+                .iter()
+                .any(|e| e == "rule:r61-cash-short-of-one-lot")
+        })
+        .expect("the shared rule is one task");
+    assert!(
+        (cash.severity - 2.0 / 3.0).abs() < 1e-12,
+        "two of three contradictions: {cash:?}"
+    );
+    assert!(
+        cash.evidence.iter().any(|e| e == "hypothesis:HYP-1")
+            && cash.evidence.iter().any(|e| e == "hypothesis:HYP-2"),
+        "both contradicted theses are cited: {:?}",
+        cash.evidence
+    );
+    let lot = tasks
+        .iter()
+        .find(|t| {
+            t.evidence
+                .iter()
+                .any(|e| e == "rule:r60-lot-exceeds-position-budget")
+        })
+        .expect("the other rule is its own task");
+    assert!((lot.severity - 1.0 / 3.0).abs() < 1e-12, "{lot:?}");
+    assert!(
+        lot.observation.contains("is not moved"),
+        "{}",
+        lot.observation
+    );
 }

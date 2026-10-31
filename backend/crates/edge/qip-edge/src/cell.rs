@@ -33,6 +33,7 @@ use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
+use qip_contracts::FeatureVector;
 use qip_contracts::action::{Ground, Justification};
 use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{Capability, DegradationState, Freshness, StrategyClass};
@@ -1160,6 +1161,10 @@ impl CellConfig {
 #[derive(Clone, Debug, Default)]
 pub struct WorkReport {
     pub signals: Vec<Signal>,
+    /// The feature vector this pass evaluated and every strategy sized
+    /// against (ADR 0132 decision 4): carried out so the node can digest it
+    /// per pass without a second evaluation that could disagree.
+    pub features: FeatureVector,
     /// Directional signals this pass that stated no edge and so were not
     /// judged by the net-edge gate (ADR 0155 §9). Counted only on a cell that
     /// built the gate, so the desk can see how much trading it does not judge.
@@ -4854,7 +4859,17 @@ impl Cell {
                 // not swallowed here.
                 state.apply(message)?;
             }
-            self.features.ingest(message)?;
+            // R12-TICK-2062: the feature engine is told how far the venue's
+            // stamp may be from the truth, so a cross-instrument feature can
+            // decline to order two samples the clocks cannot separate. The
+            // lead is the stamp's distance ahead of receipt, floored at zero
+            // where the stamp trails, as the feed's capture floors it.
+            let lead = message
+                .venue_time
+                .since(message.capture_time)
+                .max(Duration::ZERO);
+            let uncertainty = self.clock_uncertainty(&venue, lead)?;
+            self.features.ingest_placed(message, uncertainty)?;
         }
         // Judged once the whole batch is in, never between two messages of
         // it: a venue moving up publishes the new bid before it withdraws
@@ -5430,6 +5445,7 @@ impl Cell {
         let retired = self.disposition_intents(now, &mut report, &mut intents);
 
         let vector = self.features.evaluate(now)?;
+        report.features = vector.clone();
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
         self.signal_sequences.clear();
 
@@ -11801,6 +11817,35 @@ impl Cell {
             // newest that fit and counts the rest (ADR 0207).
             episodes: self.episodes.clone(),
             episodes_omitted: 0,
+            // The book as the venue's confirmed fills built it (ADR 0208):
+            // every non-zero signed quantity, in the map's own venue-then-
+            // instrument order. A key the cell cannot read back into a venue
+            // and an instrument is counted as omitted rather than guessed.
+            positions: self
+                .positions
+                .iter()
+                .filter(|(_, quantity)| !quantity.is_zero())
+                .filter_map(|(key, quantity)| {
+                    let (venue, object) = key.split_once('/')?;
+                    Some(qip_contracts::wire::AdvisoryPosition {
+                        object_id: ObjectId::from_string(object),
+                        venue: VenueId::new(venue),
+                        quantity: *quantity,
+                    })
+                })
+                .collect(),
+            positions_omitted: u32::try_from(
+                self.positions
+                    .iter()
+                    .filter(|(key, quantity)| !quantity.is_zero() && !key.contains('/'))
+                    .count(),
+            )
+            .unwrap_or(u32::MAX),
+            positions_as_of: self
+                .journal
+                .entries()
+                .last()
+                .map_or(0, |entry| entry.sequence),
         };
         delta.bound_refusals();
         delta

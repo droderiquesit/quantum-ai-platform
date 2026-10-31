@@ -357,3 +357,93 @@ fn every_arbitrage_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_na
         holds(test_file, test, item);
     }
 }
+
+/// The ten items of "Asset management" (R12-ASSET-1160): (item, seam file,
+/// seam symbol, test file, test name). Every seam is on the kernel's cycle
+/// or an operator route the API composes, and every test drives the
+/// platform rather than the helper.
+const ASSET_MANAGEMENT: [(&str, &str, &str, &str, &str); 10] = [
+    (
+        "portfolio construction",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn construct_from(",
+        "crates/runtime/qip-kernel/tests/solver_routing.rs",
+        "fn a_cycle_that_sizes_a_proposal_journals_the_solver_and_the_classical_baseline_it_was_measured_against",
+    ),
+    (
+        "mandates",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn review_position_mandates(",
+        "crates/runtime/qip-kernel/tests/position_record.rs",
+        "fn every_held_position_resolves_to_a_mandate_and_target_or_is_flagged",
+    ),
+    (
+        "horizons",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "pub fn arm_horizon_gate(",
+        "crates/runtime/qip-kernel/tests/position_record.rs",
+        "fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liquidity",
+    ),
+    (
+        "valuation",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "pub fn sizing_confidence(",
+        "crates/runtime/qip-kernel/tests/valuation_seam.rs",
+        "fn a_cycle_whose_thesis_rests_on_a_mark_past_its_review_date_sizes_nothing_and_says_when_it_fell_due",
+    ),
+    (
+        "lifecycle",
+        "crates/runtime/qip-kernel/src/position_life.rs",
+        "pub fn on_fill(",
+        "crates/runtime/qip-kernel/tests/position_life.rs",
+        "fn an_exited_unsettled_position_is_not_attributed",
+    ),
+    (
+        "corporate actions",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn apply_corporate_action(",
+        "crates/runtime/qip-kernel/tests/ledger.rs",
+        "fn a_split_the_book_took_before_a_restart_is_on_the_log_and_is_not_taken_again_when_the_tape_is_fed_to_the_new_process",
+    ),
+    (
+        "commitments",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "pub fn record_capital_call(",
+        "crates/runtime/qip-kernel/tests/capital_calls.rs",
+        "fn a_capital_call_is_refused_before_anything_is_journalled_and_an_admitted_one_is_on_the_log",
+    ),
+    (
+        "divestment",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn begin_deliberate_close(",
+        "crates/runtime/qip-kernel/tests/position_record.rs",
+        "fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held",
+    ),
+    (
+        "hedging",
+        "crates/runtime/qip-kernel/src/platform.rs",
+        "fn review_hedges(",
+        "crates/runtime/qip-kernel/tests/hedge.rs",
+        "fn a_declared_hedge_policy_is_surveyed_against_the_book_in_decide_and_reaches_the_log",
+    ),
+    (
+        "attribution",
+        "crates/runtime/qip-kernel/src/attribution.rs",
+        "pub fn note_release(",
+        "crates/runtime/qip-kernel/tests/model_tournament.rs",
+        "fn a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys",
+    ),
+];
+
+#[test]
+fn every_asset_management_scope_item_names_a_seam_and_a_test_that_still_exist() {
+    assert_eq!(
+        ASSET_MANAGEMENT.len(),
+        10,
+        "premise: the requirement lists ten items"
+    );
+    for (item, seam_file, seam, test_file, test) in ASSET_MANAGEMENT {
+        holds(seam_file, seam, item);
+        holds(test_file, test, item);
+    }
+}
