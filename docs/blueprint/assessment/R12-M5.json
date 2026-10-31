@@ -99,19 +99,23 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'The ledger, not a model or cache, is the authority' unmet: agreement with the platform book is shown only in a test; two books exist in production. The 'desk fills are not shipped' text is stale as of 84e4e33d. Authority clause still unmet: two books exist."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'The ledger, not a model or cache, is the authority' unmet: agreement with the platform book is shown only in a test; two books exist in production. The 'desk fills are not shipped' text is stale as of 84e4e33d. Authority clause still unmet: two books exist. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): qip-ledgerd's balances are the book of record and the kernel's desk book a working copy; per the skeptic the comparison runs only once the ledger's applied desk-chain position reaches the acknowledged ship, a trailing ledger refuses desk intake as lag and lifts on catch-up without recording a break, and only a difference at an equal position is a break. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L1b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: qip-ledgerd's balances are the book of record for cash and positions: the kernel's desk book is a working copy checked against them after every acknowledged ship, and a disagreement refuses new desk orders until a recorded correction, never by overwriting either side.. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-5005",
     "status": "PARTIAL",
-    "current": "Account::Reserved and a reservation OperationKind post reserved inventory through LedgerOperation into the double-entry journal; qip-ledgerd's LedgerStore::record_operation books operations with idempotency; tests prove posting, unwind and trial balance.",
+    "current": "Account::Reserved and a reservation OperationKind post reserved inventory through LedgerOperation into the double-entry journal; qip-ledgerd's LedgerStore::record_operation books operations with idempotency; tests prove posting, unwind and trial balance. Trading inventory books from fills (R12-LEDGER-5004). No path observes an inventory reservation: qip-kernel commerce_research.rs applies only LedgerEvent::Received through plane_apply, CommerceResearch::work_listed sells with reservation None, LedgerEvent::Reserved appears nowhere outside qip-financial, and qip-capital's ReservationLedger reserves capital, not inventory. OperationKind::InventoryReservation stays bookable and tested (qip-contracts tests, qip-ledgerd tests/history.rs) with no producer, by ADR 0153's Consequences.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:67 Account variants",
       "backend/crates/libs/qip-financial/src/commerce.rs:700 separate commerce Ledger",
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:755 plane_apply(LedgerEvent::Received), :919 work_listed sell(..., None)",
+      "backend/crates/services/qip-capital/src/reservation.rs:100 ReservationLedger (capital, not inventory)",
+      "backend/crates/apps/qip-ledgerd/tests/history.rs (OperationKind::InventoryReservation booked in a test only)",
+      "docs/adr/0153 Consequences: 'Everything else is bookable and has no producer by decision'"
     ],
-    "gap": "No production producer for this kind. Two other kinds now reach qip-ledgerd from production (treasury funding at every desk start, capital-grant funding at issue; ADR 0123 decisions 5 and 6), so the path exists; what is missing is an observer of a reservation. The one place inventory is reserved is the commerce research plane's event-sourced ledger (qip_financial::commerce::LedgerEvent::Reserved, qip-kernel/src/commerce_research.rs), which runs only when the deep brain is handed a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN) and no committed environment sets one, so a producer there would run on no default or committed path.",
+    "gap": "2026-10-31 owner ruling, second pass (REGRADE_TEXT): no reservation is invented to give InventoryReservation a producer. The earlier gap's 'the one place inventory is reserved is the commerce research plane' is wrong against the code: nothing on any path reserves a unit today, and ADR 0153 leaves every kind it does not name bookable, with no producer by decision. Commerce research is off by default in code: the unset QIP_DEEPBRAIN_BREADTH_PLAN is the restrictive value manifest_wiring pins. R12-ASSET-4073 allows a commerce-only breadth plan in dev's committed configuration (decision 13 sends its mount to an ADR first), and even with that plan mounted nothing reserves a unit. The kind reopens only when a path actually reserves a unit; its producer then journals the whole operation at that seam (ADR 0153 decision 1), with a qip-ledgerd read-back test of Account::Reserved whose dropped posting fails. Status stays PARTIAL. Earlier: No production producer for this kind. Two other kinds now reach qip-ledgerd from production (treasury funding at every desk start, capital-grant funding at issue; ADR 0123 decisions 5 and 6), so the path exists; what is missing is an observer of a reservation. The one place inventory is reserved is the commerce research plane's event-sourced ledger (qip_financial::commerce::LedgerEvent::Reserved, qip-kernel/src/commerce_research.rs), which runs only when the deep brain is handed a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN) and no committed environment sets one, so a producer there would run on no default or committed path.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -122,7 +126,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to add inventory operations only where a production path observes the fact: PARTIAL->PARTIAL, no producer added; the gap names the observing path and why it does not qualify."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to add inventory operations only where a production path observes the fact: PARTIAL->PARTIAL, no producer added; the gap names the observing path and why it does not qualify. Owner ruling 2026-10-31, second pass (REGRADE_TEXT): I invent no reservation to give InventoryReservation a producer. Nothing on any path reserves a unit today, and ADR 0153 leaves every kind it does not name bookable, with no producer by decision. Corrected on 2026-10-31: current and evidence gain the finding that no path reserves inventory; the earlier gap's claim that the commerce plane reserves inventory is corrected; status unchanged. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-5006",
@@ -180,7 +184,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "2026-10-24 (class LARGE_SPLITTABLE, no slice built): unchanged from lane L15's finding and still not closable in one lane. Opening a lot per strategy share inside LedgerStore::apply's paper-buy arm works, but closing the row needs three changes in one commit: (1) every oracle that compares balances() or events() with a fill-only refold (qip-ledgerd tests store.rs, fabric.rs, history.rs; qip-acceptance vertical_slice_ledgerd, vertical_slice_cell_ledger, vertical_slice_ship, desk_record_parity, desk_ledger_property) must first fold lot postings through one shared pure function; (2) a sell fill must relieve lots by FIFO (or another declared method) posting Phase::Unwind of the relieved quantity and proportional basis, or open quantity overstates after any sale; (3) a lot id must avoid ':' and '/' (order@session-sequence works). A partial slice would leave the ledger's balances disagreeing with every refold oracle, so none was built. No ADR decides the relief method; that is the open design question.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. I choose no relief method under the delegation. FIFO, average cost or specific identification is a tax method for a jurisdiction, and ADR 0153 decision 7 holds that such a method is a legal fact this repository has never been shown. A lot relieved by a method I picked would sit in the ledger of record and read as booked. OperationKind::TaxLot stays bookable and readable, with no producer. The row stays PARTIAL until a person with the facts declares the jurisdiction and its relief method in a committed record. Closes on: Nothing is built now. The gap opens with this ruling and cites ADR 0153 decision 7 as declining the lot producer. It names the missing input: a committed record, from a person with the facts, naming the jurisdiction and the relief method. Then an ADR amending ADR 0153 decision 7 opens a lot per paper buy in LedgerStore::apply's fill arm and relieves lots by the declared method, posting Phase::Unwind of the quantity and proportional basis. Lot ids take the form order@session-sequence. Every refold oracle switches to one shared pure fold in the same commit. Test: 'a sell relieves the declared lots and the open lot quantity read back equals the position'. Mutation: drop the lot posting. Earlier: 2026-10-24 (class LARGE_SPLITTABLE, no slice built): unchanged from lane L15's finding and still not closable in one lane. Opening a lot per strategy share inside LedgerStore::apply's paper-buy arm works, but closing the row needs three changes in one commit: (1) every oracle that compares balances() or events() with a fill-only refold (qip-ledgerd tests store.rs, fabric.rs, history.rs; qip-acceptance vertical_slice_ledgerd, vertical_slice_cell_ledger, vertical_slice_ship, desk_record_parity, desk_ledger_property) must first fold lot postings through one shared pure function; (2) a sell fill must relieve lots by FIFO (or another declared method) posting Phase::Unwind of the relieved quantity and proportional basis, or open quantity overstates after any sale; (3) a lot id must avoid ':' and '/' (order@session-sequence works). A partial slice would leave the ledger's balances disagreeing with every refold oracle, so none was built. No ADR decides the relief method; that is the open design question.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -191,7 +195,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader. Gap corrected 2026-10-18 by lane L15 after an attempted closure. Lane T4-LEDGER 2026-10-24: re-read against the code (grep finds OperationKind::TaxLot only in the contract and ledgerd's read-back), re-dated, no code change."
+    "notes": "Text corrected 2026-10-18 by an independent grader. Gap corrected 2026-10-18 by lane L15 after an attempted closure. Lane T4-LEDGER 2026-10-24: re-read against the code (grep finds OperationKind::TaxLot only in the contract and ledgerd's read-back), re-dated, no code change. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): I choose no relief method under the delegation. FIFO, average cost or specific identification is a tax method for a jurisdiction, and ADR 0153 decision 7 holds that such a method is a legal fact this repository has never been shown. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-5009",
@@ -436,7 +440,7 @@
     "verification": "cargo test -p qip-ledgerd plus a subledger test",
     "work_item": "",
     "size": "M",
-    "notes": "Lane T4-LEDGER 2026-10-24: gap re-dated against ADR 0153 decision 9; no code change."
+    "notes": "Lane T4-LEDGER 2026-10-24: gap re-dated against ADR 0153 decision 9; no code change. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0153 decision 9 stands, and the producer it names now exists (dfd4d446). But it queues each PhysicalInventory operation without journalling it, which decision 1 forbids. Handed to lane L1b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-5019",
@@ -615,7 +619,7 @@
     "verification": "cargo test -p qip-financial --test commerce a_unit_with_an_open_reconciliation_break; cargo test -p qip-financial --test commerce a_seeded_dif",
     "work_item": "",
     "size": "L",
-    "notes": "Lane T4-LEDGER 2026-10-24 (ADR 0153 decision 8). Mutations that fired: removing the hold_on check from CommercePlane::sell (test failed 'a held unit is not sold'); making a clean reconcile pass clear every open break (test failed 'a clean pass is not a correction'). Kept PARTIAL: warehouse reconciliation not built by decision, and the commerce plane is not enabled in any committed environment."
+    "notes": "Lane T4-LEDGER 2026-10-24 (ADR 0153 decision 8). Mutations that fired: removing the hold_on check from CommercePlane::sell (test failed 'a held unit is not sold'); making a clean reconcile pass clear every open break (test failed 'a clean pass is not a correction'). Kept PARTIAL: warehouse reconciliation not built by decision, and the commerce plane is not enabled in any committed environment. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0153 decision 8 stands: no warehouse statement is built, because a simulated warehouse drawn from the same ledger would agree by construction and prove nothing. Handed to lane L1b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-LEDGER-5027",
@@ -805,7 +809,7 @@
     "verification": "node test with in-process qip-streaming broker double",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0133 decision 4 already answers this, and it stands: telemetry leaves the node only by the scrape and is not a fabric record kind. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-MESH-5035",
@@ -1052,14 +1056,14 @@
   {
     "id": "R12-EXEC-5045",
     "status": "PARTIAL",
-    "current": "Order types (backend/crates/edge/qip-routing/src/ordertype.rs:37), best-venue selection (backend/crates/edge/qip-edge/tests/best_venue.rs), leg sequencing via CycleRouter (qip-routing/src/pathcycle.rs:193) and plan order, cancel/replace via Requoter (backend/crates/apps/qip-edge-node/src/reprice.rs, tests/pass.rs:1173). Quote engine: ModeGate enables only OrderTaking and Routing (backend/crates/apps/qip-edge-node/src/lib.rs:180-186), so quoting is refused at Cell::send.",
+    "current": "Order types (backend/crates/edge/qip-routing/src/ordertype.rs:37), best-venue selection (backend/crates/edge/qip-edge/tests/best_venue.rs), leg sequencing via CycleRouter (qip-routing/src/pathcycle.rs:193) and plan order, cancel/replace via Requoter (backend/crates/apps/qip-edge-node/src/reprice.rs, tests/pass.rs:1270). Quote engine: ModeGate enables only OrderTaking and Routing (backend/crates/apps/qip-edge-node/src/lib.rs:231-250), so quoting is refused at Cell::send. The quote engine is declined with O15 (2026-10-31, see R12-EXEC-1168).",
     "evidence": [
       "backend/crates/edge/qip-routing/src/ordertype.rs:37",
       "backend/crates/edge/qip-edge/tests/best_venue.rs",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs:1173",
-      "backend/crates/apps/qip-edge-node/src/lib.rs:180 mode gate"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:1270 a_requote_seals_its_cancel_acknowledgement_and_its_replacement_and_moves_the_open_order",
+      "backend/crates/apps/qip-edge-node/src/lib.rs:231-250 mode gate"
     ],
-    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
+    "gap": "2026-10-31 owner ruling, second pass (REGRADE_TEXT): quote engine: O15 declined 2026-10-31 (see R12-EXEC-1168); it reopens only by the owner's own ADR. The node keeps refusing ContinuousQuoting at Cell::send, so no edge quote engine is built, and Cell::record_replacement's requote count would also refuse a continuous quoter under ConductPolicy::default. Order types, venue selection, leg sequencing and cancel/replace stand as built, and the row stays PARTIAL on the quote engine alone. Earlier: Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1070,7 +1074,7 @@
     "verification": "cargo test -p qip-edge-node --test pass; cargo test -p qip-edge --test best_venue",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: An edge quote engine (quoting mode is refused at the node)."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: An edge quote engine (quoting mode is refused at the node). Owner ruling 2026-10-31, second pass (REGRADE_TEXT): O15 is declined, as on R12-EXEC-1168. The node keeps refusing ContinuousQuoting at Cell::send, so no edge quote engine is built. Corrected on 2026-10-31: stale citations corrected in current and evidence (tests/pass.rs:1173 to :1270, lib.rs:180-186 to :231-250); the ruling also asks that O15 be cleared from blocked_by, which this pass leaves to the grader; status unchanged. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-MESH-5046",
@@ -1867,7 +1871,7 @@
       "backend/crates/edge/qip-edge/tests/reservation.rs",
       "backend/crates/edge/qip-edge/tests/region_table.rs"
     ],
-    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
+    "gap": "2026-10-31 owner ruling, second pass (REFUSE_LIVE): needs live orders or real capital: never closable. O15 is declined: quoting keeps no path to an order, on the simulator as everywhere else. Lifting quote_loop's no-path-to-an-order and the edge node's quoting refusal would remove two guards from the paper boundary. Quoting is order submission at every real venue, so no delegation opens it. The reservation table keeps holding every cell order, arbitrage legs included. The row stays PARTIAL on its market-making clause. If an ADR ever admits quoting, its quotes reserve through RegionTable and nowhere else. Closes on: None under this delegation, and the requirement's separate-ledger mutation stays unrunnable. The gap opens with the refusal. Any future ADR that admits quoting must route quote reservations through qip-edge RegionTable. It must carry the test that a quote and an arbitrage leg on the same capital cannot both reserve it, and a mutation that gives quoting a separate ledger must make that test fail. Earlier: Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1878,7 +1882,7 @@
     "verification": "cargo test -p qip-edge --test reservation --test region_table",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Market-making reservations through the same table."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Market-making reservations through the same table. Owner ruling 2026-10-31, second pass (REFUSE_LIVE): O15 is declined: quoting keeps no path to an order, on the simulator as everywhere else. Lifting quote_loop's no-path-to-an-order and the edge node's quoting refusal would remove two guards from the paper boundary. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXEC-5079",
@@ -1947,7 +1951,7 @@
       "backend/crates/runtime/qip-kernel/src/breadth.rs::Platform::revise_market_permissions",
       "backend/crates/apps/qip-deepbrain/src/breadth.rs::PermissionWatch::refresh"
     ],
-    "gap": "2026-10-24: The continuous validity review is real and mutation-checked but reviews nothing unless a breadth plan creates markets, and no committed environment supplies one (QIP_DEEPBRAIN_BREADTH_PLAN unset everywhere). Closing: a committed environment sets the variable, or the row is narrowed to the library.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The market factory stays off on every committed path. The commerce-only plan I allowed under R12-ASSET-4073 stays commerce-only, because a factory section needs a venue, product and jurisdiction register, and I do not ship one whose references nobody issued, for the reason ADR 0220 gives. The validity review is built and fires on the binary path. The row stays PARTIAL until a deployed deep brain creates a market under a register an owner can trace, and the review withdraws one. Closes on: No code now. The gap records: off by decision (2026-10-31, consistent with R12-ASSET-4073's commerce-only scope and ADR 0220). The row reopens with an ADR, landed in the same change that mounts a factory section in a deployed environment's gitops deepbrain.yaml as a secret-projected file, the way universe.json is mounted, so PermissionWatch re-reads it and an operator revokes by editing it. That ADR states what a simulated-venue market's venue, product and jurisdiction permissions rest on. The row closes when a deployed cycle line shows the market created, and a revocation in the mounted file withdraws it at the next cycle. an_unset_plan_installs_nothing stays. Earlier: 2026-10-24: The continuous validity review is real and mutation-checked but reviews nothing unless a breadth plan creates markets, and no committed environment supplies one (QIP_DEEPBRAIN_BREADTH_PLAN unset everywhere). Closing: a committed environment sets the variable, or the row is narrowed to the library.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1960,7 +1964,7 @@
     "verification": "new test",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The revocation test reaches set_permissions through market_factory_mut, which only tests call: a legal-validity control that cannot fire in a binary. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the validity review reviews nothing unless a breadth plan creates markets (the stage returns at once when idle), and QIP_DEEPBRAIN_BREADTH_PLAN is set in no committed environment."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The revocation test reaches set_permissions through market_factory_mut, which only tests call: a legal-validity control that cannot fire in a binary. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the validity review reviews nothing unless a breadth plan creates markets (the stage returns at once when idle), and QIP_DEEPBRAIN_BREADTH_PLAN is set in no committed environment. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): The market factory stays off on every committed path. The commerce-only plan I allowed under R12-ASSET-4073 stays commerce-only, because a factory section needs a venue, product and jurisdiction register, and I do not ship one whose references nobody issued, for the reason ADR 0220 gives. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVENT-5082",
@@ -2047,7 +2051,7 @@
       "backend/crates/services/qip-prediction/tests/belief.rs:223",
       "backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarketPlane"
     ],
-    "gap": "Breadth plan unset by default (an_unset_plan_installs_nothing); no tfvars sets it.",
+    "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_EXTERNAL): missing: a third party (a vendor, a licence record under ADR 0157, a registrar, a credential or a second approver) nobody engages under the delegation. The event plane stays off on every committed path, as I ruled for R12-EVENT-5083: it opens only with a licensed event source (ADR 0151 decision 10). I do not ship a default plan whose venue, product and jurisdiction permissions are self-issued. Pricing from beliefs is built and tested, and the row stays PARTIAL until a licensed source is catalogued and a deployed plan prices contracts under a register whose references someone can trace. Closes on: No code now. The gap records: off by decision (R12-EVENT-5083, ADR 0151 d10) until a licensed event source has an ADR 0157 licence record and a catalogue entry (R12-WORLD-3047). After that, a deployed environment mounts a plan file through its gitops deepbrain.yaml, as universe.json is mounted, so PermissionWatch re-reads it. Its event_markets section carries permissions whose references name that record. The row closes when the deployed deep brain's cycle line shows priced outcomes with implied bands. an_unset_plan_installs_nothing stays as the default's pin. Earlier: Breadth plan unset by default (an_unset_plan_installs_nothing); no tfvars sets it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2058,7 +2062,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_EXTERNAL): The event plane stays off on every committed path, as I ruled for R12-EVENT-5083: it opens only with a licensed event source (ADR 0151 decision 10). Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EVENT-5086",
@@ -2168,7 +2172,7 @@
     "verification": "cargo test -p qip-kernel --test breadth",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one. 2026-10-24 N2-FABRIC-DATA: gap restated to the ADR 0153 decision; no code changed, status unchanged."
+    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one. 2026-10-24 N2-FABRIC-DATA: gap restated to the ADR 0153 decision; no code changed, status unchanged. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0153 decision 8 is amended in its chargeback clause only; its ledger clause stands. A commerce plan must declare a paper chargeback rate beside its fees, and a plan without one is refused at load. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A commerce plan declares a paper chargeback rate, a unit's chargeback risk is read from it and reserved against its resale, and no chargeback is booked.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-COMMERCE-5091",
@@ -2190,7 +2194,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, DISCOVER runs scout() only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets, so the Product Scout runs on no default or deployed path."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, DISCOVER runs scout() only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets, so the Product Scout runs on no default or deployed path. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): R12-ASSET-4073's commerce-only dev plan stands, but per the skeptic and decision 13 the mount cannot land as a patch first: an ADR for a per-file config mount comes first, then one protected patch carrying every part, with gitops.rs's hash-named-path guard extended to derive each file's path and never weakened, no compiled-in default and no loosened _PATH validation. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-COMMERCE-5092",
@@ -2214,7 +2218,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The committed dev plan carries an equivalent pair across two merchants, one counterfeit by GTIN and one by seller, with the named test and mutation; per the skeptic it is sequenced after decision 13's per-file mount ADR and lands inside that ADR's protected patch. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-COMMERCE-5093",
@@ -2237,7 +2241,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A cycle under the committed dev plan journals a CommerceSimulated assessment carrying all six figures, and a candidate missing any input stays refused, at plan load or at the candidate stage; per the skeptic it is sequenced after decision 13's per-file mount ADR and lands inside that ADR's protected patch. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-COMMERCE-5094",
@@ -2286,7 +2290,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (WRITE_PATCH): The commerce-only dev plan is synthetic, buys only from SimulatedMerchant and fails closed on an incomplete logistics plan; per the skeptic one patch carries every part (variables.tf, dev's tfvars, the infra.yml seed, a catalogue.tf conditional, the main.tf slot and accessor, deepbrain.yaml, the manifest_wiring move and the plan file) and nothing lands first, after decision 13's per-file mount ADR. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Decision 13 sends this mount to a per-file mount ADR first; the patch follows that ADR. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-COMMERCE-5096",
@@ -2335,7 +2339,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (WRITE_PATCH): The resale router runs only on the simulated commerce plane, inside R12-COMMERCE-5095's one-patch mount; per the skeptic the committed plan names no venues (ResaleEntry refuses unknown fields), the three simulated venues come from CommerceResearch::resale_quotes, and the test pins that the first quote is not the highest-net venue. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Decision 13 sends this mount to a per-file mount ADR first; the patch follows that ADR. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-COVERAGE-5098",
@@ -2384,7 +2388,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A basket or an index carries its constituents and their weights. It is valued only from those constituents' prices. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A basket or an index is valued and risked through its weighted constituents, and an applied corporate action books one LedgerOperation that the book's LotAdjusted record carries, under ADR 0153 decision 1.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-COVERAGE-5100",

@@ -414,3 +414,107 @@ impl Contract for ForecastStateFields {
         self.uncertainty.check(c)
     }
 }
+
+/// Who a forecast task is put to (R12-WORLD-10091): the four kinds of
+/// solver the forecast router fans one question out to, so that each answers
+/// independently and their disagreement is a measurement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForecastSolver {
+    /// A fitted model in the forecast lattice's population.
+    SpecialistModel,
+    /// An agent of the organisation, reasoning over the evidence.
+    Agent,
+    /// A world-model federation member.
+    WorldModel,
+    /// A simulator: the twin's future tree or a scenario run.
+    Simulator,
+}
+
+impl ForecastSolver {
+    pub const ALL: [Self; 4] = [
+        Self::SpecialistModel,
+        Self::Agent,
+        Self::WorldModel,
+        Self::Simulator,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SpecialistModel => "specialist_model",
+            Self::Agent => "agent",
+            Self::WorldModel => "world_model",
+            Self::Simulator => "simulator",
+        }
+    }
+}
+
+/// Why a forecast task was issued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForecastTrigger {
+    /// The routine question every promoted current-state vector raises.
+    StateVector,
+    /// The NOW Brain was surprised by the subject this cycle.
+    Surprise,
+}
+
+/// One independent forecast question put to one kind of solver at one
+/// horizon (R12-WORLD-10091): the task contract the forecast router fans a
+/// state vector or a surprise out as. It names the subject, the horizon the
+/// answer is due over and the instant it is due by, so a reader can say
+/// which solver was asked what, and when an answer became late.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForecastTask {
+    pub task_id: String,
+    pub subject: String,
+    /// The horizon's name, e.g. `hours_days`.
+    pub horizon: String,
+    /// The span the forecast is over.
+    pub span: Duration,
+    pub solver: ForecastSolver,
+    pub trigger: ForecastTrigger,
+    pub issued_at: Timestamp,
+    /// `issued_at + span`.
+    pub due_by: Timestamp,
+}
+
+impl ForecastTask {
+    /// A task, refusing a blank subject or horizon name and a span that is
+    /// not positive: a question over no time asks nothing, and a blank
+    /// subject asks it about nothing.
+    pub fn new(
+        subject: &str,
+        horizon: &str,
+        span: Duration,
+        solver: ForecastSolver,
+        trigger: ForecastTrigger,
+        issued_at: Timestamp,
+    ) -> Result<Self> {
+        if subject.trim().is_empty() || horizon.trim().is_empty() {
+            return Err(Error::invalid(
+                "a forecast task names its subject and horizon; a blank one asks about nothing",
+            ));
+        }
+        if span <= Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "a forecast task for {subject} at {horizon} spans {span:?}, which is no time; \
+                 state the horizon's span"
+            )));
+        }
+        Ok(Self {
+            task_id: format!(
+                "{subject}:{horizon}:{}@{}",
+                solver.as_str(),
+                issued_at.as_nanos()
+            ),
+            subject: subject.to_string(),
+            horizon: horizon.to_string(),
+            span,
+            solver,
+            trigger,
+            issued_at,
+            due_by: issued_at.saturating_add(span),
+        })
+    }
+}

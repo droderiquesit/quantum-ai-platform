@@ -279,6 +279,16 @@ resource "google_cloud_run_v2_job" "fleet" {
   labels              = local.labels
   deletion_protection = false
 
+  # The project's Binary Authorization policy (R12-SEC-9110). Cloud Run
+  # enforces it only on a job or service that asks for it, so without this
+  # block the worker image ran unattested in a project whose default rule
+  # requires an attestation. Fail closed: the worker image now needs an
+  # attestation from the project's build attestor (or an exact-repository
+  # entry in exempt_image_patterns) before this Job will run it.
+  binary_authorization {
+    use_default = true
+  }
+
   template {
     # One packet per task. The dispatcher sets the task count per run; the
     # parallelism is the ladder's current rung and is capped at 40 by variable.
