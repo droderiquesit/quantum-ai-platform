@@ -484,6 +484,27 @@ fn accepted_by_the_cell(frames: &[AnyEvent], root: &TrustRoot) -> VerifiedEnvelo
         .expect("the plan slot is produced");
     assert_eq!(plan.digest, sha256_hex(&plan_bytes));
     assert_eq!(plan.strategies, 1);
+    // R12-REFLEX-5030: beside the plan, the opportunity manifest naming its
+    // entry rule by the definition the node will compile, so the node
+    // activates the slice strategy rather than reading it as unnamed.
+    // Mutation: drop the slot from the fixture payload.
+    let opportunities = payload
+        .opportunity_definitions
+        .value()
+        .expect("the opportunity slot is produced");
+    assert_eq!(
+        opportunities.opportunities,
+        qip_cli::event_fabric::grant::plan_opportunities(
+            &String::from_utf8(plan_bytes.clone()).expect("the plan is text")
+        )
+        .expect("the plan digests"),
+    );
+    assert!(
+        opportunities
+            .opportunities
+            .contains_key("microprice-guard/microprice-defined"),
+        "{opportunities:?}"
+    );
     let manifest = payload
         .capital_grants
         .value()
