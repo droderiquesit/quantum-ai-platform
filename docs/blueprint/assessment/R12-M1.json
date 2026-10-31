@@ -3720,12 +3720,15 @@
   {
     "id": "R12-ASSET-1160",
     "status": "PARTIAL",
-    "current": "Portfolio construction, valuation, cash flows, attribution and hedging survey exist; corporate actions/divestment not evidenced.",
+    "current": "Nine of ten 'Asset management' items have a production seam on the cycle or an operator route and a named test; divestment has a seam (Platform::begin_deliberate_close in submit_order moves the register Held->Flagged->Unwinding through Portfolio::begin_unwind) that the default desk cycle reaches only on a loss-making full exit.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs (ASSET_MANAGEMENT, every_asset_management_scope_item_names_a_seam_and_a_test_that_still_exist)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (fn begin_deliberate_close, called from Platform::submit_order)",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs (selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held)",
       "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs:586",
       "backend/crates/libs/qip-financial/tests/valuation.rs:138"
     ],
-    "gap": "2026-10-24 (re-read against the tree): No inspection table maps each scope item to code reached from a composition root plus a named test. On today's tree construction (construct_from), mandates (desk mandate, qip-capital ledger), horizons (arm_horizon_gate), valuation (sizing_confidence), corporate actions (queue_/apply_due_/apply_corporate_action), commitments (record_capital_call via POST /ledger/commitments/:commitment/capital-calls), hedging (hedge_review in DECIDE) and attribution (LEARN) are on the kernel path. Divestment is not (Portfolio::begin_unwind and secondary_exit::plan_secondary_exit have no production caller), and lifecycle is partial (PositionLifecycle never moved to Flagged/Unwinding by the kernel; LifeStage unused, see R12-ASSET-4071). Plain code: wire begin_unwind at the kernel's close-to-flat seam, then commit the per-item mapping.",
+    "gap": "2026-10-31: Divestment is not on the default path. begin_deliberate_close unwinds a position only when a sell's quantity covers the whole long, and construct_from sizes an exit leg as narrowed free capital times the held weight (lot x average cost / equity), floored to whole lots, so a full exit at or above cost always sells less than the long and is recorded as a trim. Plain code: in stage_act_orders, begin the unwind for a sell leg whose target_weight is zero on a held long, and prove it with a run_cycle test whose tape makes the construction size that leg; plan_secondary_exit still has no production caller. The inspection table names a seam and a test per item but proves only that the strings exist.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3733,10 +3736,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "inspection: scope_inspections.rs maps all ten items to a seam and a named test (mutation: renaming the divestment test fails it naming `divestment`); divestment seam: position_record.rs test, mutation-verified by deleting the begin_deliberate_close call (Held instead of Unwinding) and by dropping the trim guard (a trim unwound).",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'corporate actions not evidenced' is stale: the kernel queues and applies corporate actions (queue_corporate_action, apply_due_corporate_actions, apply_corporate_action, with unit tests in platform.rs); hedging is a production DECIDE-stage survey."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'corporate actions not evidenced' is stale: the kernel queues and applies corporate actions (queue_corporate_action, apply_due_corporate_actions, apply_corporate_action, with unit tests in platform.rs); hedging is a production DECIDE-stage survey. | 2026-10-31 lane L3-DATA: wired Portfolio::begin_unwind at submit_order and committed the per-item scope map in qip-acceptance. Independent skeptic REFUTED promotion: the divestment seam fires on the default cycle only for loss-making full exits, because exit legs are sized from narrowed capital and floored to lots; row stays PARTIAL with that step in the gap."
   },
   {
     "id": "R12-CAPITAL-1161",
