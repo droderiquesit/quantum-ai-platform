@@ -270,12 +270,30 @@ impl ResearchBacklog {
         Ok(())
     }
 
-    /// The oldest held work, journaled as drained, or `None` when nothing
-    /// waits.
-    pub fn drain_next(&mut self, at: Timestamp) -> Result<Option<HeldWork>> {
-        let Some(cycle) = self.pending.front().map(|work| work.cycle) else {
-            return Ok(None);
-        };
+    /// Journal the oldest held work as drained and remove it, once its
+    /// rounds have run. `cycle` must name that work.
+    ///
+    /// Two steps rather than one pop: the work is handed back by
+    /// [`Self::pending`] and only recorded drained here, after it ran. A
+    /// drain journaled before the work ran lost it whenever the round did
+    /// not run after all — research shed, a loop not attached, a later step
+    /// of the cycle failing — and a restart replayed the journal to an empty
+    /// backlog with nothing run.
+    pub fn mark_drained(&mut self, cycle: u64, at: Timestamp) -> Result<()> {
+        match self.pending.front().map(|work| work.cycle) {
+            Some(oldest) if oldest == cycle => {}
+            Some(oldest) => {
+                return Err(Error::invalid(format!(
+                    "cycle {cycle}'s held rounds are not the oldest waiting (cycle {oldest} is); \
+                     the backlog drains in order"
+                )));
+            }
+            None => {
+                return Err(Error::invalid(format!(
+                    "cycle {cycle}'s held rounds are not waiting; nothing is held"
+                )));
+            }
+        }
         self.append(
             BacklogRecord::Drained {
                 cycle,
@@ -283,7 +301,8 @@ impl ResearchBacklog {
             },
             at,
         )?;
-        Ok(self.pending.pop_front())
+        self.pending.pop_front();
+        Ok(())
     }
 
     pub fn pending(&self) -> impl Iterator<Item = &HeldWork> {

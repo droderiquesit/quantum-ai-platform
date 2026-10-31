@@ -639,24 +639,18 @@ pub fn run_with(
             ..crate::cognition::CognitionRound::default()
         };
         // Recovered: what the outage held is handed back before this cycle's
-        // own rounds, oldest first, each to the loops it was held from.
-        let mut drained: Vec<crate::cognition::HeldWork> = Vec::new();
-        let mut cognition_failures: Vec<String> = Vec::new();
-        if lost.is_none()
-            && let Some(backlog) = loops.backlog.as_deref_mut()
-        {
-            loop {
-                match backlog.drain_next(now) {
-                    Ok(Some(work)) => drained.push(work),
-                    Ok(None) => break,
-                    Err(error) => {
-                        cognition_failures.push(format!("research backlog: {}", error.message()));
-                        break;
-                    }
-                }
-            }
-        }
-        cognition.drained = drained.iter().map(|work| work.cycle).collect();
+        // own rounds, oldest first, each to the loops it was held from. It is
+        // read here and recorded drained only once its rounds have run (see
+        // the end of the cycle), so a round that does not run stays held.
+        let drained: Vec<crate::cognition::HeldWork> = if lost.is_none() {
+            loops
+                .backlog
+                .as_deref()
+                .map(|backlog| backlog.pending().cloned().collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         let revised = loops
             .permissions
@@ -672,7 +666,6 @@ pub fn run_with(
 
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
-        outcome.side_failures.append(&mut cognition_failures);
         if let Some(shipper) = loops.desk.as_deref_mut()
             && let Err(error) = shipper.ship(platform)
         {
@@ -852,6 +845,31 @@ pub fn run_with(
                     "research backlog: none is attached, so cycle {cycles}'s held rounds are \
                      not queued; they were not run either"
                 )),
+            }
+        }
+        // Each handed-back round is recorded drained once every loop it was
+        // held from actually ran this cycle; the first that did not stops the
+        // drain, so the backlog keeps its order and loses nothing.
+        if let Some(backlog) = loops.backlog.as_deref_mut() {
+            for work in &drained {
+                let ran = work.loops.iter().all(|held| match held {
+                    crate::cognition::CognitiveLoop::Search
+                    | crate::cognition::CognitiveLoop::Learning => evolution.is_some(),
+                    crate::cognition::CognitiveLoop::Research => !shed && loops.research.is_some(),
+                    crate::cognition::CognitiveLoop::Tick => loops.tick.is_some(),
+                });
+                if !ran {
+                    break;
+                }
+                match backlog.mark_drained(work.cycle, now) {
+                    Ok(()) => cognition.drained.push(work.cycle),
+                    Err(error) => {
+                        outcome
+                            .side_failures
+                            .push(format!("research backlog: {}", error.message()));
+                        break;
+                    }
+                }
             }
         }
         cognition.pending = loops
@@ -1590,6 +1608,82 @@ mod tests {
             "the backlog journal is not the outage in order"
         );
         assert!(backlog.log().verify_chain().is_ok());
+    }
+
+    /// A held round that cannot run on recovery stays held. The drain was
+    /// once journaled before the work ran, so a research round handed back to
+    /// a node with no research loop attached (or research shed, or a later
+    /// step failing) was recorded drained, gone from the backlog, and never
+    /// run, and a restart replayed the journal to an empty backlog.
+    ///
+    /// Mutation: record a work drained whether or not its loops ran (`let ran
+    /// = true`). The first assertion fails.
+    #[test]
+    fn a_held_round_that_cannot_run_on_recovery_stays_held_and_drains_when_it_can() {
+        use crate::cognition::{BacklogDestination, CognitiveLoop, HeldWork, ResearchBacklog};
+        use crate::status::Unready;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut backlog =
+            ResearchBacklog::open(&BacklogDestination::InMemory).expect("an empty backlog opens");
+        backlog
+            .hold(HeldWork {
+                cycle: 7,
+                held_at: start(),
+                cause: Unready::Halted,
+                loops: BTreeSet::from([CognitiveLoop::Research]),
+            })
+            .expect("one round is held");
+        assert_eq!(backlog.len(), 1, "premise: one held round waits");
+
+        let run_once = |backlog: &mut ResearchBacklog,
+                        research: Option<&mut crate::research::ResearchLoop>|
+         -> Vec<u64> {
+            let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+            let mut platform = platform(clock.clone());
+            let config = DeepBrainConfig {
+                max_cycles: Some(1),
+                ..brisk()
+            };
+            let status = shared(&config);
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut drained = Vec::new();
+            run_with(
+                &mut platform,
+                &archive(),
+                &config,
+                &status,
+                &stop,
+                &clock,
+                0,
+                None,
+                Loops {
+                    research,
+                    backlog: Some(backlog),
+                    ..Loops::default()
+                },
+                |outcome| drained.extend(outcome.cognition.drained.iter().copied()),
+            )
+            .expect("the loop runs");
+            drained
+        };
+
+        // Recovered, but no research loop is attached: the round cannot run.
+        assert_eq!(
+            run_once(&mut backlog, None),
+            Vec::<u64>::new(),
+            "a held research round was recorded drained on a node that could not run it"
+        );
+        assert_eq!(backlog.len(), 1, "the held round was lost without running");
+
+        // With the loop back, it runs and only then leaves the backlog.
+        let mut research = crate::research::ResearchLoop::new(
+            crate::research::ResearchConfig::default(),
+            BTreeMap::new(),
+        )
+        .expect("the research loop assembles");
+        assert_eq!(run_once(&mut backlog, Some(&mut research)), vec![7]);
+        assert!(backlog.is_empty());
     }
 
     #[test]

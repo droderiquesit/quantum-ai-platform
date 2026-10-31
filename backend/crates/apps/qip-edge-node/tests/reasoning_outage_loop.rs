@@ -518,7 +518,7 @@ fn node(
         },
     );
     if let Some((installer, compiler, handoff)) = strategies {
-        decisions = decisions.with_strategies(installer, Some((compiler, handoff)));
+        decisions = decisions.with_strategies(installer, Some((Some(compiler), handoff)));
     }
     let Some(centre) = centre else {
         return Ok(decisions);
