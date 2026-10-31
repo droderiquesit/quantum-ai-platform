@@ -637,6 +637,9 @@ fn the_synthetic_venue_replays_identically_from_the_same_seed() {
                     book.best_bid().map_or(Decimal::ZERO, |level| level.price),
                     book.best_ask().map_or(Decimal::ZERO, |level| level.price)
                 ),
+                PredictionUpdate::Observed { observations, .. } => {
+                    format!("observed:{observations:?}")
+                }
                 PredictionUpdate::Report { report, .. } => format!("report:{}", report.outcome),
             })
             .collect::<Vec<_>>()
@@ -647,6 +650,65 @@ fn the_synthetic_venue_replays_identically_from_the_same_seed() {
         "the same seed must replay identically"
     );
     assert_ne!(render(9), render(10));
+}
+
+/// R12-EVENT-5083: the synthetic venue's oracle reports what the market's
+/// own criteria say about what its named source published, and publishes
+/// that evidence before the report. Until this row the venue reported an
+/// outcome drawn at random with no observation behind it, which a consumer
+/// that refuses an uncorroborated report (ADR 0151 decision 10) would refuse
+/// every time, leaving the only exercised resolution path dead.
+///
+/// Mutation: in `SyntheticPredictionVenue::resolution_updates`, report the
+/// outcome after the one the criteria chose (rotate by one), and the
+/// `Resolved(report.outcome)` assertion fails.
+#[test]
+fn the_synthetic_venue_reports_the_outcome_its_own_observations_resolve_to() {
+    let mut reported: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for seed in 0..24 {
+        let mut config = SyntheticVenueConfig::demo(seed).expect("config");
+        config.step = Duration::from_days(1);
+        let mut venue = SyntheticPredictionVenue::new(config, now()).expect("venue");
+        let market = venue.market().clone();
+        let updates = venue
+            .poll(market.proposition.resolves_at)
+            .expect("poll past the resolution date");
+        let observed = updates
+            .iter()
+            .position(|update| matches!(update, PredictionUpdate::Observed { .. }))
+            .expect("the venue published observations at resolution");
+        let at = updates
+            .iter()
+            .position(|update| matches!(update, PredictionUpdate::Report { .. }))
+            .expect("the oracle reported at resolution");
+        assert!(observed < at, "the evidence must precede the claim");
+        let (
+            PredictionUpdate::Observed {
+                source,
+                observations,
+                market_id,
+            },
+            PredictionUpdate::Report { report, .. },
+        ) = (&updates[observed], &updates[at])
+        else {
+            unreachable!("positions found by variant");
+        };
+        assert_eq!(market_id, &market.market_id);
+        assert_eq!(source, &market.proposition.source.name);
+        assert_eq!(
+            market.evaluate(observations),
+            qip_prediction::MarketVerdict::Resolved(report.outcome.clone()),
+            "seed {seed}: the oracle reported {} against its own observations {observations:?}",
+            report.outcome
+        );
+        reported.insert(report.outcome.as_str().to_string());
+    }
+    // Premise: the draw reaches every outcome, so the agreement above is not
+    // the agreement of one fixed answer with one fixed observation.
+    assert_eq!(
+        reported.into_iter().collect::<Vec<_>>(),
+        vec!["cut", "hike", "hold"]
+    );
 }
 
 #[test]
