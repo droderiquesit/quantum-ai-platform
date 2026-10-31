@@ -328,6 +328,17 @@ fn research_pass(
             .side_failures
             .push(format!("ambient journal: {}", error.message()));
     }
+    // The source scores of this cycle, on the same journal
+    // (R12-EXPAND-6027): a score printed on a cycle line and written
+    // nowhere is a figure nobody can check against its window.
+    if let (Some(scores), Some(journal)) =
+        (outcome.source_alpha.as_ref(), loops.ambient.as_deref_mut())
+        && let Err(error) = journal.record_source_scores(cycle, scores, now)
+    {
+        outcome
+            .side_failures
+            .push(format!("source-score journal: {}", error.message()));
+    }
     if let Some(agency) = loops.agency.as_deref_mut() {
         let shared = loops
             .ambient

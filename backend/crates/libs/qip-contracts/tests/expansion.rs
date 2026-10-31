@@ -76,7 +76,7 @@ fn score() -> Value {
         "incremental_gain": 0.12, "realised_contribution": 0.31, "samples": 24,
         "window_from": 100, "window_to": 123,
         "dataset_digest": "a".repeat(64),
-        "scored_at": serde_json::to_value(qip_core::Timestamp::from_secs(1_760_000_000)).expect("a timestamp encodes")
+        "scored_at": json!(qip_core::Timestamp::from_secs(1_760_000_000))
     })
 }
 
