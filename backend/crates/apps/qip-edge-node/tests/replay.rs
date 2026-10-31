@@ -95,7 +95,7 @@ static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn temp_dir(label: &str) -> PathBuf {
     let unique = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "qip-replay-{label}-{}-{unique}",
+        "qip-replay-test-{label}-{}-{unique}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -738,5 +738,90 @@ fn a_recorded_journal_that_disagrees_with_its_own_inputs_is_caught_at_the_first_
         other => panic!("expected a journal divergence, got {other:?}"),
     }
     assert_eq!(report.journal_entries as usize, index);
+    Ok(())
+}
+
+/// Every byte of every file under `directory`, hashed in path order: what
+/// "left as it was found" means for a spool.
+fn directory_digest(directory: &std::path::Path) -> String {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the directory lists") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    let mut all = Vec::new();
+    for path in paths {
+        all.extend_from_slice(path.to_string_lossy().as_bytes());
+        all.extend_from_slice(&std::fs::read(&path).expect("the file reads"));
+    }
+    qip_core::sha256_hex(&all)
+}
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("the copy's directory");
+    for entry in std::fs::read_dir(from).expect("the directory lists") {
+        let entry = entry.expect("an entry");
+        let kind = entry.file_type().expect("a file type");
+        if kind.is_dir() {
+            copy_dir(&entry.path(), &to.join(entry.file_name()));
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), to.join(entry.file_name())).expect("the file copies");
+        }
+    }
+}
+
+/// The re-drive reads the spool directory through a copy, as the manifests
+/// do: `SegmentLog::open` is the writer's open and truncates a torn tail,
+/// and on a running node's spool that tail is the batch its writer is
+/// appending. Here the recorded spool is copied, its active segment is given
+/// a torn tail, and the session read from that directory is the recorded one
+/// while every byte of the directory is as it was before the read.
+///
+/// Mutation: make `RecordedSession::from_spool_directory` open the directory
+/// in place; recovery truncates the torn tail and the digest moves.
+#[test]
+fn a_replay_reads_a_copy_of_the_spool_and_leaves_a_torn_tail_where_it_found_it() -> Result<()> {
+    let recorded = record()?;
+    let expected = RecordedSession::from_spool(&recorded.spool)?;
+    let torn = temp_dir("torn-spool");
+    copy_dir(recorded.spool.directory(), &torn);
+    let mut segments: Vec<PathBuf> = std::fs::read_dir(&torn)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("segment."))
+        })
+        .collect();
+    segments.sort();
+    let active = segments
+        .last()
+        .expect("the premise is a spool with a segment")
+        .clone();
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&active)?;
+        file.write_all(&[0xFF; 7])?;
+    }
+    let before = directory_digest(&torn);
+
+    let read = RecordedSession::from_spool_directory(&torn)?;
+    assert_eq!(
+        read, expected,
+        "the copy did not read back the recorded session"
+    );
+    assert_eq!(
+        directory_digest(&torn),
+        before,
+        "reading the spool changed the directory: the torn tail was recovered in place"
+    );
     Ok(())
 }
