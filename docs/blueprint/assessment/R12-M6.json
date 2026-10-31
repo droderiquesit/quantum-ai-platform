@@ -815,7 +815,7 @@
     "verification": "cargo test (crate producing ModelPack lineage)",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6035",
@@ -1027,7 +1027,7 @@
     "verification": "cargo test (crate producing WorldModelSpec / WorldModelBranch)",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): No branch is spawned from an unmeasured residual; per the skeptic a spawn caller already exists in model_tournament.rs's observe_outcome (R12-MODEL-7198), so the ADR amends ADR 0149 decision 12 to ratify or remove that one caller, no second caller is added, and each spawned branch's out-of-sample Brier is journaled beside its parent's, gating nothing. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A world-model branch is spawned only from the federation's measured forecast residual on a licensed subject, enters as ADR 0149's temporary entrant triple, is scored against its parent and gates nothing (amends ADR 0149 decision 12's residual clause).. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6044",
@@ -1245,7 +1245,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant."
+    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0149 decision 6 already decided this, and I keep it. A promoted result's lane is read from its compiled form, and no latency-budget field is added. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6053",
@@ -1462,7 +1462,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-expansion --test executor",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent"
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The requirement stands, and the three missing kinds are recorded, not dropped. Open questions are the registry's Open entries. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The research registry declares six record kinds: open questions are its Open entries, a concluded verdict cites its class's ADR 0192 benchmark, and an unresolved contradiction is a record keyed by campaign id that only a concluded campaign closes, with no variable-to-subject map (amends ADR 0152 decision 11).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-EXPAND-6062",
@@ -2762,7 +2762,7 @@
     "verification": "cargo test -p qip-kernel --test central -- a_family_cleared a_promotion_naming",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 ADR 0155 lane: mechanism built, PARTIAL kept. Mutations fired: skipping the register check in promote, and reading a missing record as eligible (qip-compliance check), each failed both new tests (premise: the seeded family and venue promote first)."
+    "notes": "2026-10-24 ADR 0155 lane: mechanism built, PARTIAL kept. Mutations fired: skipping the register check in promote, and reading a missing record as eligible (qip-compliance check), each failed both new tests (premise: the seeded family and venue promote first). Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): I do not grant foundry lineages one by one. A lineage is evo-{subject}, minted per sweep at run time, and a register entry per lineage would be written to pass whatever the roots happen to run. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Promotion is judged against the compliance register by the sweep's declared alpha family, a sweep that declares none is refused, and every root that promotes arms the register from the committed paper seed baked into its image.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
   },
   {
     "id": "R12-GOV-6117",

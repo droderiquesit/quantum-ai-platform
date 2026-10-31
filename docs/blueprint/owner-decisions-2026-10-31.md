@@ -484,3 +484,377 @@ that narrows a security scanner, whatever the owner has delegated.
     unprotected ones, and CI's terraform job validates it. The parity test
     is not touched. The plan file itself is committed and a kernel test runs
     it through the cycle. The rows stay PARTIAL until the mount lands.
+
+14. **The second pass decides the 188 rows the re-triage left with the owner**
+    (2026-10-31, under decision 7). Re-triaging the register after decision
+    10 (`docs/blueprint/lanes/wave1031-triage-2026-10-31.json`) still found
+    188 rows in owner buckets: OWNER_COST 96, DECIDE_ADR 64, PROTECTED 19,
+    OWNER_DECISION 5, OWNER_LIVE 3 and OWNER_RISKLIMIT 1. The delegated
+    workflow `wave1031-owner-decisions-2` decided them the way decision 10
+    decided the first 208: sixteen batches of at most twelve rows, a
+    read-only decider per batch, and a skeptic who re-read every cited path,
+    symbol and test against the tree before a ruling stood. The verbatim
+    decisions (ruling, rationale, closure, the skeptic's notes and, where the
+    skeptic overturned, the class the decider had chosen) live in
+    `docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json`. This
+    decision records the classes, the rule each class carries and every row
+    under its class, so that a lane and a reader of the register see the
+    same decision.
+
+    The counts: 76 STAY_PARTIAL_DEPLOY, 36 ADR_THEN_IMPLEMENT, 28 IMPLEMENT,
+    21 STAY_PARTIAL_EXTERNAL, 11 REGRADE_TEXT, 9 WRITE_PATCH, 5 REFUSE_LIVE,
+    2 FUND_THEN_DEPLOY and no APPLY_PATCH. The three OWNER_LIVE rows,
+    R12-CAPITAL-4084, R12-EXEC-7004 and R12-REFLEX-10074, are refused, as
+    decision 7 refused that bucket in advance. The one OWNER_RISKLIMIT row,
+    R12-CAPITAL-4078, declares no yield shelf, routed share or ladder
+    horizon, because the share would be a new capital limit whose only
+    effect is to give up liquidity the confidence governor withheld, and
+    that is not a tightening.
+
+    The skeptic overturned the decider on 41 rows. Each of the 41 is a
+    ruling that would otherwise have reached the register wrong, which is
+    why a skeptic re-reads the tree before a ruling stands. On five the
+    class moved. Decision 10 recorded four such moves for the first pass and
+    no count of corrections within a class, so the two passes compare only
+    on that figure.
+    R12-COMMERCE-5091, 5092 and 5093 went from WRITE_PATCH to
+    ADR_THEN_IMPLEMENT, because the dev mount they ride changes how a
+    workload's config files are laid out, and decision 13 had already sent
+    that mount to an ADR first. R12-FINOPS-8041 went from REGRADE_TEXT to
+    IMPLEMENT, because Bigtable's autoscaling is declared but no plan test
+    asserts it, so the regrade would have written false evidence into the
+    row. R12-API-9059 went from STAY_PARTIAL_DEPLOY to STAY_PARTIAL_EXTERNAL,
+    because ADR 0038, as it has stood since 2026-09-19, keeps the password
+    path and reopens when Google publishes the passkey methods, not when a
+    probe runs against a running dev project. On the other 36 the class
+    held and the substance did not. Some closures would have broken or bent
+    an existing guard: R12-CICD-9072's would have failed
+    `code_reviewer_and_security_engineer_have_distinct_models`, and
+    R12-MESH-1018's told the owner to edit a pin that must not move. Some
+    would have let a row pass on an equivalent the requirement does not
+    name: R12-CICD-8117, R12-CICD-9076 and R12-CICD-9115. Some tests would
+    have failed on unmutated code, or their mutation could not bite:
+    R12-EVID-1107, 1109, 1111 and 1112, and R12-DATA-1105. Some citations
+    the tree does not hold: R12-TICK-8110's `session_replay` `from_archive`
+    and R12-MESH-1018's `THE_PEER_MESH_HAS_NO_DEPLOYED_PEER`. And one ruling
+    marked tighten-only was not: R12-EVID-2035's fold would have let a
+    posterior rise past today's update and through the red-team approval
+    gate, so the corrected ruling never moves a posterior further from the
+    prior than the current update would. Where the skeptic overturned, its
+    text is the authority for the closure and the gap, and the ruling is
+    read together with it. R12-API-9059 is the plainest case: the skeptic
+    corrects which of ADR 0038's outcomes holds.
+
+    Every ruling, as corrected, tightens only. None eases a guard, a limit,
+    a test or a paper-trading layer, none admits a dependency without an
+    ADR, and none funds anything new. The two FUND_THEN_DEPLOY rows name
+    resources decision 10 already funded, and they are not counted twice:
+    R12-SEC-7014 is R12-SEC-9137's four HSM signing keys ($10 to $11 a
+    month), and R12-SEC-9128 is R12-SEC-10054's CA Service pool ($200 to
+    $250 a month). The five REFUSE_LIVE rows (R12-CAPITAL-4084,
+    R12-CAPITAL-5078, R12-COVERAGE-7187, R12-EXEC-7004, R12-REFLEX-10074)
+    need live orders, real capital or an external action surface, so they
+    are never closable under any delegation. R12-EXEC-7004's skeptic also
+    recorded what its decider missed. The edge node does hold a REST
+    order-entry path in code (`NodeGateway::Live` over `RestGateway`). What
+    keeps that path shut is that no environment, manifest or lane selects
+    it, and that `manifest_wiring`'s `NOT_AN_ORDER_ENTRY_DIAL` refuses it as
+    a deployment dial. This decision leaves both exactly as they are.
+
+    The rule each class carries in the register
+    (`docs/blueprint/assessment/R12-*.json`), applied the same day. Every
+    row's `notes` gains "Owner ruling 2026-10-31, second pass (CLASS):" with
+    the ruling in one sentence. Where the skeptic overturned, that sentence
+    already carries the skeptic's correction. A pointer to the verbatim JSON
+    follows, and no earlier text is removed.
+
+    - **REGRADE_TEXT (11).** The row's text was older than the code, or
+      older than a decision, so `current`, `evidence` and `gap` are corrected
+      now and no status moves. O08, O10 and O15 are recorded as declined on
+      the rows that waited on them (R12-FABRIC-7039, R12-FABRIC-8077,
+      R12-FABRIC-7049, R12-EXEC-1168, R12-EXEC-5045). R12-CONTRACT-7080
+      accepts ADR 0146 decision 9's amendment. The requirement statement in
+      `docs/blueprint/requirements/R12-M7.json` still reads "authority
+      class", and its own change amends it, not this one. R12-DATA-9185
+      claims only what the skeptic verified: the journal and watermark keys
+      are hash-sharded, but the chain and tail families are not, so
+      "eliminates hotspots" stays unmet. R12-RES-10126 reads "may cover" as
+      the permission it is, and promotes nothing until a lane records a
+      mutation against each `degraded.rs` test. Every path and symbol
+      written into these rows was found in the tree on 2026-10-31, and
+      every line number the rulings cited was re-read. Where the code had
+      moved, the row cites the symbol. The rulings also ask that
+      `blocked_by` drop O08, O10 and O15, and that R12-GCP-7005's
+      `verification` name the manifest test. Those fields are left to the
+      grader, as decision 10 left them.
+    - **STAY_PARTIAL_DEPLOY (76), STAY_PARTIAL_EXTERNAL (21),
+      FUND_THEN_DEPLOY (2), REFUSE_LIVE (5).** Status unchanged. Each row's
+      `gap` opens with "2026-10-31 owner ruling, second pass (CLASS):" and
+      the statement of what is missing. That is deployment evidence the
+      owner's dispatch produces; a third party (a vendor, a licence record
+      under ADR 0157, a registrar, a credential or a second approver) nobody
+      engages under the delegation; a funded resource with its monthly cost
+      named; or, for a refusal, "needs live orders or real capital: never
+      closable". The ruling and its closure follow, then "Earlier:" and the
+      gap as it stood, so nothing a lane wrote is lost. On the fourteen of
+      these rows the skeptic overturned, the gap carries the skeptic's
+      corrected statement in place of the decider's. Three rulings carried
+      wording the skeptic asked to fix before it was written, and each was
+      fixed in the gap: R12-REFLEX-7003's double negative, R12-REFLEX-8065's
+      claim that refusing swap does the work of locking memory, and
+      R12-REFLEX-10074's claim that a live gateway is refused at start-up
+      without condition. R12-QUANT-10066's closure gains the skeptic's
+      required amendment of ADR 0122 decision 4. Some rulings in these
+      classes also order a text correction to `current`, `evidence` or
+      `blocked_by`. That correction is carried in the gap, and those fields
+      are left to the row's lane or the grader.
+    - **IMPLEMENT (28), ADR_THEN_IMPLEMENT (36).** Handed to the lanes in
+      `docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json`, by decision
+      10's map of id prefix to lane, with COMMERCE going to L1 as decision
+      13 placed it. Each row stays at its status until its lane closes it
+      with the mutation report the closure names. An ADR_THEN_IMPLEMENT
+      row's lane re-reads `docs/adr/README.md` and claims the ADR number
+      there in its own pushed commit before writing the body, under the
+      title the ruling gives. The three COMMERCE rows had no decider title
+      and carry the skeptic's, which is decision 13's per-file mount ADR.
+      Where the skeptic overturned, the handoff row carries
+      `decision_before_skeptic` and `skeptic_governs`, and the lane builds
+      to the skeptic's closure. Where an ADR title the decider wrote says
+      more than the skeptic allows (R12-CONTRACT-7062's "instead of
+      CheckedEvidence", R12-EXPAND-6043's federation residual), the ADR
+      follows the skeptic, not the title's wording.
+    - **WRITE_PATCH (9).** A lane writes the protected patch at the path
+      the ruling names under `docs/blueprint/lanes/`, and none of the nine
+      exists yet on 2026-10-31. The orchestrator then applies each patch on
+      the integration branch as far as the session permission layer allows.
+      R12-CICD-9072's `.claude/agents` hunk is refused to any agent, so that
+      hunk stays the owner's to `git apply`, as decision 3 records for its
+      kind. R12-COMMERCE-5095 and 5097 wait for decision 13's ADR, and their
+      one patch then carries every part at once. Each row keeps its status
+      until its patch is applied and its gate evidence is recorded.
+    - **APPLY_PATCH (0).** No row in this pass names an existing patch.
+      Decision 10's two owner-only patches stand as recorded there.
+
+    The handoff by lane: L1 8, L1b 8, L2 9, L3 12, L3b 7, L4 1, L4b 4, L5 2,
+    L5b 1 and L6 21, which is 73 rows. L2b has none in this pass.
+
+    ### Every row, by class (ruling in one line; the full text is in the JSON)
+
+    A row the skeptic overturned is marked [skeptic], and its line carries
+    the corrected ruling. A handed-off row names its lane.
+
+    **REGRADE_TEXT (11)**
+
+    - R12-CONTRACT-7080 — REGRADE_TEXT: I accept ADR 0146 decision 9's amendment. A goal carries no authority class. Authority lives on the action policy and starts at Shadow, and a goal document naming authority_class is refused. That is…
+    - R12-DATA-2022 — REGRADE_TEXT: The score is built as the requirement says, and its unit check holds. The gap's 'deliberately unset' is older than the code: the desk now scores every cycle by default and journals each round…
+    - R12-DATA-9185 — REGRADE_TEXT: The ledger's journal/ and watermark/ keys are hash-sharded over KEY_SHARDS = 16 and the journal family is tested, but per the skeptic chain/<cell>/... stays monotonic per cell and tail/<cell> is one… [skeptic]
+    - R12-EXEC-1168 — REGRADE_TEXT: O15 is declined. Quoting stays refused at Cell::send, and quote_loop keeps no path to an order. Lifting either removes a refusal and rewrites the acceptance tests that pin the boundary, which this…
+    - R12-EXEC-5045 — REGRADE_TEXT: O15 is declined, as on R12-EXEC-1168. The node keeps refusing ContinuousQuoting at Cell::send, so no edge quote engine is built. Order types, venue selection, leg sequencing and cancel/replace stand…
+    - R12-FABRIC-7039 — REGRADE_TEXT: O08 is declined. prost is not admitted, as ADR 0109's table already says: the fabric codec is canonical JSON under hash chains, and no wire format outside this repository asks for protobuf. The…
+    - R12-FABRIC-7049 — REGRADE_TEXT: O10 is declined. blake3 is not admitted, neither as a crate nor written in-tree, because ADR 0104 already rejected BLAKE3 for the batch chain and ADR 0043 keeps SHA-256 and HMAC as our only hash…
+    - R12-FABRIC-8077 — REGRADE_TEXT: O08 is declined. prost stays unadmitted, and I do not commission an in-tree generator either. The lock's Shape names only JSON kinds, so Rust generated from it would be weaker than the hand-written…
+    - R12-GCP-7005 — REGRADE_TEXT: The statement stands, and its check is read through ADR 0036. The catalogue's services are Config Connector RunService manifests, one per workload per environment, and that accepted record removed…
+    - R12-LEDGER-5005 — REGRADE_TEXT: I invent no reservation to give InventoryReservation a producer. Nothing on any path reserves a unit today, and ADR 0153 leaves every kind it does not name bookable, with no producer by decision.…
+    - R12-RES-10126 — REGRADE_TEXT: 'Other regions may cover eligible functions' is a permission, and I read it as one. Cover is allowed, not owed. With one region under ADR 0035, there is no other region to cover. If another region…
+
+    **STAY_PARTIAL_DEPLOY (76)**
+
+    - R12-ARCH-8029 — STAY_PARTIAL_DEPLOY: The requirement stands as written: Spanner owns financial truth and Bigtable owns hot features. I will not map the fact classes onto today's local stores so the row passes. Both stores stay declined…
+    - R12-ARCH-9012 — STAY_PARTIAL_DEPLOY: O24 is declined before the deploy, as ADR 0191 already decided for the world model. The three central brains, qip-api, qip-fastbrain and qip-deepbrain, stay the decomposition, each with its own…
+    - R12-CAPITAL-4078 — STAY_PARTIAL_DEPLOY: I declare no yield shelf, no routed share and no ladder horizons. The share is a new capital limit whose only effect is to give up liquidity the confidence governor withheld, so it is not a…
+    - R12-CICD-10045 — STAY_PARTIAL_DEPLOY: The Cloud Build private pool stays off, as R12-FINOPS-9189 already ruled. It bills per build minute, holds a private-service-access peering, and its monthly cost is named nowhere I can read, so…
+    - R12-CICD-10046 — STAY_PARTIAL_DEPLOY: The registry replica already exists (modules/registry/secondary.tf, images_secondary, secondary_region null everywhere) and R12-RES-9177 already chose it over multi-region, so nothing is rebuilt… [skeptic]
+    - R12-CICD-10088 — STAY_PARTIAL_DEPLOY: O19 is answered: provenance is a gcloud-only SLSA statement attached to the pushed digest with Google's own tooling, and no third-party action enters the supply chain. As R12-CICD-9108 already…
+    - R12-CICD-8117 — STAY_PARTIAL_DEPLOY: ADR 0114 D4 stands and is not superseded: Config Sync and Argo Rollouts stay declined, no fifth controller joins the control plane, the requirement is not narrowed to the controllers ADR 0114 admits… [skeptic]
+    - R12-CICD-9076 — STAY_PARTIAL_DEPLOY: ADR 0102 is not amended and no development-agent task moves into a fleet worker; per the skeptic the gap names the shared fleet-worker account as unmet against 'task-scoped' and states that… [skeptic]
+    - R12-COVERAGE-7158 — STAY_PARTIAL_DEPLOY: Independent operation is proven on the binary's default path. Peer communication is shown on two deployed nodes or not at all. A second node and its stable fronting address are billed, ADR 0035…
+    - R12-DATA-10033 — STAY_PARTIAL_DEPLOY: The archive, artifact and simulation buckets stay off until the change that lands their first writer, because the archive's seven-year lock cannot be undone. That writer is a deployed fabricd broker…
+    - R12-DATA-10040 — STAY_PARTIAL_DEPLOY: O01 is declined for now. AlloyDB stays refused under ADR 0113 and decision 5: no Postgres wire client is admitted and no cluster is created, because workflow state lives on the journal and nothing…
+    - R12-DATA-1033 — STAY_PARTIAL_DEPLOY: The library half is done and stays tested: every connector door fills entitlement and geography, and the event log keeps both. I do not narrow the row to the constructor, because that would pass it…
+    - R12-DATA-2012 — STAY_PARTIAL_DEPLOY: The pipeline is built as the contract says, on all three production callers. Every poll is gated through the admitted set before the world model sees it, and a claim batch leaves one knowledge delta.…
+    - R12-DATA-2018 — STAY_PARTIAL_DEPLOY: The finder inspects every candidate from probe evidence before registration, and the unit check holds. I do not make the deep brain probe a committed catalogue by default. Naming a candidate file and…
+    - R12-DATA-8006 — STAY_PARTIAL_DEPLOY: O02 stays decided narrowly, as I ruled on R12-AMBIENT-9001. BigQuery is the one store switched on, and Cloud Storage waits for its first writer. Bigtable, Spanner Graph, Knowledge Catalog and Vertex…
+    - R12-DATA-8015 — STAY_PARTIAL_DEPLOY: Spanner Graph stays declined under decision 5, as the ADR I ordered on R12-AMBIENT-9001 says by name for this row. Promoted knowledge stays in the central brains, rebuilt from the event log…
+    - R12-DATA-8016 — STAY_PARTIAL_DEPLOY: Bigtable stays declined under decision 5, as I ruled on R12-DATA-9053 and R12-DATA-10035. Derived features stay in memory in qip-feature-dag. I do not admit a gRPC stack for a store nobody pays for.…
+    - R12-DATA-8126 — STAY_PARTIAL_DEPLOY: Bigtable stays declined under decision 5, as I ruled on R12-RES-9174. The plan clause is met in code: two zonal clusters and one app profile per consistency need. Nothing more is built for a store…
+    - R12-DATA-8130 — STAY_PARTIAL_DEPLOY: I decide O01 by declining it for now. I admit no PostgreSQL client and buy no AlloyDB before the deploy. ADR 0113's refusal stands. Operational metadata stays on the journal and the single-node…
+    - R12-DATA-9052 — STAY_PARTIAL_DEPLOY: Spanner Graph stays declined under decision 5; per the skeptic qip-mesh's GraphStore port (MemoryGraph, FileGraph, MeshPort::Graph mapped to the refused MeshTarget::SpannerGraph) already exists with… [skeptic]
+    - R12-DATA-9184 — STAY_PARTIAL_DEPLOY: Bigtable stays declined under decision 5, as I ruled on R12-RES-9174. Autoscaling, hotspot-safe row keys and the per-workload profiles exist in code. The check is a plan, and no committed environment…
+    - R12-EXEC-5081 — STAY_PARTIAL_DEPLOY: The market factory stays off on every committed path. The commerce-only plan I allowed under R12-ASSET-4073 stays commerce-only, because a factory section needs a venue, product and jurisdiction…
+    - R12-FABRIC-10027 — STAY_PARTIAL_DEPLOY: The in-tree half stands. RF3 is admitted only for P0 and P1 acknowledged through the managed log, and a killed leader loses nothing on the in-memory log. RF3 across zones counts only when a deployed…
+    - R12-FABRIC-7011 — STAY_PARTIAL_DEPLOY: The module already places one broker per zone and refuses two in one zone, and its plan tests show three zones. A real environment renders three only beside the Spanner managed log. Decision 5 keeps…
+    - R12-FABRIC-7035 — STAY_PARTIAL_DEPLOY: Brokers lead and follow through the managed log ADR 0111 chose. A follower that holds the committed log and takes over with nothing lost is proven, on the in-memory log and a fake Spanner transport.…
+    - R12-FABRIC-7037 — STAY_PARTIAL_DEPLOY: ADR 0111 and its Amendment 1 stand. No Raft is written or admitted, and the metadata quorum is the regional Spanner database under lease-epoch checks. The requirement's 'no cloud database' clause is…
+    - R12-FABRIC-7046 — STAY_PARTIAL_DEPLOY: O07 is not taken now. QUIC stays measured-only under ADR 0112 §4 and its Amendment 1, and I will not swap the cross-region measurement for a local or synthetic one. That measurement needs a second…
+    - R12-FABRIC-7058 — STAY_PARTIAL_DEPLOY: Nothing is pinned by default before a deployed node measures the need, as ADR 0082 says. The supervisor's CPUAffinity stays the only default placement. The opt-in QIP_SPOOL_WRITER_CPU pin stays…
+    - R12-FABRIC-8004 — STAY_PARTIAL_DEPLOY: No environment gets broker machines yet. The broker has no boot image, the machines have no price, and ADR 0156 lists prod brokers as billed, which decision 5 still declines. The module and its…
+    - R12-FABRIC-8081 — STAY_PARTIAL_DEPLOY: No runtime verb creates a topic or changes a quota or a retention. A topic is a reviewed code change naming its retention class, and a stream's policy is the committed catalogue's. The broker keeps…
+    - R12-FABRIC-8083 — STAY_PARTIAL_DEPLOY: This takes the same ruling as R12-FABRIC-7046. I do not supersede ADR 0112 §4, and a local netem run does not stand in for the committed cross-region measurement. QUIC by default waits on a second…
+    - R12-FABRIC-8085 — STAY_PARTIAL_DEPLOY: The ordering key and rendezvous placement stand as built. 'Followers in other zones' means, for P0/P1, the Spanner managed log on two or three seated brokers. Decision 5 still declines that bill, and…
+    - R12-FABRIC-8086 — STAY_PARTIAL_DEPLOY: I read this as R12-FABRIC-8091 and 8092 do. A regional Spanner commit, three read-write replicas one per zone, is the RF3 majority, but it counts only once a deployed fabricd seated on it…
+    - R12-FABRIC-8093 — STAY_PARTIAL_DEPLOY: O11 is declined for P2 for now. The market journal stays RF1 under ADR 0111 §2 until a committed measurement of P2 volume and loss from a running broker says it must survive a zone. Its escalation is…
+    - R12-FABRIC-8094 — STAY_PARTIAL_DEPLOY: P3 stays RF1 and is replayable from the archive under ADR 0111 §2. A configurable RF2/3 that no mechanism delivers would be the false claim that record forbids, so StreamPolicy keeps refusing it. Its…
+    - R12-FABRIC-8096 — STAY_PARTIAL_DEPLOY: Three brokers per production region, one per zone, on C4 or C4D, stands as ADR 0111 Amendment 1 and ADR 0156 §6(a) set it. The module's cap of three is not raised: five comes only after a committed…
+    - R12-FABRIC-8099 — STAY_PARTIAL_DEPLOY: The broker half stands as built: each broker has a reserved internal address, there is no access_config and no public forwarding rule. The export half waits with the hub. Decision 4 and R12-GCP-8057…
+    - R12-FINOPS-10138 — STAY_PARTIAL_DEPLOY: The bounded half holds: every derived store carries a retention or lifecycle rule, and it is tested. The tiers are not on. Bigtable stays declined at about $950 a month (R12-DATA-9053…
+    - R12-FINOPS-8040 — STAY_PARTIAL_DEPLOY: The reservation half is done and guarded: each execution group consumes a specific reservation sized to its target, and removing the affinity fails the scan. No node is declared, and none will be…
+    - R12-FINOPS-9188 — STAY_PARTIAL_DEPLOY: Job specs carry a queue, a capacity and a priority, and a critical job on Spot is refused; that stands. I will not label an in-process fit as Spot, and I will not route it through a quota that a…
+    - R12-GCP-10009 — STAY_PARTIAL_DEPLOY: Decision 4 and R12-GCP-8057/8058 stand. No hub comes before the record that supersedes ADR 0035 with a second region and names the hub's monthly cost. No hybrid spoke comes before a circuit is…
+    - R12-GCP-10012 — STAY_PARTIAL_DEPLOY: The NAT half holds: every NAT translates only named subnets to a reserved address and logs every connection, and the execution node's egress is its own. The row is not promoted, because the text…
+    - R12-GCP-8036 — STAY_PARTIAL_DEPLOY: ADR 0035 stands with one execution region, in which the three networks and the controlled egress are built; per the skeptic OpenObserve is declared in dev as the one-region backend under ADR 0028… [skeptic]
+    - R12-GCP-8051 — STAY_PARTIAL_DEPLOY: O17's 'before the second region' is declined and ADR 0113 §4 stands; per the skeptic, at the trigger the ADR amending ADR 0118 extends modules/resource-hierarchy with engineering and security planes… [skeptic]
+    - R12-GCP-8056 — STAY_PARTIAL_DEPLOY: Decision 4 of 2026-10-25 covers VPC spokes just as it covers the hubs (R12-GCP-8057, R12-GCP-8058). No google_network_connectivity_* resource is declared, and l6-ncc-hubs-parked.patch stays parked.…
+    - R12-LEDGER-10041 — STAY_PARTIAL_DEPLOY: The ledger of record goes to Spanner Enterprise Plus as ADR 0113 says, on nam3 with us-east4 leading (R12-LEDGER-8136). That waits until the base deploy has run and an ADR states the measured need…
+    - R12-LEDGER-8007 — STAY_PARTIAL_DEPLOY: Financial truth goes to Spanner Enterprise Plus, but only after the deploy runs and an ADR states a measured need and a ceiling against $2,705 to $8,140 a month. Decision 5 stands, as in…
+    - R12-LEDGER-8132 — STAY_PARTIAL_DEPLOY: The requirement text stands: a plan of a committed environment must show the ledger instance on ENTERPRISE_PLUS in a multi-region configuration, and I do not narrow it to the module's contract or a…
+    - R12-MESH-10075 — STAY_PARTIAL_DEPLOY: O07 is decided: ADR 0112 §4 stands and no QUIC crate is admitted now. quinn comes in only through its own ADR 0109 allow-list record, after a committed cross-region TCP+TLS against QUIC measurement…
+    - R12-MESH-1018 — STAY_PARTIAL_DEPLOY: The peer mesh stays off until a committed environment has a real deployed peer; per the skeptic manifest_wiring.rs::THE_PEER_MESH_HAS_NO_DEPLOYED_PEER is not found, nothing in qip-acceptance pins an… [skeptic]
+    - R12-MESH-1072 — STAY_PARTIAL_DEPLOY: The peer link is not switched on by default, because a default-on mesh names a peer that does not exist. A committed deployment sets it only when a priced record funds a second execution node, which…
+    - R12-MESH-8003 — STAY_PARTIAL_DEPLOY: O07 is decided as in R12-MESH-10075: ADR 0112 §4 stands, with no QUIC now and no quinn admitted. The gate is a committed cross-region TCP+TLS against QUIC measurement on the peer-mesh hop, and that…
+    - R12-OBS-10089 — STAY_PARTIAL_DEPLOY: The requirement names collectors and the text stands. ADR 0121 and my R12-OBS-10059 ruling push metrics and spans from the process on a bounded thread that counts and drops a failed push. That…
+    - R12-OBS-7115 — STAY_PARTIAL_DEPLOY: ADR 0156 §5.6 stands. The platform graph is joined by shared keys where signals are ingested. No process pushes its graph to another or scrapes a peer across the unjoined networks. Ingestion needs a…
+    - R12-QUANT-10066 — STAY_PARTIAL_DEPLOY: No TPU rung goes on the ladder and no TPU is bought. A rung no provider can serve can never be chosen, and a benchmark gate in front of it would measure nothing, so I am not having one built. Nothing…
+    - R12-QUANT-10095 — STAY_PARTIAL_DEPLOY: The fan-out stays across the substrates we can actually reach: the CPU baseline, the quantum-inspired search and the QPU arm. Each is compared against the classical baseline. The GPU and TPU arms…
+    - R12-QUANT-1013 — STAY_PARTIAL_DEPLOY: Eligible work is routed only to compute we have, and GPU and TPU are recorded as declined with the reason. I am not funding an accelerator so that the four-way placement can be shown (decision 5).…
+    - R12-QUANT-10173 — STAY_PARTIAL_DEPLOY: Four of phase 14's five deliverables stand: the compute router, the quantum gateway, the solver registry and the benchmark memory. The GPU/TPU7x pools are not bought. A GKE GPU pool is refused by ADR…
+    - R12-QUANT-10190 — STAY_PARTIAL_DEPLOY: The promotion half holds and stays exactly as it is. A quantum-gateway candidate is refused, and a quantum-informed one needs a calibrated classical baseline. Accelerator selection by measured fit…
+    - R12-QUANT-10208 — STAY_PARTIAL_DEPLOY: The no-oracle invariant holds and stays: every QPU result is a candidate benchmarked against a classical answer, and the router adopts it only on a verified win. The requirement's GPU clause stands…
+    - R12-QUANT-9041 — STAY_PARTIAL_DEPLOY: The router's learning and its replay stand: per substrate and size, and a losing substrate stays stopped. It cannot learn which of the five named substrates wins while GPU and TPU are unbought…
+    - R12-REFLEX-10085 — STAY_PARTIAL_DEPLOY: No new repository is bought for bundles, the HSM keys go on with dev's billing (R12-SEC-9137) and the row's ADR 0043 blocker is stale; per the skeptic the node-side stage step waits for an ADR… [skeptic]
+    - R12-REFLEX-1196 — STAY_PARTIAL_DEPLOY: ADR 0035 stands: one execution node, newyork-1 in us-east4, in shadow mode. No European or APAC node is declared or funded. The NCC hubs stay parked (decision 4). The record that supersedes ADR 0035…
+    - R12-REFLEX-7003 — STAY_PARTIAL_DEPLOY: I decline O13. ADR 0082 stands: no libc, nix or unsafe code enters the workspace to lock memory or busy-poll. The row asks for both only where measurement justifies them, and no running node has…
+    - R12-REFLEX-8065 — STAY_PARTIAL_DEPLOY: The requirement stands as written, and the row stays PARTIAL on three clauses. First, the binary locks no memory: I decline O13, ADR 0082 stands, and the boot refusal of swap narrows that gap…
+    - R12-REFLEX-8069 — STAY_PARTIAL_DEPLOY: ADR 0137 stands, and this row closes the way I ruled R12-REFLEX-9114: only on a fenced standby deployed in a second zone. That standby is a second billed node. No environment enables it, and decision…
+    - R12-REFLEX-9180 — STAY_PARTIAL_DEPLOY: A shard is a node, and Terraform does not record which books a node owns. ADR 0136 makes that the centre's signed assignment. The execution_nodes key is the shard, and each node already carries its…
+    - R12-RES-10151 — STAY_PARTIAL_DEPLOY: No regional-loss game day is run with one region. ADR 0035 authorises one execution region, so removing it is an outage, not a test that other regions continue. The local region-isolation drill hangs…
+    - R12-RES-10152 — STAY_PARTIAL_DEPLOY: The monthly zonal drill runs against a deployed node pair or a deployed quorum, and neither exists. It must prove fencing and quorum, so it needs both halves. The Reflex half waits on the cross-zone…
+    - R12-RES-7112 — STAY_PARTIAL_DEPLOY: Broker failover closes on a game day against a provisioned Spanner managed log, as I ruled for R12-FABRIC-9118, and decision 5 has not taken that bill. The in-memory kill test and the chaos run are…
+    - R12-RES-9168 — STAY_PARTIAL_DEPLOY: This row takes R12-RES-8038's ruling. Zone loss is proven on a standby in a second zone, with a lease store it can trust, and on RF3 replicas. None of that is bought before the first node is up. The…
+    - R12-SEC-9134 — STAY_PARTIAL_DEPLOY: R12-SEC-10056 already decided this. The stores are scanned only once a monthly discovery cost is named and funded, after the dev deploy, and today nothing names that cost. The templates and the…
+    - R12-TICK-2055 — STAY_PARTIAL_DEPLOY: Lake immutability is built and the row waits on a durable store, off until its first writer after the dev deploy at $0.30 to $6 a month; per the skeptic only market-class lake partitions ever reach… [skeptic]
+    - R12-TICK-7019 — STAY_PARTIAL_DEPLOY: The tick archive stays where R12-DATA-8125 left it. enable_cloud_storage stays off until the change that lands the first archive writer, because the archive bucket's seven-year lock cannot be undone…
+    - R12-TICK-8110 — STAY_PARTIAL_DEPLOY: Replay shards run as the same Cloud Run Job R12-TICK-7020 funds, about $105 a month, after dev runs; per the skeptic qip-kernel has no session_replay from_archive, so an architecture review first… [skeptic]
+    - R12-WORLD-8129 — STAY_PARTIAL_DEPLOY: Spanner Graph stays declined, as R12-AMBIENT-9001 already decided O02: BigQuery is the one evidence store agents read, and Bigtable, Spanner Graph and Knowledge Catalog wait for an ADR that states a…
+
+    **STAY_PARTIAL_EXTERNAL (21)**
+
+    - R12-API-9057 — STAY_PARTIAL_EXTERNAL: No public edge until I name a hostname on a domain I own and have delegated to Cloud DNS. No lane invents one, because a hostname in a tfvars file is the switch that allocates a global address and…
+    - R12-API-9059 — STAY_PARTIAL_EXTERNAL: MFA is already mandatory, and passkeys stay on ADR 0038's accepted row-three outcome, the password path, with no provider-pin raise and no console change, until Google's Identity Toolkit v2 discovery… [skeptic; decider ruled STAY_PARTIAL_DEPLOY]
+    - R12-COVERAGE-7155 — STAY_PARTIAL_EXTERNAL: Decision 6 of 2026-10-25 stands: no hosted language-model vendor yet, so no large-model candidate class is admitted to the foundry. A deterministic template is not a large model and is not registered…
+    - R12-COVERAGE-7167 — STAY_PARTIAL_EXTERNAL: I do not name the jurisdictions this platform may execute in. That is a legal determination, not a product call, and the platform holds no licence anywhere. No committed universe instrument names a…
+    - R12-DATA-2001 — STAY_PARTIAL_EXTERNAL: ADR 0157 decision 5 stands, and I do not supersede it: candidates are written by an operator or not at all. A stage that manufactures candidates nobody reviewed a route for is a control assessing its…
+    - R12-DATA-2005 — STAY_PARTIAL_EXTERNAL: No vendor yet and no invented refusal for the uncovered market classes; per the skeptic coverage means a source admission::admit admits or a quoted RefusedSource, not a KNOWN_SOURCES entry, so trades… [skeptic]
+    - R12-DATA-2007 — STAY_PARTIAL_EXTERNAL: No news, press, expert, public-web, deep-web database, social or community source is admitted, and no refusal is written without a clause read. Each class enters through its own ADR 0157 record, and…
+    - R12-DATA-2009 — STAY_PARTIAL_EXTERNAL: O03 is decided: no paid alternative-data provider is licensed now. Satellite, flight, port, traffic and commodity-flow data are subscriptions I am not buying before the deploy. AIS, energy-grid and…
+    - R12-DATA-2010 — STAY_PARTIAL_EXTERNAL: No commerce vendor now, and the row is not promoted to COMPLETE. ADR 0157 decision 6 deferred the choice; it did not refuse the class. I will not refuse commerce for good just to close the row…
+    - R12-EVENT-5085 — STAY_PARTIAL_EXTERNAL: The event plane stays off on every committed path, as I ruled for R12-EVENT-5083: it opens only with a licensed event source (ADR 0151 decision 10). I do not ship a default plan whose venue, product…
+    - R12-EVID-2037 — STAY_PARTIAL_EXTERNAL: ADR 0157 decision 9 stands: no coordinate is read out of free text. Routing, shipping and jurisdiction evidence carry a location only when a licensed source states one, and none is contracted…
+    - R12-FINOPS-10135 — STAY_PARTIAL_EXTERNAL: Billing export is switched on at the billing account, by its administrator, in the console. The provider has no resource for it, and no agent holds billing-admin. I enable it when I re-enable billing…
+    - R12-GCP-8042 — STAY_PARTIAL_EXTERNAL: The foundation root is the guardrails boundary, and its folder policies and the PAM resource are already built. Under the delegation I build no audit sink, locked log bucket or billing-export…
+    - R12-LEDGER-5008 — STAY_PARTIAL_EXTERNAL: I choose no relief method under the delegation. FIFO, average cost or specific identification is a tax method for a jurisdiction, and ADR 0153 decision 7 holds that such a method is a legal fact this…
+    - R12-RISK-4107 — STAY_PARTIAL_EXTERNAL: ADR 0155 section 19 stands, and the committed universe stays equities. No derivative hedge candidate is declared. Platform::derivative_gate refuses every derivative order until a trading entity holds…
+    - R12-SEC-10006 — STAY_PARTIAL_EXTERNAL: Security Command Center stays off. Its custom modules need the organisation's Premium or Enterprise tier. That is a licence set outside this repository, and I have not bought it, as R12-ARCH-10159…
+    - R12-SEC-10019 — STAY_PARTIAL_EXTERNAL: The policies are built and tested. No surface is published to use them until I own a domain and delegate it, as R12-API-8054 holds. Meanwhile the console stays on IAP over run.app under ADR 0095. The…
+    - R12-SEC-10022 — STAY_PARTIAL_EXTERNAL: Argo CD and Kargo stay unpublished. They are reached through the fleet Connect gateway and a port-forward, which puts no address on the internet at all. I will not open a gateway on a third-party…
+    - R12-SEC-9130 — STAY_PARTIAL_EXTERNAL: Every Cloud Armor policy in Terraform carries WAF, adaptive protection and a per-address rate ban, and that stays tested. The one internet-facing surface, the console on run.app, has no policy. It…
+    - R12-TICK-1053 — STAY_PARTIAL_EXTERNAL: The guard stands as built, and the desk stays off. I do not grant it simulated depth (my ruling on R12-TICK-1049), so the row waits for a market dataset admitted under an ADR 0157 licence record. Its…
+    - R12-TICK-2045 — STAY_PARTIAL_EXTERNAL: No vendor is chosen now for options chains, Greeks, futures curves, basis, borrow or funding. Each enters only as an ADR 0157 licence record, and options stay refused under ADR 0050. A free…
+
+    **FUND_THEN_DEPLOY (2)**
+
+    - R12-SEC-7014 — FUND_THEN_DEPLOY: These are the four HSM signing keys funded under R12-SEC-9137 at $10 to $11 a month, not counted again; per the skeptic no agent edits dev's tfvars: the owner sets bundle_not_after =… [cost_usd_month 11, already funded] [skeptic]
+    - R12-SEC-9128 — FUND_THEN_DEPLOY: This is the CA Service pool I funded under R12-SEC-10054 at $200-$250 a month. It is the same pool, not a second one. It goes on with dev's billing, with the organisation string that ruling names… [cost_usd_month 250, already funded]
+
+    **REFUSE_LIVE (5)**
+
+    - R12-CAPITAL-4084 — REFUSE_LIVE: Refused. An autonomous treasury transfer is money movement, and a corridor an intent could honestly use needs a real external destination, which only live capital has. No fabric command file is…
+    - R12-CAPITAL-5078 — REFUSE_LIVE: O15 is declined: quoting keeps no path to an order, on the simulator as everywhere else. Lifting quote_loop's no-path-to-an-order and the edge node's quoting refusal would remove two guards from the…
+    - R12-COVERAGE-7187 — REFUSE_LIVE: O16 is declined, as I ruled for R12-AGENCY-1183, 6094 and 7028. ADR 0114 D8 stands, and no outbound channel, publication route, survey or public adapter is opened, nor any account or credential for…
+    - R12-EXEC-7004 — REFUSE_LIVE: Refused under ADR 0003, decision 8 of 2026-10-25 and decision 7 of 2026-10-31; per the skeptic the node does hold a REST order-entry path (NodeGateway::Live over RestGateway) that no environment… [skeptic]
+    - R12-REFLEX-10074 — REFUSE_LIVE: Refused: orders flowing to a real venue is a live-order path. ADR 0003 holds, ADR 0108 stays proposed, and I do not accept it. This is a refusal of a live-order and external action surface, and no…
+
+    **IMPLEMENT (28)**
+
+    - R12-CAPITAL-3020 — IMPLEMENT: ADR 0147 decision 8 stands: no capital specialist agent is added, because a second control over the same RiskState would be a correlated second finding from one origin. The half that decision… [L1]
+    - R12-CICD-9101 — IMPLEMENT: O22 is declined: no libfuzzer-sys and no nightly toolchain enter the build. A second toolchain and a new crate would be a standing cost and an exception to ADR 0109, for a gate the in-tree generator… [L6]
+    - R12-DATA-1037 — IMPLEMENT: A revision a re-fetch finds is recorded at once, through record_reference's revision branch called from ConnectorArm::refetch for every Revised finding; per the skeptic the second part, re-fetching a… [skeptic] [L3]
+    - R12-DATA-1105 — IMPLEMENT: Add the assertion that a source-alpha desk switched off journals no round where the default desk journals one, reading the off cadence through source_alpha_every with an explicit 0; per the skeptic… [skeptic] [L3]
+    - R12-DATA-7013 — IMPLEMENT: The model-artifact bucket gets its retention now, in code. It gets an unlocked hold and colder storage with age, and no rule that deletes an artifact or a version a model card still names. Cloud… [L3]
+    - R12-DATA-7021 — IMPLEMENT: The invariant is held by a test that can see bytes. The journal canary must find the raw payload however it is serialised, and the entitlement mutation is credited to the storage tests that already… [L3]
+    - R12-EVID-1107 — IMPLEMENT: The provenance check is proven on the deep brain's arm path; per the skeptic the test shows two arms polled into one Platform leaving each claim linked to its document and source in the world… [skeptic] [L3]
+    - R12-EVID-1109 — IMPLEMENT: Contradiction handling is proven on the deep brain's arm path; per the skeptic a contest is recorded, not withheld: two arms disagreeing on one print leave contested == 1 on the arm's… [skeptic] [L3]
+    - R12-EVID-1110 — IMPLEMENT: Source authenticity is proven on the deep brain's arm path: a body whose declared digest does not match is marked spoofed and its record is never handed up. Signatures stay with R12-EVID-2034 under… [L3]
+    - R12-EVID-1111 — IMPLEMENT: Location consistency is proven on the deep brain's arm path over the NWS station source, and the gap's 'manifest region only' is corrected; per the skeptic the held record's geographic_consistency… [skeptic] [L3]
+    - R12-EVID-1112 — IMPLEMENT: Adversarial-source detection is proven where the deep brain senses; per the skeptic three arms with distinct source ids (min_coordinated_sources is 3) yield a CoordinatedManipulation finding naming… [skeptic] [L3]
+    - R12-EXPAND-6034 — IMPLEMENT: Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in… [skeptic] [L4b]
+    - R12-EXPAND-6052 — IMPLEMENT: ADR 0149 decision 6 already decided this, and I keep it. A promoted result's lane is read from its compiled form, and no latency-budget field is added. A result that compiles inside the reflex bounds… [L4b]
+    - R12-FABRIC-7038 — IMPLEMENT: ADR 0119 section 3 already decided this. The mirror is built and game-dayed now, on two fabricd processes on one host. It is deployed only when a record supersedes ADR 0035's one region. Build the… [L1b]
+    - R12-FABRIC-8097 — IMPLEMENT: The journal is built as the text asks: a separate Hyperdisk with provisioned IOPS and throughput, and any other disk type is refused. 'Sized for sustained append/read throughput' becomes a refusal… [L1b]
+    - R12-FINOPS-10028 — IMPLEMENT: Reflex capacity is reserved, but Fabric capacity is not. The scan that should catch this misses the brokers because they are standalone machines, not a group. Each broker gets its own required… [L1b]
+    - R12-FINOPS-8041 — IMPLEMENT: Spanner's autoscaling is plan-proven but Bigtable's is not, so per the skeptic a lane first adds an autoscaling_config assertion to scaling.tftest.hcl's Bigtable run (mutation: delete one cluster's… [skeptic; decider ruled REGRADE_TEXT] [L1b]
+    - R12-LEDGER-5018 — IMPLEMENT: ADR 0153 decision 9 stands, and the producer it names now exists (dfd4d446). But it queues each PhysicalInventory operation without journalling it, which decision 1 forbids. A lane journals each… [L1b]
+    - R12-LEDGER-5026 — IMPLEMENT: ADR 0153 decision 8 stands: no warehouse statement is built, because a simulated warehouse drawn from the same ledger would agree by construction and prove nothing. The warehouse clause stays open… [L1b]
+    - R12-MESH-1010 — IMPLEMENT: The leg bound is proven where it is enforced, and the two-cell exchange is proven at the node, now. A lane adds the missing 1- and 21-leg refusals and a qip-edge-node test in which two nodes each… [L5b]
+    - R12-OBS-8082 — IMPLEMENT: ADR 0156 §5.5 stands: fabricd's spans leave the process only through the shared drain when it is configured. No trace route is opened on the health listener, because a ring served to nobody proves… [L6]
+    - R12-OBS-9163 — IMPLEMENT: All six data objectives are declared with targets. Each one is bound to a series recorded where its fact happens, so a deleted recording site reads unmeasured. Bigtable p99 is declared and stays… [L6]
+    - R12-REFLEX-5034 — IMPLEMENT: ADR 0133 decision 4 already answers this, and it stands: telemetry leaves the node only by the scrape and is not a fabric record kind. No new ADR is written and no telemetry record is added. The… [L5]
+    - R12-SEC-8100 — IMPLEMENT: ADR 0112 already decided this: on a Compute Engine hop, the certificate's SAN, mapped to the workload's service account, replaces the bearer token for authorisation. Build it on every fabric route… [L6]
+    - R12-SEC-9132 — IMPLEMENT: I do not buy the Security Command Center tier. Premium or Enterprise is a billed activation made at the organisation, and it stays declined under decision 5 of 2026-10-25, as R12-GCP-9086 already… [L6]
+    - R12-TICK-1049 — IMPLEMENT: I do not grant the tick desk qip-simulated-depth. Simulator output is not a training source (R12-MODEL-4007, R12-MODEL-4004), and this desk trains fill-probability and volatility models. It stays off… [L3b]
+    - R12-TICK-1050 — IMPLEMENT: As on R12-TICK-1049: no simulated depth is granted to the tick desk, and it waits for a market dataset admitted under ADR 0157. The deep brain's replayed-bar fit is market-data training too. Its rows… [L3b]
+    - R12-TICK-1051 — IMPLEMENT: As on R12-TICK-1049: qip-simulated-depth is not granted, and the tick desk's entitlement waits for a licence record under ADR 0157. The deep brain's replayed-bar fit already asks the connector's… [L3b]
+
+    **ADR_THEN_IMPLEMENT (36)**
+
+    - R12-ARCH-9028 — ADR_THEN_IMPLEMENT: Vertex AI Agent Engine is not admitted. It is a paid managed runtime that holds agent sessions and memory outside the event log, and decision 5 keeps new billed services out. From now on an agent… [L2]
+    - R12-CICD-9115 — ADR_THEN_IMPLEMENT: O21 is admitted narrowly: a person-dispatched deploy.yml run moves traffic back to the previous promoted revision when the release decision refuses or cannot be read, and drafts the incident for a… [skeptic] [L6]
+    - R12-COMMERCE-5090 — ADR_THEN_IMPLEMENT: ADR 0153 decision 8 is amended in its chargeback clause only; its ledger clause stands. A commerce plan must declare a paper chargeback rate beside its fees, and a plan without one is refused at… [L1]
+    - R12-COMMERCE-5091 — ADR_THEN_IMPLEMENT: R12-ASSET-4073's commerce-only dev plan stands, but per the skeptic and decision 13 the mount cannot land as a patch first: an ADR for a per-file config mount comes first, then one protected patch… [skeptic; decider ruled WRITE_PATCH] [L1]
+    - R12-COMMERCE-5092 — ADR_THEN_IMPLEMENT: The committed dev plan carries an equivalent pair across two merchants, one counterfeit by GTIN and one by seller, with the named test and mutation; per the skeptic it is sequenced after decision… [skeptic; decider ruled WRITE_PATCH] [L1]
+    - R12-COMMERCE-5093 — ADR_THEN_IMPLEMENT: A cycle under the committed dev plan journals a CommerceSimulated assessment carrying all six figures, and a candidate missing any input stays refused, at plan load or at the candidate stage; per the… [skeptic; decider ruled WRITE_PATCH] [L1]
+    - R12-CONTRACT-7062 — ADR_THEN_IMPLEMENT: A connector's claim reaches the world model only beside its EvidencePacket, which the kernel's evidence intake decodes through the contract and refuses on failure; per the skeptic admission still… [skeptic] [L2]
+    - R12-CONTRACT-7069 — ADR_THEN_IMPLEMENT: A new unattributed fill is refused and schema-1 events stay legacy and are never rewritten, but per the skeptic the ADR first decides how intent and decision ids are minted, or makes Attribution a… [skeptic] [L2]
+    - R12-CONTRACT-7072 — ADR_THEN_IMPLEMENT: ADR 0151 decision 2 stands on the producer and the consumer. The edge builds a pack per pass over the market events it applied, and never over none. The tick desk's fusion may only remove a flagged… [L2]
+    - R12-COVERAGE-5099 — ADR_THEN_IMPLEMENT: A basket or an index carries its constituents and their weights. It is valued only from those constituents' prices. A position in it counts against its constituents' limits as well as its own, never… [L6]
+    - R12-DATA-3008 — ADR_THEN_IMPLEMENT: The deep brain names where it is blind or wrong on every research pass and journals those targets. This runs on the default path, the same in every environment. That is the request the requirement… [L3]
+    - R12-DATA-8124 — ADR_THEN_IMPLEMENT: fabricd writes each sealed segment to the regional landing and writes the same local bytes a second time into the locked archive under one content address, with no server-side copy and no transfer… [skeptic] [L3]
+    - R12-EVID-2035 — ADR_THEN_IMPLEMENT: Copies of one origin count once wherever evidence is weighed and the fabric's two-origin cap stands; per the skeptic the fold is tighten-only, never moving a posterior further from the prior than… [skeptic] [L3]
+    - R12-EXEC-1068 — ADR_THEN_IMPLEMENT: Requote layering is refused at the cell and at the desk, beside the cancel-before-fill gate and never in its place. Its bound is that gate's own: within 60 seconds, at least four requotes on one side… [L5]
+    - R12-EXPAND-6043 — ADR_THEN_IMPLEMENT: No branch is spawned from an unmeasured residual; per the skeptic a spawn caller already exists in model_tournament.rs's observe_outcome (R12-MODEL-7198), so the ADR amends ADR 0149 decision 12 to… [skeptic] [L4b]
+    - R12-EXPAND-6061 — ADR_THEN_IMPLEMENT: The requirement stands, and the three missing kinds are recorded, not dropped. Open questions are the registry's Open entries. A benchmark is the one ADR 0192 already names for the capability's… [L4b]
+    - R12-FABRIC-7045 — ADR_THEN_IMPLEMENT: O09 is declined. No OpenTelemetry exporter crate is admitted (ADR 0026 stands). No tokio goes on the fabric SDK path, which the edge node's drain reaches, until a committed measurement shows the… [L1b]
+    - R12-GOV-10004 — ADR_THEN_IMPLEMENT: Resources are created only in the United States and the European Union, enforced at the folder with gcp.resourceLocations and compute.requireShieldedVm; per the skeptic the ADR names the three… [skeptic] [L6]
+    - R12-GOV-6116 — ADR_THEN_IMPLEMENT: I do not grant foundry lineages one by one. A lineage is evo-{subject}, minted per sweep at run time, and a register entry per lineage would be written to pass whatever the roots happen to run. A… [L6]
+    - R12-LEDGER-5004 — ADR_THEN_IMPLEMENT: qip-ledgerd's balances are the book of record and the kernel's desk book a working copy; per the skeptic the comparison runs only once the ledger's applied desk-chain position reaches the… [skeptic] [L1b]
+    - R12-OBS-9140 — ADR_THEN_IMPLEMENT: qip-ledgerd adopts the shared drain now, as ADR 0156 §5.5 directs. The reflex node does not. qip-telemetry-drain is a Lane 1 crate, and ADR 0116 says a second hosted Lane 1 crate reopens the sidecar… [L6]
+    - R12-OBS-9156 — ADR_THEN_IMPLEMENT: A spent budget refuses promotion of that plane and no other. The check runs at the Kargo promotion out of a stage, where ADR 0036 puts promotion, beside the paper-ceiling step. The step refuses when… [L6]
+    - R12-QUANT-9040 — ADR_THEN_IMPLEMENT: IBM Quantum is reached by one identity only: a gateway workload of its own in the optimisation zone. It alone may hold a connected hosted provider, the qip-quantum-token mount and ibm-quantum egress.… [L4]
+    - R12-RISK-4101 — ADR_THEN_IMPLEMENT: Deployment identity gets its writer and its producer now. A node's identity is the SHA-256 of the qip-edge-node binary its unit starts. The startup script writes it to a read-only file the unit… [L1]
+    - R12-SEC-10201 — ADR_THEN_IMPLEMENT: O18 is declined as written. No agent session gets a Workload Identity pool or a per-run cloud credential, because issuing credentials to agents widens what an agent can reach. The one agent identity… [L6]
+    - R12-SEC-9064 — ADR_THEN_IMPLEMENT: ADR 0113 §4 stands: the scouts' own project comes with the second region, not before, and node pools stay refused under ADR 0114 D4. What I take now is the network. The ingestion-discovery zone gets… [L6]
+    - R12-SEC-9078 — ADR_THEN_IMPLEMENT: Agents reach models only through the gateway, and only models on a committed approved list. A custom base URL is refused. So that a direct call fails, the gateway runs as its own identity and holds… [L6]
+    - R12-TICK-2056 — ADR_THEN_IMPLEMENT: Market-class lake partitions get their own bucket without a locked retention so their 90-day delete fires; per the skeptic qip-storage also routes each lake partition by RecordClass, market to the… [skeptic] [L3b]
+    - R12-TICK-2070 — ADR_THEN_IMPLEMENT: No automatic channel carries a deep-brain promotion to the policy issuer. A distillate the deep brain promotes reaches qip-api's trained_models slot only through the two-person release. Its signed… [L3b]
+    - R12-TICK-2084 — ADR_THEN_IMPLEMENT: Each kind of mismatch gets one paper-only consumer, named before anything carries it (ADR 0151 decision 1). An Investigation opens a question in the deep brain's research backlog. An… [L3b]
+    - R12-TICK-2085 — ADR_THEN_IMPLEMENT: The Asset, Capital and Risk brains are not new components. The Asset brain is the foundry's per-subject search, and a posterior may change only how many candidates a round proposes, each one charged… [L3b]
+    - R12-WORLD-10090 — ADR_THEN_IMPLEMENT: The NOW Brain reads an admitted, uncontested knowledge delta as a typed observation of a declared variable; per the skeptic an evidence-derived observation never wakes the lattice: it is kept out of… [skeptic] [L2]
+    - R12-WORLD-3085 — ADR_THEN_IMPLEMENT: The seconds-minutes flow member reads the same signed aggressor flow R12-WORLD-3046's member reads: the paper feed's own trades, labelled simulated. A licensed tape later replaces the source, not the… [L2]
+    - R12-WORLD-3086 — ADR_THEN_IMPLEMENT: Wire the catalyst. Every UNDERSTAND pass hands the lattice the macro surprises the world model holds at that instant, so a recent release widens the hours-days row without moving its median. ADR 0151… [L2]
+    - R12-WORLD-3088 — ADR_THEN_IMPLEMENT: The same call wires the structural member. Every live causal claim into a subject reaches the quarters-years row at the pass, and a retired claim leaves it at the next pass. This lands under the… [L2]
+    - R12-WORLD-9025 — ADR_THEN_IMPLEMENT: O24 is decided without a new service. The deep brain, already its own Cloud Run service, is the strategic forecast service. It alone serves the weeks-months and quarters-years rows, and the fast… [L2]
+
+    **WRITE_PATCH (9)**
+
+    - R12-CICD-8031 — WRITE_PATCH: The tests/ directory exclusion goes. A fixture passes only if its path and its exact matched text are both on a list in a protected file, which only a person can lengthen. No fake-key marker is… [L6]
+    - R12-CICD-9072 — WRITE_PATCH: Every agent commit names its role and its model from the instant R12-CICD-9083's lane trailer becomes required, a commit missing either is refused, and no reviewer agent shares a model with a coder… [skeptic] [L6]
+    - R12-CICD-9082 — WRITE_PATCH: Every lane's sandbox run reads the lane's own committed spend ledger with the trusted agent-lanes.mjs spend and fails on a budget overrun, an unreadable line, a missing ledger or, per the skeptic, a… [skeptic] [L6]
+    - R12-CICD-9107 — WRITE_PATCH: Publish to the two repositories; do not remove them. Deleting them would be a destructive apply and would rewrite the waiver test, and the requirement names both. For the commit it built, deploy.yml… [L6]
+    - R12-COMMERCE-5095 — WRITE_PATCH: The commerce-only dev plan is synthetic, buys only from SimulatedMerchant and fails closed on an incomplete logistics plan; per the skeptic one patch carries every part (variables.tf, dev's tfvars… [skeptic] [L1]
+    - R12-COMMERCE-5097 — WRITE_PATCH: The resale router runs only on the simulated commerce plane, inside R12-COMMERCE-5095's one-patch mount; per the skeptic the committed plan names no venues (ResaleEntry refuses unknown fields), the… [skeptic] [L1]
+    - R12-SEC-10002 — WRITE_PATCH: Workforce IAP access is by Cloud Identity group only and PAM keeps individual user: principals; per the skeptic the claim that no shared account can be written in holds only once the lane's change… [skeptic] [L6]
+    - R12-SEC-10053 — WRITE_PATCH: D12 and ADR 0110 Amendment 1 stand. Every signing key is HSM in every environment. CMEK keys are HSM in stage and prod and may stay SOFTWARE in dev and test. The attestor moves to HSM as a new key… [L6]
+    - R12-SEC-9068 — WRITE_PATCH: O18 is decided once, under R12-SEC-10201's record: no agent identity pool and no per-run cloud credential. An agent run holds the sandbox's contents:read token and nothing else. Every workflow that… [L6]
+
+    **APPLY_PATCH (0)**
+
+    None in this pass.
