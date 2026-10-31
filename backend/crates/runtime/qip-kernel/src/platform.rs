@@ -16526,8 +16526,8 @@ impl Platform {
             superseded_at: None,
         };
         let policy = PromotionPolicy::default();
-        let clears = candidate.supporting_episodes.len() >= policy.minimum_support
-            && candidate.smoothed_support() >= policy.minimum_smoothed_support;
+        let clears = candidate.supporting_episodes.len() >= policy.minimum_support()
+            && candidate.smoothed_support() >= policy.minimum_smoothed_support();
         match tally.lesson {
             LessonState::Unpromoted if clears => {
                 let statement = candidate.statement.clone();

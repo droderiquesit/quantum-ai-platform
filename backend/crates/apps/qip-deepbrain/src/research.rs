@@ -1515,9 +1515,9 @@ impl ResearchLoop {
             "candidate-{}",
             subject.replace(|c: char| !c.is_ascii_alphanumeric(), "-")
         );
-        let version = self
-            .ontology
-            .get_latest(family, &name)
+        let latest = self.ontology.get_latest(family, &name);
+        let version = latest
+            .as_ref()
             .map_or(1, |spec| spec.version.saturating_add(1));
         let mut cited = vec![signal_id.to_string()];
         cited.extend(raised.signal.evidence.iter().cloned());
@@ -1533,7 +1533,14 @@ impl ResearchLoop {
             ),
         };
         patch.validate()?;
-        self.ontology.register(patch.as_type_spec())?;
+        // ADR 0198: a gap registers a type once, at version one, as a
+        // candidate. A gap raised again against a name the registry holds
+        // proposes the next version and registers nothing: that version
+        // enters only through `extend_ontology`, on a passing evaluation,
+        // which a repeated gap is not.
+        if latest.is_none() {
+            self.ontology.register(patch.as_type_spec())?;
+        }
         Ok(patch)
     }
 
