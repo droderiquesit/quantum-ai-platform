@@ -100,6 +100,9 @@ pub const ON_CHAIN: &str = "crypto-onchain.flows.global";
 /// issuer's latest reported surprise against consensus, read as a lean on
 /// its next close.
 pub const COMPANY: &str = "company.fundamental.global";
+/// The capital member (R12-WORLD-3048, ADR 0194): will the next pass find the
+/// paper book's cash lower than this one did — a funding draw?
+pub const CAPITAL: &str = "portfolio.capital.global";
 /// How sharply a fundamental surprise leans the company member's view: a
 /// five per cent beat reads at `logistic(1.0)`, about 0.73. A chosen
 /// constant, stated so a reader can see the mapping is a slope and not a
@@ -204,6 +207,27 @@ pub struct ChainView {
     pub confirmed_trades: u64,
 }
 
+/// What the capital member reads (R12-WORLD-3048, ADR 0194): the paper
+/// book's funding and leverage, as statistics. Built only where equity is
+/// positive, because a share of nothing is not a number; the member is
+/// silent rather than reading such a book as one that draws nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalView {
+    /// Cash after every fill and charge, in the book's currency, as `f64`:
+    /// the resolver compares the next pass's against it, and no amount
+    /// comes back out.
+    pub cash: f64,
+    /// Cash over equity.
+    pub cash_share: f64,
+    /// Gross exposure at cost over equity: the book's leverage.
+    pub leverage: f64,
+    /// Net exposure at cost over equity.
+    pub net_share: f64,
+    /// Approved theses waiting for construction: the book's open claims on
+    /// capital for the next pass.
+    pub pending_theses: usize,
+}
+
 /// Everything one pass reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FederationInputs {
@@ -213,6 +237,9 @@ pub struct FederationInputs {
     pub instruments: Vec<InstrumentView>,
     pub system: SystemView,
     pub chain: Option<ChainView>,
+    /// The paper book's funding state, for the capital member; `None` where
+    /// equity is not positive.
+    pub capital: Option<CapitalView>,
 }
 
 /// One member as the population check read it.
@@ -431,14 +458,19 @@ enum Pending {
         trades: u64,
         cycle: u64,
     },
+    Funding {
+        cash: f64,
+        cycle: u64,
+    },
 }
 
 impl Pending {
     fn cycle(&self) -> u64 {
         match self {
-            Self::Instrument { cycle, .. } | Self::Halted { cycle } | Self::Chain { cycle, .. } => {
-                *cycle
-            }
+            Self::Instrument { cycle, .. }
+            | Self::Halted { cycle }
+            | Self::Chain { cycle, .. }
+            | Self::Funding { cycle, .. } => *cycle,
         }
     }
 }
@@ -620,13 +652,14 @@ fn residual_fit(r: &[f64], member: usize) -> f64 {
 /// The scope families the population must cover (WORLD-3037, -3050, -3051,
 /// -3052 and ASSET-3017's federation half). A family with no live,
 /// unexpired member is named in [`FederationReview::uncovered`].
-pub const REQUIRED_FAMILIES: [&str; 6] = [
+pub const REQUIRED_FAMILIES: [&str; 7] = [
     "regional",
     "scenario",
     "counterfactual",
     "self/system",
     "crypto/on-chain",
     "company/fundamental",
+    "portfolio/capital",
 ];
 
 /// Whether a member's scope covers `family`, for a process serving `region`.
@@ -640,6 +673,7 @@ pub fn covers(family: &str, scope: &Scope, region: &str) -> bool {
         "self/system" => scope.domain == "self",
         "crypto/on-chain" => scope.domain == "crypto/on-chain",
         "company/fundamental" => scope.domain == "company/fundamental",
+        "portfolio/capital" => scope.domain == "portfolio/capital",
         // Not in `REQUIRED_FAMILIES`: a domain member exists only once the
         // composition root has named an asset class, so requiring one would
         // report a process with no classes named as uncovered every cycle.
@@ -801,6 +835,11 @@ pub fn instrument_proposition(subject: &str, cycle: u64) -> String {
 /// The proposition the next pass's kill-switch state answers.
 pub fn halted_proposition(cycle: u64) -> String {
     format!("self:halted-next-pass@{cycle}")
+}
+
+/// The proposition the next confirmed chain view answers.
+pub fn funding_proposition(cycle: u64) -> String {
+    format!("capital:funding-draw-next-pass@{cycle}")
 }
 
 /// The proposition the next confirmed chain view answers.
@@ -1057,6 +1096,17 @@ impl FederationStage {
                 ModelKind::Observational,
                 &["sense:fundamentals", "world:issuer-graph"],
                 0.3,
+            ),
+            declare(
+                CAPITAL.into(),
+                "portfolio/capital",
+                "global",
+                1,
+                Abstraction::Meso,
+                "funding-draw",
+                ModelKind::Observational,
+                &["kernel:capital", "kernel:pending-theses"],
+                0.25,
             ),
             declare(
                 ON_CHAIN.into(),
@@ -1330,6 +1380,41 @@ impl FederationStage {
                 },
             );
             propositions.push(proposition);
+        }
+
+        // The capital member (ADR 0194): will the next pass find less cash?
+        // A thesis waiting for capital is the book's own claim on funding,
+        // and more cash on hand is more room to draw on. The formula is a
+        // stated prior, not a fit: calibration charges every miss.
+        if let Some(capital) = inputs.capital {
+            let waiting = if capital.pending_theses > 0 { 0.5 } else { 0.0 };
+            let probability = 0.15 + waiting + 0.15 * capital.cash_share.clamp(0.0, 1.0);
+            let proposition = funding_proposition(inputs.cycle);
+            if feed(
+                &mut self.federation,
+                CAPITAL,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability,
+                    evidence_fit: 0.6,
+                    causal_coherence: 0.5,
+                    uncertainty: 0.4,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Funding {
+                        cash: capital.cash,
+                        cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
         }
 
         if let Some(chain) = inputs.chain {
@@ -1652,6 +1737,10 @@ impl FederationStage {
                     inputs.chain.map(|c| Some(c.confirmed_trades > *trades))
                 }
                 Pending::Chain { .. } => None,
+                Pending::Funding { cash, cycle } if *cycle < inputs.cycle => {
+                    inputs.capital.map(|c| Some(c.cash < *cash))
+                }
+                Pending::Funding { .. } => None,
             };
             match answer {
                 Some(Some(outcome)) => {
@@ -1771,6 +1860,19 @@ mod tests {
                 degraded_capabilities: Some(0),
             },
             chain: chain.map(|confirmed_trades| ChainView { confirmed_trades }),
+            capital: None,
+        }
+    }
+
+    /// A paper book holding `cash` of a 1,000 equity, with `waiting` theses
+    /// waiting for capital.
+    fn book(cash: f64, waiting: usize) -> CapitalView {
+        CapitalView {
+            cash,
+            cash_share: cash / 1_000.0,
+            leverage: 1.0 - cash / 1_000.0,
+            net_share: 1.0 - cash / 1_000.0,
+            pending_theses: waiting,
         }
     }
 
@@ -1785,9 +1887,12 @@ mod tests {
         // issuer has reported a surprise, so this one has (R12-WORLD-3044).
         let mut fed_inputs = inputs(1, 100.0, day(0), Some(3));
         fed_inputs.instruments[0].fundamental_surprise = Some(0.05);
+        // The capital member produces state only for a book with positive
+        // equity, so this one has one (R12-WORLD-3048).
+        fed_inputs.capital = Some(book(1_000.0, 0));
         let review = stage.run(&fed_inputs, day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 11, "{review:?}");
+        assert_eq!(review.population.len(), 12, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -1798,8 +1903,8 @@ mod tests {
         assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
         assert!(review.silent.is_empty(), "{:?}", review.silent);
         // One instrument proposition with nine views (seven tape members, the
-        // company member and the causal model), plus self and chain.
-        assert_eq!(review.arbitrations.len(), 3);
+        // company member and the causal model), plus self, capital and chain.
+        assert_eq!(review.arbitrations.len(), 4);
         let instrument = &review.arbitrations[0];
         assert_eq!(instrument.disagreement.views.len(), 9);
         // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
@@ -2174,8 +2279,8 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: eleven members, no branch, and nothing scored yet to decide on.
-        assert_eq!(first.population.len(), 11);
+        // Premise: twelve members, no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 12);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -2183,7 +2288,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 12);
+        assert_eq!(second.population.len(), 13);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -2286,7 +2391,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 13);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 14);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -2295,20 +2400,20 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 13 live, two branches merged away, one result: 12, every root kept.
+        // 14 live, two branches merged away, one result: 13, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 12, "{live:?}");
+        assert_eq!(live.len(), 13, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 12);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 13);
     }
 
     #[test]
@@ -2346,13 +2451,15 @@ mod tests {
         let first = stage.run(&inputs(1, 100.0, day(0), Some(1)), day(0));
         assert!(first.uncovered.is_empty(), "{:?}", first.uncovered);
         // No chain for longer than the lease, and no issuer surprise either,
-        // so the company member lapses too (R12-WORLD-3044).
+        // so the company member lapses too (R12-WORLD-3044); and no book
+        // view, so the capital member does (R12-WORLD-3048).
         let later = stage.run(&inputs(2, 101.0, day(8), None), day(8));
         assert_eq!(
             later.uncovered,
             vec![
                 "crypto/on-chain".to_string(),
-                "company/fundamental".to_string()
+                "company/fundamental".to_string(),
+                "portfolio/capital".to_string()
             ]
         );
         assert!(!later.population.iter().any(|m| m.id == COMPANY));
@@ -2492,5 +2599,68 @@ mod tests {
         // That an unfed company member lapses and leaves its family uncovered
         // is pinned by
         // `a_member_fed_nothing_lapses_at_its_lease_and_the_population_check_names_the_scope`.
+    }
+
+    /// R12-WORLD-3048 (ADR 0194): the capital member forecasts a funding draw
+    /// from the paper book, a waiting thesis raises that forecast, the next
+    /// pass's cash answers it either way, and a book with no view leaves the
+    /// member silent.
+    ///
+    /// Mutations: resolve on cash rising rather than falling; drop the
+    /// waiting-thesis term; feed the member nothing.
+    #[test]
+    fn a_book_with_a_thesis_waiting_gives_the_capital_member_a_funding_view_the_next_pass_resolves()
+    {
+        let capital_view = |review: &FederationReview, cycle: u64| {
+            review
+                .arbitrations
+                .iter()
+                .find(|a| a.proposition == funding_proposition(cycle))
+                .and_then(|a| a.disagreement.views.iter().find(|v| v.model == CAPITAL))
+                .map(|v| v.probability)
+        };
+        let with_book = |cycle: u64, close: f64, at: Timestamp, view: Option<CapitalView>| {
+            let mut fed = inputs(cycle, close, at, Some(1));
+            fed.capital = view;
+            fed
+        };
+        let mut idle = FederationStage::new();
+        let idle_review = idle.run(&with_book(1, 100.0, day(0), Some(book(800.0, 0))), day(0));
+        let idle_p = capital_view(&idle_review, 1).expect("the capital member forecast");
+        let mut stage = FederationStage::new();
+        let first = stage.run(&with_book(1, 100.0, day(0), Some(book(800.0, 1))), day(0));
+        let waiting_p = capital_view(&first, 1).expect("the capital member forecast");
+        assert!(
+            waiting_p > idle_p + 0.4,
+            "a thesis waiting for capital did not raise the draw ({waiting_p} vs {idle_p})"
+        );
+        assert!(!first.silent.contains(&CAPITAL.to_string()));
+
+        // The next pass holds less cash: a draw.
+        let second = stage.run(&with_book(2, 101.0, day(1), Some(book(600.0, 0))), day(1));
+        let drew = second
+            .resolved
+            .iter()
+            .find(|r| r.proposition == funding_proposition(1))
+            .expect("the next pass's cash resolved the draw");
+        assert!(drew.outcome, "cash fell and the draw resolved false");
+        assert!(drew.forecasts.contains_key(CAPITAL));
+        // The pass after holds more: no draw.
+        let third = stage.run(&with_book(3, 102.0, day(2), Some(book(700.0, 0))), day(2));
+        let held = third
+            .resolved
+            .iter()
+            .find(|r| r.proposition == funding_proposition(2))
+            .expect("the next pass's cash resolved the draw");
+        assert!(!held.outcome, "cash rose and the draw resolved true");
+
+        // A book with no positive equity gives no view: the member is silent.
+        let fourth = stage.run(&with_book(4, 103.0, day(3), None), day(3));
+        assert!(capital_view(&fourth, 4).is_none());
+        assert!(
+            fourth.silent.contains(&CAPITAL.to_string()),
+            "{:?}",
+            fourth.silent
+        );
     }
 }
