@@ -13,7 +13,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::reflex_package::{
-    PackageSigner, PackageVerifier, ReflexInput, SignedReflexPackage,
+    MAX_ADJUSTMENT_BPS, PackageSigner, PackageVerifier, ReflexInput, SignedReflexPackage,
 };
 use qip_core::error::{Error, Result};
 use qip_core::{Context, Decimal, Duration, Timestamp};
@@ -317,7 +317,12 @@ fn a_promoted_correction_inside_the_reflex_bounds_is_recorded_reflex_and_one_pas
     let PromotionLane::Research { refusal } = &past else {
         panic!("a 600 bp correction was recorded reflex: {past:?}");
     };
-    assert!(refusal.contains("500"), "{refusal}");
+    // The bound's own sentence, not a bare "500", which an uncertainty
+    // refusal quoting 1500 bp would also contain.
+    assert!(
+        refusal.contains(&format!("bounded at {MAX_ADJUSTMENT_BPS} bp per output")),
+        "refused for something other than the adjustment bound: {refusal}"
+    );
     assert_eq!(round.packages.get("refused"), Some(&1), "{round:?}");
     assert!(
         packages.is_empty(),
