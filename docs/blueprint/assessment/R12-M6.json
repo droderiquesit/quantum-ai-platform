@@ -514,14 +514,16 @@
   {
     "id": "R12-MODEL-6022",
     "status": "PARTIAL",
-    "current": "ForecastMarket/SyntheticCredits (services/qip-learning-engine/src/forecast_market.rs) is the internal synthetic-capital ledger. Market share is the first influence factor, and Tournament::compute_allocation splits a budget by influence (tournament.rs:1407). The kernel computes both per regime each LEARN and journals them in the TournamentReview (runtime/qip-kernel/src/model_tournament.rs:715-724).",
+    "current": "ForecastMarket/SyntheticCredits (services/qip-learning-engine/src/forecast_market.rs) is the internal synthetic-capital ledger. Market share is the first influence factor, and Tournament::compute_allocation splits a budget by influence (tournament.rs, Tournament::compute_allocation). The kernel computes both per regime each LEARN and journals them in the TournamentReview (runtime/qip-kernel/src/model_tournament.rs (TournamentStage::learn, compute_allocation)).",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs TournamentStage::learn compute_allocation",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::a_measurement_is_journaled_and_reads_nothing_back",
       "backend/crates/services/qip-learning-engine/src/forecast_market.rs:1",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs:1407",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:720",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs Tournament::compute_allocation",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::the_equal_weight_baseline_counts_a_duplicated_distribution_once",
       "services/qip-learning-engine/src/tournament.rs::tests::a_forecaster_whose_synthetic_capital_falls_loses_weight_and_compute"
     ],
-    "gap": "Make the allocation govern something. Nothing reads the compute allocation to spend compute: it is a record (model_tournament.rs:51-56, 'Advisory'). The influence-weighted aggregate is not an input to any decision, so 'loses weight in the next decision' holds only for the tournament's own aggregate.",
+    "gap": "2026-10-31 (lane L2-INTEL), under decision 10 of docs/blueprint/lanes/wave1031-owner-rulings-2026-10-31.json (the owner-delegated rulings): ADR 0149 decision 13 stands — the influence weights and the compute allocation stay journaled records that govern nothing. The measurement d13 names is built: every LEARN that scores a question whose aggregate weights were earned journals TournamentReview.aggregate_measurement, the cumulative mean two-outcome Brier of the influence-weighted aggregate and of the same pooling with every forecaster weighed alike (Tournament::equal_weight_aggregate), both taken when the question opened and so out of sample. A LEARN that scores none journals no restatement, and the tally resets on restart (TournamentStage is not persisted). Tests: qip-kernel model_tournament.rs::a_measurement_is_journaled_and_reads_nothing_back (mutations: same weights, no earned filter, a read of the tally) and qip-learning-engine tournament.rs::the_equal_weight_baseline_counts_a_duplicated_distribution_once (mutation: a plain mean) — each fails. Remaining by ruling: only once the measurement shows the aggregate ahead may an amendment let the allocation narrow the deep brain's fit budget, never widen it; until then the allocation governs nothing, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
