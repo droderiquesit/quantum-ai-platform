@@ -220,7 +220,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs constraint reasoner",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Neural-symbolic hybrids and planning reasoners absent. Registering a planning or hybrid ModelClass would be a card in a test registry: the graph and causal cards in symbolic_reasoner_registration.rs are test fixtures, no binary registers a reasoner card. The real work is a planning search over qip-reasoning-engine's constraint goals and a path by which a registered model's prediction enters the Bayesian network (symbolic_stage.rs composes rules, timeline, network, constraint and lifecycle but takes no model prediction). symbolic_stage is advisory by design (its header), so a hybrid would be recorded, not acted on.",
+    "gap": "2026-10-31 (lane L2-INTEL), one sentence: a neuro-symbolic hybrid needs a registered model's prediction at REASON, and no shipped binary serves one there — serve_model's only callers are the deep brain's promote stage and Platform::promote_model_from — so wiring a model node into symbolic_stage's network would read an input nothing produces; it waits on a served production model (R12-MODEL-9002/1083), and the planning reasoner over constraint goals is still absent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
