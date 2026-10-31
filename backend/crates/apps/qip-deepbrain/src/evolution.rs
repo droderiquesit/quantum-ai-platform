@@ -45,6 +45,7 @@ use qip_evolution::cost_model::NetReturns;
 use qip_evolution::generate::Candidate;
 use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
+use qip_financial::history::UniverseHistory;
 use qip_financial::universe::Universe;
 use qip_kernel::central::factory::AlphaFamily;
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry, recorded_manifest};
@@ -59,7 +60,7 @@ use qip_simulation_engine::validation::PurgedSplit;
 use qip_strategy::compile::StrategyCompiler;
 use std::collections::BTreeMap;
 
-use crate::campaign::{self, Assembly, CampaignConfig, StreamProvenance};
+use crate::campaign::{self, Assembly, CampaignConfig, CampaignSummary, StreamProvenance};
 use crate::connectors::ConnectorArm;
 use qip_data_finder::admission::{AdmittedSource, StandingAdmission};
 use qip_data_finder::campaign::{ConcentrationVerdict, assess_concentration};
@@ -270,10 +271,47 @@ pub struct RoundSummary {
     /// One line per measurement, up to [`MAX_REFUSALS_REPORTED`], each opening
     /// with the calibration statement its run carried.
     pub crowding: Vec<String>,
+    /// The campaign the round's window was assembled through (§22.4), where
+    /// a round ran: the id the manifest the backtest's inputs are recorded
+    /// on was journaled under. Until 2026-10-31 the strategy turn backtested
+    /// over bars taken straight from the engine's history, so the window a
+    /// candidate's holdout was scored on was referenced on no ledger and
+    /// described by no manifest; only the learning round went through the
+    /// campaign. The cycle line and the tests read this to tell which
+    /// campaign a round's backtest ran over.
+    pub campaign: Option<CampaignSummary>,
+    /// Why the round opened no campaign and searched nothing: the stream was
+    /// refused at the door — a standing admission that stopped granting, or
+    /// a source the platform holds no admission for. Carried on the round
+    /// rather than returned as `None`, because `None` is "not this cycle",
+    /// and a licence that lapsed must not read as a quiet cadence.
+    pub refused_at_door: Option<String>,
 }
 
 impl RoundSummary {
+    /// A round that opened no campaign because the door refused the stream.
+    /// Every count stays at zero: nothing was proposed, searched or judged.
+    pub fn refused_at_door(subject: &str, reason: impl Into<String>) -> Self {
+        Self {
+            subject: subject.to_string(),
+            refused_at_door: Some(reason.into()),
+            ..Self::default()
+        }
+    }
+
     pub fn describe(&self) -> String {
+        if let Some(reason) = &self.refused_at_door {
+            return format!(
+                "evolution: no search on {} — refused at the door: {reason}",
+                self.subject
+            );
+        }
+        // The campaign clause closes the line so the counts an operator
+        // scans for keep their place; a round that ran has a campaign.
+        let campaign = self
+            .campaign
+            .as_ref()
+            .map_or_else(String::new, |campaign| format!("; {}", campaign.describe()));
         format!(
             "evolution: {} proposed {} on {}, {} admitted, {} registered, {} discarded, \
              {} promoted, {} refused at the gate, {} held back ({}), {} trial(s) on the ledger",
@@ -295,6 +333,7 @@ impl RoundSummary {
                 .map_or_else(|| "no concentration verdict".to_string(), |v| v.describe()),
             self.trials
         ) + &self.crowding_clause()
+            + &campaign
     }
 
     /// What the crowding measurement found, appended to the round line.
@@ -341,11 +380,14 @@ pub struct EvolutionEngine {
     /// volatility rather than as a strategy that never traded.
     universe: Universe,
     /// The platform's universe history as it stood when the current round
-    /// began (R12-TICK-2090), snapshotted in [`Self::maybe_turn`] so every
-    /// candidate of one round is backtested against the same membership,
-    /// delistings and outages, and a round never reads a delisting a later
-    /// round learned of.
-    universe_history: qip_financial::history::UniverseHistory,
+    /// began (R12-TICK-2090): membership by instant, delistings and venue
+    /// outages, snapshotted in [`Self::maybe_turn`] so every candidate of one
+    /// round is backtested against the same account of what was listed and
+    /// which venue was out, a round never reads a delisting a later round
+    /// learned of, and a backtest over a past window judges a candidate
+    /// against the names that existed then rather than the survivors the
+    /// present universe holds.
+    universe_history: UniverseHistory,
     history: BTreeMap<String, Vec<Bar>>,
     foundries: BTreeMap<String, StrategyFoundry>,
     /// Fused posterior per instrument, as the tick desk last stated it
@@ -414,7 +456,7 @@ impl EvolutionEngine {
             adapter,
             seed,
             universe,
-            universe_history: qip_financial::history::UniverseHistory::new(),
+            universe_history: UniverseHistory::new(),
             history: BTreeMap::new(),
             foundries: BTreeMap::new(),
             priors: BTreeMap::new(),
@@ -636,32 +678,12 @@ impl EvolutionEngine {
         for (refused, reason) in self.learning.take_cap_refusals() {
             platform.refuse_model_registration(&refused, &reason, now)?;
         }
-        // The standing gate, re-asked at this round's instant and copied
-        // into the platform before the door is resolved — and asked before
-        // a subject is chosen, so a licence that has lapsed is withdrawn
-        // from the platform on the round it lapsed whether or not there is
-        // anything to fit this round. A refusal used to leave the previous
-        // `AdmittedSource` in the platform, where the ledger went on
-        // counting the source as live backing for every subject it had ever
-        // named. A refusal is a round refused at the door — a fact about
-        // this subject and this round — and not an error that leaves the
-        // node loop.
-        let gate = match &mut self.admission {
-            Some((admission, manifest)) => match admission
-                .check(now)
-                .and_then(|decision| AdmittedSource::from_decision(&decision, manifest))
-            {
-                Ok(admitted) => {
-                    platform.admit_source(admitted);
-                    Ok(())
-                }
-                Err(refusal) => {
-                    platform.withdraw_source(&manifest.source_id);
-                    Err(refusal)
-                }
-            },
-            None => Ok(()),
-        };
+        // The standing gate, asked before a subject is chosen, so a licence
+        // that has lapsed is withdrawn from the platform on the round it
+        // lapsed whether or not there is anything to fit this round. A
+        // refusal is a round refused at the door — a fact about this subject
+        // and this round — and not an error that leaves the node loop.
+        let gate = self.standing_admission_gate(platform, now);
         let Some((subject, bars)) = self
             .history
             .iter()
@@ -747,6 +769,38 @@ impl EvolutionEngine {
         self.adapter.provenance()
     }
 
+    /// Re-ask the standing admission at this round's instant and copy the
+    /// answer into the platform before any door is resolved. `Err` is the
+    /// gate's refusal, for the caller to carry on its round as "refused at
+    /// the door" — never to propagate with `?`, because a licence that
+    /// lapsed is a round refused, not a node that stops.
+    ///
+    /// One helper for both rounds, deliberately. The learning round and the
+    /// strategy turn each resolve the same admission before they assemble a
+    /// window through the campaign, and two copies of this gate would be two
+    /// places for the withdrawal to go missing from. A refusal used to leave
+    /// the previous `AdmittedSource` in the platform, where the ledger went
+    /// on counting the source as live backing for every subject it had ever
+    /// named; the withdrawal here is what closed that.
+    fn standing_admission_gate(&mut self, platform: &mut Platform, now: Timestamp) -> Result<()> {
+        match &mut self.admission {
+            Some((admission, manifest)) => match admission
+                .check(now)
+                .and_then(|decision| AdmittedSource::from_decision(&decision, manifest))
+            {
+                Ok(admitted) => {
+                    platform.admit_source(admitted);
+                    Ok(())
+                }
+                Err(refusal) => {
+                    platform.withdraw_source(&manifest.source_id);
+                    Err(refusal)
+                }
+            },
+            None => Ok(()),
+        }
+    }
+
     /// The distinct sources backing `subject`, each with its door: this
     /// engine's own stream — through the catalogue door if the platform
     /// holds its admission and this process fetched the bytes, the replayed
@@ -780,6 +834,12 @@ impl EvolutionEngine {
 
     /// Whether the adapter owns time — a tape — so the loop takes each
     /// cycle's instant from [`Self::advance`] rather than the wall clock.
+    /// The platform's historical universe as the last round judged against
+    /// it; empty before the first round.
+    pub fn universe_history(&self) -> &UniverseHistory {
+        &self.universe_history
+    }
+
     pub fn owns_time(&self) -> bool {
         self.adapter.owns_time()
     }
@@ -905,6 +965,10 @@ impl EvolutionEngine {
         if !self.search_due(cycle) {
             return Ok(None);
         }
+        // The same standing gate the learning round asks, asked here before
+        // the subject is chosen, for the same reason: a lapsed licence is
+        // withdrawn from the platform on the round it lapsed.
+        let gate = self.standing_admission_gate(platform, now);
         let Some((subject, bars)) = self
             .history
             .iter()
@@ -927,9 +991,50 @@ impl EvolutionEngine {
         else {
             return Ok(None);
         };
+        if let Err(refusal) = gate {
+            campaign::count_door_refusal(platform);
+            return Ok(Some(RoundSummary::refused_at_door(
+                &subject,
+                refusal.message(),
+            )));
+        }
+
+        // The window the search backtests over comes through the same
+        // campaign the learning round's does (§22.4, R12-REASON-3003):
+        // referenced on the platform's ledger, verified against the last
+        // reference to the same extent, read back out of the bounded cache,
+        // and described by a manifest the platform journals before a single
+        // candidate is scored on it. Until 2026-10-31 the turn took `bars`
+        // straight from `self.history`, so every holdout the gate below
+        // judged was scored on a window no manifest described — the
+        // "backtest" in the campaign arrow fetch -> verify -> backtest ->
+        // manifest did not hold on the shipped path. `assemble` counts its
+        // own door refusal; `NotYet` cannot occur here, because the subject
+        // was chosen for holding at least `minimum_bars`, and is mapped to
+        // the cadence's `None` rather than invented into a round.
+        let object = ObjectId::from_string(&subject);
+        let descriptor = self.adapter.descriptor();
+        let window = match campaign::assemble(
+            platform,
+            &descriptor,
+            self.provenance(),
+            &object,
+            &bars,
+            self.config.minimum_bars,
+            cycle,
+            now,
+            &self.campaign_config,
+        )? {
+            Assembly::Window(window) => *window,
+            Assembly::NotYet => return Ok(None),
+            Assembly::RefusedAtDoor(reason) => {
+                return Ok(Some(RoundSummary::refused_at_door(&subject, reason)));
+            }
+        };
 
         self.universe_history = platform.universe_history().clone();
-        let summary = self.turn(platform, &subject, bars, now)?;
+        let mut summary = self.turn(platform, &subject, window.bars, now)?;
+        summary.campaign = Some(window.summary);
         self.stats.rounds += 1;
         self.stats.registered += summary.registered as u64;
         self.stats.discarded += summary.discarded as u64;
@@ -2563,6 +2668,131 @@ mod tests {
              cache survived the campaign",
             persisted_bytes.len(),
             window_bytes.len()
+        );
+        Ok(())
+    }
+
+    /// R12-REASON-3003, the strategy half. "Backtest" in the campaign arrow
+    /// is the strategy backtest — the purged-split holdout the turn scores
+    /// every candidate on — and until 2026-10-31 that backtest ran over bars
+    /// taken straight from the engine's history: no ledger reference, no
+    /// manifest, no cache, while only the learning round's forecaster fit
+    /// went through the campaign. This drives the production engine
+    /// (`EvolutionEngine::over_synthetic`, the one `main.rs` builds for the
+    /// shipped synthetic arm) through `maybe_turn`, the call `node.rs` makes,
+    /// and asserts the arrow holds there: the round names the campaign its
+    /// window came through, exactly one `ResearchCampaignClosed` record is on
+    /// the log under that id, the manifest carries the fetch of the extent
+    /// and the sketched result, the round backtested over it (the search
+    /// charged trials and every registered candidate was judged, refused or
+    /// held back — the holdout gate ran), and the journaled record carries no
+    /// cache.
+    ///
+    /// The requirement names its own mutation: removing the manifest
+    /// emission. Mutated by replacing `platform.journal_campaign(closed,
+    /// now)?` in `campaign::assemble` with `true` — the turn still searches
+    /// and registers, the log holds no record, and this fails on the count
+    /// "one campaign closed, one manifest journaled"; restored byte for byte.
+    #[test]
+    fn a_strategy_round_backtests_over_a_campaign_window_and_journals_its_manifest() -> Result<()> {
+        use qip_events::Topic;
+        use qip_kernel::references::ResearchCampaignClosed;
+        use qip_streaming::envelope::StreamEnvelope;
+
+        let (platform, engine, summaries) = run_rounds(1)?;
+        // Premise: the round ran, through the door, and names its campaign.
+        assert_eq!(
+            summaries.len(),
+            1,
+            "one cycle on a cadence of every cycle is one round"
+        );
+        let round = &summaries[0];
+        assert!(
+            round.refused_at_door.is_none(),
+            "the synthetic stream was refused at the door: {:?}",
+            round.refused_at_door
+        );
+        let summary = round
+            .campaign
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the campaign the round's window came through"))?;
+        assert_eq!(summary.subject, round.subject);
+        assert!(
+            summary.bars >= engine.config.minimum_bars,
+            "the window ({} bars) is under the search's minimum ({})",
+            summary.bars,
+            engine.config.minimum_bars
+        );
+
+        // The manifest is emitted: one closed record on the log, under the
+        // campaign's own id, carrying the fetch and the result.
+        let frames = platform.event_log().by_topic(Topic::ResearchCampaignClosed);
+        assert_eq!(
+            frames.len(),
+            1,
+            "one campaign closed, one manifest journaled"
+        );
+        let closed: ResearchCampaignClosed = StreamEnvelope::from_frame(frames[0])?
+            .decode::<ResearchCampaignClosed>()?
+            .body;
+        assert_eq!(closed.campaign_id, summary.id);
+        assert_eq!(closed.subject, round.subject);
+        let entries = closed.manifest.entries();
+        assert_eq!(entries.len(), 1, "the one fetch the campaign made");
+        let interval = engine
+            .history
+            .get(round.subject.as_str())
+            .and_then(|bars| bars.first())
+            .ok_or_else(|| Error::not_found("a bar in the subject's history"))?
+            .interval;
+        assert_eq!(
+            entries[0].reference().locator(),
+            crate::campaign::locator_for(
+                &summary.source_id,
+                &ObjectId::from_string(&round.subject),
+                interval
+            ),
+            "the manifest entry names the extent the round backtested over"
+        );
+        assert_eq!(
+            closed.manifest.statistics().len(),
+            1,
+            "the campaign's result — the sketched bar count — rides the manifest"
+        );
+        assert_eq!(
+            closed.manifest.statistics()[0].estimate(),
+            summary.bars as u64
+        );
+
+        // The backtest ran over that window: the search charged trials, it
+        // registered candidates, and each registered candidate was put in
+        // front of the holdout gate (promoted or refused) or held back from
+        // it by rule 31 — which on the shipped single-stream arm is every
+        // one of them, the verdict the manifest itself carries. A round that
+        // fetched, verified and journaled and searched nothing would pass
+        // the manifest assertions above and fail here.
+        assert!(round.trials >= 1, "no trial was charged: {round:?}");
+        assert!(round.registered >= 1, "nothing was registered: {round:?}");
+        assert_eq!(
+            round.promoted + round.gate_refused + round.held_back,
+            round.registered,
+            "a registered candidate was neither judged nor held back: {round:?}"
+        );
+        assert_eq!(
+            round
+                .concentration
+                .as_ref()
+                .map(ConcentrationVerdict::is_sufficient),
+            Some(summary.concentration.is_sufficient()),
+            "the round and its campaign disagree about the backing"
+        );
+
+        // The TTL cache is deleted: the record that persists is the manifest,
+        // and it holds none of the window the cache held.
+        let persisted = serde_json::to_value(&closed)?;
+        assert!(
+            persisted.get("cache").is_none() && persisted["manifest"].get("cache").is_none(),
+            "the closed record must not carry the campaign's cache: {persisted}"
         );
         Ok(())
     }

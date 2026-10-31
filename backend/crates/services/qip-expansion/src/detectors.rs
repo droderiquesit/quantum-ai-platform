@@ -16,6 +16,7 @@
 //! socket or the environment, so a sweep replays from the readings alone.
 
 use crate::gap::{GapTrigger, Observation, Wanting};
+use qip_contracts::expansion::TheoryDelta;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +55,9 @@ pub enum Origin {
     /// A subject whose evidence is contested and into which the causal graph
     /// holds no live claim that would say which side is right.
     MissingCausalLink,
+    /// A rule the symbolic pack refused a thesis on, where the thesis then
+    /// resolved as a call the grader credited.
+    TheoryContradiction,
 }
 
 impl Origin {
@@ -72,6 +76,7 @@ impl Origin {
             Self::ModelErrorRate => "detector:model_error_rate",
             Self::ContestedEvidence => "detector:contested_evidence",
             Self::MissingCausalLink => "detector:missing_causal_link",
+            Self::TheoryContradiction => "detector:theory_contradiction",
         }
     }
 }
@@ -689,6 +694,53 @@ pub fn missing_causal_links(
                 "market",
                 evidence,
                 keys.len() as f64 / total as f64,
+            )
+        })
+        .collect()
+}
+
+/// How many theory deltas against one rule make the finding fully severe.
+/// One contradiction is a finding; three against the same rule is a theory
+/// in question. A ratio, so the severity is the share of that bar reached
+/// and never a figure nobody computed.
+pub const THEORY_CONTRADICTIONS_FOR_FULL_SEVERITY: usize = 3;
+
+/// Theory deltas the kernel journaled, read as revision tasks
+/// (R12-EXPAND-6044): one observation per rule or invariant the deltas name,
+/// citing the pack, the rule and every contradicted hypothesis. The symbolic
+/// pack is the platform's theory of what may be acted on, so what is wanting
+/// is the model, not a source or a link. The task proposes; nothing here or
+/// downstream of it moves a rule.
+pub fn theory_contradictions(deltas: &[TheoryDelta]) -> Vec<Observation> {
+    let mut by_rule: BTreeMap<(&str, u32, &str), Vec<&TheoryDelta>> = BTreeMap::new();
+    for delta in deltas {
+        for rule in &delta.rules {
+            by_rule
+                .entry((delta.pack.as_str(), delta.version, rule.as_str()))
+                .or_default()
+                .push(delta);
+        }
+    }
+    by_rule
+        .into_iter()
+        .map(|((pack, version, rule), deltas)| {
+            let mut evidence = vec![format!("pack:{pack}@v{version}"), format!("rule:{rule}")];
+            for delta in &deltas {
+                evidence.push(format!("hypothesis:{}", delta.hypothesis_id));
+                evidence.extend(delta.contradicting_evidence.iter().cloned());
+            }
+            observe(
+                Origin::TheoryContradiction,
+                GapTrigger::Contradiction,
+                Wanting::Model,
+                format!(
+                    "`{rule}` of `{pack}` v{version} refused {} thesis(es) the grader then \
+                     credited; the rule's bound is in question and is not moved",
+                    deltas.len()
+                ),
+                "reasoning",
+                evidence,
+                (deltas.len() as f64 / THEORY_CONTRADICTIONS_FOR_FULL_SEVERITY as f64).min(1.0),
             )
         })
         .collect()

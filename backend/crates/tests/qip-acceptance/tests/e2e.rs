@@ -854,7 +854,9 @@ fn the_platform_walks_from_a_discovered_source_to_a_learned_lesson() -> Result<(
     )?;
     let actual = ActualTrade::new(
         subject.clone(),
-        BookSide::Bid,
+        // A filled buy is a trade against the ask, the long; the twin reads
+        // Bid as the short since 2026-10-31.
+        BookSide::Ask,
         filled,
         order.venue.clone(),
         REGION,

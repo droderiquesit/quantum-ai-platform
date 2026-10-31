@@ -1598,12 +1598,14 @@ fn platform_knowing_aaa() -> Platform {
 
 /// A flat tape: `count` quiet daily bars ending at `start`, then a flat
 /// `level` for `days` after it. The twin marks a declined path at the open of
-/// a bar. `Platform::capture_submission` books a buy against the ask, so the
-/// twin's gross for a declined buy is `(entry - exit) * quantity` (see
-/// `qip-kernel/tests/learning.rs`, where a *rise* scores the decline
-/// unfavourable): a level far below the ~100 entry is what makes each
-/// declined buy score as a regret. The premise below asserts the score
-/// rather than trusting this reading.
+/// a bar. `Platform::capture_submission` books a buy against the ask, and the
+/// twin settles a trade against the ask as the long it is, so the gross for
+/// a declined buy is `(exit - entry) * quantity` (see
+/// `qip-kernel/tests/learning.rs`, where a *rise* after a declined buy is
+/// the regret): a level far above the ~100 entry is what makes each declined
+/// buy score as a regret. Until 2026-10-31 this comment and the level below
+/// encoded the twin's inverted direction. The premise below asserts the
+/// score rather than trusting this reading.
 fn tape_stepping_to(level: f64, count: i64, days: i64) -> Vec<SensedRecord> {
     let mut records = Vec::new();
     for i in 0..count {
@@ -1647,7 +1649,7 @@ fn three_regretted_declines_at_one_gate_reach_the_sweep_as_an_opportunity_class_
     use qip_execution_engine::order::Side;
 
     let mut platform = platform_knowing_aaa();
-    platform.observe(tape_stepping_to(30.0, 90, 5));
+    platform.observe(tape_stepping_to(300.0, 90, 5));
     for n in 0..MIN_REGRETS {
         let order = platform.order_from(
             ObjectId::from_string("obj-AAA".to_string()),

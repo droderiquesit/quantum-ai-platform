@@ -747,3 +747,81 @@ fn a_position_is_booked_through_the_lifecycle_engine_and_adapter_its_asset_class
     );
     Ok(())
 }
+
+/// R12-ASSET-1160, the divestment item: an order that sells the whole long
+/// moves the position to `Unwinding` before any fill exists, and a trim
+/// leaves it `Held`.
+///
+/// The failure prevented: `Portfolio::begin_unwind` had no production
+/// caller, so a book being sold down read as `Held` until its last lot
+/// closed, and the Portfolio/Asset Brain counted zero divestments on every
+/// book. Both orders go through `Platform::submit_order`, the one seam every
+/// desk order (the ACT stage's included) passes.
+///
+/// Mutation: delete the `begin_deliberate_close` call in
+/// `Platform::submit_order` — the full sell leaves the position `Held` and
+/// the second assertion fails. Mutation: drop `order.quantity < long` from
+/// its guard — the trim unwinds the position and the first assertion fails.
+#[test]
+fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("unwind"), start())?;
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let (held, _) = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: the cycle opened a position in obj-AAA");
+    assert!(
+        held > dec!("1"),
+        "premise: a long of more than one unit: {held}"
+    );
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Held),
+        "premise: the opened position is held"
+    );
+
+    let now = start().saturating_add(Duration::from_mins(5));
+    let price = dec!("90");
+    let trim = platform.order_from(
+        aaa.clone(),
+        Side::Sell,
+        dec!("1"),
+        price,
+        "prop-trim",
+        vec!["hyp-trim".to_string()],
+        now,
+    );
+    let _ = platform.submit_order(trim, now);
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Held),
+        "a sell smaller than the long is a trim, not a divestment"
+    );
+
+    let (remaining, _) = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: a trim leaves the position open");
+    let close = platform.order_from(
+        aaa.clone(),
+        Side::Sell,
+        remaining,
+        price,
+        "prop-close",
+        vec!["hyp-close".to_string()],
+        now,
+    );
+    let _ = platform.submit_order(close, now);
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Unwinding),
+        "a sell of the whole long, partly filled, was not recorded as a divestment"
+    );
+    Ok(())
+}

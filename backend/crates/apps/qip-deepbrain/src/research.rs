@@ -72,7 +72,7 @@ use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
     contested_evidence, contradictions, coverage, incompetent_specialists, low_confidence,
     missing_causal_links, model_drift, model_error_rate, refusal_clusters, repeated_vetoes_priced,
-    split_by_wanting, unexplained_residuals_priced, world_state_expired,
+    split_by_wanting, theory_contradictions, unexplained_residuals_priced, world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -381,7 +381,19 @@ pub struct ResearchConfig {
     /// horizon shorter than a venue's settlement refuses every lane as
     /// settling too late, and the sentinel then reports nothing to move.
     pub capital_horizon: Duration,
+    /// Specialist activations the attention router admits per hour; past
+    /// it a material signal is held and drained by severity × economic
+    /// value when the window rolls (R12-AMBIENT-7202). Default 256, far
+    /// above what a sweep raises today, so the budget binds only in a
+    /// storm, which is when it is meant to.
+    pub attention_budget_per_hour: u32,
+    /// Held signals the router keeps; the least valuable is dropped past
+    /// it. Default 256.
+    pub attention_held_capacity: usize,
 }
+
+/// The variable naming the attention router's hourly activation budget.
+pub const ATTENTION_BUDGET_VARIABLE: &str = "QIP_DEEPBRAIN_ATTENTION_BUDGET_PER_HOUR";
 
 /// The variable naming per-agent compute budgets:
 /// `domain/horizon/regime=units`, comma-separated.
@@ -432,6 +444,8 @@ impl Default for ResearchConfig {
             agent_budgets: BTreeMap::new(),
             capital_sentinel: true,
             capital_horizon: CAPITAL_HORIZON,
+            attention_budget_per_hour: 256,
+            attention_held_capacity: 256,
         }
     }
 }
@@ -445,6 +459,19 @@ impl ResearchConfig {
                     "QIP_DEEPBRAIN_RESEARCH_EVERY is {raw:?}, not a cycle count; 0 disables the research loop"
                 ))
             })?;
+        }
+        if let Some(raw) = lookup(ATTENTION_BUDGET_VARIABLE) {
+            config.attention_budget_per_hour = raw
+                .trim()
+                .parse()
+                .ok()
+                .filter(|budget| *budget > 0)
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "{ATTENTION_BUDGET_VARIABLE} is {raw:?}, not a positive count of \
+                         activations per hour; a zero budget would hold every signal forever"
+                    ))
+                })?;
         }
         if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_JURISDICTION") {
             if raw.trim().is_empty() {
@@ -699,6 +726,13 @@ pub struct ResearchRound {
     /// causal graph holds no live claim into.
     pub contested_claims: usize,
     pub unexplained_subjects: usize,
+    /// Theory deltas the kernel journaled on a thesis the rule pack refused
+    /// and the grader credited (R12-EXPAND-6044), read off the log this
+    /// sweep; each is raised as a contradiction gap, which is the revision
+    /// task. `theory_deltas_refused` says why they could not be read, where
+    /// they could not.
+    pub theory_deltas: usize,
+    pub theory_deltas_refused: Option<String>,
     /// Information requests a better-ranked request left no budget for.
     pub info_outranked: usize,
     /// DECIDE's uncertain decisions priced into an information request this
@@ -1118,8 +1152,8 @@ impl ResearchRound {
              {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
              acquisitions {:?}; campaigns {:?}; capability register refused {:?}; reflex \
              packages {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
-             conflicts); outputs advisory, none promoted; capabilities are paper and shadow \
-             only",
+             conflicts), theory deltas {}; outputs advisory, none promoted; capabilities are \
+             paper and shadow only",
             self.anomalies,
             self.raised,
             self.unclassified,
@@ -1149,6 +1183,7 @@ impl ResearchRound {
             self.unexplained_subjects,
             self.knowledge_deltas,
             self.knowledge_conflicts,
+            self.theory_deltas,
         )
     }
 }
@@ -1376,10 +1411,16 @@ impl ResearchLoop {
             registered_tools_holding(extra_tools)?,
         )?;
         // Materiality 10%: a detection weaker than that is below the bar and
-        // wakes nothing. 256 activations an hour, 256 held: far above what a
-        // sweep raises today, so the budget binds only in a storm, which is
-        // when it is meant to.
-        let policy = RoutingPolicy::standard(1_000, 256, Duration::from_hours(1), 256)?;
+        // wakes nothing. The activation budget and the held capacity come
+        // from the configuration (R12-AMBIENT-7202), defaulting far above
+        // what a sweep raises today, so the budget binds only in a storm,
+        // which is when it is meant to.
+        let policy = RoutingPolicy::standard(
+            1_000,
+            config.attention_budget_per_hour,
+            Duration::from_hours(1),
+            config.attention_held_capacity,
+        )?;
         // Every specialist a surprise can wake is a registered brain whose
         // tools this node actually has. Refused at start-up rather than at
         // the first wake: a spec naming a tool nobody registered is a brain
@@ -2040,6 +2081,22 @@ impl ResearchLoop {
         let missing = missing_causal_links(&contested, &explained);
         round.unexplained_subjects = missing.len();
         observations.extend(missing);
+        // R12-EXPAND-6044: a thesis the symbolic rule pack refused that LEARN
+        // then credited is a contradiction between the platform's theory and
+        // its evidence. The kernel journals it as a theory delta and this is
+        // the reader: each delta becomes a contradiction gap naming the rule,
+        // which is the revision task the requirement asks for. A delta that
+        // does not decode is counted and the sweep goes on, as with the
+        // knowledge deltas above.
+        let theory = match platform.theory_deltas() {
+            Ok(deltas) => deltas,
+            Err(error) => {
+                round.theory_deltas_refused = Some(error.message().to_string());
+                Vec::new()
+            }
+        };
+        round.theory_deltas = theory.len();
+        observations.extend(theory_contradictions(&theory));
 
         // --- the market's specialist proposals -----------------------------
         if let Some(calibration) = platform.calibration()
@@ -2559,10 +2616,11 @@ impl ResearchLoop {
                 horizon: Duration::ZERO,
                 novelty_bp: severity,
                 affected_entities: raised.signal.affected_domains.clone(),
-                // The signal's deadline is its expiry, so its urgency is the
-                // one `admit` will read for the same gap: a literal zero
-                // here stated a raised gap as wanting no attention at all,
-                // which is the zero `URGENCY_FLOOR_BP` exists to refuse.
+                // The deadline is the signal's own expiry, and the urgency is
+                // how much of that window has gone (R12-AMBIENT-10175): the
+                // floor at emission, the full scale once the window is
+                // spent. A literal zero here scored every value-of-information
+                // request at zero once the rank became §9.10's product.
                 urgency_bp: urgency_bp(
                     now,
                     now.saturating_add(self.config.signal_ttl),
@@ -4241,6 +4299,130 @@ mod tests {
             "premise: an off-scale figure is left unstated, not refused"
         );
         assert!(valued.attention_value() < off_scale.attention_value());
+    }
+
+    /// R12-AMBIENT-10175: a signal the loop raises states the urgency of its
+    /// own deadline, not zero. The literal zero was the defect that scored
+    /// every value-of-information request at zero under the product rank;
+    /// at emission the window is unspent, so the urgency is the floor, and
+    /// the same deadline reads as more urgent once half the window has gone.
+    /// Mutation: restore `urgency_bp: 0` in `ResearchLoop::emit` — the first
+    /// assertion fails.
+    #[test]
+    fn a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero() {
+        let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+            .unwrap_or_else(|e| panic!("{e}"));
+        let raised = qip_expansion::gap::raise(Observation {
+            trigger: GapTrigger::Contradiction,
+            wanting: vec![Wanting::Source],
+            observation: "two sources disagree".to_string(),
+            affected_domains: vec!["evidence".to_string()],
+            evidence: vec!["measured:0.4".to_string()],
+            severity: 0.5,
+            economic_value: Decimal::from_int(25),
+            risk_value: Decimal::ZERO,
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+        let now = Timestamp::from_secs(1_760_000_000);
+        let signal = research.emit(&raised, now).expect("emits");
+        assert_eq!(signal.urgency_bp(), URGENCY_FLOOR_BP);
+        // Premise, held at compile time: a zero floor would make the
+        // equality above vacuous.
+        const _: () = assert!(URGENCY_FLOOR_BP > 0, "premise: the floor is not zero");
+        assert_eq!(
+            signal.expiry(),
+            now.saturating_add(research.config.signal_ttl),
+            "the deadline the urgency is measured against is the signal's expiry"
+        );
+        let half = now.saturating_add(Duration::from_mins(30));
+        assert!(urgency_bp(half, signal.expiry(), research.config.signal_ttl) > URGENCY_FLOOR_BP);
+    }
+
+    /// R12-AMBIENT-7202: two signals held in one window drain by economic
+    /// value, not by arrival. With the activation budget at one, the first
+    /// signal of the window is activated and the next two are held; when the
+    /// window rolls, the router drains the more valuable held signal first
+    /// although it arrived second. The budget is on `ResearchConfig`, which
+    /// is what lets a test hold two signals at all; the shipped default of
+    /// 256 an hour holds nothing a sweep raises today.
+    ///
+    /// Mutation: in `AttentionRouter::route`'s drain, pick the first held
+    /// signal instead of the one with the greatest `attention_value` — the
+    /// earlier, cheaper signal activates first and the assertion fails.
+    #[test]
+    fn two_held_signals_from_one_window_drain_by_economic_value_not_arrival() {
+        use qip_contracts::ambient::Disposition;
+        let mut research = ResearchLoop::new(
+            ResearchConfig {
+                attention_budget_per_hour: 1,
+                // Longer than the router's window, so a held signal is still
+                // alive when the window rolls; at the default hour both held
+                // signals expire on the roll and nothing drains at all.
+                signal_ttl: Duration::from_hours(4),
+                ..ResearchConfig::default()
+            },
+            BTreeMap::new(),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let raise_worth = |worth: i64, what: &str| {
+            qip_expansion::gap::raise(Observation {
+                trigger: GapTrigger::Contradiction,
+                wanting: vec![Wanting::Source],
+                observation: what.to_string(),
+                affected_domains: vec!["evidence".to_string()],
+                evidence: vec!["measured:0.4".to_string()],
+                severity: 0.5,
+                economic_value: Decimal::from_int(worth),
+                risk_value: Decimal::ZERO,
+            })
+            .unwrap_or_else(|e| panic!("{e}"))
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let first = research.emit(&raise_worth(5, "first"), now).expect("emits");
+        let cheap = research
+            .emit(&raise_worth(10, "cheap, arrived second"), now)
+            .expect("emits");
+        let dear = research
+            .emit(&raise_worth(40, "dear, arrived third"), now)
+            .expect("emits");
+        assert!(cheap.attention_value() < dear.attention_value(), "premise");
+        let spent = research.router.route(&first, now).expect("routes");
+        assert!(
+            spent
+                .iter()
+                .any(|e| e.disposition == Disposition::Activated),
+            "premise: the first signal of the window spends the budget: {spent:?}"
+        );
+        for signal in [&cheap, &dear] {
+            let events = research.router.route(signal, now).expect("routes");
+            assert!(
+                events
+                    .iter()
+                    .any(|e| e.disposition == Disposition::Deferred),
+                "premise: past the budget the signal is held: {events:?}"
+            );
+        }
+        assert_eq!(research.router.deferred_len(), 2);
+
+        let later = now.saturating_add(Duration::from_hours(1) + Duration::from_secs(1));
+        let trivial = research
+            .emit(&raise_worth(1, "trivial"), later)
+            .expect("emits");
+        let events = research.router.route(&trivial, later).expect("routes");
+        let activated: Vec<&str> = events
+            .iter()
+            .filter(|e| e.disposition == Disposition::Activated)
+            .map(|e| e.signal_id.as_str())
+            .collect();
+        assert_eq!(
+            activated.first().copied(),
+            Some(dear.id()),
+            "the dearer held signal did not drain first: {events:?}"
+        );
+        assert!(
+            !activated.contains(&cheap.id()),
+            "a budget of one admitted both held signals: {events:?}"
+        );
     }
 
     /// The failure this prevents has happened: the loop stated urgency as

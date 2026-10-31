@@ -1,7 +1,9 @@
 # ADR 0184: The finder's adapter proposal is printed for review, and no adapter is generated or loaded from it
 
 - **Status**: **Accepted**, 2026-10-31, decided under the delegation the
-  owner gave the parent on 2026-10-31 for every remaining product decision.
+  owner gave the parent on 2026-10-31 for every remaining product decision,
+  recorded in
+  [`docs/blueprint/owner-decisions-2026-10-31.md`](../blueprint/owner-decisions-2026-10-31.md).
   Conservative and paper-only: nothing below reaches a venue, polls a
   source, or enables anything that was off.
 - **Date**: 2026-10-31

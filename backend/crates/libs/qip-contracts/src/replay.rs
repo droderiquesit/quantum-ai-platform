@@ -103,6 +103,56 @@ pub struct AppliedReadings {
     pub region_wire: Option<WireRecord>,
 }
 
+/// What one edge pass sized against, as one bounded P2 record per pass
+/// (ADR 0132 decision 4, R12-FABRIC-10102): per instrument the pass
+/// registered features for, the feature values the cell evaluated and the
+/// engine revision each was computed at, with the feed messages the pass
+/// was handed counted and the tape events it applied counted, ranged by
+/// event time and digested over their source hashes. The values of a
+/// windowed feature rest on earlier passes' ticks too; this record names
+/// what *this* pass applied, not every tick a value ever saw. Bounded by
+/// the instruments the cell's plan registered features for, not by market
+/// activity: a busy pass and a quiet one write a record of the same shape.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeatureDigest {
+    pub cell: String,
+    pub session: String,
+    pub pass: u64,
+    /// The pass's own clock reading, in nanoseconds, as [`PassMarker::now_ns`].
+    pub now_ns: i64,
+    /// One entry per instrument the cell holds registered features for, in
+    /// instrument order.
+    pub instruments: Vec<InstrumentDigest>,
+    /// Feed messages the pass was handed, counted and not shipped.
+    pub ticks: u64,
+    /// Tape events the pass applied, counted; their time range in
+    /// nanoseconds, zero when none; and a digest over their source hashes
+    /// in applied order, so replay can check it read the same bytes.
+    pub applied: u64,
+    pub applied_from_ns: i64,
+    pub applied_to_ns: i64,
+    pub applied_digest: String,
+}
+
+/// The features one instrument was sized against this pass.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstrumentDigest {
+    /// The instrument, as the feature key names its subject.
+    pub subject: String,
+    pub features: Vec<FeatureReading>,
+}
+
+/// One feature's value and freshness as the pass read it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeatureReading {
+    /// The feature's name and its parameters, joined as the key prints them.
+    pub name: String,
+    pub value: crate::FeatureValue,
+    /// The revision the value was computed at: freshness, by the engine's
+    /// own count rather than a clock nobody set.
+    pub revision: u64,
+}
+
 /// What one edge pass applied, recorded at the seam where it applied it.
 ///
 /// Every field is either an exogenous input (the tape span, the control

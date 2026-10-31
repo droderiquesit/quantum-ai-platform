@@ -22,7 +22,7 @@ use qip_events::event_fabric::policy::{AckProfile, BATCH_SCHEMA_VERSION, QosClas
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_streaming::event_fabric::broker::Broker;
 use qip_streaming::event_fabric::partition::partition_for;
-use qip_streaming::event_fabric::service::Service;
+use qip_streaming::event_fabric::service::{Service, TopiclessStreams};
 use qip_transport::breaker::BreakerPolicy;
 use qip_transport::event_fabric::auth::{self, BearerToken, IdentityTable};
 use qip_transport::event_fabric::producer::{Producer, ProducerConfig};
@@ -112,6 +112,7 @@ impl Fabric {
                     SegmentLogConfig::new(Arc::new(SystemClock))
                         .with_archive_required(policy.archive_required())
                 }),
+                TopiclessStreams::AdmitAll,
             )
             .unwrap(),
         );
