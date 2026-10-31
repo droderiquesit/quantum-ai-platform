@@ -2873,9 +2873,10 @@
     "current": "Archive and evidence buckets declare locked retention and versioning; archive gated off, evidence module instantiated.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:130-146 versioning + retention_policy is_locked",
-      "infrastructure/terraform/modules/evidence/main.tf:58"
+      "infrastructure/terraform/modules/evidence/main.tf:58",
+      "infrastructure/terraform/modules/data/tests/archive_retention.tftest.hcl (the_archive_holds_a_locked_retention_policy_and_keeps_every_version; no_archive_is_planned_while_storage_is_off)"
     ],
-    "gap": "2026-10-24 (re-read against the tree): The archive bucket (google_storage_bucket.archive, infrastructure/terraform/modules/data/main.tf) declares versioning and a locked retention_policy but sits behind enable_cloud_storage, which is false in all four infrastructure/environments/*/terraform.tfvars, so nothing is planned and the plan: clause cannot be met while billing is paused. Nothing moves data from a landing/segment bucket into the archive: the regional google_storage_bucket.segments deletes at 30 days and its own comment says object lifecycle cannot move objects between buckets, so 'receive data by lifecycle from landing' cannot be met as written. Needs: an owner decision restating that clause or a transfer step (Storage Transfer Service, a managed service, or an in-tree copy job); a tfvar flip of enable_cloud_storage in at least dev; a real plan/apply.",
+    "gap": "2026-10-31 (owner-delegated ruling of 2026-10-31, decision 10): the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket (object lifecycle cannot move objects between buckets, and no transfer service is bought). The module's plan harness now asserts, with enable_cloud_storage = true, that google_storage_bucket.archive[0] holds a locked retention policy of archive_retention_days and keeps every version, beside the single-region refusal. Remaining: dev's enable_cloud_storage flip (protected, billed, and the seven-year lock cannot be undone) and a real plan of an environment; reconciling the landing-to-archive copy with R12-FABRIC-8101 and R12-DATA-8124 under DATA-8019's ADR (fabricd writes the regional landing and a named copy step fills the locked archive).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2883,10 +2884,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "plan: terraform test in modules/data (mock provider), 23 passed across the module's harnesses; mutations: is_locked = false fails the lock assertion, versioning enabled = false fails the versioning assertion; both restored with cp and cmp. terraform fmt -check and validate clean.",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (IMPLEMENT): No transfer service is bought for the archive. Object lifecycle cannot move objects between buckets, so the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (IMPLEMENT): No transfer service is bought for the archive. Object lifecycle cannot move objects between buckets, so the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. | 2026-10-31 lane L3-DATA: added the ruling's plan run (enable_cloud_storage = true asserts locked retention and versioning on the archive) and recorded the restated landing clause; stays PARTIAL until the protected, billed enable_cloud_storage flip and a real plan."
   },
   {
     "id": "R12-DATA-8126",
