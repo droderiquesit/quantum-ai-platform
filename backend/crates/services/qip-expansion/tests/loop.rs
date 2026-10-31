@@ -7,7 +7,7 @@
 //! shows the reading would be read, then that the gap was raised.
 
 use qip_agents::tools::{ToolKind, ToolName, ToolRegistry};
-use qip_contracts::expansion::{CapabilityVerb, GapClass, TheoryDelta};
+use qip_contracts::expansion::{CapabilityVerb, CrossDomainHypothesis, GapClass, TheoryDelta};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_expansion::campaigns::{self, TickCampaignDetector, TickCampaignTrigger};
 use qip_expansion::curriculum::{Budget, State, TaskKind};
@@ -16,9 +16,9 @@ use qip_expansion::desk::{
 };
 use qip_expansion::detectors::{
     ContestedKey, Decline, Origin, PersistenceTracker, Reading, Refusal, Residual,
-    anomaly_clusters, contested_evidence, contradictions, coverage, incompetent_specialists,
-    low_confidence, missing_causal_links, model_drift, refusal_clusters, repeated_vetoes,
-    split_by_wanting, theory_contradictions, unexplained_residuals,
+    anomaly_clusters, contested_evidence, contradictions, coverage, cross_domain_links,
+    incompetent_specialists, low_confidence, missing_causal_links, model_drift, refusal_clusters,
+    repeated_vetoes, split_by_wanting, theory_contradictions, unexplained_residuals,
 };
 use qip_expansion::executor::{CampaignPolicy, FillResidual, run_fill_bias_campaign};
 use qip_expansion::gap::{GapTrigger, Observation, Wanting, classify, raise};
@@ -1306,5 +1306,178 @@ fn a_theory_delta_is_a_revision_task_naming_the_rule_and_wanting_the_model() {
         lot.observation.contains("is not moved"),
         "{}",
         lot.observation
+    );
+}
+
+/// R12-EXPAND-6031: a synthesised chain is a causal gap carrying its path,
+/// hops and sources, severe in proportion to the hops the causal graph does
+/// not claim, and a chain claimed end to end is not raised at all. Mutation:
+/// drop the `unclaimed_hops() > 0` filter — the claimed chain is raised and
+/// the `len() == 2` assertion fails; or want a `Source` — the class fails.
+#[test]
+fn a_cross_domain_chain_is_a_causal_gap_severe_by_its_unclaimed_hops_and_a_claimed_chain_is_not() {
+    let chain = |path: &[&str], claimed: usize| CrossDomainHypothesis {
+        subject: path[0].into(),
+        path: path.iter().map(|p| (*p).to_string()).collect(),
+        edges: vec!["in_industry".into(), "produces_commodity".into()],
+        domains: vec!["companies".into(), "industry".into(), "commodities".into()],
+        strength: 0.7,
+        sources: vec!["reference".into(), "research".into()],
+        causally_claimed_hops: claimed,
+        synthesised_at: Timestamp::from_secs(1_760_000_000),
+    };
+    let chains = vec![
+        chain(&["ent-a", "ind-x", "cmdty-1"], 0),
+        chain(&["ent-b", "ind-y", "cmdty-2"], 1),
+        chain(&["ent-c", "ind-z", "cmdty-3"], 2),
+    ];
+    assert!(
+        chains.iter().all(|c| c.validate().is_ok()),
+        "premise: every chain is well-formed"
+    );
+
+    let gaps = cross_domain_links(&chains);
+    assert_eq!(
+        gaps.len(),
+        2,
+        "the fully claimed chain is not raised: {gaps:?}"
+    );
+    for gap in &gaps {
+        assert_eq!(gap.trigger, GapTrigger::LowConfidence);
+        assert_eq!(class_of(gap), GapClass::Causal);
+        assert_eq!(gap.evidence[0], Origin::CrossDomainSynthesis.as_str());
+        assert!(
+            gap.evidence
+                .iter()
+                .any(|e| e == "edges:in_industry,produces_commodity"),
+            "{:?}",
+            gap.evidence
+        );
+        assert!(
+            gap.evidence.iter().any(|e| e == "source:research"),
+            "{:?}",
+            gap.evidence
+        );
+    }
+    assert!(
+        (gaps[0].severity - 1.0).abs() < 1e-12,
+        "nothing claimed: {:?}",
+        gaps[0]
+    );
+    assert!(
+        gaps[0]
+            .evidence
+            .iter()
+            .any(|e| e == "path:ent-a>ind-x>cmdty-1"),
+        "{:?}",
+        gaps[0].evidence
+    );
+    assert!(
+        (gaps[1].severity - 0.5).abs() < 1e-12,
+        "one of two hops claimed: {:?}",
+        gaps[1]
+    );
+}
+
+/// R12-EXPAND-6035: a campaign that ran leaves a validated experiment pack
+/// naming its hypothesis, the feature it built, the backtest it was fitted
+/// on (the Historical stage's digest and sample count, the Shadow window's
+/// forward improvement), every criterion's finding, the experiment
+/// references and what it proposes; a campaign whose shadow failed packs
+/// its failure and proposes nothing. Mutation: in
+/// `CampaignResult::experiment_pack` take `backtest_samples` from
+/// `self.correction.ops` (one) rather than `fitted_on` — the sample
+/// assertion fails; skip `pack.validate()` and return a zero-sample pack —
+/// the `validate` assertion fails.
+#[test]
+fn a_campaign_produces_a_validated_experiment_pack_with_its_backtest_result() {
+    let policy = CampaignPolicy::default();
+    let (question, lineage) = started_fill_item();
+    let run = |fills: &[FillResidual]| {
+        run_fill_bias_campaign(
+            &question,
+            &lineage,
+            fills,
+            t0(),
+            &policy,
+            true,
+            Decimal::from_int(4),
+            Decimal::from_int(48),
+        )
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("premise: enough fills on both sides of the start")
+    };
+    let held = run(&biased_fills(8, 40.0));
+    assert!(
+        held.installation.is_some() && held.campaign.is_complete(),
+        "premise: the bias held and the campaign ran every stage"
+    );
+
+    let pack = held.experiment_pack(t0()).unwrap_or_else(|e| panic!("{e}"));
+    pack.validate().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(pack.campaign_id, held.campaign.id().unwrap());
+    assert_eq!(pack.hypothesis, question);
+    assert!(
+        pack.feature.contains("`XSIM`") && pack.feature.contains("40.0 bp"),
+        "the feature names the venue and the fitted bias: {}",
+        pack.feature
+    );
+    let historical_digest = &held.campaign.stages()[0].1.dataset_digest;
+    assert_eq!(held.campaign.stages()[0].0, Environment::Historical);
+    assert_eq!(
+        &pack.backtest_digest, historical_digest,
+        "the backtest is the dataset the correction was fitted on"
+    );
+    assert_eq!(pack.backtest_samples, 10, "the ten historical fills");
+    assert!(
+        (pack.backtest_improvement_bps - held.shadow_improvement_bps).abs() < 1e-12,
+        "the forward improvement is the shadow window's"
+    );
+    assert_eq!(
+        pack.findings.len(),
+        9,
+        "one finding per criterion: {:?}",
+        pack.findings
+    );
+    assert!(
+        pack.findings
+            .iter()
+            .any(|f| f.starts_with("calibration: passed")),
+        "{:?}",
+        pack.findings
+    );
+    assert_eq!(pack.failures().count(), 0, "{:?}", pack.findings);
+    assert_eq!(
+        pack.experiments,
+        held.campaign.experiment_refs().unwrap(),
+        "the experiment references are the campaign's"
+    );
+    assert!(
+        pack.proposal.starts_with("install a 40.0 bp"),
+        "{}",
+        pack.proposal
+    );
+
+    // The bias vanishes after the start: shadow does not clear, nothing is
+    // installed, and the pack says so.
+    let failed = run(&biased_fills(8, 0.0));
+    assert!(
+        failed.installation.is_none(),
+        "premise: a vanished bias clears no shadow window"
+    );
+    let pack = failed
+        .experiment_pack(t0())
+        .unwrap_or_else(|e| panic!("{e}"));
+    pack.validate().unwrap_or_else(|e| panic!("{e}"));
+    assert!(pack.proposal.starts_with("none:"), "{}", pack.proposal);
+    assert!(
+        pack.backtest_improvement_bps < policy.min_improvement_bps,
+        "{}",
+        pack.backtest_improvement_bps
+    );
+    assert!(
+        pack.failures().count() > 0,
+        "a campaign that cleared no bar packs at least one failed criterion: {:?}",
+        pack.findings
     );
 }

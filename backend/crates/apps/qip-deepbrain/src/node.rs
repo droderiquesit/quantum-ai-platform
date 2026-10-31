@@ -328,6 +328,16 @@ fn research_pass(
             .side_failures
             .push(format!("ambient journal: {}", error.message()));
     }
+    // The experiment packs of this cycle, on the same journal
+    // (R12-EXPAND-6035): a campaign's backtest and findings printed on a
+    // cycle line and written nowhere are a result nobody can reopen.
+    if let Some(journal) = loops.ambient.as_deref_mut()
+        && let Err(error) = journal.record_experiment_packs(cycle, &round, now)
+    {
+        outcome
+            .side_failures
+            .push(format!("experiment-pack journal: {}", error.message()));
+    }
     // The source scores of this cycle, on the same journal
     // (R12-EXPAND-6027): a score printed on a cycle line and written
     // nowhere is a figure nobody can check against its window.

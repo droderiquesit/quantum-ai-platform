@@ -713,23 +713,31 @@
   },
   {
     "id": "R12-EXPAND-6031",
-    "status": "MISSING",
-    "current": "No CrossDomainHypothesis type or cross-domain search; kernel shared_cause.rs buckets exposure by causal driver from a Granger graph over the platform's own tape, which is not cross-domain synthesis.",
+    "status": "PARTIAL",
+    "current": "CrossDomainHypothesis exists (qip_contracts::expansion::CrossDomainHypothesis: subject, path, edges, domains, strength, sources, causally_claimed_hops, synthesised_at; validate/decode, MIN_DOMAINS=3). qip_world_model::synthesis::cross_domain_hypotheses walks the knowledge graph's facts holding at now (forward, no revisit, at most MAX_HOPS=4) through world-domain nodes (domain_of: entity kinds and node kinds folded onto companies/industry/commodities/fx/economy/policy/markets/shipping/weather/events/factors; platform bookkeeping nodes are not walked) and emits every chain crossing three or more distinct domains with its edge lineage and the count of hops the causal graph already claims, strongest first, at most MAX_HYPOTHESES=64. The deep brain's sweep calls it every pass and raises each chain the causal graph does not claim end to end as a GapTrigger::LowConfidence / Wanting::CausalLink gap (detectors::cross_domain_links, Origin::CrossDomainSynthesis, severity = unclaimed hops / hops). Platform::absorb_knowledge is the one intake door for extracted nodes and relationships.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/shared_cause.rs:12-20 causal driver from own price history only"
+      "backend/crates/libs/qip-contracts/src/expansion.rs CrossDomainHypothesis",
+      "backend/crates/services/qip-world-model/src/synthesis.rs cross_domain_hypotheses, domain_of",
+      "backend/crates/services/qip-expansion/src/detectors.rs cross_domain_links",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over (cross-domain block)",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs absorb_knowledge, KnowledgeRelation",
+      "backend/crates/services/qip-world-model/tests/synthesis.rs a_company_to_industry_to_commodity_path_yields_a_validated_hypothesis_with_edge_lineage",
+      "backend/crates/apps/qip-deepbrain/tests/cross_domain.rs a_recorded_cross_domain_chain_reaches_the_sweep_as_a_causal_gap_and_a_claimed_one_does_not",
+      "backend/crates/services/qip-expansion/tests/loop.rs a_cross_domain_chain_is_a_causal_gap_severe_by_its_unclaimed_hops_and_a_claimed_chain_is_not",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs chain fixture in both decoder tests"
     ],
-    "gap": "Synthesis layer and artifact.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "Audit-5 part 2 refuted by the lane's own reading, no skeptic convened: in a deployed process the knowledge graph holds only the FinancialObject nodes the kernel adds for its instruments (Platform::ensure_world_object) and no entity and no relationship, because nothing in production calls WorldModel::relate or Platform::absorb_knowledge (seed_demo_world has no production caller either), so the synthesis walks a graph with no cross-domain edge and emits nothing until a connector's extraction is wired to the door. The search is over recorded relationships only; the requirement's weather -> shipping -> basis chain needs entity kinds (Weather, Logistics) nothing yet populates.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing CrossDomainHypothesis)",
+    "verification": "cargo test -p qip-world-model --test synthesis; cargo test -p qip-deepbrain --test cross_domain; cargo test -p qip-expansion --test loop; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: triage closure landed (contract, world-model synthesis, sweep raises each chain as a gap). Mutations: commodities folded into industry in domain_of fails the synthesis test; thesis node given a domain fails the bookkeeping test; chains counted but not raised fails the deep-brain hop; claimed chain raised fails the detector test; sources unchecked fails the contract blank-field test."
   },
   {
     "id": "R12-EXPAND-6032",
@@ -802,12 +810,19 @@
   {
     "id": "R12-EXPAND-6035",
     "status": "PARTIAL",
-    "current": "Fill-bias ResearchCampaign runs in deepbrain.",
+    "current": "Fill-bias ResearchCampaign runs in deepbrain, and every campaign that reaches a verdict now leaves an ExperimentPack (qip_contracts::expansion::ExperimentPack: campaign_id, hypothesis, feature, backtest_digest, backtest_samples, backtest_improvement_bps, findings (one per criterion), experiments, proposal, produced_at; validate/decode). CampaignResult::experiment_pack builds it from the campaign's Historical stage (the dataset the correction was fitted on, by digest and count), the Shadow window's forward improvement, the evaluation's nine findings, the experiment references and the installation or withdrawal; the sweep pushes it on the round (ResearchRound.experiment_packs, refusals counted) and the ambient journal writes one record per pack (AmbientRecord::ExperimentPack, AmbientJournal::record_experiment_packs, called from the deep brain's cycle after the sweep's own record).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:71 StrategyGenerator",
-      "backend/crates/services/qip-evolution/src/generate.rs"
+      "backend/crates/libs/qip-contracts/src/expansion.rs ExperimentPack",
+      "backend/crates/services/qip-expansion/src/executor.rs CampaignResult::experiment_pack",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over (experiment_pack arm), ResearchRound.experiment_packs",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs record_experiment_packs",
+      "backend/crates/apps/qip-deepbrain/src/node.rs research_pass (experiment-pack journal)",
+      "backend/crates/services/qip-expansion/tests/loop.rs a_campaign_produces_a_validated_experiment_pack_with_its_backtest_result",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_campaign_the_sweep_runs_leaves_a_validated_experiment_pack_that_the_journal_records",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs pack fixture in both decoder tests",
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs StrategyGenerator"
     ],
-    "gap": "No agents writing experiments/features/backtests; no ExperimentPack.",
+    "gap": "The only campaign kind is the fill-bias correction, so the only feature built is an entry-bias correction and the only backtest is its Historical fit plus bootstrap; no agent writes an experiment, builds a feature or proposes a strategy or model from a gap, and the pack's backtest is the campaign's own stages rather than the evolution engine's strategy backtest the triage closure named. The pack reaches the journal only where the deep brain's research pass runs with an ambient journal configured.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -815,10 +830,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing ResearchCampaign / ExperimentPack)",
+    "verification": "cargo test -p qip-expansion --test loop; cargo test -p qip-deepbrain --test expansion_rows; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4b-expand: ExperimentPack landed (contract, campaign constructor, round, journal). Mutations: backtest samples taken from ops not the fitted count fails the loop test; pack built and dropped in sweep_over fails the deep-brain test; journal skipping the pack fails the record assertion; findings unchecked fails the contract blank-field test. Audit-5 part 4 (agents write experiments, build features, run backtests, inspect failures, propose strategies or models) holds for the record clause only; no skeptic convened."
   },
   {
     "id": "R12-EXPAND-6036",
