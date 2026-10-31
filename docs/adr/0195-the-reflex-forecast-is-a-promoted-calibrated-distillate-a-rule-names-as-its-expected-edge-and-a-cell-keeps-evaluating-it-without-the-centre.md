@@ -71,14 +71,22 @@ for a model whose admission the centre signed.
    the forecast to enlarge an order, to choose a venue or to change a
    limit. A gate that can only refuse cannot widen the paper boundary
    (ADR 0003), and a forecast that is wrong costs at most a trade not
-   taken.
+   taken. The gate is off by default: `CellConfig::net_edge_margin_bp` is
+   `None` unless a composition root arms it, and no app sets it today. On a
+   shipped node the forecast is therefore evaluated and journaled with its
+   signal, and decides nothing until a node is configured with a margin.
 4. **A cell keeps evaluating the forecast without the centre.** The plan
    and its model stay installed on the last policy the cell applied.
    `check_models_promoted` deliberately does not consult the manifest's
    freshness: a stale manifest is still the last set the centre signed.
    The policy's age narrows the cell's capability table elsewhere, but it
    does not unload the model. A centre that stops answering therefore
-   leaves the forecast running on the last promoted calibration.
+   leaves the forecast running on the last promoted calibration. That holds
+   while the strategy's capital envelope is current. An expired envelope
+   stops the cell's orders before the net-edge gate runs, so past it the
+   forecast is still evaluated and decides nothing. The envelope's lifetime
+   (eight hours by default) bounds how long "independently of central
+   services" lasts, and this decision does not lengthen it.
 5. **"Warm backup" is declined as a second node.** A standby execution node
    per region is billed infrastructure that ADR 0024 does not provide, and
    the delegation does not cover new paid infrastructure. The requirement's
@@ -93,8 +101,11 @@ for a model whose admission the centre signed.
   forecast must reach the signal, and the net-edge gate must refuse the
   signal whose forecast is below cost. The warm-backup clause stays open.
 - No committed production strategy declares a model as its expected edge
-  yet. Shipping one is a strategy decision for the desk, and nothing here
-  makes it.
+  yet, and no node arms the net-edge gate. Shipping either is a desk
+  decision, and nothing here makes it.
+- The forecast the test drives reads one book-pressure level over a
+  seconds-scale window. Nothing here builds a forecast per horizon from
+  microseconds to minutes; the requirement's horizon range stays open.
 
 ## What it costs
 

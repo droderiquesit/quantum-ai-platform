@@ -560,16 +560,14 @@
   {
     "id": "R12-WORLD-9023",
     "status": "PARTIAL",
-    "current": "Signal gains an optional expected_edge_bp (backend/crates/libs/qip-contracts/src/signal.rs, off the wire when absent). qip-strategy Rule gains an optional expected_edge expression typed Statistic (ir.rs Rule::with_expected_edge, compile.rs CompiledRule::expected_edge), evaluated in runtime.rs only for a rule that declared one; nothing derives an edge from conviction. The cell refuses a non-finite edge under GATE_SIGNAL_EDGE beside GATE_SIGNAL_CONVICTION and journals the edge in Decision::SignalRaised, so the centre joins the realised result through attribution lineage and no outcome returns to the cell (ADR 0155 section 7, 10).",
+    "current": "ADR 0195: the reflex forecast is a promoted, calibrated DistilledModel a rule names as its expected edge (Rule::with_expected_edge with Expr::Model over feature-DAG microstructure inputs), evaluated in Cell::work with no network call; its calibration is inside the digest the signed trained_models manifest admits (qip-api mesh fills the slot from the kernel's promoted set); its only decision effect is the net-edge gate, which can only refuse; a cell keeps evaluating it on the last policy it applied. tests/reflex_forecast.rs drives the pass ten minutes past the policy's valid_for with no link and a paper gateway: each signal carries its calibrated model's forecast and the gate refuses the one below cost.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/signal.rs::Signal",
-      "backend/crates/edge/qip-strategy/src/ir.rs::Rule",
-      "backend/crates/edge/qip-strategy/src/runtime.rs::StrategyRuntime::run",
-      "backend/crates/libs/qip-contracts/src/reflex.rs::Decision::SignalRaised",
-      "backend/crates/edge/qip-edge/src/cell.rs::GATE_SIGNAL_EDGE",
-      "backend/crates/edge/qip-strategy/tests/strategy.rs::a_rule_that_declares_an_edge_raises_a_signal_stating_it_and_a_rule_that_does_not_raises_a_signal_stating_none"
+      "docs/adr/0195-the-reflex-forecast-is-a-promoted-calibrated-distillate-a-rule-names-as-its-expected-edge-and-a-cell-keeps-evaluating-it-without-the-centre.md",
+      "backend/crates/edge/qip-edge/tests/reflex_forecast.rs::a_cell_evaluates_its_promoted_calibrated_forecast_in_the_pass_and_keeps_it_when_the_centre_is_gone (mutants: calibration dropped, edge not from the rule's model, net-edge gate disarmed; all killed)",
+      "backend/crates/edge/qip-edge/src/cell.rs::check_models_promoted, net_edge_refusal",
+      "backend/crates/edge/qip-strategy/src/runtime.rs (expected edge read from the rule's node)"
     ],
-    "gap": "2026-10-24: requirement is a calibrated microstructure forecast evaluated locally in the cell pass; no forecast model exists under edge/ (grep -i forecast finds nothing in qip-edge, qip-strategy or qip-edge-node/src), only an optional Signal.expected_edge_bp that no committed strategy declares",
+    "gap": "Skeptic 2026-10-31 PARTIAL: no committed strategy states a model as its expected edge and no node arms the net-edge gate (CellConfig::net_edge_margin_bp defaults to None), so bar part 2 fails. The forecast the test drives reads one book-pressure level over a seconds-scale window, not microsecond-to-minute horizons. Continuation is proven for a policy past valid_for, not past the capital envelope's expiry (8h default), which stops orders before the net-edge gate. ADR 0195 decision 5 declines the warm-backup clause, so bar part 4 fails.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -577,10 +575,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-strategy --test strategy a_rule_that_declares",
+    "verification": "cargo test -p qip-edge --test reflex_forecast",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: deriving expected_edge_bp from conviction when the rule declares none made the edgeless-rule assertion fail (premise: the declaring rule stated Some(35.0) first). No shipped strategy declares an edge yet, so every signal in the tree still states none; the gate that reads it is RISK-5044. AUDIT-2 2026-10-24: regraded, requirement is a calibrated microstructure forecast evaluated locally in the cell pass; no forecast model exists under edge/ (grep -i forecast finds nothing in qip-edge, qip-strategy or qip-edge-node/src), only an optional Signal.expected_edge_bp that no committed strategy declares"
+    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: deriving expected_edge_bp from conviction when the rule declares none made the edgeless-rule assertion fail (premise: the declaring rule stated Some(35.0) first). No shipped strategy declares an edge yet, so every signal in the tree still states none; the gate that reads it is RISK-5044. AUDIT-2 2026-10-24: regraded, requirement is a calibrated microstructure forecast evaluated locally in the cell pass; no forecast model exists under edge/ (grep -i forecast finds nothing in qip-edge, qip-strategy or qip-edge-node/src), only an optional Signal.expected_edge_bp that no committed strategy declares 2026-10-31 L4-quant: ADR 0195 accepted and the acceptance test landed (03d03de7); ADR corrected on the skeptic's findings for the default-off net-edge gate and the envelope-expiry bound. Skeptic verdict PARTIAL."
   },
   {
     "id": "R12-WORLD-9024",
