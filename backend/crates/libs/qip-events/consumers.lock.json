@@ -182,6 +182,19 @@
     ]
   },
   {
+    "topic": "reflex.feature_digested",
+    "version": 1,
+    "consumers": [
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "FeatureDigest",
+        "role": "decodes",
+        "migrated": false
+      }
+    ]
+  },
+  {
     "topic": "reflex.pass_marked",
     "version": 1,
     "consumers": [

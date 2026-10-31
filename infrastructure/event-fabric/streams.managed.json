@@ -67,6 +67,7 @@
       "topics": [
         "reflex.journal_recorded",
         "reflex.pass_marked",
+        "reflex.feature_digested",
         "reflex.market_event_applied",
         "reflex.fabric_gap"
       ]

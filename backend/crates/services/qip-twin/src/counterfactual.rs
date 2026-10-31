@@ -224,6 +224,9 @@ impl AlternativeMenu {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActualTrade {
     pub object_id: ObjectId,
+    /// The side of the book the trade consumed: `Ask` bought, `Bid` sold —
+    /// the wire's convention (`qip_contracts::wire`), not the side a resting
+    /// order would sit on. `direction` turns it into the sign of the P&L.
     pub side: BookSide,
     /// Always positive; direction lives in `side`.
     pub quantity: Decimal,
@@ -267,10 +270,22 @@ impl ActualTrade {
     }
 
     /// +1 long, -1 short.
+    ///
+    /// `Ask` is the long: a buy consumes the ask, and `side` is the side of
+    /// the book the trade consumed, which is the convention every producer
+    /// of this record speaks — the kernel's `book_side`, the cells' fill
+    /// reports (`qip_contracts::wire`) and the central plane's slippage
+    /// sign. This read `Bid` as long until 2026-10-31, so every trade the
+    /// kernel handed in settled as the opposite position: a refused buy on
+    /// a rising tape scored a negative `would_have_earned`, and the regret
+    /// bit §12.3 tallies per rule said the veto had saved what it cost.
+    /// This crate's own fixture called `Bid` a buy, so nothing here caught
+    /// it; `a_trade_against_the_ask_is_the_long_and_one_against_the_bid_is_the_short`
+    /// now does, and the kernel's `tests/learning.rs` holds the other end.
     const fn direction(&self) -> i64 {
         match self.side {
-            BookSide::Bid => 1,
-            BookSide::Ask => -1,
+            BookSide::Ask => 1,
+            BookSide::Bid => -1,
         }
     }
 }

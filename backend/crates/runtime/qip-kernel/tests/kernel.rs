@@ -2218,3 +2218,108 @@ fn a_fill_the_platform_made_is_on_the_desk_for_the_self_exploitation_probe_next_
     );
     Ok(())
 }
+
+/// R12-REASON-3023 on the default cycle: the model-failure probe reads the
+/// forecasters the tournament holds a question from, and the kernel is what
+/// puts them on the desk — `brief_the_desk_on_models`, before every REASON.
+/// The first cycle's hypothesis opens a question many forecasters answer;
+/// on the next convened panel the probe examines them. Without the feed the
+/// probe would report nothing examined on every cycle of every deployment
+/// while the organisation test, on a hand-built desk, kept passing.
+///
+/// Mutation: delete `self.brief_the_desk_on_models();` from `stage_reason`
+/// — the probe reports no data on every cycle and the assertion fails.
+/// Verified and restored.
+#[test]
+fn the_tournaments_forecasters_are_on_the_desk_for_the_model_failure_probe_next_cycle() -> Result<()>
+{
+    use qip_investment_agents::ids;
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    assert!(
+        !first
+            .stage(Stage::Reason)
+            .expect("REASON reports")
+            .detail
+            .contains("nothing in the queue"),
+        "premise: the panel convenes on this fixture"
+    );
+    assert!(
+        platform
+            .model_tournament()
+            .open_questions()
+            .next()
+            .is_some(),
+        "premise: the first cycle opened a question the forecasters answered"
+    );
+    let examined = |platform: &Platform| -> Vec<f64> {
+        platform
+            .organisation()
+            .audit()
+            .for_agent(ids::MODEL_FAILURE)
+            .iter()
+            .filter_map(|run| run.finding.as_ref())
+            .filter_map(|finding| {
+                finding
+                    .facts
+                    .iter()
+                    .find(|fact| fact.label == "models_examined")
+                    .map(|fact| fact.value)
+            })
+            .collect()
+    };
+    let mut counted = Vec::new();
+    for day in 1..=4i64 {
+        platform.observe(bars("AAA", 120 + day as usize));
+        platform.run_cycle(start().saturating_add(Duration::from_days(day)));
+        counted = examined(&platform);
+        if counted.iter().any(|models| *models >= 1.0) {
+            break;
+        }
+    }
+    assert!(
+        counted.iter().any(|models| *models >= 1.0),
+        "the probe never saw the tournament's forecasters: {counted:?}"
+    );
+    Ok(())
+}
+
+/// R12-REASON-3023 on the default cycle: the manipulation probe examines the
+/// tape the platform has sensed, not only a hand-built desk's. The kernel's
+/// fixture has bars and no book, so the tape arm is what counts the
+/// instrument.
+#[test]
+fn the_sensed_tape_is_examined_by_the_manipulation_probe_on_the_cycle() -> Result<()> {
+    use qip_investment_agents::ids;
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+    assert!(
+        !report
+            .stage(Stage::Reason)
+            .expect("REASON reports")
+            .detail
+            .contains("nothing in the queue"),
+        "premise: the panel convenes on this fixture"
+    );
+    let examined: Vec<f64> = platform
+        .organisation()
+        .audit()
+        .for_agent(ids::MANIPULATION)
+        .iter()
+        .filter_map(|run| run.finding.as_ref())
+        .filter_map(|finding| {
+            finding
+                .facts
+                .iter()
+                .find(|fact| fact.label == "instruments_examined")
+                .map(|fact| fact.value)
+        })
+        .collect();
+    assert!(
+        examined.iter().any(|count| *count >= 1.0),
+        "the probe examined nothing on the cycle: {examined:?}"
+    );
+    Ok(())
+}

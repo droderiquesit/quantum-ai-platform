@@ -385,6 +385,7 @@ impl DiscoveryDesk {
             decisions: Vec::new(),
             catalogued: Vec::new(),
             catalogue_problems: Vec::new(),
+            entries: Vec::new(),
         };
         for entry in order {
             let candidates = vec![entry.candidate.clone()];
@@ -403,6 +404,7 @@ impl DiscoveryDesk {
             };
             merged.decisions.extend(assessment.decisions);
             merged.catalogued.extend(assessment.catalogued);
+            merged.entries.extend(assessment.entries);
             merged
                 .catalogue_problems
                 .extend(assessment.catalogue_problems);

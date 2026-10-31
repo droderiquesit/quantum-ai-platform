@@ -1,0 +1,645 @@
+{
+  "date": "2026-10-31",
+  "lanes": [
+    {
+      "lane": "L1",
+      "rows": [
+        {
+          "id": "R12-ASSET-4070",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "quant",
+          "ruling": "Joint construction is approved as one run that can only narrow. construct_from takes grouped caps for strategies from the allocator's plan, for horizons from the reconciled horizon pools and for regions from the region ceilings already on record, and no cap may loosen the mandate. No asset-class budget and no new regional budget is sized here. Where no figure is on record, the cap is the book's own target gross, and a real number needs its own risk record with the numbers argued (decision 7).",
+          "closure": "After the ADR, add narrowing-only grouped caps to construction.rs::Mandate. Fill them in qip-kernel construct_from from the AllocationPlan, the HorizonReconciliation and the region ceilings on record, using target gross where none exists. Add an integration test that one run respects the per-strategy, per-class, per-region and per-horizon caps together (mutation: drop the class group).",
+          "adr_title": "Joint construction is one optimiser run whose grouped caps only narrow the mandate, and no class or region budget is sized without its own risk record",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-ASSET-4073",
+          "class": "IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. It stays outside the desk's book, sizing and capital, as commerce_research already promises. Any real merchant, marketplace or carrier stays refused under ADR 0021 and 0099. The commerce-only breadth plan may ship on in dev's committed configuration, because it is synthetic and fails closed.",
+          "closure": "In qip-kernel commerce_research.rs, build a RealAsset PositionRecord for each received unit. Its product_economics comes from the unit's LandedCost, and a new inventory-state field is read from the Ledger. The record is held in the commerce research output and never in the book. Test a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledger_inventory_and_the_book_is_unchanged; its mutation drops the ledger read. Then mount a commerce-only breadth plan in infrastructure/gitops/envs/dev/deepbrain.yaml.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CAPITAL-4085",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "Capital agents are approved as proposers only. Each of the ten named agents submits a plan every cycle, and the kernel records all ten before it chooses. The plan it acts on is the per-line minimum of those plans and the one allocator's plan, so no agent can widen a grant and nothing new is sized (decision 7 holds). Until ADR 0153 gives tax an input, the tax-aware agent submits an abstention that names the missing input.",
+          "closure": "After the ADR, add a CapitalPlan type and ten proposers in qip-capital built over the existing modules. Make CentralPlane::allocate record every plan for the cycle before it acts on the per-line minimum with CapitalAllocator::allocate's plan. Test that all ten plans are recorded before the choice and that a plan above the allocator's line is clipped (mutation: take the maximum).",
+          "adr_title": "Capital agents only propose: every named agent's plan is recorded each cycle, and the kernel acts on the per-line minimum of those plans and the one allocator's",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CAPITAL-9047",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The capital-society coordinator is a step the kernel composes over qip-capital, not a new binary (ADR 0127). It settles proposals in the survival waterfall's order: liquidity and collateral first, funding obligations next, allocation last from what remains. A set that would sum past the region's grant is cut from the bottom, and no proposal ever widens a grant. The durable ledger stays on the current store until the Spanner deploy is funded, and nothing new is sized (decision 7).",
+          "closure": "After the ADR, add a kernel step that composes qip-capital's four proposers and settles them against GrantManifests in waterfall order, with test competing_proposals_never_sum_past_the_grant and a mutation that drops the cut.",
+          "adr_title": "The capital-society coordinator is a kernel step that settles allocation, funding, liquidity and collateral proposals in the survival waterfall's order against the region's grant, and no set of proposals ever sums past it",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-RISK-4096",
+          "class": "IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "Build the quote gate now: an order on an instrument with no quote in the platform's market snapshot is refused and journaled. It reads presence only, because a freshness bound would be a new threshold that needs its own argued record (decision 7). Borrow stays fail-closed, every uncovered short refused, until qip-data-finder admits a licensed borrow source under ADR 0157; that source is a vendor and the owner's call, so the row stays PARTIAL.",
+          "closure": "In Platform::submit_order, after short_without_borrow, refuse an order whose instrument has no quote in the market snapshot, journaled under control 'quote-availability', with test an_order_on_an_instrument_with_no_live_quote_is_refused and a mutation that skips the check.",
+          "adr_title": null,
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L1b",
+      "rows": [
+        {
+          "id": "R12-FABRIC-10026",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "The module is instantiated and already refuses a non-Hyperdisk journal, so the gap's 'instantiate' is stale. The plan check still lacks an assertion on the journal's own disk type and a run that feeds it local-ssd. Add both to the module's plan-mode test and grade the row on them; no environment is switched on for this.",
+          "closure": "In modules/event-fabric-broker/tests/machine.tftest.hcl, assert the template's disk[1].disk_type starts with hyperdisk- and add a run with disk_type = \"local-ssd\" expecting failure on var.disk_type, then refresh the row's current and evidence.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-FINOPS-10137",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "No commitment is bought on the hot path until a sizing record measured on a provisioned C4 execution node is committed, and that becomes a refusal now rather than a promise. The record itself waits on an execution node, which stays off, so the row stays PARTIAL.",
+          "closure": "Add qip-acceptance infrastructure.rs test no_committed_use_discount_is_declared_before_a_sizing_record_measured_on_an_execution_node, refusing any google_compute_region_commitment under infrastructure/terraform while docs/ops/execution-measurements.md has no row measured on an execution node, with a mutation that declares one.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-FINOPS-9189",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "No cloud worker pool is bought for autonomous development (decision 5). The autonomous-development plane is agent-sandbox.yml on ephemeral hosted runners. It already allows one run per lane, with a time budget and egress request and byte quotas. It gains a max_concurrent_lanes cap in the agent policy that the lane validator enforces, set no higher than the largest wave the committed manifest already runs. The Cloud Build private pool stays off.",
+          "closure": "After the ADR, a protected patch adds sandbox.max_concurrent_lanes to scripts/agent-policy.json. scripts/agent-lanes.mjs validate then refuses any manifest whose wave exceeds the cap. Add a test pair: a wave over the cap is refused and the committed round-3 manifest is admitted. build-pool.tf is not touched and stays off.",
+          "adr_title": "The autonomous-development pool is the agent sandbox on ephemeral hosted runners, capped by a concurrent-lane limit the lane validator enforces, and no cloud worker pool is bought",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-LEDGER-8136",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "The ledger holds simulated paper balances and no customer data, so no foreign residency rule binds it today. Until a residency review says otherwise, its data stays in the United States. The instance moves from the unverified nam-eur-asea string to nam3, and the positions database leads from us-east4, where qip-ledgerd writes in ADR 0035's one execution region. Spanner stays off (decision 5).",
+          "closure": "After the ADR, set google_spanner_instance.global's config to nam3. Set the positions database's default_leader from a modules/data variable that defaults to us-east4 and is validated against nam3's read-write regions, checked on Google's configuration page in the same change. Add a harness pair that refuses europe-west1 and admits us-east4. enable_spanner stays false.",
+          "adr_title": "The ledger's Spanner instance is nam3 with its leader at the us-east4 write origin, and its data stays in the United States until a residency review says otherwise",
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L2",
+      "rows": [
+        {
+          "id": "R12-ARCH-7134",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "contracts",
+          "ruling": "The requirement text stands and so does ADR 0143. The row is graded against ADR 0143's decline and stays PARTIAL until phase 0 exits. I will not add switches to code that runs paper today: turning off the survival gate or the cycle to satisfy an ordering clause would remove protections, not add them. But nothing new arrives ungated. A capability added ahead of its phase must name a switch that keeps it off, and the ten capabilities listed with switch 'none' are a ratchet that may only shrink.",
+          "closure": "phase_register.rs refuses any ahead_of_phase entry whose switch is 'none' unless it is one of the ten committed today. The ten are held as a list in the test that may only shrink, and a mutation that adds an eleventh is shown to fail.",
+          "adr_title": "A capability added ahead of its phase arrives with a switch that keeps it off, and the ten that have none are a ratchet that may only shrink",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CONTRACT-7067",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "contracts",
+          "ruling": "The cell gets the typed envelope, built only from numbers that already exist. Hard limits come from the limit set as it stands. Each standard stress scenario is bounded at the limit set's MaxDrawdown. The health requirements are the slot staleness bounds the cell already enforces and the promotion gate's calibration floor, and the emergency mode is stated, never assumed. A limit set with no drawdown limit produces no envelope, and a cell refuses a payload with any slot missing and takes no new exposure on it.",
+          "closure": "Replace RiskEnvelopeSnapshot in PolicyPayload.risk_envelope with RiskEnvelope. Map LimitSet hard limits, MaxDrawdown per standard-library scenario, the cell's slot staleness bounds and the promotion calibration floor in qip-api mesh.rs, and decode it strictly in the cell. Test: a_policy_payload_whose_risk_envelope_lacks_a_scenario_limit_is_refused_by_the_cell. Close R12-CONTRACT-1195 with the same change.",
+          "adr_title": "The policy payload's risk envelope is the typed RiskEnvelope, built only from limits that already exist, and a cell refuses one with a slot missing",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CONTRACT-7074",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The receiver is the central brain's divergence hold. A re-promotion releases a venue's hold only when the latest MicrostructureDelta concluded for that venue sits inside the thresholds I approved in decision 2. A residual may keep a hold. It never lifts one, and it never sizes anything.",
+          "closure": "qip-api's central plane reads AmbientRecord::MicrostructureDelta from the ambient journal, re-admits each through MicrostructureDelta::new, and replay_divergence refuses to release a venue's hold while that venue's latest delta's |observed - modelled| exceeds REPLAY_DIVERGENCE_THRESHOLD_BPS on at least REPLAY_DIVERGENCE_MIN_SAMPLE samples; this is proven by a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold (mutation: drop the receive call and the hold releases), and the row's stale gap is rewritten to name the producer.",
+          "adr_title": "A concluded microstructure delta is read by the centre's divergence hold; a residual may keep a venue's hold but never lift one or size anything",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CONTRACT-7075",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "model",
+          "ruling": "The receiver is the deep brain's gap detector. If a partition's WorldModelState passes its expiry with no successor, the deep brain raises a model-drift gap and queues re-estimation. The state never moves a size and never chooses an action.",
+          "closure": "The deep brain's sweep reads NowReview.world_states from world_model.updated, re-admits each through WorldModelState::new, and raises a GapTrigger::ModelDrift observation for any partition past expires_at with no newer state; this is proven by a_partition_whose_world_state_expired_queues_a_model_drift_gap (mutation: drop the read and no gap is raised).",
+          "adr_title": "WorldModelState's receiver is the deep brain's gap detector: an expired partition queues re-estimation and moves no size",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-MODEL-10180",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "contracts",
+          "ruling": "An automatic promotion moves the centre's alias and activates nothing on a cell. A model is activated only by a two-person signed ModelPack (ADR 0110): its KMS signature is the signature link, its two publishers are the approval, and the cell records commit, data manifest, signature, approvers and epoch at activation. A pack missing any link is refused, so until training carries a commit and a data manifest, no model activates.",
+          "closure": "Add source_commit and data_manifest to qip_contracts::policy::ModelPack::signing_payload. Make ModelManifest::check_releases refuse a pack missing either. Journal an ActivationRecord (commit, manifest, signature, publication, epoch) at the cell's activation boundary, with one mutated test per link. Depends on R12-MODEL-10083 for the manifest.",
+          "adr_title": "A model activates on a cell only from a two-person signed pack that names its source commit and data manifest, the cell journals that activation with its epoch, and a centre promotion is not an activation",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-MODEL-1083",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "No bucket or registry is bought to carry plans to nodes. A model reaches a node only inline in its two-person signed pack inside the policy payload. A compiled plan reaches it baked into the attested node image, beside the trust bundle, and nothing is fetched at run time. The cell admits either only at the digest the signed payload names, and the row stays PARTIAL until a node is deployed.",
+          "closure": "Write the ADR. Then have modules/image-bake place the compiled plan at a fixed path that modules/execution-node passes as strategy_plan_path. Add a qip-edge-node test that a baked plan whose digest the signed payload does not name is refused. Deployment evidence follows the owner's node switch.",
+          "adr_title": "A compiled plan reaches an execution node baked into its attested image, a model rides inline in its signed pack, and a node fetches neither at run time",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-MODEL-3089",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "model",
+          "ruling": "The population is the learning desk's own fitted models. Each decision-eligible card forecasts only its own instrument's question, on the deep brain's existing capacity at no new spend, and a drifted card leaves. No per-regime clones and no forecasts from branches no model answers: 'thousands' is a scale the real models reach, never a count padded to, and the row stays PARTIAL until they reach it.",
+          "closure": "Admit each decision-eligible LearningDesk card as a `model:<card id>` Specialist on tournament questions whose subject is the card's instrument. Take P(up) from the fit's own holdout residual error and drop the entrant when ModelCard::decision_eligibility refuses. Test: a_drifted_card_casts_no_forecast_and_an_eligible_one_is_scored.",
+          "adr_title": "A fitted model card is a tournament entrant only on its own instrument's question, its probability comes from its own holdout error, and the population is never padded to a count",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-MODEL-4003",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "model",
+          "ruling": "A specialist model is trained only from a source a licence record admits. Volatility and regime qualify now, from the licensed bars. Event probability, valuation, liquidity, default, demand and supply wait on licence records under ADR 0157. A paper fill trains no slippage model, because it would learn our own fill simulator and call that the market. Each trained class is read by one named warm-lane consumer that may only narrow and refuses when its model is absent. A specialist is refused at hot-lane admission.",
+          "closure": "In the deep brain, train and register SpecialistVolatility and SpecialistRegime cards from licensed bars. Have one warm-lane kernel consumer read each class to shrink, never enlarge, a size, and refuse when the card is absent. Call ModelRegistry::allowed_in_hot_lane at hot-lane pack admission. Test removing_the_volatility_card_leaves_its_consumer_refusing and a specialist-in-hot-pack refusal, each mutation-verified.",
+          "adr_title": "a specialist model is trained only from a licensed source, read by one named warm-lane consumer that may only narrow, never admitted to a hot lane, and a paper fill trains no slippage model (MODEL-4003)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-MODEL-4011",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "model",
+          "ruling": "An ambient model reaches a fast lane only as the signed distillate of a fitted teacher with its own training rows and holdout. The now-stage filter is not a teacher, and a student fitted to its own outputs is refused as the filter relabelled. Until such a teacher exists and R12-CONTRACT-7064's release path can name a pack to a cell, no ambient model reaches a fast lane in any form. The row stays PARTIAL on its positive half.",
+          "closure": "Write the ADR. Restate the gap to name the two prerequisites: a fitted surprise teacher with training rows, and R12-CONTRACT-7064. Keep arch_001_independent_reflex as the prohibition's pin. No student is fitted to the filter's outputs, so there is no code change now.",
+          "adr_title": "an ambient model reaches a fast lane only as the signed distillate of a fitted teacher with its own training rows, and the now-stage filter is not a teacher (MODEL-4011)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-MODEL-6022",
+          "class": "IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "ADR 0149 decision 13 stands: the influence weights and the compute allocation stay journaled records that govern nothing. Build the measurement d13 names now. Only when the influence-weighted aggregate beats the equal-weight mean on resolved questions out of sample does an amendment let the allocation narrow the deep brain's fit budget, never widen it.",
+          "closure": "Each LEARN, journal beside the TournamentReview the out-of-sample Brier score of the influence-weighted aggregate and of the equal-weight mean. Score only questions resolved after the weights were fixed. The record gates nothing. Test: a_measurement_is_journaled_and_reads_nothing_back. Mutation: score both aggregates with the same weights.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-REASON-1133",
+          "class": "IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "Neural coupling stays out of scope under ADR 0150 decision 7. A derivation whose timeline cannot be rebuilt is not a proof, so replay refuses it by name and never reports it as identical.",
+          "closure": "Make symbolic_stage::verify return Error::invalid naming the hypothesis when derivation.temporal.inputs is None, update the TemporalDerivation.inputs doc comment, add a symbolic_federation test that a derivation with its inputs stripped is refused on replay and makes qip replay print REFUSED and exit DIFFERS, and re-grade the gap to cite ADR 0150 d7 as the remaining declined clause.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-REASON-7203",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "model",
+          "ruling": "No running process signs a reflex package. The deep brain writes each package as an unsigned draft, and the two-person model-pack publish signs it, exactly as a model pack, so the deep brain never holds the model-pack key; until that publish step exists, held_unsigned stays the honest count.",
+          "closure": "Have ResearchLoop write held packages as unsigned drafts under REFLEX_PACKAGES_NAMESPACE and add `qip reflex-package signing-message|attach-signature` verbs mirroring model_pack.rs. Run research_market.rs's published-package test with LocalSigner under QIP_DEPLOYMENT=local, and add a test that a deployed deep brain refuses a configured package signer. The row stays PARTIAL until a protected patch adds the signing step to model-pack-publish.yml and the model-pack key version exists.",
+          "adr_title": "A reflex package is drafted unsigned by the deep brain and signed only by the two-person model-pack publish, and no running process holds a package signer",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-WORLD-1178",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The federation runs every UNDERSTAND, so 'not integrated' is stale. Two members can be built now from the book the kernel already holds: a capital member forecasting the book's floor and a counterparty member forecasting settlement. Each has its own proposition and a resolver that reads the ledger, and each can only narrow. Geopolitical, company, supply-chain, physical and event members wait for licensed sources, and the row stays PARTIAL until they exist.",
+          "closure": "After ADR 0194's body: declare `portfolio.capital-floor.global` and `counterparty.settlement.global` in federation_stage.rs. Feed them from positions_at_cost and the survival floor, and resolve them from the ledger's floor and break records. Test: 'the capital and counterparty members are in the population and produce state on a cycle with a held position'. Macro and microstructure follow under R12-WORLD-3043 and R12-WORLD-3046.",
+          "adr_title": "The capital member forecasts the book's floor and the counterparty member forecasts settlement, each resolved from the ledger's own records, and neither enlarges a size (body of claimed ADR 0194)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-WORLD-3043",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "Build the macro member now on the on-chain member's pattern. It reads the NOW macro partition, forecasts its own series, and is resolved by the next reading, so it speaks the day a catalogued connector is switched on at the deploy and says it is silent until then. Conflict and sanctions have no licensed source, so the row stays PARTIAL on the geopolitical half.",
+          "closure": "Declare `macro.surprise-persistence.global` in federation_stage.rs. Add a macro field to FederationInputs, filled from now::macro_surprises (and macro_level for currencies). Feed one proposition per series, resolved by its next reading. Test: 'a cycle with a macro surprise feeds the macro member and a cycle without one reports it silent'.",
+          "adr_title": "The macro member forecasts each series' next published level from the catalogued connectors, reads a surprise only where a source states consensus and labels the synthetic tape's surprises simulated, and it may only narrow (amends ADR 0151 decision 10's source clause)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-WORLD-3046",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The paper feed already states each trade's aggressor side, and like the simulated depth dataset its terms are the platform's own. So an order-flow member reads it, labelled simulated, and a licensed tape later replaces the source, not the member. A trade with no aggressor contributes nothing, and the member can only narrow a size, never enlarge one.",
+          "closure": "After the ADR: in the platform.rs Trade arm, aggregate signed aggressor volume per instrument per cycle into FlowObservation, skipping aggressor None. Pass it through FederationInputs to a new `markets.order-flow.global.micro` member in federation_stage.rs. Test: signed_trade_flow_gives_the_order_flow_member_a_view. Mutation: ignore aggressor.",
+          "adr_title": "The simulated tape's aggressor side feeds an order-flow member labelled simulated, which may only narrow, and a licensed tape replaces the source and not the member (amends ADR 0151 decision 6)",
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L2b",
+      "rows": [
+        {
+          "id": "R12-AGENCY-3028",
+          "class": "IMPLEMENT",
+          "crate_group": "agents",
+          "ruling": "ADR 0146 decision 3 stands: the Causal Agency Brain is registered by its BrainSpec in the deep brain's registry, which refuses to start without it. It does not become an organisation agent, and coverage::Scope gets no scope that no desk evidences. What is left is the pin that decision named, and the row is then graded on it.",
+          "closure": "Add a test in qip-deepbrain/tests/brains.rs asserting that CAUSAL_AGENCY is registered and absent from platform.organisation().roster(), that coverage::Scope::ALL names no intervention-planning scope, and that registry.without(CAUSAL_AGENCY).require_coverage() is refused naming intervention-planning (mutation: drop INTERVENTION_PLANNING from REQUIRED_SCOPES), then re-grade the row on ADR 0146 decision 3.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-AMBIENT-3027",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "agents",
+          "ruling": "The Brain Registry records a brain; it does not cover a scope. Treating it as the production organisation would redefine the requirement to pass the row. The attention router stays advisory and off the Desk's roster. Its scope is covered by a finding the deep brain composes from each sweep's attention events, so removing the router removes the finding and the coverage. The Desk's seven scopes keep their test unchanged.",
+          "closure": "Add an ambient scope set to coverage, beside Scope, evidenced only by whole fact labels. Scope::ALL and the organisation test's assertion over the seven Desk scopes stay unchanged. Have qip-deepbrain compose one AgentFinding per ResearchRound from AttentionRouter events, carrying an attention_routing fact. Add the test removing_the_attention_router_drops_attention_routing_from_covered_scopes. Mutation: skip the finding composition.",
+          "adr_title": "an ambient brain covers a scope only through a finding the deep brain composes from its sweep, the brain registry records and does not cover, and the desk's seven scopes keep their test (AMBIENT-3027, AGENCY-3028)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-AMBIENT-3106",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "contracts",
+          "ruling": "The Curiosity Engine of §9.10 is the acquisition rank: AcquisitionCriteria::net_value_bp, ordered by rank_acquisitions. The expansion curriculum keeps its EXPAND-6063 order, because an unhurried, valuable question is still worth asking. Cost enters as (1 − cost), the share of the decision's value the evidence leaves, since a rank that rose with price would buy expensive evidence. A gap's severity stands for its uncertainty until an observation states a measured reduction of its own.",
+          "closure": "Write the ADR. Restate the row to the acquisition rank, recording the (1 − cost) form and severity-as-uncertainty, with spread on the federation path. Grade it on a_deferred_gap_admitted_beside_a_fresh_one_ranks_first_through_admit and the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is. Make no code change, and leave curriculum.rs untouched.",
+          "adr_title": "the curiosity engine is the acquisition rank, the expansion curriculum keeps its own order, and cost enters as the share of the decision's value it leaves (AMBIENT-3106, EXPAND-6063)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-AMBIENT-9001",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "agents",
+          "ruling": "O02 is decided narrowly. BigQuery, already switched on in dev, is the one evidence store agents read. Bigtable, Spanner Graph and Knowledge Catalog stay declined under decision 5 until an ADR states a measured need and a monthly ceiling. A research task is published as a typed record on the event log, never as an action. Its Fabric topic follows R12-AMBIENT-10108's catalogue patch.",
+          "closure": "In qip-deepbrain, have a research sweep read resolved-outcome evidence through BigQueryWarehouse::query; tests use a recorded transport, and an unset target is refused, not skipped. Journal each federation ResearchTask as a typed event-log record. Test that deleting the publish call fails. The row stays PARTIAL until dev deployment shows a real read.",
+          "adr_title": "agents read evidence only from the BigQuery warehouse and journal research tasks as typed records, and Bigtable, Spanner Graph and Knowledge Catalog stay declined until a measured need and a monthly ceiling (AMBIENT-9001, DATA-8015, DATA-9052, WORLD-8129)",
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L3",
+      "rows": [
+        {
+          "id": "R12-DATA-8014",
+          "class": "IMPLEMENT",
+          "crate_group": "data",
+          "ruling": "Build the Source Manifest Registry on the store ADR 0113 already admitted. It is a registry over SpannerKv, keyed by canonical URI, proven now against the in-process double. enable_spanner stays false until the ledger's Spanner is funded (decision 5), so the row stays PARTIAL.",
+          "closure": "Add a SourceManifestRegistry over qip_storage::gcp::spanner::SpannerKv, keyed by canonical URI (source plus locator). Add a_registry_write_and_lookup_by_canonical_uri_round_trip_through_spanner against the in-process double (mutation: key by content hash). Deployment waits on enable_spanner.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-DATA-8019",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "fabric",
+          "ruling": "Each fabric stream archives under the retention class its catalogue entry declares. A stream whose declared class disagrees with its topics' Topic::retention_class is refused at catalogue load. The new class prefixes get storage-class transitions and no delete rule, so nothing in the fabric archive is kept for less time than it is today.",
+          "closure": "After the ADR, make Broker::archive_sealed write under <prefix>/class=<retention>/ using the stream's catalogue retention. Pass QIP_EVENT_FABRIC_ARCHIVE_BUCKET and _PREFIX from modules/event-fabric-broker. Add transition-only lifecycle rules for those prefixes in modules/data. Test that tick-journal and own-fill segments archive under different classes (mutation: one prefix for all). The tfvars flips and the apply stay the owner's.",
+          "adr_title": "A fabric stream archives under the retention class its catalogue declares, a stream whose topics disagree is refused at load, and no class prefix gains a delete rule",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-DATA-8112",
+          "class": "IMPLEMENT",
+          "crate_group": "data",
+          "ruling": "ADR 0144 already decided scout isolation, so build it as written. The scout runs as its own Cloud Run job, under its own identity with no trading role and its own egress routes. The deep brain only reads its records. The plan and the apply stay the owner's.",
+          "closure": "Add the scout entry point to qip-deepbrain and the deep brain's read-only bucket reader. Declare the scout job, schedule, bucket, identity and egress routes in catalogue.tf. Add an acceptance test that the scout identity holds only its listed grants (mutation: grant a trading role). The plan and the apply stay the owner's.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-DATA-8125",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "No transfer service is bought for the archive. Object lifecycle cannot move objects between buckets, so the landing clause is restated: the archive receives each sealed segment from fabricd's own archive path, never from a landing bucket. A plan shows the archive's locked retention and versioning. Storage stays off until the change that lands the first writer, because the seven-year lock cannot be undone.",
+          "closure": "Add a modules/data plan run with enable_cloud_storage = true. It asserts that google_storage_bucket.archive[0] has retention_policy is_locked and versioning enabled, beside the existing single-region refusal run. Record the restated clause in the row. The row stays PARTIAL until dev's enable_cloud_storage flip (protected, billed) and a real plan.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-DATA-8127",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "data",
+          "ruling": "BigQuery is fed by batch load from Cloud Storage, not by a fabric sink. fabricd has no boot image, while a load needs only the two storage switches already declared. OutcomeSink stops streaming rows: it stages outcome files under an expiring prefix and loads them. No streaming insert remains on any shipped path.",
+          "closure": "Add a load-job call to qip-mesh/src/bigquery.rs. Make qip-deepbrain warehouse::OutcomeSink stage outcomes under an expiring modules/data prefix and load them, instead of calling insertAll. Wire QIP_BIGQUERY_* in catalogue.tf. Test that no shipped path calls insertAll (mutation: restore the streaming call). Deployment waits on the two storage switches.",
+          "adr_title": "The warehouse is fed by batch load from Cloud Storage, amending ADR 0182 decision 4, and no shipped path streams rows",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-DATA-8131",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "data",
+          "ruling": "Dataflow and Dataproc stay out, because ADR 0011 keeps everything in Rust. The row is scored against its Rust equivalent, the way D4 scored the GKE rows against Cloud Run. Batch reprocessing is a Rust Cloud Run Job that reads only the archive or the warehouse and never subscribes to the live fabric. Its Terraform ships switched off. Running it is billed and comes after the deploy.",
+          "closure": "Three parts: a Rust reprocessing entry point that opens only the archive (qip-storage ArchiveReader) or the warehouse; a google_cloud_run_v2_job for it in infrastructure/terraform, with count gated by a flag that ships false; and the acceptance test a_batch_job_reads_only_the_archive_or_the_warehouse_and_holds_no_fabric_subscription, whose mutation adds a fabric subscribe to the job.",
+          "adr_title": "Batch reprocessing is a Rust Cloud Run Job that reads the archive and the warehouse only and never subscribes to the fabric, and Dataflow and Dataproc stay out under 0011",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-EVID-8108",
+          "class": "IMPLEMENT",
+          "crate_group": "data",
+          "ruling": "The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Scoring is a stage of qip-deepbrain on Cloud Run, rebuilt from the log, with no GKE pool, no Spanner Graph and no BigQuery. The source-scoring desk is paper-only and reads only what the node already senses. So it runs by default instead of waiting on a variable that no environment sets, and each round goes into the log so a replay can reproduce it.",
+          "closure": "In qip-deepbrain, default QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY to a non-zero cadence; an explicit 0 still disables the desk and a non-number is still refused. Journal each SourceAlphaRound as an event. Add the test the_deep_brain_scores_every_connector_on_its_cadence_and_a_replay_of_the_log_reproduces_the_round; its mutation sets the cadence to 0.",
+          "adr_title": null,
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L3b",
+      "rows": [
+        {
+          "id": "R12-TICK-10146",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "A replay environment is wanted, and the requirement is not restated to the in-process replay. Replay is declared as a fifth environment under ADR 0118 and left off, like test, stage and prod. It is admitted only with observation autonomy, no execution node, no venue credential and reader-only grants on curated data. No project is billed until the deploy is paid for (decision 5).",
+          "closure": "After the ADR 0118 amendment, a protected patch admits replay in variables.tf only with preconditions that refuse any ceiling above observation, any execution node, any venue secret and any writer grant on curated data. It adds environments/replay/terraform.tfvars and a declared-off foundation project. Add a plan harness pair that refuses an execution node and admits the read-only configuration. Check that the longest resource id built from 'replay' stays within the 30-character service-account limit.",
+          "adr_title": "Replay is a fifth environment, declared and off, admitted only with observation autonomy, no execution node, no venue credential and reader-only grants on curated data",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-TICK-2041",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The central `Tick` is a raw print, and the cognitive layer does not take it. ADR 0151 decision 9 already says the centre has no clock discipline behind a `Tick`, so a `Tick` cannot be the time-aligned state the requirement names. Prices reach the kernel only as state built below it, and the guard refuses `Tick` by type. Reading it otherwise would redefine the requirement to pass the row.",
+          "closure": "After the ADR, qip-market-ingestion folds SensedRecord::Tick into interval state before Platform::observe. Platform::absorb_records loses its Tick arm. cognitive_no_raw_ticks.rs adds Tick and SensedRecord::Tick to its refused names. A test pins the tick desk's fusion input to MarketTrace/TracePoint. MarketStatePack follows ADR 0151 decision 2 under R12-CONTRACT-7072.",
+          "adr_title": "The central Tick is a raw print: the cognitive layer takes a price only as time-aligned state built at the ingestion seam, and the no-raw-tick guard refuses Tick and SensedRecord::Tick",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-TICK-2077",
+          "class": "IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "ADR 0148 decided this on 2026-10-19 and it stands. A missed opportunity is a claim graded in basis points over its own horizon, and it is never priced at a side nobody proposed. What is not graded is counted, never zeroed. No new design is needed, only the build that record already calls for.",
+          "closure": "Rewrite Action::MissedOpportunity's doc comment to say it has no producer and to name ADR 0148. Add qip_opportunities_unpriced_total{reason} in the kernel, with the closed enum labels expired_unworked, no_mechanism and undirected_claim. Add a qip-kernel learning test: a hypothesis rejected on review resolves to realised_move_bps from the view fixed at decision time, and the test fails if the view reads later bars. Restate the row's text to ADR 0148.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-TICK-3097",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "model",
+          "ruling": "Synthetic worlds may vary what no feed measures. Policy, weather, default and supply drivers get a synthetic-only producer. The branches they grow stay Provenance::Synthetic, and UNDERSTAND and REASON never read such a driver as evidence. A real producer for those kinds still waits on a source licensed under ADR 0157.",
+          "closure": "Add DriverKind (Policy, Weather, Default, Supply, OwnAction, Price) to qip-twin futures.rs::WorldDriver. Add a synthetic generator that, together with SyntheticMarket's participants, liquidity and structure, grows worlds along every named dimension. Test a_generator_grows_worlds_differing_along_every_named_dimension; its mutation drops one kind. Add a test that refuses a synthetic-kind driver offered to UNDERSTAND.",
+          "adr_title": "A synthetic world may declare policy, weather, default and supply drivers that no feed produces, every branch they grow stays synthetic, and no such driver reaches UNDERSTAND or REASON (amends 0151 decision 5)",
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L4",
+      "rows": [
+        {
+          "id": "R12-QUANT-4018",
+          "class": "IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The requirement calls quantum variants optional. ADR 0150 decision 5 keeps them unbuilt until a family has a benefit record on a non-simulated provider. The constraint is therefore the refusal at the one promotion door, and that is what this row is graded on. Land the guard test ADR 0150 promised, so that a producer cannot appear in a binary unnoticed.",
+          "closure": "Add no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate to qip-acceptance tests/arch_033_quantum_path.rs. It scans the non-test .rs files under backend/crates and first asserts that the model_serving.rs match arm is found. It then fails on any other `ModelProducer::QuantumInformed` construction, matched as a delimited token. Mutation-check it by constructing one in qip-deepbrain main.rs. Then regrade the gap to 'none open; producer optional and unbuilt by ADR 0150 d5'.",
+          "adr_title": null,
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L4b",
+      "rows": [
+        {
+          "id": "R12-EXPAND-6065",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "quant",
+          "ruling": "This row needs no capital. Decision 8 filed it with the live-capital rows from the triage's bucket, and I take it out. Causal drivers are measured on the graph the platform already keeps: each driver is scored by the share of the instruments its live claims reach that have history, the same way an asset class is. Language stays unmeasured, and the row stays PARTIAL on it, until a source record states the language of what it admits.",
+          "closure": "After the ADR, add CoverageDimension::CausalDriver. Have coverage_universe (or the deep brain's map at qip-deepbrain main.rs) map each live cause in Platform::world().causal().edges() to its effect instruments. Test: 'a causal driver whose effects have no history becomes one coverage gap naming its dimension'. Mutation: drop the driver rows from the map. The row stays PARTIAL on language.",
+          "adr_title": "Causal-driver coverage is measured on the graph's own drivers against the history of the instruments they reach, and language waits for a source record that states one (amends ADR 0151 decision 12)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-EXPAND-6067",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "quant",
+          "ruling": "Beliefs are probabilities, so no belief price level is built. A price/belief discrepancy is the federation's arbitrated probability landing on the wrong side of what the price then did, for the same subject, on PERSIST_SWEEPS consecutive resolutions. That raises one research item naming its origin and moves nothing. Testing it with a specialist or a simulator remains R12-EXPAND-6049's executor work.",
+          "closure": "Add a second PersistenceTracker in research.rs. Feed it the subjects whose latest Resolution has ensemble > 0.5 with outcome false, or < 0.5 with outcome true, citing the resolved propositions. Test: 'a persistent belief discrepancy queues exactly one item naming its origin'. Mutation: feed it the anomaly flags instead.",
+          "adr_title": "A price/belief discrepancy is a federation forecast the market keeps resolving against, measured in probability, and no belief price level is built (amends ADR 0151 decision 12)",
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L5",
+      "rows": [
+        {
+          "id": "R12-REFLEX-5030",
+          "class": "IMPLEMENT",
+          "crate_group": "edge-node",
+          "ruling": "Belief priors stay freshness-only. A belief value never sizes an order until ADR 0088's belief is built and Brier-scored, and then only as a (0,1] narrowing multiplier under its own record. The requirement text stands, so the row stays PARTIAL. Build the opportunity-manifest narrowing filter ADR 0149 already decided now, because it can only narrow.",
+          "closure": "Produce OpportunityManifest in qip-api mesh.rs from each compiled Enter rule's predicate-node digest. In StrategyInstaller, refuse to activate a strategy a produced manifest does not name, and leave behaviour unchanged when the slot is unproduced. Test: a_strategy_the_produced_manifest_does_not_name_is_not_activated, which must fail when the filter is removed.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-REFLEX-8066",
+          "class": "IMPLEMENT",
+          "crate_group": "edge-node",
+          "ruling": "A host tuning is adopted only after a replay shows it helps. The same recorded spool is replayed on one execution node, booted once with the image's tuning and once without, and the two latency distributions are recorded side by side as relative figures. No file of absolute timings is committed, for decision 14's reason. No second VM is bought for the untuned run, and the row closes only on a funded, running node.",
+          "closure": "Add a timing mode to `qip-edge-node replay`. It replays one spool a fixed number of times on a monotonic clock outside the cell, and prints per-pass latency percentiles with the isolcpus, nohz_full and hugepages values read from /proc/cmdline. Test it over a fixture spool. Move the row from MISSING to PARTIAL; it closes on a tuned and an untuned run on a funded node.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-RES-7099",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "edge-node",
+          "ruling": "Custody is read from the simulated venue's own statement and from nothing else. A statement older than two statement periods makes custody Stale. Older than four, or no statement since the node started, makes it Unavailable. Either state only narrows size. No operator route and no TransferGate input are added, because that gate has no production caller and a check nobody calls passes everything.",
+          "closure": "Depends on R12-LEDGER-10185's custody_statement landing first. The edge node then derives Custody freshness from the newest statement's age (Stale beyond 2 periods; Unavailable beyond 4 or with none since start) and feeds Cell narrowing. Test: with_custody_statements_stopped_the_cell_sizes_at_the_unavailable_multiplier. Mutation: report Fresh.",
+          "adr_title": "Custody reads stale after two missed custody statements and unavailable after four or none since start, the node hands it to the cell, and it only narrows",
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L5b",
+      "rows": [
+        {
+          "id": "R12-MESH-5042",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "edge",
+          "ruling": "Discovery proposes and the operator permits. The signed policy carries an operator-signed market reference, and the cell reports any cycle it finds outside the whitelist and sends nothing on it. Only the whitelist reaches the send path. The distributed half waits on a second node, which decision 5 keeps unbought.",
+          "closure": "Add an operator-signed market reference (market to base/quote per venue) to the policy payload. The cell searches every held book over it and journals each cycle with an edge outside the whitelist as a discovered-cycle record, sending no order; this is proven by a_discovered_cycle_outside_the_whitelist_is_reported_and_never_sent (mutation: route it to the send path and the test fails).",
+          "adr_title": "Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-MESH-5059",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The centre discovers templates only inside what the operator signed. Slot 8 carries the operator's conversions narrowed to the cycles the centre finds over them, so stopping discovery empties it. Candidates that cells report wait for my operator's signature. Inventory targets stay the operator's numbers, which a template may only lower, so nothing new is sized, as decision 7 requires.",
+          "closure": "The centre enumerates cycle templates over the operator's signed markets at each issue, ships only conversions on a template (journalled on WhitelistIssue), and produces inventory_targets as the lower of the operator-stated target and each template's start size; this is proven by the_centre_publishes_a_whitelist_from_discovery_and_stopping_discovery_empties_it.",
+          "adr_title": "Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered",
+          "tightens_only": true
+        }
+      ]
+    },
+    {
+      "lane": "L6",
+      "rows": [
+        {
+          "id": "R12-CICD-10117",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "Decision 13 stands: exclude, not inject. A lane writes the deploy.yml change as a patch for me. The portal's second build is compared file by file, with exactly the four per-build-secret files excluded from a list kept under .github/** so only a person can lengthen it, and the check refuses any other difference or a listed file gone. The replay clause is already met by ci.yml's named simulation gate and is corrected.",
+          "closure": "Write docs/blueprint/lanes/l9-CICD-10117.patch. It adds a deploy.yml step that rebuilds qip-portal with --no-cache and diffs the two image filesystems, excluding only the paths named in a new .github/reproducibility/portal-exceptions.txt. The step refuses on any other difference or a missing listed file. The patch also carries a deploy_provenance.rs test that executes the extracted step. Restate the replay clause. The row stays PARTIAL until the owner applies the patch and a deploy run passes it for qip-portal.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CICD-10168",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "ADR 0102 is not amended. The fleet keeps its eight roles, and security, merge and release stay out of it. The requirement's planner, coder, test, security, reviewer, release and SRE roles are the development agents under .claude/agents. Each acts only through a pull request that ci and agent boundary gate, and a release is a person's dispatch of deploy.yml, because no agent merges or deploys (GOV-9067). Phase 9's exit test is named now, but the phase is entered only after phase 8 has exited.",
+          "closure": "Add a qip-acceptance test `phase_9_roles_are_development_agents_that_act_only_through_ci`. It asserts that each of the seven roles maps to at least one .claude/agents/*.md, that agent-sandbox.yml and the fleet's budget ceiling exist, that ROLES in scripts/fleet/worker.mjs has no security, merge or release role, and that deploy.yml, infra.yml and fleet.yml stay in agent-policy.json dispatch_refused_for_agents. Name the test in phase-register.json phase 9 exit_tests and regrade 'current'. Mutation: drop deploy.yml from the refused list, or remove one role's agent file. The row stays PARTIAL while phase 9 is not_entered.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CICD-10203",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "Every action a workflow uses is pinned by its full commit SHA with the tag kept as a comment, and a test refuses a movable tag. A lane writes that as a patch for me to apply, because .github/** is mine. The kernel lock is extended to CycleJournalEntry's optional sub-journals with filled samples. The TO-PIN digests are replaced by promotion, never by hand, so the row stays PARTIAL until a promotion runs.",
+          "closure": "Write docs/blueprint/lanes/l6-cicd-10203-sha-pins.patch. It pins every `uses:` in .github/workflows by a 40-hex SHA with a `# vN` comment, and adds an acceptance test, in the same patch, that refuses a non-SHA ref. Mutation: restore one @v4. Separately, extend body_schema_lock.rs with a CycleJournalEntry sample whose optional calibration and counterfactual journals are filled; mutation: a serde rename without a SCHEMA_VERSION bump. The TO-PIN digests wait on promotion.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CICD-9083",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "Require the trailer: from the instant the running round's manifest is committed, every agent commit names its lane, and one that names none is refused, the orchestrator's included. The orchestrator is the session that commits the manifest, and its depends_on is the DAG; no scheduler is built.",
+          "closure": "Write one protected patch that commits the running round's manifest under scripts/lanes/, with each lane's owns plus an orchestrator lane that depends on every other. The same patch points lane_manifest.path at it and sets trailer_required_after to the instant it lands. agent-lanes validate must pass on the new manifest.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-CICD-9103",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "The pool's refs/heads/ bound stands. A pull request's ref never gets a Google credential, because widening the bound for a plan would hand that credential to any pull request's code. Infrastructure is planned instead on the push to the change's own branch. The plan runs under a plan-only identity that can read state and the project and write nothing, and its result is a required check on the pull request. drift.yml moves to the same identity.",
+          "closure": "Add a plan-only service account in modules/cicd: viewer plus state-bucket read, no write, plans with -lock=false. Write a protected-path patch for a push-triggered plan workflow on infrastructure/** whose result is a required check, and move drift.yml onto the new identity. Then the owner applies it and one hosted run is recorded.",
+          "adr_title": "Infrastructure is planned on every branch push that touches it by a plan-only identity, and a pull request's ref still never authenticates to the pool",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-COVERAGE-5103",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "Crypto trades on paper through the same simulated gateway as every class, and its settlement is simulated there too. A decentralised-venue fill's proceeds wait on an operator-declared finality depth, and an order with no declared depth is refused. A bridge is a declared delay and fee on a simulated transfer. Nothing signs, broadcasts or moves a chain transaction.",
+          "closure": "Add the operator-declared finality hold and the simulated bridge transfer on the paper settlement path, refuse a decentralised-venue digital-asset order with no declared depth, and add tokenized-representation and crypto-derivative paper trade tests in qip-kernel tests/asset_classes with the remove-the-record mutation.",
+          "adr_title": "Digital assets settle on paper through a simulated chain: proceeds wait on an operator-declared finality depth, a bridge is a declared delay and fee, and nothing signs or broadcasts a transaction",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-COVERAGE-5104",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "Event contracts trade on paper only. An event contract is a fully-funded payoff bounded to one unit, priced only where the simulated exchange prints it, and settled only on an operator-declared, dated outcome. An unresolved contract is held, never settled at a guess. A prediction-market venue stays without a catalogue record or licence.",
+          "closure": "Add InstrumentType::EventContract under AssetClass::Prediction with the payoff-bound and declared-outcome checks, then assemble one and trade it on paper in qip-kernel tests/asset_classes; mutation: remove the record and assembly refuses it.",
+          "adr_title": "An event contract is a fully-funded payoff bounded to one unit, traded only where the simulated exchange prints it and settled only on a declared outcome; a prediction-market venue stays unlicensed",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-EVENT-5083",
+          "class": "IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "An oracle's report never resolves a market by itself. discover proposes a resolution only when the market's own criteria, evaluated over named observations from its named source, agree with the report. A market with no such observation stays pending. The plane stays off until a licensed event source is catalogued (ADR 0151 decision 10).",
+          "closure": "In EventMarketPlane::discover, run EventMarket::evaluate over adapter-delivered Observations before MarketResolution::observe, and refuse a report that contradicts the criteria or has no observation. Add the test 'an oracle report contradicting the market's own criteria is refused and the market stays pending' (mutation: skip the evaluate check). The row stays PARTIAL until a licensed event source is catalogued.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-GCP-10010",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "No circuit is ordered: a partner contract is a term and a monthly charge for cells that run in shadow in one region, and I am not buying it. What is ours is the defect the 2026-10-11 apply found, a Partner attachment's router on the private ASN where Google requires 16550: fix it, keep the VPN on the private ASN, and let the row wait on the circuit.",
+          "closure": "Give PARTNER attachments their own per-region Cloud Router at Google's required ASN 16550, as a constant, leaving cloud_router_asn's private-ASN validation intact. Keep the HA VPN tunnels and peers on a router at var.cloud_router_asn. Add tftest runs asserting 16550 on the partner router and the private ASN on the VPN router. The row then waits on the partner circuit in NOT-ORDERED.md.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-GCP-8060",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "Private Google Access, with googleapis.com resolved to the restricted VIP, is the private route, and it meets 'where supported'. The PSC endpoint stays off, because it serves only an interconnect far end and decision 4 declined the hubs. The row closes on a real dev plan showing the private route, and on archiver and fabric GCS calls reaching 199.36.153.4/30 once those are wired.",
+          "closure": "Record a drift.yml or infra.yml plan of dev showing every subnet with private_ip_google_access and the googleapis zone resolving to restricted.googleapis.com. Regrade the 'Enable PSC' gap to 'only once an interconnect exists'.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-GOV-10005",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "The feed exists, so the row's 'no cloud_asset resource' is out of date. What is missing is the plan assertion the requirement names, so a lane adds it and corrects the text. The row is PARTIAL, not COMPLETE, until a dev plan I dispatch quotes both feeds and an operator reads one change message off the topic.",
+          "closure": "Add a run block to infrastructure/terraform/tests/security.tftest.hcl. It asserts that google_cloud_asset_project_feed.changes plans a RESOURCE and an IAM_POLICY instance, both publishing to google_pubsub_topic.asset_changes; mutate it by deleting one content type. Restate the row from MISSING to PARTIAL, citing audit-logs.tf. It completes on an owner-dispatched dev plan that quotes the two feeds.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-OBS-10059",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "The requirement names Cloud Trace, and the text stands. Request spans go to Cloud Trace from the process, the way ADR 0121 sends metrics to Cloud Monitoring. There is no collector and no new crate. The exporter is off unless an environment names its project, and a badly named one is refused at start-up. The OpenObserve trace route stays as ADR 0028 left it, unset. The row stays PARTIAL until a deployed qip-api exports a trace that someone reads back.",
+          "closure": "Add cloud_trace.rs beside qip-telemetry-drain/src/cloud_monitoring.rs. It pushes Tracer::export's spans on a bounded thread under its own unset-by-default project variable, with the same config refusals and tests. Terraform adds roles/cloudtrace.agent and the egress route, and the row closes on a dev read-back.",
+          "adr_title": "Request spans are pushed to Cloud Trace from the process as ADR 0121 pushes metrics, and the OpenObserve trace route stays unset",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-OBS-9074",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "model",
+          "ruling": "The runbook set is signed by the image it is compiled into. The deep brain runs only under the deny-by-default Binary Authorization policy, whose attestor key CI alone holds, and no runbook is ever read at run time. I will not fund a second signer for a list that cannot arrive any other way, and the deep brain refuses to start on a set whose digest is not the committed one.",
+          "closure": "Add a committed RUNBOOK_SET_DIGEST and a check in qip-deepbrain operations.rs::Operations::build that refuses construction when the canonical digest of runbooks() differs. Add an acceptance test that every env's deepbrain.yaml carries binaryAuthorization useDefault. Test: a_tampered_runbook_set_is_refused_before_any_remediation_runs. Mutation: skip the check.",
+          "adr_title": "The runbook set is signed by the image attestation it is compiled into, is never loaded at run time, and the deep brain refuses a set whose digest is not the reviewed one",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-OBS-9148",
+          "class": "IMPLEMENT",
+          "crate_group": "fabric",
+          "ruling": "ADR 0119 §3 already decided this: the mirror and its lag series are built and proven now on one host and deployed only at a second region, which stays parked (decision 4). Build the series on two brokers on one host, relax no StreamPolicy refusal for any committed catalogue, and let the row rise to PARTIAL and no further.",
+          "closure": "Add a qip-fabricd mirror role that drives plan_copy from one in-process broker to another. It records qip_fabric_mirror_lag_records and qip_fabric_mirror_lag_seconds{source_region,stream}, with labels bounded by its configured region list and committed stream set. Its test cuts the link and asserts both series grow while the source keeps acknowledging. Deleting the recording site fails the test. No environment starts the role.",
+          "adr_title": null,
+          "tightens_only": true
+        },
+        {
+          "id": "R12-OBS-9165",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "Delivery objectives are declared over facts the workflows already produce. Each fact is recorded at the step that produces it: lead time, rollback, rebuild match, attestation coverage and drift in deploy.yml, ci.yml and drift.yml. Autonomous pull-request acceptance and rework are read with the workflow's own read-only token, from the agent markers the guard already reads, so no new credential is issued. The workflow changes are protected and arrive as a lane patch for me to apply. The row stays PARTIAL until the patch is applied and a series is read back.",
+          "closure": "Write docs/blueprint/lanes/l6-obs-9165-delivery-records.patch, which adds one recording step per delivery fact to deploy.yml, ci.yml and drift.yml. Declare critical_paths::delivery_objectives, with an acceptance test that fires 'unmeasured' when a recording step is deleted.",
+          "adr_title": "Delivery objectives are recorded by the workflow step that produces each fact and read by one declared objective each, and no new credential reads pull requests",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-RES-10130",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The requirement text stands: a panel convened on a lost cycle produces new findings and theses, and reading that as existing packages continuing would redefine the row to pass it. While the AI platform is lost, REASON convenes no panel, forms no thesis and records why; installed packages and the edge trade on, and the loss signal stays ADR 0214's Halted or PersistentlyFailing.",
+          "closure": "gate_strategic_service also sets a panel-available flag on Platform from ai_platform_lost. On a cycle with the flag unset, REASON records a ReasonRouting naming the hold through place_reason_routing and convenes nothing. A run_with test shows a lost cycle journals no new finding or hypothesis and a recovered cycle convenes again. Convening anyway fails the test.",
+          "adr_title": "While the AI platform is lost REASON convenes no panel and forms no new thesis, and records the hold as its routing; amends ADR 0214's reading of the deterministic panel (R12-RES-10130)",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-RES-7106",
+          "class": "ADR_THEN_IMPLEMENT",
+          "crate_group": "kernel",
+          "ruling": "The requirement stands as written, and I will not narrow it to self-contradiction to pass the row. When the platform's own acting constraints are unsatisfiable, the conclusion is Unresolved: its trace and alternates are kept, it is scored in shadow, and it is never queued to be sized. Dissent stays distinct from contradiction, so a contested thesis is Unresolved, not Infeasible. If that empties the paper book, that is what the eligibility rule says, and it is no reason to size what the rule refuses.",
+          "closure": "Add Feasibility::Unresolved for any Step::Derived(Answer::Unsatisfiable) acting step and journal it with violated_assumptions and alternates. stage_reason keeps it off pending_theses. Rewrite a_contested_thesis_is_not_a_contradiction_and_still_forms_a_proposal_sized_small to assert Unresolved and no proposal. Mutation: queue an Unresolved thesis.",
+          "adr_title": "An acting problem the constraints leave unsatisfiable is unresolved, keeps its trace and moves no money, and a contested thesis is scored in shadow and not sized",
+          "tightens_only": true
+        },
+        {
+          "id": "R12-RES-9177",
+          "class": "IMPLEMENT",
+          "crate_group": "infra",
+          "ruling": "A registry copy in another region is storage, not a second execution region, so decision 4 does not hold it and decision 5 does, because it bills; it is a replica, not a multi-region repository that would replace the signed-image repository and its attestations. The free half lands now, off in every environment; naming a region waits on the deploy, and the prod-side check lands with whatever record lifts Kargo's refuse-prod.",
+          "closure": "Write a protected patch with two parts. First, a null-default secondary_region in infrastructure/terraform/variables.tf, passed to module.registry and null in every tfvars. Second, a deploy.yml step that runs when a secondary repository is declared: it copies each promoted digest and fails the run unless the digest resolves there. Add an acceptance test for each.",
+          "adr_title": null,
+          "tightens_only": true
+        }
+      ]
+    }
+  ]
+}

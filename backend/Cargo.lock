@@ -627,6 +627,7 @@ dependencies = [
  "qip-market",
  "qip-numerics",
  "qip-quant",
+ "qip-sequencing",
 ]
 
 [[package]]

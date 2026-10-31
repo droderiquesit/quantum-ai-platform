@@ -2499,9 +2499,10 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
         | Topic::ReflexChainSpan
         | Topic::LedgerOperationRecorded
         | Topic::EventFabricGap => RetentionClass::Irreplaceable,
-        Topic::ReflexPassMarked | Topic::ReflexJournalRecorded | Topic::MarketEventApplied => {
-            RetentionClass::EventAnchored
-        }
+        Topic::ReflexPassMarked
+        | Topic::ReflexFeatureDigested
+        | Topic::ReflexJournalRecorded
+        | Topic::MarketEventApplied => RetentionClass::EventAnchored,
         Topic::OutcomeObserved
         | Topic::AttributionCompleted
         | Topic::HypothesisScored

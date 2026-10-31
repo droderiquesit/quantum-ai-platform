@@ -166,6 +166,11 @@ impl RecordedInputs {
 /// the same order of size the spool will hold for them.
 fn measure(inputs: &PassInputs) -> Result<u64> {
     let mut bytes = serde_json::to_vec(&inputs.marker)?.len() as u64;
+    if let Some(digest) = &inputs.digest {
+        bytes = bytes
+            .checked_add(serde_json::to_vec(digest)?.len() as u64)
+            .ok_or_else(|| Error::numeric("one pass's inputs overflow a u64 byte count"))?;
+    }
     for event in &inputs.applied {
         bytes = bytes
             .checked_add(serde_json::to_vec(event)?.len() as u64)

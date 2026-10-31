@@ -519,6 +519,101 @@ fn marker(pass: u64) -> PassMarker {
     }
 }
 
+/// ADR 0132 decision 4 (R12-FABRIC-10102): a pass ships one feature digest
+/// on P2 — per instrument the pass registered features for, the values and
+/// their revisions — with the ticks it was handed as a count and a hash. A
+/// thousand ticks leave one record of two instruments; nothing on the spool
+/// is a tick. The digest is bounded by the instruments, not the feed: the
+/// same pass with ten times the ticks writes a record of the same shape.
+///
+/// Mutation: delete the `if let Some(digest) = &inputs.digest` push in
+/// `SpoolWriter::pass` — no `ReflexFeatureDigested` record reaches the spool
+/// and the first assertion fails.
+#[test]
+fn a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped() {
+    use qip_contracts::replay::{FeatureDigest, FeatureReading, InstrumentDigest};
+    let (sender, receiver) = writer::channel(8).expect("a positive capacity");
+    let (_, telemetry) = telemetry();
+    let thresholds = Thresholds::new(
+        1 << 30,
+        Decimal::parse("0.25").expect("parses"),
+        Decimal::parse("0.5").expect("parses"),
+    )
+    .expect("valid lines");
+    let mut inputs = RecordedInputs::new(sender, thresholds, telemetry);
+    let digest_of = |pass: u64, ticks: u64| FeatureDigest {
+        cell: CELL.to_string(),
+        session: "1".to_string(),
+        pass,
+        now_ns: t(20).as_nanos() + pass as i64,
+        instruments: vec![
+            InstrumentDigest {
+                subject: "obj-AAA".to_string(),
+                features: vec![FeatureReading {
+                    name: "mid".to_string(),
+                    value: qip_contracts::FeatureValue::Statistic(101.5),
+                    revision: 3,
+                }],
+            },
+            InstrumentDigest {
+                subject: "obj-BBB".to_string(),
+                features: vec![FeatureReading {
+                    name: "realised_vol[window=20]".to_string(),
+                    value: qip_contracts::FeatureValue::Statistic(0.2),
+                    revision: 3,
+                }],
+            },
+        ],
+        ticks,
+        applied: 0,
+        applied_from_ns: 0,
+        applied_to_ns: 0,
+        applied_digest: sha256_hex(b""),
+    };
+    // Two passes: a quiet one and one handed a thousand ticks.
+    for (pass, ticks) in [(10u64, 3u64), (11, 1_000)] {
+        assert_eq!(
+            inputs
+                .record(PassInputs {
+                    marker: marker(pass),
+                    applied: Vec::new(),
+                    digest: Some(digest_of(pass, ticks)),
+                })
+                .expect("the writer is alive"),
+            Recorded::HandedOff
+        );
+    }
+    let dir = temp_dir("digest");
+    let mut outbox = open_writer(segment_log(&dir), receiver, t(0));
+    drain(&mut outbox.writer);
+    let records = writer::records(outbox.writer.spool()).expect("reads back");
+
+    let digests: Vec<FeatureDigest> = on(&records, Topic::ReflexFeatureDigested)
+        .iter()
+        .map(|r| {
+            assert_eq!(r.stream, QosClass::P2MarketJournal, "a digest rides P2");
+            writer::feature_digest(&r.event).expect("a feature digest")
+        })
+        .collect();
+    assert_eq!(
+        digests,
+        vec![digest_of(10, 3), digest_of(11, 1_000)],
+        "one digest per pass, byte for byte"
+    );
+    // Bounded by the instruments: the busy pass's record has the same shape
+    // as the quiet one's, and its ticks are a number.
+    assert_eq!(digests[1].instruments.len(), digests[0].instruments.len());
+    assert_eq!(digests[1].ticks, 1_000);
+    // Nothing on the spool is a tick: the P2 records are the markers and the
+    // digests, two per pass, and no record of any other topic appeared.
+    let topics: BTreeSet<Topic> = records.iter().map(|r| r.event.topic).collect();
+    assert_eq!(
+        topics,
+        BTreeSet::from([Topic::ReflexPassMarked, Topic::ReflexFeatureDigested])
+    );
+    assert_eq!(records.len(), 4, "two passes, a marker and a digest each");
+}
+
 /// Red-team M8: an inputs backlog that overflows and drops silently leaves
 /// replay re-driving the passes either side and calling the window
 /// reproduced. The dropped passes must be declared, on P2 where they would
@@ -543,6 +638,7 @@ fn an_input_backlog_overflow_writes_a_gap_that_marks_the_window_unreproducible()
             .record(PassInputs {
                 marker: marker(pass),
                 applied: Vec::new(),
+                digest: None,
             })
             .expect("the writer is alive")
     };
@@ -695,6 +791,7 @@ fn a_pass_marker_and_its_readings_survive_the_spool_byte_for_byte() {
             .record(PassInputs {
                 marker: original.clone(),
                 applied: vec![applied.clone()],
+                digest: None,
             })
             .expect("alive"),
         Recorded::HandedOff

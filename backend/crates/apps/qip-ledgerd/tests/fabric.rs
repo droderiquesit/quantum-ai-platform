@@ -45,7 +45,7 @@ use qip_observability::metrics::{MetricValue, names};
 use qip_portfolio::ledger::{PaperFill, post};
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_streaming::event_fabric::broker::Broker;
-use qip_streaming::event_fabric::service::{SegmentConfigFor, Service};
+use qip_streaming::event_fabric::service::{SegmentConfigFor, Service, TopiclessStreams};
 use qip_transport::event_fabric::auth::{self, BearerToken, IdentityTable};
 use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport};
 use qip_transport::http::{ClientLimits, HttpClient};
@@ -159,8 +159,17 @@ impl Fabric {
                 config
             }
         });
-        let service =
-            Arc::new(Service::new(broker, identities, &catalogue, PARTITIONS, segments).unwrap());
+        let service = Arc::new(
+            Service::new(
+                broker,
+                identities,
+                &catalogue,
+                PARTITIONS,
+                segments,
+                TopiclessStreams::AdmitAll,
+            )
+            .unwrap(),
+        );
         let server = Server::bind(
             "127.0.0.1:0",
             Arc::new(DataPlane(service.clone())),

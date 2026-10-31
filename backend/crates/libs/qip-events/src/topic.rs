@@ -266,6 +266,12 @@ pub enum Topic {
     /// Event-anchored. Only the event fabric writes this; the reflex body is
     /// not the API's business.
     ReflexPassMarked,
+    /// What a reflex pass sized against — per instrument, the feature values
+    /// and their revisions, with the ticks they came from counted and
+    /// digested, never shipped one by one (ADR 0132 decision 4; R12-FABRIC-
+    /// 10102). One per pass on ADR 0100 §5's P2 row, bounded by the cell's
+    /// registered instruments. Event-anchored, like the marker beside it.
+    ReflexFeatureDigested,
     /// A reflex journal entry, on P2 — decision, fills, fills' side and quote
     /// unit and fee (ADR 0100's reflex contract; v11.6 §26.1). ADR 0100 §5's
     /// P2 row carries *every* journal entry, not only the ones that resolve
@@ -410,6 +416,7 @@ impl Topic {
         Self::BudgetExhausted,
         Self::SystemAlert,
         Self::ReflexPassMarked,
+        Self::ReflexFeatureDigested,
         Self::ReflexJournalRecorded,
         Self::MarketEventApplied,
         Self::ReflexOutcomeRecorded,
@@ -507,6 +514,7 @@ impl Topic {
             Self::BudgetExhausted => "system.budget_exhausted",
             Self::SystemAlert => "system.alert",
             Self::ReflexPassMarked => "reflex.pass_marked",
+            Self::ReflexFeatureDigested => "reflex.feature_digested",
             Self::ReflexJournalRecorded => "reflex.journal_recorded",
             Self::MarketEventApplied => "reflex.market_event_applied",
             Self::ReflexOutcomeRecorded => "reflex.outcome_recorded",
@@ -616,6 +624,7 @@ impl Topic {
             | Self::BudgetExhausted
             | Self::SystemAlert
             | Self::ReflexPassMarked
+            | Self::ReflexFeatureDigested
             | Self::ReflexJournalRecorded
             | Self::MarketEventApplied
             | Self::ReflexOutcomeRecorded
@@ -768,9 +777,10 @@ impl Topic {
             // by the log for any topic (ADR 0089 §3) — the exception, among
             // System-group facts, to "every System lifecycle fact is
             // irreplaceable" above.
-            Self::ReflexPassMarked | Self::ReflexJournalRecorded | Self::MarketEventApplied => {
-                RetentionClass::EventAnchored
-            }
+            Self::ReflexPassMarked
+            | Self::ReflexFeatureDigested
+            | Self::ReflexJournalRecorded
+            | Self::MarketEventApplied => RetentionClass::EventAnchored,
             // A reflex outcome, a P1 continuity span, a declared gap and a
             // ledger operation (ADR 0123): facts only their producer has, on
             // the P1 lane ADR 0100 §5 says is never dropped. Permanently.

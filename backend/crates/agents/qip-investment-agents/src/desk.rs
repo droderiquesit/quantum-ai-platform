@@ -117,6 +117,29 @@ pub struct ExecutionView {
     pub executions: Vec<ExecutionRecord>,
 }
 
+/// One forecaster's standing in the platform's tournament, as the
+/// model-failure probe reads it (R12-REASON-3023).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForecasterHealth {
+    pub name: String,
+    /// Mean Brier score over the questions the tournament has scored it on;
+    /// `None` until one has resolved.
+    pub mean_brier: Option<f64>,
+    /// The meta-model's predicted probability that the forecaster fails in
+    /// the current regime, in `[0, 1]`.
+    pub predicted_failure: f64,
+}
+
+/// The models the platform runs on, as the kernel knows them: every
+/// forecaster the tournament holds a question from, and every production
+/// model the deep brain last reported past its own drift threshold.
+#[derive(Debug, Default)]
+pub struct ModelsView {
+    pub forecasters: Vec<ForecasterHealth>,
+    /// `{name}@{version}` references past their drift threshold.
+    pub drifted: Vec<String>,
+}
+
 /// Trading restrictions by object id.
 ///
 /// Deterministic data rather than a model's reading of a policy document:
@@ -154,6 +177,11 @@ pub struct Desk {
     /// every REASON, and a test hands one in through
     /// [`Desk::with_executions`].
     pub executions: Gated<ExecutionView>,
+    /// The platform's models as the kernel scores them (R12-REASON-3023).
+    /// Empty from [`Desk::new`]; the kernel re-points this gate at the slot
+    /// it feeds every REASON, and a test hands one in through
+    /// [`Desk::with_models`].
+    pub models: Gated<ModelsView>,
 }
 
 impl Desk {
@@ -187,7 +215,19 @@ impl Desk {
                 Capability::ReadExecutionHistory,
                 "execution-history",
             ),
+            models: Gated::new(
+                ModelsView::default(),
+                Capability::ReadModelRegistry,
+                "model-registry",
+            ),
         }
+    }
+
+    /// The desk with `models` behind the model-registry gate, under the
+    /// capability and label [`Desk::new`] chose for it.
+    pub fn with_models(mut self, models: ModelsView) -> Self {
+        self.models = Gated::new(models, self.models.required(), self.models.label());
+        self
     }
 
     /// The desk with `executions` behind the execution-history gate, under
