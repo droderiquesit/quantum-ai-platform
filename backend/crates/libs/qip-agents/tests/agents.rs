@@ -1022,7 +1022,7 @@ fn consolidating_episodes_into_a_lesson_keeps_every_source_episode_id_and_no_oth
         "premise: the two lists partition the source episodes"
     );
     assert!(
-        supporting.len() > policy.minimum_support,
+        supporting.len() > policy.minimum_support(),
         "premise: more support than the policy's minimum"
     );
     assert_eq!(
