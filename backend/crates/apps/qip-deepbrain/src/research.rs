@@ -2480,7 +2480,15 @@ impl ResearchLoop {
                 horizon: Duration::ZERO,
                 novelty_bp: severity,
                 affected_entities: raised.signal.affected_domains.clone(),
-                urgency_bp: 0,
+                // The signal's deadline is its expiry, so its urgency is the
+                // one `admit` will read for the same gap: a literal zero
+                // here stated a raised gap as wanting no attention at all,
+                // which is the zero `URGENCY_FLOOR_BP` exists to refuse.
+                urgency_bp: urgency_bp(
+                    now,
+                    now.saturating_add(self.config.signal_ttl),
+                    self.config.signal_ttl,
+                ),
                 wake_targets: vec![pathway],
                 evidence_ids: raised.signal.evidence.clone(),
                 expiry: now.saturating_add(self.config.signal_ttl),

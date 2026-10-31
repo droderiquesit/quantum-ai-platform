@@ -277,14 +277,17 @@
   },
   {
     "id": "R12-MODEL-4013",
-    "status": "MISSING",
-    "current": "No uplift/heterogeneous-effect estimator; qip-agency plan.rs accepts a caller-supplied effect estimate beside a plan and ranks after hard-constraint refusal.",
+    "status": "PARTIAL",
+    "current": "qip-agency's estimators carry an identification label (estimate.rs). Since 2026-10-30 the back-door criterion is checked against a declared structural model's graph: StructuralModel::backdoor_open_path refuses an adjustment set containing a descendant of the treatment, or one that leaves a back-door path open (d-separation on the moral ancestral graph with the treatment's outgoing edges cut). estimate::backdoor_adjusted returns the covariate-adjusted effect labelled with the set it checked, or abstains with the reason and no number.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs header: learned effect estimate is an input"
+      "backend/crates/services/qip-agency/src/causal.rs StructuralModel::backdoor_open_path",
+      "backend/crates/services/qip-agency/src/estimate.rs backdoor_adjusted",
+      "backend/crates/services/qip-agency/tests/causal.rs::an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set",
+      "backend/crates/services/qip-agency/tests/causal.rs::adjusting_for_a_collider_opens_the_path_it_was_meant_to_close"
     ],
-    "gap": "Everything.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-30 (lane L2-INTEL): the unit clause is built; the in-lane skeptic HELD the PARTIAL status. Its one finding, that the moralisation and ancestral steps were untested, is closed by an M-bias test with both mutations firing. Open: no composition root calls backdoor_adjusted, and heterogeneity is not modelled (one effect per design, not per entity, audience, market or horizon).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -293,7 +296,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " 2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: backdoor_open_path short-circuited to None; its descendant check disabled. Each fails an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set. Also: the parent-marriage step disabled, and the moral graph built over the whole model instead of the ancestral set; each fails adjusting_for_a_collider_opens_the_path_it_was_meant_to_close."
   },
   {
     "id": "R12-MODEL-4014",

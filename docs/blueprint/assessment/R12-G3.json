@@ -4036,10 +4036,12 @@
     "status": "PARTIAL",
     "current": "Compute/attention market, specialist proposals and cognitive compiler (unsigned packages) exist in deepbrain.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero",
+      "backend/crates/services/qip-expansion",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
-      "backend/crates/services/qip-expansion"
+      "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs"
     ],
-    "gap": "VOI urgency unmeasured; no phase exit test.",
+    "gap": "Phase exit test exists (qip-acceptance/tests/phase_16_exit.rs) but drives neither a specialist proposal nor an information request (info_launched stays zero on its fixture), so VOI acquisition is not proven end to end on the phase exit; the signal's own urgency_bp is now derived from its deadline (was literal 0) but nothing on a decision path reads it — VOI ranking reads AcquisitionCriteria.urgency_bp set in admit; deployable stays false.",
     "implemented": true,
     "tested": true,
     "integrated": true,

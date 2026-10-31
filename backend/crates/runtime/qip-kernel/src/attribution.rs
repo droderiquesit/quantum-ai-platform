@@ -710,6 +710,69 @@ mod tests {
 
     use super::*;
 
+    /// R12-MODEL-6021: an order whose fills made several positions has its
+    /// deployed notional split across its forecasters once, not once per
+    /// fill, and a forecaster on two orders is credited both. Order `a` has
+    /// two fills (two positions) and two models; order `b` one fill and one
+    /// model. Mutation: drop the per-order `seen` guard in
+    /// `capital_by_forecaster` — order `a` counts twice and every figure
+    /// below moves.
+    #[test]
+    fn capital_is_split_once_per_order_across_its_forecasters_however_many_fills_it_had() {
+        let keys = |models: &[&str]| {
+            AttributionKeys::new(
+                "desk:platform",
+                models.iter().map(|m| (*m).to_string()).collect(),
+                vec!["hyp-1".to_string()],
+                vec!["exchange".to_string()],
+                "survival(hedge=0)",
+                "kernel-test",
+                "desk/sim/market",
+            )
+            .expect("keys")
+        };
+        let position =
+            |order: &str, models: &[&str]| qip_learning_engine::keyed_attribution::KeyedPosition {
+                object_id: order.to_string(),
+                total: Decimal::ZERO,
+                keys: keys(models),
+                stamped: true,
+            };
+        let pass = AttributionPass {
+            attribution: Attribution {
+                from: Timestamp::from_secs(0),
+                to: Timestamp::from_secs(0),
+                total_pnl: Decimal::ZERO,
+                opening_equity: Decimal::from_int(1_000),
+                positions: Vec::new(),
+                by_source: BTreeMap::new(),
+            },
+            keyed: KeyedAttribution {
+                positions: vec![
+                    position("a", &["model:m1", "model:m2"]),
+                    position("a", &["model:m1", "model:m2"]),
+                    position("b", &["model:m2"]),
+                ],
+                total: Decimal::ZERO,
+            },
+            unmarked: 0,
+            book_total: Decimal::ZERO,
+            held_moves: BTreeMap::new(),
+            deployed: BTreeMap::from([
+                ("a".to_string(), dec("300")),
+                ("b".to_string(), dec("100")),
+            ]),
+        };
+        let capital = capital_by_forecaster(&pass).expect("the split closes");
+        assert_eq!(
+            capital,
+            BTreeMap::from([
+                ("model:m1".to_string(), dec("150")),
+                ("model:m2".to_string(), dec("250")),
+            ])
+        );
+    }
+
     fn dec(text: &str) -> Decimal {
         Decimal::parse(text).expect("a decimal")
     }
