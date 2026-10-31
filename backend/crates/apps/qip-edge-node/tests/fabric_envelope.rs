@@ -26,7 +26,9 @@ use qip_events::AnyEvent;
 use qip_events::Topic;
 use qip_events::event_fabric::bindings;
 use qip_events::event_fabric::catalogue::Catalogue;
-use qip_events::event_fabric::codec::{Batch, DecodeOutcome, MessageType, PayloadCodec, Record};
+use qip_events::event_fabric::codec::{
+    Batch, DecodeOutcome, MessageType, PayloadCodec, Provenance, Record,
+};
 use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass, StreamPolicy};
 use qip_storage::segment::log::SegmentLogConfig;
@@ -224,7 +226,12 @@ fn record(id: &str, version: u32, tamper_payload: bool) -> Record {
     Record::from_any_event(&event, PayloadCodec::CanonicalJson).unwrap()
 }
 
-/// A batch as the writer leaves it in the spool: writer fields only.
+/// A batch as the writer leaves it in the spool: writer fields only, which
+/// since R12-FABRIC-8022 include the writer's provenance stamp. The node's
+/// own writer stamps `Provenance::EdgeNode` on every batch it spools
+/// (`event_fabric::writer::batch`), and a consumer now refuses a batch that
+/// carries none rather than labelling it itself, so a fixture that left the
+/// stamp off would be testing a batch no shipped writer produces.
 fn spooled(records: Vec<Record>) -> Batch {
     Batch::new(
         MessageType::Data,
@@ -234,6 +241,7 @@ fn spooled(records: Vec<Record>) -> Batch {
         records,
     )
     .unwrap()
+    .with_provenance(Provenance::EdgeNode)
 }
 
 fn reader() -> FabricContext {

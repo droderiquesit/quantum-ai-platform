@@ -1977,6 +1977,16 @@ pub struct StressReport {
     /// book is held at failing, and the model the book was built on failing —
     /// computed off the book directly. See [`crate::tail`].
     pub tail_worlds: Vec<crate::tail::TailWorld>,
+    /// One record per scenario this pass generated and applied, in the order
+    /// applied (R12-EXPAND-6033, ADR 0149 decision 18): every library entry
+    /// and the composed event under `Library`, and both signs of every
+    /// causal driver's shock under `Conditional`, each with the digest of the
+    /// book and the shock it was made from and no seed, because neither
+    /// generator draws. The stage journals each, so a scenario the book was
+    /// stressed against is on the record as generated rather than observed.
+    /// The tail worlds are not here: they are not `Scenario`s and their
+    /// generated pair is seeded by the cycle, which is recorded on them.
+    pub episodes: Vec<qip_contracts::expansion::SyntheticEpisode>,
     /// Generated worlds computed and reported but **not applied**: neither the
     /// survival reserve nor hedge selection reads them. Today the joint tail
     /// world (R12-RISK-4116), until the owner authorises applying it.
@@ -1988,16 +1998,6 @@ pub struct StressReport {
     /// advisory, or when that reserve could not be computed.
     #[serde(default)]
     pub advisory_reserve: Option<Decimal>,
-    /// One record per scenario this pass generated and applied, in the order
-    /// applied (R12-EXPAND-6033, ADR 0149 decision 18): every library entry
-    /// and the composed event under `Library`, and both signs of every
-    /// causal driver's shock under `Conditional`, each with the digest of the
-    /// book and the shock it was made from and no seed, because neither
-    /// generator draws. The stage journals each, so a scenario the book was
-    /// stressed against is on the record as generated rather than observed.
-    /// The tail worlds are not here: they are not `Scenario`s and their
-    /// generated pair is seeded by the cycle, which is recorded on them.
-    pub episodes: Vec<qip_contracts::expansion::SyntheticEpisode>,
 }
 
 /// One synthetic episode as the log holds it (R12-EXPAND-6033): the contract

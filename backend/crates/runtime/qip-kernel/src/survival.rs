@@ -1010,9 +1010,9 @@ mod tests {
             causal_drivers: 0,
             causal_drivers_unconnected: 0,
             tail_worlds: worlds,
+            episodes: Vec::new(),
             advisory_worlds: Vec::new(),
             advisory_reserve: None,
-            episodes: Vec::new(),
         }
     }
 
