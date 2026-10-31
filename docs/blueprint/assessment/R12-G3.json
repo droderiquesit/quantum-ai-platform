@@ -3876,12 +3876,14 @@
   {
     "id": "R12-CICD-10168",
     "status": "PARTIAL",
-    "current": "Fleet dispatcher/workers with budgets; CI/GitOps path; no sandbox or reviewer/release/SRE agents in code.",
+    "current": "The requirement's seven roles are the development agents under .claude/agents (planner: product-manager, chief-orchestrator, solution-architect; coder: backend/frontend/data-ai/cloud-platform engineers; test, security, reviewer; release and SRE: sre-release-engineer), each acting only through a pull request that ci and agent boundary gate; a release is a person's dispatch of deploy.yml. ADR 0102's fleet keeps its eight roles with no security, merge or release role; agent-sandbox.yml and the fleet's daily budget ceiling exist; deploy.yml, infra.yml and fleet.yml are refused to agent identities. Phase 9's exit test is named in the phase register.",
     "evidence": [
       "scripts/fleet/dispatch.mjs",
-      "scripts/model-gateway.mjs"
+      "scripts/model-gateway.mjs",
+      "backend/crates/tests/qip-acceptance/tests/development_roles.rs::phase_9_roles_are_development_agents_that_act_only_through_ci",
+      "docs/architecture/phase-register.json phase 9 exit_tests"
     ],
-    "gap": "Sandbox and agent roles.",
+    "gap": "2026-10-31 (lane L6, owner ruling decision 10): ADR 0102 is not amended; the roles are the development agents and the exit test is named. Stays PARTIAL while phase 9 is not_entered (it is entered only after phase 8 exits). Earlier: Sandbox and agent roles.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3895,7 +3897,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 lane L6: mutation: adding a 'release' role to scripts/fleet/worker.mjs ROLES failed the test at 'the fleet's roster names a release role'; restored, cmp clean, passed. The ruling's named mutations (dropping deploy.yml from agent-policy.json, removing an agent file) edit protected paths, so they were not run; the test asserts both by name."
   },
   {
     "id": "R12-QUANT-10169",
