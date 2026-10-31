@@ -823,3 +823,110 @@ fn try_send_refuses_when_broker_queue_is_full() -> Result<()> {
 
     Ok(())
 }
+
+/// A cell armed for custody statements (ADR 0239), with the strategy
+/// deployed as [`cell`] deploys it.
+fn custody_cell() -> Result<Cell> {
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_custody_statements();
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?;
+    cell.track(book()?);
+    let (compiled, program) = firing_strategy("alpha", "10")?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        signed_envelope("alpha")?,
+        PricingPolicy::Marketable,
+    )?;
+    Ok(cell)
+}
+
+/// R12-RES-7099, ADR 0239: custody read from the venue's own statements
+/// narrows the cell when they stop. Two armed cells identical but for the
+/// statements: the one whose venue went quiet past four periods sizes at the
+/// contract's custody-unavailable multiplier (one half) of the one whose
+/// statements are on time. Mutation: report `Fresh` from
+/// `CustodyWatch::freshness`, and the two size alike.
+#[test]
+fn with_custody_statements_stopped_the_cell_sizes_at_the_unavailable_multiplier() -> Result<()> {
+    use qip_edge::custody::{CustodyStatement, CustodyWatch};
+    let period = Duration::from_secs(1);
+    let statement = |secs: i64| CustodyStatement {
+        venue: venue(),
+        as_of: t(secs),
+    };
+    let mut on_time = CustodyWatch::new(period)?;
+    on_time.record(&statement(9));
+    let mut stopped = CustodyWatch::new(period)?;
+    stopped.record(&statement(4));
+    // Premise: one reads fresh at the pass, the other unavailable.
+    assert_eq!(on_time.freshness(t(10)), Reading::Fresh);
+    assert_eq!(stopped.freshness(t(10)), Reading::Unavailable);
+
+    let mut fresh = custody_cell()?;
+    let mut lost = custody_cell()?;
+    fresh.observe_custody(on_time.freshness(t(10)))?;
+    lost.observe_custody(stopped.freshness(t(10)))?;
+    let full = fresh.work(t(10), &mut ScriptedVenue::default())?;
+    let narrowed = lost.work(t(10), &mut ScriptedVenue::default())?;
+    assert_eq!(full.orders.len(), 1, "premise: {:?}", full.refusals);
+    assert_eq!(
+        narrowed.orders.len(),
+        1,
+        "custody halted the cell: {:?}",
+        narrowed.refusals
+    );
+    assert_eq!(
+        narrowed.orders[0].quantity * d("2"),
+        full.orders[0].quantity,
+        "custody unavailable did not size the pass at one half"
+    );
+    assert_eq!(
+        lost.narrowing(t(10)).observed(Capability::Custody),
+        Some(Reading::Unavailable),
+        "the cell's narrowing does not report the custody it sized on"
+    );
+    Ok(())
+}
+
+/// ADR 0239 decisions 1 and 2, the reading on its own: unavailable with no
+/// statement since the watch was made, fresh within two periods, stale past
+/// two, unavailable past four, and an older statement arriving late moves
+/// nothing. A cell built without custody statements refuses a reading.
+#[test]
+fn custody_reads_stale_past_two_statement_periods_and_unavailable_past_four_or_none() -> Result<()>
+{
+    use qip_edge::custody::{CustodyStatement, CustodyWatch};
+    let mut watch = CustodyWatch::new(Duration::from_secs(10))?;
+    assert_eq!(
+        watch.freshness(t(0)),
+        Reading::Unavailable,
+        "none since start"
+    );
+    watch.record(&CustodyStatement {
+        venue: venue(),
+        as_of: t(100),
+    });
+    assert_eq!(watch.freshness(t(120)), Reading::Fresh);
+    assert_eq!(watch.freshness(t(121)), Reading::Stale);
+    assert_eq!(watch.freshness(t(140)), Reading::Stale);
+    assert_eq!(watch.freshness(t(141)), Reading::Unavailable);
+    watch.record(&CustodyStatement {
+        venue: venue(),
+        as_of: t(50),
+    });
+    assert_eq!(
+        watch.freshness(t(121)),
+        Reading::Stale,
+        "a late, older statement moved it"
+    );
+    assert!(CustodyWatch::new(Duration::ZERO).is_err());
+    assert!(
+        cell(false, PricingPolicy::Marketable)?
+            .observe_custody(Reading::Fresh)
+            .is_err()
+    );
+    Ok(())
+}

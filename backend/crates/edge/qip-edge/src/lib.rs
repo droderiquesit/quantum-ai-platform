@@ -41,6 +41,8 @@ pub mod cell;
 /// refuses the same pattern on the same arithmetic; re-exported here so the
 /// cell's own path is unchanged.
 pub use qip_execution_engine::conduct;
+/// Custody's freshness read from the venue's own custody statements (ADR 0239).
+pub mod custody;
 /// §32.1's size decomposition: what a cycle does after a leg fills short.
 pub mod decomposition;
 /// The degradation envelope every input of a cell must have (R12-RES-8026).
