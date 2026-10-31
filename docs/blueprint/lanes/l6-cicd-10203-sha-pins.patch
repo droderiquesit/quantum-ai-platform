@@ -1,0 +1,915 @@
+diff --git a/.github/workflows/agent-boundary.yml b/.github/workflows/agent-boundary.yml
+index 9c64baef..dd6b95a5 100644
+--- a/.github/workflows/agent-boundary.yml
++++ b/.github/workflows/agent-boundary.yml
+@@ -45,7 +45,7 @@ jobs:
+     runs-on: ubuntu-latest
+     timeout-minutes: 10
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           sparse-checkout: scripts
+diff --git a/.github/workflows/agent-sandbox.yml b/.github/workflows/agent-sandbox.yml
+index 586cf8ce..f9c5994b 100644
+--- a/.github/workflows/agent-sandbox.yml
++++ b/.github/workflows/agent-sandbox.yml
+@@ -74,11 +74,11 @@ jobs:
+     outputs:
+       minutes: ${{ steps.budget.outputs.minutes }}
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           persist-credentials: false
+-      - uses: actions/setup-node@v4
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+         with:
+           node-version: 22
+       # Shapes before use: each value becomes a path, an argument or a ref.
+@@ -116,18 +116,18 @@ jobs:
+     runs-on: ubuntu-latest
+     timeout-minutes: ${{ fromJSON(needs.plan.outputs.minutes) }}
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: trusted
+           persist-credentials: false
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ inputs.ref }}
+           path: lane
+           fetch-depth: 0
+           persist-credentials: false
+-      - uses: actions/setup-node@v4
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+         with:
+           node-version: 22
+       - name: the lane changed only what it owns
+diff --git a/.github/workflows/branch-cleanup.yml b/.github/workflows/branch-cleanup.yml
+index ddb2af68..3b2a110f 100644
+--- a/.github/workflows/branch-cleanup.yml
++++ b/.github/workflows/branch-cleanup.yml
+@@ -52,7 +52,7 @@ jobs:
+       # branch so a branch cannot loosen it; the actor and whoever re-ran
+       # the run are both judged.
+       - name: no development agent starts this workflow
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: .agent-guard
+@@ -70,7 +70,7 @@ jobs:
+               --actor "$who" --workflow branch-cleanup.yml
+           done
+           rm -rf .agent-guard
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           fetch-depth: 0
+       - name: delete branches already merged into main
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 3cece3d6..30980e2e 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -49,7 +49,7 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+       - run: cargo fmt --all --check
+@@ -61,10 +61,10 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+       - run: cargo clippy --workspace --all-targets --all-features
+@@ -146,7 +146,7 @@ jobs:
+         run: |
+           nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+           echo $! > "$RUNNER_TEMP/free-disk.pid"
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+       # cache-on-failure, because a run whose tests failed still compiled
+@@ -155,7 +155,7 @@ jobs:
+       # each built the whole tree from nothing for exactly this reason.
+       # Keyed by partition: the four target directories hold different
+       # binaries, and rust-cache's default key does not see matrix values.
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -231,7 +231,7 @@ jobs:
+         if: matrix.partition == 'acceptance'
+         shell: bash
+         run: cargo test -p qip-acceptance --test tick_replay --test performance -- --nocapture 2>&1 | tee replay-bench.txt
+-      - uses: actions/upload-artifact@v4
++      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         if: ${{ !cancelled() && matrix.partition == 'acceptance' }}
+         with:
+           name: replay-bench
+@@ -256,10 +256,10 @@ jobs:
+       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -285,10 +285,10 @@ jobs:
+       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -311,10 +311,10 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -328,7 +328,7 @@ jobs:
+     name: attestation check
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - run: bash scripts/validate-attestations.sh
+ 
+   # The build that would actually be deployed. Run separately from the tests
+@@ -342,10 +342,10 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+       - run: cargo build --workspace --release --locked
+@@ -357,7 +357,7 @@ jobs:
+     name: dependency policy
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+       - run: ./scripts/check-dependencies.sh
+@@ -372,7 +372,7 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+       # rust-cache keeps ~/.cargo/bin between runs, so the binary each of
+@@ -380,7 +380,7 @@ jobs:
+       # and restored after: run 950 spent 2m02s, 1m53s and 1m01s building
+       # cargo-audit, cargo-deny and cargo-cyclonedx before checking anything.
+       # The version check first is what makes the restore count.
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -403,10 +403,10 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -422,16 +422,16 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+       - run: cargo cyclonedx --version >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
+       - run: cargo cyclonedx --format json --all
+-      - uses: actions/upload-artifact@v4
++      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+           name: sbom
+           path: "backend/**/*.cdx.json"
+@@ -449,8 +449,8 @@ jobs:
+       run:
+         working-directory: frontend
+     steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+         with:
+           node-version: 22
+           cache: npm
+@@ -476,8 +476,8 @@ jobs:
+       run:
+         working-directory: frontend/landing
+     steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+         with:
+           node-version: 22
+           cache: npm
+@@ -498,7 +498,7 @@ jobs:
+     name: vulnerability scan
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       # Installed from Aqua's signed apt repository rather than a marketplace
+       # action: the action's version tags have moved before, and a gate that
+       # fails on "unable to resolve action" is a gate testing nothing.
+@@ -534,8 +534,8 @@ jobs:
+     permissions:
+       contents: read
+     steps:
+-      - uses: actions/checkout@v4
+-      - uses: trunk-io/trunk-action@v1
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++      - uses: trunk-io/trunk-action@04ba50e7658c81db7356da96657e6e77f220bfa3 # v1
+         with:
+           arguments: --all --no-progress
+ 
+@@ -546,8 +546,8 @@ jobs:
+     name: infrastructure
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
+-      - uses: hashicorp/setup-terraform@v3
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+         with:
+           terraform_version: "1.9.8"
+       - name: format
+@@ -704,7 +704,7 @@ jobs:
+     name: secret scan
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           fetch-depth: 0
+       - run: ./scripts/check-secrets.sh
+@@ -723,8 +723,8 @@ jobs:
+     name: scripts
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-node@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+         with:
+           node-version: 22
+       - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs scripts/rule-citation.test.mjs
+@@ -749,10 +749,10 @@ jobs:
+     if: github.event_name == 'pull_request'
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           fetch-depth: 0
+-      - uses: actions/setup-node@v4
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+         with:
+           node-version: 22
+       - name: every changed rule file is named in the pull request
+@@ -773,7 +773,7 @@ jobs:
+     name: change management hooks
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+       - run: python3 .claude/hooks/test_hooks.py
+ 
+   # Static analysis, as a gate of ci rather than a workflow beside it (R12
+diff --git a/.github/workflows/codeql-analysis.yml b/.github/workflows/codeql-analysis.yml
+index e6030340..41d9815b 100644
+--- a/.github/workflows/codeql-analysis.yml
++++ b/.github/workflows/codeql-analysis.yml
+@@ -45,10 +45,10 @@ jobs:
+ 
+     steps:
+       - name: Checkout repository
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+ 
+       - name: Initialize CodeQL
+-        uses: github/codeql-action/init@v3
++        uses: github/codeql-action/init@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
+         with:
+           languages: ${{ matrix.language }}
+           # Optional: specify queries to customize CodeQL's analysis
+@@ -68,7 +68,7 @@ jobs:
+         run: rustup show active-toolchain || rustup toolchain install
+ 
+       - name: Autobuild
+-        uses: github/codeql-action/autobuild@v3
++        uses: github/codeql-action/autobuild@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
+ 
+       # The repository's own CodeQL model pack, for the Rust analysis only
+       # (ADR 0117 Amendment 3; `.github/codeql/qip-models/README.md` holds
+@@ -104,7 +104,7 @@ jobs:
+       # step can read what the analysis found rather than only whether it
+       # ran.
+       - name: Perform CodeQL Analysis
+-        uses: github/codeql-action/analyze@v3
++        uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
+         with:
+           category: "/language:${{ matrix.language }}"
+           output: sarif-results
+@@ -121,7 +121,7 @@ jobs:
+       # The threshold has no input and no override here: lowering it is an
+       # edit to that file, reviewed like any other. `deploy.yml` needs no
+       # change to honour it — it already reads these jobs by name.
+-      - uses: actions/setup-node@v4
++      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+         with:
+           node-version: 22
+ 
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 3c02f45c..75d58b0c 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -115,7 +115,7 @@ jobs:
+       # are `scripts/agent-policy.json`, checked out from the default branch
+       # so the commit being deployed cannot loosen the rule it is judged by.
+       - name: no development agent starts this workflow
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: .agent-guard
+@@ -445,12 +445,12 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ env.DEPLOY_SHA }}
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -467,12 +467,12 @@ jobs:
+       run:
+         working-directory: backend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ env.DEPLOY_SHA }}
+       - name: install the pinned toolchain
+         run: rustup show active-toolchain || rustup toolchain install
+-      - uses: Swatinem/rust-cache@v2
++      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+         with:
+           workspaces: backend
+           cache-on-failure: true
+@@ -545,7 +545,7 @@ jobs:
+             dockerfile: infrastructure/docker/portal.Dockerfile
+             context: frontend
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ env.DEPLOY_SHA }}
+ 
+@@ -694,12 +694,12 @@ jobs:
+           } >> "$GITHUB_OUTPUT"
+ 
+       - name: authenticate without a key
+-        uses: google-github-actions/auth@v2
++        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+         with:
+           workload_identity_provider: ${{ steps.identity.outputs.provider }}
+           service_account: ${{ steps.identity.outputs.account }}
+ 
+-      - uses: google-github-actions/setup-gcloud@v2
++      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+         with:
+           install_components: beta
+ 
+@@ -1010,7 +1010,7 @@ jobs:
+       # be compared off the runner with tools the runner does not have.
+       - name: keep both builds when they differ
+         if: failure() && steps.reproducibility.outcome == 'failure'
+-        uses: actions/upload-artifact@v4
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+           name: reproducibility-${{ matrix.binary }}-${{ env.DEPLOY_SHA }}
+           path: ${{ runner.temp }}/reproducibility
+@@ -1163,7 +1163,7 @@ jobs:
+       contents: read
+       id-token: write
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ env.DEPLOY_SHA }}
+ 
+@@ -1255,12 +1255,12 @@ jobs:
+           } >> "$GITHUB_OUTPUT"
+ 
+       - name: authenticate without a key
+-        uses: google-github-actions/auth@v2
++        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+         with:
+           workload_identity_provider: ${{ steps.identity.outputs.provider }}
+           service_account: ${{ steps.identity.outputs.account }}
+ 
+-      - uses: google-github-actions/setup-gcloud@v2
++      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+ 
+       # The catalogue's workloads, by the names catalogue.tf gives them, and
+       # the binary each runs. Read out of the committed catalogue rather than
+diff --git a/.github/workflows/drift.yml b/.github/workflows/drift.yml
+index 60e71e19..30f49c51 100644
+--- a/.github/workflows/drift.yml
++++ b/.github/workflows/drift.yml
+@@ -61,7 +61,7 @@ jobs:
+       ENVIRONMENT: dev
+     steps:
+       - name: no development agent starts this workflow
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: .agent-guard
+@@ -80,7 +80,7 @@ jobs:
+           done
+           rm -rf .agent-guard
+ 
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+ 
+       # The identity is derived from the committed tfvars, as infra.yml
+       # derives it and for the same reason: a repository variable set from a
+@@ -108,12 +108,12 @@ jobs:
+             echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
+           } >> "$GITHUB_OUTPUT"
+ 
+-      - uses: google-github-actions/auth@v2
++      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+         with:
+           workload_identity_provider: ${{ steps.identity.outputs.provider }}
+           service_account: ${{ steps.identity.outputs.account }}
+ 
+-      - uses: hashicorp/setup-terraform@v3
++      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+         with:
+           terraform_version: "1.9.8"
+           # The wrapper rewrites how the exit status reaches the shell, and
+diff --git a/.github/workflows/fleet.yml b/.github/workflows/fleet.yml
+index 51264534..bec5b064 100644
+--- a/.github/workflows/fleet.yml
++++ b/.github/workflows/fleet.yml
+@@ -75,7 +75,7 @@ jobs:
+       # branch cannot loosen it; the actor and whoever re-ran the run are
+       # both judged. First, before anything authenticates.
+       - name: no development agent starts this workflow
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: .agent-guard
+@@ -117,7 +117,7 @@ jobs:
+             *) echo "action must be plan or apply." >&2; exit 1 ;;
+           esac
+ 
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+ 
+       # Same derivation as infra.yml's step of this name, narrowed to what the
+       # fleet needs. Deliberately nothing from repository variables.
+@@ -180,12 +180,12 @@ jobs:
+             exit 1
+           fi
+ 
+-      - uses: google-github-actions/auth@v2
++      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+         with:
+           workload_identity_provider: ${{ steps.identity.outputs.provider }}
+           service_account: ${{ steps.identity.outputs.account }}
+ 
+-      - uses: hashicorp/setup-terraform@v3
++      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+         with:
+           terraform_version: "1.9.8"
+ 
+@@ -207,7 +207,7 @@ jobs:
+           terraform -chdir=infrastructure/fleet plan -input=false -out=tfplan
+           terraform -chdir=infrastructure/fleet show -no-color tfplan | tee "$RUNNER_TEMP/fleet-plan.txt"
+ 
+-      - uses: actions/upload-artifact@v4
++      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+           name: fleet-plan
+           path: ${{ runner.temp }}/fleet-plan.txt
+diff --git a/.github/workflows/image.yml b/.github/workflows/image.yml
+index 5a597603..ede17be3 100644
+--- a/.github/workflows/image.yml
++++ b/.github/workflows/image.yml
+@@ -182,7 +182,7 @@ jobs:
+       # branch cannot loosen it; the actor and whoever re-ran the run are
+       # both judged. First, before anything authenticates.
+       - name: no development agent starts this workflow
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: .agent-guard
+@@ -240,7 +240,7 @@ jobs:
+             exit 1
+           fi
+ 
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ env.BAKE_SHA }}
+ 
+@@ -540,12 +540,12 @@ jobs:
+           } >> "$GITHUB_OUTPUT"
+ 
+       - name: authenticate without a key
+-        uses: google-github-actions/auth@v2
++        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+         with:
+           workload_identity_provider: ${{ steps.identity.outputs.provider }}
+           service_account: ${{ steps.identity.outputs.account }}
+ 
+-      - uses: google-github-actions/setup-gcloud@v2
++      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+         with:
+           # `binauthz attestations list` is on the beta track, as it is in
+           # deploy.yml and vendor.yml.
+diff --git a/.github/workflows/infra.yml b/.github/workflows/infra.yml
+index a41eda2b..e2389f43 100644
+--- a/.github/workflows/infra.yml
++++ b/.github/workflows/infra.yml
+@@ -201,7 +201,7 @@ jobs:
+       # whoever re-ran the run are both judged. First, before anything
+       # authenticates.
+       - name: no development agent starts this workflow
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: .agent-guard
+@@ -301,7 +301,7 @@ jobs:
+           fi
+           echo "ci succeeded for ${THIS_SHA}"
+ 
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+ 
+       # Everything this workflow needs to authenticate is derived from the
+       # environment's tfvars, and deliberately not from repository variables.
+@@ -404,12 +404,12 @@ jobs:
+             echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
+           } >> "$GITHUB_OUTPUT"
+ 
+-      - uses: google-github-actions/auth@v2
++      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+         with:
+           workload_identity_provider: ${{ steps.identity.outputs.provider }}
+           service_account: ${{ steps.identity.outputs.account }}
+ 
+-      - uses: google-github-actions/setup-gcloud@v2
++      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+         with:
+           # The bootstrap's kubectl authenticates to GKE through this plugin;
+           # gcloud no longer embeds the credential in the kubeconfig itself.
+@@ -558,7 +558,7 @@ jobs:
+             fi
+           done
+ 
+-      - uses: hashicorp/setup-terraform@v3
++      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+         with:
+           terraform_version: "1.9.8"
+ 
+@@ -638,7 +638,7 @@ jobs:
+ 
+       - name: upload plan artifact
+         if: inputs.action == 'plan'
+-        uses: actions/upload-artifact@v4
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+           name: terraform-plan-${{ inputs.environment }}
+           path: infrastructure/terraform/tfplan
+@@ -1188,7 +1188,7 @@ jobs:
+ 
+       - name: keep the applied plan
+         if: inputs.action == 'up'
+-        uses: actions/upload-artifact@v4
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+           name: terraform-applied-plan-${{ inputs.environment }}
+           path: infrastructure/terraform/tfplan
+diff --git a/.github/workflows/rules.yml b/.github/workflows/rules.yml
+index 725f1588..39de0b5a 100644
+--- a/.github/workflows/rules.yml
++++ b/.github/workflows/rules.yml
+@@ -34,7 +34,7 @@ jobs:
+     runs-on: ubuntu-latest
+     timeout-minutes: 5
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           persist-credentials: false
+       - name: read main's live rules against the committed rulesets
+diff --git a/.github/workflows/vendor.yml b/.github/workflows/vendor.yml
+index 6a98604c..9505e45c 100644
+--- a/.github/workflows/vendor.yml
++++ b/.github/workflows/vendor.yml
+@@ -73,7 +73,7 @@ jobs:
+       # branch cannot loosen it; the actor and whoever re-ran the run are
+       # both judged. First, before anything authenticates.
+       - name: no development agent starts this workflow
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+         with:
+           ref: ${{ github.event.repository.default_branch }}
+           path: .agent-guard
+@@ -102,7 +102,7 @@ jobs:
+             exit 1
+           fi
+ 
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+ 
+       # Identical derivation to deploy.yml, for the identical reason: every
+       # value authentication and attestation need is a pure function of the
+@@ -185,12 +185,12 @@ jobs:
+           } >> "$GITHUB_OUTPUT"
+ 
+       - name: authenticate without a key
+-        uses: google-github-actions/auth@v2
++        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+         with:
+           workload_identity_provider: ${{ steps.identity.outputs.provider }}
+           service_account: ${{ steps.identity.outputs.account }}
+ 
+-      - uses: google-github-actions/setup-gcloud@v2
++      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+         with:
+           install_components: beta
+ 
+diff --git a/backend/crates/tests/qip-acceptance/tests/action_pins.rs b/backend/crates/tests/qip-acceptance/tests/action_pins.rs
+new file mode 100644
+index 00000000..28d603b0
+--- /dev/null
++++ b/backend/crates/tests/qip-acceptance/tests/action_pins.rs
+@@ -0,0 +1,143 @@
++//! R12-CICD-10203: every action a workflow uses is pinned by its full commit
++//! SHA, with the tag it was resolved from kept as a comment.
++//!
++//! A tag is movable. `actions/checkout@v4` names whatever commit the
++//! action's owner last pointed `v4` at, so a workflow pinned by tag runs code
++//! nobody here reviewed the day the tag moves, with the job's token and the
++//! workload identity it federates to. A 40-hex SHA names one tree and cannot
++//! be moved. The comment keeps the tag readable, so a person updating a pin
++//! can see what it was resolved from.
++
++use qip_acceptance::{files_with_extension, repository_root};
++
++/// The `uses:` value on a workflow line, if the line is a step's or a job's
++/// `uses:` key (a `- uses:` step or a job-level `uses:`), with the comment
++/// after it, if any.
++fn uses_of(line: &str) -> Option<(&str, Option<&str>)> {
++    let trimmed = line.trim_start();
++    let rest = trimmed
++        .strip_prefix("- uses:")
++        .or_else(|| trimmed.strip_prefix("uses:"))?;
++    let (value, comment) = match rest.split_once(" #") {
++        Some((value, comment)) => (value.trim(), Some(comment.trim())),
++        None => (rest.trim(), None),
++    };
++    Some((value, comment))
++}
++
++/// Why a `uses:` value is refused, or nothing when it is admitted.
++fn refusal(value: &str, comment: Option<&str>) -> Option<String> {
++    // A reusable workflow in this repository is reviewed with the change that
++    // calls it; it has no ref to move.
++    if value.starts_with("./") {
++        return None;
++    }
++    let Some((action, reference)) = value.rsplit_once('@') else {
++        return Some(format!(
++            "`{value}` names no ref at all, so it runs the default branch"
++        ));
++    };
++    let is_sha = reference.len() == 40
++        && reference
++            .bytes()
++            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
++    if !is_sha {
++        return Some(format!(
++            "`{action}@{reference}` is pinned by a movable ref; pin the 40-hex commit SHA the \
++             tag resolves to and keep the tag as a `# vN` comment"
++        ));
++    }
++    let tagged = comment.is_some_and(|c| {
++        c.strip_prefix('v')
++            .is_some_and(|v| v.starts_with(|ch: char| ch.is_ascii_digit()))
++    });
++    if !tagged {
++        return Some(format!(
++            "`{action}@{reference}` carries no `# vN` comment naming the tag it was resolved from"
++        ));
++    }
++    None
++}
++
++fn refusals_in(workflows: &[(String, String)]) -> (usize, Vec<String>) {
++    let mut seen = 0;
++    let mut refused = Vec::new();
++    for (path, text) in workflows {
++        for (number, line) in text.lines().enumerate() {
++            if line.trim_start().starts_with('#') {
++                continue;
++            }
++            let Some((value, comment)) = uses_of(line) else {
++                continue;
++            };
++            seen += 1;
++            if let Some(why) = refusal(value, comment) {
++                refused.push(format!("{path}:{}: {why}", number + 1));
++            }
++        }
++    }
++    (seen, refused)
++}
++
++fn committed_workflows() -> Vec<(String, String)> {
++    let root = repository_root();
++    // All of .github, not only workflows: a composite action under
++    // .github/actions runs its own `uses:` steps with the caller's token.
++    let mut files: Vec<_> = files_with_extension(".github", "yml")
++        .into_iter()
++        .chain(files_with_extension(".github", "yaml"))
++        .collect();
++    files.sort();
++    files
++        .into_iter()
++        .map(|path| {
++            let text = std::fs::read_to_string(&path)
++                .unwrap_or_else(|error| panic!("{} is unreadable: {error}", path.display()));
++            let shown = path
++                .strip_prefix(&root)
++                .unwrap_or(&path)
++                .display()
++                .to_string();
++            (shown, text)
++        })
++        .collect()
++}
++
++#[test]
++fn every_action_a_workflow_uses_is_pinned_by_a_full_commit_sha_with_its_tag_as_a_comment() {
++    let workflows = committed_workflows();
++    let (seen, refused) = refusals_in(&workflows);
++    // Premise: the walk found the workflows and their steps, so an empty
++    // refusal list is not the empty list of a walk that read nothing.
++    assert!(
++        workflows.len() >= 10,
++        "premise: .github holds the platform's workflows"
++    );
++    assert!(
++        seen >= 50,
++        "premise: the walk found the workflows' `uses:` lines, found {seen}"
++    );
++    assert!(refused.is_empty(), "movable action refs: {refused:#?}");
++}
++
++#[test]
++fn a_tag_a_branch_a_short_sha_or_an_untagged_sha_is_refused_and_a_tagged_sha_is_admitted() {
++    let sha = "11d5960a326750d5838078e36cf38b85af677262";
++    let workflow = |line: &str| vec![("w.yml".to_string(), format!("steps:\n{line}\n"))];
++    let admitted = workflow(&format!("      - uses: actions/checkout@{sha} # v4"));
++    assert_eq!(refusals_in(&admitted), (1, Vec::new()));
++    let local = workflow("    uses: ./.github/workflows/codeql-analysis.yml");
++    assert_eq!(refusals_in(&local), (1, Vec::new()));
++    for refused in [
++        "      - uses: actions/checkout@v4".to_string(),
++        "      - uses: actions/checkout@main".to_string(),
++        "      - uses: actions/checkout@11d5960".to_string(),
++        format!("      - uses: actions/checkout@{sha}"),
++        format!("      - uses: actions/checkout@{}", sha.to_uppercase()),
++        "      - uses: actions/checkout".to_string(),
++    ] {
++        let (seen, refusals) = refusals_in(&workflow(&refused));
++        assert_eq!(seen, 1, "premise: `{refused}` is read as a uses line");
++        assert_eq!(refusals.len(), 1, "`{refused}` was admitted");
++    }
++}
+diff --git a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
+index b1b437c9..5bb3788f 100644
+--- a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
++++ b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
+@@ -4086,13 +4086,20 @@ fn the_gcloud_beta_component_is_installed_because_the_iap_gates_update_fallback_
+         .iter()
+         .filter(|step| {
+             step.lines()
+-                .any(|line| line.trim() == "- uses: google-github-actions/setup-gcloud@v2")
++                // The ref is a pinned SHA (action_pins.rs holds that); the
++                // tag comment still names the major version, so a downgrade
++                // fails.
++                .any(|line| {
++                    let line = line.trim();
++                    line.starts_with("- uses: google-github-actions/setup-gcloud@")
++                        && line.ends_with("# v2")
++                })
+         })
+         .collect();
+     assert_eq!(
+         setup.len(),
+         1,
+-        "infra.yml has {} setup-gcloud@v2 step(s); one, or the install list below is \
++        "infra.yml has {} setup-gcloud step(s); one, or the install list below is \
+          ambiguous",
+         setup.len()
+     );
+diff --git a/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs b/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
+index 92cd3c46..89d8513f 100644
+--- a/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
++++ b/backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs
+@@ -624,7 +624,11 @@ fn the_test_job_uploads_the_replay_and_benchmark_output_as_an_artifact() {
+     assert!(
+         lines
+             .iter()
+-            .any(|line| line == "- uses: actions/upload-artifact@v4"),
++            // The ref is a pinned SHA (action_pins.rs holds that); the tag
++            // comment still names the major version, so a downgrade fails.
++            .any(|line| {
++                line.starts_with("- uses: actions/upload-artifact@") && line.ends_with("# v4")
++            }),
+         "premise: the `test` job uploads an artifact at all"
+     );
+     assert!(

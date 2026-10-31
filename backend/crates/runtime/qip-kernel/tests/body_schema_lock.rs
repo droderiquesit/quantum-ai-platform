@@ -14,21 +14,31 @@
 //!
 //! `LedgerEntry` is a tagged enum, so each variant is locked by a sample of
 //! its own (and `Booked` once per `BookingBasis`): a field added to one
-//! variant changes only that variant's id. `CycleJournalEntry` is locked at
-//! its top level: its optional sub-journals are skipped when absent, so a
-//! change inside one of them is not caught here, and that is stated rather
-//! than implied.
+//! variant changes only that variant's id. `CycleJournalEntry` is locked
+//! twice: once at its top level, every optional sub-journal absent, and once
+//! with its `calibration` and `counterfactuals` journals filled (every
+//! collection inside them filled too). The sub-journals are skipped when
+//! absent, so without the second sample a field renamed inside one of them
+//! changed the sealed bytes of every cycle that scored a thesis or priced a
+//! declined path, and no lock saw it. The other optional sub-journals are not
+//! locked here, and that is stated rather than implied.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a panic is the failure report
 
 use qip_capital::ledger::{UserId, UserShare};
 use qip_contracts::signal::StrategyId;
 use qip_core::Currency;
+use qip_core::ids::{ObjectId, OrderId};
 use qip_core::{Decimal, Timestamp};
 use qip_events::EventBody;
 use qip_events::event_fabric::schema_id::{SchemaId, Shape};
 use qip_execution_engine::order::Side;
 use qip_kernel::attribution::AttributionRecorded;
-use qip_kernel::platform::{BookingBasis, CycleJournalEntry, FillBooked, LedgerEntry, SensedRef};
+use qip_kernel::platform::{
+    BookingBasis, CalibrationJournal, CellDeclinedScore, CounterfactualJournal, CycleJournalEntry,
+    DeclinedScore, FillBooked, FillScore, LedgerEntry, RuleReading, SensedRef,
+};
+use qip_twin::counterfactual::EstimationMethod;
+use qip_twin::value::Simulated;
 use std::collections::BTreeMap;
 
 /// (type, version, schema id) as committed. Bump the version with the id.
@@ -82,6 +92,11 @@ const LOCKED: &[(&str, u32, &str)] = &[
         "CycleJournalEntry",
         1,
         "538ac8a14ab46b404fa858fa5eff105a5cfd088ae496f48e85b47bc127c26104",
+    ),
+    (
+        "CycleJournalEntry/calibration+counterfactuals",
+        1,
+        "e526c0531318622861286d040217b471f08a054f54102e23ef89a7e29d57e4a2",
     ),
 ];
 
@@ -250,6 +265,78 @@ fn cycle_journal() -> CycleJournalEntry {
     }
 }
 
+/// The same entry with the two sub-journals LEARN writes most often filled,
+/// and every collection inside them non-empty, so a rename or a retyped field
+/// inside either is part of the id.
+fn cycle_journal_filled() -> CycleJournalEntry {
+    let earned = Simulated::of(Decimal::from_int(2));
+    CycleJournalEntry {
+        calibration: Some(CalibrationJournal {
+            evaluated_this_cycle: 2,
+            evaluations_in_window: 30,
+            brier_score: 0.2,
+            confidence_adjustment: 0.9,
+            is_overconfident: true,
+            hit_rate_by_agent: BTreeMap::from([("skeptic".to_string(), 0.6)]),
+        }),
+        counterfactuals: Some(CounterfactualJournal {
+            scored: 1,
+            regrets: 1,
+            deferred: 1,
+            fills_scored: 1,
+            fills_deferred: 1,
+            declined_outcomes: vec![DeclinedScore {
+                order_id: OrderId::from_string("ord-1"),
+                object_id: ObjectId::from_string("obj-1"),
+                gate: "pre-trade-risk".to_string(),
+                declined_at: at(),
+                scored_at: at(),
+                would_have_earned: earned,
+                regret: true,
+                alternatives: 2,
+                rules: vec!["max-position".to_string()],
+                readings: vec![RuleReading {
+                    rule: "max-position".to_string(),
+                    observed: 1.5,
+                    bound: 1.0,
+                }],
+                venue: Some("sim".to_string()),
+                method: EstimationMethod::BarOpenReplay,
+            }],
+            fill_outcomes: vec![FillScore {
+                order_id: OrderId::from_string("ord-2"),
+                object_id: ObjectId::from_string("obj-1"),
+                venue: "sim".to_string(),
+                filled_at: at(),
+                scored_at: at(),
+                smaller_favoured: true,
+                larger_favoured: false,
+                trade_error_bps: Some(1.0),
+                unfilled: Decimal::from_int(1),
+                realised_slippage_bps: Some(1.0),
+                predicted_slippage_bps: Some(1.0),
+                predicted_outcome_bps: Some(1.0),
+                realised_outcome_bps: Some(1.0),
+                outcome_error_bps: Some(1.0),
+            }],
+            cell_declined_scored: 1,
+            cell_declined_outcomes: vec![CellDeclinedScore {
+                order_id: OrderId::from_string("ord-3"),
+                cell: "newyork-1".to_string(),
+                gate: "envelope".to_string(),
+                object_id: ObjectId::from_string("obj-1"),
+                venue: "sim".to_string(),
+                declined_at: at(),
+                scored_at: at(),
+                would_have_earned: earned,
+                regret: false,
+                method: EstimationMethod::BarOpenReplay,
+            }],
+        }),
+        ..cycle_journal()
+    }
+}
+
 fn computed() -> Vec<(&'static str, u32, String)> {
     vec![
         ("FillBooked", FillBooked::SCHEMA_VERSION, id_of(&fill())),
@@ -265,11 +352,18 @@ fn computed() -> Vec<(&'static str, u32, String)> {
             .into_iter()
             .map(|(name, entry)| (name, LedgerEntry::SCHEMA_VERSION, id_of(&entry))),
     )
-    .chain([(
-        "CycleJournalEntry",
-        CycleJournalEntry::SCHEMA_VERSION,
-        id_of(&cycle_journal()),
-    )])
+    .chain([
+        (
+            "CycleJournalEntry",
+            CycleJournalEntry::SCHEMA_VERSION,
+            id_of(&cycle_journal()),
+        ),
+        (
+            "CycleJournalEntry/calibration+counterfactuals",
+            CycleJournalEntry::SCHEMA_VERSION,
+            id_of(&cycle_journal_filled()),
+        ),
+    ])
     .collect()
 }
 

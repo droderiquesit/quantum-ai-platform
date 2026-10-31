@@ -49,7 +49,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: cargo fmt --all --check
@@ -61,10 +61,10 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
       - run: cargo clippy --workspace --all-targets --all-features
@@ -146,7 +146,7 @@ jobs:
         run: |
           nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
           echo $! > "$RUNNER_TEMP/free-disk.pid"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       # cache-on-failure, because a run whose tests failed still compiled
@@ -155,7 +155,7 @@ jobs:
       # each built the whole tree from nothing for exactly this reason.
       # Keyed by partition: the four target directories hold different
       # binaries, and rust-cache's default key does not see matrix values.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -231,7 +231,7 @@ jobs:
         if: matrix.partition == 'acceptance'
         shell: bash
         run: cargo test -p qip-acceptance --test tick_replay --test performance -- --nocapture 2>&1 | tee replay-bench.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ !cancelled() && matrix.partition == 'acceptance' }}
         with:
           name: replay-bench
@@ -256,10 +256,10 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -285,10 +285,10 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -311,10 +311,10 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -328,7 +328,7 @@ jobs:
     name: attestation check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: bash scripts/validate-attestations.sh
 
   # The build that would actually be deployed. Run separately from the tests
@@ -342,10 +342,10 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
       - run: cargo build --workspace --release --locked
@@ -357,7 +357,7 @@ jobs:
     name: dependency policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: ./scripts/check-dependencies.sh
@@ -372,7 +372,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       # rust-cache keeps ~/.cargo/bin between runs, so the binary each of
@@ -380,7 +380,7 @@ jobs:
       # and restored after: run 950 spent 2m02s, 1m53s and 1m01s building
       # cargo-audit, cargo-deny and cargo-cyclonedx before checking anything.
       # The version check first is what makes the restore count.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -403,10 +403,10 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
@@ -422,16 +422,16 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: backend
           cache-on-failure: true
       - run: cargo cyclonedx --version >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
       - run: cargo cyclonedx --format json --all
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sbom
           path: "backend/**/*.cdx.json"
@@ -449,8 +449,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -476,8 +476,8 @@ jobs:
       run:
         working-directory: frontend/landing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -498,7 +498,7 @@ jobs:
     name: vulnerability scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Installed from Aqua's signed apt repository rather than a marketplace
       # action: the action's version tags have moved before, and a gate that
       # fails on "unable to resolve action" is a gate testing nothing.
@@ -534,8 +534,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: trunk-io/trunk-action@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: trunk-io/trunk-action@04ba50e7658c81db7356da96657e6e77f220bfa3 # v1
         with:
           arguments: --all --no-progress
 
@@ -546,8 +546,8 @@ jobs:
     name: infrastructure
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "1.9.8"
       - name: format
@@ -704,7 +704,7 @@ jobs:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - run: ./scripts/check-secrets.sh
@@ -723,8 +723,8 @@ jobs:
     name: scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs scripts/rule-citation.test.mjs
@@ -749,10 +749,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - name: every changed rule file is named in the pull request
@@ -773,7 +773,7 @@ jobs:
     name: change management hooks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: python3 .claude/hooks/test_hooks.py
 
   # Static analysis, as a gate of ci rather than a workflow beside it (R12
