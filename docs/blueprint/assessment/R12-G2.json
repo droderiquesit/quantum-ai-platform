@@ -2374,11 +2374,16 @@
   {
     "id": "R12-CICD-9101",
     "status": "PARTIAL",
-    "current": "property_fuzz.rs runs deterministic property/fuzz-style cases inside cargo test; no coverage-guided fuzzing job.",
+    "current": "CI's fuzz gate is four seeded random-input tests, one per decoder that reads bytes from outside the process: qip_peer::decode (a peer frame), KnowledgePack::decode, BreadthPlan::from_json and SegmentCodec::decode (a stored lake segment). Each replays six fixed regression seeds and a fresh batch whose seed is SHA-256 of GITHUB_SHA when set and fixed otherwise, all drawn from qip_core::Xoshiro256; inputs are uniform bytes and mutations of valid encodings (bit flips, truncations, length/number-field corruption, splices, chunk duplication/deletion, insertions, stacked). Every decode runs under catch_unwind and a panic fails the test naming run seed, case seed, strategy and hex input; a case seed copied into REGRESSION_SEEDS replays that input first. Premises asserted: every corpus encoding decodes, and some mutated input is refused in both the regression and fresh batches. They run in ci.yml's existing test job (nextest over the four partitions, every pull_request to main): qip-kernel, qip-contracts, qip-storage in the runtime partition (ci.yml:104-105), qip-peer in the core partition's --workspace (ci.yml:108-109), command at ci.yml:196. No libfuzzer-sys, no nightly toolchain (owner decision 14 declines O22). No decoder panicked on any generated input before mutation.",
     "evidence": [
+      "backend/crates/libs/qip-peer/tests/fuzz_decode.rs a_peer_frame_of_random_or_mutated_bytes_is_refused_or_decoded_and_never_panics",
+      "backend/crates/libs/qip-contracts/tests/fuzz_decode.rs a_knowledge_pack_of_random_or_mutated_bytes_is_refused_or_decoded_and_never_panics",
+      "backend/crates/runtime/qip-kernel/tests/fuzz_breadth_plan.rs a_breadth_plan_of_random_or_mutated_json_is_refused_or_parsed_and_never_panics",
+      "backend/crates/libs/qip-storage/tests/fuzz_lake_codec.rs a_lake_record_of_random_or_mutated_bytes_is_refused_or_decoded_and_never_panics",
+      ".github/workflows/ci.yml:20 pull_request trigger; :104-105 runtime partition; :108-109 core partition; :196 cargo nextest run --no-fail-fast",
       "backend/crates/tests/qip-acceptance/tests/property_fuzz.rs"
     ],
-    "gap": "Owner decision O22 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit libfuzzer-sys and a nightly toolchain for a PR fuzz job. Enables: cargo-fuzz targets in CI. Costs: A crate and a second toolchain; CI minutes.",
+    "gap": "PARTIAL until a ci run on a pull request shows the tests ran.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2389,7 +2394,7 @@
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O22; gap before it: A fuzz job (cargo-fuzz is a tool, not a crate dependency). Owner ruling 2026-10-31, second pass (IMPLEMENT): O22 is declined: no libfuzzer-sys and no nightly toolchain enter the build. A second toolchain and a new crate would be a standing cost and an exception to ADR 0109, for a gate the in-tree generator can carry. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O22; gap before it: A fuzz job (cargo-fuzz is a tool, not a crate dependency). Owner ruling 2026-10-31, second pass (IMPLEMENT): O22 is declined: no libfuzzer-sys and no nightly toolchain enter the build. A second toolchain and a new crate would be a standing cost and an exception to ADR 0109, for a gate the in-tree generator can carry. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). Lane L6-platform 2026-10-31: the four fuzz tests landed. Mutations, each applied, failed the test naming seed and hex, then restored and cmp-checked byte-identical: qip-peer src/lib.rs:567 `frame.get(..4)` -> `Some(&frame[..4])` failed 'run seed 0x0000000000000001, case seed 0x0491e7cfe920d385 ..., strategy `truncate`, 2 input byte(s): 0000' (and replayed as the first case when that case seed was put first in REGRESSION_SEEDS); qip-contracts knowledge_pack.rs decode + `if bytes[0] != b'{'` failed 'case seed 0xe97a69caa2d7bf2b ..., strategy `uniform`, 0 input byte(s)'; qip-storage lake_codec.rs zstd arm + `u32::from_le_bytes([stored[0], stored[1], stored[2], stored[3]])` failed 'case seed 0x0491e7cfe920d385 ..., strategy `truncate`, 0 input byte(s)'; qip-kernel breadth.rs from_json + `if text.as_bytes()[0] != b'{'` failed 'case seed 0x61954dcc47b1e89d ..., strategy `truncate`, 0 input byte(s)'. Status stays PARTIAL: the gap is CI evidence, not code."
   },
   {
     "id": "R12-CICD-9102",
