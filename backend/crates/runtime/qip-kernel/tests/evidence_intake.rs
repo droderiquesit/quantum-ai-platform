@@ -882,3 +882,96 @@ fn a_claim_dated_before_its_declared_cause_is_journaled_with_an_event_ordering_v
         effect.record.temporal_consistency
     );
 }
+
+/// R12-EVID-2038: a contest the evidence raised, both of its competing
+/// hypotheses and the later claim that resolved it, survive a restart from
+/// the event log, and the UNDERSTAND stage says so.
+///
+/// Before this, `Platform::new` resumed several ledgers from the log but
+/// never the evidence fabric: `EvidenceFabric::rebuild` existed and was
+/// proven equal to the live fabric, and no production code called it. A
+/// restarted process therefore began with no contest at all — both sides
+/// of every contradiction and the resolving claim gone from the first
+/// cycle, and the next claim on either side admitted as if it were the
+/// first.
+///
+/// Mutation: in `Platform::new`, skip `world_model.rebuild_evidence(..)` —
+/// the restarted fabric holds no contest and the comparison fails.
+#[test]
+fn a_contest_and_its_resolving_evidence_survive_a_restart_from_the_event_log() {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-evidence-contest-{}-{}",
+        std::process::id(),
+        at(0).as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let assemble = |now: Timestamp| {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(now, config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .unwrap()
+    };
+
+    let contests_before = {
+        let mut platform = assemble(at(0));
+        let intake = platform.absorb_evidence(
+            vec![
+                checked("a1", "https://a.example", "rate 1.10", "1.10", &hash('a')),
+                checked("b1", "https://b.example", "rate 1.20", "1.20", &hash('b')),
+                checked("c1", "https://c.example", "fix at 1.10", "1.10", &hash('c')),
+                checked("d1", "https://d.example", "fixed 1.10", "1.10", &hash('d')),
+            ],
+            at(30),
+        );
+        assert_eq!(intake.claims_journaled, 4, "{intake:?}");
+        platform.world().evidence().contests().clone()
+    };
+    // Premise: a contest kept both hypotheses and was resolved by a named
+    // later claim, so there is something a restart could lose.
+    let resolved = contests_before
+        .values()
+        .find(|contest| contest.resolution.is_some())
+        .expect("premise: the disagreement was resolved by a later claim");
+    assert!(
+        resolved.hypotheses.contains_key("1.10") && resolved.hypotheses.contains_key("1.20"),
+        "premise: both sides of the contradiction are kept: {resolved:?}"
+    );
+    let resolving = resolved
+        .resolution
+        .as_ref()
+        .map(|resolution| resolution.resolved_by.clone())
+        .unwrap();
+    assert!(
+        ["c1", "d1"].contains(&resolving.as_str()),
+        "premise: a later claim resolved it, not one of the first two: {resolving}"
+    );
+
+    // A second process over the same log, assembled later, as a restart is.
+    let mut restarted = assemble(at(3_600));
+    let contests_after = restarted.world().evidence().contests().clone();
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(
+        contests_after, contests_before,
+        "the restarted fabric holds the same contests, both sides and the resolving claim"
+    );
+    let outcome = restarted.run_cycle(at(3_660));
+    let understand = outcome
+        .stages
+        .iter()
+        .find(|stage| stage.stage == qip_kernel::Stage::Understand)
+        .expect("the cycle ran UNDERSTAND");
+    assert!(
+        understand
+            .detail
+            .contains("1 resolved with the resolving claim named"),
+        "the stage reports the contest the restart kept: {}",
+        understand.detail
+    );
+}
