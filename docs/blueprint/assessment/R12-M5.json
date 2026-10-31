@@ -1134,25 +1134,25 @@
   },
   {
     "id": "R12-MESH-5048",
-    "status": "PARTIAL",
-    "current": "Peer frames refuse downward-only kinds (backend/crates/services/qip-mesh/src/peer.rs:63 DOWNWARD_ONLY; test backend/crates/services/qip-mesh/tests/peer.rs:493); MeshFunction lane registry (backend/crates/services/qip-mesh/src/peer.rs:108). Fabric codec separate (qip-events event_fabric). Neither peer transport nor node fabric drain is live.",
+    "status": "COMPLETE",
+    "current": "A peer frame of a downward-only kind (packs, policy, capital grants) is refused inside qip_peer::decode, the only way a peer frame becomes a PeerMessage (PeerEndpoint::receive_checked, which qip-peer-link reaches only through receive and receive_from). The reverse direction is held by the crate graph: the mesh crates and the durable fabric crates reach none of each other.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:63 DOWNWARD_ONLY",
-      "backend/crates/services/qip-mesh/tests/peer.rs:493",
-      "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs"
+      "backend/crates/libs/qip-peer/src/lib.rs::DOWNWARD_ONLY (checked in decode)",
+      "backend/crates/services/qip-mesh/tests/peer.rs::a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::reflex_mesh_traffic_and_durable_fabric_traffic_share_no_crate_in_either_direction"
     ],
-    "gap": "Both live paths.",
+    "gap": "None against the requirement's text. It is a separation constraint, so bar part 3 applies: the guard sits on the only path a peer frame decodes by, whether or not the mesh is enabled.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer; qip-acceptance mesh_lane",
+    "verification": "cargo test -p qip-mesh --test peer a_well_formed_pack_policy_or_grant; qip-acceptance architecture reflex_mesh_traffic_and_durable_fabric_traffic",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-31 lane L5-EDGE (taken over from L5b; wave1031 triage ALREADY_COMPLETE, skeptic recorded in wave1031-triage-2026-10-31.json): PARTIAL -> COMPLETE. The evidence cited the deleted qip-mesh/src/peer.rs:63 and is re-cited by symbol. Mutation: the DOWNWARD_ONLY check in decode short-circuited to false fails a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing at peer.rs:512 (the frame is then refused only as an unknown variant, without the 'never from a peer' reason); restored byte-for-byte (cmp)."
   },
   {
     "id": "R12-MESH-5049",
@@ -1445,28 +1445,26 @@
   },
   {
     "id": "R12-MESH-5061",
-    "status": "PARTIAL",
-    "current": "EpochDraft::build refuses each missing field by name; saga.rs now originates epochs in production code, but only when the env-gated peer mesh is configured.",
+    "status": "COMPLETE",
+    "current": "Every epoch reaches an endpoint through PeerEndpoint::install, which calls OpportunityEpoch::validate. A peer's Token frame and a locally opened epoch (open_epoch, which saga origination also goes through) both reach it, so no hollow epoch is held on any path. EpochDraft::build refuses each missing field by name as well.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/peer.rs:231",
-      "backend/crates/libs/qip-contracts/src/peer.rs:311",
-      "services/qip-mesh/tests/peer.rs::an_epoch_missing_any_one_of_its_seven_fields_is_refused_naming_that_field",
-      "services/qip-mesh/tests/peer.rs::an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted"
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::install (OpportunityEpoch::validate)",
+      "backend/crates/services/qip-mesh/tests/peer.rs::a_hollow_epoch_is_refused_naming_its_field_whether_a_peer_sends_it_or_a_node_opens_it",
+      "backend/crates/services/qip-mesh/tests/peer.rs::an_epoch_missing_any_one_of_its_seven_fields_is_refused_naming_that_field",
+      "backend/crates/services/qip-mesh/tests/peer.rs::an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted"
     ],
-    "gap": "Peer mesh on by default or in committed deployment.",
+    "gap": "None against the requirement's text. It is a refusal, so bar part 3 applies: the guard sits on the only path an epoch is installed by, whether or not the mesh is enabled.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "R12-MESH-5046"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer",
+    "verification": "cargo test -p qip-mesh --test peer a_hollow_epoch an_epoch_missing",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The rule is sound and unit-proven. It is still unused by any node or the centre. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: The rule is sound and unit-proven. It is still unused by any node or the centre. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L5-EDGE (taken over from L5b; wave1031 triage CODE_NOW, skeptic recorded there): PARTIAL -> COMPLETE. New test sends each of the seven fields hollowed, built by hand rather than through the builder, as a Token frame through receive and through open_epoch, and asserts each is refused naming the field (empty legs on open_epoch is refused earlier as holding no own leg), with nothing installed. Mutation: drop the validate call in PeerEndpoint::install, and the test fails at peer.rs:637 (a hollow epoch from a peer was installed); restored byte-for-byte (cmp)."
   },
   {
     "id": "R12-MESH-5062",
