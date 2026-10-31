@@ -17,7 +17,9 @@ use qip_contracts::reflex_package::{
 };
 use qip_core::error::{Error, Result};
 use qip_core::{Context, Decimal, Duration, Timestamp};
-use qip_deepbrain::research::{FillObservation, META_MARGINAL_VALUE, ResearchConfig, ResearchLoop};
+use qip_deepbrain::research::{
+    FillObservation, META_MARGINAL_VALUE, PromotionLane, ResearchConfig, ResearchLoop,
+};
 use qip_expansion::desk::CloseReason;
 use qip_expansion::meta::{ReputationKey, Standing};
 use qip_financial::universe::Universe;
@@ -144,20 +146,25 @@ impl PackageVerifier for TestKey {
 
 /// Ten scored fills before `t0`, then `post` after it, all ~40 bp off.
 fn fills(post: usize) -> Vec<FillObservation> {
+    fills_off(post, 40.0)
+}
+
+/// [`fills`] at any bias: the same spread around `bias` basis points.
+fn fills_off(post: usize, bias: f64) -> Vec<FillObservation> {
     let at = |offset_mins: i64| t0().saturating_add(Duration::from_mins(offset_mins));
     let mut out: Vec<FillObservation> = (0..10)
         .map(|i| FillObservation {
             venue: VENUE.to_string(),
             object_id: "BTC-USD".to_string(),
             filled_at: at(i - 60),
-            trade_error_bps: Some(if i % 2 == 0 { 35.0 } else { 45.0 }),
+            trade_error_bps: Some(if i % 2 == 0 { bias - 5.0 } else { bias + 5.0 }),
         })
         .collect();
     out.extend((0..post as i64).map(|i| FillObservation {
         venue: VENUE.to_string(),
         object_id: "BTC-USD".to_string(),
         filled_at: at(i + 1),
-        trade_error_bps: Some(if i % 2 == 0 { 38.0 } else { 42.0 }),
+        trade_error_bps: Some(if i % 2 == 0 { bias - 2.0 } else { bias + 2.0 }),
     }));
     out
 }
@@ -245,6 +252,77 @@ fn without_a_signer_a_compiled_package_is_held_and_nothing_is_published() {
     );
     assert!(store.list("").unwrap().is_empty());
     assert!(research.packages().all(|p| p.signed.is_none()));
+}
+
+/// ADR 0149 d6 (R12-EXPAND-6052): a promoted correction inside the reflex
+/// bounds is recorded reflex and held unsigned, and one past
+/// `MAX_ADJUSTMENT_BPS` is recorded research and yields no package. The
+/// lane is read from the compiled form: the same campaign, at a bias the
+/// compiler cannot express in one bounded adjustment, goes to research.
+/// Without the record a refused compile was a count, and nothing said which
+/// promoted question had been held back from the reflex lane.
+///
+/// Mutation: record `Reflex` on the compile-refused arm of `distil`.
+#[test]
+fn a_promoted_correction_inside_the_reflex_bounds_is_recorded_reflex_and_one_past_them_research() {
+    let lane_after = |bias: f64| {
+        let platform = platform();
+        let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).unwrap();
+        research
+            .sweep_over(
+                &platform,
+                &fills_off(0, bias),
+                &[],
+                t0(),
+                &set(&[]),
+                &set(&["US"]),
+            )
+            .unwrap();
+        let round = research
+            .sweep_over(
+                &platform,
+                &fills_off(8, bias),
+                &[],
+                t0().saturating_add(Duration::from_hours(1)),
+                &set(&[]),
+                &set(&["US"]),
+            )
+            .unwrap();
+        assert_eq!(
+            round.campaigns.get("promoted"),
+            Some(&1),
+            "premise: the correction at {bias} bp was promoted: {round:?}"
+        );
+        assert_eq!(round.lanes.len(), 1, "{:?}", round.lanes);
+        let (question, lane) = round.lanes.iter().next().unwrap();
+        assert!(question.contains(VENUE), "{question}");
+        (
+            lane.clone(),
+            round,
+            research.packages().cloned().collect::<Vec<_>>(),
+        )
+    };
+
+    let (inside, round, packages) = lane_after(40.0);
+    let PromotionLane::Reflex { package_id } = &inside else {
+        panic!("a 40 bp correction was not recorded reflex: {inside:?}");
+    };
+    assert_eq!(round.packages.get("held_unsigned"), Some(&1), "{round:?}");
+    assert_eq!(packages.len(), 1);
+    assert_eq!(&packages[0].compiled.package.package_id, package_id);
+    assert!(packages[0].signed.is_none(), "an unsigned lane signed");
+
+    // 600 bp is past MAX_ADJUSTMENT_BPS (500): one rule cannot carry it.
+    let (past, round, packages) = lane_after(600.0);
+    let PromotionLane::Research { refusal } = &past else {
+        panic!("a 600 bp correction was recorded reflex: {past:?}");
+    };
+    assert!(refusal.contains("500"), "{refusal}");
+    assert_eq!(round.packages.get("refused"), Some(&1), "{round:?}");
+    assert!(
+        packages.is_empty(),
+        "a research-lane result yielded a package"
+    );
 }
 
 /// Research whose acquisition has no executor realises nothing, and the
