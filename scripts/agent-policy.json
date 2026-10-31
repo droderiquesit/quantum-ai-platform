@@ -47,7 +47,7 @@
 
   "dispatch_refused_for_agents": {
     "comment": "Workflows an agent identity may never start: each deploys, applies infrastructure or reaches a cloud credential. A planner may read and plan; no agent merges or deploys (GOV-9067). Enforced by the guard step at the top of each workflow, before anything authenticates.",
-    "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml"]
+    "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml", "drift.yml"]
   },
   "deploy_range_advisory": {
     "comment": "ADR 0124 §3 (the owner accepted this on 2026-10-12 citing ADR 0123, whose record was never written; 0123 is the ledger-operations ADR, and 0124 records this decision under its own number). dev reads the agent-boundary range verdict as advice: refusals are printed, the deploy proceeds. The guard admits only dev whatever this list says.",
