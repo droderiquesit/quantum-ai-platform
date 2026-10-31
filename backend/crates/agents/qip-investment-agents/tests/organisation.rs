@@ -2495,6 +2495,89 @@ fn removing_the_risk_control_drops_forecast_stress_and_recommendation_from_cover
     Ok(())
 }
 
+/// R12-CAPITAL-3020 (ADR 0147 decision 8). No capital specialist is added:
+/// a second agent over the same `RiskState` would be a correlated second
+/// finding from one origin. The risk control reports the capital facts the
+/// state already holds instead, so it alone covers the capital position and
+/// removing it drops the scope. A figure the state does not hold is not
+/// reported, so an unmeasured funding buffer is never read as zero.
+///
+/// Mutation: drop the capital facts from `RiskControl::analyse` and the
+/// scope is not covered with the control present.
+#[test]
+fn removing_the_risk_control_drops_capital_position_from_coverage() -> Result<()> {
+    let state = RiskState {
+        equity: dec!("10000000"),
+        cash: dec!("4000000"),
+        gross_exposure: dec!("6000000"),
+        funding_buffer: Some(0.35),
+        margin_utilisation: Some(0.42),
+        survival_gross_ceiling: Some(dec!("15000000")),
+        ..RiskState::default()
+    };
+    let desk = desk_with_risk(state, LimitSet::new("t"));
+
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::RISK)
+        .expect("premise: the standard organisation runs the risk control");
+    for (label, value) in [
+        ("cash", 4_000_000.0),
+        ("funding_buffer", 0.35),
+        ("margin_utilisation", 0.42),
+        ("survival_gross_ceiling", 15_000_000.0),
+    ] {
+        let got = fact_value(finding, label).expect(label);
+        assert!(
+            (got - value).abs() < 1e-6,
+            "{label} is {got}, expected {value}"
+        );
+    }
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::RISK)?;
+    assert!(
+        with.contains(&Scope::CapitalPosition),
+        "capital position not covered: {with:?}"
+    );
+    assert!(
+        !without.contains(&Scope::CapitalPosition),
+        "capital position covered without the risk control: {without:?}"
+    );
+
+    // Only where present: a state that measured no buffer, margin or
+    // ceiling reports none of the three rather than a zero for each.
+    let bare = desk_with_risk(
+        RiskState {
+            equity: dec!("10000000"),
+            cash: dec!("10000000"),
+            ..RiskState::default()
+        },
+        LimitSet::new("t"),
+    );
+    let mut org = organisation(bare)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::RISK)
+        .expect("premise: the standard organisation runs the risk control");
+    assert!(fact_value(finding, "cash").is_some(), "cash is always held");
+    for label in [
+        "funding_buffer",
+        "margin_utilisation",
+        "survival_gross_ceiling",
+    ] {
+        assert!(
+            fact_value(finding, label).is_none(),
+            "{label} was reported though the state holds none"
+        );
+    }
+    Ok(())
+}
+
 /// R12-ASSET-3019. The Portfolio/Asset Brain reads the held book, and nobody
 /// else reports it: a position the lifecycle register flagged for want of a
 /// mandate reaches the chief only through it. The figures are checked
