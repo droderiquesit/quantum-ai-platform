@@ -1,0 +1,71 @@
+# Are main's rulesets still in force? (R12-CICD-9095.)
+#
+# Branch protection is a repository setting, and a setting nobody reads is a
+# setting nobody notices being switched off. .github/rulesets/ holds the
+# rules main is meant to have; this reads the rules GitHub actually applies
+# to main and fails when one is missing: deletion and force-push refused,
+# a pull request with a code owner's review, and every required check the
+# committed ruleset names.
+#
+# Not part of ci on purpose. Until a repository admin applies the rulesets
+# this fails every time, and a failing ci stops deploy.yml. A daily run,
+# and one after any change to the rulesets, alerts without blocking.
+#
+# Read-only: the job's token can read contents and nothing else, and the
+# rules endpoint for a branch is readable at that scope.
+name: rules
+
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/rulesets/**"
+      - ".github/workflows/rules.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: main's rulesets are in force
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: read main's live rules against the committed rulesets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+          live="$(gh api "repos/${REPOSITORY}/rules/branches/${branch}")"
+          missing=0
+          for rule in deletion non_fast_forward pull_request required_status_checks; do
+            if ! jq -e --arg t "$rule" 'any(.[]; .type == $t)' <<<"$live" >/dev/null; then
+              echo "::error title=rule missing::${branch} has no '${rule}' rule in force."
+              missing=1
+            fi
+          done
+          if ! jq -e 'any(.[]; .type == "pull_request" and .parameters.require_code_owner_review == true)' <<<"$live" >/dev/null; then
+            echo "::error title=rule missing::${branch} does not require a code owner's review."
+            missing=1
+          fi
+          contexts="$(jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' .github/rulesets/main-integrity.json)"
+          [ -n "$contexts" ] || { echo "::error::the committed ruleset names no required check" >&2; exit 1; }
+          while IFS= read -r context; do
+            if ! jq -e --arg c "$context" 'any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]; .context == $c))' <<<"$live" >/dev/null; then
+              echo "::error title=required check missing::${branch} does not require '${context}'."
+              missing=1
+            fi
+          done <<<"$contexts"
+          if [ "$missing" -ne 0 ]; then
+            echo "Apply .github/rulesets/*.json as a repository admin (see .github/rulesets/README.md)." >&2
+            exit 1
+          fi
+          echo "${branch}: every committed rule is in force."

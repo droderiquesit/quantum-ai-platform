@@ -342,6 +342,38 @@ export function judgeChange({ policy, headRef, headSha, files, commits, reviews,
     if (outside.length > 0) refusals.push(`the ${id} lane does not own: ${outside.join(", ")}`);
   }
 
+  // 1c. A lane nobody declares (CICD-9083). 1b holds a commit that names its
+  //     lane, and so a commit naming none was held to no lane at all: the
+  //     cheapest way past a lane boundary was to leave the trailer off.
+  //     Once the policy names a `trailer_required_after` instant, every agent
+  //     commit committed at or after it must carry `Agent-Lane`. Earlier
+  //     commits are not judged, so history from before the switch still
+  //     passes. A commit whose committer date cannot be read is judged as
+  //     after the instant, and an instant that cannot be parsed refuses
+  //     everything, because a gate whose switch cannot be read is not off.
+  //     Merge commits are exempt, as in the unmarked rule above: GitHub's
+  //     merge button writes them.
+  const requiredAfter = policy.lane_manifest?.trailer_required_after;
+  if (requiredAfter !== undefined && requiredAfter !== null) {
+    const cutoff = Date.parse(requiredAfter);
+    if (Number.isNaN(cutoff)) {
+      refusals.push(`scripts/agent-policy.json's lane_manifest.trailer_required_after is ${JSON.stringify(requiredAfter)}, which is not a date`);
+    } else {
+      const committedAt = (c) => Date.parse((c?.commit ?? c)?.committer?.date ?? c?.committer_date ?? "");
+      const isMerge = (c) => (c?.parents?.length ?? 0) >= 2;
+      const unlaned = agentCommits.filter((c) => {
+        if (isMerge(c) || laneOf(c)) return false;
+        const at = committedAt(c);
+        return Number.isNaN(at) || at >= cutoff;
+      });
+      if (unlaned.length > 0) {
+        refusals.push(
+          `${unlaned.length} agent commit(s) committed at or after ${requiredAfter} carry no Agent-Lane trailer, so no lane's territory holds them`,
+        );
+      }
+    }
+  }
+
   // 2. Protected paths need a person's approval of the head commit. A
   //    signature does not stand in for it here: an agent's commit signed by
   //    its user's key is still an agent's commit. ADR 0124 §1 exempts the

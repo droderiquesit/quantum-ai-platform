@@ -40,8 +40,8 @@ const LOCKED: &[(&str, u32, &str)] = &[
     ),
     (
         "AttributionRecorded",
-        1,
-        "6042323ea2faef4eb74d72bc7f9a99d336054379b1b52763a528dfe804970422",
+        2,
+        "d7d382108170778bdb8c79c9e59bf3386918015a83733458c6f4e87c4e7a0c20",
     ),
     (
         "LedgerEntry::Funded",
@@ -121,6 +121,7 @@ fn attribution() -> AttributionRecorded {
             "strategy".to_string(),
             BTreeMap::from([("s-1".to_string(), Decimal::from_int(5))]),
         )]),
+        capital_by_forecaster: BTreeMap::from([("model:m-1".to_string(), Decimal::from_int(500))]),
     }
 }
 

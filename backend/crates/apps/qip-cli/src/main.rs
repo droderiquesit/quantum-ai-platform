@@ -127,6 +127,7 @@ fn print_help() {
     println!("  limits            the risk limits and their rationales");
     println!("  storage           the configured store, and what survives a restart");
     println!("  registrations [--config <path>]");
+    println!("  registrations propose --candidates <path> [--config <path>]");
     println!("                    every catalogued source's requirement and standing,");
     println!("                    and the exact secret-add command for a pending one");
     println!("  control-pack announce <pack.json> --rollout <rollout.json>");
@@ -609,6 +610,9 @@ fn configuration(path: Option<&PathBuf>) -> Result<PlatformConfig> {
 
 /// `qip registrations [--config <path>]`.
 fn registrations_command(arguments: &[String]) -> Result<u8> {
+    if arguments.first().map(String::as_str) == Some("propose") {
+        return propose_command(&arguments[1..]).map(|()| OK);
+    }
     let options = options(arguments, &["--config"])?;
     let mut config = configuration(options.get("--config"))?;
     // A read-only question must not append to a deployment's event log.
@@ -626,6 +630,36 @@ fn registrations_command(arguments: &[String]) -> Result<u8> {
         println!("{line}");
     }
     Ok(report.code)
+}
+
+/// `qip registrations propose --candidates <path> [--config <path>]`
+/// (R12-DATA-2002): assess each candidate in an operator's catalogue through
+/// the finder and print, for each one it approves, the adapter a person
+/// would build — and for each one it does not, why not. A proposal for
+/// review; nothing is written, and the platform it assesses with journals to
+/// memory so a deployment's log is not touched by a question.
+fn propose_command(arguments: &[String]) -> Result<()> {
+    let options = options(arguments, &["--candidates", "--config"])?;
+    let Some(path) = options.get("--candidates") else {
+        return Err(Error::invalid(
+            "`qip registrations propose` needs --candidates <path>, a source-candidate catalogue \
+             naming each candidate beside its reviewed egress route",
+        ));
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| Error::io(format!("{} cannot be read: {error}", path.display())))?;
+    let now = SystemClock.now();
+    let entries = qip_data_finder::catalogue::load(&text, now)?.entries;
+    let mut config = configuration(options.get("--config"))?;
+    config.event_log = EventLogDestination::InMemory;
+    let mut platform = platform_from(config)?;
+    let proposals = qip_cli::adapter_proposals::propose(&mut platform, &entries, None, now)?;
+    for proposal in &proposals {
+        for line in proposal.lines() {
+            println!("{line}");
+        }
+    }
+    Ok(())
 }
 
 /// `qip replay --journal <path> [--config <path>]`.

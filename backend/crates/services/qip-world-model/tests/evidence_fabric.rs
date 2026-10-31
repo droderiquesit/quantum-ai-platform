@@ -962,3 +962,56 @@ fn a_rebuild_refuses_a_fabric_that_holds_claims_and_a_journal_the_fabric_refuses
         duplicate.message()
     );
 }
+
+/// R12-DATA-1041: a claim that carries a document body as its statement is
+/// refused at construction and at admission, so it never reaches the fabric
+/// or, through it, the durable journal.
+///
+/// An independent review found the gap: the stores were guarded, and the
+/// event log was not, because a claim's statement is journaled with it and
+/// nothing bounded it — a vendor that put a whole article in its headline
+/// put the article in the hash-chained record. The statement is a public
+/// field, so the constructor's refusal alone is not on the only path; the
+/// test writes the body in after construction and the fabric must still
+/// refuse it.
+///
+/// Mutations, each fails here: drop `check_statement_length` from
+/// `EvidenceFabric::admit` (the mutated record is admitted); drop it from
+/// `EvidenceRecord::new` (the oversized constructor succeeds).
+#[test]
+fn a_claim_whose_statement_is_a_document_body_is_refused_before_it_can_be_journaled() {
+    use qip_world_model::evidence::MAX_STATEMENT_BYTES;
+    let body = "the article continues ".repeat(200);
+    assert!(
+        body.len() > MAX_STATEMENT_BYTES,
+        "premise: the body is past the bound"
+    );
+    let refused = EvidenceRecord::new(
+        "long".to_string(),
+        "https://a.example".to_string(),
+        at(10),
+        at(15),
+        "connector:test/1.0".to_string(),
+        "commercial".to_string(),
+        body.clone(),
+        0.9,
+    );
+    assert!(
+        refused.is_err(),
+        "the constructor refuses a body as a statement"
+    );
+
+    let mut fabric = EvidenceFabric::default();
+    let kept = claim("short", "https://a.example", "rate 1.10", "1.10", 10);
+    assert!(
+        fabric.admit(kept, None, at(20)).is_ok(),
+        "premise: a one-line claim is admitted"
+    );
+    let mut smuggled = claim("smuggled", "https://b.example", "rate 1.10", "1.10", 10);
+    smuggled.statement = body;
+    assert!(
+        fabric.admit(smuggled, None, at(20)).is_err(),
+        "a body written into the statement after construction is refused at admission"
+    );
+    assert_eq!(fabric.len(), 1, "only the one-line claim is held");
+}

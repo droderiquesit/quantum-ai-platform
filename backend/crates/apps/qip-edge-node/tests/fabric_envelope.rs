@@ -26,7 +26,9 @@ use qip_events::AnyEvent;
 use qip_events::Topic;
 use qip_events::event_fabric::bindings;
 use qip_events::event_fabric::catalogue::Catalogue;
-use qip_events::event_fabric::codec::{Batch, DecodeOutcome, MessageType, PayloadCodec, Record};
+use qip_events::event_fabric::codec::{
+    Batch, DecodeOutcome, MessageType, PayloadCodec, Provenance, Record,
+};
 use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass, StreamPolicy};
 use qip_storage::segment::log::SegmentLogConfig;
@@ -224,7 +226,12 @@ fn record(id: &str, version: u32, tamper_payload: bool) -> Record {
     Record::from_any_event(&event, PayloadCodec::CanonicalJson).unwrap()
 }
 
-/// A batch as the writer leaves it in the spool: writer fields only.
+/// A batch as the writer leaves it in the spool: writer fields only,
+/// which since ADR 0129 §2 include the writer's provenance. The node's
+/// writer stamps `Provenance::EdgeNode` on every batch it cuts, and a
+/// consumer refuses a batch without one rather than naming one itself; a
+/// fixture that left it off read back as a refusal the production path
+/// never produces.
 fn spooled(records: Vec<Record>) -> Batch {
     Batch::new(
         MessageType::Data,
@@ -234,6 +241,7 @@ fn spooled(records: Vec<Record>) -> Batch {
         records,
     )
     .unwrap()
+    .with_provenance(Provenance::EdgeNode)
 }
 
 fn reader() -> FabricContext {
@@ -351,6 +359,53 @@ fn a_batch_with_a_record_the_consumer_would_refuse_is_never_sent_and_leaves_no_t
         held[0].base_sequence, 0,
         "the refusals consumed no sequence"
     );
+}
+
+/// A spool batch no writer stamped a provenance on — the format-version-1
+/// batch an older binary's writer leaves behind — is refused by the sink
+/// before anything is sent. The ledger refuses such a batch rather than
+/// naming a provenance itself (ADR 0129 §2), so sent, it would be
+/// acknowledged by the broker and stall the ledger's partition for ever;
+/// and the preflight's own open cannot catch it, because a producer's
+/// preflight may name its own provenance. The same sink then delivers a
+/// stamped batch at sequence 0, so the refusal consumed nothing.
+///
+/// Mutation: delete the `batch.provenance.is_none()` refusal in
+/// `FabricSink::deliver` and the broker holds the unstamped batch.
+#[test]
+fn a_batch_no_writer_stamped_a_provenance_on_is_never_sent_and_leaves_no_trace() {
+    let fabric = Fabric::start();
+    let mut sink = fabric.sink();
+    let mut unstamped = spooled(vec![record("evt-u", 1, false)]);
+    unstamped.provenance = None;
+    assert!(
+        FabricEnvelope::open_all(&unstamped, &reader(), &bindings::ALL).is_err(),
+        "premise: the consumer refuses a batch with no writer-stamped provenance"
+    );
+
+    let err = sink
+        .deliver(0, QosClass::P2MarketJournal, &unstamped)
+        .unwrap_err();
+    assert_eq!(err.code(), "schema", "{}", err.message());
+    assert!(
+        err.message().contains("provenance"),
+        "the refusal does not name what is missing: {}",
+        err.message()
+    );
+    assert!(
+        fabric.journal().is_empty(),
+        "the broker holds a batch the sink should have refused"
+    );
+
+    sink.deliver(
+        0,
+        QosClass::P2MarketJournal,
+        &spooled(vec![record("evt-after", 1, false)]),
+    )
+    .unwrap();
+    let held = fabric.journal();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].base_sequence, 0, "the refusal consumed no sequence");
 }
 
 /// Re-reading the same offset yields envelopes with the same identities, so
