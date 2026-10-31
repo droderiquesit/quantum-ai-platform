@@ -179,7 +179,7 @@ fn main() {
     // arguments.
     let arguments: Vec<String> = std::env::args().collect();
     let outcome = match arguments.get(1).map(String::as_str) {
-        Some("replay") => replay_command(arguments.get(2).map(String::as_str)),
+        Some("replay") => replay_command(&arguments[2..]),
         // `qip-edge-node replay-manifests --spool <dir> --cell-digest <hex>`,
         // read before any configuration: it reads a spool and serves nothing,
         // so it must not need the variables a node does.
@@ -627,7 +627,74 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
 ///
 /// Exit status: zero when the session is reproduced, two when it diverged,
 /// one on a refusal.
-fn replay_command(spool: Option<&str>) -> Result<()> {
+fn replay_command(arguments: &[String]) -> Result<()> {
+    let (runs, spool) = match arguments.first().map(String::as_str) {
+        Some("--timing") => (
+            Some(parse_timing_runs(arguments.get(1).map(String::as_str))?),
+            arguments.get(2).map(String::as_str),
+        ),
+        _ => (None, arguments.first().map(String::as_str)),
+    };
+    let Some(runs) = runs else {
+        let report = replay_once(spool)?;
+        if !report.is_reproduced() {
+            std::process::exit(EX_DIVERGED);
+        }
+        return Ok(());
+    };
+    // R12-REFLEX-8066: the same spool, `runs` times, each pass timed by the
+    // monotonic clock outside the cell, reported with the host tuning this
+    // boot carries. A host tuning is adopted only when one node replaying
+    // one spool, booted with it and without it, shows the difference; the
+    // figures are printed, never written to a file, because an absolute
+    // timing committed from one machine is a number nobody else can check.
+    let mut latencies = Vec::new();
+    for _ in 0..runs {
+        let report = replay_once(spool)?;
+        if !report.is_reproduced() {
+            eprintln!(
+                "qip-edge-node: a timed replay diverged; its timings measure a different run \
+                 and are not reported"
+            );
+            std::process::exit(EX_DIVERGED);
+        }
+        latencies.extend(report.pass_latencies);
+    }
+    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let tuning = qip_edge_node::replay::host_tuning(&cmdline)
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    match qip_edge_node::replay::LatencySummary::of(&latencies) {
+        Some(summary) => println!(
+            "qip-edge-node: timing over {runs} replays ({tuning}): {}",
+            summary.describe()
+        ),
+        None => println!("qip-edge-node: timing over {runs} replays ({tuning}): no pass timed"),
+    }
+    Ok(())
+}
+
+/// How many times `replay --timing` replays the spool: a whole number from
+/// one to [`MAX_TIMING_RUNS`], refused rather than clamped otherwise.
+fn parse_timing_runs(value: Option<&str>) -> Result<u32> {
+    value
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .filter(|runs| (1..=MAX_TIMING_RUNS).contains(runs))
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "configuration: `replay --timing <runs> <spool-dir>` takes a whole number of \
+                 runs from 1 to {MAX_TIMING_RUNS}"
+            ))
+        })
+}
+
+/// The most replays one timing run makes: enough for stable tails over a
+/// short spool, few enough that a typo cannot hold a node for a day.
+const MAX_TIMING_RUNS: u32 = 1_000;
+
+fn replay_once(spool: Option<&str>) -> Result<qip_edge_node::replay::ReplayReport> {
     let spool = spool
         .map(str::trim)
         .filter(|path| !path.is_empty())
@@ -768,10 +835,7 @@ fn replay_command(spool: Option<&str>) -> Result<()> {
         &clock,
     )?;
     println!("qip-edge-node: {}", report.describe());
-    if !report.is_reproduced() {
-        std::process::exit(EX_DIVERGED);
-    }
-    Ok(())
+    Ok(report)
 }
 
 /// The one assembly the binary takes its cell and registry from, with the
