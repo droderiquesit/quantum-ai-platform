@@ -15194,3 +15194,81 @@ fn no_committed_use_discount_is_declared_before_a_sizing_record_measured_on_an_e
          in-process figure buys a year of a shape nobody measured"
     );
 }
+
+/// R12-RES-9177: the secondary image repository is wired from the root and
+/// off in every committed environment.
+///
+/// `modules/registry/secondary.tf` declares the replica; it reaches an
+/// environment only through the root's `secondary_region`, and deploy.yml
+/// copies a signed digest there only when the build environment's tfvars
+/// name one. Two failures read alike and are both refused here. A root that
+/// declares the variable and stops passing it to `module.registry` plans no
+/// replica anywhere while every tfvars still looks configured; and a tfvars
+/// that drops the line, or names a region, turns on billed storage that
+/// owner decision 5 of 2026-10-25 holds off until a region is named with the
+/// deploy. Every environment states `null` explicitly so turning it on is a
+/// one-line diff a reviewer sees, not a default somebody forgot.
+///
+/// Mutation: remove `secondary_region = var.secondary_region` from the
+/// registry block, or set one tfvars to `"us-west1"`. Each fails here.
+#[test]
+fn every_environment_states_no_secondary_registry_and_the_root_passes_the_setting_to_the_registry()
+{
+    let block = root_module_block("registry");
+    assert!(
+        block
+            .lines()
+            .any(|line| collapsed(line) == "promotion_readers = var.registry_promotion_readers"),
+        "premise: the registry block read is the one that passes the promotion readers"
+    );
+    assert!(
+        block
+            .lines()
+            .any(|line| collapsed(line) == "secondary_region = var.secondary_region"),
+        "infrastructure/terraform/main.tf's module \"registry\" does not pass \
+         secondary_region; a region named in a tfvars would plan no replica and \
+         deploy.yml would copy into a repository that does not exist"
+    );
+
+    let variables = without_comments(&read("infrastructure/terraform/variables.tf"));
+    let at = variables
+        .find("variable \"secondary_region\" {")
+        .expect("infrastructure/terraform/variables.tf declares no secondary_region");
+    let declaration: String = variables[at..]
+        .lines()
+        .take_while(|line| !line.starts_with('}'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        declaration
+            .lines()
+            .any(|line| collapsed(line) == "default = null"),
+        "the root's secondary_region no longer defaults to null, so an environment \
+         that omits the line would bill a replica nobody named"
+    );
+
+    let tfvars = files_with_extension("infrastructure/environments", "tfvars");
+    assert!(
+        tfvars.len() >= 4,
+        "premise: the four environments' tfvars are read, found {tfvars:?}"
+    );
+    for path in &tfvars {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{} cannot be read: {error}", path.display()));
+        let settings: Vec<String> = text
+            .lines()
+            .filter(|line| {
+                line.strip_prefix("secondary_region")
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            })
+            .map(collapsed)
+            .collect();
+        assert_eq!(
+            settings,
+            vec!["secondary_region = null".to_string()],
+            "{} must state `secondary_region = null` exactly once: a replica bills, and \
+             owner decision 5 of 2026-10-25 holds it until a region is named with the deploy",
+            path.display()
+        );
+    }
+}

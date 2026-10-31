@@ -997,13 +997,16 @@
   },
   {
     "id": "R12-WORLD-3043",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No macro/geopolitical federation member; NOW Brain estimates economy state from macro surprises but is not a federation member.",
-    "evidence": [],
-    "gap": "Build and register.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_reports_it_silent",
+      "docs/adr/0256-the-macro-member-forecasts-each-series-next-surprise-from-the-catalogued-connectors-labels-the-synthetic-tapes-surprises-simulated-and-may-only-narrow.md"
+    ],
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0256 under decision 10 of the 2026-10-31 owner rulings, amending ADR 0151 decision 10's source clause): the macro member is built on the default cycle. macro.surprise-persistence.global reads FederationInputs.macros (now::macro_surprises; a surprise exists only where a release stated consensus) and FederationInputs.currencies (now::currency_levels for FX.<base>.<quote> fixings, read by their move). It forecasts once per release that the series' next surprise, or next move, goes the same way; the next reading resolves it; patience is 60 days of elapsed time (MACRO_PATIENCE), not passes; a synthetic tape's release is labelled ':simulated'; it reaches no size (qip-kernel tests/symbolic_federation.rs::a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_reports_it_silent and federation_stage unit tests a_macro_forecast_waits_for_its_next_release_in_time_not_in_passes and a_currency_fixing_that_moves_is_forecast_to_keep_moving_and_the_next_fixing_answers_it; seven mutations each fail one). Open: none of the three catalogued macro connectors states a consensus, so switching one on gives currency moves (Frankfurter) and no surprise — rates and policy surprises come only from the narrative vendor adapter or the synthetic tape until a consensus source is admitted; trade, conflict and sanctions have no licensed source; and no required population family names the macro scope, so an absent macro member does not yet fail the population check.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1011,7 +1014,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Build the macro member now on the on-chain member's pattern. It reads the NOW macro partition, forecasts its own series, and is resolved by the next reading, so it speaks the day a catalogued connector is switched on at the deploy and says it is silent until then. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The macro member forecasts each series' next published level from the catalogued connectors, reads a surprise only where a source states consensus and labels the synthetic tape's surprises simulated, and it may only narrow (amends ADR 0151 decision 10's source clause)."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Build the macro member now on the on-chain member's pattern. It reads the NOW macro partition, forecasts its own series, and is resolved by the next reading, so it speaks the day a catalogued connector is switched on at the deploy and says it is silent until then. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The macro member forecasts each series' next published level from the catalogued connectors, reads a surprise only where a source states consensus and labels the synthetic tape's surprises simulated, and it may only narrow (amends ADR 0151 decision 10's source clause). 2026-10-31 lane L2-INTEL: MISSING -> PARTIAL under ADR 0256; the member is registered and produces state on the default cycle."
   },
   {
     "id": "R12-WORLD-3044",
@@ -1062,10 +1065,12 @@
     "status": "PARTIAL",
     "current": "World-model modules liquidity, order_flow, lead_lag, price_impact, arbitrage_state, execution_state.",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::signed_trade_flow_gives_the_order_flow_member_a_view",
       "backend/crates/services/qip-world-model/src/lib.rs:19-40 module list",
-      "backend/crates/services/qip-world-model/tests/liquidity.rs"
+      "backend/crates/services/qip-world-model/tests/liquidity.rs",
+      "docs/adr/0255-the-simulated-tapes-aggressor-side-feeds-an-order-flow-member-labelled-simulated-which-may-only-narrow-and-a-licensed-tape-replaces-the-source-and-not-the-member.md"
     ],
-    "gap": "Not started. The bar tape carries OHLCV and no buy/sell split, so an order-flow imbalance (qip_world_model::order_flow::FlowObservation) cannot be formed from it, and nothing in the kernel absorbs a FlowObservation or a price-impact observation; a microstructure member fed from bars would be the regional member again. Needs a producer of signed flow or trade-side data before the member has anything of its own to say.",
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0255 under decision 10 of the 2026-10-31 owner rulings, amending ADR 0151 decision 6): an order-flow member is built on the default cycle. Platform::record_order_flow sums each cycle's signed aggressor volume per instrument and venue from Trade::aggressor, skipping a print that names no side or forms no price (late, corrected, off-exchange); UNDERSTAND passes it through FederationInputs (InstrumentView.order_flow) to markets.order-flow.global.micro, declared on sense:trade-aggressor:simulated, which answers the instrument's next-close proposition (qip-kernel tests/symbolic_federation.rs::signed_trade_flow_gives_the_order_flow_member_a_view; reading every print as a buy, dropping the price-forming filter, or keeping last cycle's flow each fails it). It can only narrow because the federation's one power over DECIDE is Narrowing::of_spread below one; the test does not exercise that. Open: the source is the platform's own simulated tape, so the member's record says nothing about a real market until a licensed tape with aggressor side is admitted under ADR 0157. Also open against the requirement text: of liquidity, order flow, venues, lead/lag, impact, arbitrage and execution state only order flow (and the existing markets.microstructure.home.micro spread member) has a member, and no required population family names the microstructure scope, so an absent order-flow member does not yet fail the population check.",
     "implemented": true,
     "tested": true,
     "integrated": true,

@@ -4246,13 +4246,15 @@
   },
   {
     "id": "R12-RES-10181",
-    "status": "PARTIAL",
-    "current": "Dark-region wire and gates tested; cells decide alone; not deployed multi-region.",
+    "status": "COMPLETE",
+    "current": "Darkening one region suspends only the mirrored legs into it, under its own gate, and leaves a cell whose venues are all at home trading as before. The wire is derived from QIP_HALT_FLAG_PATH in qip-edge-node main.rs, which the execution node's startup template always sets; the centre's darkness only refuses or retains and never halts other regions.",
     "evidence": [
-      "backend/crates/edge/qip-edge/tests/cross_region.rs:1308",
-      "backend/crates/edge/qip-edge/src/cell.rs:254 GATE_DARK_REGION"
+      "backend/crates/edge/qip-edge/tests/cross_region.rs::a_cycle_whose_mirrored_leg_reaches_a_dark_region_is_suspended_under_its_own_gate",
+      "backend/crates/edge/qip-edge/tests/cross_region.rs::a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before",
+      "backend/crates/apps/qip-edge-node/tests/dark.rs::a_node_whose_declaration_names_a_region_suspends_the_mirrors_reaching_it_and_restores_them",
+      "backend/crates/edge/qip-edge/src/cell.rs (RoutedOutcome::RegionDark arm, GATE_DARK_REGION)"
     ],
-    "gap": "Multi-region deployment and drill.",
+    "gap": "None against the requirement's text, whose verification is integration; a multi-region deployment and drill is not in it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4261,11 +4263,11 @@
     "depends_on": [
       "R12-RES-10131"
     ],
-    "blocked_by": "nothing deployed",
-    "verification": "game day",
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cross_region dark_region; cargo test -p qip-edge-node --test dark",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 lane L5-EDGE (wave1031 triage ALREADY_COMPLETE, skeptic recorded in wave1031-triage-2026-10-31.json): PARTIAL -> COMPLETE after part 1 was proven. Mutations at Cell::work's RoutedOutcome::RegionDark arm, each restored byte-for-byte (cmp): the refusal filed under GATE_PATH_ROUTER, and the refusal dropped for a silent skip; both fail a_cycle_whose_mirrored_leg_reaches_a_dark_region_is_suspended_under_its_own_gate at cross_region.rs:1093."
   },
   {
     "id": "R12-CICD-10182",

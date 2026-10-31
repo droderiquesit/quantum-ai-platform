@@ -877,3 +877,25 @@ that narrows a security scanner, whatever the owner has delegated.
     0231 to 0238 for L6, 0239 to 0241 for L3. L5 moves to 0242, and L2's two
     claims move to 0255 and 0256. A block running out is extended by the
     orchestrator, never by the lane.
+
+16. **The lane-trailer gate stays off until it can judge a commit by its
+    own files** (lane L6, R12-CICD-9083, decided 10:00 UTC). Decision 10
+    ruled that every agent commit names its lane once the running round's
+    manifest is committed. Lane L6 wrote that patch, and in building it
+    found two ways switching it on would refuse legitimate work.
+    `agent-guard`'s step 1b judges a pull request's whole file list against
+    every lane its commits name, so the rolling integration pull request
+    would be refused even after a person approved it. And the composition
+    roots, `backend/Cargo.lock`, `data/**` and `.github/rulesets/**` are
+    editable by no role in the manifest, while most lanes touch at least
+    one. A gate that refuses the integration path would be switched off
+    again within the day, which is worse than leaving it off until it can
+    fire correctly. So `l6-cicd-9083-lane-manifest.patch` is held, not
+    applied, and the trailer requirement ships off as it does today. The
+    row stays PARTIAL on two preconditions: a protected patch to
+    `agent-guard.mjs` and `agent-boundary.yml` that judges each commit's
+    own files on a pull request, as range mode already does, and a manifest
+    that gives the four unowned path groups an owner. Lane L6 writes both
+    as one patch. The same round applied L6's
+    `l6-res-9177-secondary-registry.patch`, which defaults off in every
+    environment and bills nothing until a region is named.

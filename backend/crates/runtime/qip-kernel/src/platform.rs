@@ -774,6 +774,10 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// Signed aggressor flow per (instrument, venue) since the last
+    /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
+    /// venues one cycle's trades name.
+    cycle_order_flow: BTreeMap<(String, String), qip_world_model::order_flow::FlowObservation>,
     /// The active-sensing requests the latest federation pass issued, each
     /// with the disagreement spread behind it in basis points (ADR 0158
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
@@ -6430,6 +6434,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            cycle_order_flow: BTreeMap::new(),
             federation_requests: Vec::new(),
             decision_uncertainties: Vec::new(),
             cycle_second_order: None,
@@ -12788,6 +12793,7 @@ impl Platform {
                 }
                 SensedRecord::Trade(trade) => {
                     self.ensure_world_object(trade.object_id.as_str(), trade.at);
+                    self.record_order_flow(&trade);
                     // "Last traded price" is the feature store's own
                     // definition of `close`, and a trade is exactly that.
                     // Use capture_time for known_at to preserve bitemporal distinction:
@@ -14982,6 +14988,61 @@ impl Platform {
             .collect()
     }
 
+    /// A company twin over the supply relationships the world graph holds as
+    /// true and known at `now` (R12-WORLD-9037). Each `Supplies` fact
+    /// becomes a supply link whose share is the fact's weight (the graph's
+    /// "share of supply", read as the customer's share of input from that
+    /// supplier) and whose source is the fact's. Where a pair was stated more
+    /// than once, the latest recorded statement is kept.
+    ///
+    /// The twin is a simulation over facts, not a causal claim: that a
+    /// company supplies another is a fact, that a shock travels between them
+    /// is the twin's hypothesis, and nothing here writes a causal edge.
+    /// Refuses the graph's links if the twin would: shares that sum past a
+    /// customer's whole input are a data error to correct, not to clamp.
+    pub fn business_twin(&self, now: Timestamp) -> Result<qip_twin::business::BusinessTwin> {
+        use qip_world_model::relationship::RelationshipKind;
+        let world = self.world.read();
+        let mut latest: BTreeMap<(String, String), (Timestamp, qip_twin::business::SupplyLink)> =
+            BTreeMap::new();
+        for fact in world.graph().facts_at(now, now) {
+            let relationship = &fact.relationship;
+            if relationship.kind != RelationshipKind::Supplies {
+                continue;
+            }
+            let key = (relationship.from.clone(), relationship.to.clone());
+            if latest
+                .get(&key)
+                .is_some_and(|(at, _)| *at >= fact.recorded_at)
+            {
+                continue;
+            }
+            latest.insert(
+                key,
+                (
+                    fact.recorded_at,
+                    qip_twin::business::SupplyLink {
+                        supplier: relationship.from.clone(),
+                        customer: relationship.to.clone(),
+                        share: relationship.weight,
+                        source: relationship.source.clone(),
+                    },
+                ),
+            );
+        }
+        qip_twin::business::BusinessTwin::new(
+            latest
+                .into_values()
+                .map(|(_, link)| link)
+                // A supply stated at a weight of nothing carries nothing; the
+                // graph admits it, and the twin, which refuses a zero share,
+                // would otherwise refuse every other link with it.
+                .filter(|link| link.share > 0.0)
+                .collect(),
+            Vec::new(),
+        )
+    }
+
     /// Each instrument's issuer's latest fundamental surprise readable at
     /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
     /// newest by availability per entity, carried to every instrument the
@@ -15083,6 +15144,84 @@ impl Platform {
             .then_some(view)
     }
 
+    /// Add `trade`'s signed volume to this cycle's order flow (ADR 0255). A
+    /// trade whose venue stated no aggressor contributes nothing: guessing a
+    /// side from the quote would be the platform inventing the flow it then
+    /// forecasts from. Nor does a print that formed no price — a late
+    /// report, a correction, an off-exchange cross — because a block crossed
+    /// away from the book says who traded, not who was taking the spread,
+    /// and `qip_market::microstructure` counts only price-forming prints too.
+    fn record_order_flow(&mut self, trade: &qip_market::quote::Trade) {
+        if !trade.condition.is_price_forming() {
+            return;
+        }
+        let Some(side) = trade.aggressor else {
+            return;
+        };
+        let key = (trade.object_id.as_str().to_string(), trade.venue.clone());
+        let flow = self.cycle_order_flow.entry(key).or_insert_with(|| {
+            qip_world_model::order_flow::FlowObservation {
+                object_id: trade.object_id.clone(),
+                venue: qip_contracts::venue::VenueId::new(&trade.venue),
+                observed_at: trade.at,
+                buy_volume: Decimal::ZERO,
+                sell_volume: Decimal::ZERO,
+                buy_count: 0,
+                sell_count: 0,
+            }
+        });
+        flow.observed_at = flow.observed_at.max(trade.at);
+        match side {
+            qip_market::book::Side::Buy => {
+                flow.buy_volume += trade.size;
+                flow.buy_count += 1;
+            }
+            qip_market::book::Side::Sell => {
+                flow.sell_volume += trade.size;
+                flow.sell_count += 1;
+            }
+        }
+    }
+
+    /// The latest macro surprise per series readable at `now`, for the
+    /// macro member (ADR 0256). A surprise exists only where the release
+    /// stated a consensus; one whose sources carry the synthetic tag is
+    /// marked simulated.
+    fn macro_views(&self, now: Timestamp) -> Vec<crate::federation_stage::MacroView> {
+        let world = self.world.read();
+        qip_world_model::now::macro_surprises(&world, now)
+            .into_iter()
+            .map(|reading| crate::federation_stage::MacroView {
+                simulated: reading
+                    .sources
+                    .iter()
+                    .any(|s| s == qip_world_model::now::MACRO_SIMULATED_SOURCE),
+                series: reading.subject,
+                surprise: reading.value,
+                valid_at: reading.valid_at,
+            })
+            .collect()
+    }
+
+    /// The latest fixing per currency series readable at `now`, for the
+    /// macro member (ADR 0256). A fixing from a synthetic tape is marked
+    /// simulated by the same source tag as a surprise.
+    fn currency_views(&self, now: Timestamp) -> Vec<crate::federation_stage::CurrencyView> {
+        let world = self.world.read();
+        qip_world_model::now::currency_levels(&world, now)
+            .into_iter()
+            .map(|reading| crate::federation_stage::CurrencyView {
+                simulated: reading
+                    .sources
+                    .iter()
+                    .any(|s| s == qip_world_model::now::MACRO_SIMULATED_SOURCE),
+                series: reading.subject,
+                level: reading.value,
+                valid_at: reading.valid_at,
+            })
+            .collect()
+    }
+
     /// Each venue the platform routes to, as the counterparty member reads it
     /// (R12-WORLD-3049): the desk's broker, which is always a counterparty,
     /// and every venue the feasibility window names, with the refusals the
@@ -15133,6 +15272,13 @@ impl Platform {
         let mut thin_subjects = 0;
         let causal_views = self.causal_views(now);
         let surprises = self.fundamental_surprises(now);
+        // This cycle's flow, taken so the next cycle starts empty: the
+        // member reads one cycle's prints, never an accumulating history.
+        let mut flows: BTreeMap<String, Vec<qip_world_model::order_flow::FlowObservation>> =
+            BTreeMap::new();
+        for ((subject, _), flow) in std::mem::take(&mut self.cycle_order_flow) {
+            flows.entry(subject).or_default().push(flow);
+        }
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -15153,6 +15299,7 @@ impl Platform {
                 spread_ratio: self.spread_ratio(subject),
                 causal: causal_views.get(subject).copied(),
                 fundamental_surprise: surprises.get(subject).copied(),
+                order_flow: flows.remove(subject).unwrap_or_default(),
             });
         }
         let level = self.autonomy.level();
@@ -15178,6 +15325,8 @@ impl Platform {
                 confirmed_trades: view.state().trades(),
             }),
             capital: self.capital_view(),
+            macros: self.macro_views(now),
+            currencies: self.currency_views(now),
             counterparties: self.counterparty_views(),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
@@ -29061,6 +29210,61 @@ mod decide_tests {
                 .count(),
             3,
             "a reaction was applied twice or not at all"
+        );
+    }
+
+    /// R12-WORLD-9037: the platform's company twin is built from the
+    /// supply facts its world graph holds, so a shock to an upstream company
+    /// reaches the companies it supplies, at each customer's share, and a
+    /// supply fact not yet known is not in the twin.
+    ///
+    /// A supply stated at a weight of nothing carries nothing and is left
+    /// out, rather than making the twin refuse every other link with it.
+    ///
+    /// Mutations: build the twin from no facts, from every relationship
+    /// kind, or from facts not yet known; keep the zero-weight supply.
+    #[test]
+    fn the_platforms_company_twin_carries_a_suppliers_shock_to_its_customers_from_the_graph() {
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let platform = small_book_platform();
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let later = t0.saturating_add(Duration::from_days(30));
+        platform.world.update(|world| {
+            for (from, to, kind, weight, known) in [
+                ("FOUNDRY", "CHIPS", RelationshipKind::Supplies, 0.4, t0),
+                ("CHIPS", "DEVICES", RelationshipKind::Supplies, 0.5, t0),
+                ("CHIPS", "RIVAL", RelationshipKind::Competitor, 1.0, t0),
+                (
+                    "FOUNDRY",
+                    "LATECOMER",
+                    RelationshipKind::Supplies,
+                    0.9,
+                    later,
+                ),
+                // A supply the graph admits at a weight of nothing.
+                ("FARM", "DEVICES", RelationshipKind::Supplies, 0.0, t0),
+            ] {
+                world
+                    .relate(
+                        Relationship::new(from, to, kind, weight, "filing"),
+                        t0,
+                        known,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            }
+        });
+        let now = t0.saturating_add(Duration::from_days(1));
+        let twin = platform.business_twin(now).expect("a twin from the graph");
+        assert_eq!(twin.len(), 2, "only the supply facts known now are links");
+        let response = twin.shock_entity("FOUNDRY", -0.10, 4).expect("a shock");
+        let change = |e: &str| response.effects.get(e).map(|x| x.change);
+        assert!((change("CHIPS").expect("reached") - -0.04).abs() < 1e-12);
+        assert!((change("DEVICES").expect("reached") - -0.02).abs() < 1e-12);
+        assert!(change("RIVAL").is_none(), "a competitor is not a customer");
+        assert!(
+            change("LATECOMER").is_none(),
+            "a fact not yet known was in the twin"
         );
     }
 
