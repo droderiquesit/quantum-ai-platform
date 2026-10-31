@@ -33,6 +33,7 @@ use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
+use qip_contracts::FeatureVector;
 use qip_contracts::action::{Ground, Justification};
 use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{Capability, DegradationState, Freshness, StrategyClass};
@@ -1159,6 +1160,10 @@ impl CellConfig {
 #[derive(Clone, Debug, Default)]
 pub struct WorkReport {
     pub signals: Vec<Signal>,
+    /// The feature vector this pass evaluated and every strategy sized
+    /// against (ADR 0132 decision 4): carried out so the node can digest it
+    /// per pass without a second evaluation that could disagree.
+    pub features: FeatureVector,
     /// Directional signals this pass that stated no edge and so were not
     /// judged by the net-edge gate (ADR 0155 §9). Counted only on a cell that
     /// built the gate, so the desk can see how much trading it does not judge.
@@ -5399,6 +5404,7 @@ impl Cell {
         let retired = self.disposition_intents(now, &mut report, &mut intents);
 
         let vector = self.features.evaluate(now)?;
+        report.features = vector.clone();
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
         self.signal_sequences.clear();
 
