@@ -788,6 +788,26 @@ pub fn run_with(
                     platform,
                     evolution.as_deref_mut(),
                     &mut loops,
+
+            // The source scores of this cycle, on the same journal
+            // (R12-EXPAND-6027): a score printed on a cycle line and written
+            // nowhere is a figure nobody can check against its window.
+            if let (Some(round), Some(journal)) =
+                (outcome.source_alpha.as_ref(), loops.ambient.as_deref_mut())
+                && let Err(error) = journal.record_source_scores(cycles, round, now)
+            {
+                outcome
+                    .side_failures
+                    .push(format!("source-score journal: {}", error.message()));
+            }
+            if let (Some(round), Some(agency)) =
+                (outcome.research.as_ref(), loops.agency.as_deref_mut())
+            {
+                let shared = loops
+                    .ambient
+                    .as_deref()
+                    .and_then(|journal| journal.last_correlation().cloned());
+                match agency.route(
                     cycles,
                     now,
                     &mut outcome,
