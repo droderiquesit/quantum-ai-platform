@@ -767,7 +767,16 @@ pub fn run_with(
             // Re-verify what was referenced, on its own cadence, after the
             // poll that referenced it.
             outcome.refetch = engine.maybe_refetch(platform, cycles, now)?;
-            outcome.source_alpha = engine.maybe_score_sources(cycles, now);
+            // Each round on the log, so a replay reads back the scores the
+            // desk produced (R12-EVID-8108). A refused write is a side
+            // failure, not a stopped node: the round still happened.
+            let (round, journaled) = engine.maybe_score_sources(platform, cycles, now);
+            outcome.source_alpha = round;
+            if let Err(error) = journaled {
+                outcome
+                    .side_failures
+                    .push(format!("source alpha journal: {}", error.message()));
+            }
         }
         // Research after discovery, so a source catalogued this cycle is
         // licensed for this sweep's admissions. The bounds are the discovery

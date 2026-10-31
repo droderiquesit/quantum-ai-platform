@@ -500,15 +500,30 @@ impl EvolutionEngine {
         self.source_alpha.as_ref()
     }
 
-    /// Score the sources if this cycle is on the desk's cadence.
+    /// Score the sources if this cycle is on the desk's cadence, and put the
+    /// round on the log so a replay reads back the scores it produced
+    /// (R12-EVID-8108). A write the log refuses is raised with the round
+    /// already scored; the caller decides whether that stops anything.
     pub fn maybe_score_sources(
         &mut self,
+        platform: &mut Platform,
         cycle: u64,
         now: Timestamp,
-    ) -> Option<crate::source_alpha::SourceAlphaRound> {
-        self.source_alpha
+    ) -> (Option<crate::source_alpha::SourceAlphaRound>, Result<()>) {
+        let round = self
+            .source_alpha
             .as_mut()
-            .and_then(|desk| desk.maybe_score(cycle, now))
+            .and_then(|desk| desk.maybe_score(cycle, now));
+        // A round that scored no pair is not journaled: on a node with no
+        // connector arm that is every round, the topic is kept indefinitely,
+        // and an empty record a cycle is log growth that explains nothing.
+        let journaled = match round.as_ref().filter(|round| !round.scores.is_empty()) {
+            Some(round) => platform
+                .journal_source_alpha_round(round.record(cycle, now))
+                .map(|_| ()),
+            None => Ok(()),
+        };
+        (round, journaled)
     }
 
     /// Attach a discovery desk (§7.4-§7.6.2). Replaces one attached before.
@@ -3783,6 +3798,100 @@ mod tests {
         Ok(())
     }
 
+    /// R12-EVID-8108: with nothing set, the engine `main.rs` builds scores
+    /// every connector on the desk's default cadence, and the round is on
+    /// the log, so a replay reads back exactly the scores it produced.
+    ///
+    /// The failure prevented: the desk waited on a variable no environment
+    /// sets, so no deployed node ever scored a source, and a round it did
+    /// score lived only in a bounded in-memory history that a restart lost.
+    ///
+    /// Mutation: make `source_alpha_every` return `0` when the variable is
+    /// unset — no desk attaches, no round runs and the cadence assertion
+    /// fails. Mutation: drop the
+    /// `journal_source_alpha_round` call in `maybe_score_sources` — the log
+    /// holds no round and the replay assertion fails. Mutation: drop the
+    /// empty-round filter in `maybe_score_sources` — the arm-less round is
+    /// journaled and the empty-log assertion fails.
+    #[test]
+    fn the_deep_brain_scores_every_connector_on_its_cadence_and_a_replay_of_the_log_reproduces_the_round()
+    -> Result<()> {
+        use crate::source_alpha::{DEFAULT_SOURCE_ALPHA_EVERY, source_alpha_every};
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let mut platform = platform()?;
+        let mut warm = engine(0);
+        let mut now = start();
+        for _ in 0..5 {
+            now = now.saturating_add(Duration::from_mins(1));
+            warm.sense(&mut platform, now)?;
+        }
+        let subject = warm
+            .history
+            .keys()
+            .next()
+            .map(ObjectId::from_string)
+            .ok_or_else(|| Error::not_found("premise: the own stream printed a subject"))?;
+        let senses = 16usize;
+        let mut answers = vec![RecordedAnswer::json(200, ticker_body(now))];
+        let mut level = 64_000.0_f64;
+        for index in 0..senses {
+            let at = now.saturating_add(Duration::from_mins(index as i64 + 1));
+            level += [7.5, -3.25, 11.0, -9.5, 2.75][index % 5] * (1.0 + index as f64 / 10.0);
+            answers.push(RecordedAnswer::json(
+                200,
+                format!(
+                    r#"{{"ask":"{a:.2}","bid":"{b:.2}","volume":"9184.4","trade_id":{id},"price":"{p:.2}","size":"0.0018","time":"{t}"}}"#,
+                    a = level + 0.5,
+                    b = level - 0.5,
+                    id = 712_553_481 + index,
+                    p = level,
+                    t = at.to_rfc3339()
+                ),
+            ));
+        }
+        // The cadence `main.rs` reads when the variable is unset.
+        let every = source_alpha_every(&|_| None)?;
+        // With no connector arm a round scores nothing and is not journaled.
+        let mut bare = engine(0).with_source_alpha(every);
+        bare.sense(&mut platform, now)?;
+        let (empty, journaled) = bare.maybe_score_sources(&mut platform, every, now);
+        journaled?;
+        assert!(
+            empty.is_some_and(|round| round.scores.is_empty()),
+            "premise: an arm-less desk runs a round that scores nothing"
+        );
+        assert!(
+            platform.source_alpha_rounds()?.is_empty(),
+            "a round that scored nothing was journaled"
+        );
+        let mut engine = warm
+            .with_connector(scripted_coinbase_arm_on(&subject, now, answers)?)
+            .with_source_alpha(every);
+        for _ in 0..senses {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let due = DEFAULT_SOURCE_ALPHA_EVERY * senses as u64;
+        let (round, journaled) = engine.maybe_score_sources(&mut platform, due, now);
+        journaled?;
+        let round = round.ok_or_else(|| {
+            Error::not_found("with nothing set, no round ran on the default cadence")
+        })?;
+        assert!(
+            round
+                .scores
+                .iter()
+                .any(|score| score.source == "coinbase-spot-ticker" && score.outcome.is_ok()),
+            "premise: the connector was scored: {round:?}"
+        );
+        assert_eq!(
+            platform.source_alpha_rounds()?,
+            vec![round.record(due, now)],
+            "the log does not hold the round the desk scored"
+        );
+        Ok(())
+    }
+
     /// R12-DATA-2022, R12-DATA-2025 and R12-DATA-1105, through the engine
     /// `main.rs` builds: a connector polled beside the own stream is scored
     /// on its incremental information gain over that stream and on its
@@ -3838,10 +3947,15 @@ mod tests {
             now = now.saturating_add(Duration::from_mins(1));
             engine.sense(&mut platform, now)?;
         }
-        assert!(engine.maybe_score_sources(senses as u64 - 1, now).is_none());
-        let round = engine
-            .maybe_score_sources(senses as u64, now)
-            .ok_or_else(|| Error::not_found("no round on the cadence"))?;
+        assert!(
+            engine
+                .maybe_score_sources(&mut platform, senses as u64 - 1, now)
+                .0
+                .is_none()
+        );
+        let (round, journaled) = engine.maybe_score_sources(&mut platform, senses as u64, now);
+        journaled?;
+        let round = round.ok_or_else(|| Error::not_found("no round on the cadence"))?;
         let score = round
             .scores
             .iter()

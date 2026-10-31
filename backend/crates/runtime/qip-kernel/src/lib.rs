@@ -86,6 +86,7 @@ pub mod self_watch;
 pub mod session_replay;
 pub mod shared_cause;
 pub mod sizing_review;
+pub mod source_alpha_record;
 pub mod source_discovery;
 pub mod source_lifecycle;
 pub mod survival;
