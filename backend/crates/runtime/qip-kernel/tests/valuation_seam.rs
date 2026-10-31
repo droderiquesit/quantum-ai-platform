@@ -111,6 +111,9 @@ use qip_reasoning_engine::redteam::ReviewPolicy;
 use qip_reasoning_engine::rules::Value;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
+#[path = "support/eligible_panel.rs"]
+mod eligible_panel;
+
 /// See the module note. Low enough that the panel's verdict on a synthetic
 /// tape is `Approved` for a listed name *and* for a private fund, because the
 /// seam under test is reached only through an approved thesis.
@@ -154,6 +157,9 @@ fn config(equity: Decimal) -> PlatformConfig {
             minimum_surviving_confidence: REVIEW_FLOOR,
             ..ReviewPolicy::default()
         },
+        // The vendor datasets `eligible_tape`'s alternative data comes from
+        // (see `eligible_panel`); a scenario that supplies none is unaffected.
+        licensed_datasets: eligible_panel::licensed_datasets(),
         ..PlatformConfig::default()
     }
 }
@@ -287,6 +293,31 @@ fn tape(symbol: &str) -> Vec<SensedRecord> {
         .collect()
 }
 
+/// [`tape`] with [`eligible_panel::DRIFT`] under its noise, followed by the
+/// macro calendar and the declared catalyst the panel needs to reach the
+/// shipped eligibility rule uncontested (ADR 0238, owner decision 18). Every
+/// test whose premise is a cycle that sizes something drives this scenario;
+/// [`tape`] stays as it was for the tests that never needed one.
+fn eligible_tape(symbol: &str) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    let mut records: Vec<SensedRecord> = (0..TAPE)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let drop = if i == TAPE - 1 {
+                DROP
+            } else {
+                eligible_panel::DRIFT
+            };
+            let open = price;
+            price *= 1.0 + noise + drop;
+            let at = start().saturating_sub(Duration::from_days((TAPE - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect();
+    records.extend(eligible_panel::context("US", &[object(symbol)], start()));
+    records
+}
+
 /// Drive one whole cycle over `universe`, with the tape on `subject`, and
 /// return the platform beside the proposal the DECIDE stage recorded.
 ///
@@ -295,7 +326,7 @@ fn tape(symbol: &str) -> Vec<SensedRecord> {
 /// finding these tests close.
 fn cycle_over(universe: Universe, subject: &str) -> Result<(Platform, Proposal)> {
     let mut platform = platform_over(universe, leverage_only())?;
-    platform.observe(tape(subject));
+    platform.observe(eligible_tape(subject));
     let report = platform.run_cycle(start());
     assert!(
         report.traversed_every_stage(),
@@ -1527,7 +1558,7 @@ fn a_hypothesis_review_approved_that_the_rule_pack_finds_cash_short_of_one_lot_f
             .build(start())?,
         )?;
         let mut platform = platform_over(universe, leverage_only())?;
-        platform.observe(tape("AAA"));
+        platform.observe(eligible_tape("AAA"));
         let report = platform.run_cycle(start());
         Ok((platform, report))
     };
@@ -1617,7 +1648,7 @@ fn a_position_opened_on_a_thesis_is_that_thesis_classs_exposure_and_the_buckets_
         .insert(listed("AAA").expect("a listed name"))
         .expect("insertable");
     let mut platform = platform_over(universe, leverage_only()).expect("a platform");
-    platform.observe(tape("AAA"));
+    platform.observe(eligible_tape("AAA"));
     platform.run_cycle(start());
 
     let positions = platform.positions_at_cost();

@@ -53,6 +53,9 @@ use qip_observability::Telemetry;
 use qip_reasoning_engine::redteam::ReviewPolicy;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
+#[path = "support/eligible_panel.rs"]
+mod eligible_panel;
+
 // --- fixtures ---------------------------------------------------------------
 
 /// A liquid listed name on five million units a day, quoted at three basis
@@ -83,6 +86,8 @@ fn universe() -> Universe {
                     fixture_liquidity(),
                 )
                 .venue("XNYS")
+                // The economy `eligible_panel`'s macro calendar is for.
+                .geography("US")
                 .sector(Sector::InformationTechnology)
                 .price(dec!("100"))
                 .provenance(Provenance::synthetic("test", start()))
@@ -120,6 +125,7 @@ fn platform() -> Result<Platform> {
             minimum_surviving_confidence: REVIEW_FLOOR,
             ..ReviewPolicy::default()
         },
+        licensed_datasets: eligible_panel::licensed_datasets(),
         ..PlatformConfig::default()
     };
     let (context, _clock) = Context::deterministic(start(), config.seed);
@@ -143,20 +149,31 @@ fn bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
     }))
 }
 
-/// A price series with a jump partway through, so the detectors have something
-/// real to find — the same shape the kernel's founding test feeds.
+/// A price series rising by [`eligible_panel::DRIFT`] under its noise that
+/// drops nine percent on its last bar, with the context `eligible_panel`
+/// adds, so the detectors have something real to find and the thesis it
+/// raises clears the shipped eligibility rule uncontested (ADR 0238, owner
+/// decision 18). Until then this was the kernel's founding shape, a jump two
+/// thirds of the way through; its thesis was contested, so since ADR 0238 it
+/// is unresolved and no cycle on it constructs.
 fn bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
     let mut price = 100.0_f64;
-    (0..count)
+    let mut records: Vec<SensedRecord> = (0..count)
         .map(|i| {
             let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
-            let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
+            let drop = if i == count - 1 {
+                -0.09
+            } else {
+                eligible_panel::DRIFT
+            };
             let open = price;
-            price *= 1.0 + noise + jump;
+            price *= 1.0 + noise + drop;
             let at = start().saturating_sub(Duration::from_days((count - i) as i64));
             bar(symbol, at, open, price)
         })
-        .collect()
+        .collect();
+    records.extend(eligible_panel::context("US", &[object(symbol)], start()));
+    records
 }
 
 /// The journal entry for one cycle, replayed from the durable log rather than
@@ -393,6 +410,7 @@ fn platform_with_mandate(maximum_holdings: Option<usize>) -> Result<Platform> {
             maximum_holdings,
             ..qip_portfolio_engine::construction::Mandate::default()
         },
+        licensed_datasets: eligible_panel::licensed_datasets(),
         ..PlatformConfig::default()
     };
     let (context, _clock) = Context::deterministic(start(), config.seed);

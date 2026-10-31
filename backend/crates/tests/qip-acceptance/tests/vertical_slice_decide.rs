@@ -178,17 +178,27 @@ fn bar(at: Timestamp, open: f64, close: f64) -> SensedRecord {
 
 const TAPE_BARS: usize = 400;
 
-/// A quiet daily tape that drops twelve percent on its final bar. The noise is
-/// a fixed irrational rotation so the scenario reproduces exactly. The drop is
-/// last on purpose: a drop earlier in the tape leaves a volatility-shift
-/// anomaly at the head of the queue, whose claim is about the option and not
-/// the underlying (`valuation_seam.rs` records the same trap).
+/// The daily rise under the tape's noise (ADR 0238, owner decision 18). On a
+/// flat tape the simulation analyst's bootstrap of the tape's own returns has
+/// a negative mean, so it dissented from the buy and the panel was contested
+/// at 0.53; since ADR 0238 a contested thesis is unresolved and never sized.
+/// A rise this small leaves the tape quiet beside its final drop and turns
+/// that bootstrap positive, so the panel is uncontested. Data, not policy:
+/// the review floor, the eligibility rule and every limit stay as shipped.
+const DRIFT: f64 = 0.0005;
+
+/// A quiet daily tape, rising by [`DRIFT`], that drops twelve percent on its
+/// final bar. The noise is a fixed irrational rotation so the scenario
+/// reproduces exactly. The drop is last on purpose: a drop earlier in the
+/// tape leaves a volatility-shift anomaly at the head of the queue, whose
+/// claim is about the option and not the underlying (`valuation_seam.rs`
+/// records the same trap).
 fn tape() -> Vec<SensedRecord> {
     let mut price = 100.0_f64;
     (0..TAPE_BARS)
         .map(|i| {
             let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.003;
-            let drop = if i == TAPE_BARS - 1 { -0.12 } else { 0.0 };
+            let drop = if i == TAPE_BARS - 1 { -0.12 } else { DRIFT };
             let open = price;
             price *= 1.0 + noise + drop;
             let at = start().saturating_sub(Duration::from_days((TAPE_BARS - i) as i64));

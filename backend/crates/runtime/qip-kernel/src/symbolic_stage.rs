@@ -460,9 +460,27 @@ pub struct SymbolicDerivation {
     pub feasibility: Option<Feasibility>,
 }
 
+/// The record version from which an unsatisfiable acting problem with no
+/// contradiction is marked [`Feasibility::Unresolved`] (ADR 0238).
+///
+/// The shape of a [`SymbolicDerivation`] did not change at ADR 0238; what
+/// changed is the rule its feasibility mark is computed by. Version 1 was
+/// sealed under ADR 0212, which marked such a record `Feasible`, and a
+/// journal sealed then must go on replaying under the rule that was in force
+/// when it was sealed — otherwise every log written before the change stops
+/// verifying, and the event log's claim that a decision is reproducible
+/// from the log alone becomes false for the whole of its history. The
+/// version is what the journal names: [`verify_sealed`] reads it off the
+/// envelope a record was decoded from and recomputes the mark under that
+/// version's rule. A record of this version or later carrying `Feasible`
+/// for an unsatisfiable acting problem does not verify.
+pub const UNRESOLVED_SINCE_VERSION: u32 = 2;
+
 impl EventBody for SymbolicDerivation {
     const TOPIC: Topic = Topic::EvidenceAttached;
-    const SCHEMA_VERSION: u32 = 1;
+    /// 2 since ADR 0238 ([`UNRESOLVED_SINCE_VERSION`]): the same fields, a
+    /// feasibility mark computed by a different rule.
+    const SCHEMA_VERSION: u32 = UNRESOLVED_SINCE_VERSION;
 
     fn idempotency_key(&self) -> Option<String> {
         Some(format!("{IDEMPOTENCY_PREFIX}{}", self.hypothesis_id))
@@ -1113,17 +1131,44 @@ pub fn feasibility_of(
     rules: &RuleDerivation,
     acting: &Step<Answer>,
 ) -> Feasibility {
+    feasibility_sealed_under(
+        pack,
+        hypothesis_id,
+        rules,
+        acting,
+        <SymbolicDerivation as EventBody>::SCHEMA_VERSION,
+    )
+}
+
+/// [`feasibility_of`] under the rule in force for a record of
+/// `schema_version`: before [`UNRESOLVED_SINCE_VERSION`], ADR 0212's rule,
+/// under which an unsatisfiable acting problem with no contradiction is
+/// `Feasible`; from it, ADR 0238's, under which it is `Unresolved`. What
+/// counts as a contradiction, and the infeasible mark, are the same under
+/// both.
+pub fn feasibility_sealed_under(
+    pack: &RulePack,
+    hypothesis_id: &str,
+    rules: &RuleDerivation,
+    acting: &Step<Answer>,
+    schema_version: u32,
+) -> Feasibility {
     let contradictions = contradictions(rules, acting);
     if contradictions.is_empty() {
         return match acting {
-            Step::Derived(Answer::Unsatisfiable { conflict }) => Feasibility::Unresolved {
-                violated_assumptions: conflict
-                    .iter()
-                    .map(|id| format!("constraint: {id}"))
-                    .collect(),
-                alternates: resolutions(pack, rules, conflict),
-            },
-            Step::Derived(Answer::Satisfied(_)) | Step::Refused(_) => Feasibility::Feasible,
+            Step::Derived(Answer::Unsatisfiable { conflict })
+                if schema_version >= UNRESOLVED_SINCE_VERSION =>
+            {
+                Feasibility::Unresolved {
+                    violated_assumptions: conflict
+                        .iter()
+                        .map(|id| format!("constraint: {id}"))
+                        .collect(),
+                    alternates: resolutions(pack, rules, conflict),
+                }
+            }
+            Step::Derived(Answer::Unsatisfiable { .. } | Answer::Satisfied(_))
+            | Step::Refused(_) => Feasibility::Feasible,
         };
     }
     let evidence = [format!("{IDEMPOTENCY_PREFIX}{hypothesis_id}")];
@@ -1439,9 +1484,9 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<SymbolicDeriva
         if !ours {
             continue;
         }
-        let derivation = envelope.decode::<SymbolicDerivation>()?.body;
-        verify(&derivation, world.causal())?;
-        out.push(derivation);
+        let decoded = envelope.decode::<SymbolicDerivation>()?;
+        verify_sealed(&decoded.body, world.causal(), decoded.schema_version)?;
+        out.push(decoded.body);
     }
     Ok(out)
 }
@@ -1475,9 +1520,9 @@ pub fn replay_recorded(platform: &crate::platform::Platform) -> Result<Vec<Symbo
         if !ours {
             continue;
         }
-        let derivation = envelope.decode::<SymbolicDerivation>()?.body;
-        verify(&derivation, world.causal())?;
-        out.push(derivation);
+        let decoded = envelope.decode::<SymbolicDerivation>()?;
+        verify_sealed(&decoded.body, world.causal(), decoded.schema_version)?;
+        out.push(decoded.body);
     }
     Ok(out)
 }
@@ -1509,14 +1554,44 @@ pub fn replay_recorded(platform: &crate::platform::Platform) -> Result<Vec<Symbo
 /// - the violated assumptions and the uncertainty, recomputed from the
 ///   parts above (R12-REASON-3062);
 /// - the feasibility mark, recomputed from the rule and acting parts under
-///   this build's pack (ADR 0212).
+///   this build's pack (ADR 0212) and under the rule in force for the
+///   record's version (ADR 0238, [`verify_sealed`]).
 ///
 /// The posterior and acting checks need the rule facts; a record whose rule
 /// inputs were refused (a confidence outside `[0, 1]`) carries none, and its
 /// posterior and acting are left unchecked rather than checked against an
 /// invented `contested` or `kill_switch`.
+///
+/// This checks `derivation` as a record of this build's version. A record
+/// decoded from a journal is checked with [`verify_sealed`] and the version
+/// its envelope names, which [`replay`] and [`replay_recorded`] do.
 pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<()> {
+    verify_sealed(
+        derivation,
+        causal,
+        <SymbolicDerivation as EventBody>::SCHEMA_VERSION,
+    )
+}
+
+/// [`verify`] for a record sealed at `schema_version`, the version its
+/// envelope names. Every part is checked as [`verify`] checks it; only the
+/// feasibility mark is recomputed under the rule that version was sealed by
+/// ([`UNRESOLVED_SINCE_VERSION`]), so a journal sealed before ADR 0238 goes
+/// on verifying and a record sealed since cannot claim the older rule.
+/// Refuses a version this build does not know.
+pub fn verify_sealed(
+    derivation: &SymbolicDerivation,
+    causal: &CausalGraph,
+    schema_version: u32,
+) -> Result<()> {
     let id = &derivation.hypothesis_id;
+    let current = <SymbolicDerivation as EventBody>::SCHEMA_VERSION;
+    if schema_version == 0 || schema_version > current {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: sealed at version {schema_version}, which this build (version \
+             {current}) does not know; replay it with the build that wrote it"
+        )));
+    }
     if let Some(typing) = &derivation.subject_type
         && Step::of(type_subject(typing.class.as_deref())) != typing.typed
     {
@@ -1598,7 +1673,13 @@ pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<(
         )));
     }
     if let Some(recorded) = &derivation.feasibility
-        && feasibility_of(&pack, id, &derivation.rules, &derivation.acting) != *recorded
+        && feasibility_sealed_under(
+            &pack,
+            id,
+            &derivation.rules,
+            &derivation.acting,
+            schema_version,
+        ) != *recorded
     {
         return Err(Error::invalid(format!(
             "derivation for {id}: the contradictions its parts hold, the constraints that \
@@ -1988,5 +2069,122 @@ mod tests {
         i.anomaly.observed = i.anomaly.expected;
         let none = derive(i, &CausalGraph::default(), at(20));
         assert!(matches!(none.abduction, Step::Refused(_)));
+    }
+
+    /// A derivation as the journal holds it: sealed into an envelope at
+    /// `version`, type-erased, and decoded back the way [`replay`] and
+    /// [`replay_recorded`] decode it.
+    fn sealed_at(
+        derivation: &SymbolicDerivation,
+        version: u32,
+    ) -> qip_events::Envelope<SymbolicDerivation> {
+        use qip_core::{CorrelationId, EventId, Lineage};
+        let mut envelope = qip_events::Envelope::new(
+            EventId::from_string("EVT00000000000000000000001"),
+            at(20),
+            at(20),
+            Lineage::root(
+                CorrelationId::from_string("COR00000000000000000000001"),
+                "kernel/symbolic",
+            ),
+            derivation.clone(),
+        );
+        envelope.schema_version = version;
+        envelope
+            .erase()
+            .expect("the record erases")
+            .decode::<SymbolicDerivation>()
+            .expect("a record at or below this build's version decodes")
+    }
+
+    /// ADR 0238, owner decision 18 condition 5: a journal sealed before the
+    /// change must not start failing verification, and a record sealed since
+    /// must not be able to claim the old rule.
+    ///
+    /// The failure prevented: ADR 0238 changed the rule a feasibility mark is
+    /// computed by without changing a field, and `verify` recomputes the mark.
+    /// Recomputed under the new rule, every record ADR 0212 sealed as
+    /// `Feasible` on an unsatisfiable acting problem — every contested thesis
+    /// in every journal written before the change — refused to replay, and the
+    /// log's claim to reproduce its own history became false. The rule is
+    /// therefore chosen by the version the envelope names, which a record
+    /// cannot change without the hash chain noticing.
+    ///
+    /// Mutations: recompute every record under the current rule in
+    /// `verify_sealed` (pass `SCHEMA_VERSION` instead of `schema_version` to
+    /// `feasibility_sealed_under`), and the old record fails to verify; read
+    /// the old rule for every version (make `UNRESOLVED_SINCE_VERSION`
+    /// unreachable in `feasibility_sealed_under`), and this build's own
+    /// record is no longer marked unresolved, which fails the premise.
+    #[test]
+    fn a_record_sealed_under_adr_0212_still_verifies_and_one_sealed_since_cannot_claim_its_rule() {
+        let contested = derive(
+            SymbolicInput {
+                contested: true,
+                dissenters: 1,
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        assert!(
+            matches!(
+                contested.acting,
+                Step::Derived(Answer::Unsatisfiable { .. })
+            ),
+            "premise: a contested thesis's acting problem is unsatisfiable: {:?}",
+            contested.acting
+        );
+        assert!(
+            matches!(contested.feasibility, Some(Feasibility::Unresolved { .. })),
+            "premise: this build marks it unresolved: {:?}",
+            contested.feasibility
+        );
+        assert_eq!(<SymbolicDerivation as EventBody>::SCHEMA_VERSION, 2);
+
+        // What ADR 0212 sealed for the same parts: `Feasible`, at version 1.
+        let mut as_sealed_then = contested.clone();
+        as_sealed_then.feasibility = Some(Feasibility::Feasible);
+        let old = sealed_at(&as_sealed_then, UNRESOLVED_SINCE_VERSION - 1);
+        assert_eq!(
+            old.schema_version, 1,
+            "premise: the envelope names version 1"
+        );
+        verify_sealed(&old.body, &CausalGraph::default(), old.schema_version)
+            .expect("a record sealed under ADR 0212 stopped verifying");
+
+        // The same `Feasible` mark sealed at this build's version is refused:
+        // the old rule is the old version's, not anybody's to claim.
+        let forged = sealed_at(&as_sealed_then, UNRESOLVED_SINCE_VERSION);
+        let refusal = verify_sealed(&forged.body, &CausalGraph::default(), forged.schema_version)
+            .expect_err("a record sealed since ADR 0238 verified with ADR 0212's mark");
+        assert!(
+            refusal
+                .message()
+                .contains("feasibility mark is not reproducible"),
+            "refused for the wrong reason: {}",
+            refusal.message()
+        );
+        assert!(
+            verify(&as_sealed_then, &CausalGraph::default()).is_err(),
+            "`verify` reads a record as this build's version"
+        );
+
+        // And the gate is exact both ways: this build's own record verifies at
+        // its version, and does not pass for one sealed under the old rule.
+        let current = sealed_at(&contested, UNRESOLVED_SINCE_VERSION);
+        verify_sealed(
+            &current.body,
+            &CausalGraph::default(),
+            current.schema_version,
+        )
+        .expect("this build's own record does not verify");
+        assert!(
+            verify_sealed(&contested, &CausalGraph::default(), 1).is_err(),
+            "an unresolved mark verified as a record ADR 0212 sealed"
+        );
+        // A version this build does not know is refused, not read as either.
+        assert!(verify_sealed(&contested, &CausalGraph::default(), 0).is_err());
+        assert!(verify_sealed(&contested, &CausalGraph::default(), 3).is_err());
     }
 }

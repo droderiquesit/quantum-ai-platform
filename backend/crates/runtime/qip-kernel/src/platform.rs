@@ -33737,6 +33737,17 @@ mod self_model_tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
 
+    // The kernel suites' shared eligible scenario (ADR 0238, owner decision
+    // 18). Included rather than declared with `#[path]`, which inside an
+    // inline module of `platform.rs` resolves under a directory that does not
+    // exist; the file carries no inner attribute so that it can be.
+    mod eligible_panel {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/eligible_panel.rs"
+        ));
+    }
+
     fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
     }
@@ -33769,6 +33780,8 @@ mod self_model_tests {
                     LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
                 )
                 .venue("XNYS")
+                // The economy `eligible_panel`'s macro calendar is for.
+                .geography("US")
                 .sector(Sector::InformationTechnology)
                 .price(Decimal::from_int(100))
                 .provenance(Provenance::synthetic("test", start()))
@@ -33779,17 +33792,25 @@ mod self_model_tests {
         universe
     }
 
-    /// The founding tape: noise with a jump two thirds of the way in, so a
-    /// detector finds something and REASON forms a hypothesis.
+    /// Noise rising by [`eligible_panel::DRIFT`] and dropping nine percent on
+    /// its last bar, with the context `eligible_panel` adds, so a detector
+    /// finds something and REASON forms a hypothesis that clears the shipped
+    /// eligibility rule uncontested and is sized. Until ADR 0238 this was the
+    /// founding tape, a jump two thirds of the way in; its thesis is
+    /// contested, so it is now unresolved and no construction follows from it.
     fn tape() -> Vec<qip_market_ingestion::adapter::SensedRecord> {
         use qip_market::bar::{Bar, Interval};
         let mut price = 100.0_f64;
-        (0..120_usize)
+        let mut records: Vec<qip_market_ingestion::adapter::SensedRecord> = (0..120_usize)
             .map(|i| {
                 let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
-                let jump = if i == 80 { 0.09 } else { 0.0 };
+                let drop = if i == 119 {
+                    -0.09
+                } else {
+                    eligible_panel::DRIFT
+                };
                 let open = price;
-                price *= 1.0 + noise + jump;
+                price *= 1.0 + noise + drop;
                 let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
                 qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
                     object_id: ObjectId::from_string("obj-AAA"),
@@ -33806,7 +33827,13 @@ mod self_model_tests {
                     quality: qip_financial::quality::DataQuality::default(),
                 }))
             })
-            .collect()
+            .collect();
+        records.extend(eligible_panel::context(
+            "US",
+            &[ObjectId::from_string("obj-AAA")],
+            start(),
+        ));
+        records
     }
 
     fn reasoning_platform() -> Platform {
@@ -33815,6 +33842,7 @@ mod self_model_tests {
                 minimum_surviving_confidence: 0.10,
                 ..qip_reasoning_engine::redteam::ReviewPolicy::default()
             },
+            licensed_datasets: eligible_panel::licensed_datasets(),
             ..PlatformConfig::default()
         };
         let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
@@ -39459,7 +39487,8 @@ mod symbolic_contradiction_tests {
     ///
     /// Mutations: in `stage_reason`, queue an unresolved thesis (skip the
     /// `symbolic_unresolved` arm), and the queue and leg assertions fail; in
-    /// `feasibility_of`, return `Feasible` for an unsatisfiable acting step,
+    /// `feasibility_sealed_under`, return `Feasible` for an unsatisfiable
+    /// acting step,
     /// and the mark assertion fails; drop `eligible &&` in `contradictions`
     /// (ADR 0212's mutation), and the thesis is marked `Infeasible` and the
     /// mark assertion fails.

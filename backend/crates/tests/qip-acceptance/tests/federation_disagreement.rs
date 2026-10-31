@@ -212,13 +212,24 @@ fn acme_universe() -> Result<Universe> {
     Ok(universe)
 }
 
-/// The vertical-slice tape: quiet, then a twelve percent drop on the last bar.
+/// The daily rise under the vertical-slice tape's noise, the same input
+/// `vertical_slice_decide.rs` states and for the same reason: on a flat tape
+/// the simulation analyst dissents and, since ADR 0238, a contested thesis is
+/// never sized (owner decision 18).
+const ACME_DRIFT: f64 = 0.0005;
+
+/// The vertical-slice tape: quiet and rising by [`ACME_DRIFT`], then a twelve
+/// percent drop on the last bar.
 fn acme_tape() -> Vec<SensedRecord> {
     let mut price = 100.0_f64;
     (0..TAPE_BARS)
         .map(|i| {
             let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.003;
-            let drop = if i == TAPE_BARS - 1 { -0.12 } else { 0.0 };
+            let drop = if i == TAPE_BARS - 1 {
+                -0.12
+            } else {
+                ACME_DRIFT
+            };
             let open = price;
             price *= 1.0 + noise + drop;
             let at = start().saturating_sub(Duration::from_days((TAPE_BARS - i) as i64));

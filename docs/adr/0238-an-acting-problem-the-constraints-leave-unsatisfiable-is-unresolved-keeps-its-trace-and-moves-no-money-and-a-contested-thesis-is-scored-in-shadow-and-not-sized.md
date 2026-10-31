@@ -117,15 +117,63 @@ a second mark for exactly this case.
    stops among them keep their veto arm, which runs first. The rest were
    sized before this record, and none is now.
 
+7. **A journal sealed before this record goes on verifying (owner
+   decision 18, condition 5).** The mark is recomputed on replay, and ADR
+   0212 sealed `Feasible` where this record computes `Unresolved`, so
+   without a gate every journal written before the change would stop
+   verifying, and the log could no longer reproduce its own history. The
+   gate is the record's version. `SymbolicDerivation::SCHEMA_VERSION` is 2
+   (`symbolic_stage::UNRESOLVED_SINCE_VERSION`). The fields did not
+   change; the rule the mark is computed by did, and a version is how the
+   log names that. `verify_sealed` recomputes the mark under the rule in
+   force for the version the record's envelope names. `replay` and
+   `replay_recorded` pass that version, and `verify` reads a record as
+   this build's version. A version-1 record carrying `Feasible` for an
+   unsatisfiable acting problem verifies. A version-2 record carrying the
+   same mark does not, so the old rule cannot be claimed by a record
+   sealed under the new one. A version this build does not know is
+   refused. The version sits in the envelope, which the hash chain seals,
+   so a record cannot be re-labelled to the older rule without breaking
+   the chain. `SymbolicDerivation` is not in any schema lock: not in
+   `qip-events/schemas.lock.json`, `qip-api`'s `COMMITTED_SCHEMAS` or
+   `qip-kernel`'s `body_schema_lock.rs`. So no locked body changed
+   version.
+
+8. **Fixtures, not the pack (owner decision 18, option 1).** The rule
+   pack and `r10-eligible`'s premises stay as shipped. There is no
+   test-only seam to set the kernel's pack, and no threshold changed. A
+   test whose premise is a traded cycle reaches eligibility by changing
+   its scenario's inputs only, and every assertion stays byte-identical.
+   The kernel suites share
+   `backend/crates/runtime/qip-kernel/tests/support/eligible_panel.rs`,
+   which adds four inputs:
+   - a small daily drift, so the simulation analyst's bootstrap of the
+     tape agrees with the reversion buy;
+   - a macro calendar, so a second independent origin supports the claim;
+   - a filed revenue figure three days before the drop, so the move has a
+     catalyst;
+   - forty readings of each alternative-data series, with the fixture's
+     `licensed_datasets` naming those vendor datasets.
+
+   A private fund needs the alternative data, because the equity analyst
+   declines anything that is not equity. The licence list is fixture
+   configuration, not scenario data, and it is named here so that nobody
+   mistakes it for data. It admits only the vendor data the scenario
+   itself supplies. The acceptance vertical slice already carried the
+   macro calendar and a declared catalyst, so it needed only a drift of
+   five basis points a day.
+
 ## What changes and what does not
 
 - **Changes.** An approved thesis whose acting constraints are
   unsatisfiable forms no proposal where it used to be sized small. Every
   such derivation record carries `Unresolved` instead of `Feasible`. The
   REASON detail line gains `, unresolved, scored in shadow` for it. Under
-  a tripped kill switch an approved thesis now stops in REASON. Before, it
-  reached ACT's `kill-switch` refusal gate. ACT's gate still refuses
-  anything queued by another road.
+  a tripped kill switch an approved thesis now stops in REASON, because
+  `r10-eligible` requires `kill_switch = false`. Before, it reached ACT's
+  `kill-switch` refusal gate. ACT's gate still refuses anything queued by
+  another road, but through the public API no road reaches it with the
+  switch globally tripped (see What it costs).
 - **Does not change.** The shipped rule pack and its version. Every risk
   limit, threshold, limit set, capital grant and multiplier. The veto's
   hard stops and their ordering. `contradictions`, the `Infeasible` mark
@@ -134,42 +182,61 @@ a second mark for exactly this case.
   live rungs, `AutonomyLevel::deployable` in the composition roots, and the
   edge `Cell`'s paper-only constructors.
 - **Records written before this one** carry `Feasible` for an unsatisfiable
-  acting problem. They no longer replay, because `verify` recomputes the
-  mark and finds `Unresolved`. That is the same position ADR 0212 put
-  older records in. The record says what the platform concluded under the
-  rule then in force, and the replay says the rule has changed.
+  acting problem at version 1, and go on verifying under ADR 0212's rule
+  (decision 7). Records sealed from this one on are version 2.
 
 ## What it costs
 
-- **The paper book empties on every fixture tape probed.** The tape the
-  kernel's own tests drive, a nine percent drop the panel contests, used to
-  open a position and now opens none. The cost is wider than dissent. The
+- **The paper book empties on a bare price tape.** The tape the kernel's
+  own tests drove, a nine percent drop the panel contests, used to open a
+  position and now opens none. The cost is wider than dissent. The
   confidence premise of `r10-eligible` (`confidence_bp >= 5000`) used to be
-  a sizing input and is now a stop. REASON's prior is 0.25, so on one
-  instrument the default panel lands below it. A throwaway probe on
-  2026-10-31 ran the default cycle over 192 single-instrument tapes. The
+  a sizing input and is now a stop. REASON's prior is 0.25, so on a bare
+  tape the default panel lands below it. A throwaway probe on 2026-10-31
+  ran the default cycle over 192 single-instrument price-only tapes. The
   last bar's move ranged over ±5, ±9, ±15 and ±30 percent, with four
   noise amplitudes, three drifts and two volumes. The highest admitted
-  confidence recorded was 4823 bp. No tape produced an eligible thesis,
-  so none formed a proposal. The probe was not committed. The owner
-  accepted this in the ruling: "If that empties the paper book, that is
-  what the eligibility rule says, and it is no reason to size what the
-  rule refuses." This record does not change the 5000 bp premise, which
-  would be a threshold change. Whether a fixture can reach eligibility
-  without one is the owner's question, and it is recorded below.
-- **Tests whose premise is a traded cycle fail.** A test that drives the
-  default cycle and asserts a proposal, a position or a solve as its
-  *premise* now fails that premise. The property it guards is downstream,
-  in valuation, capital, solver routing or position records, and is not
-  disproved. These tests are not loosened, skipped or rewritten here. The
-  rule is never to weaken a test to pass. Restoring them needs one of
-  three things, and each is the owner's call:
-  1. a fixture that reaches eligibility under the shipped pack;
-  2. a test-only seam to set the kernel's rule pack from outside the
-     crate, which ADR 0212 decision 7 forbids today;
-  3. a change to the eligibility premise, which is a threshold change.
+  confidence recorded was 4823 bp. With the inputs of decision 8 a listed
+  equity reached 0.54 to 0.61 and traded. The owner accepted this in the
+  ruling: "If that empties the paper book, that is what the eligibility
+  rule says, and it is no reason to size what the rule refuses."
+- **Thirty-three of the thirty-eight tests this record broke are restored
+  by their inputs (decision 8).** Five cannot be, under the shipped pack,
+  without changing an assertion. Each case is a structural consequence of
+  this record, not a fixture gap, and the owner should read each one:
+  1. **A sized thesis is never conflicted.** Evidence contradicts a claim
+     only through a finding opposite to it. Any such finding beside a
+     supporting one makes the panel contested, so the thesis is
+     unresolved. `Hypothesis::confidence_for_sizing`'s conflict narrowing
+     is still in the code, but on the default cycle it now narrows
+     nothing that gets sized.
+     `valuation_seam::a_thesis_whose_evidence_contradicts_itself_is_sized_on_a_narrower_conviction_than_admitted_it`
+     asserts that narrowing reaches DECIDE, and it cannot pass.
+  2. **A blocking limit makes the risk-control agent dissent.** It reports
+     `Negative` at conviction 1.0 whenever any limit blocks, so a book the
+     monitor holds at `reduce_only` contests every thesis. ACT's
+     `new risk is blocked: reduce_only` refusal of a *sized* proposal is
+     therefore unreachable through the cycle.
+     `valuation_seam::a_cycle_over_a_book_that_cannot_be_exited_within_the_week_is_refused_new_risk`
+     asserts that refusal.
+  3. **A name the book already holds draws the adversarial reviewer's
+     objection.** The objection is "a re-argument of an existing
+     position", reported `Negative`. So the cycle never adds to a held
+     position.
+     `valuation_seam::a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_budget_with_a_halved_bound`
+     and
+     `catalogue_hedge_candidates::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue`
+     each need a thesis on a held name.
+  4. **A globally tripped kill switch stops the thesis in REASON**, so
+     ACT's `kill-switch` gate never records the refusal.
+     `qip-acceptance`'s
+     `vertical_slice_decide::a_tripped_kill_switch_halts_the_cycle_before_anything_trades`
+     asserts that refusal. Its stop in REASON is pinned instead by
+     `symbolic_federation::a_tripped_kill_switch_stops_an_eligible_thesis_in_reason_as_unresolved_and_nothing_moves`.
 
-  The lane's report lists them by name.
+  These five stay failing, unchanged. Points 2 and 3 are the most
+  consequential: the platform no longer adds to a position it holds, and
+  a book under a blocking limit forms no new thesis at all.
 - ADR 0150 decision 14's learning argument, that the platform learns most
   from the questions it was least sure of, is now served by shadow scoring
   alone. A contested claim is still written, graded and calibrated. What
@@ -187,7 +254,11 @@ a second mark for exactly this case.
   is `Unresolved`, and the ADR 0212 mutation (drop `eligible &&` in
   `contradictions`) still fails it.
 - An eligible-and-unsatisfiable derivation losing its `Infeasible` mark to
-  this one. `feasibility_of` checks contradictions first.
+  this one. `feasibility_sealed_under` checks contradictions first.
+- A journal sealed before this record failing to verify, or a record
+  sealed since verifying under the old rule.
+  `symbolic_stage::tests::a_record_sealed_under_adr_0212_still_verifies_and_one_sealed_since_cannot_claim_its_rule`
+  fails in either case.
 - Shadow scoring silently stopping: an unresolved thesis whose claim is
   never written would be neither sized nor graded. The rewritten test
   asserts the claim is open.
@@ -229,3 +300,33 @@ a second mark for exactly this case.
   step outrank a contradiction failed the contradiction test at "a
   self-contradicting derivation was not marked infeasible". ADR 0212's
   mutation, dropping `eligible &&` in `contradictions`, still fails both.
+- Replay gating (decision 7): `symbolic_stage::UNRESOLVED_SINCE_VERSION`,
+  `feasibility_sealed_under` and `verify_sealed`, proven by
+  `symbolic_stage::tests::a_record_sealed_under_adr_0212_still_verifies_and_one_sealed_since_cannot_claim_its_rule`.
+  That test seals a record into an envelope, erases it and decodes it back
+  the way `replay` does. Two mutations were run against it:
+  - recomputing every record under the current rule in `verify_sealed`
+    fails it at "a record sealed under ADR 0212 stopped verifying";
+  - making the new rule unreachable fails its premise.
+- The new default, pinned through the public API (owner decision 18,
+  condition 3):
+  `symbolic_federation::a_cycle_whose_panel_is_contested_forms_no_proposal_and_journals_its_routing_as_unresolved`.
+  It reads the sealed log through `replay_recorded`. Two mutations were
+  run against it:
+  - queuing an unresolved thesis fails it;
+  - returning `Feasible` for an unsatisfiable acting step fails it at "the
+    contested thesis was not journaled unresolved: Some(Feasible)".
+- The kill-switch stop in REASON (condition 4):
+  `symbolic_federation::a_tripped_kill_switch_stops_an_eligible_thesis_in_reason_as_unresolved_and_nothing_moves`.
+  Handing the symbolic stage `kill_switch: false` fails it at "the halted
+  cycle's thesis was not stopped in REASON".
+- Fixtures (decision 8): `tests/support/eligible_panel.rs`, used by these
+  suites:
+  - `capital.rs`, `position_record.rs`, `solver_routing.rs`,
+    `symbolic_federation.rs` and `valuation_seam.rs`;
+  - `platform::self_model_tests`, which uses it through `include!`.
+
+  `qip-acceptance`'s `vertical_slice_decide.rs` and
+  `federation_disagreement.rs` each gained a five-basis-point drift. In
+  every one of these files the diff touches only fixture builders, call
+  sites that feed a fixture, and comments; no assertion line changed.

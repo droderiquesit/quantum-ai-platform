@@ -27,6 +27,9 @@ use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_world_model::federation::Decision;
 
+#[path = "support/eligible_panel.rs"]
+mod eligible_panel;
+
 /// The liquidity every fixture in this file states, because nothing states it
 /// for them any more.
 ///
@@ -62,6 +65,9 @@ fn universe() -> Universe {
                     fixture_liquidity(),
                 )
                 .venue("XNYS")
+                // The economy `eligible_panel`'s macro calendar is for; with no
+                // calendar fed the macro analyst has nothing to read either way.
+                .geography("US")
                 .sector(Sector::InformationTechnology)
                 .price(dec!("100"))
                 .provenance(Provenance::synthetic("test", start()))
@@ -123,6 +129,31 @@ fn bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
             bar(symbol, at, open, price)
         })
         .collect()
+}
+
+/// A series rising by [`eligible_panel::DRIFT`] under its noise that drops
+/// nine percent on its last bar, with the context `eligible_panel` adds, for
+/// a test whose premise is a cycle that sizes a thesis: since ADR 0238 the
+/// thesis [`bars`] raises is contested, so it is unresolved and never sized
+/// (owner decision 18 moved such tests onto an eligible scenario).
+fn eligible_bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    let mut records: Vec<SensedRecord> = (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let drop = if i == count - 1 {
+                -0.09
+            } else {
+                eligible_panel::DRIFT
+            };
+            let open = price;
+            price *= 1.0 + noise + drop;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect();
+    records.extend(eligible_panel::context("US", &[object(symbol)], start()));
+    records
 }
 
 #[test]
@@ -1152,11 +1183,12 @@ fn a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agree
             minimum_surviving_confidence: 0.10,
             ..ReviewPolicy::default()
         },
+        licensed_datasets: eligible_panel::licensed_datasets(),
         ..PlatformConfig::default()
     };
     let (context, _clock) = Context::deterministic(start(), config.seed);
     let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
-    platform.observe(bars("AAA", 120));
+    platform.observe(eligible_bars("AAA", 120));
     let report = platform.run_cycle(start());
 
     // Premise: the journaled arbitration really is a material disagreement,
@@ -1643,6 +1675,168 @@ fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_
             "{} has one confident side only and was named a contradiction",
             a.proposition
         );
+    }
+    Ok(())
+}
+// --- ADR 0238: an unsatisfiable acting problem is unresolved (R12-RES-7106) --
+
+/// The platform on [`universe`] with the licence `eligible_panel`'s vendor
+/// data needs, so one fixture serves both tests below.
+fn platform_licensed() -> Result<Platform> {
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+    let config = PlatformConfig {
+        review: ReviewPolicy {
+            minimum_surviving_confidence: 0.10,
+            ..ReviewPolicy::default()
+        },
+        licensed_datasets: eligible_panel::licensed_datasets(),
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(config, context, Telemetry::silent(), universe(), limits())
+}
+
+/// The new default, pinned through the public API (owner decision 18,
+/// condition 3): a cycle whose panel is contested forms no proposal, and the
+/// derivation it journals carries the unresolved routing — the constraints
+/// that block acting and the premise dissent failed.
+///
+/// The failure prevented: before ADR 0238 this tape's contested thesis was
+/// queued and sized small, and nothing in the record said the platform's own
+/// acting constraints were unsatisfiable. Mutations: queue an unresolved
+/// thesis in `stage_reason` (skip the `symbolic_unresolved` arm), and a leg
+/// is proposed; return `Feasible` for an unsatisfiable acting step in
+/// `feasibility_sealed_under`, and the journaled mark is not unresolved.
+#[test]
+fn a_cycle_whose_panel_is_contested_forms_no_proposal_and_journals_its_routing_as_unresolved()
+-> Result<()> {
+    let mut platform = platform_licensed()?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+    let reason = report.stage(Stage::Reason).expect("REASON ran");
+    assert!(
+        reason.detail.contains(", contested;"),
+        "premise: the panel contests this tape's thesis: {}",
+        reason.detail
+    );
+    assert!(
+        reason.detail.contains("hypothesis approved at confidence "),
+        "premise: review approved it, so what stops it is the routing: {}",
+        reason.detail
+    );
+
+    let derivations = symbolic_stage::replay_recorded(&platform)?;
+    assert_eq!(derivations.len(), 1, "premise: one derivation was sealed");
+    let Some(symbolic_stage::Feasibility::Unresolved {
+        violated_assumptions,
+        alternates,
+    }) = &derivations[0].feasibility
+    else {
+        panic!(
+            "the contested thesis was not journaled unresolved: {:?}",
+            derivations[0].feasibility
+        );
+    };
+    assert!(
+        violated_assumptions
+            .iter()
+            .any(|v| v == "constraint: acting-requires-eligibility"),
+        "{violated_assumptions:?}"
+    );
+    assert!(
+        alternates.derived().is_some_and(|a| a
+            .iter()
+            .any(|line| line == "r10-eligible: needs contested = false (recorded true)")),
+        "{alternates:?}"
+    );
+    assert!(
+        reason
+            .problems
+            .iter()
+            .any(|p| p
+                .starts_with("symbolically unresolved, scored in shadow, no proposal formed: ")),
+        "{:?}",
+        reason.problems
+    );
+    assert!(
+        !reason.detail.contains("; sized on conviction"),
+        "a contested thesis was queued for sizing: {}",
+        reason.detail
+    );
+    assert!(
+        platform.proposals().iter().all(|p| p.legs.is_empty()),
+        "a contested thesis formed a proposal leg"
+    );
+    assert!(platform.positions_at_cost().is_empty());
+    assert!(!platform.orders().has_live_fills());
+    Ok(())
+}
+
+/// Owner decision 18, condition 4: a tripped kill switch now stops an
+/// eligible thesis in REASON, before ACT's gate. The halt is an input to the
+/// symbolic stage: `r10-eligible` requires `kill_switch = false`, so the
+/// acting problem is unsatisfiable (the solver's minimal conflict is the
+/// eligibility constraint, which the halt also breaks) and the thesis is
+/// unresolved, naming the premise the switch failed. `qip-acceptance`'s
+/// `a_tripped_kill_switch_halts_the_cycle_before_anything_trades`, which
+/// expects ACT's `kill-switch` gate to record the refusal, no longer reaches
+/// that gate with any thesis, and this is the stop that replaced it.
+///
+/// The control is the same scenario without the trip, which sizes a leg, so
+/// the empty book is the halt's doing. Mutation: in
+/// `Platform::reason_symbolically`, hand the symbolic stage `kill_switch:
+/// false` whatever the switch says (the thesis is eligible, sized, and
+/// refused only at ACT's gate, and the REASON assertions fail).
+#[test]
+fn a_tripped_kill_switch_stops_an_eligible_thesis_in_reason_as_unresolved_and_nothing_moves()
+-> Result<()> {
+    let mut control = platform_licensed()?;
+    control.observe(eligible_bars("AAA", 120));
+    let report = control.run_cycle(start());
+    let reason = report.stage(Stage::Reason).expect("REASON ran");
+    assert!(
+        reason.detail.contains("; sized on conviction"),
+        "premise: without the trip the thesis is eligible and sized: {}",
+        reason.detail
+    );
+    assert!(
+        control.proposals().iter().any(|p| !p.legs.is_empty()),
+        "premise: without the trip a leg is proposed"
+    );
+
+    let mut halted = platform_licensed()?;
+    halted.autonomy_mut().kill_switch_mut().trip_global(
+        start(),
+        "symbolic-federation-test",
+        "an operator halted the platform",
+    );
+    halted.observe(eligible_bars("AAA", 120));
+    let report = halted.run_cycle(start());
+    let reason = report.stage(Stage::Reason).expect("REASON ran");
+    let unresolved = reason
+        .problems
+        .iter()
+        .find(|p| p.starts_with("symbolically unresolved, scored in shadow, no proposal formed: "))
+        .unwrap_or_else(|| {
+            panic!(
+                "the halted cycle's thesis was not stopped in REASON: {:?}",
+                reason.problems
+            )
+        });
+    assert!(
+        unresolved.contains("constraint: acting-requires-eligibility")
+            && unresolved.contains("r10-eligible: needs kill_switch = false (recorded true)"),
+        "the stop does not name the halt: {unresolved}"
+    );
+    assert!(
+        halted.proposals().iter().all(|p| p.legs.is_empty()),
+        "a halted cycle proposed a leg"
+    );
+    assert!(halted.positions_at_cost().is_empty());
+    assert!(halted.orders().fills().is_empty());
+    for platform in [&control, &halted] {
+        assert!(!platform.orders().has_live_fills());
+        assert!(!platform.is_live_capable());
     }
     Ok(())
 }
