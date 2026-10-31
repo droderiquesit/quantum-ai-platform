@@ -1969,7 +1969,7 @@ pub struct WorldReading {
     pub available_at: Timestamp,
     /// The streams the feature value drew from, as the store recorded them.
     /// A macro release from a synthetic tape carries `MACRO_SIMULATED_SOURCE`
-    /// here, so a reader can label its surprise simulated (ADR 0232).
+    /// here, so a reader can label its surprise simulated (ADR 0256).
     pub sources: Vec<String>,
 }
 
@@ -2033,7 +2033,7 @@ pub fn company_features(world: &WorldModel, now: Timestamp) -> Vec<WorldReading>
 }
 
 /// Currency fixings readable at `now`, one per `FX.<base>.<quote>` series,
-/// the series id as the subject (ADR 0232). A fixing states no consensus, so
+/// the series id as the subject (ADR 0256). A fixing states no consensus, so
 /// it has no surprise; what the macro member reads from it is the move from
 /// the last fixing.
 pub fn currency_levels(world: &WorldModel, now: Timestamp) -> Vec<WorldReading> {
@@ -2052,7 +2052,7 @@ pub fn currency_levels(world: &WorldModel, now: Timestamp) -> Vec<WorldReading> 
         .collect()
 }
 
-/// The source tag a macro surprise from a synthetic tape carries (ADR 0232).
+/// The source tag a macro surprise from a synthetic tape carries (ADR 0256).
 pub const MACRO_SIMULATED_SOURCE: &str = "simulated";
 
 /// Macro surprises readable at `now`, one per series, the series id as the
@@ -2190,7 +2190,7 @@ mod tests {
                 value: 3.4 - 3.1,
                 valid_at: reference,
                 available_at: ingested,
-                // The store's own source list, carried since ADR 0232.
+                // The store's own source list, carried since ADR 0256.
                 sources: vec!["world_stream:macro".to_string()],
             }],
             "the macro reading does not carry the instants the store holds for it"

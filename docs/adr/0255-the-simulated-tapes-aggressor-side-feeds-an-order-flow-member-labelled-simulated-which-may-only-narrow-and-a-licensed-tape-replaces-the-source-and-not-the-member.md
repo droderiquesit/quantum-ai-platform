@@ -1,4 +1,4 @@
-# ADR 0231: The simulated tape's aggressor side feeds an order-flow member labelled simulated, which may only narrow; a licensed tape replaces the source and not the member
+# ADR 0255: The simulated tape's aggressor side feeds an order-flow member labelled simulated, which may only narrow; a licensed tape replaces the source and not the member
 
 - **Status**: **Accepted 2026-10-31 under the owner's delegation**. This is
   decision 10 of `docs/blueprint/lanes/wave1031-owner-rulings-2026-10-31.json`,

@@ -775,7 +775,7 @@ pub struct Platform {
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
     /// Signed aggressor flow per (instrument, venue) since the last
-    /// UNDERSTAND (ADR 0231), taken by it. Bounded by the instruments and
+    /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
     /// venues one cycle's trades name.
     cycle_order_flow: BTreeMap<(String, String), qip_world_model::order_flow::FlowObservation>,
     /// The active-sensing requests the latest federation pass issued, each
@@ -15063,7 +15063,7 @@ impl Platform {
             .then_some(view)
     }
 
-    /// Add `trade`'s signed volume to this cycle's order flow (ADR 0231). A
+    /// Add `trade`'s signed volume to this cycle's order flow (ADR 0255). A
     /// trade whose venue stated no aggressor contributes nothing: guessing a
     /// side from the quote would be the platform inventing the flow it then
     /// forecasts from. Nor does a print that formed no price — a late
@@ -15103,7 +15103,7 @@ impl Platform {
     }
 
     /// The latest macro surprise per series readable at `now`, for the
-    /// macro member (ADR 0232). A surprise exists only where the release
+    /// macro member (ADR 0256). A surprise exists only where the release
     /// stated a consensus; one whose sources carry the synthetic tag is
     /// marked simulated.
     fn macro_views(&self, now: Timestamp) -> Vec<crate::federation_stage::MacroView> {
@@ -15123,7 +15123,7 @@ impl Platform {
     }
 
     /// The latest fixing per currency series readable at `now`, for the
-    /// macro member (ADR 0232). A fixing from a synthetic tape is marked
+    /// macro member (ADR 0256). A fixing from a synthetic tape is marked
     /// simulated by the same source tag as a surprise.
     fn currency_views(&self, now: Timestamp) -> Vec<crate::federation_stage::CurrencyView> {
         let world = self.world.read();

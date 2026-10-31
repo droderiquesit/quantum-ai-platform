@@ -850,7 +850,7 @@ impl WorldModel {
     pub fn absorb_macro(&mut self, observation: &MacroObservation) {
         // A synthetic tape's release is labelled at its source, so every
         // reader of its level or surprise can tell it was simulated
-        // (ADR 0232).
+        // (ADR 0256).
         let mut sources = vec!["world_stream:macro".to_string()];
         if observation.provenance.licensing == qip_financial::quality::LicensingClass::Synthetic {
             sources.push(crate::now::MACRO_SIMULATED_SOURCE.to_string());

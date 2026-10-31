@@ -77,13 +77,13 @@ pub const MEMBER_LEASE: Duration = Duration::from_days(7);
 
 /// The members, by id. Fixed, so a replay of the log names the same models.
 pub const MOMENTUM: &str = "markets.momentum.global.micro";
-/// The order-flow member (ADR 0231, R12-WORLD-3046): signed aggressor
+/// The order-flow member (ADR 0255, R12-WORLD-3046): signed aggressor
 /// volume per instrument per cycle, read from the paper feed's own
 /// aggressor side and labelled simulated by its source, so a licensed tape
 /// later replaces the source and not the member.
 pub const ORDER_FLOW: &str = "markets.order-flow.global.micro";
 
-/// The macro member (ADR 0232, R12-WORLD-3043): whether each series' next
+/// The macro member (ADR 0256, R12-WORLD-3043): whether each series' next
 /// release surprises its consensus in the same direction as its last one.
 pub const MACRO: &str = "macro.surprise-persistence.global";
 
@@ -194,7 +194,7 @@ pub struct InstrumentView {
     pub causal: Option<CausalView>,
     /// Latest quoted spread over its own median, where one was measured.
     pub spread_ratio: Option<f64>,
-    /// This cycle's signed aggressor flow per venue (ADR 0231): trades
+    /// This cycle's signed aggressor flow per venue (ADR 0255): trades
     /// with no aggressor side contributed nothing. Empty where no trade
     /// stated one, and the order-flow member is then silent on it.
     pub order_flow: Vec<qip_world_model::order_flow::FlowObservation>,
@@ -245,7 +245,7 @@ pub struct ChainView {
 }
 
 /// One macro series' latest surprise against its consensus, as the macro
-/// member reads it (ADR 0232). Only a release that stated a consensus has a
+/// member reads it (ADR 0256). Only a release that stated a consensus has a
 /// surprise, so a series without one is absent rather than read as zero.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MacroView {
@@ -260,7 +260,7 @@ pub struct MacroView {
 }
 
 /// One currency series' latest fixing, as the macro member reads it
-/// (ADR 0232): a fixing states no consensus, so the member reads its move
+/// (ADR 0256): a fixing states no consensus, so the member reads its move
 /// from the previous fixing instead of a surprise.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CurrencyView {
@@ -318,9 +318,9 @@ pub struct FederationInputs {
     /// The paper book's funding state, for the capital member; `None` where
     /// equity is not positive.
     pub capital: Option<CapitalView>,
-    /// The latest macro surprise per series readable this pass (ADR 0232).
+    /// The latest macro surprise per series readable this pass (ADR 0256).
     pub macros: Vec<MacroView>,
-    /// The latest currency fixing per series readable this pass (ADR 0232).
+    /// The latest currency fixing per series readable this pass (ADR 0256).
     pub currencies: Vec<CurrencyView>,
 }
 
@@ -595,7 +595,7 @@ pub struct FederationStage {
     /// The confirmed trade count the on-chain member last read.
     last_chain_trades: Option<u64>,
     /// The reference period of the last release the macro member read, per
-    /// series (ADR 0232): a release is fed once, not every pass it stays
+    /// series (ADR 0256): a release is fed once, not every pass it stays
     /// readable. Bounded by [`MAX_MACRO_SERIES`].
     last_macro: BTreeMap<String, Timestamp>,
     /// The last fixing the macro member read per currency series: its level
@@ -1429,7 +1429,7 @@ impl FederationStage {
                     0.6,
                 )
             });
-            // The order-flow member's view (ADR 0231): this cycle's signed
+            // The order-flow member's view (ADR 0255): this cycle's signed
             // aggressor volume summed across venues, as an imbalance in
             // [-1, 1]. Its evidence grows with the prints that stated a side,
             // up to twenty; with none it is silent rather than even, because
@@ -1586,7 +1586,7 @@ impl FederationStage {
             }
         }
 
-        // The macro member (ADR 0232): a release that surprised its
+        // The macro member (ADR 0256): a release that surprised its
         // consensus is read as likelier than not to be followed by a surprise
         // the same way — persistence, declared not fitted, at 0.6. Fed once
         // per release; a pass with no new release leaves it silent.
@@ -1647,7 +1647,7 @@ impl FederationStage {
             }
         }
 
-        // Currencies (ADR 0232): a fixing has no consensus and so no
+        // Currencies (ADR 0256): a fixing has no consensus and so no
         // surprise; the member reads its move from the previous fixing and
         // forecasts, at the same declared persistence, that the next fixing
         // moves the same way. The first fixing of a series only seeds the
@@ -2204,7 +2204,7 @@ mod tests {
         let mut fed_inputs = inputs(1, 100.0, day(0), Some(3));
         fed_inputs.instruments[0].fundamental_surprise = Some(0.05);
         // The order-flow member produces state only where a print stated its
-        // aggressor (ADR 0231), so this instrument has one cycle's flow.
+        // aggressor (ADR 0255), so this instrument has one cycle's flow.
         fed_inputs.instruments[0].order_flow = vec![qip_world_model::order_flow::FlowObservation {
             object_id: qip_core::ObjectId::from_string("AAA"),
             venue: qip_contracts::venue::VenueId::new("XNYS"),
@@ -2218,7 +2218,7 @@ mod tests {
         // equity, so this one has one (R12-WORLD-3048).
         fed_inputs.capital = Some(book(1_000.0, 0));
         // The macro member produces state only for a release that surprised
-        // its consensus (ADR 0232), so this pass reads one.
+        // its consensus (ADR 0256), so this pass reads one.
         fed_inputs.currencies = Vec::new();
         fed_inputs.macros = vec![MacroView {
             series: "US.CPI.YOY".into(),
@@ -2618,8 +2618,8 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: fourteen members (the order-flow member, ADR 0231, and the
-        // macro member, ADR 0232, among them), no branch, and nothing scored
+        // Premise: fourteen members (the order-flow member, ADR 0255, and the
+        // macro member, ADR 0256, among them), no branch, and nothing scored
         // yet to decide on.
         assert_eq!(first.population.len(), 14);
         assert!(branch_ids(&stage, day(0)).is_empty());
@@ -2757,7 +2757,7 @@ mod tests {
         assert_eq!(stage.federation().live_specs(day(0)).len(), 15);
     }
 
-    /// ADR 0232: a macro forecast waits for its series' next release in
+    /// ADR 0256: a macro forecast waits for its series' next release in
     /// time, not in passes. The skeptic's finding: patience was 90 passes on
     /// the premise of daily cycles, and a deployed cycle runs every 300 s on
     /// the deep brain and every 100 ms on the fast brain, so every monthly
@@ -2802,7 +2802,7 @@ mod tests {
         assert!(resolution.outcome);
     }
 
-    /// ADR 0232: a currency fixing states no consensus, so the macro member
+    /// ADR 0256: a currency fixing states no consensus, so the macro member
     /// reads its move. The first fixing seeds the level, the second's move is
     /// forecast to persist, and the third answers it. Mutation: record the
     /// move inverted (`view.level < last`) — the forecast resolves false.

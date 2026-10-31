@@ -150,8 +150,8 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
     // Fourteen members (the company member, R12-WORLD-3044, the capital
-    // member, R12-WORLD-3048, the order-flow member, ADR 0231, and the macro
-    // member, ADR 0232, among them) plus the one domain member the
+    // member, R12-WORLD-3048, the order-flow member, ADR 0255, and the macro
+    // member, ADR 0256, among them) plus the one domain member the
     // platform now declares for the universe's single asset class
     // (MODEL-4009): the composition names the classes itself, so a deployed
     // cycle carries the member too.
@@ -183,7 +183,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     // an aggressor and no macro release surprised its consensus, so the
     // company, on-chain, macro and order-flow members are the silent ones —
     // present, unexpired, and honest that they produced nothing
-    // (R12-WORLD-3044, ADR 0231, ADR 0232).
+    // (R12-WORLD-3044, ADR 0255, ADR 0256).
     assert_eq!(
         first.silent,
         vec![
@@ -1645,7 +1645,7 @@ fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_
     Ok(())
 }
 
-/// ADR 0231, R12-WORLD-3046: the paper feed's signed aggressor flow gives
+/// ADR 0255, R12-WORLD-3046: the paper feed's signed aggressor flow gives
 /// the order-flow member a view of the instrument it traded, leaning with
 /// the side that dominated. A print that stated no aggressor, or formed no
 /// price, gives it nothing, and a cycle with no new prints finds it silent
@@ -1754,7 +1754,7 @@ fn signed_trade_flow_gives_the_order_flow_member_a_view() -> Result<()> {
     Ok(())
 }
 
-/// ADR 0232, R12-WORLD-3043: a cycle with a macro surprise feeds the macro
+/// ADR 0256, R12-WORLD-3043: a cycle with a macro surprise feeds the macro
 /// member a persistence forecast on that series, a cycle without a new
 /// release reports it silent, and the series' next release answers the
 /// forecast.

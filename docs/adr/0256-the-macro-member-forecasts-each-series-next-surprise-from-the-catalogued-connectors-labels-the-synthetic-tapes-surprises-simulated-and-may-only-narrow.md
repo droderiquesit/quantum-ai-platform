@@ -1,4 +1,4 @@
-# ADR 0232: The macro member forecasts each series' next surprise from the catalogued connectors, reads a surprise only where a source states consensus, labels the synthetic tape's surprises simulated, and may only narrow
+# ADR 0256: The macro member forecasts each series' next surprise from the catalogued connectors, reads a surprise only where a source states consensus, labels the synthetic tape's surprises simulated, and may only narrow
 
 - **Status**: **Accepted 2026-10-31 under the owner's delegation**, under
   decision 10 of `docs/blueprint/lanes/wave1031-owner-rulings-2026-10-31.json`.
