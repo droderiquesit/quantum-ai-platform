@@ -94,6 +94,13 @@ pub enum AmbientRecord {
         cycle: u64,
         score: qip_contracts::expansion::SourceScore,
     },
+    /// A research campaign's experiment pack (R12-EXPAND-6035): the
+    /// validated contract record of what it researched, built, backtested,
+    /// found and proposes, written whatever the verdict.
+    ExperimentPack {
+        cycle: u64,
+        pack: qip_contracts::expansion::ExperimentPack,
+    },
     /// The compute market the sweep ran (R12-AMBIENT-9034): the agent
     /// budgets it allocated within, each grant with the reputation weight
     /// it was priced on, each decline with its reason, and what was spent.
@@ -224,6 +231,35 @@ impl AmbientJournal {
                     score: score.clone(),
                 },
                 score.scored_at,
+                at,
+            )?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Write one record per experiment pack the sweep produced this cycle
+    /// (R12-EXPAND-6035), under its own lineage: a pack is a campaign's
+    /// record, not a signal the sweep routed.
+    pub fn record_experiment_packs(
+        &mut self,
+        cycle: u64,
+        round: &ResearchRound,
+        at: Timestamp,
+    ) -> Result<usize> {
+        let lineage = Lineage::root(
+            CorrelationId::from_string(format!("experiment-pack-{cycle}-{}", self.written)),
+            AMBIENT_ORIGIN,
+        );
+        let mut count = 0usize;
+        for pack in &round.experiment_packs {
+            self.append(
+                &lineage,
+                AmbientRecord::ExperimentPack {
+                    cycle,
+                    pack: pack.clone(),
+                },
+                pack.produced_at,
                 at,
             )?;
             count += 1;

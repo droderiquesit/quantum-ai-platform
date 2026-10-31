@@ -36,6 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_contracts::governance::Usage;
+use qip_contracts::ledger_operation::InventoryEnd;
 use qip_core::error::{Error, Result};
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Duration, Timestamp};
@@ -60,6 +61,10 @@ pub const MAX_QUEUED_CANDIDATES: usize = 16;
 
 /// The most candidates one SIMULATE pass assesses.
 pub const CANDIDATES_PER_PASS: usize = 4;
+
+/// The buyer every paper sale is made to: the simulated marketplace has no
+/// buyer of its own to name.
+const PAPER_BUYER: &str = "paper-buyer";
 
 /// The most units one purchase receives into the ledger.
 pub const MAX_UNITS_PER_PURCHASE: u32 = 50;
@@ -334,6 +339,28 @@ pub struct PaperPurchase {
     pub units: Vec<String>,
 }
 
+/// One unit's physical movement, for the platform to book at the ledger as
+/// a [`qip_contracts::ledger_operation::OperationKind::PhysicalInventory`]
+/// operation (R12-COMMERCE-5096): received from the venue it was bought at
+/// into the warehouse, sold out of the warehouse to the buyer, returned by
+/// the buyer into the warehouse. One unit each, because the commerce ledger
+/// holds units one record each.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InventoryMove {
+    /// The commerce ledger's unit id; the operation is keyed on it.
+    pub unit: String,
+    /// What moved, as the ledger books it: the product's SKU.
+    pub sku: String,
+    /// `received`, `sold` or `returned`, for the operation id.
+    pub stage: &'static str,
+    pub from: qip_contracts::ledger_operation::InventoryEnd,
+    pub to: qip_contracts::ledger_operation::InventoryEnd,
+}
+
+/// Moves a plane holds undrained before it refuses to record more: twice
+/// the units it may hold, a receipt and a sale each.
+const MAX_PENDING_MOVES: usize = MAX_LISTED_UNITS * 2;
+
 /// A unit listed or repriced, with where and at what.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PricedUnit {
@@ -354,6 +381,13 @@ pub struct CommerceSimulated {
     pub repriced: Vec<PricedUnit>,
     pub sold: Vec<CycleEvent>,
     pub problems: Vec<String>,
+    /// R12-ASSET-4073: a RealAsset position record for each unit received
+    /// this pass, carrying the purchase's landed cost and the unit's state as
+    /// the inventory ledger holds it. A paper research record: it is held
+    /// here, in the commerce research output, and never in the desk's book,
+    /// sizing or capital. Absent from a record written before it existed.
+    #[serde(default)]
+    pub positions: Vec<qip_financial::position_record::PositionRecord>,
 }
 
 impl EventBody for CommerceSimulated {
@@ -391,6 +425,9 @@ pub struct CommerceResearch {
     logistics: Option<LogisticsPlan>,
     day: u32,
     purchases: u32,
+    /// Physical movements not yet drained into the platform's ledger
+    /// operations, bounded by [`MAX_PENDING_MOVES`].
+    inventory_moves: Vec<InventoryMove>,
     cycles: Vec<CycleEvent>,
     /// Sales settled and buyer returns taken, for the plan's return rate.
     sales: i64,
@@ -496,6 +533,7 @@ impl CommerceResearch {
             logistics: Some(logistics),
             day: 0,
             purchases: 0,
+            inventory_moves: Vec::new(),
             cycles: Vec::new(),
             sales: 0,
             returns_taken: 0,
@@ -599,7 +637,7 @@ impl CommerceResearch {
 
     /// SIMULATE: assess, buy, plan, receive, route, list, reprice and sell,
     /// all on paper.
-    pub fn simulate(&mut self) -> Result<CommerceSimulated> {
+    pub fn simulate(&mut self, now: Timestamp) -> Result<CommerceSimulated> {
         self.day = self.day.saturating_add(1);
         let mut run = CommerceSimulated {
             decision_grade: self.decision_grade(),
@@ -620,7 +658,7 @@ impl CommerceResearch {
         let take = self.queue.len().min(CANDIDATES_PER_PASS);
         let candidates: Vec<Candidate> = self.queue.drain(..take).collect();
         for candidate in candidates {
-            if let Err(error) = self.work_candidate(&candidate, &mut run) {
+            if let Err(error) = self.work_candidate(&candidate, &mut run, now) {
                 run.problems.push(format!(
                     "{} at {}: {}",
                     candidate.product,
@@ -632,7 +670,12 @@ impl CommerceResearch {
         Ok(run)
     }
 
-    fn work_candidate(&mut self, candidate: &Candidate, run: &mut CommerceSimulated) -> Result<()> {
+    fn work_candidate(
+        &mut self,
+        candidate: &Candidate,
+        run: &mut CommerceSimulated,
+        now: Timestamp,
+    ) -> Result<()> {
         let assessment = FeasibilityInput {
             unit_price: Some(candidate.price),
             quantity: Some(self.plan.quantity),
@@ -717,6 +760,18 @@ impl CommerceResearch {
                 cost_basis,
                 owner: self.plan.owner.clone(),
             })?;
+            self.record_move(
+                run,
+                &unit,
+                &candidate.product,
+                "received",
+                InventoryEnd::Counterparty {
+                    counterparty: candidate.venue.clone(),
+                },
+                InventoryEnd::Location {
+                    location: logistics.warehouse.clone(),
+                },
+            );
             self.attributes.insert(
                 unit.clone(),
                 self.unit_attributes(&unit, candidate, &logistics)?,
@@ -746,6 +801,13 @@ impl CommerceResearch {
                     factor,
                 },
             );
+            run.positions.push(self.position_record(
+                &unit,
+                cost_basis,
+                &assessment.landed,
+                quote.days_to_sale,
+                now,
+            )?);
             run.listed.push(PricedUnit {
                 unit: unit.clone(),
                 venue: choice.chosen.venue,
@@ -761,6 +823,65 @@ impl CommerceResearch {
             units,
         });
         Ok(())
+    }
+
+    /// The RealAsset position record for a received `unit` (R12-ASSET-4073):
+    /// its landed cost is the purchase's, and its inventory state is read
+    /// from the plane's ledger, so a unit the ledger did not receive has no
+    /// record. Valued at cost, with a zero target exposure because it is
+    /// outside the book, and an exit by sale at the chosen venue's time to
+    /// sale.
+    fn position_record(
+        &self,
+        unit: &str,
+        cost_basis: Decimal,
+        landed: &qip_financial::physical::LandedCost,
+        days_to_sale: u32,
+        now: Timestamp,
+    ) -> Result<qip_financial::position_record::PositionRecord> {
+        use qip_financial::position_record::{
+            Declared, ExitPlan, ExitRoute, PositionRecordBuilder,
+        };
+        let state = self
+            .plane
+            .ledger()
+            .units()
+            .get(unit)
+            .map(|record| record.state.clone())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "unit {unit} is not in the inventory ledger, so it has no position to record"
+                ))
+            })?;
+        let days = i64::from(days_to_sale.max(1));
+        let paper = "a paper research unit, outside the desk's book";
+        PositionRecordBuilder::new()
+            .asset(unit)
+            .class(qip_financial::asset_class::AssetClass::RealAsset)
+            .mandate(self.plan.owner.clone())
+            .target_exposure(Decimal::ZERO)
+            .valuation(qip_financial::valuation::IlliquidValuator::at_cost(
+                unit, cost_basis, now, now,
+            )?)
+            .horizon(Duration::from_days(days))
+            .expected_exit(Duration::from_days(days))
+            .hedges(Declared::NoneApplicable {
+                reason: paper.to_string(),
+            })
+            .corporate_actions(Declared::NoneApplicable {
+                reason: "a physical good has no corporate actions".to_string(),
+            })
+            .commitments(Declared::NoneApplicable {
+                reason: paper.to_string(),
+            })
+            .exit_plan(ExitPlan::new(
+                now.saturating_add(Duration::from_days(days)),
+                ExitRoute::Sale,
+                None,
+            )?)
+            .product_economics(landed.clone())
+            .inventory_state(state)
+            .build()
     }
 
     /// Reprice what is still sitting, and sell what has sat as long as its
@@ -795,9 +916,40 @@ impl CommerceResearch {
             if elapsed >= held.days_to_sale {
                 let sale = format!("sale-{unit}");
                 self.plane
-                    .sell(&sale, &unit, "paper-buyer", listed.price, None)?;
+                    .sell(&sale, &unit, PAPER_BUYER, listed.price, None)?;
                 self.plane.settle(&sale)?;
+                let warehouse = self
+                    .logistics
+                    .as_ref()
+                    .map(|plan| plan.warehouse.clone())
+                    .ok_or_else(|| Error::invalid("the logistics plan is missing"))?;
+                self.record_move(
+                    run,
+                    &unit,
+                    &held.sku,
+                    "sold",
+                    InventoryEnd::Location {
+                        location: warehouse.clone(),
+                    },
+                    InventoryEnd::Counterparty {
+                        counterparty: PAPER_BUYER.to_string(),
+                    },
+                );
                 let returned = self.take_return_owed(&sale)?;
+                if returned {
+                    self.record_move(
+                        run,
+                        &unit,
+                        &held.sku,
+                        "returned",
+                        InventoryEnd::Counterparty {
+                            counterparty: PAPER_BUYER.to_string(),
+                        },
+                        InventoryEnd::Location {
+                            location: warehouse,
+                        },
+                    );
+                }
                 self.refresh_attributes(&unit)?;
                 let settlement = self
                     .plane
@@ -864,6 +1016,39 @@ impl CommerceResearch {
             .return_unit(sale, Condition::OpenBox, &warehouse, &self.plan.owner)?;
         self.returns_taken = self.returns_taken.saturating_add(1);
         Ok(true)
+    }
+
+    /// Hold one physical movement for the platform's ledger, or say why it
+    /// was not held: past [`MAX_PENDING_MOVES`] a move is refused and named
+    /// on the run rather than evicting one the ledger has not yet booked.
+    fn record_move(
+        &mut self,
+        run: &mut CommerceSimulated,
+        unit: &str,
+        sku: &str,
+        stage: &'static str,
+        from: InventoryEnd,
+        to: InventoryEnd,
+    ) {
+        if self.inventory_moves.len() >= MAX_PENDING_MOVES {
+            run.problems.push(format!(
+                "unit {unit} {stage}: {MAX_PENDING_MOVES} inventory movements are already \
+                 waiting for the ledger, so this one is not booked there"
+            ));
+            return;
+        }
+        self.inventory_moves.push(InventoryMove {
+            unit: unit.to_string(),
+            sku: sku.to_string(),
+            stage,
+            from,
+            to,
+        });
+    }
+
+    /// The physical movements recorded since the last drain, oldest first.
+    pub fn take_inventory_moves(&mut self) -> Vec<InventoryMove> {
+        std::mem::take(&mut self.inventory_moves)
     }
 
     fn plane_apply(&mut self, event: LedgerEvent) -> Result<()> {

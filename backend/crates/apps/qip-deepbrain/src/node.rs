@@ -328,6 +328,16 @@ fn research_pass(
             .side_failures
             .push(format!("ambient journal: {}", error.message()));
     }
+    // The experiment packs of this cycle, on the same journal
+    // (R12-EXPAND-6035): a campaign's backtest and findings printed on a
+    // cycle line and written nowhere are a result nobody can reopen.
+    if let Some(journal) = loops.ambient.as_deref_mut()
+        && let Err(error) = journal.record_experiment_packs(cycle, &round, now)
+    {
+        outcome
+            .side_failures
+            .push(format!("experiment-pack journal: {}", error.message()));
+    }
     // The source scores of this cycle, on the same journal
     // (R12-EXPAND-6027): a score printed on a cycle line and written
     // nowhere is a figure nobody can check against its window.
@@ -767,7 +777,16 @@ pub fn run_with(
             // Re-verify what was referenced, on its own cadence, after the
             // poll that referenced it.
             outcome.refetch = engine.maybe_refetch(platform, cycles, now)?;
-            outcome.source_alpha = engine.maybe_score_sources(cycles, now);
+            // Each round on the log, so a replay reads back the scores the
+            // desk produced (R12-EVID-8108). A refused write is a side
+            // failure, not a stopped node: the round still happened.
+            let (round, journaled) = engine.maybe_score_sources(platform, cycles, now);
+            outcome.source_alpha = round;
+            if let Err(error) = journaled {
+                outcome
+                    .side_failures
+                    .push(format!("source alpha journal: {}", error.message()));
+            }
         }
         // Research after discovery, so a source catalogued this cycle is
         // licensed for this sweep's admissions. The bounds are the discovery

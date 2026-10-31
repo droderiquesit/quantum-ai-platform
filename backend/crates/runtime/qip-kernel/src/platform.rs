@@ -1066,6 +1066,9 @@ pub struct Platform {
     /// The mandates whose subscription is in the log, by the operation id's
     /// mandate part, so a second funding of one mandate queues nothing.
     subscribed_mandates: BTreeSet<String>,
+    /// Physical-inventory operations queued from the commerce plane, for the
+    /// sequence each carries (R12-COMMERCE-5096).
+    commerce_inventory_operations: u64,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -6445,6 +6448,7 @@ impl Platform {
             capital_grant_fundings: BTreeMap::new(),
             capital_grant_operations: 0,
             subscribed_mandates: BTreeSet::new(),
+            commerce_inventory_operations: 0,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -7978,6 +7982,57 @@ impl Platform {
             now,
         )?;
         self.subscribe_mandate(user, currency, amount, now)
+    }
+
+    /// Queue each physical movement the commerce plane recorded as a
+    /// `PhysicalInventory` operation for the desk ledger (R12-COMMERCE-5096).
+    ///
+    /// The commerce ledger is event-sourced and replayable on its own, and
+    /// until this it was a ledger nothing else could see: its units, their
+    /// location and their sale were invisible to the platform's books. Each
+    /// receipt, sale and return now books one unit between the venue or
+    /// buyer and the warehouse, keyed on the unit and the stage, so the desk
+    /// ledger's inventory account at the warehouse replays to the units the
+    /// commerce ledger holds there. A movement the contract refuses is
+    /// reported and skipped, as a mandate subscription's is.
+    pub(crate) fn queue_inventory_moves(
+        &mut self,
+        moves: Vec<crate::commerce_research::InventoryMove>,
+        now: Timestamp,
+    ) -> Vec<String> {
+        use qip_contracts::ledger_operation::{LedgerOperationFields, OperationKind};
+        let mut problems = Vec::new();
+        let chain = self.desk_ledger.chain().to_string();
+        for movement in moves {
+            let sequence = self.commerce_inventory_operations + 1;
+            let built = qip_contracts::validated::Validated::new(LedgerOperationFields {
+                schema_version: 1,
+                operation_id: format!("{chain}:commerce-{}:{}", movement.stage, movement.unit),
+                origin: chain.clone(),
+                sequence,
+                recorded_at: now,
+                settlement: qip_contracts::ledger::Settlement::Simulated,
+                kind: OperationKind::PhysicalInventory {
+                    from: movement.from,
+                    to: movement.to,
+                    unit: movement.sku,
+                    amount: Decimal::ONE,
+                },
+            });
+            match built {
+                Ok(operation) => {
+                    self.commerce_inventory_operations = sequence;
+                    self.desk_operations.push(operation);
+                }
+                Err(error) => problems.push(format!(
+                    "commerce unit {} {} was not booked at the ledger: {}",
+                    movement.unit,
+                    movement.stage,
+                    error.message()
+                )),
+            }
+        }
+        problems
     }
 
     /// Queue the ledger's record that this user's mandate subscribed capital
@@ -14964,6 +15019,38 @@ impl Platform {
         parents
     }
 
+    /// The paper book's funding state for the federation's capital member
+    /// (R12-WORLD-3048, ADR 0194). Money crosses to `f64` here, as
+    /// statistics: the member forecasts whether the next pass holds less
+    /// cash, and no amount comes back out of it. `None` where equity is not
+    /// positive or any figure is not finite — a share of nothing is not a
+    /// number, and the member is silent rather than reading that book as one
+    /// that draws nothing.
+    fn capital_view(&self) -> Option<crate::federation_stage::CapitalView> {
+        let equity = self.equity().to_f64();
+        if !equity.is_finite() || equity <= 0.0 {
+            return None;
+        }
+        let cash = self.capital.cash.to_f64();
+        let (mut gross, mut net) = (0.0, 0.0);
+        for lot in self.capital.positions.values() {
+            let notional = (lot.quantity * lot.average_price).to_f64();
+            gross += notional.abs();
+            net += notional;
+        }
+        let view = crate::federation_stage::CapitalView {
+            cash,
+            cash_share: cash / equity,
+            leverage: gross / equity,
+            net_share: net / equity,
+            pending_theses: self.pending_theses.len(),
+        };
+        [view.cash, view.cash_share, view.leverage, view.net_share]
+            .iter()
+            .all(|x| x.is_finite())
+            .then_some(view)
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15016,6 +15103,7 @@ impl Platform {
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
             }),
+            capital: self.capital_view(),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
         // so a material disagreement on a held name issues the contract

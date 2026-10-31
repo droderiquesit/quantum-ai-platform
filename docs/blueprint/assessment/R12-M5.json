@@ -2285,13 +2285,16 @@
   {
     "id": "R12-COMMERCE-5096",
     "status": "PARTIAL",
-    "current": "commerce::Ledger (backend/crates/libs/qip-financial/src/commerce.rs:700, replay :720, apply :738); Not called by any kernel or app (grep for qip_financial::commerce outside the crate finds none).",
+    "current": "qip_financial::commerce::Ledger is event-sourced and replayable (commerce.rs Ledger::replay/apply) and is the ledger the kernel's commerce plane runs (commerce_research.rs plane_apply, LedgerEvent::Received at each receipt, CommercePlane::sell/return_unit). Since 2026-10-31 each receipt, sale and return also queues one OperationKind::PhysicalInventory operation for the desk ledger (Platform::queue_inventory_moves, drained in the breadth SIMULATE stage), keyed by unit and stage.",
     "evidence": [
       "backend/crates/libs/qip-financial/tests/commerce.rs:447",
       "backend/crates/libs/qip-financial/tests/commerce.rs:481",
-      "backend/crates/libs/qip-financial/tests/commerce.rs:645"
+      "backend/crates/libs/qip-financial/tests/commerce.rs:645",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs::record_move",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::queue_inventory_moves",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs::a_commerce_receipt_books_one_physical_inventory_operation_the_ledger_replays_to_the_same_units"
     ],
-    "gap": "Join to the global ledger; integration.",
+    "gap": "2026-10-31 (lane L5-EDGE): the commerce ledger now joins the desk ledger — its receipts, sales and returns replay at the desk ledger's inventory accounts to the units it holds — but the commerce plane runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, and the queued operations are not journaled, so a restart loses the ones the desk has not yet shipped (a mandate subscription is journaled and re-queued; these are not).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2299,10 +2302,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
+    "verification": "cargo test -p qip-kernel --test breadth -- a_commerce_receipt",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " 2026-10-31 lane L5-EDGE: correction - the 'current' text said no kernel or app called the commerce ledger; commerce_research.rs runs it. Built the join: InventoryMove recorded at each receipt (venue -> warehouse), sale (warehouse -> paper-buyer) and return (paper-buyer -> warehouse), bounded at twice MAX_LISTED_UNITS and refused past it, drained after each SIMULATE pass into PhysicalInventory operations, one unit each, on the desk ledger's chain. Mutations fired (3): drop the drain; drop the receipt move; book the sale as leaving no warehouse. No skeptic was run; the row is not promoted."
   },
   {
     "id": "R12-COMMERCE-5097",

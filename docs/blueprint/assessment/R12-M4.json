@@ -393,23 +393,24 @@
   {
     "id": "R12-QUANT-4018",
     "status": "PARTIAL",
-    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family (qip_quantum::foundry::FamilyKind variant) that Foundry::platform() holds as Registered; a NotBuilt, unnamed or unknown family is refused with the foundry reason before anything is journalled.",
+    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family Foundry::platform() holds as Registered and a calibrated classical baseline card exists. ADR 0150 decision 5 keeps the producer unbuilt; qip-acceptance arch_033 no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate fails on any production mention of the variant or its serde tag quantum_informed outside the seam's declaration and match arm, reading every src/ tree and build.rs with only #[cfg(test)] mod blocks skipped.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/model_serving.rs::require_eligible_workload",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built"
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built",
+      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs::no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate (mutants killed: construction in qip-deepbrain main.rs; construction at learning.rs promote_model_from; quantum_informed JSON literal in main.rs; token blinded; old truncating read)"
     ],
-    "gap": "The seam refuses ineligible workloads, but no production caller produces a QuantumInformed candidate (qip-deepbrain promotes only ModelProducer::TrainingPipeline through promote_model), so the check runs only when a test or a future desk names the producer.",
+    "gap": "Skeptic 2026-10-31 REFUTED (COMPLETE refused): the seam checks that a calibrated baseline card exists but never compares the candidate against it, though the requirement asks for evaluation against the calibrated classical baseline; ADR 0150 decision 5 declines building the variant, so under bar part 4 the clause stays unmet. Promotions restored from the log (resume_model_promotions, rollback) skip require_eligible_workload. The scan cannot see a ModelProducer deserialized from JSON assembled at runtime, nor benches/ or macro-generated code. The first scan stopped at each file's first #[cfg(test)] and missed qip-deepbrain/src/learning.rs past line 1016; fixed in the follow-up commit.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test serving",
+    "verification": "cargo test -p qip-kernel --test serving; cargo test -p qip-acceptance --test arch_033_quantum_path",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. Owner ruling 2026-10-31 (IMPLEMENT): The requirement calls quantum variants optional. ADR 0150 decision 5 keeps them unbuilt until a family has a benefit record on a non-simulated provider. Handed to lane L4 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open. Owner ruling 2026-10-31 (IMPLEMENT): The requirement calls quantum variants optional. ADR 0150 decision 5 keeps them unbuilt until a family has a benefit record on a non-simulated provider. Handed to lane L4 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-MODEL-4019",
@@ -1635,9 +1636,12 @@
     "current": "qip-financial commerce.rs is a paper-only pipeline (SimulatedMerchant, inventory ledger, settlement) with tests; not composed into the kernel.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/commerce.rs:1-12",
-      "backend/crates/libs/qip-financial/tests/commerce.rs"
+      "backend/crates/libs/qip-financial/tests/commerce.rs",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs CommerceResearch::position_record; CommerceSimulated.positions",
+      "backend/crates/libs/qip-financial/src/position_record.rs PositionRecord.inventory_state (RealAsset only)",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledger_inventory_and_the_book_is_unchanged"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Paper commerce is composed into the kernel (qip-kernel src/commerce_research.rs, DISCOVER/SIMULATE) but runs only when QIP_DEEPBRAIN_BREADTH_PLAN (qip-deepbrain src/breadth.rs) is set, and no committed environment sets it (infrastructure/gitops/envs/*/deepbrain.yaml). By its own doc no commerce unit becomes a position in the kernel's book; PositionRecord.product_economics (LandedCost) is never built and the record has no inventory-state field. Needs a gitops deploy change for the breadth plan plus a decision (ADR 0021/0099 scope) letting paper commerce units enter the asset book; any real merchant stays BLOCKED by ADR 0021/0099.",
+    "gap": "2026-10-24 (re-read against the tree): Paper commerce is composed into the kernel (qip-kernel src/commerce_research.rs, DISCOVER/SIMULATE) but runs only when QIP_DEEPBRAIN_BREADTH_PLAN (qip-deepbrain src/breadth.rs) is set, and no committed environment sets it (infrastructure/gitops/envs/*/deepbrain.yaml). By its own doc no commerce unit becomes a position in the kernel's book; PositionRecord.product_economics (LandedCost) is never built and the record has no inventory-state field. Needs a gitops deploy change for the breadth plan plus a decision (ADR 0021/0099 scope) letting paper commerce units enter the asset book; any real merchant stays BLOCKED by ADR 0021/0099.\n2026-10-31 (lane L1-MONEY, ruling decision 10): each received paper unit is now a RealAsset PositionRecord carrying the purchase's LandedCost and its inventory state read from the commerce ledger. It is held in the commerce research output, never in the desk's book. Remaining: commerce research runs only when the deep brain is given a breadth plan, and no committed environment gives it one. The ruling approves mounting a commerce-only breadth plan in dev (a plan file under data/, a catalogue.tf config_files entry and QIP_DEEPBRAIN_BREADTH_PLAN in infrastructure/gitops/envs/dev/deepbrain.yaml). That is not done yet, so bar part 2 is unmet.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1648,7 +1652,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). 2026-10-31 lane L1-MONEY: mutation (literal Sold instead of the ledger read) fired, restored with cp+cmp. No skeptic was run: the row cannot be promoted until the dev mount lands. Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-ASSET-4074",
@@ -2194,7 +2198,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::short_without_borrow, observe_borrow; called from submit_order",
       "backend/crates/runtime/qip-kernel/tests/learning.rs a_short_nobody_has_said_is_borrowable_is_refused_and_a_covered_one_is_admitted"
     ],
-    "gap": "Corrected 2026-10-24 (lane L1-MONEY): the earlier text said no borrow datum exists anywhere; that was stale. A borrow limit exists and fires on the default order path: submit_order refuses every short not covered by a fresh reading, and nothing defaults to borrowable. What is missing is the measurement: Platform::observe_borrow has no production caller, because no borrow-availability source has been evaluated by qip-data-finder for licensing posture, so in every binary every short is refused rather than measured (fail-closed, not covered). Quote availability is unmet: qip_capital::margin::estimate_exit's quote_available/borrow_available arms have no production caller (grep finds none outside tests), and no gate refuses an order on an instrument with no live quote. Closes with an admitted borrow source feeding observe_borrow and a quote-presence read at submit_order with a test driving each.",
+    "gap": "Corrected 2026-10-24 (lane L1-MONEY): the earlier text said no borrow datum exists anywhere; that was stale. A borrow limit exists and fires on the default order path: submit_order refuses every short not covered by a fresh reading, and nothing defaults to borrowable. What is missing is the measurement: Platform::observe_borrow has no production caller, because no borrow-availability source has been evaluated by qip-data-finder for licensing posture, so in every binary every short is refused rather than measured (fail-closed, not covered). Quote availability is unmet: qip_capital::margin::estimate_exit's quote_available/borrow_available arms have no production caller (grep finds none outside tests), and no gate refuses an order on an instrument with no live quote. Closes with an admitted borrow source feeding observe_borrow and a quote-presence read at submit_order with a test driving each.\n2026-10-31 (lane L1-MONEY): the quote gate the 2026-10-31 ruling approved was built and measured, then withdrawn uncommitted. In Platform::submit_order after short_without_borrow, it refused an order whose instrument has no quote, trade or bar in the market snapshot, under control \"quote-availability\". It refused 92 kernel tests across 16 targets (1051 passed, 92 failed on qip-kernel): their fixtures submit orders on instruments the snapshot never priced, and qip-api, qip-acceptance and the edge suites build platforms the same way. Remaining: one slice that seeds an observed price in every order-submitting fixture first, then lands the gate with an_order_on_an_instrument_with_no_live_quote_is_refused and a mutation that skips it. Borrow stays fail-closed (every uncovered short refused) until qip-data-finder admits a licensed borrow source under ADR 0157, an owner vendor decision, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2205,7 +2209,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row. Owner ruling 2026-10-31 (IMPLEMENT): Build the quote gate now: an order on an instrument with no quote in the platform's market snapshot is refused and journaled. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row. 2026-10-31 lane L1-MONEY: gate prototyped, 92 fixture refusals measured, reverted; nothing committed in code. Owner ruling 2026-10-31 (IMPLEMENT): Build the quote gate now: an order on an instrument with no quote in the platform's market snapshot is refused and journaled. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-RISK-4097",
