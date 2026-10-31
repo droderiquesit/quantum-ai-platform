@@ -235,7 +235,10 @@ fn private_fund_reported_at(
         distributed_capital: distributed,
         residual_value: residual,
         stage: "buyout".to_string(),
-        lockup_years: 7.0,
+        // Expired before the test's instant: these tests are about the mark,
+        // and a fund inside its lockup cannot be sized on a short thesis
+        // (ADR 0183).
+        lockup_years: 1.0,
         capital_call_notice_days: 10,
         call_schedule: None,
     }))

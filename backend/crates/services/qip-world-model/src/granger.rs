@@ -326,8 +326,10 @@ pub fn establish_temporal_precedence_controlling_for(
 ///    create one with the lag from the reaction episode.
 /// 2. **Update lag estimates**: if an edge exists, update its lag field to
 ///    match observed reaction lags, weighted by confidence.
-/// 3. **Falsification**: if a reaction contradicts a held edge (e.g., edge says
-///    no connection but a strong reaction is observed), confidence is reduced.
+/// 3. **Falsification** is not done here: this function only builds an edge.
+///    A reaction that contradicts a held edge lowers its confidence through
+///    [`apply_reaction`] (R12-WORLD-6015). Until that existed, this sentence
+///    claimed the reduction happened here and nothing did it.
 ///
 /// # Parameters
 ///
@@ -383,4 +385,124 @@ pub fn establish_precedence_from_reaction(
     )?
     .with_confidence(edge_confidence)?
     .with_evidence(vec![evidence_id]))
+}
+
+/// The horizons, in bars after the event, at which a world event's market
+/// reaction is measured (R12-WORLD-6015): the next bar, a week of daily bars
+/// and a month of them.
+pub const REACTION_HORIZONS_BARS: [usize; 3] = [1, 5, 20];
+
+/// What a contradicting reaction multiplies a held edge's confidence by. A
+/// chosen constant: one reaction against the edge halves how sure the graph
+/// is of it, and the edge survives; repeated contradictions drive it toward
+/// zero without any single reaction erasing it.
+pub const CONTRADICTION_CONFIDENCE_FACTOR: f64 = 0.5;
+
+/// A reaction that went against a held edge, and what it did to the edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReactionContradiction {
+    pub cause: String,
+    pub effect: String,
+    pub episode_id: String,
+    /// The sign the edge, through its mechanism, says the effect moves with
+    /// this event's direction.
+    pub expected_sign: f64,
+    /// The sign the market moved.
+    pub observed_sign: f64,
+    pub confidence_before: f64,
+    pub confidence_after: f64,
+}
+
+/// What one reaction episode did to the graph.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReactionOutcome {
+    /// Edges the episode established, where none was held.
+    pub created: usize,
+    /// Held edges the episode agreed with, left as they were.
+    pub agreed: usize,
+    pub contradicted: Vec<ReactionContradiction>,
+}
+
+/// Apply one reaction episode to the causal graph (R12-WORLD-6015), per
+/// affected instrument:
+///
+/// - no live edge from the event to the instrument: one is established
+///   through [`establish_precedence_from_reaction`]'s rule;
+/// - a live edge whose mechanism, given the event's own `event_direction`,
+///   expects the move the market made: left unchanged;
+/// - a live edge expecting the opposite move: its confidence is lowered by
+///   [`CONTRADICTION_CONFIDENCE_FACTOR`], the reaction is cited on it, and
+///   the contradiction is returned.
+///
+/// A flat move (direction zero) or a directionless event neither supports
+/// nor contradicts anything and creates nothing.
+pub fn apply_reaction(
+    graph: &mut crate::causal::CausalGraph,
+    reaction: &crate::reaction::ReactionEpisode,
+    event_direction: f64,
+    mechanism: Mechanism,
+    now: Timestamp,
+) -> Result<ReactionOutcome> {
+    let mut outcome = ReactionOutcome::default();
+    if !event_direction.is_finite() || event_direction == 0.0 {
+        return Ok(outcome);
+    }
+    for (instrument, magnitude_bps, observed) in &reaction.affected_instruments {
+        if *observed == 0.0 {
+            continue;
+        }
+        let evidence_id = format!(
+            "reaction:{}:event_at={}:lag_bars={}",
+            reaction.episode_id, reaction.event_time, reaction.lag_bars
+        );
+        let held: Vec<(usize, Mechanism, f64)> = graph
+            .outgoing_indexed(&reaction.event_name, now)
+            .into_iter()
+            .filter(|(_, e)| e.effect == *instrument)
+            .map(|(i, e)| (i, e.mechanism, e.confidence))
+            .collect();
+        if held.is_empty() {
+            let strength = magnitude_bps.abs() / 10_000.0;
+            let edge = CausalEdge::new(
+                &reaction.event_name,
+                instrument,
+                mechanism,
+                strength,
+                Duration::from_secs(reaction.lag_bars as i64 * 86_400),
+                now,
+            )?
+            .with_confidence(reaction.confidence * TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING)?
+            .with_evidence(vec![evidence_id]);
+            graph.add(edge);
+            outcome.created += 1;
+            continue;
+        }
+        for (index, held_mechanism, _) in held {
+            let expected = event_direction.signum()
+                * if held_mechanism.preserves_sign() {
+                    1.0
+                } else {
+                    -1.0
+                };
+            if expected * observed > 0.0 {
+                outcome.agreed += 1;
+                continue;
+            }
+            let (before, after) = graph.weaken_on_contradiction(
+                index,
+                CONTRADICTION_CONFIDENCE_FACTOR,
+                evidence_id.clone(),
+            )?;
+            outcome.contradicted.push(ReactionContradiction {
+                cause: reaction.event_name.clone(),
+                effect: instrument.clone(),
+                episode_id: reaction.episode_id.clone(),
+                expected_sign: expected,
+                observed_sign: *observed,
+                confidence_before: before,
+                confidence_after: after,
+            });
+        }
+    }
+    Ok(outcome)
 }

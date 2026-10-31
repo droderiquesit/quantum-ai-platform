@@ -263,6 +263,10 @@ execution_nodes = {
     # what the node trades, and the binary refuses at start-up a declaration
     # naming a venue outside `venues` above.
     cross_region_mirror_path = ""
+    # ADR 0116: no peer. A second node and the stable address that fronts
+    # each peer are billed (decision 5 of 2026-10-25); the module refuses a
+    # mesh naming no peer, so null is the only honest value until then.
+    peer_mesh = null
   }
 }
 

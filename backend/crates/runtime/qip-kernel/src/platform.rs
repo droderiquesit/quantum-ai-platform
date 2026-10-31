@@ -1076,6 +1076,13 @@ pub struct Platform {
     /// [`Platform::risk_state`] here before the panel is convened; see
     /// [`Self::brief_the_desk_on_risk`].
     risk: Upstream<RiskView>,
+    /// The book the desk's `read_portfolio` gate reads (R12-ASSET-3019),
+    /// written from the position lifecycle register before the panel is
+    /// convened. Until it existed the desk held the empty portfolio it was
+    /// assembled with for the life of the process, so the Portfolio/Asset
+    /// Brain would have read an empty book in every running binary and
+    /// construction priced its turnover against nothing.
+    book: Upstream<BookView>,
     /// The platform's own executions as the desk's adversary probe reads
     /// them (R12-REASON-3023): rebuilt from the order manager before every
     /// REASON by `brief_the_desk_on_executions`, bounded to the most recent
@@ -1095,6 +1102,13 @@ pub struct Platform {
     /// version (R12-WORLD-3034): the record that a distilled procedure was
     /// retrieved for reuse, not only stored.
     procedures_briefed: Vec<(String, u32)>,
+    /// (event id, horizon in bars) pairs whose market reaction has been
+    /// measured and applied to the causal graph (R12-WORLD-6015), so each
+    /// is applied once. Pruned to events still held in `market_events`.
+    reactions_applied: BTreeSet<(String, usize)>,
+    /// The contradictions recent reactions found against held causal edges,
+    /// newest last and bounded by [`REACTION_CONTRADICTION_HISTORY`].
+    reaction_contradictions: Vec<qip_world_model::granger::ReactionContradiction>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -1282,6 +1296,11 @@ pub struct Platform {
     /// Desk sale proceeds the venue's settlement calendar has not yet made
     /// usable (R12-CAPITAL-4087). See [`UnsettledSale`].
     unsettled_sales: Vec<UnsettledSale>,
+    /// Each desk position's life, discover to attribute (R12-ASSET-4071).
+    /// Advanced by [`Self::book_desk_fill`], scheduled by
+    /// [`Self::register_settlement`], settled and attributed only in LEARN.
+    /// See [`crate::position_life`] for what a resumed position gets.
+    position_lives: crate::position_life::PositionLives,
     /// Proposals produced since assembly, including those aged out above.
     proposals_made: u64,
     /// Corporate actions absorbed whose ex-date the tape has not yet reached,
@@ -1337,7 +1356,33 @@ pub struct Platform {
     /// hypotheses carry none records nothing here, and the position's record
     /// then refuses rather than stating a horizon nobody approved.
     position_horizons: BTreeMap<String, (String, Duration)>,
+    /// The exit plan each object was last sized with, by object id, written
+    /// by `construct_from` on the same terms as [`Self::position_horizons`]
+    /// (R12-ASSET-4069, ADR 0183): only once the proposal's capital is held,
+    /// bounded by the universe, not rebuilt on a restart. A proposal any leg
+    /// of which has no admissible plan is refused before it holds capital,
+    /// so nothing reaches ACT without one.
+    position_exit_plans: BTreeMap<String, qip_financial::position_record::ExitPlan>,
+    /// Every instrument the platform has seen trade, from its first bar,
+    /// with the delistings and renames its corporate actions dated
+    /// (R12-TICK-2090). In memory and rebuilt every process from the bars
+    /// and actions re-fed to it, like the bar history it rides beside: a
+    /// backtest that asked the current universe who existed last year would
+    /// not see the names that have since gone, which is survivorship hidden
+    /// in a lookup.
+    universe_history: qip_financial::history::UniverseHistory,
+    /// The platform's own decision latency, SENSE through ACT, one sample per
+    /// cycle on the injected clock and the most recent
+    /// [`DECISION_LATENCY_SAMPLES`] kept (R12-TICK-2074). The capacity probe
+    /// runs behind it, so a simulated execution arrives as late as this
+    /// platform's own decisions do rather than at the instant it decided.
+    decision_latencies: std::collections::VecDeque<Duration>,
 }
+
+/// How many cycles of decision latency the platform keeps: enough for a
+/// median and a tenth-to-ninetieth spread, few enough that one slow hour
+/// leaves the window within the hour.
+const DECISION_LATENCY_SAMPLES: usize = 64;
 
 /// How many announced-but-not-yet-due corporate actions the platform holds.
 ///
@@ -2919,6 +2964,11 @@ const PRECEDENT_K: usize = 5;
 /// reader asking "what was the platform's picture of this name" can hold in
 /// their head at once. It is not a threshold and nothing fires on it.
 const CAUSAL_CONTEXT_LIMIT: usize = 5;
+
+/// Reaction contradictions the platform keeps for inspection
+/// (R12-WORLD-6015). A cap, not a forecast: the record of what each did is on
+/// the edges themselves, which cite the reaction that weakened them.
+const REACTION_CONTRADICTION_HISTORY: usize = 256;
 
 /// The most recent correct calls an analyst's procedure is distilled from.
 /// A window, not a lifetime: a way of answering that worked two years ago
@@ -5826,7 +5876,13 @@ impl Platform {
         // and the two gates are then re-pointed at these slots under the
         // capability and label `Desk::new` itself chose — not a second
         // spelling of either.
-        let world = Upstream::new(WorldModel::new());
+        // The evidence fabric is derived again from the claims the log holds
+        // as admitted (R12-EVID-2038): a restarted process otherwise begins
+        // with no contest, no kept contradiction and no resolution, and the
+        // next claim on either side is admitted as if it were the first.
+        let mut world_model = WorldModel::new();
+        world_model.rebuild_evidence(Self::journaled_evidence_in(&event_log)?)?;
+        let world = Upstream::new(world_model);
         let research_memory = Upstream::new(ResearchMemory::new());
         let market = Upstream::new(MarketView {
             snapshot: MarketSnapshot::new(now),
@@ -5883,6 +5939,11 @@ impl Platform {
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
         desk.risk = risk.gate(desk.risk.required(), desk.risk.label());
+        let book = Upstream::new(BookView {
+            portfolio: asset_book_opened(initial_equity, now),
+            marks: BTreeMap::new(),
+        });
+        desk.book = book.gate(desk.book.required(), desk.book.label());
         let executions = Upstream::new(ExecutionView::default());
         desk.executions = executions.gate(desk.executions.required(), desk.executions.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
@@ -6224,6 +6285,8 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             procedures_briefed: Vec::new(),
+            reactions_applied: BTreeSet::new(),
+            reaction_contradictions: Vec::new(),
             pending_theses: Vec::new(),
             justified_hypotheses: justification::JustifiedHypotheses::default(),
             outside_priors: BTreeMap::new(),
@@ -6233,6 +6296,7 @@ impl Platform {
             apply_joint_tail_reserve: false,
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
+            position_lives: crate::position_life::PositionLives::default(),
             episodes: EpisodicMemory::default(),
             pending_episodes: Vec::new(),
             precedents: Vec::new(),
@@ -6299,6 +6363,7 @@ impl Platform {
             world,
             market,
             risk,
+            book,
             executions,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
@@ -6317,6 +6382,9 @@ impl Platform {
             asset_book: asset_book_opened(initial_equity, now),
             position_mandates: BTreeMap::new(),
             position_horizons: BTreeMap::new(),
+            position_exit_plans: BTreeMap::new(),
+            universe_history: qip_financial::history::UniverseHistory::new(),
+            decision_latencies: std::collections::VecDeque::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -8946,18 +9014,11 @@ impl Platform {
                             ));
                         }
                     }
-                    let moved = self.book_desk_fill(
-                        &fill.object_id,
-                        fill.side,
-                        fill.price,
-                        fill.quantity,
-                        fill.costs,
-                        fill.at,
-                    );
-                    self.aggregate_fill(&fill.object_id, moved);
                     // From the same record, so a restart withholds what the
-                    // process it replaced withheld.
-                    self.register_settlement(
+                    // process it replaced withheld, and every position's life
+                    // is rebuilt from the fills that walked it.
+                    self.book_desk_fill(
+                        &fill.object_id,
                         &fill.venue,
                         fill.side,
                         fill.price,
@@ -11110,6 +11171,7 @@ impl Platform {
         self.world.feeds(&self.desk.world)
             && self.market.feeds(&self.desk.market)
             && self.risk.feeds(&self.desk.risk)
+            && self.book.feeds(&self.desk.book)
     }
 
     /// The risk view the desk's risk control reads through its
@@ -11140,6 +11202,63 @@ impl Platform {
             view.state = state;
             view.limits = limits;
         });
+    }
+
+    /// Write the position lifecycle register and the latest close of every
+    /// instrument it holds into the slot the desk's `read_portfolio` gate
+    /// reads (R12-ASSET-3019), before the panel is convened. The register is
+    /// the book a flag for want of a mandate is raised on (R12-ASSET-4066),
+    /// so the Portfolio/Asset Brain reads that flag rather than inferring
+    /// one. An instrument with no close is left unmarked, and the brain says
+    /// how many, rather than marked at a price nobody observed.
+    fn brief_the_desk_on_book(&self) {
+        let portfolio = self.asset_book.clone();
+        let marks: BTreeMap<String, Decimal> = portfolio
+            .positions()
+            .filter_map(|position| {
+                let object = position.object_id.as_str();
+                self.bar_history
+                    .get(object)
+                    .and_then(|bars| bars.last())
+                    .map(|bar| (object.to_string(), bar.close))
+            })
+            .collect();
+        self.book.update(|view| {
+            view.portfolio = portfolio;
+            view.marks = marks;
+        });
+    }
+
+    /// List `object_id` in the universe history from `at` the first time the
+    /// platform sees it, under the universe record's symbol (or its id where
+    /// the universe holds no record). Later sightings change nothing.
+    fn note_listing(&mut self, object_id: &ObjectId, at: Timestamp) {
+        if self.universe_history.is_named(object_id) {
+            return;
+        }
+        let symbol = self.market.read().universe.get(object_id).map_or_else(
+            || object_id.as_str().to_string(),
+            |record| record.symbol.clone(),
+        );
+        if let Err(error) = self.universe_history.list(object_id.clone(), symbol, at) {
+            self.capture_problems.push(format!(
+                "{object_id} could not be listed in the universe history: {}",
+                error.message()
+            ));
+        }
+    }
+
+    /// Every instrument the platform has seen trade, with the delistings and
+    /// renames dated (R12-TICK-2090): what a backtest asks who was a member
+    /// on a past date.
+    pub fn universe_history(&self) -> &qip_financial::history::UniverseHistory {
+        &self.universe_history
+    }
+
+    /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
+    /// it.
+    pub fn desk_book_view(&self) -> Reading<'_, BookView> {
+        self.book.read()
     }
 
     /// Write the platform's own executed orders into the slot the desk's
@@ -11568,8 +11687,15 @@ impl Platform {
     /// release instant rather than read as instant — the permissive guess —
     /// and the problem is said on the cycle. Purchases owe nothing later
     /// here: the broker has already debited the cash.
+    ///
+    /// The same quote schedules the settlement of a desk position this fill
+    /// exited, on either side (R12-ASSET-4071): a short closed by a purchase
+    /// owes its settlement as much as a long closed by a sale, so the
+    /// position life is scheduled before the purchase early-return below.
+    #[allow(clippy::too_many_arguments)]
     fn register_settlement(
         &mut self,
+        object_id: &str,
         venue: &str,
         side: Side,
         price: Decimal,
@@ -11577,6 +11703,18 @@ impl Platform {
         costs: Decimal,
         at: Timestamp,
     ) {
+        let quoted = self
+            .pre_positioner
+            .settlement()
+            .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
+            .and_then(|calendar| calendar.quote(at))
+            .map(|quote| quote.available_at);
+        if let Some(problem) = self
+            .position_lives
+            .schedule_settlement(object_id, quoted.as_ref().ok().copied())
+        {
+            self.capture_problems.push(problem);
+        }
         if side != Side::Sell {
             return;
         }
@@ -11587,13 +11725,8 @@ impl Platform {
         else {
             return;
         };
-        let available_at = match self
-            .pre_positioner
-            .settlement()
-            .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
-            .and_then(|calendar| calendar.quote(at))
-        {
-            Ok(quote) => Some(quote.available_at),
+        let available_at = match quoted {
+            Ok(available_at) => Some(available_at),
             Err(error) => {
                 self.capture_problems.push(format!(
                     "a sale at {venue} has no settlement date ({}); its {proceeds} of proceeds \
@@ -11990,6 +12123,7 @@ impl Platform {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
                     self.ensure_world_object(key.as_str(), bar.close_time());
+                    self.note_listing(&bar.object_id, bar.open_time);
                     push_bounded(
                         self.price_history.entry(key.clone()).or_default(),
                         bar.close.to_f64(),
@@ -12403,6 +12537,134 @@ impl Platform {
     /// what the caller gets back. The refusal is not a stage failing — it is the
     /// argument being wrong — so nothing is journalled, nothing is charged and
     /// no state moves.
+    /// Pair each world event with the market's reaction at each of
+    /// [`qip_world_model::granger::REACTION_HORIZONS_BARS`] once enough bars
+    /// have closed, and apply each reaction to the causal graph
+    /// (R12-WORLD-6015): a reaction with no edge behind it establishes one,
+    /// and one against a held edge lowers that edge's confidence and is kept
+    /// in [`Self::reaction_contradictions`].
+    ///
+    /// The move is the subject's close at the horizon against its last
+    /// close before the event, in basis points. An event whose subject has
+    /// no bar history, or whose weight is not a probability, is skipped with
+    /// a problem on the cycle; one whose horizon has not closed yet waits.
+    fn react_to_world_events(&mut self, now: Timestamp) {
+        use qip_world_model::granger::REACTION_HORIZONS_BARS;
+        use qip_world_model::reaction::ReactionEpisode;
+        let held: BTreeSet<String> = self
+            .market_events
+            .iter()
+            .map(|e| e.event_id.clone())
+            .collect();
+        self.reactions_applied
+            .retain(|(event_id, _)| held.contains(event_id));
+        let mut problems = Vec::new();
+        let mut episodes: Vec<(ReactionEpisode, f64)> = Vec::new();
+        for event in &self.market_events {
+            if event.direction == 0.0 || event.known_at() > now {
+                continue;
+            }
+            let Some(bars) = self.bar_history.get(&event.subject) else {
+                continue;
+            };
+            let Some(first_after) = bars
+                .iter()
+                .position(|bar| bar.open_time >= event.occurred_at())
+            else {
+                continue;
+            };
+            let Some(base) = first_after
+                .checked_sub(1)
+                .and_then(|i| bars.get(i))
+                .map(|bar| bar.close.to_f64())
+                .filter(|c| *c > 0.0)
+            else {
+                continue;
+            };
+            for horizon in REACTION_HORIZONS_BARS {
+                if self
+                    .reactions_applied
+                    .contains(&(event.event_id.clone(), horizon))
+                {
+                    continue;
+                }
+                let Some(bar) = bars.get(first_after + horizon - 1) else {
+                    continue;
+                };
+                if bar.close_time() > now {
+                    continue;
+                }
+                // Statistics from here: a return in basis points.
+                let moved_bps = (bar.close.to_f64() / base - 1.0) * 10_000.0;
+                let sign = if moved_bps > 0.0 {
+                    1.0
+                } else if moved_bps < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                };
+                match ReactionEpisode::new(
+                    format!("{}@{horizon}", event.event_id),
+                    event.class.clone(),
+                    event.occurred_at(),
+                    bar.close_time(),
+                    vec![(event.subject.clone(), moved_bps, sign)],
+                    horizon,
+                    event.weight,
+                    format!("{} over {horizon} bar(s)", event.description),
+                    now,
+                ) {
+                    Ok(episode) => episodes.push((episode, event.direction)),
+                    Err(error) => problems.push(format!(
+                        "the reaction to {} over {horizon} bar(s) was not recorded: {}",
+                        event.event_id,
+                        error.message()
+                    )),
+                }
+            }
+        }
+        let mut contradictions = Vec::new();
+        for (episode, direction) in episodes {
+            let applied = self.world.update(|world| {
+                world.apply_reaction(
+                    &episode,
+                    direction,
+                    qip_world_model::causal::Mechanism::TemporalPrecedence,
+                    now,
+                )
+            });
+            match applied {
+                Ok(outcome) => {
+                    if let Some((event_id, horizon)) = episode.episode_id.rsplit_once('@')
+                        && let Ok(horizon) = horizon.parse::<usize>()
+                    {
+                        self.reactions_applied
+                            .insert((event_id.to_string(), horizon));
+                    }
+                    contradictions.extend(outcome.contradicted);
+                }
+                Err(error) => problems.push(format!(
+                    "the reaction {} was not applied to the causal graph: {}",
+                    episode.episode_id,
+                    error.message()
+                )),
+            }
+        }
+        self.reaction_contradictions.extend(contradictions);
+        let excess = self
+            .reaction_contradictions
+            .len()
+            .saturating_sub(REACTION_CONTRADICTION_HISTORY);
+        self.reaction_contradictions.drain(..excess);
+        self.capture_problems.extend(problems);
+    }
+
+    /// The contradictions recent world-event reactions found against held
+    /// causal edges, newest last (R12-WORLD-6015).
+    pub fn reaction_contradictions(&self) -> &[qip_world_model::granger::ReactionContradiction] {
+        &self.reaction_contradictions
+    }
+
     /// Hand the self-model this cycle's operational health: whether the
     /// global kill switch is tripped, and every §6.2 row the centre reads as
     /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
@@ -12501,6 +12763,7 @@ impl Platform {
         let learned = self.stage_learn(now);
         self.finish_stage(&mut stages, learned, &mut mark);
         self.observe_own_health(now);
+        self.react_to_world_events(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -12514,6 +12777,16 @@ impl Platform {
                 learn.problems.push(problem);
             }
         }
+
+        // SENSE through ACT, the stages a decision waits on before an order
+        // exists (R12-TICK-2074). Recorded every cycle, zero included: a
+        // window that kept only the slow cycles would calibrate a latency
+        // this platform does not have.
+        let decided_in = stages
+            .iter()
+            .filter(|outcome| outcome.stage != Stage::Learn)
+            .fold(Duration::ZERO, |total, outcome| total + outcome.elapsed);
+        self.observe_decision_latency(decided_in);
 
         let mut report = CycleReport {
             cycle: self.cycle,
@@ -13121,6 +13394,30 @@ impl Platform {
             }
         }
 
+        // The universe history takes the action every process, as the
+        // series does (R12-TICK-2090): a delisting dates the end of the
+        // instrument's membership and keeps its record, and a rename starts a
+        // new symbol era, so a past date still finds the instrument and its
+        // old ticker.
+        self.note_listing(&action.object_id, action.ex_date);
+        let dated = match &action.kind {
+            qip_market::corporate_action::CorporateActionKind::Delisting { .. } => Some(
+                self.universe_history
+                    .delist(&action.object_id, action.ex_date),
+            ),
+            qip_market::corporate_action::CorporateActionKind::Renamed { new_symbol } => Some(
+                self.universe_history
+                    .rename(&action.object_id, new_symbol.clone(), action.ex_date),
+            ),
+            _ => None,
+        };
+        if let Some(Err(error)) = dated {
+            self.capture_problems.push(format!(
+                "the universe history refused corporate action {key} on {object}: {}",
+                error.message()
+            ));
+        }
+
         // A book the log rebuilt has already taken this action in an earlier
         // process. The series above still needed it — bars are re-fed to
         // every process and held in memory only — and the lot must not have
@@ -13184,58 +13481,6 @@ impl Platform {
             now,
         )?;
         self.adjust_desk_lot(key, object, quantity_factor)
-    }
-
-    /// Book one desk fill into [`TrackedCapital`] and the lifecycle register
-    /// together, and return what the tracked book's at-cost notional moved.
-    ///
-    /// The one place either is fed a fill, live or resumed, so the register
-    /// cannot miss a fill the book took — the way it would if each seam
-    /// remembered to call both. The register refusing the fill (an instrument
-    /// outside the universe, or priced in a unit other than the book's) does
-    /// not stop the booking: the venue has filled and `capital` is what every
-    /// limit reads. The refusal is said out loud on the cycle instead, and
-    /// the next mandate review reports the disagreement for as long as it
-    /// lasts.
-    fn book_desk_fill(
-        &mut self,
-        object_id: &str,
-        side: Side,
-        price: Decimal,
-        quantity: Decimal,
-        costs: Decimal,
-        at: Timestamp,
-    ) -> Decimal {
-        let moved = self
-            .capital
-            .apply_fill(object_id, side, price, quantity, costs, at);
-        let signed = match side {
-            Side::Buy => quantity,
-            Side::Sell => -quantity,
-        };
-        let object = self
-            .market
-            .read()
-            .universe
-            .get(&ObjectId::from_string(object_id))
-            .cloned();
-        let mirrored = match object {
-            Some(object) => self
-                .asset_book
-                .apply_fill(&object, signed, price, costs, at, None)
-                .map(|_| ()),
-            None => Err(Error::not_found(format!(
-                "{object_id} is not in the universe the platform was assembled over"
-            ))),
-        };
-        if let Err(error) = mirrored {
-            self.capture_problems.push(format!(
-                "a desk fill in {object_id} was booked and the position lifecycle register \
-                 refused it ({}); the position cannot be flagged until the two agree",
-                error.message()
-            ));
-        }
-        moved
     }
 
     /// Take one corporate action's share-count change on [`TrackedCapital`]
@@ -13391,6 +13636,25 @@ impl Platform {
             format!(
                 "; {} contradiction(s) between sources recorded, both sides kept",
                 state.contradiction_count
+            )
+        };
+        // R12-EVID-2038: the evidence fabric's contests, open and resolved,
+        // said on the stage so a restart that lost them reads differently
+        // from one that kept them.
+        let (open_contests, resolved_contests) = {
+            let world = self.world.read();
+            let contests = world.evidence().contests();
+            (
+                contests.values().filter(|c| c.is_contested()).count(),
+                contests.values().filter(|c| c.resolution.is_some()).count(),
+            )
+        };
+        let contest_detail = if open_contests == 0 && resolved_contests == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {open_contests} evidence contest(s) held open as competing hypotheses, \
+                 {resolved_contests} resolved with the resolving claim named"
             )
         };
         let liquidity = if self.liquidity.observation_count() == 0 {
@@ -13607,7 +13871,7 @@ impl Platform {
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                  {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
+                  {contradiction_detail}{contest_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
                  {second_order_detail}{statistics_detail}{routing_detail}{federation_detail}\
                  {now_detail}",
                 state.object_count,
@@ -13946,6 +14210,41 @@ impl Platform {
             .collect()
     }
 
+    /// Each instrument's issuer's latest fundamental surprise readable at
+    /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
+    /// newest by availability per entity, carried to every instrument the
+    /// entity issues in the knowledge graph. An instrument whose issuer is not
+    /// in the graph, or has reported no surprise, is absent.
+    fn fundamental_surprises(&self, now: Timestamp) -> BTreeMap<String, f64> {
+        use qip_world_model::relationship::RelationshipKind;
+        let world = self.world.read();
+        let mut latest: BTreeMap<String, (Timestamp, f64)> = BTreeMap::new();
+        for reading in qip_world_model::now::company_features(&world, now) {
+            if !reading.feature.ends_with("_surprise") {
+                continue;
+            }
+            let newer = latest
+                .get(&reading.subject)
+                .is_none_or(|(at, _)| reading.available_at > *at);
+            if newer {
+                latest.insert(
+                    reading.subject.clone(),
+                    (reading.available_at, reading.value),
+                );
+            }
+        }
+        let mut by_instrument = BTreeMap::new();
+        for (entity, (_, surprise)) in latest {
+            for fact in world
+                .graph()
+                .neighbours(&entity, Some(RelationshipKind::Issues), now, now)
+            {
+                by_instrument.insert(fact.relationship.to.clone(), surprise);
+            }
+        }
+        by_instrument
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -13953,6 +14252,7 @@ impl Platform {
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
         let causal_views = self.causal_views(now);
+        let surprises = self.fundamental_surprises(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -13972,6 +14272,7 @@ impl Platform {
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
                 causal: causal_views.get(subject).copied(),
+                fundamental_surprise: surprises.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();
@@ -15036,6 +15337,7 @@ impl Platform {
             expired.len() as f64,
         );
         self.brief_the_desk_on_risk();
+        self.brief_the_desk_on_book();
         self.brief_the_desk_on_executions();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
@@ -17364,6 +17666,22 @@ impl Platform {
             );
         }
 
+        // An exit plan for every leg, or no proposal (R12-ASSET-4069, ADR
+        // 0183). Dated here, after the solve and before any capital is held,
+        // because this is the first moment the legs exist and the last before
+        // a refusal would have to release a hold. A leg whose hypotheses carry
+        // no horizon, or whose horizon ends inside the instrument's declared
+        // lockup, is a position opened with no exit the platform can honour:
+        // the construction is refused naming the leg, as every other refusal
+        // here is, rather than the leg sized on an invented date.
+        let mut exit_plans = Vec::with_capacity(outcome.proposal.legs.len());
+        for leg in &outcome.proposal.legs {
+            exit_plans.push((
+                leg.object_id.as_str().to_string(),
+                self.exit_plan_for(leg, now)?,
+            ));
+        }
+
         // Hold what the proposal was sized for, keyed by its id, until the
         // act stage commits or releases it. A proposal whose capital cannot
         // be held must not enter the pipeline: refusing here is the control
@@ -17386,6 +17704,7 @@ impl Platform {
         // written only now that the proposal's capital is held: a refused
         // hold returned above, and a target the platform never committed
         // capital to is not the target of anything it holds.
+        self.position_exit_plans.extend(exit_plans);
         let mandate = self.user_ledger.desk().as_str().to_string();
         for leg in &outcome.proposal.legs {
             // Removed rather than left standing where this leg's hypotheses
@@ -17411,6 +17730,98 @@ impl Platform {
             );
         }
         Ok((outcome, unsizeable, capped))
+    }
+
+    /// The exit plan for one proposal leg: dated at `now` plus the horizon
+    /// of the hypothesis the leg expresses, routed as a sale, and checked
+    /// against the instrument's declared lockup by [`ExitPlan::new`]
+    /// (R12-ASSET-4069, ADR 0183).
+    ///
+    /// Every input is a record, and a missing one refuses. The horizon is
+    /// the one REASON approved, looked up through the leg's hypothesis ids;
+    /// a leg expressing no hypothesis DECIDE registered has none and is
+    /// refused rather than given a default. The route is `Sale` because the
+    /// only way out this platform can carry out is an order to a venue. The
+    /// lockup is the catalogue's — a private asset's vintage origin plus its
+    /// stated lockup term — refused with the record named if either cannot
+    /// be read, because a lockup read as absent is a plan dated inside a term
+    /// the fund forbids.
+    ///
+    /// [`ExitPlan::new`]: qip_financial::position_record::ExitPlan::new
+    fn exit_plan_for(
+        &self,
+        leg: &qip_portfolio_engine::proposal::ProposalLeg,
+        now: Timestamp,
+    ) -> Result<qip_financial::position_record::ExitPlan> {
+        let object = leg.object_id.as_str();
+        let (hypothesis, horizon) = self
+            .justified_hypotheses
+            .horizon(&leg.hypotheses)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "the leg in {object} expresses hypotheses {:?} and none carries a horizon \
+                     DECIDE registered, so the position would open with no exit plan; size it \
+                     only from a thesis REASON approved",
+                    leg.hypotheses
+                ))
+            })?;
+        let exit_at = now
+            .as_nanos()
+            .checked_add(horizon.as_nanos())
+            .map(Timestamp::from_nanos)
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the leg in {object} has a horizon from {} no timestamp can represent; the \
+                 position would open with no exit plan",
+                    now.to_rfc3339()
+                ))
+            })?;
+        let lockup = {
+            let market = self.market.read();
+            match market
+                .universe
+                .get(&leg.object_id)
+                .map(|record| &record.extension)
+            {
+                Some(qip_financial::extensions::Extension::PrivateAsset(details)) => {
+                    let origin = private_asset_origin(details)?;
+                    let term = details.lockup()?;
+                    Some(origin
+                        .as_nanos()
+                        .checked_add(term.as_nanos())
+                        .map(Timestamp::from_nanos)
+                        .ok_or_else(|| {
+                        Error::numeric(format!(
+                            "{object}'s lockup ends at an instant no timestamp can represent; \
+                             correct the reference record"
+                        ))
+                    })?)
+                }
+                _ => None,
+            }
+        };
+        qip_financial::position_record::ExitPlan::new(
+            exit_at,
+            qip_financial::position_record::ExitRoute::Sale,
+            lockup,
+        )
+        .map_err(|refusal| {
+            Error::invalid(format!(
+                "the leg in {object}, sized on hypothesis {hypothesis}, has no exit plan its \
+                 instrument's terms admit: {}",
+                refusal.message()
+            ))
+        })
+    }
+
+    /// The exit plan the last construction that sized `object_id` dated for
+    /// it, or `None` where no construction this process ran has
+    /// (R12-ASSET-4069).
+    pub fn position_exit_plan(
+        &self,
+        object_id: &str,
+    ) -> Option<&qip_financial::position_record::ExitPlan> {
+        self.position_exit_plans.get(object_id)
     }
 
     /// Each held position's hedge relationships, pending corporate actions
@@ -18094,6 +18505,13 @@ struct CapacityProbeResult {
     adversity_bps: f64,
     /// The calibrated feed delay the probe ran behind (R12-TICK-2087).
     feed_delay: Duration,
+    /// How long after the decision the order reached the venue, and what
+    /// the fill paid beyond the mark the probe decided against, in basis
+    /// points (R12-TICK-2074). The adversity above is measured from the
+    /// book the order arrived at, so a latency is invisible in it; this is
+    /// where the platform's own slowness shows as cost.
+    latency: Duration,
+    shortfall_bps: Option<f64>,
     /// The conditions the simulator reports it applied to the probe's
     /// arrival, by name — read off the run rather than off the schedule, so
     /// the detail states what the fill saw and not what was requested.
@@ -18111,6 +18529,10 @@ struct CapacityProbeStrategy {
     venue: String,
     quantity: Decimal,
     submitted: bool,
+    /// The mark the probe decided against, at the step it submitted
+    /// (R12-TICK-2074): the reference a latency is paid against, where the
+    /// execution's own reference is the book it arrived at.
+    decided_at_price: Option<Decimal>,
 }
 
 impl SimStrategy for CapacityProbeStrategy {
@@ -18118,11 +18540,14 @@ impl SimStrategy for CapacityProbeStrategy {
         "capacity-probe"
     }
 
-    fn on_step(&mut self, _view: &SimMarketView<'_>) -> Vec<SimOrder> {
+    fn on_step(&mut self, view: &SimMarketView<'_>) -> Vec<SimOrder> {
         if self.submitted {
             return Vec::new();
         }
         self.submitted = true;
+        self.decided_at_price = view
+            .mark(&self.object_id, &self.venue)
+            .and_then(|mark| mark.price);
         vec![SimOrder::market(
             self.object_id.clone(),
             self.venue.clone(),
@@ -18165,6 +18590,13 @@ impl Platform {
                 probe.feed_delay.as_secs_f64(),
                 probe.conditions.join(", ")
             ));
+            if let Some(shortfall) = probe.shortfall_bps {
+                detail.push_str(&format!(
+                    ", arriving {:.0}s after the decision at {shortfall:.1}bps over the mark it \
+                     decided on",
+                    probe.latency.as_secs_f64()
+                ));
+            }
             self.telemetry.metrics.gauge(
                 names::SIMULATION_CAPACITY_ADVERSITY_BPS,
                 labels([("instrument", probe.subject.as_str())]),
@@ -18344,26 +18776,59 @@ impl Platform {
                 .ok()?,
             ])
             .ok()?;
+        // And behind this platform's own measured decision latency
+        // (R12-TICK-2074): a probe that executed at the instant it decided
+        // would read a capacity no order of this platform's could reach.
+        let latencies: Vec<Duration> = self.decision_latencies.iter().copied().collect();
+        let latency = MarketCondition::latency_from_measured(&latencies)
+            .ok()
+            .filter(|condition| match condition {
+                MarketCondition::Latency { base, jitter } => {
+                    *base > Duration::ZERO || *jitter > Duration::ZERO
+                }
+                _ => false,
+            });
+        let mut schedule = ConditionSchedule::new();
+        let mut conditioned = false;
         if feed_delay > Duration::ZERO {
-            run = run
-                .with_conditions(ConditionSchedule::new().with(ConditionWindow::always(
-                    MarketCondition::DelayedFeed { delay: feed_delay },
-                )))
-                .ok()?;
+            schedule = schedule.with(ConditionWindow::always(MarketCondition::DelayedFeed {
+                delay: feed_delay,
+            }));
+            conditioned = true;
+        }
+        if let Some(latency) = latency {
+            schedule = schedule.with(ConditionWindow::always(latency));
+            conditioned = true;
+        }
+        if conditioned {
+            run = run.with_conditions(schedule).ok()?;
         }
         let mut strategy = CapacityProbeStrategy {
             object_id: subject.clone(),
             venue: "XSIM".to_string(),
             quantity,
             submitted: false,
+            decided_at_price: None,
         };
         let outcome = run.run(&mut strategy).ok()?;
         let report = outcome.reports.first()?;
+        // Statistics: the decision mark and the average fill cross to f64
+        // here, for a diagnostic nothing sizes from.
+        let shortfall_bps = strategy
+            .decided_at_price
+            .filter(|price| price.is_positive() && report.filled.is_positive())
+            .and_then(|decided| {
+                let average = report.notional.checked_div(report.filled)?;
+                let decided = decided.to_f64();
+                Some((average.to_f64() - decided) / decided * 10_000.0)
+            });
         Some(CapacityProbeResult {
             subject: subject.clone(),
             quantity,
             adversity_bps: report.adversity_bps(),
             feed_delay,
+            latency: report.latency,
+            shortfall_bps,
             conditions: report.conditions.clone(),
         })
     }
@@ -20351,6 +20816,19 @@ impl Platform {
                 held.len()
             );
             outcome = StageOutcome { detail, ..outcome };
+        }
+        // R12-ASSET-4071: settle every exited desk position whose calendar
+        // instant has passed, then attribute only what settled. Here, in
+        // LEARN, because attribution is a judgement on a finished position
+        // and nothing earlier in the cycle may credit one whose ownership has
+        // not cleared.
+        let lives = self.position_lives.settle_and_attribute(now);
+        if let Some(described) = lives.describe() {
+            let detail = format!("{}; {described}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in lives.problems {
+            outcome = outcome.with_problem(problem);
         }
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
@@ -22413,16 +22891,8 @@ impl Platform {
                     error.message()
                 ));
             }
-            let moved = self.book_desk_fill(
+            self.book_desk_fill(
                 object_id.as_str(),
-                side,
-                fill.price,
-                fill.quantity,
-                fill.costs,
-                fill.at,
-            );
-            self.aggregate_fill(object_id.as_str(), moved);
-            self.register_settlement(
                 venue.as_str(),
                 side,
                 fill.price,
@@ -22573,6 +23043,90 @@ impl Platform {
                 error.message()
             ));
         }
+    }
+
+    /// Book one desk fill: the lot, the risk aggregate, the lifecycle
+    /// register, the position's life and the settlement register, in that
+    /// order and from one place.
+    ///
+    /// One seam for the live path and [`Self::resume_book`], so a restart
+    /// folds a journaled fill through exactly what booked it. The life is
+    /// advanced from the lot's signed quantity before and after the fill —
+    /// the book's own answer to whether this fill opened, resized or closed
+    /// the position — and before the settlement is registered, so an exit
+    /// exists for the venue's calendar to schedule.
+    #[allow(clippy::too_many_arguments)]
+    fn book_desk_fill(
+        &mut self,
+        object_id: &str,
+        venue: &str,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        costs: Decimal,
+        at: Timestamp,
+    ) {
+        let held = |capital: &TrackedCapital| {
+            capital
+                .positions
+                .get(object_id)
+                .map_or(Decimal::ZERO, |lot| lot.quantity)
+        };
+        let before = held(&self.capital);
+        let moved = self
+            .capital
+            .apply_fill(object_id, side, price, quantity, costs, at);
+        self.aggregate_fill(object_id, moved);
+        let after = held(&self.capital);
+        // The lifecycle register takes the same fill (R12-ASSET-4066), so it
+        // cannot miss one the book took. Its refusal (an instrument outside
+        // the universe, or priced in a unit other than the book's) does not
+        // stop the booking: the venue has filled and `capital` is what every
+        // limit reads. It is said on the cycle instead, and the next mandate
+        // review reports the disagreement for as long as it lasts.
+        let signed = match side {
+            Side::Buy => quantity,
+            Side::Sell => -quantity,
+        };
+        let object = self
+            .market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object_id))
+            .cloned();
+        let mirrored = match object {
+            Some(object) => self
+                .asset_book
+                .apply_fill(&object, signed, price, costs, at, None)
+                .map(|_| ()),
+            None => Err(Error::not_found(format!(
+                "{object_id} is not in the universe the platform was assembled over"
+            ))),
+        };
+        if let Err(error) = mirrored {
+            self.capture_problems.push(format!(
+                "a desk fill in {object_id} was booked and the position lifecycle register \
+                 refused it ({}); the position cannot be flagged until the two agree",
+                error.message()
+            ));
+        }
+        let problems = self.position_lives.on_fill(object_id, before, after, at);
+        self.capture_problems.extend(problems);
+        self.register_settlement(object_id, venue, side, price, quantity, costs, at);
+    }
+
+    /// Where `object_id`'s latest desk position is in its life
+    /// (R12-ASSET-4071): `None` for an instrument the desk has never held
+    /// since assembly or resume, or whose attribution has aged out of the
+    /// bounded record.
+    pub fn position_life_stage(&self, object_id: &str) -> Option<qip_portfolio::LifeStage> {
+        self.position_lives.stage_of(object_id)
+    }
+
+    /// The whole position-life register: lives not yet attributed and the
+    /// most recently attributed ones.
+    pub fn position_lives(&self) -> &crate::position_life::PositionLives {
+        &self.position_lives
     }
 
     /// The running risk counters, as the pre-trade check reads them.
@@ -23840,6 +24394,23 @@ impl Platform {
         if delay > entry.max {
             entry.max = delay;
         }
+    }
+
+    /// Record one decision latency in the bounded window the capacity probe
+    /// calibrates from (R12-TICK-2074). `run_cycle` calls it with each
+    /// cycle's SENSE-through-ACT time; a test calls it to stand in for a
+    /// clock that does not move.
+    #[doc(hidden)]
+    pub fn observe_decision_latency(&mut self, latency: Duration) {
+        self.decision_latencies.push_back(latency);
+        while self.decision_latencies.len() > DECISION_LATENCY_SAMPLES {
+            self.decision_latencies.pop_front();
+        }
+    }
+
+    /// The decision latencies the platform has measured, oldest first.
+    pub fn decision_latencies(&self) -> impl Iterator<Item = &Duration> {
+        self.decision_latencies.iter()
     }
 
     /// The publication delay each source has shown, by source name.
@@ -27092,6 +27663,107 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-6015: a world event is paired with the market's reaction at
+    /// one, five and twenty bars, and each is applied to the causal graph once.
+    /// A second event of the same class whose direction the market goes
+    /// against lowers the confidence of the edge the first established, and
+    /// the contradiction is kept on the platform.
+    ///
+    /// Mutation: in `react_to_world_events`, measure only the first horizon
+    /// -- the event then yields one reaction, not three.
+    #[test]
+    fn a_news_event_yields_reactions_at_three_horizons_and_a_contradiction_lowers_the_edge_confidence()
+     {
+        use qip_market::bar::{Bar, Interval};
+        use qip_opportunity_engine::catalyst::MarketEvent;
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let mut platform = small_book_platform();
+        // Fifty daily bars: flat to day 4, rising to day 24 (past the first
+        // event's last horizon), then falling.
+        let bars: Vec<Bar> = (0..50)
+            .map(|day| {
+                let close = if day < 5 {
+                    100.0
+                } else if day < 25 {
+                    100.0 + (day - 4) as f64
+                } else {
+                    120.0 - (day - 24) as f64 * 2.0
+                };
+                let px = |v: f64| Decimal::from_f64(v).expect("a price");
+                Bar {
+                    object_id: qip_core::ObjectId::from_string("AAPL"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: t0.saturating_add(Duration::from_days(day)),
+                    open: px(close),
+                    high: px(close),
+                    low: px(close),
+                    close: px(close),
+                    volume: Decimal::from_int(1_000),
+                    vwap: None,
+                    trade_count: 1,
+                    quality: qip_financial::quality::DataQuality::default(),
+                }
+            })
+            .collect();
+        platform.bar_history.insert("AAPL".to_string(), bars);
+        let event = |id: &str, day: i64| {
+            let at = t0
+                .saturating_add(Duration::from_days(day))
+                .saturating_add(Duration::from_hours(1));
+            MarketEvent::new(id, "AAPL", "guidance", at, at)
+                .with_direction(1.0)
+                .with_weight(0.8)
+        };
+        platform.market_events.push(event("ev-up", 4));
+        let after_first = t0.saturating_add(Duration::from_days(60));
+        platform.react_to_world_events(after_first);
+        let applied: Vec<usize> = platform
+            .reactions_applied
+            .iter()
+            .filter(|(id, _)| id == "ev-up")
+            .map(|(_, h)| *h)
+            .collect();
+        assert_eq!(
+            applied,
+            vec![1, 5, 20],
+            "the event did not react at three horizons"
+        );
+        let confidence = |p: &Platform| {
+            p.world
+                .read()
+                .causal()
+                .edges()
+                .iter()
+                .find(|e| e.cause == "guidance" && e.effect == "AAPL")
+                .map(|e| e.confidence)
+                .expect("the reaction established an edge")
+        };
+        let established = confidence(&platform);
+        assert!(platform.reaction_contradictions().is_empty(), "premise");
+        // The same guidance up a second time, after which the market fell.
+        platform.market_events.push(event("ev-down", 25));
+        platform.react_to_world_events(after_first);
+        assert!(
+            !platform.reaction_contradictions().is_empty(),
+            "a reaction against the edge recorded no contradiction"
+        );
+        assert!(
+            confidence(&platform) < established,
+            "the edge's confidence did not fall"
+        );
+        platform.react_to_world_events(after_first);
+        assert_eq!(
+            platform
+                .reactions_applied
+                .iter()
+                .filter(|(id, _)| id == "ev-down")
+                .count(),
+            3,
+            "a reaction was applied twice or not at all"
+        );
     }
 
     /// R12-WORLD-3034: an analyst's distilled procedure is retrieved at its
@@ -33086,7 +33758,10 @@ mod unsizeable_thesis_tests {
             distributed_capital: Decimal::ZERO,
             residual_value: dec!("500000"),
             stage: "buyout".to_string(),
-            lockup_years: 7.0,
+            // Expired before the test's instant: these tests are about the mark,
+            // and a fund inside its lockup cannot be sized on a short thesis
+            // (ADR 0183).
+            lockup_years: 1.0,
             capital_call_notice_days: 10,
             call_schedule: None,
         }))

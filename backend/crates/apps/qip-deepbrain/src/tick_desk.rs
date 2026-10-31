@@ -495,6 +495,13 @@ impl TickDesk {
         self.tree.as_ref()
     }
 
+    /// Whether a round is due on `cycle`. The one statement of the cadence,
+    /// read by every `maybe_round*` and by the run loop when it holds a due
+    /// round in the research backlog instead (ADR 0214).
+    pub const fn due(&self, cycle: u64) -> bool {
+        self.config.enabled() && cycle.is_multiple_of(self.config.every_cycles)
+    }
+
     /// Run a round if this cycle is on the cadence, replaying the platform's
     /// own orders from the lookback window against the recorded market and
     /// recording, per order, the replayed fill beside the venue's
@@ -512,7 +519,7 @@ impl TickDesk {
         orders: impl IntoIterator<Item = &'a Order>,
         fills: &[FillScore],
     ) -> Result<Option<TickRound>> {
-        if !self.config.enabled() || !cycle.is_multiple_of(self.config.every_cycles) {
+        if !self.due(cycle) {
             return Ok(None);
         }
         let from = now.saturating_sub(Duration::from_days(self.config.lookback_days));
@@ -541,7 +548,7 @@ impl TickDesk {
         now: Timestamp,
         fills: &[FillScore],
     ) -> Result<Option<TickRound>> {
-        if !self.config.enabled() || !cycle.is_multiple_of(self.config.every_cycles) {
+        if !self.due(cycle) {
             return Ok(None);
         }
         self.round_with_fills(graph, now, Vec::new(), fills)

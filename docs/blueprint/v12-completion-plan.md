@@ -23,6 +23,29 @@ which with 538 does not make 1,518); recount with `python3 -I -c` over
 any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
+Recounted **2026-10-31 01:05 UTC, after the wave580 lanes' thirteenth through
+seventeenth merges on `ccr-116bbb27-osu8n8` (head `6c652b4b`)** with `python3 -I`
+over `docs/blueprint/assessment/*.json`: COMPLETE 514, PARTIAL 894, MISSING
+78, BLOCKED 31, NEEDS-VALIDATION 1 (= 1518). Four MISSING rows became PARTIAL
+and no row moved to COMPLETE: every promotion the lanes proposed in this round
+was refuted by its in-lane skeptic and recorded as PARTIAL with the refutation
+in its gap (QUANT-4042 and 4044, WORLD-3034 and 10187, MODEL-6074 and 1159,
+RISK-4116, LEDGER-8138, CONTRACT-7073, MESH-5057, TICK-2090, TICK-10184). The
+first orchestrator session stopped on 2026-10-30 at 22:50 UTC after every turn
+from 22:28 was refused by the model's safeguards; its unpushed merges of lanes
+L1, L2 and L4 and its half-resolved L5 merge were lost with its container and
+redone here from the lane branches, which is why the integration branch moved
+from `ccr-d1bc1e54-kf6mr0` (frozen at `48cec824`, PR #242's head) to
+`ccr-116bbb27-osu8n8`. Two cross-lane breaks were found only on the merged
+tree: lane L1b's `afcdcb99` made a consumer refuse a provenance-less fabric
+batch and broke three `qip-edge-node` tests whose fixture predated the stamp
+(fixed in `61b7c247`, with the sink now refusing an unstamped spool batch
+before the ledger would), and lanes L3b and L5 built node replay and replay
+manifests in the same module (kept as a union in `793c342f`). Separately,
+fourteen RustSec advisories published on 2026-10-16 against zstd 0.14.2 turned
+`cargo-deny` and `security audit` red on an unchanged lockfile; `725c180b`
+lifts the pin to 0.14.3.
+
 Recounted **2026-10-18 19:55 UTC, after the lanes' fourth wave merged as #235**
 with `python3 -I` over `docs/blueprint/assessment/*.json` at ab06b938: COMPLETE
 452, PARTIAL 919, MISSING 114, BLOCKED 31, INCORRECT 1, NEEDS-VALIDATION 1
@@ -341,7 +364,7 @@ substring); `qip-data-finder/src/references.rs:625`; `event_fabric_transport_and
 
 | Item | Rows | What | Size |
 |---|---|---|---|
-| W4.1 Keyless deploy works | deploy.yml run 255 | Every image job fails at "authenticate without a key": WIF pool/provider not applied. Owner runs the dev bootstrap; then build, scan, sign, push. | S (owner) |
+| W4.1 Keyless deploy works | deploy.yml run 255 | Stale since 2026-10-13: infra.yml run 118 applied the WIF pool and provider ("Apply complete"), run 121 reported qip-dev Synced and Healthy, and deploy.yml run 284 succeeded on 2026-10-19; the last two image pushes (runs 287, 288) failed on a registry 403, unverified (billing or IAM). | S (owner) |
 | W4.2 Dev apply with the fabric broker and ledgerd | G1/G3 rows | Instantiate `event-fabric-broker` (no root uses it) and `qip-ledgerd`. Plan shown, owner applies. | M |
 | W4.3 One execution node in dev | REFLEX/RES rows; `execution_nodes = {}` | First edge node, simulated feed. | M |
 | W4.4 Managed stores | LEDGER-8007, 8132–8140; DATA-8014–8016, 8130 | Needs D5. | XL |
