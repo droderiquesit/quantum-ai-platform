@@ -32,7 +32,7 @@
       "infrastructure/terraform/execution-nodes-enabled.tf:22-60",
       "infrastructure/terraform/modules/execution-node/main.tf:494"
     ],
-    "gap": "Enabling the node and showing the plan needs a baked boot image: dispatch .github/workflows/image.yml for c4-highcpu-8 (a deployment run, never yet dispatched), write the self-link it prints into newyork-1's boot_image and set execution_nodes_enabled = true in dev (protected path infrastructure/environments/**). Corrected 2026-10-24: the C3/C3D/N2 refusal and the C4 dev shape are done; only the enable-and-plan half remains and it is deployment-dependent.",
+    "gap": "2026-10-31 (lane L6): prerequisite now named. execution_nodes_enabled = true is refused at plan unless artefact_trust_bundle_file, google_tls_roots_file and certificate_authority are all set (execution-nodes-enabled.tf). google_tls_roots_file's file now exists (infrastructure/trust/google-roots.pem, GTS Root R1/R3/R4, pinned by qip-tls's the_committed_google_roots_are_the_pinned_gts_roots_and_build_a_client); the trust bundle needs the owner's billed artefact_signing apply and a rendered infrastructure/trust/dev.json; the CA pool is certificate_authority applied (billed). The dev tfvars lines are docs/blueprint/lanes/l6-node-prereqs-protected.patch; the order is in docs/ops/runbooks/owner-switches.md. Earlier: Enabling the node and showing the plan needs a baked boot image: dispatch .github/workflows/image.yml for c4-highcpu-8 (a deployment run, never yet dispatched), write the self-link it prints into newyork-1's boot_image and set execution_nodes_enabled = true in dev (protected path infrastructure/environments/**). Corrected 2026-10-24: the C3/C3D/N2 refusal and the C4 dev shape are done; only the enable-and-plan half remains and it is deployment-dependent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -803,7 +803,7 @@
       "infrastructure/environments/prod/terraform.tfvars:20 region = europe-west2",
       "infrastructure/environments/prod/terraform.tfvars:51 execution_nodes = {}"
     ],
-    "gap": "Multi-region root (per-region module instantiation) and three declared regions.",
+    "gap": "2026-10-31 (lane L6): prerequisite now named. execution_nodes_enabled = true is refused at plan unless artefact_trust_bundle_file, google_tls_roots_file and certificate_authority are all set (execution-nodes-enabled.tf). google_tls_roots_file's file now exists (infrastructure/trust/google-roots.pem, GTS Root R1/R3/R4, pinned by qip-tls's the_committed_google_roots_are_the_pinned_gts_roots_and_build_a_client); the trust bundle needs the owner's billed artefact_signing apply and a rendered infrastructure/trust/dev.json; the CA pool is certificate_authority applied (billed). The dev tfvars lines are docs/blueprint/lanes/l6-node-prereqs-protected.patch; the order is in docs/ops/runbooks/owner-switches.md. Earlier: Multi-region root (per-region module instantiation) and three declared regions.",
     "implemented": false,
     "tested": false,
     "integrated": false,

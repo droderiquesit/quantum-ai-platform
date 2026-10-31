@@ -16,6 +16,24 @@ feed, with `boot_image = null` and `region_allocation = null`. With the flag
 off the root hands the node module an empty map and the entry plans nothing
 (`terraform/tests/execution-node-enable.tftest.hcl`, **ran**, 7 passed).
 
+**Three prerequisites come first, and the plan checks them before anything
+else** (`infrastructure/terraform/execution-nodes-enabled.tf`, the first
+validation on `execution_nodes_enabled`). A node verifies the centre against a
+committed trust bundle and speaks mutual TLS on a CA Service certificate, and
+holds no shared key to fall back to (ADR 0110, ADR 0112), so with any of the
+three null the flag is refused at plan rather than creating a machine whose
+binary refuses to start and restarts for ever under `Restart=always`:
+
+| Variable (root, `variables.tf` / `artefact-signing.tf`) | What it names | Where the value comes from | State |
+|---|---|---|---|
+| `google_tls_roots_file` | `infrastructure/trust/google-roots.pem`, the pinned GTS roots every process authenticates KMS and CA Service against | Committed 2026-10-31 (GTS Root R1, R3, R4; provenance in `infrastructure/trust/README.md`) | **Ready**; set it in dev's tfvars |
+| `artefact_trust_bundle_file` | `infrastructure/trust/dev.json`, the public keys of the four KMS signing key versions | Rendered, never written: set `artefact_signing = { bundle_not_after = "<RFC 3339>" }` in dev's tfvars, `infra.yml action=plan`, read, `action=up` (creates the key ring and four HSM keys — **billed**); then `terraform output -json artefact_trust_bundle \| jq . > infrastructure/trust/dev.json` from the applied state, committed in the same diff that sets this variable | Needs the owner's billed apply |
+| `certificate_authority` | A private CA Service pool and root (`security.tf`, `google_privateca_*`, all `count = local.cas_on`) | Set `certificate_authority = { location = "us-east4", organization = "<legal name>" }` in dev's tfvars (`max_certificate_lifetime_hours` defaults to 24, at most 24); plan, read, apply — **billed** (owner-decisions-2026-10-25 decision 5 defers it) | Needs the owner's billed apply |
+
+The patch `docs/blueprint/lanes/l6-node-prereqs-protected.patch` carries the
+dev tfvars lines for all three, the first live and the two billed ones
+commented with the order above, because `environments/**` is a protected path.
+
 To turn it on, in this order:
 
 1. Uncomment `image_bake_subnet_cidr` in dev's tfvars, run `infra.yml`

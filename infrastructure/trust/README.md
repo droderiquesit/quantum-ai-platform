@@ -6,10 +6,23 @@ carries it on into the execution node's boot image). ADR 0110 decision 2: the
 trust bundle is a committed file baked into the attested image, **never fetched
 at run time**.
 
-**Nothing but this README is committed here today, on purpose.** A bundle is
-the public keys of Cloud KMS key versions that exist; no environment has
-applied `artefact_signing`, so there is no key to publish, and a placeholder
-bundle would be a file a process could be pointed at that verifies nothing.
+**No trust bundle is committed here, on purpose.** A bundle is the public
+keys of Cloud KMS key versions that exist; no environment has applied
+`artefact_signing`, so there is no key to publish, and a placeholder bundle
+would be a file a process could be pointed at that verifies nothing.
+
+**`google-roots.pem` is committed (2026-10-31).** It holds the three Google
+Trust Services roots GTS Root R1, R3 and R4, in that order, as plain PEM
+certificates with nothing between them (`qip_tls::roots_from_pem` reads every
+certificate block and refuses an empty file). Each was taken from the Mozilla
+store this repository's build host ships (`/etc/ssl/certs/ca-certificates.crt`)
+and checked byte for byte against the copy `https://pki.goog/repo/certs/gtsr<n>.der`
+publishes; the SHA-256 of each root's DER is pinned in
+`qip-tls`'s `the_committed_google_roots_are_the_pinned_gts_roots_and_build_a_client`,
+so a root added, dropped or swapped here fails that test. GTS Root R2 is left
+out: only one of the two sources carried it. Nothing points at the file yet:
+`google_tls_roots_file` is null in every environment until the owner sets it
+(`docs/ops/runbooks/owner-switches.md`).
 
 ## What may live here
 
