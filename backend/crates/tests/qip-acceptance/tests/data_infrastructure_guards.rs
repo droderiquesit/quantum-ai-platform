@@ -1009,3 +1009,100 @@ fn a_canary_in_a_rest_narrative_or_alternative_body_is_found_in_no_durable_store
         );
     }
 }
+
+/// R12-DATA-1041: no durable store holds document bodies, and knowledge
+/// packs serialise compactly.
+///
+/// Every store the platform may write is a declared class
+/// (`qip_storage::classes::DECLARED`; `blob_class` and `archive_class`
+/// refuse anything else), and every class states what it holds through
+/// `Holds`, which has no document variant. The match below is exhaustive on
+/// purpose: a reviewed change that added a variant for world documents, or
+/// a pack kind that carried one, would stop this file compiling until
+/// somebody wrote down here why a body belongs in the durable layer.
+///
+/// The tick lake is the one class that keeps bytes a third party published,
+/// and it keeps venue market data under a retention right (ADR 0181), not a
+/// document (ADR 0180 decision 4); it is pinned by name so a second class
+/// claiming `VenueMarketData` is noticed.
+///
+/// A pack's free text is bounded at the encoder: a summary of 4 KiB is
+/// refused, one of a sentence is kept.
+///
+/// Mutations, each fails here: declare a further class under `Holds::
+/// VenueMarketData`; raise `MAX_PACK_TEXT_BYTES` past the oversized summary
+/// (or drop `check_compact` from `encode`) — the oversized pack encodes.
+#[test]
+fn no_declared_storage_class_or_pack_body_kind_can_hold_a_document_body() {
+    use qip_contracts::knowledge_pack::{KnowledgePack, MAX_PACK_TEXT_BYTES, PackBody};
+    use qip_storage::classes::{DECLARED, Holds};
+
+    assert!(
+        !DECLARED.is_empty(),
+        "premise: the tree declares its stores"
+    );
+    for class in DECLARED {
+        let derived = match class.holds {
+            Holds::EventSegments
+            | Holds::ModelArtifacts
+            | Holds::KnowledgePacks
+            | Holds::SimulationOutput
+            | Holds::Probe => true,
+            Holds::VenueMarketData => false,
+        };
+        if !derived {
+            assert_eq!(
+                class.name, "tick lake",
+                "only the tick lake keeps third-party bytes, and those are venue market data \
+                 under a retention right; {} claims the same",
+                class.name
+            );
+        }
+    }
+    assert_eq!(
+        DECLARED
+            .iter()
+            .filter(|class| class.holds == Holds::VenueMarketData)
+            .count(),
+        1,
+        "exactly one class keeps venue market data"
+    );
+
+    let summary = |text: String| {
+        KnowledgePack::new(
+            "pack-1",
+            1,
+            PackBody::Summary {
+                subject: "ECB".into(),
+                text,
+            },
+        )
+    };
+    // Every pack kind is named here, so a new kind is a compile error until
+    // its free text is accounted for in `KnowledgePack::check_compact`.
+    let kinds = |body: &PackBody| match body {
+        PackBody::Summary { .. }
+        | PackBody::Embedding { .. }
+        | PackBody::WorldStateSnapshot { .. }
+        | PackBody::WorldModelDelta { .. }
+        | PackBody::ModelArtifact { .. }
+        | PackBody::EpisodicMemory { .. } => (),
+    };
+    let kept = summary("rates held at the March meeting".into());
+    kinds(&kept.body);
+    let bytes = kept
+        .encode()
+        .expect("a sentence of summary is derived knowledge");
+    assert_eq!(KnowledgePack::decode(&bytes).expect("decodes"), kept);
+
+    let body = "word ".repeat(820);
+    assert!(
+        body.len() > MAX_PACK_TEXT_BYTES,
+        "premise: the oversized summary is past the bound"
+    );
+    let refused = summary(body).encode();
+    assert!(
+        refused.is_err(),
+        "a 4 KiB summary is the document, and the encoder must refuse it"
+    );
+}

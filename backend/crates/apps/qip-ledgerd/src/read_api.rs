@@ -239,6 +239,32 @@ impl ReadApi {
                 let lots = self.store.tax_lots()?;
                 Ok(Response::json(200, serde_json::to_string(&lots)?))
             }
+            // R12-CAPITAL-4086: the margin, collateral and unsettled cash the
+            // ledger of record says are withheld, folded from its own
+            // balances by `LedgerObligations`, for the survival waterfall to
+            // read instead of deriving them. `as_of` is the reader's instant
+            // and is required, not filled from this process's clock: the
+            // reading is stamped with the instant the caller will size at,
+            // so the kernel's ordering check compares like with like.
+            "/api/v1/ledger/obligations" => {
+                let unit = request
+                    .query_param("unit")
+                    .ok_or_else(|| Error::invalid("obligations needs ?unit="))?;
+                let as_of = request
+                    .query_param("as_of")
+                    .ok_or_else(|| {
+                        Error::invalid(
+                            "obligations needs ?as_of= (unix seconds): the instant the reading \
+                             is for is the caller's, and is never guessed here",
+                        )
+                    })?
+                    .parse::<i64>()
+                    .map_err(|_| Error::invalid("as_of must be whole unix seconds"))?;
+                let obligations = self
+                    .store
+                    .obligations(unit, qip_core::Timestamp::from_secs(as_of))?;
+                Ok(Response::json(200, serde_json::to_string(&obligations)?))
+            }
             "/api/v1/ledger/trial-balance" => {
                 let totals: BTreeMap<String, String> = self
                     .store
@@ -323,6 +349,43 @@ mod tests {
             headers: BTreeMap::new(),
             body: Vec::new(),
             peer: "127.0.0.1:1".to_string(),
+        }
+    }
+
+    /// R12-CAPITAL-4086: the obligations route answers the ledger's own fold,
+    /// stamped with the caller's instant, and refuses a request that leaves
+    /// out the unit or the instant rather than defaulting either.
+    ///
+    /// Mutation: remove the route arm and the request falls through to 404.
+    #[test]
+    fn the_obligations_route_answers_the_ledgers_fold_at_the_callers_instant() {
+        let api = api();
+        let answered = api.handle(&get(
+            "/api/v1/ledger/obligations",
+            &[("unit", "USD"), ("as_of", "1790000100")],
+        ));
+        assert_eq!(
+            answered.status,
+            200,
+            "{:?}",
+            String::from_utf8_lossy(&answered.body)
+        );
+        let decoded: qip_contracts::ledger::LedgerObligations =
+            serde_json::from_slice(&answered.body).expect("the body is LedgerObligations");
+        assert_eq!(decoded.unit(), "USD");
+        assert_eq!(decoded.as_of(), Timestamp::from_secs(1_790_000_100));
+        assert!(decoded.margin().is_zero() && decoded.collateral().is_zero());
+        for missing in [
+            vec![("as_of", "1790000100")],
+            vec![("unit", "USD")],
+            vec![("unit", "USD"), ("as_of", "soon")],
+        ] {
+            assert_eq!(
+                api.handle(&get("/api/v1/ledger/obligations", &missing))
+                    .status,
+                400,
+                "{missing:?} was not refused"
+            );
         }
     }
 

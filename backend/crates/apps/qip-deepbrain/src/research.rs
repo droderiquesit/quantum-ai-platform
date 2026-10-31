@@ -1671,6 +1671,13 @@ impl ResearchLoop {
         &self.now_estimate
     }
 
+    /// Whether a sweep is due on `cycle`. The one statement of the cadence,
+    /// read by [`Self::maybe_sweep`] and by the run loop when it holds a due
+    /// sweep in the research backlog instead (ADR 0214).
+    pub fn due(&self, cycle: u64) -> bool {
+        self.config.every_cycles != 0 && cycle.is_multiple_of(self.config.every_cycles)
+    }
+
     /// Run a sweep if this cycle is on the cadence.
     pub fn maybe_sweep(
         &mut self,
@@ -1680,7 +1687,7 @@ impl ResearchLoop {
         licensed_sources: &BTreeSet<String>,
         eligible_jurisdictions: &BTreeSet<String>,
     ) -> Result<Option<ResearchRound>> {
-        if self.config.every_cycles == 0 || !cycle.is_multiple_of(self.config.every_cycles) {
+        if !self.due(cycle) {
             return Ok(None);
         }
         self.sweep(platform, now, licensed_sources, eligible_jurisdictions)

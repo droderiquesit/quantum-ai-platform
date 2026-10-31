@@ -1530,6 +1530,37 @@ impl CausalGraph {
         &self.edges
     }
 
+    /// Lower the confidence of the edge at `index` by `factor` in `(0, 1)`
+    /// because `evidence_id` contradicts it (R12-WORLD-6015), and cite that
+    /// evidence on the edge, so the edge itself records what weakened it. The
+    /// edge is kept and its earlier evidence with it: a contradiction weakens
+    /// a claim, it does not erase the record that once supported it. Returns
+    /// the confidence before and after.
+    ///
+    /// Refused for an index the graph does not hold, a factor outside
+    /// `(0, 1)`, and evidence citing a quantum result.
+    pub fn weaken_on_contradiction(
+        &mut self,
+        index: usize,
+        factor: f64,
+        evidence_id: String,
+    ) -> Result<(f64, f64)> {
+        if !(factor.is_finite() && factor > 0.0 && factor < 1.0) {
+            return Err(Error::invalid(format!(
+                "a contradiction weakens by a factor in (0, 1); {factor} would not weaken anything \
+                 or would erase the edge"
+            )));
+        }
+        let edge = self.edges.get_mut(index).ok_or_else(|| {
+            Error::not_found(format!("the causal graph holds no edge at index {index}"))
+        })?;
+        refuse_quantum_evidence(&edge.cause, &edge.effect, [&evidence_id])?;
+        let before = edge.confidence;
+        edge.confidence = before * factor;
+        edge.evidence.push(evidence_id);
+        Ok((before, edge.confidence))
+    }
+
     /// Edges leaving `cause`, known by `known_at` and not retired by then.
     ///
     /// The two filters are the two halves of point in time: an edge recorded

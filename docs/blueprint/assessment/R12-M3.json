@@ -424,9 +424,14 @@
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/construction.rs:75 PortfolioConstruction reads approved_conviction from the feature store and reports no data without it",
       "grep -rn '\"approved_conviction\"' over runtime, apps and services finds no writer outside tests",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed",
+      "backend/crates/agents/qip-investment-agents/src/portfolio_brain.rs (PortfolioAssetAnalyst)",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs (Scope::PortfolioAsset)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (brief_the_desk_on_book, desk_book_view)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_portfolio_asset_brain_drops_portfolio_asset_from_coverage",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close"
     ],
-    "gap": "Two prerequisites, neither done: the kernel feeding BookView as an Upstream (see R12-CAPITAL-3020), and a kernel writer for the approved_conviction feature PortfolioConstruction sizes from (nothing outside tests writes it; REASON approves a thesis and the conviction is not recorded on the world model). Then divestment and causal-driver findings in the agent.",
+    "gap": "2026-10-30: skeptic REFUTED on part 4: the Portfolio/Asset Brain runs in the standard organisation on the default cycle and reads the held book the kernel now writes into the desk every REASON, covering mandates (positions flagged with none) and exposure, but it states no horizon, hedge or factor/causal-driver allocation, and its divestment count is always zero because nothing on a shipped path calls Portfolio::begin_unwind; remaining step is findings for those three from the kernel's position records and a default-path unwind seam.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -434,10 +439,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed. 2026-10-30: the desk's book slot is an Upstream the kernel writes from the position lifecycle register and latest closes every REASON (it had been the empty assembly portfolio for the life of the process); a new PortfolioAssetAnalyst in standard_agents reports positions held, flagged without mandate, unwinding, unmarked and gross exposure over equity; Scope::PortfolioAsset. Mutations: drop brief_the_desk_on_book (kernel test fails); count Held for Flagged (organisation test fails). Roster and documented agent count move to twenty-one. Skeptic (code-reviewer) REFUTED as in the gap."
   },
   {
     "id": "R12-CAPITAL-3020",
@@ -1009,9 +1014,12 @@
     "status": "MISSING",
     "current": "No company/fundamental federation member; NOW Brain holds company-scope state from fundamentals, not registered in the federation.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9521 fundamental metric surprise"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9521 fundamental metric surprise",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs COMPANY, REQUIRED_FAMILIES, InstrumentView.fundamental_surprise",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::fundamental_surprises",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_fundamental_surprise_on_an_issuer_gives_the_company_member_a_view_and_its_absence_names_the_family_uncovered"
     ],
-    "gap": "Build and register.",
+    "gap": "2026-10-31 (L4, commit 9efe8b29, skeptic REFUTED). Closed: a company/fundamental federation member (COMPANY) is declared, its family is in REQUIRED_FAMILIES, and it gives a view on an instrument from its issuer's latest reported surprise (Platform::fundamental_surprises, joined through RelationshipKind::Issues). Still open: no production code writes an Issues fact, so on a shipped binary the join finds nothing and the member is always silent; the population check counts the family covered while its member is live but silent, though the requirement says it produces state; the member reads one quantity, the latest surprise, and does not model financials as state, management actions, credit or capital structure, and no ADR declines those clauses (ADR 0157 bills credit and capital-structure series); the new test feeds fundamental_surprise directly, so the graph join is untested.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1022,7 +1030,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 (L4), commit 9efe8b29: mutant (drop the company view) killed, restored sha256-identical. Five existing tests updated for the member count and silent/uncovered lists, none weakened (skeptic agreed). Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-WORLD-3045",
@@ -1879,7 +1887,7 @@
       "backend/crates/runtime/qip-kernel/src/now_stage.rs:487-529",
       "qip-world-model/tests/now_brain.rs::a_belief_delta_carries_moments_and_manifests_and_a_raw_payload_is_refused"
     ],
-    "gap": "Each NOW delta cites a manifest name minted inside the kernel (kernel/bar-history, cycle-N), not a connector manifest entry, and the reference ledger (references.rs DataReferenceRecorded) is keyed by fetch digest and source id, which no NOW reading carries. A resolver that refused an unresolvable citation would refuse every delta today; the readings must first carry the digest of the fetch they came from, through the world model feature store.",
+    "gap": "2026-10-30: deploy dependence: the only external evidence that can stand behind NOW state arrives through the connector arm (fastbrain/api/deepbrain), which every committed tfvars leaves off, so on the default path every NOW delta rests on the platform's own simulated bars and there is no external evidence for a manifest citation to resolve; remaining step is threading FetchDigest and source id from connector SensedRecords through the feature store into ManifestRefs once a connector runs on a committed path.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1892,7 +1900,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. 2026-10-18 lane L06: not implemented; the closure as graded would refuse every NOW delta. Left PARTIAL with the corrected gap."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. 2026-10-18 lane L06: not implemented; the closure as graded would refuse every NOW delta. Left PARTIAL with the corrected gap. 2026-10-30: lane L3-data: not implemented this round; the closure's test ('every NOW delta from connector data cites a manifest the reference ledger resolves') can only be driven by a test-built connector, which the bar does not count."
   },
   {
     "id": "R12-WORLD-3082",

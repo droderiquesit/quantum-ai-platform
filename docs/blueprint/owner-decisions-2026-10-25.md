@@ -93,6 +93,30 @@ permission layer refuses them to an agent whatever the delegation says.
     R12-CICD-9095, 8032, 9083 and R12-GCP-9086 stay PARTIAL until the patches
     are applied and, for 9095, the rulesets are live.
 
+13. **R12-CICD-10117, the four files two builds of one tree still differ in
+    (2026-10-30, under the standing delegation).** Lane L9 made the portal's
+    `generateBuildId` read `SOURCE_DATE_EPOCH` and measured two builds of the
+    same tree: 4 of 2,921 files differ, and all four hold per-build secrets
+    (the preview-mode keys and the Server Actions key). Decision: exclude,
+    not inject. Sharing a per-build secret across builds to make them
+    byte-equal would trade a security property for a reproducibility
+    figure. The deploy gate compares the two builds with exactly those four
+    files excluded, named one by one in a committed list, and refuses when
+    any file outside the list differs or a listed file stops existing. That
+    gate is a `deploy.yml` change, so it arrives as a patch under
+    `docs/blueprint/lanes/` for the owner, and the row stays PARTIAL until
+    it is applied.
+
+14. **R12-CICD-9085, a committed baseline plus a delta test (2026-10-30).**
+    `RECORDED_DIGEST` in `tick_replay.rs` is a baseline for replay
+    fidelity, not performance, and `performance.rs`'s ratio tolerances are
+    bounds, not a baseline. What closes the row is a committed baseline of
+    relative figures recorded on a named runner class with a delta test
+    against it; the runner class is not known before a deployment, so the
+    row stays PARTIAL and waits on deploy. A file of absolute timings is
+    refused: it would fail on any slower runner and pass on any faster one,
+    which measures the runner, not the change.
+
 ## Owner action
 
 The agents cannot carry these out, whatever the delegation says.
@@ -126,6 +150,21 @@ The agents cannot carry these out, whatever the delegation says.
     that round's manifest.
 - Approve the rolling pull request's head, so that `agent boundary` passes
   (decision 3).
+- Decide R12-RISK-4116's reserve (raised 2026-10-30 by lane L1). The joint
+  tail world L1 built in `qip-kernel/src/tail.rs` is one more survival
+  world, and `survival::worst_world` takes the worst, so letting it count
+  raises the survival reserve the platform holds back. Raising a risk
+  limit is an alteration the agents may not make, tightening included, so
+  on the shipped default path the world runs and its would-be reserve is
+  journaled and reported but not applied. Saying "apply it" turns it on;
+  until then the row stays PARTIAL.
+- Decide R12-SEC-10056's route (lane L6, 2026-10-30). Sensitive Data
+  Protection cannot scan Cloud Logging, and OBS-020's `manifest_wiring`
+  guard forbids any log sink outside Cloud Logging, so the SDP sink L6
+  built was reverted in `7ed4be03`. Either an ADR admits exactly one SDP
+  sink as a named exception to OBS-020, or the row takes another route;
+  the agents do not pick between a logging boundary and a scanning
+  requirement.
 - When ready to deploy, follow `docs/ops/runbooks/dev-redeploy-readiness.md`
   §4: enable billing, raise the budget alert (decision 10), then dispatch
   `infra.yml` and `deploy.yml` in the order given.

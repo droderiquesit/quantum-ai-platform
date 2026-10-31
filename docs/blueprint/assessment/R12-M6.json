@@ -32,7 +32,7 @@
       "backend/crates/runtime/qip-kernel/tests/learning.rs:523 declined counterfactual record test",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:1688 counterfactual outcomes journaled"
     ],
-    "gap": "No unified training-data export of all paths; hedges/unwinds/agency proposals not captured.",
+    "gap": "No unified training-data export of all paths; hedges/unwinds/agency proposals not captured. 2026-10-30 (lane L2-INTEL), one sentence: the hedge half is held by owner decision 7 (no declared hedge policy, so run_hedge_brain proposes nothing to record), and the ambient-draft half is the ambient door's, so a unified export of all paths cannot cover hedges on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -79,7 +79,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:826 declined and filled share one cap"
     ],
-    "gap": "No counterfactual for hedged or unwound positions: Platform has no queue of hedge proposals or unwinds to price, and evaluate_alternatives prices a placed order's size arms, not a hedge or an unwind leg. Needs a design decision on what an unwound or hedged path's alternative is (the unhedged hold? the held-to-horizon position?) before a queue and a twin arm can be built. The partial-fill half is closed.",
+    "gap": "No counterfactual for hedged or unwound positions: Platform has no queue of hedge proposals or unwinds to price, and evaluate_alternatives prices a placed order's size arms, not a hedge or an unwind leg. Needs a design decision on what an unwound or hedged path's alternative is (the unhedged hold? the held-to-horizon position?) before a queue and a twin arm can be built. The partial-fill half is closed. 2026-10-30 (lane L2-INTEL), one sentence: held by owner decision 7; a hedge is surveyed only under a declared hedge policy, no composition root declares one, and a default policy would be a new target exposure, so a hedges-not-taken counterfactual would score nothing on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -333,9 +333,14 @@
     "evidence": [
       "backend/crates/services/qip-world-model/src/reaction.rs:35 ReactionEpisode",
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse",
-      "backend/crates/services/qip-world-model/src/granger.rs"
+      "backend/crates/services/qip-world-model/src/granger.rs",
+      "backend/crates/services/qip-world-model/src/granger.rs apply_reaction, REACTION_HORIZONS_BARS, CONTRADICTION_CONFIDENCE_FACTOR",
+      "backend/crates/services/qip-world-model/src/causal.rs CausalGraph::weaken_on_contradiction",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::react_to_world_events",
+      "backend/crates/services/qip-world-model/tests/granger.rs::a_contradicting_reaction_lowers_the_held_edges_confidence_and_keeps_the_edge",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::a_news_event_yields_reactions_at_three_horizons_and_a_contradiction_lowers_the_edge_confidence"
     ],
-    "gap": "Not shown at several horizons or lowering a causal edge confidence on contradiction; fusion runs only in the off-by-default tick desk.",
+    "gap": "2026-10-30 (L4, commit ed8a76c5, skeptic REFUTED). Closed: granger::apply_reaction applies a reaction episode to the causal graph (establishes an edge where none is held; a reaction against what the edge's mechanism expects for the event direction lowers its confidence by CONTRADICTION_CONFIDENCE_FACTOR and is cited on the edge), and Platform::react_to_world_events, called from run_cycle, measures each directional event at 1, 5 and 20 bars. Still open: on a shipped binary's default feed the loop matches nothing (synthetic news yields no MarketEvents because mentions carry no entity_id; fundamentals are keyed by entity id and bars by object id; macro series have no bars), so only the test fixture exercises it; only the event's own subject is measured (not multi-asset) and only from bar closes (not ticks); every directional event is used, with no materiality threshold; reaction episodes are not journaled and reactions_applied is in memory, so a restart re-applies them; an edge is created whatever sign the first reaction showed, and the three overlapping horizons of one event can each halve confidence; agreement never raises confidence; edge.evidence grows without a cap; propagation from a class-named cause is not shown.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -346,7 +351,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 (L4), commit ed8a76c5: three mutants killed (skip weaken_on_contradiction; first horizon only; drop the kept contradictions), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
   },
   {
     "id": "R12-MODEL-6016",
@@ -473,14 +478,17 @@
   {
     "id": "R12-MODEL-6021",
     "status": "PARTIAL",
-    "current": "Real marked P&L is joined to the forecaster (Model) keys stamped at order acceptance and split pro rata (qip-learning-engine keyed_attribution; Platform::attribute in LEARN). attribution::by_forecaster returns each forecaster's share and feeds the tournament's cumulative attributed P&L each LEARN. In a cycle: a hypothesis REASON formed, an order citing it filling and LEARN marking the position up credits the detector that raised it a positive share, and the shares sum to the position's marked P&L.",
+    "current": "Real marked P&L is joined to the forecaster (Model) keys stamped at order acceptance and split pro rata (qip-learning-engine keyed_attribution; Platform::attribute in LEARN). attribution::by_forecaster returns each forecaster's share and feeds the tournament's cumulative attributed P&L each LEARN. In a cycle: a hypothesis REASON formed, an order citing it filling and LEARN marking the position up credits the detector that raised it a positive share, and the shares sum to the position's marked P&L. Since 2026-10-30 the downstream capital impact is attributed too. AttributionPass.deployed holds each order's gross notional, and attribution::capital_by_forecaster splits it across the order's Model keys in the equal shares by_forecaster splits its P&L in. The split is refused if it does not sum to the notional deployed. AttributionRecorded, journaled in LEARN, carries it as capital_by_forecaster (SCHEMA_VERSION 2, additive; version-1 records decode with the map empty; body_schema_lock updated).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/attribution.rs::by_forecaster",
       "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs",
       "runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
-      "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source"
+      "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs capital_by_forecaster, AttributionPass.deployed, AttributionRecorded.capital_by_forecaster",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs attribution::tests::capital_is_split_once_per_order_across_its_forecasters_however_many_fills_it_had"
     ],
-    "gap": "2026-10-24: Closes when downstream capital impact is attributed to each forecaster as well as P&L: a per-forecaster figure for the capital (grant, allocation or risk usage) its forecasts informed, journaled beside by_forecaster's P&L share; or an ADR narrows the requirement to P&L.",
+    "gap": "2026-10-30 (lane L2-INTEL): P&L and deployed capital are attributed per forecaster on the default LEARN path and journaled. The in-lane skeptic REFUTED the first test on bar part 1: it checked the deployed notional against itself. The test now also asserts the order's notional equals quantity times price from the outcome capture, an independent record, and the arithmetic mutation fires. It has not been re-reviewed (no third round). The per-order split across several fills and models is now tested (a unit test; dropping the per-order guard fails it). Capital is read as deployed notional, not a grant or risk-usage figure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -493,7 +501,7 @@
     "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause. AUDIT-4 2026-10-24: regraded, the requirement attributes economic contribution and downstream capital impact to each forecaster; by_forecaster attributes marked P&L only, and the row's own notes say capital impact 'is not attributed separately and remains a later clause'. The P&L half is real: reading Dimension::Belief instead of Model fails model_tournament.rs:408."
+    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause. AUDIT-4 2026-10-24: regraded, the requirement attributes economic contribution and downstream capital impact to each forecaster; by_forecaster attributes marked P&L only, and the row's own notes say capital impact 'is not attributed separately and remains a later clause'. The P&L half is real: reading Dimension::Belief instead of Model fails model_tournament.rs:408. 2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: split keyed by Dimension::Belief; empty map journaled in AttributionRecorded::from_pass. Each fails each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional. 2026-10-30 L2-INTEL: added mutation: deployed summed as quantity alone fails the test at the independent notional assertion; restored by copy + cmp."
   },
   {
     "id": "R12-MODEL-6022",

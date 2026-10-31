@@ -354,6 +354,123 @@ impl StructuralModel {
         Ok(at(1.0)? - at(0.0)?)
     }
 
+    /// Why adjusting for `adjustment` does not identify the effect of
+    /// `treatment` on `outcome` in this model's graph, or `None` when it does
+    /// (the back-door criterion, R12-MODEL-4013).
+    ///
+    /// The criterion has two parts and both are checked. No member of the
+    /// adjustment set may be a descendant of the treatment: adjusting for a
+    /// mediator removes part of the effect, and for a collider downstream
+    /// opens a path the design had closed. And every path between the two
+    /// that begins with an edge *into* the treatment must be blocked: the
+    /// treatment's outgoing edges are cut and the two must then be
+    /// d-separated given the set, decided on the moral graph of their
+    /// ancestral set with the set removed (Lauritzen's criterion). A design
+    /// this refuses is one whose association is not the effect, and an
+    /// estimate taken from it would be a confounded number under an
+    /// identified label.
+    pub fn backdoor_open_path(
+        &self,
+        treatment: &str,
+        outcome: &str,
+        adjustment: &BTreeSet<String>,
+    ) -> Result<Option<String>, Error> {
+        for variable in std::iter::once(treatment)
+            .chain(std::iter::once(outcome))
+            .chain(adjustment.iter().map(String::as_str))
+        {
+            if !self.order.iter().any(|known| known == variable) {
+                return Err(Error::invalid(format!(
+                    "model `{}` does not contain `{variable}`",
+                    self.name
+                )));
+            }
+        }
+        if treatment == outcome || adjustment.contains(treatment) || adjustment.contains(outcome) {
+            return Err(Error::invalid(
+                "the treatment, the outcome and the adjustment set must be distinct",
+            ));
+        }
+        // Children, from the parent lists.
+        let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (child, parents) in &self.parents {
+            for (parent, _) in parents {
+                children
+                    .entry(parent.as_str())
+                    .or_default()
+                    .push(child.as_str());
+            }
+        }
+        let mut descendants: BTreeSet<&str> = BTreeSet::new();
+        let mut stack = vec![treatment];
+        while let Some(node) = stack.pop() {
+            for child in children.get(node).into_iter().flatten() {
+                if descendants.insert(child) {
+                    stack.push(child);
+                }
+            }
+        }
+        if let Some(descendant) = adjustment.iter().find(|v| descendants.contains(v.as_str())) {
+            return Ok(Some(format!(
+                "`{descendant}` is a descendant of `{treatment}`; adjusting for it removes part \
+                 of the effect or opens a path through a collider"
+            )));
+        }
+        // Parents with the treatment's outgoing edges cut.
+        let parents_of = |node: &str| -> Vec<&str> {
+            self.parents
+                .get(node)
+                .into_iter()
+                .flatten()
+                .map(|(parent, _)| parent.as_str())
+                .filter(|parent| *parent != treatment)
+                .collect()
+        };
+        let mut ancestral: BTreeSet<&str> = BTreeSet::new();
+        let mut stack: Vec<&str> = std::iter::once(treatment)
+            .chain(std::iter::once(outcome))
+            .chain(adjustment.iter().map(String::as_str))
+            .collect();
+        while let Some(node) = stack.pop() {
+            if ancestral.insert(node) {
+                stack.extend(parents_of(node));
+            }
+        }
+        // The moral graph over the ancestral set: each edge undirected, and
+        // every two parents of a common child married.
+        let mut neighbours: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for node in &ancestral {
+            let parents = parents_of(node);
+            for parent in &parents {
+                neighbours.entry(node).or_default().insert(parent);
+                neighbours.entry(parent).or_default().insert(node);
+            }
+            for (i, left) in parents.iter().enumerate() {
+                for right in &parents[i + 1..] {
+                    neighbours.entry(left).or_default().insert(right);
+                    neighbours.entry(right).or_default().insert(left);
+                }
+            }
+        }
+        let mut seen: BTreeSet<&str> = BTreeSet::from([treatment]);
+        let mut frontier = vec![treatment];
+        while let Some(node) = frontier.pop() {
+            for next in neighbours.get(node).into_iter().flatten() {
+                if adjustment.contains(*next) || !seen.insert(next) {
+                    continue;
+                }
+                if *next == outcome {
+                    return Ok(Some(format!(
+                        "a back-door path from `{treatment}` to `{outcome}` is open given {{{}}}",
+                        adjustment.iter().cloned().collect::<Vec<_>>().join(", ")
+                    )));
+                }
+                frontier.push(next);
+            }
+        }
+        Ok(None)
+    }
+
     /// The slope of `effect` on `cause` the model implies observationally:
     /// `Cov(cause, effect) / Var(cause)`, from the covariance the exogenous
     /// variances propagate. Equal to [`Self::interventional_effect`] only

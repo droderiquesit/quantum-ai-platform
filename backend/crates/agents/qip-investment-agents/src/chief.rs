@@ -447,7 +447,7 @@ pub fn standard_agents(
 ) -> Vec<Arc<dyn Agent>> {
     use crate::{
         adversary, analysts, construction, control, execution, fast, learning, poisoning,
-        reasoning, review,
+        portfolio_brain, reasoning, review,
     };
 
     vec![
@@ -546,6 +546,10 @@ pub fn standard_agents(
         )),
         Arc::new(adversary::ModelFailureProbe::new(
             manifests::model_failure_probe(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(portfolio_brain::PortfolioAssetAnalyst::new(
+            manifests::portfolio_asset_brain(reviewed_at),
             desk,
         )),
     ]

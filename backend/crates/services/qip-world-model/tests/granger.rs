@@ -169,3 +169,95 @@ fn a_non_finite_observation_is_refused_rather_than_silently_dropped() {
     let result = establish_temporal_precedence("a", &series, "b", &clean, daily_bars(), now());
     assert!(result.is_err(), "a NaN in either series must be refused");
 }
+
+/// R12-WORLD-6015: a reaction to a world event updates the causal graph. With
+/// no edge held, it establishes one. A later reaction that agrees leaves it
+/// alone. One that contradicts what the edge's mechanism expects for the
+/// event's direction lowers the edge's confidence by
+/// `CONTRADICTION_CONFIDENCE_FACTOR`, cites the contradicting reaction on the
+/// edge beside its earlier evidence, and returns the contradiction with the
+/// confidence before and after.
+///
+/// Mutation: in `apply_reaction`, skip `weaken_on_contradiction` -- the
+/// confidence is then unchanged after the contradicting reaction.
+#[test]
+fn a_contradicting_reaction_lowers_the_held_edges_confidence_and_keeps_the_edge() {
+    use qip_world_model::causal::{CausalGraph, Mechanism};
+    use qip_world_model::granger::{CONTRADICTION_CONFIDENCE_FACTOR, apply_reaction};
+    use qip_world_model::reaction::ReactionEpisode;
+    let t0 = qip_core::Timestamp::from_civil(2026, 9, 1);
+    let reaction = |id: &str, day: i64, sign: f64| {
+        ReactionEpisode::new(
+            id.to_string(),
+            "earnings".to_string(),
+            t0.saturating_add(qip_core::Duration::from_days(day)),
+            t0.saturating_add(qip_core::Duration::from_days(day + 1)),
+            vec![("AAA".to_string(), 120.0 * sign, sign)],
+            1,
+            0.8,
+            "test".to_string(),
+            t0.saturating_add(qip_core::Duration::from_days(day + 1)),
+        )
+        .unwrap()
+    };
+    let now = |day: i64| t0.saturating_add(qip_core::Duration::from_days(day + 2));
+    let mut graph = CausalGraph::new();
+
+    let created = apply_reaction(
+        &mut graph,
+        &reaction("r1", 0, 1.0),
+        1.0,
+        Mechanism::TemporalPrecedence,
+        now(0),
+    )
+    .unwrap();
+    assert_eq!(created.created, 1);
+    assert_eq!(graph.len(), 1);
+    let held = graph.edges()[0].confidence;
+    assert!(held > 0.0);
+
+    let agreed = apply_reaction(
+        &mut graph,
+        &reaction("r2", 5, 1.0),
+        1.0,
+        Mechanism::TemporalPrecedence,
+        now(5),
+    )
+    .unwrap();
+    assert_eq!(agreed.agreed, 1);
+    assert!(agreed.contradicted.is_empty());
+    assert_eq!(
+        graph.edges()[0].confidence.to_bits(),
+        held.to_bits(),
+        "an agreeing reaction moved the confidence"
+    );
+
+    let against = apply_reaction(
+        &mut graph,
+        &reaction("r3", 10, -1.0),
+        1.0,
+        Mechanism::TemporalPrecedence,
+        now(10),
+    )
+    .unwrap();
+    assert_eq!(against.contradicted.len(), 1, "{against:?}");
+    let c = &against.contradicted[0];
+    assert_eq!((c.expected_sign, c.observed_sign), (1.0, -1.0));
+    assert_eq!(c.confidence_before.to_bits(), held.to_bits());
+    assert!((c.confidence_after - held * CONTRADICTION_CONFIDENCE_FACTOR).abs() < 1e-12);
+    assert_eq!(
+        graph.len(),
+        1,
+        "the contradicted edge was dropped, not weakened"
+    );
+    let edge = &graph.edges()[0];
+    assert!((edge.confidence - held * CONTRADICTION_CONFIDENCE_FACTOR).abs() < 1e-12);
+    assert!(
+        edge.evidence.iter().any(|e| e.contains("r1")),
+        "the earlier evidence was erased"
+    );
+    assert!(
+        edge.evidence.iter().any(|e| e.contains("r3")),
+        "the contradiction is not cited"
+    );
+}
