@@ -107,6 +107,7 @@
 //! machine for regret nobody should feel.
 
 pub mod asof;
+pub mod business;
 pub mod calibration;
 pub mod capture;
 pub mod counterfactual;

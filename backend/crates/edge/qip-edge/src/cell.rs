@@ -4090,11 +4090,13 @@ impl Cell {
     /// stage then a formality that reads as a control.
     ///
     /// **An absent manifest admits a plan with no inline model and refuses
-    /// one with any.** The slot is produced nowhere yet
-    /// (`grep -rn 'ModelManifest' backend/crates --include=*.rs | grep -v '/tests/' | grep -v qip-contracts`
-    /// returned nothing on 2026-09-19), so today every plan carrying a model
-    /// is refused and every plan without one is unaffected. That is the
-    /// fail-closed reading: a cell that holds no list of promoted models
+    /// one with any.** The slot is produced by `qip-api`'s mesh from the
+    /// kernel's promoted set (`Platform::model_manifest_targeted`; locate it
+    /// with `grep -n 'payload.trained_models' backend/crates/apps/qip-api/src/mesh.rs`,
+    /// read 2026-10-31; this said "produced nowhere" until then), so a cell
+    /// holds a manifest only once a policy carrying one has reached it. Until
+    /// then every plan carrying a model is refused and every plan without
+    /// one is unaffected. That is the fail-closed reading: a cell that holds no list of promoted models
     /// has no grounds to say a model was promoted. Freshness is deliberately
     /// not consulted — the slot's staleness narrows the cell's capability
     /// table elsewhere, and a stale manifest is still the last set the

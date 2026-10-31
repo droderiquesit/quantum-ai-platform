@@ -907,6 +907,7 @@ mod tests {
             value: 0.3,
             valid_at,
             available_at,
+            sources: Vec::new(),
         }
     }
 
