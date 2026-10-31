@@ -29069,7 +29069,7 @@ mod decide_tests {
     #[test]
     fn the_platforms_company_twin_carries_a_suppliers_shock_to_its_customers_from_the_graph() {
         use qip_world_model::relationship::{Relationship, RelationshipKind};
-        let mut platform = small_book_platform();
+        let platform = small_book_platform();
         let t0 = Timestamp::from_secs(1_760_000_000);
         let later = t0.saturating_add(Duration::from_days(30));
         platform.world.update(|world| {
