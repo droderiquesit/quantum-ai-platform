@@ -261,24 +261,29 @@
   {
     "id": "R12-REFLEX-6012",
     "status": "PARTIAL",
-    "current": "qip-edge Cell records RegionalEpisode (anomaly, failure, latency spike, fill slippage) into a bounded local buffer; Microstructure and VenueBehaviour kinds are never recorded and nothing ships episodes to the centre.",
+    "current": "qip-edge Cell records RegionalEpisode (anomaly, failure, latency spike, fill slippage) into a bounded local ring; since 2026-10-31 (ADR 0207) the ring rides the mesh delta as a view — CellStateDelta/WireDelta/CellInterval carry `episodes` (newest MAX_EPISODES_PER_DELTA=32) and `episodes_omitted`, defaulted so sealed deltas replay — the API's IngestSink puts them on CellReport, and CentralPlane::ingest merges them into a per-cell store bounded at MAX_EPISODES_PER_CELL=256, deduplicated by the episode's own equality, read through CentralPlane::episodes(cell) by nothing that decides. Microstructure and VenueBehaviour are still never recorded.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:4033 record_episode (private, bounded)",
-      "backend/crates/edge/qip-edge/src/cell.rs:4076 episodes(): four of six kinds recorded",
-      "backend/crates/libs/qip-contracts/src/regional_episode.rs:68 RegionalEpisode"
+      "docs/adr/0207 (accepted 2026-10-31)",
+      "backend/crates/libs/qip-contracts/src/wire.rs MAX_EPISODES_PER_DELTA",
+      "backend/crates/edge/qip-edge/src/cell.rs state_delta: episodes: self.episodes.clone(); record_episode (private, bounded)",
+      "backend/crates/edge/qip-edge/src/mesh.rs CellStateDelta::{episodes, episodes_omitted}, bound_refusals keeps the newest",
+      "backend/crates/services/qip-mesh/src/delta.rs WireDelta/CellInterval episodes; tests::a_delta_written_before_episodes_existed_decodes_as_having_reported_none",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs CellReport::with_episodes, CentralPlane::{episodes, store_episodes}, MAX_EPISODES_PER_CELL; tests::an_episode_a_cell_reports_is_held_once_and_the_store_is_bounded_per_cell",
+      "backend/crates/apps/qip-api/src/mesh.rs IngestSink::absorb .with_episodes; tests/mesh.rs::a_cells_regional_episode_crosses_the_wire_into_the_central_store",
+      "backend/crates/tests/qip-acceptance/tests/regional_episodes.rs::an_episode_recorded_at_a_cell_reaches_the_central_store"
     ],
-    "gap": "Unchanged in substance (corrected 2026-10-24): carrying Cell::episodes to the centre is a mesh delta wire change that needs its own ADR, Microstructure and VenueBehaviour have no recording seam (cell.rs doc at the episodes accessor says so), and the central plane has no episode store.",
+    "gap": "2026-10-31 (lane L5b; independent read-only skeptic REFUTED promotion): episodes recorded at a cell now reach a bounded per-cell store in CentralPlane over the mesh delta (ADR 0207), but the Microstructure and VenueBehaviour kinds the requirement names (microstructure drift, queue behaviour, venue anomalies) are still never recorded, and ADR 0207 declines to add a seam for them (bar part 4). Delivery runs only where QIP_MESH_CELLS binds the API's mesh port, which no committed environment sets (manifest_wiring THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN), and on an execution node that is not deployed (bar part 2).",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge && cargo test -p qip-kernel (new: ingested episode reaches central store)",
+    "verification": "cargo test -p qip-acceptance --test regional_episodes; cargo test -p qip-api --test mesh a_cells_regional_episode; cargo test -p qip-kernel --lib an_episode_a_cell_reports; cargo test -p qip-mesh --lib episodes",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Nothing is deployed (execution_nodes = {} in every tfvars), so nothing is demonstrated end to end. The triage closure (carry Cell::episodes on the report and store them in CentralPlane::ingest) is the wire change in (1). Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE. Lane L5b 2026-10-31: the wire change landed under ADR 0207. Mutations fired (5, each restored byte for byte): state_delta ships an empty list (regional_episodes.rs fails at 'the delta is not the cell's view'); ingest never calls store_episodes (fails at the store assertion); store_episodes without its contains check (plane test: two copies); the bound at >= (plane test: one fewer); IngestSink without with_episodes (qip-api mesh test: store empty). Kept PARTIAL on the skeptic's refutation in the gap."
   },
   {
     "id": "R12-WORLD-6013",
@@ -529,14 +534,16 @@
   {
     "id": "R12-EXPAND-6023",
     "status": "PARTIAL",
-    "current": "Tools start read-only and widen only on a cited evaluation; models move through ModelStage with calibrated baseline gate; other capability kinds (ontology, specialists, memory) have contracts but no promotion gate in a running path.",
+    "current": "ADR 0198 (2026-10-31) names one widening door per capability kind and closes the doors beside it: OntologyRegistry::register admits version one only and every later version comes through extend with a passing CitedEvaluation; ModelRegistry::register refuses a self-fitted card at Production without the completed shadow promote demands (the restore path's journaled cards carry it); CapabilityRegistry::add_capability is crate-private and promote is the door; PromotionPolicy's floors are private, PromotionPolicy::new refuses fewer than two supporting episodes or a smoothed floor at or under one half, and a decoded policy goes through the same check. Tools start read-only and widen only on a cited evaluation reference; models move through ModelStage with the shadow gate; specialists have no door by ADR 0158 d8; feature definitions are ingestion facts, not capabilities (ADR 0198).",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/tools.rs:126 promote requires evaluation",
-      "backend/crates/libs/qip-ai/src/registry.rs:99 ModelStage",
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65",
-      "backend/crates/libs/qip-agents/src/memory.rs promote (record_lesson removed in f9edfe5f)"
+      "docs/adr/0198-every-capability-registry-has-one-widening-door-and-that-door-cites-a-passing-evaluation.md",
+      "backend/crates/libs/qip-agents/src/registries.rs::OntologyRegistry::register (version one only), ::extend, ::CapabilityRegistry::promote",
+      "backend/crates/libs/qip-ai/src/registry.rs::ModelRegistry::register (self-fitted Production refusal), ::promote",
+      "backend/crates/libs/qip-agents/src/memory.rs::PromotionPolicy::new",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_type_above_version_one_enters_the_ontology_only_through_an_evaluated_extension, ::a_promotion_policy_with_a_floor_that_cannot_refuse_is_itself_refused",
+      "backend/crates/libs/qip-ai/tests/registry.rs::a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_refused"
     ],
-    "gap": "An independent read-only skeptic (2026-10-25, defaulting to REFUTED) found the claim \"each capability kind widens only on a cited evaluation\" REFUTED after f9edfe5f removed ResearchMemory::record_lesson. Remaining ungated widening doors, by kind: (1) ontology: registries.rs register is pub and accepts any higher version without extend; extend only checks a non-blank CitedEvaluation id and never resolves it to a record; CapabilityRegistry::add_capability cites nothing. (2) model: ModelRegistry::register (qip-ai registry.rs) inserts any card unchecked and ModelCard.stage is pub, so a card built at Production skips promote (the deep brain restore path registers journaled cards this way). (3) research: record and record_version (research.rs) bypass record_concluded experiment-reference check. (4) tool: promote takes an attestation string, not a stored evaluation record. (5) memory: promote counts supporting_episodes without resolving them against held episodes, and PromotionPolicy fields are pub so floors can be lowered to zero (qip-investment-agents learning.rs with_promotion_policy). (6) specialist: BrainRegistry::register cites no evaluation; ADR 0158 decision 8 declines the clause, so it stays unmet under bar part 4. (7) knowledge: absorb_evidence gates on admissibility, not an evaluation. Closure: make register non-widening or crate-private, resolve evaluation arguments to stored records, make policy floors non-lowerable, verify episode ids in promote.",
+    "gap": "Open doors ADR 0198 names rather than closes: ToolRegistry::promote takes an evaluation reference string and its one production caller (qip-deepbrain language.rs) passes the hosted provider's attestation, self-attested, not a stored record the registry resolves; ResearchRegistry::record and record_version still write versioned verdicts without experiment references (their production callers record open and routing verdicts, not concluded research); ResearchMemory::promote counts cited episodes without resolving them against held episodes, because the kernel's LEARN cites resolution ids that are not the analyst episodes' run ids. The ontology candidate the sweep registers (6029) cites a gap, not an evaluation, and is admitted only at version one. No skeptic round ran on this slice (2026-10-31), so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -547,7 +554,7 @@
     "verification": "cargo test -p qip-agents && cargo test -p qip-kernel --test models",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-25 L4-quant: f9edfe5f removed the one ungated memory door (record_lesson); skeptic verdict REFUTED for the whole row, findings recorded in gap. Stays PARTIAL."
+    "notes": "2026-10-25 L4-quant: f9edfe5f removed the one ungated memory door (record_lesson); skeptic verdict REFUTED for the whole row, findings recorded in gap. Stays PARTIAL. 2026-10-31 L4b-expand: ADR 0198 accepted and four doors closed. Mutations fired: dropping the version-one rule in OntologyRegistry::register failed the ontology test at the first is_err; dropping the self-fitted Production check in ModelRegistry::register failed the qip-ai test at is_err; dropping the support floor in PromotionPolicy::new failed the policy test at its first assertion; each restored byte-for-byte (sha256 checked). Four registries.rs unit tests that registered version two directly now extend through the evaluated door. Kept PARTIAL: tool attestation, research record, memory citation resolution open; no skeptic."
   },
   {
     "id": "R12-EXPAND-6024",
@@ -618,23 +625,29 @@
   {
     "id": "R12-EXPAND-6027",
     "status": "PARTIAL",
-    "current": "Source scoring/routing and bounded source-alpha history exist in qip-data-finder; outcome-driven reputation updating and adversarial detection not found.",
+    "current": "Source scoring and routing and a bounded source-alpha history exist in qip-data-finder. Since 2026-10-31 qip_contracts::expansion::SourceScore (source, subject, incremental gain and realised contribution in [-1, 1], samples, the window of senses, the SHA-256 of the aligned samples as their bits, scored_at) is produced by SourceAlphaDesk::score for every scored source-subject pair, validated, kept on the SourceAlphaRound, and written to the deep brain's ambient journal by AmbientJournal::record_source_scores from node::run_with, one record per pair, under its own lineage. The desk's cadence defaults to every cycle (DEFAULT_SOURCE_ALPHA_EVERY = 1; QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY=0 disables by name), so a node with a connector arm scores and journals on the default path.",
     "evidence": [
+      "backend/crates/libs/qip-contracts/src/expansion.rs::SourceScore",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score (records), ::DEFAULT_SOURCE_ALPHA_EVERY",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs::AmbientJournal::record_source_scores, AmbientRecord::SourceScore",
+      "backend/crates/apps/qip-deepbrain/src/node.rs run_with (record_source_scores beside the ambient sweep record)",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::tests::a_scored_connector_leaves_a_validated_source_score_citing_its_window",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::a_cycles_source_scores_are_journaled_as_records_citing_their_window",
       "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71",
       "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:90"
     ],
-    "gap": "EvidencePolicy/SourceScore updated from outcomes.",
+    "gap": "The desk scores a connector arm against the own stream, and every committed environment leaves deepbrain_connector null (QIP_CONNECTOR_SOURCE unset), so on the default path there is no arm to score and the journal receives no record; reaching one needs a connector and, for a hosted source, the egress path the 2026-10-18 note describes (zone policy and a Cloud NAT gateway, billed; owner decision). No EvidencePolicy record is produced (the requirement names either artifact). Outcome-driven reputation updating beyond the score and adversarial detection are not here. No skeptic round ran on this slice, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing EvidencePolicy / SourceScore)",
+    "verification": "cargo test -p qip-deepbrain --lib source_alpha; cargo test -p qip-deepbrain --test ambient_journal; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-31 L4b-expand: SourceScore contract, producer, journal record and the every-cycle default landed. Mutations fired: dropping the records push failed the unit test at records.len() (0, expected 1); dropping the journal append failed the ambient_journal test at written (0, expected 1); each restored byte-for-byte (sha256 checked). The cadence unit test was updated to the decided default (unset = 1, 0 disables). Kept PARTIAL: input env-gated, no skeptic."
   },
   {
     "id": "R12-EXPAND-6028",
@@ -1595,7 +1608,7 @@
   {
     "id": "R12-EXPAND-6070",
     "status": "PARTIAL",
-    "current": "Models: a model the deep brain fits for itself (ModelCard.self_fitted) reaches production only out of a completed shadow stage. ModelRegistry::promote refuses a self-fitted card unless it is in ModelStage::Shadow with MIN_SHADOW_ROUNDS (3) rounds won, whoever calls it, and the kernel's ModelProducer::SelfFitted check is a second layer. The learning desk enters a candidate that passes holdout, adversarial and verifier checks into shadow. Each later window scores it against every production incumbent, or the zero-return predictor, on rows strictly after everything it has read (seen_through), and a lost round retires it. Every promotion record lists its stages and carries the central plane's HMAC signature (Platform::promotion_verifies). Images: deploy.yml builds, scans, signs and attests, under Binary Authorization.",
+    "current": "Models: a model the deep brain fits for itself (ModelCard.self_fitted) reaches production only out of a completed shadow stage. ModelRegistry::promote refuses a self-fitted card unless it is in ModelStage::Shadow with MIN_SHADOW_ROUNDS (3) rounds won, whoever calls it, and the kernel's ModelProducer::SelfFitted check is a second layer. The learning desk enters a candidate that passes holdout, adversarial and verifier checks into shadow. Each later window scores it against every production incumbent, or the zero-return predictor, on rows strictly after everything it has read (seen_through), and a lost round retires it. Every promotion record lists its stages and carries the central plane's HMAC signature (Platform::promotion_verifies). Images: deploy.yml builds, scans, signs and attests, under Binary Authorization. ADR 0198 (2026-10-31) names the promotion door for every kind the requirement lists: code through CI signing and Binary Authorization; models through ModelRegistry::promote, with register now refusing a self-fitted card built at Production without its completed shadow; schemas through OntologyRegistry::extend on a passing evaluation, register admitting version one only; tools through ToolRegistry::promote on an evaluation reference; agents and feature definitions declared to have no door, with the reason.",
     "evidence": [
       ".github/workflows/deploy.yml:1-2 build, scan, sign, attest",
       "backend/crates/libs/qip-ai/src/registry.rs:99-109 ModelStage incl. Shadow",
@@ -1604,9 +1617,11 @@
       "backend/crates/libs/qip-ai/tests/model_infrastructure.rs::a_shadow_round_is_counted_only_for_a_shadowed_model_once_per_window_with_evidence",
       "backend/crates/runtime/qip-kernel/tests/serving.rs::a_self_fitted_model_that_skipped_its_shadow_stage_is_refused_production",
       "backend/crates/runtime/qip-kernel/tests/serving.rs::a_promotion_record_lists_its_stages_under_a_signature_an_edit_breaks",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs::tests::a_self_fitted_candidate_runs_in_shadow_and_is_promoted_only_after_winning_its_rounds"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs::tests::a_self_fitted_candidate_runs_in_shadow_and_is_promoted_only_after_winning_its_rounds",
+      "docs/adr/0198-every-capability-registry-has-one-widening-door-and-that-door-cites-a-passing-evaluation.md (clause 2: the per-kind gate table)",
+      "backend/crates/libs/qip-ai/tests/registry.rs::a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_refused"
     ],
-    "gap": "2026-10-24 (L4, wave580): the model half is built (commits e5d9f847 and 45bdbc87). The independent skeptic REFUTED e5d9f847; its two defects (in-sample shadow rounds, a guard keyed on the caller's producer label) were fixed in 45bdbc87. Still unmet: (1) 'shadow/paper operation' as the requirement means it. The shadow is an offline comparison against production on fresh windows, not the model running beside production on live paper decisions. (2) The requirement also names code, tools, agents, features and schemas. Code reaches production only as CI-signed images under Binary Authorization. Tools, agents, features and schemas have no staged branch, test, shadow and signed-promotion gate, and that needs an ADR naming each one's gate. (3) The signature is self-attestation by the promoting process, using the plane's HMAC key; ADR 0110's HSM model-pack key is unused because artefact_signing is null in every environment.",
+    "gap": "2026-10-24 (L4, wave580): the model half is built (commits e5d9f847 and 45bdbc87). The independent skeptic REFUTED e5d9f847; its two defects (in-sample shadow rounds, a guard keyed on the caller's producer label) were fixed in 45bdbc87. Still unmet: (1) 'shadow/paper operation' as the requirement means it. The shadow is an offline comparison against production on fresh windows, not the model running beside production on live paper decisions. (2) ADR 0198 (2026-10-31) now names each kind's gate; tools widen on a self-attested evaluation reference rather than a stored, signed record, and agents and features have no gate by decision, so the 'shadow/paper operation and signed promotion' clause is met for models and code only. (3) The signature is self-attestation by the promoting process, using the plane's HMAC key; ADR 0110's HSM model-pack key is unused because artefact_signing is null in every environment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1617,12 +1632,12 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-ai --test model_infrastructure && cargo +1.94.1 test -p qip-kernel --test serving && cargo +1.94.1 test -p qip-deepbrain --lib a_self_fitted_candidate_runs",
     "work_item": "",
     "size": "L",
-    "notes": "Not deployed, so signed promotion has never run against a live environment. 2026-10-24 (L4, wave580) mutations, all killed: enter_shadow without its evaluation check; record_shadow_round without its time check; rounds_won >= 0; require_completed_shadow returning Ok; signing an empty payload; stages dropped from the signed payload; a lost round counted as won; promoting as TrainingPipeline; no freshness filter; seen_through never advanced; no self_fitted check in ModelRegistry::promote. Gate on 45bdbc87: 338 binaries, 3383 passed, 1 failed (traceability-matrix render, parent's); qip-fastbrain --test tape: 3 passed."
+    "notes": "Not deployed, so signed promotion has never run against a live environment. 2026-10-24 (L4, wave580) mutations, all killed: enter_shadow without its evaluation check; record_shadow_round without its time check; rounds_won >= 0; require_completed_shadow returning Ok; signing an empty payload; stages dropped from the signed payload; a lost round counted as won; promoting as TrainingPipeline; no freshness filter; seen_through never advanced; no self_fitted check in ModelRegistry::promote. Gate on 45bdbc87: 338 binaries, 3383 passed, 1 failed (traceability-matrix render, parent's); qip-fastbrain --test tape: 3 passed. 2026-10-31 L4b-expand: clause 2 addressed by ADR 0198 and the ModelRegistry::register door (mutation fired, see 6023). Clauses 1 (live shadow operation) and 3 (HSM key, artefact_signing null everywhere) unchanged. Stays PARTIAL."
   },
   {
     "id": "R12-EXPAND-6071",
     "status": "PARTIAL",
-    "current": "ADR 0141's schedule is code: qip_agency::autonomy::SCHEDULE gives per level the scope, from-level, attribution need, clean days, compensation, kill path, rollback, distinct approvers and grant. ActionPolicy::widen_to reads only that table, and widen (reached from qip-cli's agency pass through engine::widen) delegates to it. Checks run in order: prohibited levels (External: ADR 0114 D8; Capital: ADR 0003/0021/0108), then evidence item by item, then distinct approvers, then the from-level, then the grant. NarrowCompensable and BroadInternal refuse lesser evidence by name, and with full evidence refuse naming ADR 0141.",
+    "current": "ADR 0141's schedule is code: qip_agency::autonomy::SCHEDULE gives per level the scope, from-level, attribution need, clean days, compensation, kill path, rollback, distinct approvers and grant. ActionPolicy::widen_to reads only that table, and widen (reached from qip-cli's agency pass through engine::widen) delegates to it. Checks run in order: prohibited levels (External: ADR 0114 D8; Capital: ADR 0003/0021/0108), then evidence item by item, then distinct approvers, then the from-level, then the grant. NarrowCompensable and BroadInternal refuse lesser evidence by name, and with full evidence refuse naming ADR 0141. Since 2026-10-31 every drill is read against the instant the request is judged at (WideningEvidence.as_of, the pass's own clock in qip-cli, never one the request supplies): a drill dated after the request has not run, and one dated before the row's clean period began rehearsed a policy state since changed; both are refused by name for a compensating step and for the kill path. The qip-cli WideningDecl carries further attributions and the classes the widened scope covers, so BroadInternal's every-class row is reachable from the binary.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/tools.rs:126",
       "backend/crates/services/qip-agency/src/autonomy.rs:87 widen",
@@ -1632,9 +1647,13 @@
       "backend/crates/apps/qip-cli/src/agency.rs WideningDecl.target, Session::widen -> engine::widen_to",
       "backend/crates/services/qip-agency/src/autonomy.rs Drill, Drill::shortfall",
       "backend/crates/apps/qip-cli/tests/agency.rs::an_operator_pass_asking_narrow_compensable_with_narrow_reversible_evidence_is_refused_by_name",
-      "backend/crates/services/qip-agency/tests/agency.rs::a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule"
+      "backend/crates/services/qip-agency/tests/agency.rs::a_rollback_named_but_never_rehearsed_meets_no_level_of_the_schedule",
+      "backend/crates/services/qip-agency/src/autonomy.rs::Drill::shortfall(as_of, clean_days), WideningEvidence::judged_at",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::widen (as_of: now; attributions, classes)",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_drill_dated_after_the_request_or_before_the_clean_period_is_not_a_rehearsal",
+      "backend/crates/apps/qip-cli/tests/agency.rs::an_operator_pass_asking_narrow_compensable_with_narrow_reversible_evidence_is_refused_by_name (future-drill and stale-drill cases)"
     ],
-    "gap": "2026-10-25 (L4, commit 014903cd, skeptic REFUTED): closed since 2026-10-24: the shipped qip-cli agency pass now names a target level (WideningDecl.target) and routes through engine::widen_to and ActionPolicy::widen_to, so a request short of a level's row is refused by name on the default path; compensations and the kill path are typed Drill records refused when they name no step, left no record, or did not restore. Still open: (1) Drill.restored is self-declared and Drill.record is never resolved against a journal, so a fabricated drill meets the row; (2) Drill.ran_at is read by nothing (a future date or one before the clean period is accepted); (3) the CLI passes one attribution and no classes, so BroadInternal is refused at the attribution step and its per-class compensation and kill-path drill are unreachable from a binary; (4) Drill.step is not linked to the policy's tool or its declared reverse, and NarrowReversible's declared reverse is checked at call time, not in widen_to; (5) LevelRequirement.rollback and .scope are read by nothing; (6) BroadInternal checks one clean_days figure, not one per class; (7) nothing above NarrowReversible is grantable without a further ADR amending 0141, by design.",
+    "gap": "2026-10-25 (L4, commit 014903cd, skeptic REFUTED): closed since 2026-10-24: the shipped qip-cli agency pass now names a target level (WideningDecl.target) and routes through engine::widen_to and ActionPolicy::widen_to, so a request short of a level's row is refused by name on the default path; compensations and the kill path are typed Drill records refused when they name no step, left no record, or did not restore. Still open: (1) Drill.restored is self-declared and Drill.record is never resolved against a journal, so a fabricated drill meets the row; (2) closed 2026-10-31: Drill.ran_at is judged against the pass's clock (future and pre-clean-period drills refused by name); (3) closed 2026-10-31: WideningDecl carries attributions and classes; (4) Drill.step is not linked to the policy's tool or its declared reverse, and NarrowReversible's declared reverse is checked at call time, not in widen_to; (5) LevelRequirement.rollback and .scope are read by nothing; (6) BroadInternal checks one clean_days figure, not one per class; (7) nothing above NarrowReversible is grantable without a further ADR amending 0141, by design. No skeptic round ran on the 2026-10-31 slice, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1645,7 +1664,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency && cargo +1.94.1 test -p qip-cli --test agency",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D17; gap before it: Authority-graded evidence schedule. ADR lane 2026-10-18: gap re-graded against ADR 0141; gap before it: Delegable decision D17 (design-decisions-2026-10-18.json), ADR not yet written: Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8. Needs that ADR, then the code. 2026-10-24 (L4), commit 09ccd529: six mutants of widen_to each failed the new test at their own assertion: drop clean-days, drop compensation, count signatures not distinct approvers, drop the Ungranted refusal, drop the Refused check, drop kill-path. Restored and checked with sha256sum. An independent security-engineer skeptic returned REFUTED (default path and rollback findings in gap). Status stays PARTIAL. 2026-10-25 (L4), commit 014903cd: three mutants each killed at their own assertion (ignore decl.target: first pass widens, exit 3; skip the compensation loop: unrehearsed case reaches the from-level refusal; Drill::shortfall returns None: every case reaches the grant refusal); restored, sha256sum identical. Independent security-engineer skeptic REFUTED (findings in gap). Status stays PARTIAL."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D17; gap before it: Authority-graded evidence schedule. ADR lane 2026-10-18: gap re-graded against ADR 0141; gap before it: Delegable decision D17 (design-decisions-2026-10-18.json), ADR not yet written: Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8. Needs that ADR, then the code. 2026-10-24 (L4), commit 09ccd529: six mutants of widen_to each failed the new test at their own assertion: drop clean-days, drop compensation, count signatures not distinct approvers, drop the Ungranted refusal, drop the Refused check, drop kill-path. Restored and checked with sha256sum. An independent security-engineer skeptic returned REFUTED (default path and rollback findings in gap). Status stays PARTIAL. 2026-10-25 (L4), commit 014903cd: three mutants each killed at their own assertion (ignore decl.target: first pass widens, exit 3; skip the compensation loop: unrehearsed case reaches the from-level refusal; Drill::shortfall returns None: every case reaches the grant refusal); restored, sha256sum identical. Independent security-engineer skeptic REFUTED (findings in gap). Status stays PARTIAL. 2026-10-31 L4b-expand: gap items (2) and (3) closed. Mutation: dropping the two date arms of Drill::shortfall failed the agency test at its first contains and the CLI test at the future-drill case (both reached the from-level refusal instead); restored byte-for-byte (sha256 checked). The CLI test's drills are now dated relative to the binary's clock, because the binary judges them against SystemClock. Stays PARTIAL: items (1), (4), (5), (6), (7) open; no skeptic."
   },
   {
     "id": "R12-EXPAND-6072",

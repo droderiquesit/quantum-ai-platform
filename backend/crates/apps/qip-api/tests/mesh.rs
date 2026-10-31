@@ -312,6 +312,8 @@ fn delta(utilisation_orders_sent: u64) -> CellStateDelta {
         reconciliation_breaks_omitted: 0,
         crosses: Vec::new(),
         crosses_omitted: 0,
+        episodes: Vec::new(),
+        episodes_omitted: 0,
     }
 }
 
@@ -342,6 +344,58 @@ fn signed_grant() -> Result<CapitalEnvelope> {
         ENVELOPE_KEY.as_bytes(),
         &unsigned.signing_payload(),
     ))
+}
+
+/// R12-REFLEX-6012 (ADR 0207): an episode a cell classified rides its delta
+/// over the real socket, through the drain's decode and the sink's report,
+/// into the central plane's store. Mutation (run, failed here, restored):
+/// drop `.with_episodes(..)` from `IngestSink::absorb` — the store stays
+/// empty after the cycle.
+#[test]
+fn a_cells_regional_episode_crosses_the_wire_into_the_central_store() -> Result<()> {
+    use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
+    let rig = rig(64)?;
+    let episode = RegionalEpisode::new(
+        CELL.to_string(),
+        REGION.to_string(),
+        EpisodeKind::Anomaly,
+        start(),
+        "the order-entry channel reports a fill on order london-1-9 and the cell has no open \
+         order under that id"
+            .to_string(),
+    )
+    .with_occurred_at(start());
+    let mut carrying = delta(14);
+    carrying.episodes = vec![episode.clone()];
+    let sent = uplink(&rig, "uplink")?.publish(carrying, start())?;
+    assert!(
+        sent.is_delivered(),
+        "the delta did not reach the inbox: {sent:?}"
+    );
+    {
+        let platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        assert!(
+            platform.central().episodes(CELL).is_empty(),
+            "premise: the plane held an episode for this cell before the drain"
+        );
+    }
+
+    let cycle = run_cycle(&rig)?;
+    assert_eq!(cycle["mesh"]["drained"]["absorbed"], 1, "{cycle}");
+
+    let platform = rig
+        .platform
+        .lock()
+        .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+    assert_eq!(
+        platform.central().episodes(CELL),
+        &[episode][..],
+        "the episode the cell reported is not in the central store"
+    );
+    Ok(())
 }
 
 #[test]

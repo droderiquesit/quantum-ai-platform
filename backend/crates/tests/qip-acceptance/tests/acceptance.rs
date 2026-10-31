@@ -739,6 +739,8 @@ fn the_centre_decodes_a_contributor_vector_out_of_bytes_the_edge_crate_produced(
         reconciliation_breaks_omitted: 0,
         crosses: Vec::new(),
         crosses_omitted: 0,
+        episodes: Vec::new(),
+        episodes_omitted: 0,
     };
 
     // The premise: these are the edge crate's own bytes, not a fixture written
@@ -829,6 +831,8 @@ fn an_internal_cross_reaches_the_centre_rather_than_stopping_at_the_cell() -> Re
             sold: vec![qip_contracts::signal::StrategyId::new("beta")],
         }],
         crosses_omitted: 0,
+        episodes: Vec::new(),
+        episodes_omitted: 0,
     };
 
     let decoded = qip_mesh::delta::decode_cell_delta(&delta.to_frame()?)?;

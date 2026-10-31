@@ -50,6 +50,19 @@ impl OntologyRegistry {
     /// a late-arriving old definition replaced the current one.
     pub fn register(&mut self, spec: OntologyTypeSpec) -> Result<()> {
         spec.validate()?;
+        // ADR 0198: a type enters this registry at version one, as a
+        // candidate; every later version comes through `extend`, which
+        // demands a passing evaluation. Until 2026-10-31 any caller could
+        // register version seven of a type directly and the evaluation gate
+        // guarded a door nobody had to use.
+        if spec.version != 1 {
+            return Err(Error::denied(format!(
+                "OntologyTypeSpec {:?}.{} version {} cannot be registered directly; a type \
+                 enters at version 1 and every later version comes through `extend` with a \
+                 passing evaluation",
+                spec.family, spec.name, spec.version
+            )));
+        }
         let key = (spec.family, spec.name.clone(), spec.version);
 
         if self.types.contains_key(&key) {
@@ -117,13 +130,18 @@ impl OntologyRegistry {
             )));
         };
         let next = latest.saturating_add(1);
-        self.register(OntologyTypeSpec {
+        let spec = OntologyTypeSpec {
             family,
             name: name.to_string(),
             version: next,
             schema: schema.to_string(),
             description: format!("{description} [evaluation: {}]", evaluation.id),
-        })?;
+        };
+        spec.validate()?;
+        // The evaluated door: the only writer of a version above one.
+        self.latest_version_per_name
+            .insert((family, name.to_string()), next);
+        self.types.insert((family, name.to_string(), next), spec);
         Ok(next)
     }
 
@@ -213,8 +231,10 @@ impl CapabilityRegistry {
     /// Add or update a capability and bump the version. Refuses an entry that
     /// fails its own validation — an empty implementation list or a
     /// confidence outside [0, 1] would otherwise be recorded as a capability
-    /// the platform has.
-    pub fn add_capability(&mut self, entry: CapabilityEntry) -> Result<()> {
+    /// the platform has. Crate-private since ADR 0198: [`Self::promote`] is
+    /// the one door, and it is the one that refuses a duplicate and a live
+    /// eligibility.
+    pub(crate) fn add_capability(&mut self, entry: CapabilityEntry) -> Result<()> {
         entry.validate()?;
         self.version_history
             .insert(self.version, self.capabilities.clone());
@@ -334,6 +354,22 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    /// The evaluated door: version two of `name` in `family`, as `extend`
+    /// admits it (ADR 0198). A direct `register` above version one is refused.
+    fn extend_v2(reg: &mut OntologyRegistry, family: OntologyTypeFamily, name: &str) -> u32 {
+        reg.extend(
+            family,
+            name,
+            r#"{"v": 2}"#,
+            "v2",
+            &CitedEvaluation {
+                id: "eval-1".to_string(),
+                passed: true,
+            },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn an_ontology_type_can_be_registered_and_retrieved() {
         let mut reg = OntologyRegistry::new();
@@ -386,7 +422,14 @@ mod tests {
         };
 
         reg.register(spec_v1).unwrap();
-        reg.register(spec_v2).unwrap();
+        assert!(
+            reg.register(spec_v2).is_err(),
+            "ADR 0198: version two enters only through an evaluated extension"
+        );
+        assert_eq!(
+            extend_v2(&mut reg, OntologyTypeFamily::Relationship, "Owns"),
+            2
+        );
 
         assert_eq!(reg.type_count(), 2);
         // Reading at the old version must return the old definition, not
@@ -426,10 +469,11 @@ mod tests {
             schema: format!("{{\"v\": {version}}}"),
             description: "swap".to_string(),
         };
-        reg.register(make(2)).unwrap();
+        reg.register(make(1)).unwrap();
+        assert_eq!(extend_v2(&mut reg, OntologyTypeFamily::Product, "Swap"), 2);
         let err = reg.register(make(1));
         assert!(
-            matches!(&err, Err(e) if e.to_string().contains("not above the latest registered version 2")),
+            matches!(&err, Err(e) if e.to_string().contains("already registered")),
             "a late older version must be refused: {err:?}"
         );
         let latest = reg.get_latest(OntologyTypeFamily::Product, "Swap");
@@ -455,7 +499,8 @@ mod tests {
         };
 
         reg.register(spec_v1).unwrap();
-        reg.register(spec_v2).unwrap();
+        assert!(reg.register(spec_v2).is_err(), "ADR 0198: not directly");
+        assert_eq!(extend_v2(&mut reg, OntologyTypeFamily::Market, "Equity"), 2);
 
         let latest = reg
             .get_latest(OntologyTypeFamily::Market, "Equity")
@@ -489,7 +534,11 @@ mod tests {
         };
 
         reg.register(entity1).unwrap();
-        reg.register(entity1_v2).unwrap();
+        assert!(reg.register(entity1_v2).is_err(), "ADR 0198: not directly");
+        assert_eq!(
+            extend_v2(&mut reg, OntologyTypeFamily::Entity, "Account"),
+            2
+        );
         reg.register(entity2).unwrap();
 
         let entities = reg.types_by_family(OntologyTypeFamily::Entity);

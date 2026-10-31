@@ -87,6 +87,13 @@ pub enum AmbientRecord {
         cycle: u64,
         delta: qip_contracts::microstructure_delta::MicrostructureDelta,
     },
+    /// One source scored on one subject by the source-alpha desk
+    /// (R12-EXPAND-6027): the validated contract record, with the window
+    /// and the digest of the samples it was computed from.
+    SourceScore {
+        cycle: u64,
+        score: qip_contracts::expansion::SourceScore,
+    },
     /// The compute market the sweep ran (R12-AMBIENT-9034): the agent
     /// budgets it allocated within, each grant with the reputation weight
     /// it was priced on, each decline with its reason, and what was spent.
@@ -195,6 +202,35 @@ impl AmbientJournal {
 
     /// Append one sweep's signals and attention events, each attention
     /// event caused by the signal it answers. Returns how many were written.
+    /// Write one record per source score the desk produced this cycle
+    /// (R12-EXPAND-6027), under its own lineage: a score is the platform's
+    /// finding about a source, not a signal the sweep routed.
+    pub fn record_source_scores(
+        &mut self,
+        cycle: u64,
+        round: &crate::source_alpha::SourceAlphaRound,
+        at: Timestamp,
+    ) -> Result<usize> {
+        let lineage = Lineage::root(
+            CorrelationId::from_string(format!("source-alpha-{cycle}-{}", self.written)),
+            AMBIENT_ORIGIN,
+        );
+        let mut count = 0usize;
+        for score in &round.records {
+            self.append(
+                &lineage,
+                AmbientRecord::SourceScore {
+                    cycle,
+                    score: score.clone(),
+                },
+                score.scored_at,
+                at,
+            )?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     pub fn record(&mut self, cycle: u64, round: &ResearchRound, at: Timestamp) -> Result<usize> {
         let lineage = Lineage::root(
             CorrelationId::from_string(format!("ambient-sweep-{cycle}-{}", self.written)),

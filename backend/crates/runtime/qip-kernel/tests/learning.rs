@@ -2530,6 +2530,100 @@ fn a_resolved_prediction_updates_the_calibration_report() -> Result<()> {
     Ok(())
 }
 
+/// The shortfall against the decision-time mark the SIMULATE stage's
+/// capacity probe reported, in basis points, and the latency it arrived
+/// after, in seconds, read off the stage detail.
+fn probe_shortfall(detail: &str) -> (f64, f64) {
+    let after = detail
+        .split(", arriving ")
+        .nth(1)
+        .expect("the probe reported its arrival");
+    let seconds = after
+        .split("s after the decision at ")
+        .next()
+        .and_then(|figure| figure.trim().parse().ok())
+        .expect("the latency is a number");
+    let bps = after
+        .split("s after the decision at ")
+        .nth(1)
+        .and_then(|rest| rest.split("bps").next())
+        .and_then(|figure| figure.trim().parse().ok())
+        .expect("the shortfall is a number");
+    (seconds, bps)
+}
+
+/// R12-TICK-2074. The platform's own decision latency — SENSE through ACT,
+/// measured every cycle — is a condition the SIMULATE stage's capacity
+/// probe runs under, so a simulated execution arrives as late as this
+/// platform's decisions do. Two platforms on the same tape and seed differ
+/// only in the latency they have measured: the slow one's probe reports the
+/// simulator applied a latency, and its execution costs more.
+///
+/// Mutation: in `capacity_probe`, calibrate from an empty sample set — no
+/// latency condition is applied, the detail does not name one and the two
+/// probes cost the same.
+///
+/// On a tape that moves against the order. A measured latency on a random
+/// walk can as easily land on a better price as a worse one — the first
+/// version of this test, on the noisy tape the other tests use, saw the
+/// slow probe fill 22bps better — so the property is asserted where the
+/// requirement states it: a later execution pays the move it waited through.
+#[test]
+fn a_measured_decision_latency_pushes_the_simulated_execution_later_and_worsens_its_fill()
+-> Result<()> {
+    let run = |latencies: &[Duration]| -> Result<String> {
+        let mut platform = platform()?;
+        // A tape rising one percent a bar and nothing else: the probe's
+        // drift is the trend and its volatility the floor, so a buy that
+        // arrives later pays the move it waited through and no draw of
+        // noise can hand it a better price.
+        let rising: Vec<SensedRecord> = (0..120)
+            .map(|i| {
+                let open = 100.0 * 1.01_f64.powi(i);
+                let at = start().saturating_sub(Duration::from_days(120 - i64::from(i)));
+                bar("AAA", at, open, open * 1.01)
+            })
+            .collect();
+        platform.observe(rising);
+        for latency in latencies {
+            platform.observe_decision_latency(*latency);
+        }
+        let report = platform.run_cycle(start());
+        let simulate = report.stage(Stage::Simulate).expect("simulate ran");
+        assert!(
+            simulate.detail.contains("capacity probe"),
+            "the premise: the probe ran: {}",
+            simulate.detail
+        );
+        Ok(simulate.detail.clone())
+    };
+    let prompt = run(&[])?;
+    let slow = run(&[
+        Duration::from_secs(60),
+        Duration::from_secs(90),
+        Duration::from_secs(120),
+    ])?;
+    assert!(
+        !prompt.contains("latency"),
+        "premise: a platform with no measured latency probes without one: {prompt}"
+    );
+    assert!(
+        slow.contains("latency"),
+        "the simulator did not apply the measured decision latency: {slow}"
+    );
+    let ((prompt_secs, prompt_bps), (slow_secs, slow_bps)) =
+        (probe_shortfall(&prompt), probe_shortfall(&slow));
+    assert!(
+        prompt_secs < 1.0 && slow_secs >= 60.0,
+        "the measured latency pushed the execution later: {prompt_secs}s against {slow_secs}s"
+    );
+    assert!(
+        slow_bps > prompt_bps,
+        "a slower decision did not worsen the fill: {slow_bps} bps against {prompt_bps} bps"
+    );
+    Ok(())
+}
+
 /// A report from a cell that refused one two-leg cycle on `AAA` whole.
 fn report_refusing_a_cycle(cell: &str, at: Timestamp) -> qip_kernel::central::CellReport {
     report_refusing_a_cycle_on(cell, "AAA", at)
@@ -2659,99 +2753,5 @@ fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate(
     );
     // And kept out of the desk's own declined sample, which sizes the desk.
     assert!(platform.declined_scores().is_empty());
-    Ok(())
-}
-
-/// The shortfall against the decision-time mark the SIMULATE stage's
-/// capacity probe reported, in basis points, and the latency it arrived
-/// after, in seconds, read off the stage detail.
-fn probe_shortfall(detail: &str) -> (f64, f64) {
-    let after = detail
-        .split(", arriving ")
-        .nth(1)
-        .expect("the probe reported its arrival");
-    let seconds = after
-        .split("s after the decision at ")
-        .next()
-        .and_then(|figure| figure.trim().parse().ok())
-        .expect("the latency is a number");
-    let bps = after
-        .split("s after the decision at ")
-        .nth(1)
-        .and_then(|rest| rest.split("bps").next())
-        .and_then(|figure| figure.trim().parse().ok())
-        .expect("the shortfall is a number");
-    (seconds, bps)
-}
-
-/// R12-TICK-2074. The platform's own decision latency — SENSE through ACT,
-/// measured every cycle — is a condition the SIMULATE stage's capacity
-/// probe runs under, so a simulated execution arrives as late as this
-/// platform's decisions do. Two platforms on the same tape and seed differ
-/// only in the latency they have measured: the slow one's probe reports the
-/// simulator applied a latency, and its execution costs more.
-///
-/// Mutation: in `capacity_probe`, calibrate from an empty sample set — no
-/// latency condition is applied, the detail does not name one and the two
-/// probes cost the same.
-///
-/// On a tape that moves against the order. A measured latency on a random
-/// walk can as easily land on a better price as a worse one — the first
-/// version of this test, on the noisy tape the other tests use, saw the
-/// slow probe fill 22bps better — so the property is asserted where the
-/// requirement states it: a later execution pays the move it waited through.
-#[test]
-fn a_measured_decision_latency_pushes_the_simulated_execution_later_and_worsens_its_fill()
--> Result<()> {
-    let run = |latencies: &[Duration]| -> Result<String> {
-        let mut platform = platform()?;
-        // A tape rising one percent a bar and nothing else: the probe's
-        // drift is the trend and its volatility the floor, so a buy that
-        // arrives later pays the move it waited through and no draw of
-        // noise can hand it a better price.
-        let rising: Vec<SensedRecord> = (0..120)
-            .map(|i| {
-                let open = 100.0 * 1.01_f64.powi(i);
-                let at = start().saturating_sub(Duration::from_days(120 - i64::from(i)));
-                bar("AAA", at, open, open * 1.01)
-            })
-            .collect();
-        platform.observe(rising);
-        for latency in latencies {
-            platform.observe_decision_latency(*latency);
-        }
-        let report = platform.run_cycle(start());
-        let simulate = report.stage(Stage::Simulate).expect("simulate ran");
-        assert!(
-            simulate.detail.contains("capacity probe"),
-            "the premise: the probe ran: {}",
-            simulate.detail
-        );
-        Ok(simulate.detail.clone())
-    };
-    let prompt = run(&[])?;
-    let slow = run(&[
-        Duration::from_secs(60),
-        Duration::from_secs(90),
-        Duration::from_secs(120),
-    ])?;
-    assert!(
-        !prompt.contains("latency"),
-        "premise: a platform with no measured latency probes without one: {prompt}"
-    );
-    assert!(
-        slow.contains("latency"),
-        "the simulator did not apply the measured decision latency: {slow}"
-    );
-    let ((prompt_secs, prompt_bps), (slow_secs, slow_bps)) =
-        (probe_shortfall(&prompt), probe_shortfall(&slow));
-    assert!(
-        prompt_secs < 1.0 && slow_secs >= 60.0,
-        "the measured latency pushed the execution later: {prompt_secs}s against {slow_secs}s"
-    );
-    assert!(
-        slow_bps > prompt_bps,
-        "a slower decision did not worsen the fill: {slow_bps} bps against {prompt_bps} bps"
-    );
     Ok(())
 }

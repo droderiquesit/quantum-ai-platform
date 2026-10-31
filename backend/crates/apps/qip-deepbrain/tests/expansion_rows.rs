@@ -872,8 +872,9 @@ fn reference_surprised() -> Platform {
 /// so an ontology gap; and the gap leaves one validated `OntologyPatch`
 /// citing the signal that raised it and the subject it was about, registered
 /// in the loop's ontology as a candidate type whose description cites the
-/// gap. A second sweep over the same surprise proposes the next version
-/// rather than colliding with the first. Until this change the detector
+/// gap. A second sweep over the same surprise proposes the next version and
+/// registers nothing, because a version above one enters only through an
+/// evaluated extension (ADR 0198). Until this change the detector
 /// context carried prices alone, so no observation ever wanted a type and
 /// the ontology registry only ever held what it started with.
 ///
@@ -962,14 +963,16 @@ fn an_observation_wanting_a_type_leaves_a_validated_ontology_patch_citing_it_and
     );
     assert_eq!(
         again.ontology_patches[0].version, 2,
-        "the next version, not a collision"
+        "the repeat proposes the next version"
     );
     assert_eq!(
         research
             .ontology()
             .get_latest(OntologyTypeFamily::Event, name)
             .map(|t| t.version),
-        Some(2)
+        Some(1),
+        "ADR 0198: a repeated gap registers nothing; version two enters only through an \
+         evaluated extension"
     );
 }
 

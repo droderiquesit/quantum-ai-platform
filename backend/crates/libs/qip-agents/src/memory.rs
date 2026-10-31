@@ -156,12 +156,71 @@ impl Lesson {
 }
 
 /// The minimum evidence before an observation becomes a lesson.
+///
+/// The floors are private since ADR 0198: a policy whose fields could be set
+/// to zero was a gate anyone could hold open, so [`Self::new`] refuses a
+/// support floor under two episodes and a smoothed floor at or under a coin
+/// flip, and a decoded policy goes through the same check.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PromotionPolicyFields")]
 pub struct PromotionPolicy {
     /// Independent supporting episodes required.
-    pub minimum_support: usize,
+    minimum_support: usize,
     /// Smoothed support the lesson must reach.
+    minimum_smoothed_support: f64,
+}
+
+/// The wire form of [`PromotionPolicy`], checked on decode.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct PromotionPolicyFields {
+    pub minimum_support: usize,
     pub minimum_smoothed_support: f64,
+}
+
+impl TryFrom<PromotionPolicyFields> for PromotionPolicy {
+    type Error = Error;
+    fn try_from(fields: PromotionPolicyFields) -> Result<Self> {
+        Self::new(fields.minimum_support, fields.minimum_smoothed_support)
+    }
+}
+
+impl PromotionPolicy {
+    /// A policy with its floors stated. Refuses fewer than two supporting
+    /// episodes (one observation is a coincidence, and zero is no gate) and a
+    /// smoothed floor that is not a real fraction above one half (at or
+    /// under it, a lesson is promoted on evidence that went the wrong way as
+    /// often as the right way).
+    pub fn new(minimum_support: usize, minimum_smoothed_support: f64) -> Result<Self> {
+        if minimum_support < 2 {
+            return Err(Error::invalid(format!(
+                "a promotion policy needs at least two supporting episodes, got \
+                 {minimum_support}; a lesson learned from one observation is a coincidence \
+                 and a floor of zero is no gate"
+            )));
+        }
+        if !minimum_smoothed_support.is_finite()
+            || minimum_smoothed_support <= 0.5
+            || minimum_smoothed_support > 1.0
+        {
+            return Err(Error::invalid(format!(
+                "a promotion policy's smoothed-support floor must be in (0.5, 1], got \
+                 {minimum_smoothed_support}; at or under one half the evidence went the wrong \
+                 way as often as the right way"
+            )));
+        }
+        Ok(Self {
+            minimum_support,
+            minimum_smoothed_support,
+        })
+    }
+
+    pub const fn minimum_support(&self) -> usize {
+        self.minimum_support
+    }
+
+    pub const fn minimum_smoothed_support(&self) -> f64 {
+        self.minimum_smoothed_support
+    }
 }
 
 impl Default for PromotionPolicy {

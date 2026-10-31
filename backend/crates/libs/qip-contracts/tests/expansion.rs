@@ -6,6 +6,7 @@
 
 use qip_contracts::expansion::{
     CurriculumItem, EffectAttribution, GapSignal, GoalSpec, InterventionPlan, OntologyPatch,
+    SourceScore,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -69,6 +70,16 @@ fn patch() -> Value {
     })
 }
 
+fn score() -> Value {
+    json!({
+        "source": "frankfurter-ecb-reference-rates", "subject": "EURUSD",
+        "incremental_gain": 0.12, "realised_contribution": 0.31, "samples": 24,
+        "window_from": 100, "window_to": 123,
+        "dataset_digest": "a".repeat(64),
+        "scored_at": json!(qip_core::Timestamp::from_secs(1_760_000_000))
+    })
+}
+
 fn item() -> Value {
     json!({
         "research_question": "does CPI lead rates", "expected_information_value": 1.5,
@@ -85,6 +96,7 @@ fn decoders() -> Vec<(&'static str, Value, Decode)> {
         ("plan", plan(), |b| InterventionPlan::decode(b).map(|_| ())),
         ("gap", gap(), |b| GapSignal::decode(b).map(|_| ())),
         ("patch", patch(), |b| OntologyPatch::decode(b).map(|_| ())),
+        ("score", score(), |b| SourceScore::decode(b).map(|_| ())),
         ("item", item(), |b| CurriculumItem::decode(b).map(|_| ())),
         ("attribution", attribution(), |b| {
             serde_json::from_slice::<EffectAttribution>(b)
@@ -206,6 +218,9 @@ fn a_blank_or_empty_listed_field_is_refused_naming_the_field() {
                 "gap_class",
                 "reversibility",
                 "family",
+                // A timestamp is refused by its own parser with its own
+                // message, as an enum is.
+                "scored_at",
             ]
             .contains(&key.as_str())
             {

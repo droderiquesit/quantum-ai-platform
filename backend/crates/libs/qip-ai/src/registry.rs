@@ -686,6 +686,25 @@ impl ModelCard {
         self.class.class_eligibility(self)
     }
 
+    /// [`Self::decision_eligibility`] for a decision taken in `regime`, with
+    /// no inputs to check (R12-RISK-4099): a card that names the regimes it
+    /// was validated in is refused in another. For a caller that ranks
+    /// models before any input exists, such as the cost router's reputation
+    /// book, so a model validated only in a calm market is not ranked for a
+    /// crisis decision. [`Self::decision_eligibility_in`] adds the input
+    /// checks once the inputs are known.
+    pub fn regime_eligibility(
+        &self,
+        now: Timestamp,
+        regime: &str,
+    ) -> std::result::Result<(), String> {
+        self.decision_eligibility(now)?;
+        match self.regime_gap(regime) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
+
     /// [`Self::decision_eligibility`] for a decision taken in `regime` on
     /// `inputs` (R12-MODEL-4020, R12-RISK-4099).
     ///
@@ -822,6 +841,26 @@ impl ModelRegistry {
     /// journals it.
     pub fn register(&mut self, card: ModelCard) -> Result<()> {
         let reference = card.reference();
+        // ADR 0198: `promote` is the one door into production for a model the
+        // platform fitted for itself, and this seam honours the same rule, so
+        // a card built at `Production` cannot walk around the shadow stage
+        // (the restore path registers journaled cards, which carry the shadow
+        // they were promoted out of). A pipeline-trained card is governed by
+        // its evaluation and CI attestation, not by shadow, and is not held
+        // here.
+        if card.self_fitted && card.stage == ModelStage::Production {
+            let completed = card
+                .shadow
+                .as_ref()
+                .is_some_and(|shadow| shadow.rounds_won >= MIN_SHADOW_ROUNDS);
+            if !completed {
+                return Err(Error::denied(format!(
+                    "{reference} is not registered: a self-fitted card at Production must carry \
+                     a completed shadow stage ({MIN_SHADOW_ROUNDS} round(s) won); promote it out \
+                     of shadow instead of registering it there"
+                )));
+            }
+        }
         if !self.cards.contains_key(&reference) && self.cards.len() >= MAX_CARDS {
             return Err(Error::denied(format!(
                 "{reference} is not registered: the registry holds {MAX_CARDS} model cards, its \

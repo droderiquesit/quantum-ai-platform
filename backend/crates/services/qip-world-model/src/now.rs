@@ -836,6 +836,29 @@ pub struct Evidence<'a> {
     /// one, as of the last step; empty for a scope nothing contains or on
     /// the first step before any aggregate is promoted.
     pub related: &'a [RelatedBelief],
+    /// The same variable's promoted belief at each causal parent of this
+    /// scope, with the signed transmission the causal graph holds from it
+    /// (R12-WORLD-3078); empty where the graph names no parent or none of
+    /// them has a promoted belief yet.
+    pub causal: &'a [CausalBelief],
+}
+
+/// A causal parent of a scope, as the brain is told it each step: the parent
+/// scope's id and the signed transmission from it, in `[-1, 1]` (negative
+/// where the mechanism inverts the sign).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CausalParent {
+    pub cause: String,
+    pub transmission: f64,
+}
+
+/// A causal parent's promoted belief, as an estimator reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CausalBelief {
+    pub cause: String,
+    pub transmission: f64,
+    pub mean: f64,
+    pub variance: f64,
 }
 
 impl Evidence<'_> {
@@ -1052,6 +1075,47 @@ impl StateFilter for GraphFilter {
     }
 }
 
+/// A causal estimator (R12-WORLD-3078): what the scope's causal parents'
+/// promoted beliefs imply for it, `Σ t·m` over parents with signed
+/// transmission `t` and promoted mean `m`, with variance `Σ t²·v` plus the
+/// process variance. It reads no reading of the scope itself, so where the
+/// tape and the graph disagree its candidate and the filters' diverge and
+/// the ensemble records the disagreement. It abstains where no parent has a
+/// promoted belief.
+#[derive(Debug, Default)]
+pub struct CausalFilter;
+
+impl StateFilter for CausalFilter {
+    fn id(&self) -> &str {
+        "causal-parents"
+    }
+    fn kind(&self) -> EstimatorKind {
+        EstimatorKind::Causal
+    }
+    fn propose(&mut self, e: &Evidence<'_>) -> Result<Option<Candidate>> {
+        let parents: Vec<&CausalBelief> = e
+            .causal
+            .iter()
+            .filter(|b| {
+                b.mean.is_finite()
+                    && b.variance.is_finite()
+                    && b.variance >= 0.0
+                    && b.transmission.is_finite()
+            })
+            .collect();
+        if parents.is_empty() {
+            return Ok(None);
+        }
+        let mean = parents.iter().map(|b| b.transmission * b.mean).sum::<f64>();
+        let variance = parents
+            .iter()
+            .map(|b| b.transmission.powi(2) * b.variance)
+            .sum::<f64>()
+            + e.process_variance;
+        Ok(Some(Candidate { mean, variance }))
+    }
+}
+
 /// A robust filter: the readings' median rather than their mean, with a
 /// measurement variance from their median absolute deviation, so one wild
 /// source moves it far less than it moves the other two.
@@ -1254,6 +1318,9 @@ pub struct NowBrain {
     catalogue: Catalogue,
     workers: Vec<Box<dyn StateFilter>>,
     store: NowStore,
+    /// Each scope id's causal parents, as the caller last stated them
+    /// (R12-WORLD-3078). Replaced whole on every statement.
+    causal_parents: BTreeMap<String, Vec<CausalParent>>,
     /// Predictive-interval hits and trials per partition: how often the
     /// readings landed inside the prior's 80% interval.
     coverage: BTreeMap<PartitionKey, (u64, u64)>,
@@ -1274,6 +1341,7 @@ impl NowBrain {
             catalogue,
             workers: Vec::new(),
             store: NowStore::default(),
+            causal_parents: BTreeMap::new(),
             coverage: BTreeMap::new(),
             issued: 0,
         })
@@ -1281,12 +1349,48 @@ impl NowBrain {
 
     /// The four in-tree filters over the standard catalogue: the three
     /// single-variable filters and the graph estimator over the scope graph.
+    ///
+    /// [`CausalFilter`] is not registered here, deliberately. The causal
+    /// graph's edge strength is a Granger partial R², a measure of fit and
+    /// not a slope, and it carries a lag the filter does not apply. Fused by
+    /// default, its candidate would pull every promoted belief toward
+    /// `R²·parent`, volatility and spread included, which estimates nothing.
+    /// It joins the standard set once edges carry a fitted coefficient
+    /// (R12-WORLD-3078's open gap).
     pub fn standard(seed: u64) -> Result<Self> {
         Ok(Self::new(NowConfig::default(), Catalogue::standard()?)?
             .with_worker(Box::new(KalmanFilter))
             .with_worker(Box::new(ParticleFilter::seeded(seed)))
             .with_worker(Box::new(RobustFilter))
             .with_worker(Box::new(GraphFilter)))
+    }
+
+    /// State each scope id's causal parents for the steps that follow,
+    /// replacing what was stated before (R12-WORLD-3078).
+    pub fn set_causal_parents(&mut self, parents: BTreeMap<String, Vec<CausalParent>>) {
+        self.causal_parents = parents;
+    }
+
+    /// The promoted belief of `key`'s variable at each of its scope's
+    /// causal parents, in the same partition and at the same scope kind.
+    fn causal_beliefs(&self, partition: &PartitionKey, key: &VariableKey) -> Vec<CausalBelief> {
+        let Some(parents) = self.causal_parents.get(&key.scope.id) else {
+            return Vec::new();
+        };
+        parents
+            .iter()
+            .filter_map(|parent| {
+                let scope = Scope::new(key.scope.kind, parent.cause.as_str()).ok()?;
+                let parent_key = VariableKey::new(scope, key.name.clone()).ok()?;
+                let belief = self.store.get(partition, &parent_key)?;
+                Some(CausalBelief {
+                    cause: parent.cause.clone(),
+                    transmission: parent.transmission,
+                    mean: belief.mean,
+                    variance: belief.uncertainty,
+                })
+            })
+            .collect()
     }
 
     /// The promoted beliefs about `key`'s variable at the scopes containing
@@ -1541,6 +1645,7 @@ impl NowBrain {
         let process_variance = (spec.drift_per_day * scale).powi(2) * elapsed_days;
         let prior = prior_var.as_ref().map(|p| (p.mean, p.uncertainty));
         let related = self.related(partition, key);
+        let causal = self.causal_beliefs(partition, key);
         let evidence = Evidence {
             key,
             prior,
@@ -1548,6 +1653,7 @@ impl NowBrain {
             measurement_variance,
             process_variance,
             related: &related,
+            causal: &causal,
         };
         let mut candidates: Vec<(String, Candidate)> = Vec::new();
         for w in &mut self.workers {

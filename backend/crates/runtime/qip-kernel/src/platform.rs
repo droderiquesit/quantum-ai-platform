@@ -1390,6 +1390,17 @@ pub struct Platform {
     /// runs behind it, so a simulated execution arrives as late as this
     /// platform's own decisions do rather than at the instant it decided.
     decision_latencies: std::collections::VecDeque<Duration>,
+    /// The adapter and lifecycle engine each desk position was booked
+    /// through, by object id, resolved from the asset class registry at the
+    /// fill (R12-ASSET-1015). Bounded by the universe: one entry per
+    /// instrument the desk has held.
+    position_bookings: BTreeMap<
+        String,
+        (
+            crate::asset_class_registry::ClassAdapter,
+            crate::asset_class_registry::LifecycleEngine,
+        ),
+    >,
 }
 
 /// How many cycles of decision latency the platform keeps: enough for a
@@ -6463,6 +6474,7 @@ impl Platform {
             position_exit_plans: BTreeMap::new(),
             universe_history: qip_financial::history::UniverseHistory::new(),
             decision_latencies: std::collections::VecDeque::new(),
+            position_bookings: BTreeMap::new(),
         };
         platform.describe_metrics();
         // Every rule reads as not dormant from assembly, so the series exists
@@ -11662,6 +11674,19 @@ impl Platform {
         &self.universe_history
     }
 
+    /// The adapter and lifecycle engine `object_id`'s desk position was
+    /// booked through, or `None` where the desk has never held it
+    /// (R12-ASSET-1015).
+    pub fn position_booking(
+        &self,
+        object_id: &str,
+    ) -> Option<(
+        crate::asset_class_registry::ClassAdapter,
+        crate::asset_class_registry::LifecycleEngine,
+    )> {
+        self.position_bookings.get(object_id).copied()
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -14393,6 +14418,7 @@ impl Platform {
             blind_spot_share: (priced > 0).then(|| thin as f64 / priced as f64),
             macro_surprises,
             company_features,
+            causal_parents: self.now_causal_parents(now),
         };
         let review = self.now_brain.run(inputs, now);
         let mut problems: Vec<String> = Vec::new();
@@ -14650,6 +14676,40 @@ impl Platform {
             }
         }
         by_instrument
+    }
+
+    /// Each priced instrument's causal parents among the priced instruments,
+    /// from the causal graph's live edges known now (R12-WORLD-3078). The
+    /// transmission is the edge's strength, signed by whether its mechanism
+    /// preserves the sign. An edge from a cause the NOW brain holds no state
+    /// for (a factor, an event class) gives the estimator nothing to read and
+    /// is left out.
+    fn now_causal_parents(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, Vec<qip_world_model::now::CausalParent>> {
+        let world = self.world.read();
+        let mut parents: BTreeMap<String, Vec<qip_world_model::now::CausalParent>> =
+            BTreeMap::new();
+        for effect in self.price_history.keys() {
+            for edge in world.causal().incoming(effect, now) {
+                if !self.price_history.contains_key(&edge.cause) || edge.cause == *effect {
+                    continue;
+                }
+                let sign = if edge.mechanism.preserves_sign() {
+                    1.0
+                } else {
+                    -1.0
+                };
+                parents.entry(effect.clone()).or_default().push(
+                    qip_world_model::now::CausalParent {
+                        cause: edge.cause.clone(),
+                        transmission: sign * edge.strength,
+                    },
+                );
+            }
+        }
+        parents
     }
 
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
@@ -17235,8 +17295,8 @@ impl Platform {
             superseded_at: None,
         };
         let policy = PromotionPolicy::default();
-        let clears = candidate.supporting_episodes.len() >= policy.minimum_support
-            && candidate.smoothed_support() >= policy.minimum_smoothed_support;
+        let clears = candidate.supporting_episodes.len() >= policy.minimum_support()
+            && candidate.smoothed_support() >= policy.minimum_smoothed_support();
         match tally.lesson {
             LessonState::Unpromoted if clears => {
                 let statement = candidate.statement.clone();
@@ -21930,6 +21990,7 @@ impl Platform {
             let market = self.market.read();
             crate::hedge::plan(&crate::hedge::HedgeBrainInputs {
                 declarations: &self.config.hedge_candidates,
+                hedge_map: &self.asset_class_registry,
                 universe: &market.universe,
                 snapshot: &market.snapshot,
                 state: &state,
@@ -23517,6 +23578,22 @@ impl Platform {
             .universe
             .get(&ObjectId::from_string(object_id))
             .cloned();
+        // Booked through the adapter and lifecycle engine its class names
+        // (R12-ASSET-1015). A class the registry refuses was refused at
+        // assembly too, so a refusal here is the registry and the universe
+        // disagreeing, said on the cycle rather than booked under a guess.
+        if let Some(object) = &object {
+            match self.asset_class_registry.booking_of(object.asset_class) {
+                Ok(booking) => {
+                    self.position_bookings
+                        .insert(object_id.to_string(), booking);
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "a desk fill in {object_id} has no adapter or lifecycle engine: {}",
+                    error.message()
+                )),
+            }
+        }
         let mirrored = match object {
             Some(object) => self
                 .asset_book
@@ -28095,6 +28172,39 @@ mod decide_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    /// R12-WORLD-3078: the NOW brain is told each priced instrument's causal
+    /// parents among the priced instruments, signed by mechanism. An edge
+    /// from a cause the brain holds no state for is left out.
+    ///
+    /// Mutation: in `now_causal_parents`, drop the sign -- the inverting
+    /// edge's transmission then reads positive.
+    #[test]
+    fn the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism() {
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        let edge = |cause: &str, mechanism: Mechanism| {
+            CausalEdge::new(cause, "MSFT", mechanism, 0.6, Duration::from_hours(1), now)
+                .expect("a valid edge")
+        };
+        platform.world.update(|world| {
+            world
+                .claim_causal(edge("AAPL", Mechanism::CompetitiveSubstitution))
+                .expect("the edge is claimed");
+            world
+                .claim_causal(edge("FACTOR", Mechanism::TemporalPrecedence))
+                .expect("the edge is claimed");
+        });
+        let parents = platform.now_causal_parents(now);
+        let msft = parents.get("MSFT").expect("MSFT has a priced parent");
+        assert_eq!(msft.len(), 1, "an unpriced cause was passed on: {msft:?}");
+        assert_eq!(msft[0].cause, "AAPL");
+        assert!((msft[0].transmission + 0.6).abs() < 1e-12, "{msft:?}");
+        assert!(!parents.contains_key("AAPL"));
     }
 
     /// R12-WORLD-6015: a world event is paired with the market's reaction at

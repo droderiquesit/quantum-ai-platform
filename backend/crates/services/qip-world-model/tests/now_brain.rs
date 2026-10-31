@@ -946,3 +946,71 @@ fn the_global_regional_and_world_model_projections_are_typed_and_scoped() {
         qip_contracts::forecast::Calibration::Measured { resolved: 1, .. }
     ));
 }
+
+/// R12-WORLD-3078: a causal estimator contributes beside the Kalman filter,
+/// and their disagreement is recorded. With the graph holding AAA as BBB's
+/// parent at transmission 0.8, and AAA's promoted belief well above what
+/// BBB's own readings say, BBB's ensemble has two members, a disagreement
+/// above zero, and a recorded dispute naming both. With no parent stated,
+/// the causal estimator abstains, which is the premise that the graph and
+/// not the readings made the second view.
+///
+/// Mutation: make `CausalFilter::propose` always abstain -- BBB's ensemble
+/// then has one member.
+#[test]
+fn a_causal_estimator_contributes_beside_the_kalman_and_their_disagreement_is_recorded() {
+    use qip_world_model::now::{CausalFilter, CausalParent};
+    let mut brain = kalman_only().with_worker(Box::new(CausalFilter));
+    let token = brain.lead();
+    let child = VariableKey::new(scope(ScopeKind::Instrument, "BBB"), "return").unwrap();
+    let first = brain
+        .step(
+            token,
+            vec![
+                ret("AAA", "US", 0.05, "s1", t0()),
+                ret("BBB", "US", -0.02, "s1", t0()),
+            ],
+            t0(),
+        )
+        .unwrap();
+    assert_eq!(
+        only(&first, &child).ensemble,
+        1,
+        "premise: with no causal parent stated the causal estimator abstains"
+    );
+    brain.set_causal_parents(BTreeMap::from([(
+        "BBB".to_string(),
+        vec![CausalParent {
+            cause: "AAA".to_string(),
+            transmission: 0.8,
+        }],
+    )]));
+    let t1 = later(t0(), 60);
+    let second = brain
+        .step(
+            token,
+            vec![
+                ret("AAA", "US", 0.05, "s1", t1),
+                ret("BBB", "US", -0.02, "s1", t1),
+            ],
+            t1,
+        )
+        .unwrap();
+    let v = only(&second, &child);
+    assert_eq!(v.ensemble, 2, "both estimators contributed: {second:?}");
+    assert!(v.disagreement > 0.0, "{}", v.disagreement);
+    let dispute = second
+        .disagreements
+        .iter()
+        .find(|d| {
+            d.disputed_propositions
+                .iter()
+                .any(|p| p.contains(&child.to_string()))
+        })
+        .expect("the disagreement on BBB is recorded");
+    let views: BTreeSet<&str> = dispute.views.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(
+        views,
+        BTreeSet::from(["kalman-local-level", "causal-parents"])
+    );
+}

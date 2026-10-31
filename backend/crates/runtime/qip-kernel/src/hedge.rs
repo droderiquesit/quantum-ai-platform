@@ -61,7 +61,10 @@ use qip_risk::hedge_search::{
 };
 use qip_risk::limits::{COUNTERPARTY_AXIS, RiskState};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::asset_class_registry::AssetClassRegistry;
+use qip_financial::asset_class::AssetClass;
 
 /// The largest share of stressed daily volume a plan may need to exit.
 pub const MAX_VOLUME_SHARE: f64 = 0.10;
@@ -270,6 +273,40 @@ impl ExposureSurvey {
     }
 }
 
+/// The classes the hedge map admits as offsets for the classes `held`
+/// (object ids) belong to, and those held classes themselves, for the
+/// refusal text. A held object the catalogue does not know, or a held class
+/// the registry does not record, contributes nothing: the map can only
+/// admit what it names.
+fn permitted_hedge_classes(
+    held: &[String],
+    universe: &Universe,
+    hedge_map: &AssetClassRegistry,
+) -> (BTreeSet<AssetClass>, BTreeSet<AssetClass>) {
+    let held_classes: BTreeSet<AssetClass> = held
+        .iter()
+        .filter_map(|object| universe.get(&ObjectId::from_string(object)))
+        .map(|record| record.asset_class)
+        .collect();
+    let permitted = held_classes
+        .iter()
+        .filter_map(|class| hedge_map.get(*class))
+        .flat_map(|record| record.hedge_classes().iter().copied())
+        .collect();
+    (permitted, held_classes)
+}
+
+fn classes_named(classes: &BTreeSet<AssetClass>) -> String {
+    if classes.is_empty() {
+        return "none".to_string();
+    }
+    classes
+        .iter()
+        .map(AssetClass::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Whether an instrument type has no convexity and no volatility sensitivity
 /// by construction, so its gamma and vega are exactly zero rather than
 /// unknown. Deliberately a short list: every type not named here (options,
@@ -418,6 +455,13 @@ fn worlds_of(stress: &StressReport, equity: f64) -> Vec<(String, f64)> {
 #[derive(Debug)]
 pub struct HedgeBrainInputs<'a> {
     pub declarations: &'a [HedgeCandidateDeclaration],
+    /// The cross-class hedge map (R12-MESH-7143): which asset classes may
+    /// offset which. A candidate whose class the map names for none of the
+    /// classes the book holds is left out of the search and named in
+    /// `unresolved`, so the plan is drawn only from classes the registry
+    /// says can offset what is held. Until this input existed the map
+    /// steered nothing: `check_hedge_map` validated it and no search read it.
+    pub hedge_map: &'a AssetClassRegistry,
     pub universe: &'a Universe,
     pub snapshot: &'a MarketSnapshot,
     pub state: &'a RiskState,
@@ -563,6 +607,41 @@ pub fn plan(inputs: &HedgeBrainInputs<'_>) -> HedgeBrainReport {
             Err(error) => report.unresolved.push(error.message().to_string()),
         }
     }
+    // The hedge map (R12-MESH-7143): a candidate is admitted to the search
+    // only if its class is one the registry names as an offset for some
+    // class the book holds. Fail closed on both sides — a held instrument the
+    // catalogue does not know, or a held class the registry does not record,
+    // permits nothing — because a hedge in a class the platform could never
+    // take is coverage on paper and exposure in fact.
+    let (permitted, held_classes) =
+        permitted_hedge_classes(&held, inputs.universe, inputs.hedge_map);
+    candidates.retain(|candidate| {
+        let class = inputs
+            .universe
+            .get(&candidate.object_id)
+            .map(|record| record.asset_class);
+        match class {
+            Some(class) if permitted.contains(&class) => true,
+            Some(class) => {
+                report.unresolved.push(format!(
+                    "hedge candidate {} is {}, which the hedge map names as an offset for none \
+                     of the classes the book holds ({}); it is left out of the search",
+                    candidate.symbol,
+                    class.as_str(),
+                    classes_named(&held_classes)
+                ));
+                false
+            }
+            None => {
+                report.unresolved.push(format!(
+                    "hedge candidate {} is not in the catalogue, so its class is unknown and the \
+                     hedge map cannot admit it",
+                    candidate.symbol
+                ));
+                false
+            }
+        }
+    });
     let worlds: Vec<ForecastWorld> = worlds_of(stress, equity)
         .into_iter()
         .map(|(name, book_pnl)| ForecastWorld {
@@ -826,8 +905,10 @@ mod tests {
             ("obj-BBB".to_string(), vec![50.0, 50.4, 49.6, 51.0, 51.2]),
         ]);
         let stress = stress(&[("venue-outage", 0.12)]);
+        let registry = AssetClassRegistry::shipped().expect("the shipped registry");
         let report = plan(&HedgeBrainInputs {
             declarations: &[],
+            hedge_map: &registry,
             universe: &Universe::new(),
             snapshot: &MarketSnapshot::new(at()),
             state: &state(),
@@ -884,8 +965,10 @@ mod tests {
 
     fn survey_over(universe: &Universe, history: &BTreeMap<String, Vec<f64>>) -> ExposureSurvey {
         let stress = stress(&[("venue-outage", 0.12)]);
+        let registry = AssetClassRegistry::shipped().expect("the shipped registry");
         plan(&HedgeBrainInputs {
             declarations: &[],
+            hedge_map: &registry,
             universe,
             snapshot: &MarketSnapshot::new(at()),
             state: &state(),
@@ -981,8 +1064,10 @@ mod tests {
         book.position_notionals
             .insert("obj-CCC".to_string(), dec!("100000"));
         let stress = stress(&[("venue-outage", 0.12)]);
+        let registry = AssetClassRegistry::shipped().expect("the shipped registry");
         let survey = plan(&HedgeBrainInputs {
             declarations: &[],
+            hedge_map: &registry,
             universe: &Universe::new(),
             snapshot: &MarketSnapshot::new(at()),
             state: &book,
@@ -1011,14 +1096,18 @@ mod tests {
         assert!(mean.abs() < 0.5, "the mean {mean} must hide the pairs");
     }
 
-    fn hedge_record() -> qip_financial::object::FinancialObject {
-        use qip_financial::asset_class::{InstrumentType, Sector};
+    fn listed_record(
+        id: &str,
+        symbol: &str,
+        kind: qip_financial::asset_class::InstrumentType,
+    ) -> qip_financial::object::FinancialObject {
+        use qip_financial::asset_class::Sector;
         use qip_financial::costs::LiquidityProfile;
         use qip_financial::quality::Provenance;
         qip_financial::object::FinancialObject::builder(
-            ObjectId::from_string("obj-HDG"),
-            "HDG",
-            InstrumentType::CommonStock,
+            ObjectId::from_string(id),
+            symbol,
+            kind,
             LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0),
         )
         .venue("XNAS")
@@ -1029,22 +1118,87 @@ mod tests {
         .expect("a listed record")
     }
 
+    fn hedge_record() -> qip_financial::object::FinancialObject {
+        listed_record(
+            "obj-HDG",
+            "HDG",
+            qip_financial::asset_class::InstrumentType::CommonStock,
+        )
+    }
+
+    /// A sovereign bond the catalogue knows, so its class is read as fixed
+    /// income rather than guessed; the builder refuses a bond with no maturity.
+    fn bond_record() -> qip_financial::object::FinancialObject {
+        use qip_financial::asset_class::InstrumentType;
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::extensions::{
+            BondDetails, CouponFrequency, CreditRating, DayCount, Extension, Seniority,
+        };
+        use qip_financial::quality::Provenance;
+        qip_financial::object::FinancialObject::builder(
+            ObjectId::from_string("obj-BND"),
+            "BND",
+            InstrumentType::GovernmentBond,
+            LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0),
+        )
+        .venue("XNAS")
+        .geography("US")
+        .price(dec!("100"))
+        .provenance(Provenance::synthetic("catalogue", at()))
+        .extension(Extension::Bond(BondDetails {
+            issuer: "Sovereign".into(),
+            coupon_rate: 0.04,
+            coupon_frequency: CouponFrequency::SemiAnnual,
+            maturity: at().saturating_add(qip_core::Duration::from_days(3_650)),
+            issue_date: at(),
+            face_value: dec!("100"),
+            day_count: DayCount::ActualActual,
+            seniority: Seniority::SeniorUnsecured,
+            credit_rating: Some(CreditRating::Aaa),
+            yield_to_maturity: 0.04,
+            modified_duration: 8.0,
+            convexity: 0.0,
+            option_adjusted_spread_bps: 0.0,
+            callable: false,
+            puttable: false,
+            inflation_index: None,
+        }))
+        .build(at())
+        .expect("a sovereign bond record")
+    }
+
+    /// The book's two names, as equities the catalogue knows: the hedge map
+    /// admits an offset only for a held class it can read.
+    fn held_records() -> Vec<qip_financial::object::FinancialObject> {
+        use qip_financial::asset_class::InstrumentType;
+        vec![
+            listed_record("obj-AAA", "AAA", InstrumentType::CommonStock),
+            listed_record("obj-BBB", "BBB", InstrumentType::CommonStock),
+        ]
+    }
+
     fn priced() -> MarketSnapshot {
+        priced_names(&["obj-HDG"])
+    }
+
+    fn priced_names(names: &[&str]) -> MarketSnapshot {
         use qip_market::quote::{Trade, TradeCondition};
         let mut snapshot = MarketSnapshot::new(at());
-        snapshot.apply_trade(Trade {
-            object_id: ObjectId::from_string("obj-HDG"),
-            venue: "XNAS".into(),
-            at: at(),
-            capture_time: at(),
-            sequence: None,
-            price: dec!("100"),
-            size: Decimal::from_int(100),
-            aggressor: None,
-            condition: TradeCondition::Regular,
-            trade_id: None,
-            quality: Default::default(),
-        });
+        for name in names {
+            snapshot.apply_trade(Trade {
+                object_id: ObjectId::from_string(*name),
+                venue: "XNAS".into(),
+                at: at(),
+                capture_time: at(),
+                sequence: None,
+                price: dec!("100"),
+                size: Decimal::from_int(100),
+                aggressor: None,
+                condition: TradeCondition::Regular,
+                trade_id: None,
+                quality: Default::default(),
+            });
+        }
         snapshot
     }
 
@@ -1063,6 +1217,99 @@ mod tests {
         }
     }
 
+    /// R12-MESH-7143: the cross-class hedge map steers the search. An equity
+    /// book may be offset by an equity or a derivative
+    /// (`AssetClassRegistry::shipped`, the Equity record's hedge classes) and
+    /// by nothing else, so a government bond declared as a candidate — with
+    /// the same loading, carry and depth as the equity hedge, so that only its
+    /// class tells them apart — is left out of the search and named, and a
+    /// deployment whose only candidate is that bond is planned nothing rather
+    /// than a bond. Mutation (run, failed here, restored): `plan` keeping
+    /// every resolved candidate in place of `candidates.retain(..)` — the
+    /// bond-only report carries a plan, and the first assertion on it fails.
+    #[test]
+    fn a_hedge_is_drawn_only_from_a_class_the_hedge_map_names() {
+        let mut universe = Universe::new();
+        universe.insert(hedge_record()).expect("insertable");
+        universe.insert(bond_record()).expect("insertable");
+        for record in held_records() {
+            universe.insert(record).expect("insertable");
+        }
+        // Premise: the bond really is another class, and the registry's map
+        // for the book's class really excludes it.
+        let registry = AssetClassRegistry::shipped().expect("the shipped registry");
+        assert_eq!(
+            universe
+                .get(&ObjectId::from_string("obj-BND"))
+                .map(|r| r.asset_class),
+            Some(AssetClass::FixedIncome)
+        );
+        let equity_map = registry
+            .get(AssetClass::Equity)
+            .expect("the shipped registry records equity")
+            .hedge_classes();
+        assert!(equity_map.contains(&AssetClass::Equity));
+        assert!(!equity_map.contains(&AssetClass::FixedIncome));
+
+        let bond = HedgeCandidateDeclaration {
+            instrument: ObjectId::from_string("obj-BND"),
+            ..declaration()
+        };
+        let snapshot = priced_names(&["obj-HDG", "obj-BND"]);
+        let stress = stress(&[("equity-crash-1987", 0.35)]);
+        let book = state();
+        let history = BTreeMap::new();
+        let inputs = |declarations: &'static [HedgeCandidateDeclaration]| HedgeBrainInputs {
+            declarations,
+            hedge_map: &registry,
+            universe: &universe,
+            snapshot: &snapshot,
+            state: &book,
+            stress: Some(&stress),
+            price_history: &history,
+            equity: dec!("1000000"),
+            hedge_capacity: dec!("100000"),
+            funding: Decimal::ZERO,
+            tolerance: 0.20,
+            cycle: 11,
+            at: at(),
+        };
+
+        // Only the bond declared: nothing is planned, and the record says why.
+        let bond_only: &'static [HedgeCandidateDeclaration] = Box::leak(Box::new([bond.clone()]));
+        let report = plan(&inputs(bond_only));
+        assert!(
+            report.plan.is_none(),
+            "a bond was planned as the hedge of an equity book: {:?}",
+            report.plan
+        );
+        assert_eq!(report.unresolved.len(), 1, "{:?}", report.unresolved);
+        assert!(
+            report.unresolved[0].contains("BND")
+                && report.unresolved[0].contains("fixed_income")
+                && report.unresolved[0].contains("hedge map")
+                && report.unresolved[0].contains("equity"),
+            "{}",
+            report.unresolved[0]
+        );
+
+        // Both declared: the plan is drawn from the equity and the bond is
+        // still named as left out, so an operator reading the record sees the
+        // candidate they declared and the reason it did nothing.
+        let both: &'static [HedgeCandidateDeclaration] = Box::leak(Box::new([declaration(), bond]));
+        let report = plan(&inputs(both));
+        let planned = report.plan.as_ref().expect("the equity hedge is planned");
+        assert!(!planned.instruments.is_empty());
+        assert!(
+            planned
+                .instruments
+                .iter()
+                .all(|leg| leg.instrument != "obj-BND"),
+            "{planned:?}"
+        );
+        assert_eq!(report.unresolved.len(), 1, "{:?}", report.unresolved);
+    }
+
     /// R12-RISK-4106/4108/4109 through the kernel: a book that fails the
     /// library's 1987 world is planned a hedge whose size comes from that
     /// world's own equity shock — not a declared beta — inside the hedge
@@ -1073,9 +1320,14 @@ mod tests {
     fn a_book_failing_a_library_world_is_planned_a_validated_hedge_sized_by_that_world() {
         let mut universe = Universe::new();
         universe.insert(hedge_record()).expect("insertable");
+        for record in held_records() {
+            universe.insert(record).expect("insertable");
+        }
         let stress = stress(&[("equity-crash-1987", 0.35)]);
+        let registry = AssetClassRegistry::shipped().expect("the shipped registry");
         let report = plan(&HedgeBrainInputs {
             declarations: &[declaration()],
+            hedge_map: &registry,
             universe: &universe,
             snapshot: &priced(),
             state: &state(),
@@ -1107,6 +1359,7 @@ mod tests {
         // budget is the survival waterfall's, not the search's own.
         let starved = super::plan(&HedgeBrainInputs {
             declarations: &[declaration()],
+            hedge_map: &registry,
             universe: &universe,
             snapshot: &priced(),
             state: &state(),
@@ -1130,8 +1383,10 @@ mod tests {
     #[test]
     fn a_failing_world_with_no_candidate_is_a_recorded_finding_not_silence() {
         let stress = stress(&[("gap-move", 0.35)]);
+        let registry = AssetClassRegistry::shipped().expect("the shipped registry");
         let report = plan(&HedgeBrainInputs {
             declarations: &[],
+            hedge_map: &registry,
             universe: &Universe::new(),
             snapshot: &MarketSnapshot::new(at()),
             state: &state(),
@@ -1155,6 +1410,7 @@ mod tests {
 
         let unresolvable = plan(&HedgeBrainInputs {
             declarations: &[declaration()],
+            hedge_map: &registry,
             universe: &Universe::new(),
             snapshot: &MarketSnapshot::new(at()),
             state: &state(),
