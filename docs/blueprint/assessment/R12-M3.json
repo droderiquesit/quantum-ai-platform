@@ -1099,12 +1099,15 @@
   {
     "id": "R12-WORLD-3048",
     "status": "PARTIAL",
-    "current": "Capital fabric demand forecast and pre-positioning integrated.",
+    "current": "Federation member portfolio.capital.global (domain portfolio/capital, ADR 0194) forecasts capital:funding-draw-next-pass on every shipped cycle from the paper book (cash, cash/equity, leverage, net/equity, waiting theses); the next pass's cash resolves it; it is silent where equity is not positive. portfolio/capital is in REQUIRED_FAMILIES, so an unfed member lapses and the family is named uncovered.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/forecast.rs:324 DemandForecaster",
-      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs"
+      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs",
+      "docs/adr/0194-the-federation-gains-a-capital-member-whose-proposition-is-a-funding-draw-on-the-next-pass-resolved-by-the-books-own-cash.md",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::a_book_with_a_thesis_waiting_gives_the_capital_member_a_funding_view_the_next_pass_resolves (mutants: resolver inverted, waiting term dropped, member unfed, family dropped from REQUIRED_FAMILIES, all killed)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations (capital member never silent on the platform cycle; mutant capital: None killed)"
     ],
-    "gap": "Not started. DemandForecaster output and pre_positioning exposure are per currency and per funding need, not per instrument proposition, and 'realised funding use' as the resolution has no instrument-level event the stage can wait on; the member needs its own proposition (next-pass funding draw) and a resolver, which is new federation vocabulary.",
+    "gap": "Skeptic 2026-10-31 PARTIAL: collateral, optionality and capital mobility are declined by ADR 0194 decision 6 and liquidity (in the requirement title) is not modelled, so bar part 4 fails. Leverage and net-exposure figures are carried but read by nothing. The waiting-thesis input reads zero on the shipped cycle because DECIDE drains pending_theses before the next UNDERSTAND, so the forecast there is 0.15 + 0.15 x cash share. FederationInputs is not journaled.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1115,7 +1118,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-10-31 L4-quant commit 60d63742 under ADR 0194 (owner-decisions-2026-10-31.md delegation); skeptic verdict PARTIAL; ADR corrected for the inert waiting term, the absent liquidity clause and the narrowing claim."
   },
   {
     "id": "R12-WORLD-3049",

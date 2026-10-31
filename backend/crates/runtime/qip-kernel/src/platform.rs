@@ -14964,6 +14964,38 @@ impl Platform {
         parents
     }
 
+    /// The paper book's funding state for the federation's capital member
+    /// (R12-WORLD-3048, ADR 0194). Money crosses to `f64` here, as
+    /// statistics: the member forecasts whether the next pass holds less
+    /// cash, and no amount comes back out of it. `None` where equity is not
+    /// positive or any figure is not finite — a share of nothing is not a
+    /// number, and the member is silent rather than reading that book as one
+    /// that draws nothing.
+    fn capital_view(&self) -> Option<crate::federation_stage::CapitalView> {
+        let equity = self.equity().to_f64();
+        if !equity.is_finite() || equity <= 0.0 {
+            return None;
+        }
+        let cash = self.capital.cash.to_f64();
+        let (mut gross, mut net) = (0.0, 0.0);
+        for lot in self.capital.positions.values() {
+            let notional = (lot.quantity * lot.average_price).to_f64();
+            gross += notional.abs();
+            net += notional;
+        }
+        let view = crate::federation_stage::CapitalView {
+            cash,
+            cash_share: cash / equity,
+            leverage: gross / equity,
+            net_share: net / equity,
+            pending_theses: self.pending_theses.len(),
+        };
+        [view.cash, view.cash_share, view.leverage, view.net_share]
+            .iter()
+            .all(|x| x.is_finite())
+            .then_some(view)
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -15016,6 +15048,7 @@ impl Platform {
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
             }),
+            capital: self.capital_view(),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
         // so a material disagreement on a held name issues the contract
