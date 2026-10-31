@@ -3350,13 +3350,17 @@
   {
     "id": "R12-MESH-7143",
     "status": "PARTIAL",
-    "current": "qip-routing path graph, edge quoting, reservations, decomposition exist.",
+    "current": "qip-routing path graph, edge quoting, reservations and decomposition exist. Since 2026-10-31 the cross-class hedge map steers the Hedge Brain: HedgeBrainInputs carries the AssetClassRegistry and kernel hedge.rs `plan` admits a resolved candidate to the search only if its asset class is one the registry's hedge map names for a class the book holds, naming every excluded candidate in the journaled `unresolved`; `Platform` passes its shipped registry on the DECIDE path. Saga recovery exists in pieces (Cell::unwind_cycle, the peer saga's unwind) with no end-to-end test.",
     "evidence": [
       "backend/crates/edge/qip-routing/src/path.rs",
       "backend/crates/edge/qip-edge/src/quoting.rs",
-      "backend/crates/edge/qip-edge/src/reservation.rs"
+      "backend/crates/edge/qip-edge/src/reservation.rs",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs HedgeBrainInputs::hedge_map, permitted_hedge_classes, candidates.retain in plan",
+      "backend/crates/runtime/qip-kernel/src/platform.rs hedge_map: &self.asset_class_registry at the hedge::plan call",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::tests::a_hedge_is_drawn_only_from_a_class_the_hedge_map_names",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs check_hedge_map, AssetClassRecord::hedge_classes"
     ],
-    "gap": "Saga recovery and cross-class hedge map end to end.",
+    "gap": "2026-10-31 (lane L5b, one slice of an XL row): the hedge-map half is on the DECIDE path and mutation-proven; the saga-recovery half — a broken cycle unwound and hedged end to end (a_broken_cycle_is_unwound_and_hedged_end_to_end over Cell::unwind_cycle, the peer saga's unwind and a hedge drawn through the map) — is not written, LegGroup is still an unused import in cell.rs, and the cycle paths it would exercise run only on an undeployed node behind the peer-mesh switch (decision 5 of 2026-10-25).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3364,10 +3368,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cargo test -p qip-kernel --lib hedge::; cargo test -p qip-kernel --test catalogue_hedge_candidates --test hedge --test asset_classes",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap."
   },
   {
     "id": "R12-QUANT-7144",
