@@ -2244,7 +2244,8 @@
       "backend/crates/libs/qip-financial/tests/commerce_purchase.rs:213",
       "backend/crates/libs/qip-financial/tests/commerce_purchase.rs:281",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs::CommerceResearch",
-      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install"
+      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install",
+      "backend/crates/libs/qip-financial/tests/commerce_purchase.rs a_purchase_exceeding_the_per_account_limit_is_refused, a_purchase_exceeding_the_global_ceiling_is_refused, multiple_purchases_that_individually_fit_but_collectively_exceed_the_ceiling_are_refused_at_the_ceiling (each asserts merchant_calls()==0)"
     ],
     "gap": "Off by default: unset QIP_DEEPBRAIN_BREADTH_PLAN means no commerce plane, and no committed deployment sets it.",
     "implemented": true,
@@ -2257,7 +2258,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L1-MONEY, triage regrade check: both mutations fired, each restored with cp+cmp. Disabling the per_purchase_limit check in PurchaseExecutor::purchase fails a_purchase_exceeding_the_per_account_limit_is_refused. Disabling the total_ceiling check fails a_purchase_exceeding_the_global_ceiling_is_refused and multiple_purchases_..._refused_at_the_ceiling (commerce_purchase: 12 passed clean). Not regraded: the executor's only production caller is CommerceResearch, which runs only under a breadth plan, and no committed deployment mounts one (the dev mount of data/breadth/dev-commerce-paper.json is pending). Bar part 2 stays unmet; PARTIAL."
   },
   {
     "id": "R12-COMMERCE-5095",

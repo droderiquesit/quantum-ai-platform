@@ -9478,3 +9478,72 @@ fn a_market_at_a_venue_not_stated_simulated_must_state_its_costs() -> Result<()>
     assert!(!venue.simulated);
     Ok(())
 }
+
+/// R12-CAPITAL-4085 (ADR 0229): every one of the ten named agents submits a
+/// plan on every allocation, and the plane records all ten before the plan it
+/// acts on is chosen. With no figure handed over, the plan acted on is the
+/// allocator's; given a survival budget below the line, the line is
+/// narrowed to it and names the survival agent.
+///
+/// Mutation: make `society::settle` keep the larger of the two figures
+/// instead of the smaller, and the narrowed line stays at the allocator's.
+#[test]
+fn every_capital_agent_plan_is_recorded_before_the_choice_and_only_narrows_the_allocators_line()
+-> Result<()> {
+    use qip_capital::society::{CapitalAgent, Proposal, SocietyInputs};
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+
+    let baseline = plane.allocate(0.0, start())?;
+    let line = baseline
+        .allocations
+        .iter()
+        .find(|allocation| allocation.strategy == id)
+        .map(|allocation| allocation.notional)
+        .expect("premise: the piloted strategy holds an allocation line");
+    assert!(line.is_positive(), "premise: the line is sized");
+    let recorded = plane.society();
+    assert_eq!(
+        recorded.iter().map(|plan| plan.agent).collect::<Vec<_>>(),
+        CapitalAgent::ALL.to_vec(),
+        "all ten agents' plans are recorded, in order"
+    );
+    assert!(
+        recorded.iter().any(|plan| plan.agent == CapitalAgent::TaxAware
+            && matches!(&plan.proposal, Proposal::Abstain { missing } if missing.contains("ADR 0153"))),
+        "the tax-aware agent abstains naming its missing input"
+    );
+
+    let half = line
+        .checked_div(qip_core::Decimal::from_int(2))
+        .expect("halvable");
+    plane.set_society_inputs(SocietyInputs {
+        survival_budget: Some(half),
+        ..SocietyInputs::default()
+    });
+    let narrowed = plane.allocate(0.0, start())?;
+    let narrowed_line = narrowed
+        .allocations
+        .iter()
+        .find(|allocation| allocation.strategy == id)
+        .expect("the line is still there");
+    assert_eq!(
+        narrowed_line.notional, half,
+        "the survival agent's line was not acted on"
+    );
+    assert!(
+        narrowed_line
+            .binding_constraints
+            .iter()
+            .any(|constraint| constraint == "capital-society:survival"),
+        "{:?}",
+        narrowed_line.binding_constraints
+    );
+    assert!(
+        narrowed.allocated() <= baseline.allocated(),
+        "an agent widened the plan"
+    );
+    Ok(())
+}

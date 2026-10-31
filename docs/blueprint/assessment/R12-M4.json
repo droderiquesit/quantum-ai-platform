@@ -1652,7 +1652,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). 2026-10-31 lane L1-MONEY: mutation (literal Sold instead of the ledger read) fired, restored with cp+cmp. No skeptic was run: the row cannot be promoted until the dev mount lands. Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 lane L1-MONEY: mutation (literal Sold instead of the ledger read) fired, restored with cp+cmp. No skeptic was run: the row cannot be promoted until the dev mount lands. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
   },
   {
     "id": "R12-ASSET-4074",
@@ -1918,9 +1918,14 @@
     "status": "MISSING",
     "current": "No capital agents or plan competition; allocation is one CapitalAllocator.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/allocation.rs:377"
+      "backend/crates/services/qip-capital/src/allocation.rs:377",
+      "docs/adr/0229-capital-agents-only-propose-every-named-agents-plan-is-recorded-each-cycle-and-the-kernel-acts-on-the-per-line-minimum-of-those-plans-and-the-one-allocators.md",
+      "backend/crates/services/qip-capital/src/society.rs CapitalAgent (10), propose_all, settle",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs CentralPlane::allocate records society before settling; set_society_inputs; society()",
+      "backend/crates/runtime/qip-kernel/tests/central.rs every_capital_agent_plan_is_recorded_before_the_choice_and_only_narrows_the_allocators_line",
+      "backend/crates/services/qip-capital/tests/capital.rs a_capital_agent_plan_above_the_allocators_line_is_clipped_to_it"
     ],
-    "gap": "Everything.",
+    "gap": "Everything.\n2026-10-31 (lane L1-MONEY, 24bdaa19, ADR 0229): ten named agents each submit a plan per allocation, recorded on the central plane before the plan acted on is settled to the per-line minimum (tighten-only). Independent skeptic REFUTED promotion. Remaining:\n(1) No production caller hands the society its inputs (set_society_inputs is test-only), so on every default path nine agents abstain and the strategy-allocation agent echoes the allocator: no competing plans.\n(2) Per cycle: CentralPlane::allocate is reached in the cycle only through plan_pre_positioning, which returns early when forecast_lanes == 0.\n(3) arm_horizons (via stage_learn's arm_horizon_gate) calls the allocator directly and budgets the pool reconciler with unnarrowed figures. It must read the settled plan before any agent input is wired, or the gate and the deployed plan disagree.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1931,7 +1936,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Capital agents are approved as proposers only. Each of the ten named agents submits a plan every cycle, and the kernel records all ten before it chooses. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: Capital agents only propose: every named agent's plan is recorded each cycle, and the kernel acts on the per-line minimum of those plans and the one allocator's."
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Capital agents are approved as proposers only. Each of the ten named agents submits a plan every cycle, and the kernel records all ten before it chooses. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: Capital agents only propose: every named agent's plan is recorded each cycle, and the kernel acts on the per-line minimum of those plans and the one allocator's. 2026-10-31 lane L1-MONEY: mutation (settle keeps the larger figure) fired in both tests, restored with cp+cmp. One code-reviewer skeptic round REFUTED. Kept PARTIAL."
   },
   {
     "id": "R12-CAPITAL-4086",
@@ -2209,7 +2214,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row. 2026-10-31 lane L1-MONEY: gate prototyped, 92 fixture refusals measured, reverted; nothing committed in code. Owner ruling 2026-10-31 (IMPLEMENT): Build the quote gate now: an order on an instrument with no quote in the platform's market snapshot is refused and journaled. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row. Owner ruling 2026-10-31 (IMPLEMENT): Build the quote gate now: an order on an instrument with no quote in the platform's market snapshot is refused and journaled. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 lane L1-MONEY: gate prototyped, 92 fixture refusals measured, reverted; nothing committed in code."
   },
   {
     "id": "R12-RISK-4097",
