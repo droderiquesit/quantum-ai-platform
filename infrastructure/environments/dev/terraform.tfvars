@@ -276,6 +276,19 @@ execution_nodes = {
 # the same reviewed diff and read the plan `infra.yml`'s `plan` action prints
 # before anybody dispatches `up`. The plan refuses the flip with either
 # value null, naming the one that is missing.
+# The three things every execution node needs to start, which
+# execution_nodes_enabled = true is refused without (execution-nodes-enabled.tf;
+# docs/ops/runbooks/owner-switches.md). The Google roots are committed and
+# named here. The other two are billed applies the owner takes in this order:
+# set artefact_signing, plan, read, apply; render the bundle with
+#   terraform output -json artefact_trust_bundle | jq . > infrastructure/trust/dev.json
+# and commit it beside uncommenting artefact_trust_bundle_file; then set
+# certificate_authority, plan, read, apply.
+google_tls_roots_file = "infrastructure/trust/google-roots.pem"
+# artefact_signing           = { bundle_not_after = "2027-10-31T00:00:00Z" }
+# artefact_trust_bundle_file = "infrastructure/trust/dev.json"
+# certificate_authority      = { location = "us-east4", organization = "<the owner's legal name>" }
+
 execution_nodes_enabled = false
 
 

@@ -345,6 +345,9 @@ fn every_schema_id_a_stream_admits_is_in_the_lock() {
             BTreeSet::from([
                 "reflex.journal_recorded",
                 "reflex.pass_marked",
+                // ADR 0132 decision 4: one feature digest per pass, ticks
+                // counted and digested, never shipped (R12-FABRIC-10102).
+                "reflex.feature_digested",
                 "reflex.market_event_applied",
                 "reflex.fabric_gap",
             ]),

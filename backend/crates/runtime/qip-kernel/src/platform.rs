@@ -146,12 +146,14 @@ use qip_financial::asset_class::{AssetClass, InstrumentType};
 use qip_financial::constraints::Jurisdiction;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use qip_financial::derivative_permissions::DerivativePermissions;
+use qip_financial::history::UniverseHistory;
 use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, MarketView, RiskView, TradeSide,
+    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
+    ModelsView, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -243,6 +245,10 @@ struct SymbolicReading {
     /// The derivation was computed and could not be journaled.
     problem: Option<String>,
     veto: Option<String>,
+    /// The rule and invariant ids whose firing made `veto`; empty without one.
+    veto_rules: Vec<String>,
+    /// The pack and version the derivation ran under.
+    pack: (String, u32),
     infeasible: Option<String>,
 }
 
@@ -577,6 +583,12 @@ pub struct Platform {
     /// Orders a control refused and the twin has not yet priced, oldest
     /// first, bounded by [`DECLINED_HISTORY`].
     declined: Vec<DeclinedPath>,
+    /// Hypotheses the symbolic rule pack refused and LEARN has not yet
+    /// graded, by hypothesis id, bounded by
+    /// [`crate::theory_revision::SYMBOLIC_VETO_HISTORY`]. Read back when the
+    /// thesis is graded, so a refusal the outcome contradicted leaves a
+    /// theory delta rather than nothing (R12-EXPAND-6044).
+    pub(crate) symbolic_vetoes: BTreeMap<String, crate::theory_revision::SymbolicVetoNote>,
     /// What each priced refusal would have earned, most recent last, bounded
     /// by [`DECLINED_HISTORY`].
     declined_scores: Vec<DeclinedScore>,
@@ -906,6 +918,16 @@ pub struct Platform {
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
     universe_assembled: UniverseAssembled,
+    /// The historical universe (R12-TICK-2090): every instrument this
+    /// platform was assembled to trade, listed from the assembly instant,
+    /// with the delistings and renamings the corporate-action tape announced
+    /// (effective at their ex-dates) and the venue outages the platform
+    /// itself caused by withdrawing a venue on feasibility evidence. A
+    /// backtest reads membership and outages as of its own instants from
+    /// here, so a name delisted later stays in the universe it is judged
+    /// against and a venue that was out is not filled through. The present
+    /// `Universe` behind the desk drops a delisted name; this does not.
+    universe_history: UniverseHistory,
     /// The last log sequence this platform inherited rather than wrote. See
     /// `inherited_through`.
     inherited_through: u64,
@@ -1098,6 +1120,13 @@ pub struct Platform {
     /// REASON by `brief_the_desk_on_executions`, bounded to the most recent
     /// `EXECUTION_HISTORY_KEPT`.
     executions: Upstream<ExecutionView>,
+    /// The platform's models as the desk's model-failure probe reads them
+    /// (R12-REASON-3023): every forecaster the tournament holds an open
+    /// question from, with its mean Brier score and the meta-model's
+    /// predicted failure, and the production models the deep brain last
+    /// reported past their drift threshold. Rebuilt before every REASON by
+    /// `brief_the_desk_on_models`.
+    models: Upstream<ModelsView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -1382,14 +1411,6 @@ pub struct Platform {
     /// of which has no admissible plan is refused before it holds capital,
     /// so nothing reaches ACT without one.
     position_exit_plans: BTreeMap<String, qip_financial::position_record::ExitPlan>,
-    /// Every instrument the platform has seen trade, from its first bar,
-    /// with the delistings and renames its corporate actions dated
-    /// (R12-TICK-2090). In memory and rebuilt every process from the bars
-    /// and actions re-fed to it, like the bar history it rides beside: a
-    /// backtest that asked the current universe who existed last year would
-    /// not see the names that have since gone, which is survivorship hidden
-    /// in a lookup.
-    universe_history: qip_financial::history::UniverseHistory,
     /// The platform's own decision latency, SENSE through ACT, one sample per
     /// cycle on the injected clock and the most recent
     /// [`DECISION_LATENCY_SAMPLES`] kept (R12-TICK-2074). The capacity probe
@@ -3265,6 +3286,33 @@ pub struct SourceAssessment {
     /// Registrations the catalogue refused, with its reason. Recorded rather
     /// than raised: one unusable entry must not lose the others.
     pub catalogue_problems: Vec<String>,
+    /// The Source Registry entry of every registration this pass made
+    /// (R12-EXPAND-6055): provenance, cost, licence, freshness and utility
+    /// as `RegisteredSource::entry` reads them off the registered source, so
+    /// the entry is consulted on the running path and travels with the
+    /// assessment rather than being derivable only by a test that opens the
+    /// finder. A registration the registry does not hold under its id is a
+    /// catalogue problem, not a silent gap.
+    pub entries: Vec<SourceRegistryView>,
+}
+
+/// One Source Registry entry as a running path read it
+/// (`qip_data_finder::decision::SourceRegistryEntry`, flattened to owned
+/// values for the record).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceRegistryView {
+    pub source_id: String,
+    /// Where the source was found.
+    pub discovered_from: String,
+    pub discovered_at: Timestamp,
+    pub monthly_fee: Decimal,
+    /// The licence identifier the registration was decided on. Every
+    /// registered source has one: the finder treats an unknown legality as
+    /// forbidden, so a candidate without a declared licence never registers.
+    pub licence: String,
+    pub freshness: qip_data_finder::coverage::UpdateFrequency,
+    pub routing: qip_data_finder::RoutingClass,
+    pub composite: f64,
 }
 
 impl SourceAssessment {
@@ -5963,6 +6011,14 @@ impl Platform {
         // the journal both exist — but before this function returns, so no
         // cycle can precede it.
         let members: Vec<String> = universe.ids().map(|id| id.as_str().to_string()).collect();
+        // The historical universe starts as the assembled one, every member
+        // listed from this instant: the earliest this process can say it
+        // knew the name. A listing date the catalogue does not carry is not
+        // invented here.
+        let mut universe_history = UniverseHistory::new();
+        for object in universe.iter() {
+            universe_history.list(object.object_id.clone(), object.symbol.clone(), now)?;
+        }
         let universe_assembled = UniverseAssembled {
             catalogue: universe.origin().cloned(),
             instruments: universe.len(),
@@ -6047,6 +6103,8 @@ impl Platform {
         desk.book = book.gate(desk.book.required(), desk.book.label());
         let executions = Upstream::new(ExecutionView::default());
         desk.executions = executions.gate(desk.executions.required(), desk.executions.label());
+        let models = Upstream::new(ModelsView::default());
+        desk.models = models.gate(desk.models.required(), desk.models.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6299,6 +6357,7 @@ impl Platform {
             bar_history: BTreeMap::new(),
             publication_delays: BTreeMap::new(),
             declined: Vec::new(),
+            symbolic_vetoes: BTreeMap::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
             cell_fills_queued: CellFillsQueued::default(),
@@ -6360,6 +6419,7 @@ impl Platform {
             private_forecasts,
             credit,
             universe_assembled,
+            universe_history,
             inherited_through,
             asset_classes,
             derivative_types,
@@ -6472,6 +6532,7 @@ impl Platform {
             risk,
             book,
             executions,
+            models,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -6490,7 +6551,6 @@ impl Platform {
             position_mandates: BTreeMap::new(),
             position_horizons: BTreeMap::new(),
             position_exit_plans: BTreeMap::new(),
-            universe_history: qip_financial::history::UniverseHistory::new(),
             decision_latencies: std::collections::VecDeque::new(),
             position_bookings: BTreeMap::new(),
         };
@@ -6520,6 +6580,18 @@ impl Platform {
         // a platform running cycles whose log never says what universe they
         // ran over — is the state this record exists to end.
         platform.record_universe_assembled(now)?;
+        // A venue the log says was withdrawn before this process started is
+        // out from this instant in the historical universe: the withdrawal's
+        // own instant is on the log, but the earliest this process can speak
+        // for is now, and a backtest that filled through a venue the desk
+        // refuses would be the survivorship the history exists to end.
+        for venue in platform.withdrawn_venues.clone() {
+            platform.universe_history.open_outage(
+                venue,
+                now,
+                "withdrawn on feasibility evidence before this process started (resumed from the log)",
+            )?;
+        }
         // The committed eligibility decisions, after the universe record and
         // after every mandate is enrolled, through the same journaled path
         // an operator's runtime decision takes. A decision the registry
@@ -7592,6 +7664,14 @@ impl Platform {
                 return Err(error);
             }
         };
+        // ADR 0208: where the cell's own statement of its book disagrees with
+        // what the centre settled from that cell's fills, the disagreement is
+        // a capture problem on the record — not a correction of either side.
+        // The settled book stays the truth for every balance; the statement
+        // is the cell's claim, and a claim the centre cannot reproduce from
+        // the fills it was sent is the thing a reconciler looks at next.
+        self.capture_problems
+            .extend(ingestion.advisory_disagreements.iter().cloned());
         // One observation per report absorbed. `halted` is `None` exactly
         // where the report reconciled — the plane sets it from the union of
         // the cell's own breaks and the settlement's `UnsentFill` findings —
@@ -10881,17 +10961,14 @@ impl Platform {
             "{} refused this leg's cycle under {}; the twin prices what declining it cost",
             path.cell, path.gate
         ));
-        // The wire's convention is `Ask` bought and `Bid` sold (the order
-        // a cell sends takes the ask to buy); the twin's `ActualTrade` reads
-        // `Bid` as long. Crossed here, at the one seam where the two meet,
-        // or every leg would be priced in the direction it did not propose.
-        let twin_side = match path.side {
-            BookSide::Ask => BookSide::Bid,
-            BookSide::Bid => BookSide::Ask,
-        };
+        // The wire's convention is `Ask` bought and `Bid` sold (the order a
+        // cell sends takes the ask to buy), and since 2026-10-31 the twin's
+        // `ActualTrade` reads the same side the same way, so the leg's side
+        // goes through uncrossed; a cross here would price every leg in the
+        // direction it did not propose.
         let actual = ActualTrade::new(
             path.object_id.clone(),
-            twin_side,
+            path.side,
             path.quantity,
             path.venue.clone(),
             HOME_REGION,
@@ -11617,9 +11694,22 @@ impl Platform {
 
     /// List `object_id` in the universe history from `at` the first time the
     /// platform sees it, under the universe record's symbol (or its id where
-    /// the universe holds no record). Later sightings change nothing.
+    /// the universe holds no record). A later sighting changes nothing unless
+    /// it is *earlier* than the listing the history holds: an assembled name
+    /// is listed from the assembly instant, the earliest the process could
+    /// say it knew the name, and a bar dated before that is evidence the name
+    /// traded then, so the listing moves back to it. Without that a backtest
+    /// as of a date before this process started would find an empty universe
+    /// and refuse every order in it (R12-TICK-2090).
     fn note_listing(&mut self, object_id: &ObjectId, at: Timestamp) {
         if self.universe_history.is_named(object_id) {
+            if let Err(error) = self.universe_history.backdate_listing(object_id, at) {
+                self.capture_problems.push(format!(
+                    "{object_id} traded at {at} before its listing and the universe history \
+                     refused to move the listing back: {}",
+                    error.message()
+                ));
+            }
             return;
         }
         let symbol = self.market.read().universe.get(object_id).map_or_else(
@@ -11632,26 +11722,6 @@ impl Platform {
                 error.message()
             ));
         }
-    }
-
-    /// Every instrument the platform has seen trade, with the delistings and
-    /// renames dated (R12-TICK-2090): what a backtest asks who was a member
-    /// on a past date.
-    pub fn universe_history(&self) -> &qip_financial::history::UniverseHistory {
-        &self.universe_history
-    }
-
-    /// The adapter and lifecycle engine `object_id`'s desk position was
-    /// booked through, or `None` where the desk has never held it
-    /// (R12-ASSET-1015).
-    pub fn position_booking(
-        &self,
-        object_id: &str,
-    ) -> Option<(
-        crate::asset_class_registry::ClassAdapter,
-        crate::asset_class_registry::LifecycleEngine,
-    )> {
-        self.position_bookings.get(object_id).copied()
     }
 
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
@@ -11696,6 +11766,44 @@ impl Platform {
             records.drain(..records.len() - EXECUTION_HISTORY_KEPT);
         }
         self.executions.update(|view| view.executions = records);
+    }
+
+    /// Write the platform's forecaster records and drift report into the
+    /// slot the desk's model-failure probe reads, before the panel is
+    /// convened (R12-REASON-3023). Forecasters are the ones the tournament
+    /// holds an open question from, each with the mean Brier score of the
+    /// questions it has been scored on and the meta-model's predicted
+    /// failure in that question's regime; drifted models are what the deep
+    /// brain last reported through `observe_model_drift`. Rebuilt each
+    /// time, so the view cannot disagree with the tournament it describes.
+    fn brief_the_desk_on_models(&self) {
+        let tournament = self.tournament.tournament();
+        let mut seen: BTreeMap<String, ForecasterHealth> = BTreeMap::new();
+        for question in tournament.open_questions() {
+            let regime = question.spec().regime.clone();
+            for name in question.forecasts().keys() {
+                // A forecaster answering questions in several regimes is
+                // judged by the regime it is most expected to fail in: the
+                // probe asks whether anything behind a claim is failing,
+                // and the best regime would hide the worst.
+                let predicted = tournament.meta_model().predict(name, &regime);
+                seen.entry(name.clone())
+                    .and_modify(|health| {
+                        health.predicted_failure = health.predicted_failure.max(predicted);
+                    })
+                    .or_insert_with(|| ForecasterHealth {
+                        name: name.clone(),
+                        mean_brier: tournament.mean_brier(name),
+                        predicted_failure: predicted,
+                    });
+            }
+        }
+        let forecasters: Vec<ForecasterHealth> = seen.into_values().collect();
+        let drifted: Vec<String> = self.drifted_models.iter().cloned().collect();
+        self.models.update(|view| {
+            view.forecasters = forecasters;
+            view.drifted = drifted;
+        });
     }
 
     /// Where liquidity lives, per instrument across venues, as fed from the
@@ -12518,6 +12626,29 @@ impl Platform {
             // the platform learns it, because nothing downstream keeps the
             // source beside the figure.
             self.source_leads.observe(&record);
+            // ADR 0132 decision 1: one admission rule for every sensed
+            // record. A record that states both the instant it happened and
+            // the instant it was captured is held to `Admission::check_order`
+            // — received before it happened is refused, not reconciled —
+            // with no clock doubt, because a centre record carries none. The
+            // refusal is a capture problem the cycle reports, and the record
+            // reaches no series: a feature computed from it would be knowable
+            // before it was true, the leak the bitemporal rules exist for.
+            {
+                use qip_contracts::admission::{Admissible, Admission};
+                let own = record.own_times();
+                if let (Some(event_time), Some(receive_time)) = (own.event_time, own.receive_time)
+                    && let Err(error) =
+                        Admission::check_order(event_time, receive_time, Duration::ZERO)
+                {
+                    self.capture_problems.push(format!(
+                        "a {} record was refused at admission: {}",
+                        record.topic(),
+                        error.message()
+                    ));
+                    continue;
+                }
+            }
             match record {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
@@ -13794,6 +13925,38 @@ impl Platform {
             ));
             return;
         }
+        // The historical universe takes the membership facts now, at the
+        // announcement, effective at the ex-date: a delisting ends the
+        // listing there and a renaming opens a new symbol era there. Recorded
+        // here, after the duplicate checks, so a tape re-fed to a restarted
+        // process does not end a listing twice. A refusal is a tape fault
+        // (a delisting before the listing began, an unknown name) and is
+        // captured as one rather than aborting the observation.
+        // Terminal actions — a delisting, a merger that takes the name away
+        // — end the listing; `CorporateAction::is_terminal` is the one
+        // place that says which kinds those are, so a kind added there ends
+        // a listing here without a second list to keep in step.
+        let membership = match &action.kind {
+            CorporateActionKind::Renamed { new_symbol } => Some(self.universe_history.rename(
+                &action.object_id,
+                new_symbol.clone(),
+                action.ex_date,
+            )),
+            _ if action.is_terminal() => Some(
+                self.universe_history
+                    .delist(&action.object_id, action.ex_date),
+            ),
+            _ => None,
+        };
+        if let Some(Err(error)) = membership {
+            self.capture_problems.push(format!(
+                "a corporate action on {} ex {} was queued but the historical universe refused \
+                 it: {}",
+                action.object_id,
+                action.ex_date.to_rfc3339(),
+                error.message()
+            ));
+        }
         self.corporate_actions_pending.insert(key, action);
     }
 
@@ -13933,29 +14096,11 @@ impl Platform {
             }
         }
 
-        // The universe history takes the action every process, as the
-        // series does (R12-TICK-2090): a delisting dates the end of the
-        // instrument's membership and keeps its record, and a rename starts a
-        // new symbol era, so a past date still finds the instrument and its
-        // old ticker.
-        self.note_listing(&action.object_id, action.ex_date);
-        let dated = match &action.kind {
-            qip_market::corporate_action::CorporateActionKind::Delisting { .. } => Some(
-                self.universe_history
-                    .delist(&action.object_id, action.ex_date),
-            ),
-            qip_market::corporate_action::CorporateActionKind::Renamed { new_symbol } => Some(
-                self.universe_history
-                    .rename(&action.object_id, new_symbol.clone(), action.ex_date),
-            ),
-            _ => None,
-        };
-        if let Some(Err(error)) = dated {
-            self.capture_problems.push(format!(
-                "the universe history refused corporate action {key} on {object}: {}",
-                error.message()
-            ));
-        }
+        // The universe history took this action's membership fact when the
+        // action was queued (R12-TICK-2090, `queue_corporate_action`), dated
+        // at the ex-date; it is not taken again here, because a delisting
+        // recorded twice is refused and would report a tape fault that is
+        // not one.
 
         // A book the log rebuilt has already taken this action in an earlier
         // process. The series above still needed it — bars are re-fed to
@@ -15100,16 +15245,26 @@ impl Platform {
     /// the pass atomic within a cycle: every subject is labelled against the
     /// same graph snapshot.
     fn mark_regime_transitions(&mut self, now: Timestamp) -> usize {
-        let subjects: BTreeSet<String> = {
+        // Every priced subject, and every causal effect: a regime is a
+        // fact about an instrument's own tape, and a tracker that marked
+        // only the effects of causal edges left every other subject's
+        // structural-break critic abstaining for want of a regime
+        // (R12-REASON-3108, F2) — the subject the panel most often reasons
+        // about is the one with a tape, not the one somebody drew an edge
+        // to. The first observation of a subject records its regime and
+        // marks no crossing, so widening the set raises no spurious break.
+        let mut subjects: BTreeSet<String> = self.price_history.keys().cloned().collect();
+        {
             let world = self.world.read();
-            world
-                .causal()
-                .edges()
-                .iter()
-                .filter(|edge| edge.recorded_at <= now)
-                .map(|edge| edge.effect.clone())
-                .collect()
-        };
+            subjects.extend(
+                world
+                    .causal()
+                    .edges()
+                    .iter()
+                    .filter(|edge| edge.recorded_at <= now)
+                    .map(|edge| edge.effect.clone()),
+            );
+        }
         let observed: Vec<(String, String)> = subjects
             .into_iter()
             .map(|subject| {
@@ -15946,6 +16101,7 @@ impl Platform {
         self.brief_the_desk_on_risk();
         self.brief_the_desk_on_book();
         self.brief_the_desk_on_executions();
+        self.brief_the_desk_on_models();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
@@ -16310,6 +16466,8 @@ impl Platform {
                     detail: symbolic_detail,
                     problem: symbolic_problem,
                     veto: symbolic_veto,
+                    veto_rules: symbolic_veto_rules,
+                    pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                 } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
                 // ADR 0212: a derivation that contradicts itself is a
@@ -16386,6 +16544,7 @@ impl Platform {
                         }
                     ),
                 );
+                let claim_written = matches!(predicted, Ok(true));
                 if let Err(error) = predicted {
                     outcome = outcome.with_problem(format!(
                         "the hypothesis could not be written as a resolvable claim: {}",
@@ -16431,6 +16590,30 @@ impl Platform {
                     outcome = outcome.with_problem(format!(
                         "approved on review but vetoed by the symbolic rule pack: {veto}"
                     ));
+                    // R12-EXPAND-6044: the veto is held against the grade
+                    // LEARN gives this thesis, so a stop the outcome
+                    // contradicts leaves a theory delta. Only where a claim
+                    // was written above: a veto on a thesis that never
+                    // became a claim has no grade to be held against, and
+                    // its note would hold a slot in the window forever.
+                    if claim_written
+                        && let Some(problem) =
+                            self.note_symbolic_veto(crate::theory_revision::SymbolicVetoNote {
+                                hypothesis_id: reasoned
+                                    .hypothesis
+                                    .hypothesis_id
+                                    .as_str()
+                                    .to_string(),
+                                cycle: self.cycle,
+                                at: now,
+                                pack: symbolic_pack.0.clone(),
+                                version: symbolic_pack.1,
+                                rules: symbolic_veto_rules.clone(),
+                                veto: veto.clone(),
+                            })
+                    {
+                        outcome = outcome.with_problem(problem);
+                    }
                     DecisionTaken::NotSizeable
                 } else if !approved {
                     outcome = outcome
@@ -16839,6 +17022,11 @@ impl Platform {
         };
         let detail = derivation.detail();
         let veto = derivation.veto();
+        let veto_rules = derivation.veto_rules();
+        let pack = (
+            self.symbolic_rule_pack.name.clone(),
+            self.symbolic_rule_pack.version,
+        );
         let infeasible = derivation.infeasibility();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
@@ -16853,6 +17041,8 @@ impl Platform {
             detail,
             problem,
             veto,
+            veto_rules,
+            pack,
             infeasible,
         }
     }
@@ -21762,11 +21952,24 @@ impl Platform {
         // through the same drain every other LEARN-time problem reaches.
         self.capture_problems
             .extend(learned.problems.iter().cloned());
+        // R12-EXPAND-6044: a thesis the rule pack refused and the grader
+        // credited is a contradiction between the theory and the evidence,
+        // and it leaves a theory delta on the log here, at the instant the
+        // grade is known. A proposal only: see `crate::theory_revision`.
+        let revision = self.revise_theory(&learned.evaluations, self.cycle, now);
+        self.capture_problems
+            .extend(revision.problems.iter().cloned());
         let mut summary = format!(
             "{} thesis(es) resolved, {} graded",
             scored.len(),
             learned.evaluations.len()
         );
+        if revision.produced > 0 || revision.upheld > 0 {
+            summary.push_str(&format!(
+                ", {} theory delta(s) proposed, {} veto(es) upheld",
+                revision.produced, revision.upheld
+            ));
+        }
         if ungradeable > 0 {
             summary.push_str(&format!(", {ungradeable} ungradeable"));
         }
@@ -22892,6 +23095,7 @@ impl Platform {
         // further without that routing. `Router::determine` returns a type that
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
+        self.begin_deliberate_close(&order);
         let subject = order.object_id.as_str().to_string();
         let conditions = self.pretrade_conditions(&subject);
         self.pretrade_routing = Some(
@@ -22986,6 +23190,53 @@ impl Platform {
                     .map(|reason| reason.describe())
                     .unwrap_or_else(|| "refused with no reason recorded".to_string()),
             ))
+        }
+    }
+
+    /// Record a sell that takes the whole long off the book as blueprint
+    /// §35.1's divestment: the position moves to `Unwinding` through
+    /// [`Portfolio::begin_unwind`] (R12-ASSET-1160).
+    ///
+    /// Before this, `begin_unwind` had no production caller, so a book being
+    /// sold down read as `Held` until the last lot closed, and the
+    /// Portfolio/Asset Brain's divestment count was zero on every book. A
+    /// trim is not this: a sell smaller than the long leaves the position
+    /// held, because §35.1 separates being closed deliberately from being
+    /// reduced.
+    ///
+    /// Run before the controls rule and before any fill exists, which is the
+    /// seam `begin_unwind` names. `Unwinding` records the desk's decision to
+    /// divest, so it stands if a control then refuses the order; the
+    /// refusal is on the record beside it. The lifecycle table has no
+    /// `Held -> Unwinding` edge, so the concern that caused the close (a
+    /// sizing that took the position to flat) is raised through
+    /// [`Portfolio::flag_position`] first. A register that will not move is
+    /// said on the cycle; it never stops the order.
+    fn begin_deliberate_close(&mut self, order: &Order) {
+        if !matches!(order.side, Side::Sell) {
+            return;
+        }
+        let long = self
+            .capital
+            .positions
+            .get(order.object_id.as_str())
+            .map_or(Decimal::ZERO, |lot| lot.quantity);
+        if !long.is_positive() || order.quantity < long {
+            return;
+        }
+        let id = ObjectId::from_string(order.object_id.as_str());
+        let moved = self
+            .asset_book
+            .flag_position(&id)
+            .and_then(|_| self.asset_book.begin_unwind(&id));
+        if let Err(error) = moved {
+            self.capture_problems.push(format!(
+                "selling {} of {} takes the position to flat and the lifecycle register could \
+                 not record the unwind: {}",
+                order.quantity,
+                order.object_id.as_str(),
+                error.message()
+            ));
         }
     }
 
@@ -24107,6 +24358,7 @@ impl Platform {
         }
         let mut catalogued = Vec::new();
         let mut catalogue_problems = Vec::new();
+        let mut entries = Vec::new();
         // The owner is validated once, as a `NamedOperator`, before any entry
         // is built (R12-DATA-2020). The configured default is the process's
         // own name, and a catalogue entry owned by a process names nobody who
@@ -24119,6 +24371,44 @@ impl Platform {
         for decision in &decisions {
             if !decision.is_registered() {
                 continue;
+            }
+            // The registry entry, read where the registration is made
+            // (R12-EXPAND-6055). The finder admits no source without a
+            // declared licence, so an entry whose licence cannot be named is
+            // a registry that disagrees with its own decision, and is
+            // recorded as a problem rather than catalogued.
+            match self.data_finder.registry().get(decision.source_id()) {
+                Some(registered) => {
+                    let entry = registered.entry();
+                    match entry.licence.license() {
+                        Some(license) => entries.push(SourceRegistryView {
+                            source_id: decision.source_id().to_string(),
+                            discovered_from: entry.provenance.discovered_from().to_string(),
+                            discovered_at: entry.provenance.discovered_at(),
+                            monthly_fee: entry.cost.monthly_fee(),
+                            licence: license.identifier().to_string(),
+                            freshness: entry.freshness,
+                            routing: entry.utility.class(),
+                            composite: entry.utility.composite(),
+                        }),
+                        None => {
+                            catalogue_problems.push(format!(
+                                "source.{}: registered with no declared licence in its registry \
+                                 entry; not catalogued",
+                                decision.source_id()
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    catalogue_problems.push(format!(
+                        "source.{}: the decision says registered and the registry holds no \
+                         entry under that id; not catalogued",
+                        decision.source_id()
+                    ));
+                    continue;
+                }
             }
             let operator = match &operator {
                 Ok(operator) => operator,
@@ -24149,6 +24439,7 @@ impl Platform {
             decisions,
             catalogued,
             catalogue_problems,
+            entries,
         })
     }
 
@@ -25622,10 +25913,18 @@ impl Platform {
                             error_bps,
                             Histogram::signed_basis_points,
                         );
-                        if let Err(error) = self
-                            .fill_calibration
-                            .observe(path.venue.as_str(), error_bps)
-                        {
+                        // R12-TICK-2080: the fill's share of the bar it filled
+                        // in, so the calibration can split the error between
+                        // spread and impact. Unknown — no order on the desk, no
+                        // bar covering the fill, a bar with no volume — leaves
+                        // the spread to take the whole error, as before, rather
+                        // than a participation nobody measured.
+                        let participation = self.fill_participation(&order_id, &path);
+                        if let Err(error) = self.fill_calibration.observe_with_participation(
+                            path.venue.as_str(),
+                            error_bps,
+                            participation,
+                        ) {
                             problems.push(format!("fill calibration: {}", error.message()));
                         }
                     }
@@ -25915,6 +26214,44 @@ impl Platform {
         self.tactical = Some(refresh);
     }
 
+    /// The share of its bar's volume a scored fill took (R12-TICK-2080): the
+    /// quantity the desk's order filled, or the cell's reported fill
+    /// quantity, over the volume of the held bar whose session covers the
+    /// decision instant. `None` when any of the three is unknown, so the
+    /// calibration charges the error to the spread alone rather than to a
+    /// size nobody measured. Money to statistic at the one place it happens
+    /// for this path: a participation is a ratio of two quantities.
+    fn fill_participation(&self, order_id: &OrderId, path: &FilledPath) -> Option<f64> {
+        let quantity = match &path.cell {
+            Some(origin) => origin.quantity,
+            None => self
+                .orders
+                .order(order_id)?
+                .fills
+                .iter()
+                .try_fold(Decimal::ZERO, |sum, fill| sum.checked_add(fill.quantity))?,
+        };
+        if quantity <= Decimal::ZERO {
+            return None;
+        }
+        let bars = self.bar_history.get(path.object_id.as_str())?;
+        let bar = bars
+            .iter()
+            .find(|bar| bar.open_time <= path.decided_at && path.decided_at < bar.close_time())
+            .or_else(|| {
+                bars.iter()
+                    .rev()
+                    .find(|bar| bar.close_time() <= path.decided_at)
+            })?;
+        if bar.volume <= Decimal::ZERO {
+            return None;
+        }
+        let participation = quantity.to_f64() / bar.volume.to_f64();
+        (0.0..=1.0)
+            .contains(&participation)
+            .then_some(participation)
+    }
+
     /// The twin's per-venue fill calibration, as the scored fills have moved
     /// it (R12-TICK-2080).
     pub fn fill_calibration(&self) -> &qip_twin::calibration::FillCalibration {
@@ -26020,6 +26357,28 @@ impl Platform {
     /// venue back takes two operators' signatures (ADR 0062).
     pub fn withdrawn_venues(&self) -> &BTreeSet<String> {
         &self.withdrawn_venues
+    }
+
+    /// The historical universe (R12-TICK-2090): membership as of any instant,
+    /// delistings and renamings effective at their ex-dates, and the venue
+    /// outages this platform's withdrawals caused. What a backtest judges a
+    /// strategy against, so a name delisted later is still in the universe
+    /// it traded in.
+    pub fn universe_history(&self) -> &UniverseHistory {
+        &self.universe_history
+    }
+
+    /// The adapter and lifecycle engine `object_id`'s desk position was
+    /// booked through, or `None` where the desk has never held it
+    /// (R12-ASSET-1015).
+    pub fn position_booking(
+        &self,
+        object_id: &str,
+    ) -> Option<(
+        crate::asset_class_registry::ClassAdapter,
+        crate::asset_class_registry::LifecycleEngine,
+    )> {
+        self.position_bookings.get(object_id).copied()
     }
 
     /// Every withdrawal record this kernel's review has written, oldest
@@ -26392,7 +26751,7 @@ impl Platform {
         let record = VenueWithdrawal::of(&cluster, self.cycle, now);
         match self.journal_once(record, VENUE_REVIEW_ORIGIN, now) {
             Ok(_) => {
-                self.withdraw_venue(&cluster.venue);
+                self.withdraw_venue(&cluster.venue, now);
                 (
                     Some(format!(
                         "venue {} withdrawn on feasibility evidence ({} of {} recent refusals, \
@@ -26419,10 +26778,23 @@ impl Platform {
     /// Withdraw `venue` at both seams. The one writer of the withdrawn set,
     /// called only after the record is in the log; the order manager
     /// refuses and the plane omits from the next call on.
-    fn withdraw_venue(&mut self, venue: &str) {
+    fn withdraw_venue(&mut self, venue: &str, now: Timestamp) {
         self.withdrawn_venues.insert(venue.to_string());
         self.orders.withdraw_venue(venue);
         self.central.withdraw_venue(venue);
+        // And the historical universe: the venue is out from now until a
+        // reinstatement says otherwise, so a backtest over this window does
+        // not fill through a venue the desk refused.
+        if let Err(error) = self.universe_history.open_outage(
+            venue,
+            now,
+            "withdrawn on feasibility evidence (venue review)",
+        ) {
+            self.capture_problems.push(format!(
+                "{venue} was withdrawn but the historical universe refused the outage: {}",
+                error.message()
+            ));
+        }
     }
 
     /// Sign a withdrawn venue's reinstatement, and put it back at both seams
@@ -26552,7 +26924,7 @@ impl Platform {
                 // by the next assembly.
                 self.journal_record(entry.clone(), VENUE_REINSTATEMENT_ORIGIN, now)?;
                 approval?;
-                self.reinstate_venue_at_seams(venue);
+                self.reinstate_venue_at_seams(venue, now);
                 Ok(entry)
             }
         }
@@ -26585,8 +26957,15 @@ impl Platform {
     /// is never resumed from the log — so the pardon there is a no-op, and
     /// the two callers are kept on one path rather than on two that could
     /// drift.
-    fn reinstate_venue_at_seams(&mut self, venue: &str) {
+    fn reinstate_venue_at_seams(&mut self, venue: &str, now: Timestamp) {
         self.withdrawn_venues.remove(venue);
+        if let Err(error) = self.universe_history.close_outage(venue, now) {
+            self.capture_problems.push(format!(
+                "{venue} was reinstated but the historical universe refused to close its \
+                 outage: {}",
+                error.message()
+            ));
+        }
         crate::venue_review::pardon(&mut self.feasibility_refusals, venue);
         self.orders.reinstate_venue(venue);
         self.central.reinstate_venue(venue);
@@ -27644,7 +28023,11 @@ fn signed_bps(price: f64, reference: f64, side: BookSide) -> Option<f64> {
 ///
 /// A buy lifts the offer and a sell hits the bid, so a buy is recorded against
 /// the ask. Written out rather than assumed, because getting it backwards would
-/// make every counterfactual price the opposite trade.
+/// make every counterfactual price the opposite trade — which is what happened
+/// until 2026-10-31, from the other end: this mapping was right and the twin's
+/// `ActualTrade::direction` read `Bid` as long, so every refused buy scored as
+/// a short. `a_declined_buy_on_a_rising_tape_is_scored_as_the_long_it_was` in
+/// `tests/learning.rs` holds the two ends together.
 const fn book_side(side: Side) -> BookSide {
     match side {
         Side::Buy => BookSide::Ask,

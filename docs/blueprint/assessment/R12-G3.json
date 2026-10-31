@@ -10,7 +10,7 @@
       "infrastructure/terraform/modules/resource-hierarchy/main.tf",
       "infrastructure/terraform/modules/resource-hierarchy/tests/hierarchy.tftest.hcl"
     ],
-    "gap": "2026-10-24 (lane L6): the folder and per-plane project split now exists as an uninstantiated module (resource-hierarchy: a folder per environment, a project per plane, ids distinct across environments by construction and refused at plan if two planes collide); it outputs nothing a binary reads, so the hierarchy is not a runtime dependency. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. ADR 0118's one project per environment stands, and the per-plane clause is not reworded away. The plane split is created only under an organisation and billing account the owner holds, and only after dev serves from its one project. Moving resources into plane projects then gets its own ADR amending 0118. Until then the resource-hierarchy module stays unused by any root and the row stays PARTIAL. Closes on: When the owner supplies an organisation id to scripts/bootstrap-foundation.sh, wire modules/resource-hierarchy into infrastructure/foundation under an ADR amending 0118. Then migrate one plane at a time, with a real plan for each. Earlier: 2026-10-24 (lane L6): the folder and per-plane project split now exists as an uninstantiated module (resource-hierarchy: a folder per environment, a project per plane, ids distinct across environments by construction and refused at plan if two planes collide); it outputs nothing a binary reads, so the hierarchy is not a runtime dependency. Not instantiated anywhere: the hierarchy needs an organisation (the repository creates no organisation resource, modules/scc), a billing account and an owner's apply; wiring it into a root is a protected change; and no resource has been moved into a plane's project — every environment is still one project holding every plane, so 'holding only the listed resources' is unmet. No real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -21,7 +21,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure every_environment_names_a_project_of_its_own",
     "work_item": "",
     "size": "M",
-    "notes": "Blueprint wants per-plane blast-radius isolation; the repo isolates per environment only. 2026-10-24 lane L6: Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused."
+    "notes": "Blueprint wants per-plane blast-radius isolation; the repo isolates per environment only. 2026-10-24 lane L6: Scratch copy, terraform 1.9.8: modules/resource-hierarchy 'Success! 3 passed, 0 failed.' Mutations, restored by cp and cmp: the 30-character id check loosened to 300 failed an_id_longer_than_google_allows_is_refused; dropping dev's ledger project failed every_environment_gets_the_same_planes_as_their_own_projects (the prod/dev plane-set equality); the prod requirement weakened failed a_hierarchy_without_production_is_refused. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): ADR 0118's one project per environment stands, and the per-plane clause is not reworded away."
   },
   {
     "id": "R12-SEC-10002",
@@ -107,7 +107,7 @@
     "verification": "terraform plan shows google_cloud_asset_project_feed",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): The feed exists, so the row's 'no cloud_asset resource' is out of date. What is missing is the plan assertion the requirement names, so a lane adds it and corrects the text. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it."
   },
   {
     "id": "R12-SEC-10006",
@@ -220,7 +220,7 @@
     "verification": "terraform test modules/connectivity",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): No circuit is ordered: a partner contract is a term and a monthly charge for cells that run in shadow in one region, and I am not buying it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-GCP-10011",
@@ -592,7 +592,7 @@
     "verification": "terraform test for modules/event-fabric-broker asserting hyperdisk journal",
     "work_item": "",
     "size": "M",
-    "notes": "fabric_085 acceptance test asserts fixtures it builds itself, not Terraform."
+    "notes": "fabric_085 acceptance test asserts fixtures it builds itself, not Terraform. Owner ruling 2026-10-31 (IMPLEMENT): The module is instantiated and already refuses a non-Hyperdisk journal, so the gap's 'instantiate' is stale. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-FABRIC-10027",
@@ -784,7 +784,7 @@
       "infrastructure/terraform/modules/data/main.tf:322 google_bigtable_instance timeseries (count enable_bigtable)",
       "infrastructure/environments/dev/terraform.tfvars:282 enable_bigtable = false"
     ],
-    "gap": "2026-10-24 (re-read against the tree): google_bigtable_instance.timeseries (two autoscaling clusters, replication justified in a comment) is declared but enable_bigtable=false in all four envs, so no plan; no rebuild job from GCS/fabric and no Rust Bigtable client exist (provider refuses StorageTarget::Bigtable for want of a gRPC stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable). Needs a Bigtable store ADR, a gRPC/protobuf dependency ADR or REST alternative, a rebuild job, a tfvar flip, and a plan.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Bigtable stays declined, as decision 5 of 2026-10-25 says. At the two-cluster floor it bills about $950-$1,300 a month for an empty instance, because no client, rebuild job or dependency record exists. It reopens only through an ADR that states a measured need, a monthly ceiling and the client it uses. The row stays PARTIAL. Closes on: Write decision 5 and the $950-$1,300 a month floor into the gap. The row reopens only through an ADR that admits Bigtable under ADR 0101 C4, with a measured need and a ceiling, plus a client dependency ADR under ADR 0109. The rebuild job, the tfvar flip and a real plan follow those records. Earlier: 2026-10-24 (re-read against the tree): google_bigtable_instance.timeseries (two autoscaling clusters, replication justified in a comment) is declared but enable_bigtable=false in all four envs, so no plan; no rebuild job from GCS/fabric and no Rust Bigtable client exist (provider refuses StorageTarget::Bigtable for want of a gRPC stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable). Needs a Bigtable store ADR, a gRPC/protobuf dependency ADR or REST alternative, a rebuild job, a tfvar flip, and a plan.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -797,7 +797,7 @@
     "verification": "terraform plan; sink integration test",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Line refs stale: the instance now carries a second cluster and app profiles in modules/data/main.tf; enable_bigtable in dev tfvars is at ~line 342."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Line refs stale: the instance now carries a second cluster and app profiles in modules/data/main.tf; enable_bigtable in dev tfvars is at ~line 342. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Bigtable stays declined, as decision 5 of 2026-10-25 says. At the two-cluster floor it bills about $950-$1,300 a month for an empty instance, because no client, rebuild job or dependency record exists."
   },
   {
     "id": "R12-DATA-10036",
@@ -826,7 +826,7 @@
     "status": "MISSING",
     "current": "No Dataplex/Knowledge Catalog resource.",
     "evidence": [],
-    "gap": "2026-10-24 (re-read against the tree): No Knowledge Catalog/Dataplex resource (google_dataplex_*) anywhere under infrastructure/terraform, and no catalog, lineage or quality registration in code. ADR 0101 row C4 lists Knowledge Catalog among stores needing their own storage record, so this needs an ADR/owner decision, a managed service in Terraform, and a real plan.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Knowledge Catalog stays declined under decision 5. It is a billed managed service, with no storage record under ADR 0101 C4 and no priced ceiling, so nothing is declared in Terraform. The row stays MISSING until an ADR states the need, the scope and a monthly ceiling. Closes on: Record decision 5 in the gap. The row reopens only through an ADR that admits Knowledge Catalog with a measured need, its scope and a monthly ceiling. A gated module resource, lineage registration and a real plan follow that ADR. Earlier: 2026-10-24 (re-read against the tree): No Knowledge Catalog/Dataplex resource (google_dataplex_*) anywhere under infrastructure/terraform, and no catalog, lineage or quality registration in code. ADR 0101 row C4 lists Knowledge Catalog among stores needing their own storage record, so this needs an ADR/owner decision, a managed service in Terraform, and a real plan.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -840,7 +840,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Knowledge Catalog stays declined under decision 5. It is a billed managed service, with no storage record under ADR 0101 C4 and no priced ceiling, so nothing is declared in Terraform."
   },
   {
     "id": "R12-DATA-10038",
@@ -936,7 +936,7 @@
     "evidence": [
       "backend/crates/services/qip-world-model/src/graph.rs in-memory graph"
     ],
-    "gap": "Graph store and writer.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Declined for now under decision 5 and ADR 0191. Promoted world knowledge stays in the central brains, rebuilt from the event log, which already keeps graph load off the ledger. Spanner Graph is reopened by an ADR that states measured graph query load and a monthly ceiling, after the deploy. Closes on: After the deploy, an ADR states the measured graph load and a monthly ceiling and admits the store and its client crate. Then a Terraform module for a graph database separate from the ledger, an evidence-worker writer with its integration test, and a reviewed plan. The row stays MISSING until then. Earlier: Graph store and writer.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -949,7 +949,7 @@
     "verification": "terraform plan + world-model writer integration test",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Declined for now under decision 5 and ADR 0191. Promoted world knowledge stays in the central brains, rebuilt from the event log, which already keeps graph load off the ledger."
   },
   {
     "id": "R12-MODEL-10043",
@@ -1118,7 +1118,7 @@
       "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names",
       "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names (ten files since 2026-10-24)"
     ],
-    "gap": "2026-10-24 (lane L6): allow lists now also pin the CI and infra deploy identities (modules/cicd/main.tf), the build pool, the image bake, the GitOps control plane, the artefact signers including the model-pack publisher (artefact-signing.tf) and the research fleet worker (infrastructure/fleet/main.tf); the console and landing run as Cloud Run workloads and were already under the cloudrun module's list. Still open: (1) a list is a per-file ceiling, so where one file declares two accounts (cicd: CI and infra) the test bounds their union, not each; (2) nothing measures that each held role is used (a pinned list is a ceiling, not a use measurement), so 'only the grants it uses' is unproven: that needs IAM Recommender or audit-log evidence from a deployed project; (3) the infra identity's list is admin-wide by design, since it applies the whole root.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Split the cicd ceiling now so CI and infra are each bounded on their own; that is a tightening a lane can land today. 'Only the grants it uses' is a measurement, and it waits on IAM Recommender findings from a deployed project, committed per account. Closes on: Key the cicd allow list per google_service_account (ci, infra) in workload_identity.rs, with a mutation per account. After a deploy, commit IAM Recommender findings per account and remove any unused role. Earlier: 2026-10-24 (lane L6): allow lists now also pin the CI and infra deploy identities (modules/cicd/main.tf), the build pool, the image bake, the GitOps control plane, the artefact signers including the model-pack publisher (artefact-signing.tf) and the research fleet worker (infrastructure/fleet/main.tf); the console and landing run as Cloud Run workloads and were already under the cloudrun module's list. Still open: (1) a list is a per-file ceiling, so where one file declares two accounts (cicd: CI and infra) the test bounds their union, not each; (2) nothing measures that each held role is used (a pinned list is a ceiling, not a use measurement), so 'only the grants it uses' is unproven: that needs IAM Recommender or audit-log evidence from a deployed project; (3) the infra identity's list is admin-wide by design, since it applies the whole root.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1129,7 +1129,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity",
     "work_item": "",
     "size": "S",
-    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file. 2026-10-24 lane L6: six allow lists added. Mutation: a roles/iam.serviceAccountKeyAdmin binding appended to modules/cicd/main.tf failed every_workload_identity_holds_only_the_roles_its_allow_list_names naming the file and role; restored by cp and cmp, 'test result: ok. 4 passed'. Stays PARTIAL."
+    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file. 2026-10-24 lane L6: six allow lists added. Mutation: a roles/iam.serviceAccountKeyAdmin binding appended to modules/cicd/main.tf failed every_workload_identity_holds_only_the_roles_its_allow_list_names naming the file and role; restored by cp and cmp, 'test result: ok. 4 passed'. Stays PARTIAL. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Split the cicd ceiling now so CI and infra are each bounded on their own; that is a tightening a lane can land today."
   },
   {
     "id": "R12-SEC-10051",
@@ -1205,7 +1205,7 @@
       "infrastructure/terraform/security.tf google_privateca_ca_pool.internal",
       "infrastructure/terraform/tests/security.tftest.hcl every_security_service_plans_when_named_soundly, a_workload_certificate_living_longer_than_a_day_is_refused"
     ],
-    "gap": "2026-10-25 (lane L6): no patch written. The closure is setting certificate_authority in dev tfvars (protected) and running a real plan, and CA Service is billed infrastructure, which owner-decisions-2026-10-25 decision 5 declines for now; it stays PARTIAL until the owner enables it. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): the CA pool exists in code and is off everywhere (certificate_authority = null; enabling it is an infrastructure/environments/** change, protected, and costs money). No Fabric broker, client or VM requests or presents a certificate from it: the event-fabric protocol still authenticates by the in-tree identity table over plaintext TCP, and no composition root reads the pool's trust roots. Closing needs the tfvar flip with a real plan, and the mTLS terminator on the Fabric hop (ADR 0112 Amendment 1, R12-SEC-10031).",
+    "gap": "2026-10-31 owner ruling (FUND_THEN_DEPLOY), missing: a funded resource at about USD 250 a month (cost_usd_month 250), then deployment evidence. Fund the CA Service pool at the billed plan's $200-$250 a month. The one execution node I asked for cannot start without it, and fabricd and qip-tls already request from it. It goes on with dev's billing, and the row stays PARTIAL until a deployed broker and client present certificates from the pool. Closes on: After billing is on, the owner sets certificate_authority = { location = \"us-east4\", organization = \"algorik-qip\" } in dev tfvars (protected) with a real plan. Then deploy the execution node and fabricd with QIP_TLS_MODE=cas and commit the issued-leaf evidence. Earlier: 2026-10-25 (lane L6): no patch written. The closure is setting certificate_authority in dev tfvars (protected) and running a real plan, and CA Service is billed infrastructure, which owner-decisions-2026-10-25 decision 5 declines for now; it stays PARTIAL until the owner enables it. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): the CA pool exists in code and is off everywhere (certificate_authority = null; enabling it is an infrastructure/environments/** change, protected, and costs money). No Fabric broker, client or VM requests or presents a certificate from it: the event-fabric protocol still authenticates by the in-tree identity table over plaintext TCP, and no composition root reads the pool's trust roots. Closing needs the tfvar flip with a real plan, and the mTLS terminator on the Fabric hop (ADR 0112 Amendment 1, R12-SEC-10031).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1216,7 +1216,7 @@
     "verification": "scratch copy of infrastructure/ and data/datasets: terraform init -backend=false && terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL, the row predated security.tf. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation doubling the hour-to-seconds factor of cas_maximum_lifetime (security.tf:32) failed every_security_service_plans_when_named_soundly and a_workload_certificate_lifetime_of_hours_is_admitted; restored (cmp), 13 passed."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL, the row predated security.tf. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation doubling the hour-to-seconds factor of cas_maximum_lifetime (security.tf:32) failed every_security_service_plans_when_named_soundly and a_workload_certificate_lifetime_of_hours_is_admitted; restored (cmp), 13 passed. Owner ruling 2026-10-31 (FUND_THEN_DEPLOY): Fund the CA Service pool at the billed plan's $200-$250 a month. The one execution node I asked for cannot start without it, and fabricd and qip-tls already request from it."
   },
   {
     "id": "R12-SEC-10055",
@@ -1226,7 +1226,7 @@
       "infrastructure/terraform/security.tf google_access_context_manager_service_perimeter.data",
       "infrastructure/terraform/tests/security.tftest.hcl a_perimeter_restricting_nothing_is_refused, every_security_service_plans_when_named_soundly"
     ],
-    "gap": "2026-10-25 (lane L6): no patch written. The closure needs the organisation's access-policy number, which only the owner holds, set in vpc_service_controls in dev tfvars (protected) with a dry-run then a real plan; it stays PARTIAL on that owner input and on the billing pause. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere. Enabling needs the organisation's access policy number and an infrastructure/environments/** change (protected) with a real plan; Artifact Registry is deliberately left out of the default list pending an egress rule for cross-project promotion (security.tf comment).",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. The perimeter goes on in dry run first, then enforced, as soon as the organisation's access-policy number is supplied. It costs nothing, and that number is the only thing missing. Artifact Registry stays outside the perimeter until an egress rule naming only the CI identity and the promotion project is written and tested. Closes on: Once the owner supplies the access-policy number, set vpc_service_controls with dry run in dev tfvars and plan, then enforce. Separately, add the Artifact Registry egress rule with a tftest before adding artifactregistry.googleapis.com to restricted_services. Earlier: 2026-10-25 (lane L6): no patch written. The closure needs the organisation's access-policy number, which only the owner holds, set in vpc_service_controls in dev tfvars (protected) with a dry-run then a real plan; it stays PARTIAL on that owner input and on the billing pause. Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere. Enabling needs the organisation's access policy number and an infrastructure/environments/** change (protected) with a real plan; Artifact Registry is deliberately left out of the default list pending an egress rule for cross-project promotion (security.tf comment).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1237,7 +1237,7 @@
     "verification": "scratch copy: terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation deleting spanner.googleapis.com from the default restricted_services (variables.tf:2013) failed every_security_service_plans_when_named_soundly ('12 passed, 1 failed'); restored (cmp), 13 passed."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation deleting spanner.googleapis.com from the default restricted_services (variables.tf:2013) failed every_security_service_plans_when_named_soundly ('12 passed, 1 failed'); restored (cmp), 13 passed. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): The perimeter goes on in dry run first, then enforced, as soon as the organisation's access-policy number is supplied."
   },
   {
     "id": "R12-SEC-10056",
@@ -1247,7 +1247,7 @@
       "infrastructure/terraform/security.tf google_data_loss_prevention_discovery_config.lake",
       "infrastructure/terraform/tests/security.tftest.hcl a_discovery_scan_for_nothing_is_refused"
     ],
-    "gap": "2026-10-25 (lane L6): blocked on a conflict with a standing guard. The code half (a CMEK BigQuery copy of the workload logs, named by the discovery config) was built and then reverted, because manifest_wiring's OBS-020 guard (every_workload_identity_may_write_to_cloud_logging_in_its_own_project_and_no_sink_routes_logs_elsewhere) refuses any sink that routes logs out of Cloud Logging, and SDP cannot scan Cloud Logging buckets. The owner decides: an ADR admitting one SDP-only sink beside OBS-020, or another way to scan the logs. Also off in every environment (protected tfvars, billed). Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere; enabling it is an infrastructure/environments/** change (protected) that bills, and needs a real plan. Logs are not inspected: the requirement names stores and logs, and the discovery config covers BigQuery and Cloud Storage only (log redaction would need a log sink into one of them or a Logging exclusion/redaction, neither declared).",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. OBS-020 stands and no exception is admitted. A sink that copies the platform's logs into BigQuery so a scanner can read them puts the same sensitive data in a second place, which is the leak this row exists to prevent. Sensitive Data Protection keeps covering the stores its discovery config names. The logs half of the requirement stays unmet and is written down as unmet, not redefined. The stores half is switched on only when its scanning cost is named and funded, after the dev deploy. Closes on: No code. Record in the gap that the logs half is unmet by decision (OBS-020 kept, no SDP sink) and that the stores half waits on a named monthly DLP-discovery cost, the owner setting sensitive_data_protection = {} in the protected tfvars, and deployment evidence of a discovery run. The row stays PARTIAL. Earlier: 2026-10-25 (lane L6): blocked on a conflict with a standing guard. The code half (a CMEK BigQuery copy of the workload logs, named by the discovery config) was built and then reverted, because manifest_wiring's OBS-020 guard (every_workload_identity_may_write_to_cloud_logging_in_its_own_project_and_no_sink_routes_logs_elsewhere) refuses any sink that routes logs out of Cloud Logging, and SDP cannot scan Cloud Logging buckets. The owner decides: an ADR admitting one SDP-only sink beside OBS-020, or another way to scan the logs. Also off in every environment (protected tfvars, billed). Earlier: 2026-10-24 (lane L6, row was stale at MISSING): declared and off everywhere; enabling it is an infrastructure/environments/** change (protected) that bills, and needs a real plan. Logs are not inspected: the requirement names stores and logs, and the discovery config covers BigQuery and Cloud Storage only (log redaction would need a log sink into one of them or a Logging exclusion/redaction, neither declared).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1258,7 +1258,7 @@
     "verification": "scratch copy: terraform test -filter=tests/security.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation setting the discovery config's status to PAUSED (security.tf:468) failed every_security_service_plans_when_named_soundly; restored (cmp), 13 passed. 2026-10-25 lane L6 (delegated agent, cherry-picked): mutations in a scratch copy: sink ungated failed no_log_copy_exists_while_sensitive_data_protection_is_off; destination pointed at the research dataset, delete permission added to the writer role, and the discovery regex pointed elsewhere each failed the sdp-on run. Agent's acceptance: infrastructure 161, security 29, security_controls 12, terraform_contract 12, terraform_plan 13, identity_separation 5, data_infrastructure_guards 8 passed, 0 failed. 2026-10-25 lane L6: the sink (db60f078) was reverted after the whole acceptance suite failed OBS-020's guard on it; the agent had run only the suites it judged relevant."
+    "notes": "2026-10-24 lane L6: MISSING->PARTIAL. Harness: in a scratch copy (terraform 1.9.8, sha256 checked against SHA256SUMS), terraform test -filter=tests/security.tftest.hcl 'Success! 13 passed, 0 failed.'; mutation setting the discovery config's status to PAUSED (security.tf:468) failed every_security_service_plans_when_named_soundly; restored (cmp), 13 passed. 2026-10-25 lane L6 (delegated agent, cherry-picked): mutations in a scratch copy: sink ungated failed no_log_copy_exists_while_sensitive_data_protection_is_off; destination pointed at the research dataset, delete permission added to the writer role, and the discovery regex pointed elsewhere each failed the sdp-on run. Agent's acceptance: infrastructure 161, security 29, security_controls 12, terraform_contract 12, terraform_plan 13, identity_separation 5, data_infrastructure_guards 8 passed, 0 failed. 2026-10-25 lane L6: the sink (db60f078) was reverted after the whole acceptance suite failed OBS-020's guard on it; the agent had run only the suites it judged relevant. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): OBS-020 stands and no exception is admitted. A sink that copies the platform's logs into BigQuery so a scanner can read them puts the same sensitive data in a second place, which is the leak this row exists to prevent."
   },
   {
     "id": "R12-OBS-10057",
@@ -1327,7 +1327,7 @@
     "verification": "integration test exporting a span",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: read-only correction of a stale row; no code change."
+    "notes": "2026-10-24 lane L6: read-only correction of a stale row; no code change. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The requirement names Cloud Trace, and the text stands. Request spans go to Cloud Trace from the process, the way ADR 0121 sends metrics to Cloud Monitoring. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Request spans are pushed to Cloud Trace from the process as ADR 0121 pushes metrics, and the OpenObserve trace route stays unset."
   },
   {
     "id": "R12-GCP-10060",
@@ -1338,7 +1338,7 @@
       "infrastructure/terraform/modules/connectivity-tests/variables.tf",
       "infrastructure/terraform/modules/connectivity-tests/tests/connectivity_tests.tftest.hcl"
     ],
-    "gap": "2026-10-24 (lane L6, MISSING->PARTIAL): the module exists and is tested but is not instantiated from the root (a root variable is a change to infrastructure/terraform/variables.tf, protected) and no environment names a path; the key paths (execution node to venue and to the internet, API to ledger, broker to archive) need the deployed instances' self-links, which do not exist while no node or broker is deployed. No real plan.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Connectivity Tests are declared for paths that exist, not for paths we hope to have. The module stays as built. The root instantiates it from existing module outputs, with no new root variable, once an execution node or broker is deployed. The row stays PARTIAL until a dev plan shows an intended path and a forbidden path between real instances. Closes on: After a node or broker is deployed, add module \"connectivity_tests\" to infrastructure/terraform/main.tf with tests derived from module outputs: node to venue reachable, node to internet unreachable, API to ledger, broker to archive. The map is empty while none exists, and the dev plan that shows them is recorded. Earlier: 2026-10-24 (lane L6, MISSING->PARTIAL): the module exists and is tested but is not instantiated from the root (a root variable is a change to infrastructure/terraform/variables.tf, protected) and no environment names a path; the key paths (execution node to venue and to the internet, API to ledger, broker to archive) need the deployed instances' self-links, which do not exist while no node or broker is deployed. No real plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1349,7 +1349,7 @@
     "verification": "scratch copy: cd infrastructure/terraform/modules/connectivity-tests && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-24 lane L6: terraform 1.9.8 in a scratch copy 'Success! 4 passed, 0 failed.' Mutation: the at-least-one-forbidden-path validation weakened to `length(var.tests) >= 0` failed a_suite_of_only_intended_paths_is_refused ('Missing expected failure'); restored by cp and cmp, 4 passed."
+    "notes": "2026-10-24 lane L6: terraform 1.9.8 in a scratch copy 'Success! 4 passed, 0 failed.' Mutation: the at-least-one-forbidden-path validation weakened to `length(var.tests) >= 0` failed a_suite_of_only_intended_paths_is_refused ('Missing expected failure'); restored by cp and cmp, 4 passed. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Connectivity Tests are declared for paths that exist, not for paths we hope to have."
   },
   {
     "id": "R12-ARCH-10061",
@@ -1455,7 +1455,7 @@
     "status": "BLOCKED",
     "current": "No GPU capacity; no GKE workload clusters.",
     "evidence": [],
-    "gap": "GPU node pools are refused (ADR 0114 D4); accelerators are placed as Vertex AI custom jobs (ADR 0122) and only for an experiment that measures a need.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Declined: ADR 0114 D4 refuses a GPU pool on GKE, and I decline a Vertex accelerator (decision 5). Neither comes until an experiment measures a need and an ADR names its monthly ceiling; the row stays BLOCKED and nothing is deployed for it. Closes on: Nothing to build or deploy. The row reopens only through an ADR that cites a measured accelerator consumer and a monthly ceiling, after the paper deploy. Earlier: GPU node pools are refused (ADR 0114 D4); accelerators are placed as Vertex AI custom jobs (ADR 0122) and only for an experiment that measures a need.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1466,7 +1466,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Declined: ADR 0114 D4 refuses a GPU pool on GKE, and I decline a Vertex accelerator (decision 5)."
   },
   {
     "id": "R12-QUANT-10066",
@@ -1491,7 +1491,7 @@
     "status": "MISSING",
     "current": "No batch pool or Cloud Run Job for solvers.",
     "evidence": [],
-    "gap": "Job pool + queue.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Declined for now under decision 5. The in-tree solver runs in-process within ADR 0150's bounds, and no measured queue exists to scale a pool by. A Spot job pool is reopened by an ADR that states a measured queue depth and a monthly ceiling, and only after the deploy, which is the cost taken first. Closes on: After the deploy, an ADR states a measured solver/simulation queue depth and a monthly ceiling. Then add a Terraform job-pool module with Spot and queue-depth scaling, and a reviewed plan showing it. The row stays MISSING until then. Earlier: Job pool + queue.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1502,7 +1502,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Declined for now under decision 5. The in-tree solver runs in-process within ADR 0150's bounds, and no measured queue exists to scale a pool by."
   },
   {
     "id": "R12-QUANT-10068",
@@ -1783,7 +1783,7 @@
     "status": "MISSING",
     "current": "No Bigtable writer in the workspace; Bigtable is gated off.",
     "evidence": [],
-    "gap": "2026-10-24 (re-read against the tree): No Bigtable writer or fabric sink exists: StorageTarget::Bigtable is refused in qip-storage/src/provider.rs for want of a gRPC/HTTP2/protobuf stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable. Needs a Bigtable store ADR plus a new-dependency ADR (NEW_DEPENDENCY), a running fabricd (event_fabric_broker null everywhere), and enable_bigtable flipped and applied. The ingest app profile it would write through is declared.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. This is declined with Bigtable under decision 5. No fabric sink is written against a store no ADR admits, through a client ADR 0109 does not admit. The row stays MISSING until both records exist and the instance is deployed. Closes on: This depends on R12-DATA-10035's reopening ADR and a client dependency ADR. A fabricd sink then writes the stream into Bigtable through the ingest profile. It gets an integration test that rows appear, and a plan with enable_bigtable and event_fabric_broker set. Earlier: 2026-10-24 (re-read against the tree): No Bigtable writer or fabric sink exists: StorageTarget::Bigtable is refused in qip-storage/src/provider.rs for want of a gRPC/HTTP2/protobuf stack, ADR 0109 does not admit prost, ADR 0113 §1 does not admit Bigtable. Needs a Bigtable store ADR plus a new-dependency ADR (NEW_DEPENDENCY), a running fabricd (event_fabric_broker null everywhere), and enable_bigtable flipped and applied. The ingest app profile it would write through is declared.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1796,7 +1796,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): This is declined with Bigtable under decision 5. No fabric sink is written against a store no ADR admits, through a client ADR 0109 does not admit."
   },
   {
     "id": "R12-DATA-10081",
@@ -1879,7 +1879,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack"
     ],
-    "gap": "No publisher exists: nothing in the tree writes a ModelPack to a registry. Three things are missing and none is a kernel change. (1) A pack repository: modules/registry declares DOCKER (qip-<env>), GENERIC qip-rust-<env> and GENERIC qip-deployments-<env>, none for model packs, and a new repository is a billed Artifact Registry resource. (2) A publish step authenticated by workload identity in a workflow, which is a protected path (.github/**). (3) The prerequisite R12-CICD-10046 (replica/local-copy guarantee) is itself PARTIAL. The kernel side (ModelPack digest, signature, rollback parent, promotion journal by digest) is complete. Corrected 2026-10-24.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. No new repository is bought for packs. A signed pack is uploaded to the existing GENERIC qip-deployments-<env> by model-pack-publish.yml under its workload identity, after the two-person signature and never before. The row stays PARTIAL until a pack is read back from a live registry. Closes on: Write docs/blueprint/lanes/l2-model-pack-upload.patch. It adds an upload step that pushes the signed pack to qip-deployments-<env> in model-pack-publish.yml. Grant the qip-publish identity writer on that one repository in modules/registry. After the owner applies the patch and billing is enabled, close on a published pack's digest read back from the registry. Depends on R12-CICD-10046. Earlier: No publisher exists: nothing in the tree writes a ModelPack to a registry. Three things are missing and none is a kernel change. (1) A pack repository: modules/registry declares DOCKER (qip-<env>), GENERIC qip-rust-<env> and GENERIC qip-deployments-<env>, none for model packs, and a new repository is a billed Artifact Registry resource. (2) A publish step authenticated by workload identity in a workflow, which is a protected path (.github/**). (3) The prerequisite R12-CICD-10046 (replica/local-copy guarantee) is itself PARTIAL. The kernel side (ModelPack digest, signature, rollback parent, promotion journal by digest) is complete. Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1893,7 +1893,7 @@
     "verification": "integration test publishing a pack",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): No new repository is bought for packs. A signed pack is uploaded to the existing GENERIC qip-deployments-<env> by model-pack-publish.yml under its workload identity, after the two-person signature and never before."
   },
   {
     "id": "R12-REFLEX-10085",
@@ -2113,11 +2113,14 @@
     "status": "PARTIAL",
     "current": "The research loop bids only the desk's items (Question, Simulation, DataSource, Model); a grant starts the item, is measured next sweep, and agent compute is bounded by agent_budgets in the market and the manifest Budget in the run. No agent bid exists and no grant raises a ceiling, by decision (ADR 0158 decisions 1-2).",
     "evidence": [
+      "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::allocate_within",
+      "backend/crates/services/qip-expansion/tests/meta.rs:57 the_next_unit_goes_to_the_work_with_the_higher_marginal_value_per_cost",
+      "backend/crates/services/qip-expansion/tests/meta.rs:102 every_allocation_records_the_expected_value_it_was_granted_on",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:547 a_research_round_journals_the_agent_budgets_and_model_weights_it_allocated_on (asserts grant.expected_bp > 0 and agent_budgets.is_empty())",
       "backend/crates/apps/qip-deepbrain/src/research.rs::work_kind",
-      "backend/crates/apps/qip-deepbrain/src/research.rs::tests::the_bids_the_research_loop_makes_are_only_of_kinds_that_change_a_named_budget",
-      "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::allocate_within"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:3471 run_market sets (ComputeResourceType::Tpu, Decimal::ZERO); :427 qpu_per_sweep defaults to Decimal::ZERO"
     ],
-    "gap": "2026-10-24: requirement names CPU/GPU/TPU/QPU and agent budgets allocated by expected value; by default only CPU/GPU are allocated (TPU literal zero, QPU zero, agent_budgets empty, no agent bid exists), and the named test pins which bid kinds exist, not that an allocation is justified by an expected-value term",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): TPU stays the literal zero and no agent bid is made, by decision (ADR 0158 decisions 2 and 5; owner decision 5 of 2026-10-25): a budget nothing can spend is a billed commitment for nothing, and a zero grant where no consumer exists is the requirement's 'only where expected value justifies the cost' holding. The market prices every bid by marginal value per cost (qip-expansion meta.rs::MetaIntelligence::allocate_within), and the verification now names the tests that prove a grant carries its expected value and is recorded, which the earlier bid-kinds test (AUDIT-2's objection) did not. TPU, QPU and agent budgets stay zero by decision. An independent grader regrades the status; this regrade does not award COMPLETE. Earlier: 2026-10-24: requirement names CPU/GPU/TPU/QPU and agent budgets allocated by expected value; by default only CPU/GPU are allocated (TPU literal zero, QPU zero, agent_budgets empty, no agent bid exists), and the named test pins which bid kinds exist, not that an allocation is justified by an expected-value term",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2125,10 +2128,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-deepbrain --lib the_bids_the_research_loop",
+    "verification": "cargo test -p qip-expansion --test meta the_next_unit_goes_to_the_work_with_the_higher_marginal_value_per_cost every_allocation_records_the_expected_value_it_was_granted_on; cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_research_round_journals_the_agent_budgets_and_model_weights_it_allocated_on",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed per ADR 0158 d1-2 (test-only). Mutation fired: mapping TaskKind::Experiment to WorkKind::Agent in work_kind failed the test (bid set {Question, Agent, Simulation, DataSource} != the four named-budget kinds). The TPU budget is the literal zero and is the owner's. AUDIT-2 2026-10-24: regraded, requirement names CPU/GPU/TPU/QPU and agent budgets allocated by expected value; by default only CPU/GPU are allocated (TPU literal zero, QPU zero, agent_budgets empty, no agent bid exists), and the named test pins which bid kinds exist, not that an allocation is justified by an expected-value term"
+    "notes": "2026-10-24 lane T6-MODEL-AGENTS: closed per ADR 0158 d1-2 (test-only). Mutation fired: mapping TaskKind::Experiment to WorkKind::Agent in work_kind failed the test (bid set {Question, Agent, Simulation, DataSource} != the four named-budget kinds). The TPU budget is the literal zero and is the owner's. AUDIT-2 2026-10-24: regraded, requirement names CPU/GPU/TPU/QPU and agent budgets allocated by expected value; by default only CPU/GPU are allocated (TPU literal zero, QPU zero, agent_budgets empty, no agent bid exists), and the named test pins which bid kinds exist, not that an allocation is justified by an expected-value term Owner ruling 2026-10-31 (REGRADE_TEXT): TPU stays the literal zero and no agent bid is made: a budget nothing can spend is a billed commitment for nothing (ADR 0158 decisions 2 and 5, my decision 5)."
   },
   {
     "id": "R12-QUANT-10095",
@@ -2288,12 +2291,19 @@
   {
     "id": "R12-FABRIC-10102",
     "status": "PARTIAL",
-    "current": "qip-edge-node main constructs SpoolWriter, Drain and relay; every journal entry reaches P2 and every outcome P1 (outbox test). Evidence text 'outbox not constructed by main.rs' is stale. Ticks are count-only (Ingested) or in the tape/lake; no feature snapshot record.",
+    "current": "qip-edge-node main constructs SpoolWriter, Drain and relay; every journal entry reaches P2 and every outcome P1 (outbox test). Since 2026-10-31 (ADR 0132 decision 4) every turn that runs a pass also records one `FeatureDigest` P2 record (`reflex.feature_digested`, schema version 1, locked in schemas.lock.json and inventoried in consumers.lock.json; admitted on reflex-journal.local in both committed catalogues): per instrument the cell registered features for, the feature values the pass evaluated and the revision each was computed at (`WorkReport::features`, the vector `Cell::work` sized against), with the feed's messages counted and the applied tape events counted, ranged and digested over their source hashes. Ticks are counted, never shipped. The record is bounded by the registered instruments, not by market activity: `Scheduler::feature_digest` groups the evaluated vector by subject, so a busy pass and a quiet one write the same shape.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open; :1095 Drain::open",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:330 every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
+      "backend/crates/libs/qip-contracts/src/replay.rs FeatureDigest, InstrumentDigest, FeatureReading",
+      "backend/crates/libs/qip-events/src/topic.rs Topic::ReflexFeatureDigested; bindings.rs REFLEX_FEATURE_DIGESTED; message_routing.rs",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs Scheduler::feature_digest (built every turn that ran a pass, handed over in PassInputs)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs SpoolWriter::pass (RecordKind::FeatureDigested on P2), feature_digest",
+      "backend/crates/edge/qip-edge/src/cell.rs WorkReport::features (the vector Cell::work evaluated)",
+      "backend/crates/libs/qip-events/schemas.lock.json and consumers.lock.json rows for reflex.feature_digested",
+      "infrastructure/event-fabric/streams.local.json and streams.managed.json: reflex-journal.local admits reflex.feature_digested",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
     ],
-    "gap": "Per-pass FeatureSnapshot P2 record from the node, bounded by configured instruments, with a test that ticks are counted and not shipped (ADR 0132; corrected 2026-10-24): a new topic needs qip-events schemas.lock.json and consumers.lock.json entries and the fabric catalogue stream list, and Decision is a hash-chained enum, so it is a multi-crate change with acceptance suites, not a node-only slice.",
+    "gap": "Skeptic REFUTED 2026-10-31: (1) the P2 stream still carries one `reflex.market_event_applied` record per applied tape event (writer.rs `SpoolWriter::pass`, the replay input ADR 0100 §8 records), so ADR 0132 decision 4's 'does not produce one record per tick' does not hold on the default path while the requirement's own text ('tick ... appended to Fabric P1/P2') is met by those records; the owner decides which governs, and until then the digest is an addition beside the per-event records, not a replacement; (2) `Scheduler::feature_digest` and `WorkReport::features` are reached by no test — the outbox test hands the writer hand-built digests — so bar part 1 holds for the writer only; (3) `ticks` is the feed's message count (status messages included) while the hash covers the applied events, and the time range is of the applied events, not of every tick a windowed value rests on. Closes with a node-level turn test with registered features and a non-empty tape asserting one digest per pass, and the owner's reading of decision 4.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2303,10 +2313,10 @@
       "R12-FABRIC-10076"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
+    "verification": "cargo +1.94.1 test -p qip-edge-node --test event_fabric_outbox && cargo +1.94.1 test -p qip-acceptance --test event_fabric_schema_lock --test event_fabric_catalogue",
     "work_item": "",
-    "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement names ticks and feature snapshots, which are not appended as records. ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Per-tick and feature-snapshot records on P1/P2; fabric partition only drains when a URL is configured. Lane T1-EDGE 2026-10-24: re-read against the code, no code changed, kept PARTIAL. Class LARGE_SPLITTABLE."
+    "size": "L",
+    "notes": "Re-graded 2026-10-17; ADR lane 2026-10-18 against D08; lane T1-EDGE 2026-10-24 kept PARTIAL. 2026-10-31 lane L1b-fabric: the digest landed as a seventh reflex binding. Mutation: `SpoolWriter::pass` never pushing the digest record — `a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped` fails with `left: []` against the two digests; restored by copy, `cmp` clean. Independent skeptic: REFUTED (gap); the time range was changed from first/last to min/max and the record's doc narrowed to what this pass applied in answer to its findings. Limit stated: the digest carries the feature vector as evaluated, which is bounded by registered features; a cell with no registered features writes a digest with no instruments, which is a true statement about that pass."
   },
   {
     "id": "R12-TICK-10103",
@@ -2641,7 +2651,7 @@
       "scripts/fleet/worker.mjs",
       ".github/workflows/ci.yml"
     ],
-    "gap": "Independent evaluator agents in a sandbox.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. No model provider enters the agent sandbox: its no-model egress is a guard and stays one. Independent evaluation is ADR 0102's read-only reviewer packet, one per dimension (tests, security, architecture) of one diff, whose findings a person reads before approving the head, and it runs when the fleet runs, after billing and an admitted model. Closes on: After the owner enables billing and a model is admitted, a lane adds a dispatch that turns a PR diff into three reviewer packets (tests, security, architecture). The first funded run's outputs and ledger objects are then recorded against a PR. Earlier: Independent evaluator agents in a sandbox.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2654,7 +2664,7 @@
     "verification": "node --test scripts/fleet/worker.test.mjs",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): No model provider enters the agent sandbox: its no-model egress is a guard and stays one."
   },
   {
     "id": "R12-CICD-10117",
@@ -2682,7 +2692,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL. 2026-10-25 lane L9: the protected half was not written. Running deploy.yml's second-build check for qip-portal before frontend/portal/next.config.ts pins generateBuildId, and before a double build is measured identical, would fail every portal build and leave the console undeployable. The code half comes first (lane L6), then the deploy.yml condition and a named replay job in ci.yml. 2026-10-25 lane L9, later the same day: L6 confirmed it holds this row, so the code half is done here. frontend/portal/next.config.ts now derives generateBuildId from SOURCE_DATE_EPOCH, and portal.Dockerfile declares that ARG in its build stage so deploy.yml's --build-arg reaches it. deploy_provenance.rs pins both, and 4 mutations each fired. Two `next build`s of one tree with the same epoch were measured: 2,921 files each, and 4 differ, all of them per-build secrets. Those are the preview-mode keys in prerender-manifest.json and server/preview-props.json, and the Server Actions key in server/server-reference-manifest.{js,json}. The deploy.yml gate therefore still cannot be turned on for the portal. Either those keys are injected from a secret both builds share, which needs a deploy.yml change and a secret slot, or the comparison excludes exactly those four files, which would make the check weaker. That choice is the owner's. Stays PARTIAL. Parent ruling 2026-10-30: exclude, not inject. deploy.yml's portal comparison will exclude exactly the four per-build-secret files, named one by one in a committed list, and will refuse when any other file differs or a listed file stops existing. That is a deploy.yml patch for the owner, and the row stays PARTIAL until the gate exists."
+    "notes": "2026-10-24 lane L6: no code change; gap corrected from 'proof missing' to what run 284 proves and what it does not. Stays PARTIAL. 2026-10-25 lane L9: the protected half was not written. Running deploy.yml's second-build check for qip-portal before frontend/portal/next.config.ts pins generateBuildId, and before a double build is measured identical, would fail every portal build and leave the console undeployable. The code half comes first (lane L6), then the deploy.yml condition and a named replay job in ci.yml. 2026-10-25 lane L9, later the same day: L6 confirmed it holds this row, so the code half is done here. frontend/portal/next.config.ts now derives generateBuildId from SOURCE_DATE_EPOCH, and portal.Dockerfile declares that ARG in its build stage so deploy.yml's --build-arg reaches it. deploy_provenance.rs pins both, and 4 mutations each fired. Two `next build`s of one tree with the same epoch were measured: 2,921 files each, and 4 differ, all of them per-build secrets. Those are the preview-mode keys in prerender-manifest.json and server/preview-props.json, and the Server Actions key in server/server-reference-manifest.{js,json}. The deploy.yml gate therefore still cannot be turned on for the portal. Either those keys are injected from a secret both builds share, which needs a deploy.yml change and a secret slot, or the comparison excludes exactly those four files, which would make the check weaker. That choice is the owner's. Stays PARTIAL. Parent ruling 2026-10-30: exclude, not inject. deploy.yml's portal comparison will exclude exactly the four per-build-secret files, named one by one in a committed list, and will refuse when any other file differs or a listed file stops existing. That is a deploy.yml patch for the owner, and the row stays PARTIAL until the gate exists. Owner ruling 2026-10-31 (IMPLEMENT): Decision 13 stands: exclude, not inject. A lane writes the deploy.yml change as a patch for me. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-CICD-10118",
@@ -2857,7 +2867,7 @@
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/telemetry.rs archive_lag gauge"
     ],
-    "gap": "Alert + restore runbook automation.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Build the fabric alert now, gated on workload_metrics_exist like the other eleven policies. It costs nothing until metrics exist. The row stays open until a deployed fabricd is lost on purpose, the alert fires and the archive replay restores it, and no broker is deployed before it has a baked image. Closes on: A lane can land now: google_monitoring_alert_policy.fabric_serving on qip_event_fabric_serving (absent or zero) and on a rising archive_lag_segments, gated on workload_metrics_exist, with a tftest. That moves the row from MISSING to PARTIAL. It closes only on a broker-loss game-day record against a deployed fabricd showing the alert and the replay. Earlier: Alert + restore runbook automation.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2871,7 +2881,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Build the fabric alert now, gated on workload_metrics_exist like the other eleven policies."
   },
   {
     "id": "R12-RES-10126",
@@ -2997,7 +3007,7 @@
     "verification": "cargo test -p qip-deepbrain --lib a_node_halted_when_its_loop_runs_queues_strategic_questions_and_runs_every_stage; cargo test -p qip-edge-node --test reasoning_outage_loop",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls. 2026-10-24 lane L6: mutation deleting the gate_strategic_service call in run_with failed the new test at node.rs:1142 ('the run loop left the strategic service up through a halt'); restored by cp and cmp, it passes. qip-deepbrain --no-fail-fast: 15 result lines, 317 passed, 0 failed. Stays PARTIAL for the edge half. 2026-10-24 lane L6 (edge half): mutation making DecisionLoop::turn skip its pass on a turn whose mesh tick carried a poll error failed reasoning_outage_loop.rs:747 ('turn 3 differs with the centre stopped before turn 3'); restored by cp and cmp, it passes (three consecutive runs ok). qip-edge-node --no-fail-fast: 41 result lines, 285 passed, 0 failed. 2026-10-24 lane L6: skeptic (code-reviewer, read-only) verdict REFUTED; findings above. Stays PARTIAL. 2026-10-30 lane L6 (delegated agent, cherry-picked): mutations: research run while lost ('the research loop swept while the AI platform was lost'); enqueue dropped (pending left 0 right 1); a learning round, and so promotion, while lost ('a learning round ran — and could promote a package'); the edge pass run only with a mesh ('turn 0 differs with the centre silent'). Agent's gate: qip-deepbrain + qip-edge-node passed 648, failed 0; ten acceptance suites incl. paper_boundary, mesh_lane, arch_048 passed. The loss predicate narrowed from Stalled/Stopping/Halted/PersistentlyFailing to Halted/PersistentlyFailing after two existing tests showed in-loop Stalled and Stopping were artefacts; the ADR records it. 2026-10-31 skeptic (read-only, independent): REFUTED on part 4 (REASON's panel ungated). Drain-before-run fixed: mutation recording every handed-back round drained regardless failed the new test at 'a held research round was recorded drained on a node that could not run it'; restored, cmp clean, passed."
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice. AUDIT-4 2026-10-24: regraded, the deep-brain half is proven only on the function (gate_strategic_service called directly in node.rs tests); deleting its one call in the shipped run loop (node.rs:490) fails no test, so a running deep brain could keep the strategic service up through an outage unnoticed. The edge-node half repeats REFLEX-5029: reasoning_outage drives MeshLink::exchange, which the shipped node never calls. 2026-10-24 lane L6: mutation deleting the gate_strategic_service call in run_with failed the new test at node.rs:1142 ('the run loop left the strategic service up through a halt'); restored by cp and cmp, it passes. qip-deepbrain --no-fail-fast: 15 result lines, 317 passed, 0 failed. Stays PARTIAL for the edge half. 2026-10-24 lane L6 (edge half): mutation making DecisionLoop::turn skip its pass on a turn whose mesh tick carried a poll error failed reasoning_outage_loop.rs:747 ('turn 3 differs with the centre stopped before turn 3'); restored by cp and cmp, it passes (three consecutive runs ok). qip-edge-node --no-fail-fast: 41 result lines, 285 passed, 0 failed. 2026-10-24 lane L6: skeptic (code-reviewer, read-only) verdict REFUTED; findings above. Stays PARTIAL. 2026-10-30 lane L6 (delegated agent, cherry-picked): mutations: research run while lost ('the research loop swept while the AI platform was lost'); enqueue dropped (pending left 0 right 1); a learning round, and so promotion, while lost ('a learning round ran — and could promote a package'); the edge pass run only with a mesh ('turn 0 differs with the centre silent'). Agent's gate: qip-deepbrain + qip-edge-node passed 648, failed 0; ten acceptance suites incl. paper_boundary, mesh_lane, arch_048 passed. The loss predicate narrowed from Stalled/Stopping/Halted/PersistentlyFailing to Halted/PersistentlyFailing after two existing tests showed in-loop Stalled and Stopping were artefacts; the ADR records it. 2026-10-31 skeptic (read-only, independent): REFUTED on part 4 (REASON's panel ungated). Drain-before-run fixed: mutation recording every handed-back round drained regardless failed the new test at 'a held research round was recorded drained on a node that could not run it'; restored, cmp clean, passed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The requirement text stands: a panel convened on a lost cycle produces new findings and theses, and reading that as existing packages continuing would redefine the row to pass it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: While the AI platform is lost REASON convenes no panel and forms no new thesis, and records the hold as its routing; amends ADR 0214's reading of the deterministic panel (R12-RES-10130)."
   },
   {
     "id": "R12-RES-10131",
@@ -3159,7 +3169,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): No commitment is bought on the hot path until a sizing record measured on a provisioned C4 execution node is committed, and that becomes a refusal now rather than a promise. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-FINOPS-10138",
@@ -3361,7 +3371,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): A replay environment is wanted, and the requirement is not restated to the in-process replay. Handed to lane L3b (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: Replay is a fifth environment, declared and off, admitted only with observation autonomy, no execution node, no venue credential and reader-only grants on curated data."
   },
   {
     "id": "R12-EXEC-10147",
@@ -3608,7 +3618,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell",
       "docs/blueprint/lanes/l6-sec-10157-protected.patch"
     ],
-    "gap": "2026-10-25 (lane L6): l6-sec-10157-protected.patch was applied by the parent session on ccr-d1bc1e54-kf6mr0 at b9a45fd5 under owner-decisions-2026-10-25 decision 3 (with the parent's corrections for 9120: rustup inside backend/, and change-windows.json naming `qip change-window`), and is merged into this lane. Still PARTIAL until the owner's approving review of the rolling pull request's head (the `agent boundary` sign-off) and a hosted CI run shows the gate firing. Earlier: The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall. 2026-10-24 (lane L6): that step is written as docs/blueprint/lanes/l6-sec-10157-protected.patch, a step appended to .github/workflows/agent-sandbox.yml that, after the egress verdict, runs as the lane's uid and lane-egress gid and must be refused five times: reading a root-only planted secret, a direct connection with the proxy bypassed, an off-list host through the proxy, a runner token in the lane's environment, and a token kept in either checkout's .git/config; any success fails the job. Checked only statically: the YAML parses, `bash -n` accepts the step, and agent-guard.mjs's sandbox judge still admits the file ('holds no secret, no credential and no write ...'). It has not run: it needs a person to apply the protected patch and a dispatched sandbox run, and its record would then belong in docs/ops/game-days/agent-escalation/.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. The sandbox drill step is already applied on this branch, and the only thing it still needs from me is the review. Once the rolling pull request's head is approved and merged, agent-sandbox.yml is dispatched and its five refusals are committed as the drill record. The row closes on that record, not on the YAML. Closes on: After the head is approved and merged to main, dispatch agent-sandbox.yml for a round manifest. Commit docs/ops/game-days/agent-escalation/<date>-sandbox.json recording all five refusals. Earlier: 2026-10-25 (lane L6): l6-sec-10157-protected.patch was applied by the parent session on ccr-d1bc1e54-kf6mr0 at b9a45fd5 under owner-decisions-2026-10-25 decision 3 (with the parent's corrections for 9120: rustup inside backend/, and change-windows.json naming `qip change-window`), and is merged into this lane. Still PARTIAL until the owner's approving review of the rolling pull request's head (the `agent boundary` sign-off) and a hosted CI run shows the gate firing. Earlier: The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall. 2026-10-24 (lane L6): that step is written as docs/blueprint/lanes/l6-sec-10157-protected.patch, a step appended to .github/workflows/agent-sandbox.yml that, after the egress verdict, runs as the lane's uid and lane-egress gid and must be refused five times: reading a root-only planted secret, a direct connection with the proxy bypassed, an off-list host through the proxy, a runner token in the lane's environment, and a token kept in either checkout's .git/config; any success fails the job. Checked only statically: the YAML parses, `bash -n` accepts the step, and agent-guard.mjs's sandbox judge still admits the file ('holds no secret, no credential and no write ...'). It has not run: it needs a person to apply the protected patch and a dispatched sandbox run, and its record would then belong in docs/ops/game-days/agent-escalation/.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3619,7 +3629,7 @@
     "verification": "node --test scripts/game-day/harness.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, relaxed-policy, lying-record and command tests failed). Kept PARTIAL for the sandbox-run half. 2026-10-24 lane L6: sandbox drill step written as a protected patch; not run (no runner, protected path). Stays PARTIAL."
+    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, relaxed-policy, lying-record and command tests failed). Kept PARTIAL for the sandbox-run half. 2026-10-24 lane L6: sandbox drill step written as a protected patch; not run (no runner, protected path). Stays PARTIAL. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): The sandbox drill step is already applied on this branch, and the only thing it still needs from me is the review."
   },
   {
     "id": "R12-RES-10158",
@@ -3629,7 +3639,7 @@
       ".github/workflows/infra.yml",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5233 an_environment_can_be_brought_up_before_anything_has_been_deployed_to_it"
     ],
-    "gap": "Scheduled rebuild.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Deploy first: nothing applies infrastructure on a timer while billing is off, and an unattended billed apply is not where a rebuild starts. Once dev is up, the rebuild runs monthly in test, up from empty and torn down in the same run, never in dev or prod; the Fabric half waits until some environment declares a broker. Closes on: After the owner's first dev up, a lane writes a protected patch adding a monthly schedule to infra.yml for test (up from empty, then teardown). The first scheduled run's record closes the regional-cluster half; the Fabric half waits on a declared broker. Earlier: Scheduled rebuild.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3640,7 +3650,7 @@
     "verification": "scheduled infra.yml run record",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Deploy first: nothing applies infrastructure on a timer while billing is off, and an unattended billed apply is not where a rebuild starts."
   },
   {
     "id": "R12-ARCH-10159",
@@ -3653,7 +3663,7 @@
       "docs/architecture/phase-register.json phase 0 (state entered, eight exit tests)",
       "backend/crates/tests/qip-acceptance/tests/phase_register.rs"
     ],
-    "gap": "PAM, NCC, CA, SCC enabled.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. Phase 0 stays entered and not exited, and I will not amend its exit test to pass without NCC. The hub stays declined while ADR 0035 runs one execution region. CA is funded under R12-SEC-10054. PAM waits on a second approver, and SCC waits on the organisation's Premium tier, which is a licence. Closes on: Phase 0 exits only when all four hold: a second region is decided and NCC lands through a priced ADR; SCC is activated at the organisation tier and enable_security_command_center is flipped; PAM has an approved entitlement; and the CA pool is deployed. Earlier: PAM, NCC, CA, SCC enabled.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3669,7 +3679,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L6: phase 0 is recorded as entered, not exited, in the ADR 0143 register, with its eight Rust exit tests checked by phase_register.rs; the gap (PAM, NCC, CA, SCC enabled) is unchanged."
+    "notes": "2026-10-24 lane L6: phase 0 is recorded as entered, not exited, in the ADR 0143 register, with its eight Rust exit tests checked by phase_register.rs; the gap (PAM, NCC, CA, SCC enabled) is unchanged. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): Phase 0 stays entered and not exited, and I will not amend its exit test to pass without NCC."
   },
   {
     "id": "R12-CICD-10160",
@@ -3680,7 +3690,7 @@
       "infrastructure/gitops/kargo/base/stages.yaml",
       "Makefile:123"
     ],
-    "gap": "Cloud Build pools, Config Sync, Rollouts.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Config Sync and Argo Rollouts are scored against ADR 0114 D4's equivalents, as R12-CICD-10087 already is: Argo CD with Config Connector does the sync, and the Cloud Run traffic split (R12-CICD-9116) does the canary. No fifth controller goes on the cluster. The private pool stays the requirement, and I will not replace it with an ADR for GitHub-hosted builds. It is written and switched off. It is turned on only after dev serves again, with its monthly cost stated before the flag flips. The row stays PARTIAL until a deploy.yml run has built in the pool and phase 0 has exited. Closes on: Regrade the Config Sync and Rollouts clauses against ADR 0114 D4 in the row. Close when the owner funds and flips cloud_build_private_pool_enabled in dev, a deploy.yml run builds in qip-dev-build, and phase 1's exit test is recorded in the phase register. Earlier: Cloud Build pools, Config Sync, Rollouts.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3694,7 +3704,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Config Sync and Argo Rollouts are scored against ADR 0114 D4's equivalents, as R12-CICD-10087 already is: Argo CD with Config Connector does the sync, and the Cloud Run traffic split (R12-CICD-9116) does the canary."
   },
   {
     "id": "R12-FABRIC-10161",
@@ -3889,7 +3899,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): ADR 0102 is not amended. The fleet keeps its eight roles, and security, merge and release stay out of it. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-QUANT-10169",
@@ -4039,14 +4049,15 @@
   {
     "id": "R12-AMBIENT-10175",
     "status": "PARTIAL",
-    "current": "Compute/attention market, specialist proposals and cognitive compiler (unsigned packages) exist in deepbrain.",
+    "current": "Phase 16's deliverables exist on the deep brain's default sweep and each has its proof: value-of-information sensing (ResearchLoop::emit states a raised gap's economic value on the signal and, since 2026-10-31, its urgency as the consumed share of the signal's own window via urgency_bp rather than a literal zero; cheapest_viable ranks observations on §9.10's product), the compute/attention market (run_market through MetaIntelligence::allocate_within, the attention router draining held signals by severity × economic value), recursive specialist creation (specialist proposals), and the cognitive compiler (CognitiveCompiler on the research sweep, packages held unsigned without a signer). The phase exit suite is backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs (a_sweep_grants_compute_through_the_market_to_the_research_the_residuals_raised; a_compiled_cognitive_package_with_no_signer_is_held_unsigned_and_never_published).",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero",
-      "backend/crates/services/qip-expansion",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
-      "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs"
+      "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs",
+      "backend/crates/apps/qip-deepbrain/src/research.rs emit: urgency_bp(now, expiry, signal_ttl); urgency_bp; cheapest_viable; run_market",
+      "backend/crates/apps/qip-deepbrain/src/research.rs tests a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero, a_gap_with_economic_value_launches_on_the_product_rank, a_raised_gaps_economic_value_reaches_the_signal_the_router_admits_by",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero (another lane's test of the same emit fix, carried in from origin/ccr-116bbb27-osu8n8 at merge)",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Phase exit test exists (qip-acceptance/tests/phase_16_exit.rs) but drives neither a specialist proposal nor an information request (info_launched stays zero on its fixture), so VOI acquisition is not proven end to end on the phase exit; the signal's own urgency_bp is now derived from its deadline (was literal 0) but nothing on a decision path reads it — VOI ranking reads AcquisitionCriteria.urgency_bp set in admit; deployable stays false.",
+    "gap": "2026-10-31 (lane L2b; independent read-only skeptic REFUTED on bar parts 1 and 4): the exit suite phase_16_exit.rs covers the compute market (units_granted > 0) and the compiler (held unsigned) and says itself that specialist proposal and value-of-information launch are not driven there, so two of the four deliverables have no exit test; urgency_bp(now, now + ttl, ttl) at emission always returns URGENCY_FLOOR_BP (a constant in disguise; nothing in production reads AmbientSignal::urgency_bp, and attention_value is severity x economic value), while the real deadline-based urgency is computed at desk admission (research.rs admit) and the exit suite does not prove it; and a specialist proposal produces only an Observation whose plan step is InstantiateSpecialist (qip-expansion plan.rs), gated on calibration >= MIN_EVALUATED, which no cycle fixture reaches, so recursive specialist creation is a proposal, not a creation. Closing it: an exit test per deliverable (a value-of-information launch on the product rank from a sweep; a specialist proposal that instantiates a specialist on the roster), and the signal's urgency computed from the deadline the launch is ranked against rather than restated at emission.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4057,10 +4068,10 @@
       "R12-AMBIENT-10094"
     ],
     "blocked_by": "",
-    "verification": "per-deliverable checks above",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test phase_16_exit && cargo +1.94.1 test -p qip-deepbrain --lib a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L2b (wave580): the row said no phase exit test existed; phase_16_exit.rs does, now cited. The one literal left — urgency_bp: 0 on a signal-raised Detection — is replaced by the deadline-derived figure. Mutation fired: restoring `urgency_bp: 0` in ResearchLoop::emit -> \"left: 0 right: 5000\"; restored byte for byte (cmp), test ok. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records. The emission change and its test are kept (the literal zero is gone and the mutation fired), but they move no production behaviour; the row's claim is withdrawn to what the exit suite proves.  Merge 2026-10-31 with origin/ccr-116bbb27-osu8n8: upstream had the same urgency fix in emit with its own crate-level test and an older gap text (phase_16_exit drives neither a specialist proposal nor an information request, info_launched zero); this lane's refuted gap kept, upstream evidence appended."
   },
   {
     "id": "R12-ARCH-10176",
@@ -4114,15 +4125,22 @@
   },
   {
     "id": "R12-FABRIC-10178",
-    "status": "MISSING",
-    "current": "Single broker RF1; no replication; acceptance tests for this are fixture-only.",
+    "status": "PARTIAL",
+    "current": "The managed log (qip-fabricd src/quorum.rs, src/spanner.rs) and its follower takeover are built and tested against the in-memory managed log: qip-fabricd tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost (real listeners, MemoryManagedLog) and tests/chaos.rs::seeded_kills_and_partitions_lose_no_acknowledged_record_and_never_split_an_epoch. The decision thread never waits on the fabric: qip-acceptance tests/event_fabric_core_path_exclusions.rs::the_reflex_decision_thread_reaches_the_fabric_only_through_a_handoff_it_never_waits_on and qip-edge-node tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread. qip-events event_fabric/policy.rs::StreamPolicy::new admits managed_majority only for P0/P1 at MANAGED_REPLICATION_FACTOR (3) and refuses it for P2-P4 (ADR 0111 §2), so P2 is never quorum-acknowledged. Not deployed: enable_spanner = false in dev/test/stage/prod tfvars and event_fabric_broker unset (infrastructure/terraform/fabric.tf count = 0). Text corrected 2026-10-31 under the owner ruling; it previously read 'Single broker RF1; no replication; acceptance tests for this are fixture-only'.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/lib.rs:28-31",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_operational.rs:285 fabric_055 (fixture-only)"
+      "backend/crates/apps/qip-fabricd/src/quorum.rs",
+      "backend/crates/apps/qip-fabricd/src/spanner.rs",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "backend/crates/apps/qip-fabricd/tests/chaos.rs::seeded_kills_and_partitions_lose_no_acknowledged_record_and_never_split_an_epoch",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs::the_reflex_decision_thread_reaches_the_fabric_only_through_a_handoff_it_never_waits_on",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs::StreamPolicy::new (ManagedMajority admitted for P0/P1 only, MANAGED_REPLICATION_FACTOR = 3)",
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars enable_spanner = false",
+      "infrastructure/terraform/fabric.tf (count = 0 while event_fabric_broker is null)"
     ],
-    "gap": "Replication.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT), MISSING to PARTIAL: P0/P1 survive a zone only once a deployed fabricd acknowledges through a provisioned Spanner managed log, which decision 5 of 2026-10-25 still declines, and P2 is never quorum-acknowledged while ADR 0111 §2 keeps it at RF1; the requirement text stands and is not read down to P0/P1 to pass. Verification stays the multi-broker kill test on a deployment. Earlier: Replication.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -4133,7 +4151,7 @@
     "verification": "multi-broker kill test",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (REGRADE_TEXT): The row is not MISSING: the managed log, its follower takeover and the decision thread's refusal to wait on the fabric are built and tested, so regrade it to PARTIAL."
   },
   {
     "id": "R12-LEDGER-10179",
@@ -4208,7 +4226,7 @@
     "verification": "unit test on activation record",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L06: not implemented; the closure as graded would block every promotion in qip-deepbrain or record invented links. Left PARTIAL with the corrected gap."
+    "notes": "2026-10-18 lane L06: not implemented; the closure as graded would block every promotion in qip-deepbrain or record invented links. Left PARTIAL with the corrected gap. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): An automatic promotion moves the centre's alias and activates nothing on a cell. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A model activates on a cell only from a two-person signed pack that names its source commit and data manifest, the cell journals that activation with its epoch, and a centre promotion is not an activation."
   },
   {
     "id": "R12-RES-10181",
@@ -4283,12 +4301,13 @@
   {
     "id": "R12-TICK-10184",
     "status": "PARTIAL",
-    "current": "The node replay exists (ADR 0100 §8 SLICE-39): qip-edge-node/src/replay.rs reads a recorded session off the spool (RecordedSession::from_spool) or off the fabric's indexed archive through ArchiveReader over any BlobStore (from_archive), groups pass markers with the tape events each pass applied and the journal the session wrote, refuses a window with an input gap or a tape that does not hash to its marker, rebuilds the node from the caller's assembly (refusing on config_digest or gateway_seed), and re-drives every pass on a ManualClock: the control frames at the fabric positions the marker names are fetched from a ControlSource (ArchivedControl over the archive, FixtureControl for fixtures), verified through the same CapitalDownlink/PolicyDownlink the node uses and applied at a control::Handoff boundary, the recorded wire readings (journal pressure, polled halt, region wire) are rebuilt from the marker's words and re-applied, run_pass runs, the replayed tape digest is compared with the marker's per pass, and the rebuilt journal is compared entry for entry (decision and instant) with the recorded one, fills (Decision::Filled) and halt flags (Decision::HaltChanged) counted. The scheduler now writes the boundary's fabric positions into PassMarker.control. The shipped binary has a `qip-edge-node replay <spool-dir>` subcommand that rebuilds the cell through the same cell_configuration() and assembled() helpers run() uses, seats the chain epoch from the session, opens the seeded simulated gateway, reads control from QIP_REPLAY_CONTROL_ARCHIVE when set, prints the ReplayReport and exits 2 on divergence. Venue-bytes replay (qip-orderbook::replay, tick_replay.rs RECORDED_DIGEST) stands beside it.",
+    "current": "The node replay exists (ADR 0100 §8 SLICE-39): qip-edge-node/src/replay.rs reads a recorded session off the spool (RecordedSession::from_spool) or off the fabric's indexed archive through ArchiveReader over any BlobStore (from_archive), groups pass markers with the tape events each pass applied and the journal the session wrote, refuses a window with an input gap or a tape that does not hash to its marker, rebuilds the node from the caller's assembly (refusing on config_digest or gateway_seed), and re-drives every pass on a ManualClock: the control frames at the fabric positions the marker names are fetched from a ControlSource (ArchivedControl over the archive, FixtureControl for fixtures), verified through the same CapitalDownlink/PolicyDownlink the node uses and applied at a control::Handoff boundary, the recorded wire readings (journal pressure, polled halt, region wire) are rebuilt from the marker's words and re-applied, run_pass runs, the replayed tape digest is compared with the marker's per pass, and the rebuilt journal is compared entry for entry (decision and instant) with the recorded one, fills (Decision::Filled) and halt flags (Decision::HaltChanged) counted. The scheduler now writes the boundary's fabric positions into PassMarker.control. The shipped binary has a `qip-edge-node replay <spool-dir>` subcommand that reads the spool through a copy (replay::with_spool_copy, shared with replay-manifests: SegmentLog::open recovers a torn tail, and on a running node's spool that tail is the batch being appended), rebuilds the cell through the same cell_configuration() and assembled() helpers run() uses, seats the chain epoch from the session, opens the seeded simulated gateway, reads control from QIP_REPLAY_CONTROL_ARCHIVE when set, prints the ReplayReport and exits 2 on divergence. Venue-bytes replay (qip-orderbook::replay, tick_replay.rs RECORDED_DIGEST) stands beside it.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/replay.rs::RecordedSession::{from_spool,from_archive,from_records}, ::replay, ::ArchivedControl, ::Divergence",
       "backend/crates/apps/qip-edge-node/src/scheduler.rs::DecisionLoop::apply_plan (last_control = boundary.positions()) and ::marker (control: self.last_control.clone())",
       "backend/crates/apps/qip-edge-node/src/main.rs::replay_command, ::cell_configuration, ::assembled (grep -n 'fn replay_command\\|fn cell_configuration\\|fn assembled' backend/crates/apps/qip-edge-node/src/main.rs)",
       "backend/crates/apps/qip-edge-node/tests/replay.rs::a_recorded_node_session_replayed_reproduces_every_journal_entry_fill_and_flag",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_replay_reads_a_copy_of_the_spool_and_leaves_a_torn_tail_where_it_found_it",
       "backend/crates/apps/qip-edge-node/tests/replay.rs::a_session_read_from_the_archive_with_control_from_the_archived_control_stream_reproduces",
       "backend/crates/apps/qip-edge-node/tests/replay.rs::a_recorded_journal_that_disagrees_with_its_own_inputs_is_caught_at_the_first_differing_entry",
       "backend/crates/apps/qip-edge-node/tests/replay.rs::a_replay_missing_one_recorded_control_frame_names_the_pass_and_position_rather_than_reproducing",
@@ -4308,7 +4327,7 @@
     "verification": "cargo test -p qip-edge-node --test replay",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the earlier 'current' credited replay.rs with re-driving run_pass, but the file holds no code. The triage closure (Replay::from_archive) presupposes a Replay type that does not exist; building it is size L and was not attempted in this lane. 2026-10-25 lane L3b (wave580): node replay built. Mutations fired, restored by cp + cmp: (1) replay skipping the recorded control frames - main test fails Diverged(Tape{pass:3}) because the unshared cell sends nothing and the venue depth differs; (2) scheduler writing control: Vec::new() - positions premise fails [(1,0),(2,0),...]; (3) journal comparison accepting any pair - the altered-journal test reads Reproduced and fails. cargo test -p qip-edge-node --no-fail-fast: 45 binaries, 311 passed, 0 failed. Independent skeptic (code-reviewer) verdict REFUTED for COMPLETE: shipped path records no control positions (mesh control), replay_command untested against run()'s spool and (before the fix) seated no chain epoch, no Journal-arm test (since added), book not compared, GCS not wired. Chain epoch and requoter added to replay_command after the review; the other findings stand in gap. Kept PARTIAL."
+    "notes": "Corrected 2026-10-18 by lane L09: the earlier 'current' credited replay.rs with re-driving run_pass, but the file holds no code. The triage closure (Replay::from_archive) presupposes a Replay type that does not exist; building it is size L and was not attempted in this lane. 2026-10-25 lane L3b (wave580): node replay built. Mutations fired, restored by cp + cmp: (1) replay skipping the recorded control frames - main test fails Diverged(Tape{pass:3}) because the unshared cell sends nothing and the venue depth differs; (2) scheduler writing control: Vec::new() - positions premise fails [(1,0),(2,0),...]; (3) journal comparison accepting any pair - the altered-journal test reads Reproduced and fails. cargo test -p qip-edge-node --no-fail-fast: 45 binaries, 311 passed, 0 failed. Independent skeptic (code-reviewer) verdict REFUTED for COMPLETE: shipped path records no control positions (mesh control), replay_command untested against run()'s spool and (before the fix) seated no chain epoch, no Journal-arm test (since added), book not compared, GCS not wired. Chain epoch and requoter added to replay_command after the review; the other findings stand in gap. Kept PARTIAL. 2026-10-31 lane L3b: the re-drive now reads the spool directory through the same copy the manifests use (RecordedSession::from_spool_directory via with_spool_copy); test gives the copied spool a torn tail and asserts the directory's bytes are unchanged after the read. Mutation fired (opening in place: 'the torn tail was recovered in place'), restored by cp + cmp. The copy path was renamed qip-edge-node-replay-copy-<pid>-<n>: under the old qip-replay-spool-<pid>-<n> it collided with a test spool of the same name and would have removed it. cargo test -p qip-edge-node --no-fail-fast: 48 binaries, 320 passed, 3 failed - the three failures are fabric_envelope.rs provenance tests that fail identically on the integration head 725c180b without this lane's changes."
   },
   {
     "id": "R12-LEDGER-10185",
@@ -4758,7 +4777,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- no_model_weights_are_committed_outside_a_declared_registry_path every_environment_variable_a_workload_reads_is_documented",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one. AUDIT-4: 2026-10-24 regraded, the named tests cover model weights and documented variables only; flipping the registry module's immutable_tags to false leaves both green and fails only infrastructure.rs, which the row does not name; no named test checks digest pinning.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL; 2026-10-24 parent session: fleet registry made immutable and every DOCKER repository in the tree is now tested; the mutation (dropping fleet's docker_config) failed the new test naming `fleet`. Row stays PARTIAL on the clauses listed in gap. 2026-10-24 lane L6: lock added. Mutations, restored by cp and cmp: `#[serde(rename = \"fee\")]` on FillBooked.costs failed the lock naming FillBooked's new id; the same on AttributionRecorded.unkeyed failed it naming AttributionRecorded. Stays PARTIAL. 2026-10-25 lane L6: mutations: a serde rename of InflowCancelled.amount without a version bump failed each_hash_chained_kernel_body_has_the_shape_its_version_locks at 'LedgerEntry::InflowCancelled is now version 1 with schema id ...'; a rename of CycleJournalEntry.sensed_unlisted failed it at 'CycleJournalEntry is now version 1 ...'. Both restored with cmp; passed."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one. AUDIT-4: 2026-10-24 regraded, the named tests cover model weights and documented variables only; flipping the registry module's immutable_tags to false leaves both green and fails only infrastructure.rs, which the row does not name; no named test checks digest pinning.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL; 2026-10-24 parent session: fleet registry made immutable and every DOCKER repository in the tree is now tested; the mutation (dropping fleet's docker_config) failed the new test naming `fleet`. Row stays PARTIAL on the clauses listed in gap. 2026-10-24 lane L6: lock added. Mutations, restored by cp and cmp: `#[serde(rename = \"fee\")]` on FillBooked.costs failed the lock naming FillBooked's new id; the same on AttributionRecorded.unkeyed failed it naming AttributionRecorded. Stays PARTIAL. 2026-10-25 lane L6: mutations: a serde rename of InflowCancelled.amount without a version bump failed each_hash_chained_kernel_body_has_the_shape_its_version_locks at 'LedgerEntry::InflowCancelled is now version 1 with schema id ...'; a rename of CycleJournalEntry.sensed_unlisted failed it at 'CycleJournalEntry is now version 1 ...'. Both restored with cmp; passed. Owner ruling 2026-10-31 (IMPLEMENT): Every action a workflow uses is pinned by its full commit SHA with the tag kept as a comment, and a test refuses a movable tag. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-OBS-10204",
@@ -4810,14 +4829,17 @@
   },
   {
     "id": "R12-DATA-10206",
-    "status": "MISSING",
-    "current": "No Bigtable app profile declared.",
+    "status": "PARTIAL",
+    "current": "Three Bigtable app profiles are declared in infrastructure/terraform/modules/data/main.tf (local.bigtable_app_profiles and google_bigtable_app_profile.timeseries, commit 4f2da224 of 2026-10-18): ingest is single-cluster to the primary at high priority, serve is multi-cluster at medium, batch is single-cluster to the secondary at low. modules/data/tests/scaling.tftest.hcl run bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload is a mocked plan with enable_bigtable = true that asserts exactly the three profiles, ingest single-cluster, serve multi-cluster, and that every single-cluster profile names a declared cluster; .github/workflows/ci.yml's terraform-test loop runs every *.tftest.hcl. Batch's pin to the secondary is declared but not asserted on its own. No Rust reader or writer names a profile (Bigtable not admitted, ADR 0113 §1), and enable_bigtable is false in every environment. Text corrected 2026-10-31: 'No Bigtable app profile declared' and 'no acceptance test guards the profile-to-routing mapping' were older than the code.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:322"
+      "infrastructure/terraform/modules/data/main.tf local.bigtable_app_profiles",
+      "infrastructure/terraform/modules/data/main.tf google_bigtable_app_profile.timeseries",
+      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl run bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload",
+      ".github/workflows/ci.yml terraform-test loop over *.tftest.hcl"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Profiles are declared: google_bigtable_app_profile.timeseries with ingest (single-cluster to primary, high priority), serve (multi-cluster, medium) and batch (single-cluster to secondary, low) in modules/data/main.tf, planned only when enable_bigtable=true, which no env sets; no plan can run now. No Rust reader/writer picks a profile (Bigtable not admitted, ADR 0113 §1), and no acceptance test guards the profile-to-routing mapping. Needs a tfvar flip, a Bigtable store ADR, and a plan.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT), MISSING to PARTIAL: real readers and writers naming their profile wait on the Bigtable decline (owner-decisions-2026-10-25 decision 5; reopened only by an ADR stating a measured need and a monthly ceiling under ADR 0101 C4 plus a client dependency ADR under ADR 0109), and no plan can run while enable_bigtable is false everywhere. Earlier: 2026-10-24 (re-read against the tree): Profiles are declared: google_bigtable_app_profile.timeseries with ingest (single-cluster to primary, high priority), serve (multi-cluster, medium) and batch (single-cluster to secondary, low) in modules/data/main.tf, planned only when enable_bigtable=true, which no env sets; no plan can run now. No Rust reader/writer picks a profile (Bigtable not admitted, ADR 0113 §1), and no acceptance test guards the profile-to-routing mapping. Needs a tfvar flip, a Bigtable store ADR, and a plan.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -4828,7 +4850,7 @@
     "verification": "plan",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Bigtable app profile declared' is false: three profiles (ingest/serve/batch) were added in commit 4f2da224 (local.bigtable_app_profiles, google_bigtable_app_profile.timeseries)."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'No Bigtable app profile declared' is false: three profiles (ingest/serve/batch) were added in commit 4f2da224 (local.bigtable_app_profiles, google_bigtable_app_profile.timeseries). Owner ruling 2026-10-31 (REGRADE_TEXT): The profiles are built, and a plan test holds each one to its routing, so the row's text is older than the code and is corrected."
   },
   {
     "id": "R12-CICD-10207",

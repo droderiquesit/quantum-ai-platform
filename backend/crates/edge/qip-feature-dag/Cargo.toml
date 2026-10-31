@@ -13,6 +13,7 @@ qip-numerics.workspace = true
 qip-market.workspace = true
 qip-contracts.workspace = true
 qip-quant.workspace = true
+qip-sequencing.workspace = true
 
 [lints]
 workspace = true

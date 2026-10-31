@@ -44,6 +44,14 @@ pub const REFLEX_PASS_MARKED: TopicBinding = TopicBinding {
     qos_class: QosClass::P2MarketJournal,
 };
 
+/// ADR 0132 decision 4: one feature digest per pass on the P2 row, bounded
+/// by the cell's registered instruments (R12-FABRIC-10102).
+pub const REFLEX_FEATURE_DIGESTED: TopicBinding = TopicBinding {
+    topic: Topic::ReflexFeatureDigested,
+    schema_version: 1,
+    qos_class: QosClass::P2MarketJournal,
+};
+
 /// ADR 0100 §5's P2 row: "every reflex journal entry."
 pub const REFLEX_JOURNAL_RECORDED: TopicBinding = TopicBinding {
     topic: Topic::ReflexJournalRecorded,
@@ -91,8 +99,9 @@ pub const EVENT_FABRIC_GAP: TopicBinding = TopicBinding {
 };
 
 /// Every reflex binding, in declaration order.
-pub const ALL: [TopicBinding; 6] = [
+pub const ALL: [TopicBinding; 7] = [
     REFLEX_PASS_MARKED,
+    REFLEX_FEATURE_DIGESTED,
     REFLEX_JOURNAL_RECORDED,
     MARKET_EVENT_APPLIED,
     REFLEX_OUTCOME_RECORDED,
@@ -100,7 +109,7 @@ pub const ALL: [TopicBinding; 6] = [
     EVENT_FABRIC_GAP,
 ];
 
-/// The binding for `topic`, or `None` for every topic outside the six the
+/// The binding for `topic`, or `None` for every topic outside the seven the
 /// reflex fabric writes.
 pub fn binding_for(topic: Topic) -> Option<TopicBinding> {
     ALL.iter().copied().find(|binding| binding.topic == topic)
@@ -118,9 +127,10 @@ mod tests {
     /// empty.
     #[test]
     fn every_reflex_topic_has_exactly_one_binding_on_the_class_adr_0100_names() {
-        assert_eq!(ALL.len(), 6);
+        assert_eq!(ALL.len(), 7);
         let expectations = [
             (Topic::ReflexPassMarked, QosClass::P2MarketJournal),
+            (Topic::ReflexFeatureDigested, QosClass::P2MarketJournal),
             (Topic::ReflexJournalRecorded, QosClass::P2MarketJournal),
             (Topic::MarketEventApplied, QosClass::P2MarketJournal),
             (Topic::ReflexOutcomeRecorded, QosClass::P1Outcomes),

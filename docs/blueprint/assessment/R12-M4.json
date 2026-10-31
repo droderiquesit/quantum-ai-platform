@@ -69,7 +69,7 @@
     "verification": "per-class training + consumer integration tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): A specialist model is trained only from a source a licence record admits. Volatility and regime qualify now, from the licensed bars. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: a specialist model is trained only from a licensed source, read by one named warm-lane consumer that may only narrow, never admitted to a hot lane, and a paper fill trains no slippage model (MODEL-4003)."
   },
   {
     "id": "R12-MODEL-4004",
@@ -81,7 +81,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3317-3353 check_models_promoted",
       "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:38-120 one toy tree evaluated under five purpose names"
     ],
-    "gap": "Corrected 2026-10-24. No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring exists, and no plan in the deployed path carries one (R12-MODEL-4024: no compiled plan carries a model, no node deployed). The in-tree LocalTrainer, distillation and manifest path are free to run, but the only data a purpose model could be fitted on today is the paper simulator's own fills, so the fit would measure the simulator and not a venue; that is a data decision (an ADR and a licensed venue record), not a lane's. model_reflex_evaluation.rs still evaluates one toy tree under five purpose names and constructs two forms; its title overstates it and its assertions pass with every purpose model absent.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. A model fitted on the paper simulator's own fills measures the simulator, not a venue. None is trained or promoted as an order-book, fill-probability or adverse-selection model. Purpose models wait on a licensed venue data record admitted under its own ADR. Closes on: Restate the evidence and notes to the current model_reflex_evaluation.rs, which needs no title fix. Hold PARTIAL until a licensed venue record is admitted. Then fit, distil and promote each purpose model through the manifest. Earlier: Corrected 2026-10-24. No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring exists, and no plan in the deployed path carries one (R12-MODEL-4024: no compiled plan carries a model, no node deployed). The in-tree LocalTrainer, distillation and manifest path are free to run, but the only data a purpose model could be fitted on today is the paper simulator's own fills, so the fit would measure the simulator and not a venue; that is a data decision (an ADR and a licensed venue record), not a lane's. model_reflex_evaluation.rs still evaluates one toy tree under five purpose names and constructs two forms; its title overstates it and its assertions pass with every purpose model absent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -94,7 +94,7 @@
     "verification": "cargo test -p qip-edge with a purpose model deployed through the manifest",
     "work_item": "",
     "size": "L",
-    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent. 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated; no training job launched, no code changed."
+    "notes": "model_reflex_evaluation.rs claims to verify 'trained models for each of five named purposes' and 'three forms tree, linear and ensemble'; it evaluates one toy tree renamed per purpose and constructs only two forms, so its assertions would pass with every purpose model absent. 2026-10-24 lane N3-MODEL-EDGE-INFRA: gap restated; no training job launched, no code changed. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): A model fitted on the paper simulator's own fills measures the simulator, not a venue."
   },
   {
     "id": "R12-MODEL-4005",
@@ -151,7 +151,7 @@
     "evidence": [
       "backend/crates/libs/qip-ai/src/embedding.rs text embeddings only"
     ],
-    "gap": "Everything.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. Simulator ticks are not a training source: a representation learned from them embeds the simulator. The row waits for a depth feed admitted under ADR 0157 as a committed licence record, and nothing is coded before it; I will read the depth terms of the host whose spot ticker is already admitted first. Closes on: After a depth source's licence record is committed under ADR 0157, build a versioned embedding over its recorded replay. Feed it to one regime detector, with a test that removing the embedding changes the detector's inputs. Earlier: Everything.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -162,7 +162,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): Simulator ticks are not a training source: a representation learned from them embeds the simulator."
   },
   {
     "id": "R12-MODEL-4008",
@@ -252,7 +252,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): An ambient model reaches a fast lane only as the signed distillate of a fitted teacher with its own training rows and holdout. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: an ambient model reaches a fast lane only as the signed distillate of a fitted teacher with its own training rows, and the now-stage filter is not a teacher (MODEL-4011)."
   },
   {
     "id": "R12-MODEL-4012",
@@ -301,15 +301,15 @@
   {
     "id": "R12-MODEL-4014",
     "status": "PARTIAL",
-    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:338) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:454). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
+    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:401) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:560). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs:338",
-      "backend/crates/services/qip-agency/src/engine.rs:454",
+      "backend/crates/services/qip-agency/src/engine.rs:401 execute",
+      "backend/crates/services/qip-agency/src/engine.rs:560 counterfactually_supported; :1115 run_governed_with",
       "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps",
       "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is read on the operator CLI (ADR 0146 decision 2: no deployed binary acts under authority), where engine::execute refuses a plan that no simulated branch supports, reached only through engine::run_governed_with from qip-cli agency.rs; integration beyond the CLI is out of scope by decision and is not a gap, and amending ADR 0146 d2 to let a deployed binary act would widen authority. Graded on authority_is_used_only_over_a_plan_every_competing_model_agrees_helps and its recorded mutation. Earlier: Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -320,7 +320,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute."
+    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute. Owner ruling 2026-10-31 (REGRADE_TEXT): No deployed binary acts under authority, and the requirement is read on the operator CLI."
   },
   {
     "id": "R12-MODEL-4015",
@@ -412,7 +412,7 @@
     "verification": "cargo test -p qip-kernel --test serving; cargo test -p qip-kernel --lib a_restored_quantum_informed; cargo test -p qip-acceptance --test arch_033_quantum_path",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open. 2026-10-31 decision 12 (parent): not overruled; decision 10's proposed gap \"none open; producer optional and unbuilt by ADR 0150 d5\" is superseded by the skeptic's findings, which were closed as tightenings: the baseline comparison and the restore check. Rollback needs no check of its own: every record it reads passed the live seam in-process or the resume check at start."
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. Owner ruling 2026-10-31 (IMPLEMENT): The requirement calls quantum variants optional. ADR 0150 decision 5 keeps them unbuilt until a family has a benefit record on a non-simulated provider. Handed to lane L4 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open. 2026-10-31 decision 12 (parent): not overruled; decision 10's proposed gap \"none open; producer optional and unbuilt by ADR 0150 d5\" is superseded by the skeptic's findings, which were closed as tightenings: the baseline comparison and the restore check. Rollback needs no check of its own: every record it reads passed the live seam in-process or the resume check at start."
   },
   {
     "id": "R12-MODEL-4019",
@@ -539,7 +539,7 @@
       "backend/crates/apps/qip-api/src/mesh.rs:883 manifest into policy payload",
       "backend/crates/edge/qip-edge/src/cell.rs:3317-3353 check_models_promoted"
     ],
-    "gap": "No compiled plan in the deploy path carries a model; no edge node is deployed (execution_nodes = {}).",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. The export chain is built, and the row closes only when a deployed cell admits a promoted digest. That waits on the owner's node switch and one two-person published pack, and nothing is enabled early to close it. Closes on: Correct cell.rs check_models_promoted's stale 'produced nowhere yet' doc now. After the owner enables the dev node and publishes one signed pack with inline_model, close on the node journal showing Cell::check_models_promoted admitting that digest. Earlier: No compiled plan in the deploy path carries a model; no edge node is deployed (execution_nodes = {}).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -552,7 +552,7 @@
     "verification": "acceptance: promoted distillate reaches a cell via mesh and is evaluated in Cell::work",
     "work_item": "",
     "size": "M",
-    "notes": "cell.rs:3305-3309 says the trained_models slot 'is produced nowhere yet (returned nothing on 2026-09-19)'; the code contradicts it — Platform::model_manifest produces it and qip-api mesh.rs:883 ships it."
+    "notes": "cell.rs:3305-3309 says the trained_models slot 'is produced nowhere yet (returned nothing on 2026-09-19)'; the code contradicts it — Platform::model_manifest produces it and qip-api mesh.rs:883 ships it. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): The export chain is built, and the row closes only when a deployed cell admits a promoted digest."
   },
   {
     "id": "R12-MODEL-4025",
@@ -855,7 +855,7 @@
     "evidence": [
       "backend/crates/libs/qip-quantum/src/foundry.rs:192-235"
     ],
-    "gap": "Everything. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds budgeted scenario selection with budget slack, compared with a greedy value-per-cost selector. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. ADR 0150 A2 stands, as ADR 0190 confirmed, and the parked scenario-selection family stays parked. Nothing the platform runs poses a scenario selection, so an encoding and a greedy comparison would be a benchmark for a workload nobody has. I do not reword the requirement. The row stays MISSING until there is either a benefit note or a hosted provider with a wider qubit ceiling, which is billed and mine to buy later. Closes on: No build now. Cite ADR 0190 and this ruling in the gap. Reopen on either a committed benefit note showing posed sizes in (22, 24] or a funded hosted provider. Then land the scenario-selection part of the parked patch under its own ADR, with a deep-brain sweep as its caller. Earlier: Everything. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds budgeted scenario selection with budget slack, compared with a greedy value-per-cost selector. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -866,7 +866,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it."
+    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): ADR 0150 A2 stands, as ADR 0190 confirmed, and the parked scenario-selection family stays parked."
   },
   {
     "id": "R12-QUANT-4039",
@@ -1320,7 +1320,7 @@
     "status": "MISSING",
     "current": "No quantum path exists for this research domain, so the required classical check does not exist either.",
     "evidence": [],
-    "gap": "The research family and its check. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds a selection that reports score uplift and compute cost (runtime and price per entrant) against the classical selection. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. FeatureEnsembleSelection stays not built, as ADR 0150 A2 decided on purpose and ADR 0190 confirmed. A selection over fewer features than the enumeration limit can at best tie the exact classical answer, so an uplift-and-cost report on it would read as evidence and is not. The row stays MISSING and its text stands. It reopens on a benefit note or a hosted provider that I fund later. Closes on: No build now. Cite ADR 0190 and this ruling in the gap. When a benefit note or a funded hosted provider meets A2, land the feature-selection family from the parked patch under its own ADR. It reports score uplift and compute cost against the classical selection, and a deep-brain research sweep runs it. Earlier: The research family and its check. 2026-10-24 (L4): blocked by ADR 0150 decision A2, accepted 2026-10-19: a new family's encoding, baseline and benchmark may be written only after a committed note shows the sizes the platform actually poses lie above the exact-enumeration limit and at or below the provider's qubit ceiling. A2 also keeps FeatureEnsembleSelection not built on purpose. No such note exists. For this row the parked patch holds a selection that reports score uplift and compute cost (runtime and price per entrant) against the classical selection. The code is written and parked unlanded in docs/blueprint/lanes/L4-quant-research-families-adr0150.patch: the graph-search, feature-selection and scenario-selection QUBO families and the kernel and reservoir QML families, each with a greedy or in-sample-chosen classical baseline, a validated experiment record with a problem digest, and registration in Foundry::platform with a required benchmark field. It applied cleanly to 09ccd529, and its tests and mutations ran green there (qip-quantum --test families 7 passed, --test qml 5 passed, --test foundry 11 passed). The remaining step is an owner or ADR decision that supersedes A2, or the benefit note A2 asks for; then apply the patch. Even then the families run in no binary, so bar part 2 also needs a deep-brain research sweep to run them.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1331,7 +1331,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it."
+    "notes": "2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): FeatureEnsembleSelection stays not built, as ADR 0150 A2 decided on purpose and ADR 0190 confirmed."
   },
   {
     "id": "R12-QUANT-4060",
@@ -1359,7 +1359,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:615-650",
       "backend/crates/runtime/qip-kernel/tests/serving.rs:673,713"
     ],
-    "gap": "Ensemble-feature path for quantum-derived representations.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. ADR 0150 decision 5 stands. No quantum-derived feature is admitted until a family has a benefit record against a non-simulated provider. That provider, its key and its budget are billed and mine, and none is engaged now. So the ensemble-feature path is not built ahead of a benefit nobody has measured. The refusal of a quantum output offered as a model stays as it is, and the row stays PARTIAL. Closes on: After a hosted provider is funded and a family commits a benefit record against it: an ensemble-feature path in qip-kernel model serving that takes a quantum output only as an input feature to an evaluated model. Its test is a_quantum_output_reaches_a_decision_only_as_a_feature_and_offering_it_as_a_model_is_refused. Earlier: Ensemble-feature path for quantum-derived representations.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1370,14 +1370,14 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): ADR 0150 decision 5 stands. No quantum-derived feature is admitted until a family has a benefit record against a non-simulated provider."
   },
   {
     "id": "R12-QUANT-4062",
     "status": "MISSING",
     "current": "Nothing measures information gain of quantum-derived features.",
     "evidence": [],
-    "gap": "Everything.",
+    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_EXTERNAL), missing: a third party (vendor, licence record, credential or second approver) nobody engages under the delegation. No quantum-derived feature exists, and ADR 0150 decision 5 admits none until a family has a benefit record on a non-simulated provider. A per-regime information-gain scorer over an empty set would be a capability that measures nothing, so I am not having one built. The row stays MISSING behind R12-QUANT-4061 and the hosted-provider decision, which is billed and mine. Closes on: No build now. Cite ADR 0150 decision 5 and this ruling in the gap. Once a quantum-derived feature is admitted under a benefit record, the Evaluation Brain records a per-regime information-gain score for each such feature against its classical baseline. Earlier: Everything.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1390,7 +1390,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_EXTERNAL): No quantum-derived feature exists, and ADR 0150 decision 5 admits none until a family has a benefit record on a non-simulated provider."
   },
   {
     "id": "R12-QUANT-4063",
@@ -1584,7 +1584,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Joint construction is approved as one run that can only narrow. construct_from takes grouped caps for strategies from the allocator's plan, for horizons from the reconciled horizon pools and for regions from the region ceilings already on record, and no cap may loosen the mandate. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Joint construction is one optimiser run whose grouped caps only narrow the mandate, and no class or region budget is sized without its own risk record."
   },
   {
     "id": "R12-ASSET-4071",
@@ -1653,7 +1653,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs)."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-ASSET-4074",
@@ -1932,7 +1932,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Capital agents are approved as proposers only. Each of the ten named agents submits a plan every cycle, and the kernel records all ten before it chooses. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: Capital agents only propose: every named agent's plan is recorded each cycle, and the kernel acts on the per-line minimum of those plans and the one allocator's."
   },
   {
     "id": "R12-CAPITAL-4086",
@@ -2210,7 +2210,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL. 2026-10-24 lane L1-MONEY: gap corrected in both directions (borrow gate exists and is tested; quote availability and a borrow source remain). No code changed for this row. Owner ruling 2026-10-31 (IMPLEMENT): Build the quote gate now: an order on an instrument with no quote in the platform's market snapshot is refused and journaled. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-RISK-4097",

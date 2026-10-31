@@ -59,6 +59,27 @@ pub struct CrossRecord {
 /// is never told it missed is the failure mode this pairing exists to prevent.
 pub const MAX_CROSSES_PER_DELTA: usize = 64;
 
+/// One open position as a cell states it on its delta (ADR 0208,
+/// R12-MESH-7143): signed quantity held at one venue in one instrument, from
+/// the cell's confirmed fills alone. Advisory to the centre — the centre's
+/// own books, settled from the fills the cell reported, stay the truth for
+/// every balance — and read by the Hedge Brain so a leg left over after a
+/// cycle break is an exposure the centre can see. No price: the centre marks
+/// it against its own snapshot, because a price the cell chose would be a
+/// second claim about a fact the centre already holds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisoryPosition {
+    pub object_id: ObjectId,
+    pub venue: VenueId,
+    pub quantity: Decimal,
+}
+
+/// How many advisory positions one delta carries before it starts counting
+/// instead (ADR 0208). A cell's positions are bounded by the instruments it
+/// holds books for, which the venue list bounds; the counter beside the list
+/// keeps a truncation visible.
+pub const MAX_POSITIONS_PER_DELTA: usize = 64;
+
 /// How many regional episodes one delta carries before it starts counting
 /// instead (ADR 0207, R12-REFLEX-6012).
 ///

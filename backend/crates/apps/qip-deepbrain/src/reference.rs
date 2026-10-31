@@ -14,8 +14,23 @@
 //! symbols, venues, prices. Deriving the universe from that list means the
 //! reference data and the bars describe one instrument each, from one
 //! definition. A committed catalogue alongside it would be a second definition
-//! of the same five instruments, and two definitions that drift apart is a
+//! of the same six instruments, and two definitions that drift apart is a
 //! defect nobody finds because both look right in isolation.
+//!
+//! # Why one of the six is a dated contract
+//!
+//! The kernel's rule pack carries `r70-contract-expires-before-horizon`
+//! (R12-REASON-3057), read from a future's or an option's expiry at assembly.
+//! Until the demo listed a contract, no shipped default path held one: the
+//! committed catalogue loader refuses derivatives, the committed universe is
+//! common stock, and this module built only stocks and a bond — so the rule
+//! was on the cycle and its input never was. The exchange's cash-settled
+//! future on its larger technology name is registered here as a
+//! [`InstrumentType::Future`] with its expiry, so the contract rule has a
+//! subject on the path the node ships with. The derivative desk holds no
+//! permissions by default, so the kernel refuses every order on it; that is
+//! the intended posture, not a gap — the contract is reasoned about, not
+//! traded.
 //!
 //! # Why this is not fabricated data
 //!
@@ -35,11 +50,13 @@ use qip_core::{Decimal, Duration, Timestamp};
 use qip_financial::Provenance;
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::costs::LiquidityProfile;
-use qip_financial::extensions::{BondDetails, CouponFrequency, DayCount, Extension, Seniority};
+use qip_financial::extensions::{
+    BondDetails, CouponFrequency, DayCount, Extension, FutureDetails, Seniority, SettlementStyle,
+};
 use qip_financial::object::FinancialObject;
 use qip_financial::universe::Universe;
-use qip_market_ingestion::synthetic::SyntheticEnvironment;
 use qip_market_ingestion::synthetic::book::BookParameters;
+use qip_market_ingestion::synthetic::{ContractTerms, SyntheticEnvironment, SyntheticInstrument};
 
 /// The provenance source stamped on every derived object, so a record traced
 /// back from the event log names the module that wrote it.
@@ -53,6 +70,19 @@ pub const SOURCE: &str = "qip-deepbrain-synthetic-reference";
 /// [`liquidity_of`] for the rule they follow.
 const THIN_EXIT_SESSIONS: f64 = 3.0;
 const THIN_PARTICIPATION_RATE: f64 = 0.05;
+
+/// Margin the synthetic clearing house is stated to call on the demo's
+/// future, as a fraction of one contract's notional: initial on entry,
+/// maintenance thereafter.
+///
+/// Stated, not measured — the environment has no clearing house — and named
+/// here for the same reason the exit horizon above is: a figure nobody
+/// measured must be visible as one. The pair is the shape an equity-index
+/// contract's exchange margin takes, roughly a tenth of notional with
+/// maintenance below initial, so a reader of the record sees a margin and
+/// not a zero that reads as "no margin is called".
+const FUTURE_INITIAL_MARGIN_FRACTION: Decimal = Decimal::from_raw(100_000_000); // 0.10
+const FUTURE_MAINTENANCE_MARGIN_FRACTION: Decimal = Decimal::from_raw(80_000_000); // 0.08
 
 /// What this module says an exit from one synthetic instrument costs.
 ///
@@ -155,12 +185,15 @@ pub fn synthetic_universe(environment: &SyntheticEnvironment, at: Timestamp) -> 
     let mut universe = Universe::new();
     for instrument in environment.instruments() {
         // The environment does not carry an instrument type; its convention is
-        // that the one over-the-counter instrument is its government bond and
-        // everything exchange-listed is common stock. Stated here because the
-        // contract multiplier the type implies reaches the backtester's P&L.
+        // that the one over-the-counter instrument is its government bond, an
+        // instrument carrying contract terms is a future, and everything else
+        // exchange-listed is common stock. Stated here because the contract
+        // multiplier the type implies reaches the backtester's P&L.
         let bond = instrument.venue == "OTC";
         let kind = if bond {
             InstrumentType::GovernmentBond
+        } else if instrument.contract.is_some() {
+            InstrumentType::Future
         } else {
             InstrumentType::CommonStock
         };
@@ -216,10 +249,76 @@ pub fn synthetic_universe(environment: &SyntheticEnvironment, at: Timestamp) -> 
                 inflation_index: None,
             }));
         }
+        if let Some(terms) = &instrument.contract {
+            builder = future_terms(builder, instrument, terms, environment, price)?;
+        }
         let object = builder.build(at)?;
         universe.insert(object)?;
     }
     Ok(universe)
+}
+
+/// The future's record: its underlying, its multiplier and its dated terms.
+///
+/// The object model refuses a derivative with no underlying and a future with
+/// no expiry, which is correct — a contract that settles against nothing, or
+/// never, is not a contract. Both come from the environment's own terms, so
+/// the expiry the kernel's contract rule reads is the one the exchange marks
+/// the contract to. The underlying is resolved by symbol against the same
+/// instrument list, and a contract on a name the environment does not list
+/// is refused here rather than registered against an id nobody prices.
+///
+/// Money crosses from `f64` to `Decimal` once, at `price`, in the caller; the
+/// margins below are that decimal times the multiplier times a stated
+/// fraction, so no second crossing happens here.
+fn future_terms(
+    builder: qip_financial::object::ObjectBuilder,
+    instrument: &SyntheticInstrument,
+    terms: &ContractTerms,
+    environment: &SyntheticEnvironment,
+    price: Decimal,
+) -> Result<qip_financial::object::ObjectBuilder> {
+    let underlying = environment
+        .instruments()
+        .iter()
+        .find(|candidate| candidate.symbol == terms.underlying_symbol)
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "the synthetic contract {} settles against {}, which the environment does not \
+                 list; refusing to register a future on an unpriced underlying",
+                instrument.symbol, terms.underlying_symbol
+            ))
+        })?;
+    let margin = |fraction: Decimal| -> Result<Decimal> {
+        price
+            .checked_mul(terms.multiplier)
+            .and_then(|notional| notional.checked_mul(fraction))
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the margin on {} at {price} times {} overflows a decimal; refusing to \
+                     invent one",
+                    instrument.symbol, terms.multiplier
+                ))
+            })
+    };
+    let tick_size = instrument.book.tick_size;
+    Ok(builder
+        .underlying(underlying.object_id.clone())
+        .contract_multiplier(terms.multiplier)
+        .tick_size(tick_size)
+        .extension(Extension::Future(FutureDetails {
+            underlying_object_id: underlying.object_id.as_str().to_string(),
+            expiry: terms.expiry,
+            contract_size: terms.multiplier,
+            tick_size,
+            tick_value: tick_size * terms.multiplier,
+            initial_margin: margin(FUTURE_INITIAL_MARGIN_FRACTION)?,
+            maintenance_margin: margin(FUTURE_MAINTENANCE_MARGIN_FRACTION)?,
+            settlement: SettlementStyle::Cash,
+            // The demo lists one contract, so it is the front month by
+            // construction.
+            contract_month_index: 1,
+        })))
 }
 
 #[cfg(test)]

@@ -1073,6 +1073,59 @@ impl SourceScore {
     }
 }
 
+// --- TheoryDelta (R12-EXPAND-6044) --------------------------------------------
+
+/// The artifact symbolic theory growth produces when the world contradicts
+/// the rule pack: a hypothesis the pack's hard stop refused resolved as a
+/// call the grader credited, so the stop refused something the market
+/// confirmed. The delta names the pack and version, the rule or invariant
+/// ids that fired, the change it proposes and the evidence that contradicts
+/// the theory, and it is a proposal only: nothing reads one to change a rule,
+/// and `qip_kernel::symbolic_stage::rule_pack` is fixed at build time. A
+/// delta naming no rule or citing no evidence is refused, because a revision
+/// task with no side to revise and nothing to revise it against is a sentence
+/// nobody can act on or check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TheoryDelta {
+    pub pack: String,
+    /// The pack version the contradicted verdict was derived under; at least
+    /// one.
+    pub version: u32,
+    /// The rule and invariant ids whose firing made the refusal; at least one.
+    pub rules: Vec<String>,
+    /// The hypothesis the pack refused and the grader credited.
+    pub hypothesis_id: String,
+    pub proposed_change: String,
+    /// Record ids and facts the contradiction rests on; at least one.
+    pub contradicting_evidence: Vec<String>,
+    pub proposed_at: Timestamp,
+}
+
+impl TheoryDelta {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "TheoryDelta";
+        text(R, "pack", &self.pack)?;
+        if self.version == 0 {
+            return Err(Error::invalid(format!(
+                "{R}.version must be at least one; version zero names no pack"
+            )));
+        }
+        list(R, "rules", &self.rules)?;
+        text(R, "hypothesis_id", &self.hypothesis_id)?;
+        text(R, "proposed_change", &self.proposed_change)?;
+        list(R, "contradicting_evidence", &self.contradicting_evidence)?;
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a TheoryDelta: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
+    }
+}
+
 // --- SyntheticEpisode (ADR 0149 decision 18) --------------------------------
 
 /// How a synthetic episode was produced, which decides whether it has a seed.

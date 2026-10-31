@@ -32,6 +32,8 @@ pub enum Capability {
     ReadPortfolio,
     ReadRiskState,
     ReadExecutionHistory,
+    /// The model cards and forecaster records the platform scores (R12-REASON-3023).
+    ReadModelRegistry,
 
     // --- computation: expensive but side-effect free ---
     CallLanguageModel,
@@ -69,6 +71,7 @@ impl Capability {
             Self::ReadPortfolio => "read_portfolio",
             Self::ReadRiskState => "read_risk_state",
             Self::ReadExecutionHistory => "read_execution_history",
+            Self::ReadModelRegistry => "read_model_registry",
             Self::CallLanguageModel => "call_language_model",
             Self::RunBacktest => "run_backtest",
             Self::RunSimulation => "run_simulation",
@@ -108,6 +111,7 @@ impl Capability {
             Self::ReadPortfolio,
             Self::ReadRiskState,
             Self::ReadExecutionHistory,
+            Self::ReadModelRegistry,
             Self::CallLanguageModel,
             Self::RunBacktest,
             Self::RunSimulation,
@@ -139,7 +143,8 @@ impl Capability {
             | Self::ReadResearchMemory
             | Self::ReadPortfolio
             | Self::ReadRiskState
-            | Self::ReadExecutionHistory => 0,
+            | Self::ReadExecutionHistory
+            | Self::ReadModelRegistry => 0,
             Self::CallLanguageModel
             | Self::RunBacktest
             | Self::RunSimulation

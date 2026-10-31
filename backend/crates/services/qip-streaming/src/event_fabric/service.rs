@@ -161,9 +161,29 @@ fn stream_shape(topics: &[qip_events::topic::Topic]) -> Shape {
     )
 }
 
+/// What a catalogue stream that names no topic admits (ADR 0215).
+///
+/// ADR 0156 decision 4 refuses such a stream; the committed `telemetry.local`
+/// names none because no body in the lock can ride P4, and every in-process
+/// fixture declares its streams topic-less and produces raw payloads. So the
+/// answer is the deployment's: a deployed broker closes the stream, a
+/// `local` one — the only deployment that may run a reproducible key or a
+/// plaintext link — may run it open. A parameter of [`Service::new`] rather
+/// than a default, so a service cannot be built without saying which it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TopiclessStreams {
+    /// A stream naming no topic admits any record. `local` only.
+    AdmitAll,
+    /// A stream naming no topic admits no record: every produce to it is
+    /// refused with `SchemaRefused` before append, until the catalogue
+    /// names what it carries.
+    AdmitNone,
+}
+
 /// The event-fabric broker's protocol handler. See the module documentation.
 pub struct Service {
     broker: Arc<Broker>,
+    topicless: TopiclessStreams,
     identities: IdentityTable,
     /// Replaced whole by [`Service::apply_catalogue`], never edited in
     /// place, so a request authorises against one consistent grant list.
@@ -208,6 +228,7 @@ impl Service {
         catalogue: &Catalogue,
         partitions_per_stream: u32,
         segments: SegmentConfigFor,
+        topicless: TopiclessStreams,
     ) -> Result<Self> {
         if partitions_per_stream == 0 {
             return Err(Error::invalid(
@@ -227,6 +248,7 @@ impl Service {
             partitions_per_stream,
             segments,
             schema_registry: RwLock::new(SchemaRegistry::new()),
+            topicless,
         };
         // The lock embedded in qip-events: the broker admits against the lock
         // its image was built with and reads no file (ADR 0156 §1.2).
@@ -297,14 +319,20 @@ impl Service {
                 BATCH_SCHEMA_VERSION,
                 stream_shape(&declaration.topics),
             )?;
-            // A stream declared with no topic list admits any, as it always
-            // has: the committed `telemetry.local` names none because no
-            // registered body can be carried on it, and ADR 0156 §1.4's
-            // refusal of such a stream waits on one (see R12-FABRIC-8090).
-            // One that names topics admits exactly those, at the versions
-            // the lock holds for each, and a topic the lock holds no row
-            // for is refused here rather than streamed unchecked.
-            if !declaration.topics.is_empty() {
+            // A stream declared with no topic list admits any only under
+            // `TopiclessStreams::AdmitAll`, the `local` deployment's policy
+            // (ADR 0215): the committed `telemetry.local` names none because
+            // no registered body can be carried on it, and a deployed broker
+            // registers an empty admitted set for it, so every record on it
+            // is refused before append rather than streamed unchecked. One
+            // that names topics admits exactly those, at the versions the
+            // lock holds for each, and a topic the lock holds no row for is
+            // refused here rather than streamed unchecked.
+            if declaration.topics.is_empty() {
+                if self.topicless == TopiclessStreams::AdmitNone {
+                    self.broker.close_body_topics(name)?;
+                }
+            } else {
                 let mut admitted = BTreeMap::new();
                 for topic in &declaration.topics {
                     let versions: BTreeSet<u32> = descriptors
