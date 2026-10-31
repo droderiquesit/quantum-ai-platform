@@ -24,7 +24,7 @@
   },
   {
     "id": "R12-DATA-2002",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_data_finder::ingestion::plan_for/descriptor_for turn a RegisteredSource into an IngestionPlan and SourceDescriptor; actual adapters are hand-written connectors with committed manifests.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/ingestion.rs:52 plan_for",
@@ -33,9 +33,11 @@
       "backend/crates/services/qip-market-ingestion/src/connectors/manifests/ seven hand-written shipped manifests",
       "backend/crates/apps/qip-cli/src/adapter_proposals.rs (propose)",
       "backend/crates/apps/qip-cli/src/main.rs (qip registrations propose)",
-      "backend/crates/apps/qip-cli/tests/adapter_proposals.rs"
+      "backend/crates/apps/qip-cli/tests/adapter_proposals.rs",
+      "docs/adr/0184-the-finders-adapter-proposal-is-printed-for-review-and-no-adapter-is-generated-or-loaded-from-it.md",
+      "backend/crates/apps/qip-cli/tests/adapter_proposals.rs an_approved_streaming_source_is_proposed_as_a_buffered_push_adapter"
     ],
-    "gap": "2026-10-25: owner decision (skeptic REFUTED on part 4): qip registrations propose prints, for each candidate the finder registers, the adapter plan and descriptor matching its access mechanism (refused ones get the finder's reason), but ADR 0157 §4/§5 and ADR 0180 decision 3 decline generated adapters and the requirement names the Scout, so whether an operator-run printed proposal meets 'the Scout ... proposes for review' is the owner's call.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -46,7 +48,7 @@
     "verification": "cargo test -p qip-cli --test adapter_proposals",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-25: qip registrations propose --candidates <path> assesses each catalogue entry through Platform::assess_sources (reviewed egress route per entry, in-memory event log, print-only) and proposes plan_for/descriptor_for for registered sources. Mutation: route Rejected into the adapter arm; test fails. Skeptic (security-engineer): parts 1-3 hold; REFUTED on part 4 (ADR 0180 decision 3); only REST is exercised."
+    "notes": "2026-10-25: qip registrations propose --candidates <path> assesses each catalogue entry through Platform::assess_sources (reviewed egress route per entry, in-memory event log, print-only) and proposes plan_for/descriptor_for for registered sources. Mutation: route Rejected into the adapter arm; test fails. Skeptic (security-engineer): parts 1-3 hold; REFUTED on part 4 (ADR 0180 decision 3); only REST is exercised. 2026-10-31: ADR 0184 (Accepted; decided under the owner's 2026-10-31 delegation of remaining product decisions as relayed by the parent session, not yet recorded in an owner-decisions file in the repo) separates the clause's readings: the finder's printed plan and descriptor is the proposal for review, nothing is generated or loaded from it; amends ADR 0180 decision 3 for this row only. New streaming (WebSocket, push-buffered) test; mutation (plan_for reports Pull for every mechanism) fails it. Second-round skeptic (security-engineer): HOLDS on parts 1-4; caveats: only two of eight mechanisms are exercised, and the delegation should be recorded in the repo by the parent."
   },
   {
     "id": "R12-DATA-2003",
