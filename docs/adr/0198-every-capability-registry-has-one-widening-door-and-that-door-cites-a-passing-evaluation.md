@@ -87,6 +87,23 @@ Named here so that the row's `gap` and this record agree.
   environment) are untouched: the first is a design the learning desk does
   not have, the second a deployment.
 
+## What it costs
+
+- A type can no longer be seeded at a version above one. A deployment that
+  wants to ship a vocabulary already at version three registers version one
+  and extends twice, each time with the evaluation that justified the step;
+  the shipped seeds in `symbolic_stage.rs` and `research.rs` all start at one
+  and pay nothing.
+- A journaled self-fitted card restored at `Production` without its shadow
+  record is refused rather than restored. Cards promoted through `promote`
+  carry the record; a card journaled before the shadow stage existed would
+  have to be re-promoted, and the restore path counts the refusal.
+- A caller that built a `PromotionPolicy` with one-episode floors for a test
+  now builds it through `new` and is refused below two; four tests in
+  `registries.rs` that registered version two directly now go through
+  `extend` and show the evaluation.
+- Nothing is faster or cheaper: each door does one more comparison.
+
 ## What would make this wrong
 
 A capability kind that legitimately needs two writers above its starting
