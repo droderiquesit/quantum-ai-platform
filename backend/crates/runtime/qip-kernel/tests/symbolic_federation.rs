@@ -149,10 +149,11 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    // Ten members plus the one domain member the platform now declares for
+    // Eleven members (the company member, R12-WORLD-3044, among them) plus
+    // the one domain member the platform now declares for
     // the universe's single asset class (MODEL-4009): the composition names
     // the classes itself, so a deployed cycle carries the member too.
-    assert_eq!(first.population.len(), 11, "{:?}", first.population);
+    assert_eq!(first.population.len(), 12, "{:?}", first.population);
     assert!(
         first
             .population
@@ -167,9 +168,13 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
             "{family} uncovered"
         );
     }
-    // No chain was observed, so the on-chain member is the one silent member
-    // — present, unexpired, and honest that it produced nothing.
-    assert_eq!(first.silent, vec![ON_CHAIN.to_string()]);
+    // No chain was observed and no issuer reported a surprise, so the
+    // company and on-chain members are the silent ones — present, unexpired,
+    // and honest that they produced nothing (R12-WORLD-3044).
+    assert_eq!(
+        first.silent,
+        vec![federation_stage::COMPANY.to_string(), ON_CHAIN.to_string()]
+    );
     let instrument: Vec<_> = first
         .arbitrations
         .iter()

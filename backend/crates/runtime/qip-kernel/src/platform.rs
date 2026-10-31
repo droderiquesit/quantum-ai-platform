@@ -14089,6 +14089,41 @@ impl Platform {
             .collect()
     }
 
+    /// Each instrument's issuer's latest fundamental surprise readable at
+    /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
+    /// newest by availability per entity, carried to every instrument the
+    /// entity issues in the knowledge graph. An instrument whose issuer is not
+    /// in the graph, or has reported no surprise, is absent.
+    fn fundamental_surprises(&self, now: Timestamp) -> BTreeMap<String, f64> {
+        use qip_world_model::relationship::RelationshipKind;
+        let world = self.world.read();
+        let mut latest: BTreeMap<String, (Timestamp, f64)> = BTreeMap::new();
+        for reading in qip_world_model::now::company_features(&world, now) {
+            if !reading.feature.ends_with("_surprise") {
+                continue;
+            }
+            let newer = latest
+                .get(&reading.subject)
+                .is_none_or(|(at, _)| reading.available_at > *at);
+            if newer {
+                latest.insert(
+                    reading.subject.clone(),
+                    (reading.available_at, reading.value),
+                );
+            }
+        }
+        let mut by_instrument = BTreeMap::new();
+        for (entity, (_, surprise)) in latest {
+            for fact in world
+                .graph()
+                .neighbours(&entity, Some(RelationshipKind::Issues), now, now)
+            {
+                by_instrument.insert(fact.relationship.to.clone(), surprise);
+            }
+        }
+        by_instrument
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
@@ -14096,6 +14131,7 @@ impl Platform {
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
         let causal_views = self.causal_views(now);
+        let surprises = self.fundamental_surprises(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -14115,6 +14151,7 @@ impl Platform {
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
                 causal: causal_views.get(subject).copied(),
+                fundamental_surprise: surprises.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();

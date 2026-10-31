@@ -96,6 +96,15 @@ pub const ALTERNATE_FUTURE: &str = "markets.alternate-future.global.macro";
 pub const RARE_REGIME_TAIL: f64 = 0.05;
 pub const SELF_SYSTEM: &str = "self.operational-health.global";
 pub const ON_CHAIN: &str = "crypto-onchain.flows.global";
+/// The company/fundamental member (R12-WORLD-3044, §9.3): an instrument's
+/// issuer's latest reported surprise against consensus, read as a lean on
+/// its next close.
+pub const COMPANY: &str = "company.fundamental.global";
+/// How sharply a fundamental surprise leans the company member's view: a
+/// five per cent beat reads at `logistic(1.0)`, about 0.73. A chosen
+/// constant, stated so a reader can see the mapping is a slope and not a
+/// measurement.
+pub const FUNDAMENTAL_SURPRISE_SLOPE: f64 = 20.0;
 /// The regional member's id is `markets.microstructure.<region>.micro`.
 pub const REGIONAL_PREFIX: &str = "markets.microstructure.";
 /// The domain members' id prefix (MODEL-4009): one per asset class the
@@ -149,6 +158,10 @@ pub struct InstrumentView {
     pub causal: Option<CausalView>,
     /// Latest quoted spread over its own median, where one was measured.
     pub spread_ratio: Option<f64>,
+    /// The instrument's issuer's latest reported fundamental surprise against
+    /// consensus, as a fraction (R12-WORLD-3044); `None` where no issuer of it
+    /// has reported one, which is what leaves the company member silent.
+    pub fundamental_surprise: Option<f64>,
 }
 
 /// The platform's own state, for the self/system member (WORLD-3052).
@@ -607,12 +620,13 @@ fn residual_fit(r: &[f64], member: usize) -> f64 {
 /// The scope families the population must cover (WORLD-3037, -3050, -3051,
 /// -3052 and ASSET-3017's federation half). A family with no live,
 /// unexpired member is named in [`FederationReview::uncovered`].
-pub const REQUIRED_FAMILIES: [&str; 5] = [
+pub const REQUIRED_FAMILIES: [&str; 6] = [
     "regional",
     "scenario",
     "counterfactual",
     "self/system",
     "crypto/on-chain",
+    "company/fundamental",
 ];
 
 /// Whether a member's scope covers `family`, for a process serving `region`.
@@ -625,6 +639,7 @@ pub fn covers(family: &str, scope: &Scope, region: &str) -> bool {
         "counterfactual" => scope.kind == ModelKind::Counterfactual,
         "self/system" => scope.domain == "self",
         "crypto/on-chain" => scope.domain == "crypto/on-chain",
+        "company/fundamental" => scope.domain == "company/fundamental",
         // Not in `REQUIRED_FAMILIES`: a domain member exists only once the
         // composition root has named an asset class, so requiring one would
         // report a process with no classes named as uncovered every cycle.
@@ -1033,6 +1048,17 @@ impl FederationStage {
                 0.25,
             ),
             declare(
+                COMPANY.into(),
+                "company/fundamental",
+                "global",
+                90,
+                Abstraction::Meso,
+                "fundamental-surprise",
+                ModelKind::Observational,
+                &["sense:fundamentals", "world:issuer-graph"],
+                0.3,
+            ),
+            declare(
                 ON_CHAIN.into(),
                 "crypto/on-chain",
                 "global",
@@ -1202,11 +1228,23 @@ impl FederationStage {
                         (2.0 * (share * (1.0 - share) / n as f64).sqrt()).clamp(0.1, 1.0),
                     )
                 });
+            // The company member's view (R12-WORLD-3044): the issuer's latest
+            // surprise, which says nothing about the tape.
+            let company_view = view.fundamental_surprise.map(|surprise| {
+                (
+                    COMPANY.to_string(),
+                    logistic(FUNDAMENTAL_SURPRISE_SLOPE * surprise),
+                    0.5,
+                    0.5,
+                    0.6,
+                )
+            });
             let mut any = false;
             for (model, probability, evidence_fit, causal_coherence, uncertainty) in views
                 .into_iter()
                 .map(|(m, p, f, c, u)| (m.to_string(), p, f, c, u))
                 .chain(domain_view)
+                .chain(company_view)
                 .chain(std::iter::once(causal_view))
             {
                 let model = model.as_str();
@@ -1721,6 +1759,7 @@ mod tests {
                 observed_through: through,
                 spread_ratio: Some(1.2),
                 causal: None,
+                fundamental_surprise: None,
             }],
             system: SystemView {
                 halted: false,
@@ -1742,9 +1781,13 @@ mod tests {
     #[test]
     fn a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state() {
         let mut stage = FederationStage::new();
-        let review = stage.run(&inputs(1, 100.0, day(0), Some(3)), day(0));
+        // The company member produces state only for an instrument whose
+        // issuer has reported a surprise, so this one has (R12-WORLD-3044).
+        let mut fed_inputs = inputs(1, 100.0, day(0), Some(3));
+        fed_inputs.instruments[0].fundamental_surprise = Some(0.05);
+        let review = stage.run(&fed_inputs, day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 10, "{review:?}");
+        assert_eq!(review.population.len(), 11, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -1754,11 +1797,11 @@ mod tests {
         assert_eq!(spanned.kinds.len(), 3);
         assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
         assert!(review.silent.is_empty(), "{:?}", review.silent);
-        // One instrument proposition with eight views (seven tape members and
-        // the causal model), plus self and chain.
+        // One instrument proposition with nine views (seven tape members, the
+        // company member and the causal model), plus self and chain.
         assert_eq!(review.arbitrations.len(), 3);
         let instrument = &review.arbitrations[0];
-        assert_eq!(instrument.disagreement.views.len(), 8);
+        assert_eq!(instrument.disagreement.views.len(), 9);
         // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
         // members are in the population and each produced a view on the instrument.
         for member in [RARE_REGIME, ALTERNATE_FUTURE, CAUSAL_GLOBAL] {
@@ -1877,6 +1920,7 @@ mod tests {
                 observed_through: day(0),
                 spread_ratio: None,
                 causal: None,
+                fundamental_surprise: None,
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -1955,6 +1999,7 @@ mod tests {
                 observed_through: day(0),
                 spread_ratio: None,
                 causal: None,
+                fundamental_surprise: None,
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -2129,8 +2174,8 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: ten members, no branch, and nothing scored yet to decide on.
-        assert_eq!(first.population.len(), 10);
+        // Premise: eleven members, no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 11);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -2138,7 +2183,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 11);
+        assert_eq!(second.population.len(), 12);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -2241,7 +2286,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 12);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 13);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -2250,20 +2295,20 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 12 live, two branches merged away, one result: 11, every root kept.
+        // 13 live, two branches merged away, one result: 12, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 11, "{live:?}");
+        assert_eq!(live.len(), 12, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 11);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 12);
     }
 
     #[test]
@@ -2300,9 +2345,17 @@ mod tests {
         let mut stage = FederationStage::new();
         let first = stage.run(&inputs(1, 100.0, day(0), Some(1)), day(0));
         assert!(first.uncovered.is_empty(), "{:?}", first.uncovered);
-        // No chain for longer than the lease.
+        // No chain for longer than the lease, and no issuer surprise either,
+        // so the company member lapses too (R12-WORLD-3044).
         let later = stage.run(&inputs(2, 101.0, day(8), None), day(8));
-        assert_eq!(later.uncovered, vec!["crypto/on-chain".to_string()]);
+        assert_eq!(
+            later.uncovered,
+            vec![
+                "crypto/on-chain".to_string(),
+                "company/fundamental".to_string()
+            ]
+        );
+        assert!(!later.population.iter().any(|m| m.id == COMPANY));
         assert!(!later.population.iter().any(|m| m.id == ON_CHAIN));
     }
 
@@ -2383,5 +2436,61 @@ mod tests {
                 against_probability: 0.15,
             }]
         );
+    }
+
+    /// R12-WORLD-3044: the federation's company/fundamental member exists and
+    /// produces state. An instrument whose issuer reported a fundamental
+    /// surprise gives it a view, leaning the way the surprise did, and the
+    /// population check covers its family. With no surprise it gives no view.
+    ///
+    /// Mutation: drop the company view from the instrument's views -- the
+    /// member then never produces state and the first assertion fails.
+    #[test]
+    fn a_fundamental_surprise_on_an_issuer_gives_the_company_member_a_view_and_its_absence_names_the_family_uncovered()
+     {
+        assert!(REQUIRED_FAMILIES.contains(&"company/fundamental"));
+        let mut stage = FederationStage::new();
+        let mut beat = inputs(1, 100.0, day(0), Some(1));
+        beat.instruments[0].fundamental_surprise = Some(0.05);
+        let review = stage.run(&beat, day(0));
+        let company = review.arbitrations[0]
+            .disagreement
+            .views
+            .iter()
+            .find(|v| v.model == COMPANY)
+            .unwrap_or_else(|| panic!("the company member produced no view: {review:?}"));
+        assert!(
+            company.probability > 0.5,
+            "a beat did not lean up: {company:?}"
+        );
+        assert!(!review.silent.contains(&COMPANY.to_string()));
+        assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
+
+        let mut miss = inputs(2, 101.0, day(1), Some(1));
+        miss.instruments[0].fundamental_surprise = Some(-0.05);
+        let review = stage.run(&miss, day(1));
+        let company = review.arbitrations[0]
+            .disagreement
+            .views
+            .iter()
+            .find(|v| v.model == COMPANY)
+            .expect("a miss gives a view too");
+        assert!(
+            company.probability < 0.5,
+            "a miss did not lean down: {company:?}"
+        );
+
+        let quiet = stage.run(&inputs(3, 102.0, day(2), Some(1)), day(2));
+        assert!(
+            quiet
+                .arbitrations
+                .iter()
+                .flat_map(|a| a.disagreement.views.iter())
+                .all(|v| v.model != COMPANY),
+            "the company member gave a view with no surprise to read"
+        );
+        // That an unfed company member lapses and leaves its family uncovered
+        // is pinned by
+        // `a_member_fed_nothing_lapses_at_its_lease_and_the_population_check_names_the_scope`.
     }
 }
