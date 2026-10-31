@@ -1347,16 +1347,22 @@ impl NowBrain {
         })
     }
 
-    /// The five in-tree filters over the standard catalogue: the three
-    /// single-variable filters, the graph estimator over the scope graph and
-    /// the causal estimator over the causal parents (R12-WORLD-3078).
+    /// The four in-tree filters over the standard catalogue: the three
+    /// single-variable filters and the graph estimator over the scope graph.
+    ///
+    /// [`CausalFilter`] is not registered here, deliberately. The causal
+    /// graph's edge strength is a Granger partial R², a measure of fit and
+    /// not a slope, and it carries a lag the filter does not apply. Fused by
+    /// default, its candidate would pull every promoted belief toward
+    /// `R²·parent`, volatility and spread included, which estimates nothing.
+    /// It joins the standard set once edges carry a fitted coefficient
+    /// (R12-WORLD-3078's open gap).
     pub fn standard(seed: u64) -> Result<Self> {
         Ok(Self::new(NowConfig::default(), Catalogue::standard()?)?
             .with_worker(Box::new(KalmanFilter))
             .with_worker(Box::new(ParticleFilter::seeded(seed)))
             .with_worker(Box::new(RobustFilter))
-            .with_worker(Box::new(GraphFilter))
-            .with_worker(Box::new(CausalFilter)))
+            .with_worker(Box::new(GraphFilter)))
     }
 
     /// State each scope id's causal parents for the steps that follow,

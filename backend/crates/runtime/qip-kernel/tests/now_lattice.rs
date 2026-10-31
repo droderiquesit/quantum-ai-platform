@@ -169,8 +169,7 @@ fn every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests(
     let review: NowReview = last(&platform, "now:");
     assert!(!review.deltas.is_empty());
     assert!(review.deltas.iter().all(|d| !d.manifests.is_empty()));
-    // Five since the causal estimator joined (R12-WORLD-3078).
-    assert_eq!(review.ensemble.len(), 5, "five estimators registered");
+    assert_eq!(review.ensemble.len(), 4, "four estimators registered");
     let scopes: BTreeSet<&str> = review
         .variables_by_scope
         .keys()
@@ -403,9 +402,7 @@ fn an_estimator_outage_shrinks_the_ensemble_and_the_now_state_still_updates() {
     assert!(platform.now_brain_mut().remove_worker("particle-bootstrap"));
     platform.run_cycle(start());
     let review: NowReview = last(&platform, "now:");
-    // Five registered (the causal estimator among them, R12-WORLD-3078), one
-    // removed.
-    assert_eq!(review.ensemble.len(), 4);
+    assert_eq!(review.ensemble.len(), 3);
     assert!(!review.deltas.is_empty());
 }
 
