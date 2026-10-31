@@ -2621,6 +2621,8 @@ fn a_measured_decision_latency_pushes_the_simulated_execution_later_and_worsens_
         slow_bps > prompt_bps,
         "a slower decision did not worsen the fill: {slow_bps} bps against {prompt_bps} bps"
     );
+    Ok(())
+}
 
 /// A report from a cell that refused one two-leg cycle on `AAA` whole.
 fn report_refusing_a_cycle(cell: &str, at: Timestamp) -> qip_kernel::central::CellReport {
