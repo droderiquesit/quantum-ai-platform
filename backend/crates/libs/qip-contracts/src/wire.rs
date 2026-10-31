@@ -59,6 +59,16 @@ pub struct CrossRecord {
 /// is never told it missed is the failure mode this pairing exists to prevent.
 pub const MAX_CROSSES_PER_DELTA: usize = 64;
 
+/// How many regional episodes one delta carries before it starts counting
+/// instead (ADR 0207, R12-REFLEX-6012).
+///
+/// A delta is a view of the cell's retained episodes — the newest ones, so
+/// a centre that reads any delta reads what the cell most recently saw — and
+/// the ring the cell keeps is four times this. The counter beside the list
+/// says how many older episodes the cell still held and did not send, which
+/// is a different fact from "nothing happened".
+pub const MAX_EPISODES_PER_DELTA: usize = 32;
+
 /// One strategy's share of a venue fill, as the cell attributed it.
 ///
 /// A named pair rather than a tuple because a tuple serialises as a

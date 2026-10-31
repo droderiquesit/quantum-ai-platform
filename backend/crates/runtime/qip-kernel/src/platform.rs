@@ -21900,6 +21900,7 @@ impl Platform {
             let market = self.market.read();
             crate::hedge::plan(&crate::hedge::HedgeBrainInputs {
                 declarations: &self.config.hedge_candidates,
+                hedge_map: &self.asset_class_registry,
                 universe: &market.universe,
                 snapshot: &market.snapshot,
                 state: &state,

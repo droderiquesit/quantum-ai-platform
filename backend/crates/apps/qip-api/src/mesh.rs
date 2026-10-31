@@ -1741,6 +1741,7 @@ impl CellDeltaSink for IngestSink<'_> {
             .with_orders(decoded.interval.orders.clone())
             .with_fills(decoded.interval.fills.clone())
             .with_crosses(decoded.interval.crosses.clone())
+            .with_episodes(decoded.interval.episodes.clone())
             .with_refusals(decoded.interval.refusals.clone());
         // Recorded before the ingest so `/regions` knows the cell spoke even
         // when the plane goes on to halt it — a halted cell that looked
