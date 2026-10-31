@@ -37,7 +37,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use qip_contracts::forecast::{Forecast, ForecastState};
+use qip_contracts::forecast::{
+    Forecast, ForecastSolver, ForecastState, ForecastTask, ForecastTrigger,
+};
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
 use qip_world_model::causal::CausalGraph;
@@ -256,6 +258,15 @@ pub struct LatticeReview {
     pub weights: WeightUpdate,
     /// The running scorecard per horizon after the pass.
     pub scorecards: BTreeMap<String, Scorecard>,
+    /// The forecast router's fan-out this pass (R12-WORLD-10091): for each forecast
+    /// the pass issued, one task to each kind of solver, triggered by the
+    /// subject's promoted state vector or, where the NOW Brain was surprised
+    /// by it, by the surprise. A subject with neither raises none, and a slot
+    /// still current raises none again. Journaled with the
+    /// review, so who was asked what, and when it fell due, is on the log.
+    /// Defaulted so a record journaled before the fan-out still decodes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<ForecastTask>,
 }
 
 impl EventBody for LatticeReview {
@@ -290,6 +301,40 @@ impl LatticeReview {
             self.inconsistencies.len()
         )
     }
+}
+
+/// One [`ForecastTask`] per solver kind for a question the lattice has just
+/// issued (R12-WORLD-10091). Called only where a forecast for `(subject,
+/// horizon)` was issued this pass, so a task is asked once per issue and
+/// not again every cycle the slot is still current; and only on the central
+/// lane, so the microsecond horizon, which the regional cell evaluates in
+/// its own pass (ADR 0008), is never put from the centre. A task the
+/// contract refuses is recorded as refused, never dropped.
+fn tasks_for(
+    subject: &str,
+    horizon: LatticeHorizon,
+    trigger: ForecastTrigger,
+    now: Timestamp,
+    refused: &mut Vec<(String, String)>,
+) -> Vec<ForecastTask> {
+    let mut tasks = Vec::new();
+    for solver in ForecastSolver::ALL {
+        match ForecastTask::new(
+            subject,
+            horizon.as_str(),
+            horizon.representative(),
+            solver,
+            trigger,
+            now,
+        ) {
+            Ok(task) => tasks.push(task),
+            Err(error) => refused.push((
+                format!("{subject}:{}:{}", horizon.as_str(), solver.as_str()),
+                error.message().to_string(),
+            )),
+        }
+    }
+    tasks
 }
 
 /// The stage's state across passes.
@@ -551,6 +596,7 @@ impl LatticeStage {
                 .filter(|t| !inputs.surprised.contains(&t.subject)),
         );
         order.truncate(LATTICE_MAX_SUBJECTS);
+        let mut tasks = Vec::new();
         let mut issued = Vec::new();
         let mut woken = Vec::new();
         let mut fallbacks = 0;
@@ -629,6 +675,24 @@ impl LatticeStage {
                         if surprised {
                             woken.push(id);
                         }
+                        // The router's fan-out: a surprise is put to every
+                        // kind of solver, and so is a promoted state vector.
+                        // A subject the NOW Brain promoted nothing for and
+                        // was not surprised by raises no task.
+                        let trigger = if surprised {
+                            Some(ForecastTrigger::Surprise)
+                        } else {
+                            target.now_return.map(|_| ForecastTrigger::StateVector)
+                        };
+                        if let Some(trigger) = trigger {
+                            tasks.extend(tasks_for(
+                                &target.subject,
+                                horizon,
+                                trigger,
+                                now,
+                                &mut refused,
+                            ));
+                        }
                         chain.push(made.forecast);
                     }
                     Err(e) => refused.push((input.target.clone(), e.message().to_string())),
@@ -683,6 +747,7 @@ impl LatticeStage {
             abandoned,
             refused,
             backlog: self.backlog.len(),
+            tasks,
             weights,
             scorecards: LatticeHorizon::ALL
                 .iter()
@@ -896,5 +961,142 @@ mod tests {
         );
 
         assert_eq!(stage.tactical_staleness("AAPL", now), None);
+    }
+
+    /// Daily closes ending at `at`, enough for the lattice to forecast on,
+    /// with the NOW Brain's latent return where one is promoted.
+    fn forecastable_target(
+        subject: &str,
+        at: Timestamp,
+        now_return: Option<(f64, f64, u32)>,
+    ) -> LatticeTarget {
+        let closes = (0..40)
+            .map(|day: i64| {
+                let wiggle = ((day * 7919) % 13) as f64 / 13.0 - 0.5;
+                (
+                    at.saturating_sub(Duration::from_days(39 - day)),
+                    100.0 + wiggle,
+                )
+            })
+            .collect();
+        LatticeTarget {
+            subject: subject.to_string(),
+            closes,
+            regime: "calm".to_string(),
+            held_quantity: 0.0,
+            now_return,
+        }
+    }
+
+    /// R12-WORLD-10091: the forecast router fans each forecast the pass
+    /// issues out to every kind of solver. A surprise is surprise-triggered,
+    /// a promoted state vector is state-vector-triggered, and a subject with
+    /// neither raises no task. The microsecond horizon, the cell's, is never
+    /// put from the centre. A second pass with every slot still current asks
+    /// nothing again, so the journal does not carry the same questions every
+    /// cycle.
+    ///
+    /// Mutations: drop a solver kind; route the microsecond horizon too;
+    /// mark every task state-vector; fan out an unpromoted subject; issue
+    /// tasks for current slots too.
+    #[test]
+    fn a_surprise_fans_one_forecast_task_per_central_horizon_to_every_member_kind() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let promoted = Some((0.001, 0.0001, 7_000));
+        let mut stage = LatticeStage::new().expect("the stage builds");
+        let review = stage.run(
+            LatticeInputs {
+                cycle: 1,
+                targets: vec![
+                    forecastable_target("AAPL", now, None),
+                    forecastable_target("MSFT", now, promoted),
+                    forecastable_target("IBM", now, None),
+                ],
+                surprised: BTreeSet::from(["AAPL".to_string()]),
+            },
+            now,
+        );
+        let issued_horizons = |subject: &str| -> BTreeSet<String> {
+            review
+                .issued
+                .iter()
+                .filter(|f| f.target == format!("{subject}/close"))
+                .map(|f| LatticeHorizon::of(f.horizon).as_str().to_string())
+                .collect()
+        };
+        let of = |subject: &str| -> Vec<&ForecastTask> {
+            review
+                .tasks
+                .iter()
+                .filter(|t| t.subject == subject)
+                .collect()
+        };
+        for subject in ["AAPL", "MSFT"] {
+            let horizons = issued_horizons(subject);
+            // Premise: the lattice issued forecasts for the subject.
+            assert!(!horizons.is_empty(), "{subject}: nothing was issued");
+            let tasks = of(subject);
+            let pairs: BTreeSet<(String, ForecastSolver)> = tasks
+                .iter()
+                .map(|t| (t.horizon.clone(), t.solver))
+                .collect();
+            assert_eq!(
+                tasks.len(),
+                horizons.len() * ForecastSolver::ALL.len(),
+                "{subject}: not one task per issued horizon and solver kind"
+            );
+            assert_eq!(pairs.len(), tasks.len(), "{subject}: a repeated task");
+            for horizon in &horizons {
+                for solver in ForecastSolver::ALL {
+                    assert!(
+                        pairs.contains(&(horizon.clone(), solver)),
+                        "{subject}: no {} task at {horizon}",
+                        solver.as_str()
+                    );
+                }
+            }
+            for task in &tasks {
+                assert_ne!(
+                    task.horizon,
+                    LatticeHorizon::MicrosecondsMs.as_str(),
+                    "the centre routed the cell's microsecond horizon"
+                );
+                assert_eq!(task.due_by, task.issued_at.saturating_add(task.span));
+            }
+        }
+        assert!(
+            of("AAPL")
+                .iter()
+                .all(|t| t.trigger == ForecastTrigger::Surprise)
+        );
+        assert!(
+            of("MSFT")
+                .iter()
+                .all(|t| t.trigger == ForecastTrigger::StateVector)
+        );
+        // Premise: IBM was forecast, so its silence is the trigger's doing.
+        assert!(
+            !issued_horizons("IBM").is_empty(),
+            "IBM: nothing was issued"
+        );
+        assert!(
+            of("IBM").is_empty(),
+            "an unpromoted, unsurprised subject was fanned out"
+        );
+
+        // A later pass with every slot still current asks nothing again.
+        let again = stage.run(
+            LatticeInputs {
+                cycle: 2,
+                targets: vec![forecastable_target("MSFT", now, promoted)],
+                surprised: BTreeSet::new(),
+            },
+            now.saturating_add(Duration::from_secs(1)),
+        );
+        assert!(
+            again.tasks.is_empty(),
+            "{} tasks re-asked",
+            again.tasks.len()
+        );
     }
 }
