@@ -70,9 +70,9 @@ use qip_expansion::desk::{
 };
 use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contested_evidence, contradictions, coverage, incompetent_specialists, low_confidence,
-    missing_causal_links, model_drift, model_error_rate, refusal_clusters, repeated_vetoes_priced,
-    split_by_wanting, theory_contradictions, unexplained_residuals_priced,
+    contested_evidence, contradictions, coverage, cross_domain_links, incompetent_specialists,
+    low_confidence, missing_causal_links, model_drift, model_error_rate, refusal_clusters,
+    repeated_vetoes_priced, split_by_wanting, theory_contradictions, unexplained_residuals_priced,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -729,6 +729,11 @@ pub struct ResearchRound {
     /// they could not.
     pub theory_deltas: usize,
     pub theory_deltas_refused: Option<String>,
+    /// Chains across three or more domains the world model synthesised from
+    /// the knowledge graph this sweep (R12-EXPAND-6031), and how many of
+    /// them the causal graph does not claim end to end and so were raised.
+    pub cross_domain_hypotheses: usize,
+    pub cross_domain_raised: usize,
     /// Information requests a better-ranked request left no budget for.
     pub info_outranked: usize,
     /// DECIDE's uncertain decisions priced into an information request this
@@ -745,6 +750,11 @@ pub struct ResearchRound {
     pub acquisitions: BTreeMap<&'static str, usize>,
     /// Campaigns judged, by outcome.
     pub campaigns: BTreeMap<&'static str, usize>,
+    /// One experiment pack per campaign that ran to a verdict this sweep
+    /// (R12-EXPAND-6035): hypothesis, feature, backtest, findings, proposal,
+    /// validated; and why any could not be packed.
+    pub experiment_packs: Vec<qip_contracts::expansion::ExperimentPack>,
+    pub experiment_packs_refused: Vec<String>,
     /// Promotions the Capability Registry refused to record, with why
     /// (R12-EXPAND-6062): the campaign concluded and the verb did not move.
     pub capabilities_refused: Vec<String>,
@@ -923,15 +933,32 @@ fn coverage_asset_class(key: &str) -> Option<&str> {
     }
 }
 
+/// The ontology family and type name a non-class coverage key seeds
+/// (R12-EXPAND-6056): a venue is a `Market` type and a geography an `Entity`
+/// type, because that is what the detector's two other dimensions are
+/// dimensions *of*. `None` for an asset-class key, which
+/// [`coverage_asset_class`] owns, and for a dimension nothing here names.
+fn coverage_dimension_type(key: &str) -> Option<(OntologyTypeFamily, &str)> {
+    match key.split_once(':') {
+        Some(("venue", value)) => Some((OntologyTypeFamily::Market, value)),
+        Some(("geography", value)) => Some((OntologyTypeFamily::Entity, value)),
+        _ => None,
+    }
+}
+
 /// The event type the coverage detector's observations are filed under: a
 /// universe class with too little history to trade.
 pub const COVERAGE_GAP_EVENT: &str = "coverage_gap";
 
 /// [`sweep_ontology`] plus what the coverage detector reads of `coverage`:
-/// one `Asset` type per asset class the universe holds, and the `Event` type
-/// its observations are. The composition root builds this from the universe
-/// it is about to hand the platform, so an asset class cannot be swept for
-/// coverage that the ontology never named.
+/// one `Asset` type per asset class the universe holds, one `Market` type per
+/// venue and one `Entity` type per geography it covers (R12-EXPAND-6056;
+/// until 2026-10-31 the two other dimensions' values were swept and never
+/// named, so the registry could not say what a venue coverage gap was a gap
+/// in), and the `Event` type its observations are. The composition root
+/// builds this from the universe it is about to hand the platform, so a
+/// class, venue or geography cannot be swept for coverage that the ontology
+/// never named.
 pub fn sweep_ontology_over(
     coverage: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<OntologyRegistry> {
@@ -956,6 +983,25 @@ pub fn sweep_ontology_over(
             version: 1,
             schema: format!("qip-deepbrain/research:asset_class:{class}"),
             description: format!("the {class} asset class the coverage detector measures"),
+        })?;
+    }
+    for (family, value) in coverage
+        .keys()
+        .filter_map(|key| coverage_dimension_type(key))
+    {
+        if registry.get_latest(family, value).is_some() {
+            continue;
+        }
+        let dimension = match family {
+            OntologyTypeFamily::Market => "venue",
+            _ => "geography",
+        };
+        registry.register(OntologyTypeSpec {
+            family,
+            name: value.to_string(),
+            version: 1,
+            schema: format!("qip-deepbrain/research:{dimension}:{value}"),
+            description: format!("the {value} {dimension} the coverage detector measures"),
         })?;
     }
     Ok(registry)
@@ -1146,10 +1192,11 @@ impl ResearchRound {
              halted, {} outranked; {} tick campaign(s) opened; {} NOW surprise(s) woke {:?}; \
              evidence: {} claim(s) held, poisoning {:?}; market: {} unit(s) granted, declined \
              {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
-             acquisitions {:?}; campaigns {:?}; capability register refused {:?}; reflex \
+             acquisitions {:?}; campaigns {:?} ({} pack(s), {} refused); capability register \
+             refused {:?}; reflex \
              packages {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
-             conflicts), theory deltas {}; outputs advisory, none promoted; capabilities are \
-             paper and shadow only",
+             conflicts), theory deltas {}, cross-domain chains {} ({} raised); outputs \
+             advisory, none promoted; capabilities are paper and shadow only",
             self.anomalies,
             self.raised,
             self.unclassified,
@@ -1173,6 +1220,8 @@ impl ResearchRound {
             self.specialists_proposed,
             self.acquisitions,
             self.campaigns,
+            self.experiment_packs.len(),
+            self.experiment_packs_refused.len(),
             self.capabilities_refused,
             self.packages,
             self.contested_claims,
@@ -1180,6 +1229,8 @@ impl ResearchRound {
             self.knowledge_deltas,
             self.knowledge_conflicts,
             self.theory_deltas,
+            self.cross_domain_hypotheses,
+            self.cross_domain_raised,
         )
     }
 }
@@ -2032,6 +2083,22 @@ impl ResearchLoop {
         };
         round.theory_deltas = theory.len();
         observations.extend(theory_contradictions(&theory));
+        // R12-EXPAND-6031: the knowledge graph holds typed relationships
+        // across domains and until this call nothing walked them. A chain
+        // crossing three or more domains that the causal graph does not
+        // claim end to end is a hypothesis the platform has recorded the
+        // facts for and never stated, so it is raised as a causal gap
+        // carrying the chain's lineage; a chain the graph already claims is
+        // not. Synthesis reads the graph as of `now` and proposes; no
+        // causal edge is claimed from it.
+        let synthesised = {
+            let world = platform.world();
+            qip_world_model::synthesis::cross_domain_hypotheses(&world, now)
+        };
+        round.cross_domain_hypotheses = synthesised.len();
+        let links = cross_domain_links(&synthesised);
+        round.cross_domain_raised = links.len();
+        observations.extend(links);
 
         // --- the market's specialist proposals -----------------------------
         if let Some(calibration) = platform.calibration()
@@ -3715,6 +3782,16 @@ impl ResearchLoop {
                 metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "waiting")]));
                 continue;
             };
+            // R12-EXPAND-6035: the campaign's pack, written whatever the
+            // verdict — a failed campaign's backtest and findings are the
+            // record a reviewer needs most. A pack the contract refuses is
+            // counted rather than failing the sweep: the campaign did run.
+            match result.experiment_pack(now) {
+                Ok(pack) => round.experiment_packs.push(pack),
+                Err(error) => round
+                    .experiment_packs_refused
+                    .push(format!("{question}: {}", error.message())),
+            }
             // ADR 0142 d5's two phases, on the round beside the verdict: an
             // installation is the moment the correction started acting in
             // the paper window, a withdrawal the moment paper refused it.
