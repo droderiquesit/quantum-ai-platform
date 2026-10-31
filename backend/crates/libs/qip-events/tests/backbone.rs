@@ -2512,6 +2512,7 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
         | Topic::WorldModelSnapshot
         | Topic::SourceRevisionDetected
         | Topic::SourceLifecycleChanged
+        | Topic::SourceAlphaScored
         | Topic::ResearchCampaignClosed
         | Topic::ResearchCampaignFlagged
         | Topic::RiskRuleDefended

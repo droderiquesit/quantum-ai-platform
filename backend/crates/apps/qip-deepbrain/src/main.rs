@@ -696,7 +696,8 @@ fn run() -> Result<()> {
     evolution = evolution.with_refetch(refetch_every);
     // How often each connector is scored on incremental information gain
     // and realised contribution against the own stream (R12-DATA-2022,
-    // 2025, 1105); 0 when unset attaches no desk.
+    // 2025, 1105); on by default (R12-EXPAND-6027, R12-EVID-8108), and an explicit 0
+    // attaches no desk.
     let source_alpha_every =
         qip_deepbrain::source_alpha::source_alpha_every(&|name| std::env::var(name).ok())
             .map_err(configuration)?;

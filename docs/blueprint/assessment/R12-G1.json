@@ -2470,9 +2470,11 @@
     "current": "Source quality/legal/freshness scoring lives in qip-data-finder and kernel source_lifecycle in-process; no Spanner Graph/BigQuery backing.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/freshness.rs",
-      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs"
+      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs",
+      "backend/crates/runtime/qip-kernel/src/source_alpha_record.rs (SourceAlphaScored, Platform::journal_source_alpha_round, source_alpha_rounds)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs (EvolutionEngine::maybe_score_sources journals each round that scored a pair; test the_deep_brain_scores_every_connector_on_its_cadence_and_a_replay_of_the_log_reproduces_the_round)"
     ],
-    "gap": "Continuous scoring as a scheduled stage of qip-deepbrain on Cloud Run; derived state reproducible from the event log and snapshotted to the archive, no Spanner Graph/BigQuery (ADR 0113, ADR 0114 Amendment 1).",
+    "gap": "2026-10-31 (after the owner-delegated ruling of 2026-10-31 decision 10, read with D4 of 2026-10-11 and ADR 0114 Amendment 1): scoring runs by default every cycle (R12-EXPAND-6027) and each round that scored a pair is journaled under Topic::SourceAlphaScored. Three steps remain, from an independent skeptic's REFUTED: (1) no committed environment attaches a connector arm (deepbrain_connector is null or commented out in every tfvars), so on the default path every round scores nothing; a default-sensed source must be scorable or an arm attached by default; (2) nothing reads source_alpha_rounds back on start, so the desk is not rebuilt from the log after a restart, and nothing snapshots it to the archive; (3) 'handle contradictions' has no code and no ruling withdrawing it.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2480,10 +2482,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of catalogue.tf and the binary's composition",
+    "verification": "unit: evolution.rs test drives the engine main.rs builds with the cadence read from an unset variable and asserts the log holds exactly the scored round and no empty round; mutations: unset cadence returning 0 (no round), dropping the journal call (log empty, left: []), dropping the empty-round filter (arm-less round journaled).",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). | 2026-10-31 lane L3-DATA: implemented the ruling's closure (default cadence already on via R12-EXPAND-6027; rounds journaled; named test). Skeptic REFUTED promotion on the three steps in the gap; it also found an empty round journaled every cycle, now fixed by journaling only rounds that scored a pair. Owner ruling 2026-10-31 (IMPLEMENT): The requirement is read the way decision D4 of 2026-10-11 and ADR 0114 Amendment 1 already restated it. Handed to lane L3 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
   },
   {
     "id": "R12-FABRIC-8109",
