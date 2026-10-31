@@ -1,0 +1,832 @@
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 3c02f45c..1ebf36fb 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -672,6 +672,44 @@ jobs:
+                 ;;
+             esac
+           fi
++
++          # The secondary image repository (R12-RES-9177), from the same
++          # committed file and under the same refusals as the region: the
++          # replica in another region each signed digest is copied into, so
++          # a loss of the build registry's region does not lose the release
++          # artifact. `modules/registry/secondary.tf` names it
++          # qip-<env>-secondary in the build project. `null` or no line is
++          # none, which is every environment today (owner decision 5 of
++          # 2026-10-25), and the copy step below does not run. Anything else
++          # that is not a quoted region is refused rather than read as none:
++          # a typo that silently dropped the copy would be the loss this
++          # setting exists to prevent.
++          secondary_registry=""
++          secondary_line="$(grep -E '^[[:space:]]*secondary_region[[:space:]]*=' "$build_tfvars" || true)"
++          if [ -n "$secondary_line" ]; then
++            secondary_region="$(printf '%s\n' "$secondary_line" | head -1 | sed 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')"
++            if [ "$secondary_region" != "null" ]; then
++              case "$secondary_region" in
++                \"*\") secondary_region="${secondary_region#\"}"; secondary_region="${secondary_region%\"}" ;;
++                *)
++                  echo "$build_tfvars sets secondary_region to '$secondary_region'; only a quoted region or null is read." >&2
++                  exit 1
++                  ;;
++              esac
++              case "$secondary_region" in
++                ''|*[!a-z0-9-]*)
++                  echo "$build_tfvars names a secondary region containing a character a region cannot: '$secondary_region'" >&2
++                  echo "Permitted: lowercase letters, digits and -" >&2
++                  exit 1
++                  ;;
++              esac
++              if [ "$secondary_region" = "$build_region" ]; then
++                echo "$build_tfvars names the build region $build_region as the secondary region; a copy there is lost with the primary." >&2
++                exit 1
++              fi
++              secondary_registry="${secondary_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}-secondary"
++            fi
++          fi
+           {
+             echo "project=$project"
+             echo "region=$region"
+@@ -681,6 +719,7 @@ jobs:
+             echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
+             echo "registry_host=${build_region}-docker.pkg.dev"
+             echo "registry=${build_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}"
++            echo "secondary_registry=${secondary_registry}"
+             # The names modules/build-pool gives the pool, its identity and
+             # its staging bucket: pure functions of the build project. Change
+             # them there and here in one diff.
+@@ -1122,6 +1161,77 @@ jobs:
+             --attestor-project "${GCP_PROJECT}" \
+             --keyversion "${BINAUTHZ_KEY_VERSION}"
+ 
++      # Copy the signed digest to the secondary registry (R12-RES-9177), and
++      # read it back.
++      #
++      # A loss of the build registry's region must not lose the release
++      # artifact: the nodes keep what they pulled, but every rollback and
++      # every later promotion names a digest that lived only there. So once
++      # the digest is signed, the same bytes go to the replica the build
++      # environment's tfvars declare. Only when one is declared — the `if`
++      # is the switch, and it is off in every environment today.
++      #
++      # The digest is the one the sign step attested: both resolve the same
++      # `binary:<sha>` tag, which the registry's immutable tags pin to one
++      # set of bytes. `imagetools create` with one source and nothing to
++      # merge or annotate pushes the source's manifest bytes unchanged under
++      # the new tag and copies each blob by digest, so the copy has the same
++      # digest; a `docker pull`/`tag`/`push` goes through the daemon's store
++      # and is not guaranteed to. Binary Authorization's attestation names
++      # that digest, so it covers the copy without a second signature.
++      #
++      # Nothing is assumed to have landed. The secondary is asked for
++      # `binary@<digest>` afterwards and the run fails unless it answers
++      # with exactly that digest: a copy that failed quietly, or a tag in
++      # the replica already holding other bytes, would otherwise leave a
++      # region loss to discover that the artifact was never there.
++      - name: copy the signed digest to the secondary registry
++        if: steps.identity.outputs.secondary_registry != ''
++        env:
++          BUILD_REGISTRY: ${{ steps.identity.outputs.registry }}
++          BUILD_REGISTRY_HOST: ${{ steps.identity.outputs.registry_host }}
++          SECONDARY_REGISTRY: ${{ steps.identity.outputs.secondary_registry }}
++          BINARY: ${{ matrix.binary }}
++        run: |
++          set -euo pipefail
++          digest="$(gcloud artifacts docker images describe \
++            "${BUILD_REGISTRY}/${BINARY}:${DEPLOY_SHA}" \
++            --format='value(image_summary.digest)')"
++          case "$digest" in
++            sha256:*) ;;
++            *)
++              echo "the build registry reports no digest for ${BINARY}:${DEPLOY_SHA} ('${digest}'); nothing is copied." >&2
++              exit 1
++              ;;
++          esac
++          secondary_host="${SECONDARY_REGISTRY%%/*}"
++          gcloud auth configure-docker "${BUILD_REGISTRY_HOST},${secondary_host}" --quiet
++
++          # A re-run for the same commit finds the tag already there. The
++          # replica's tags are immutable too, so the same digest under it is
++          # success and a different one is a refusal, never an overwrite.
++          present="$(gcloud artifacts docker images describe \
++            "${SECONDARY_REGISTRY}/${BINARY}:${DEPLOY_SHA}" \
++            --format='value(image_summary.digest)' 2>/dev/null || true)"
++          if [ -z "$present" ]; then
++            docker buildx imagetools create \
++              --tag "${SECONDARY_REGISTRY}/${BINARY}:${DEPLOY_SHA}" \
++              "${BUILD_REGISTRY}/${BINARY}@${digest}"
++          elif [ "$present" != "$digest" ]; then
++            echo "${SECONDARY_REGISTRY}/${BINARY}:${DEPLOY_SHA} already holds ${present}, not the signed ${digest}." >&2
++            echo "The replica's tags are immutable; find out what put those bytes there before anything is promoted." >&2
++            exit 1
++          fi
++
++          copied="$(gcloud artifacts docker images describe \
++            "${SECONDARY_REGISTRY}/${BINARY}@${digest}" \
++            --format='value(image_summary.digest)' 2>/dev/null || true)"
++          if [ "$copied" != "$digest" ]; then
++            echo "the secondary registry resolves ${BINARY}@${digest} to '${copied}'; the release artifact is not in ${SECONDARY_REGISTRY}." >&2
++            exit 1
++          fi
++          echo "${BINARY}@${digest} is in ${SECONDARY_REGISTRY} as well as ${BUILD_REGISTRY}."
++
+   # ── Record ─────────────────────────────────────────────────────────────
+   #
+   # What this job did until ADR 0036 — `gcloud run services update`, the
+diff --git a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+index 3425f5bf..ab201e47 100644
+--- a/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
++++ b/backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs
+@@ -550,6 +550,290 @@ esac
+     let _ = std::fs::remove_dir_all(&dir);
+ }
+ 
++/// A scratch directory holding executable stubs, unique to one test.
++fn stub_dir(test: &str, stubs: &[(&str, &str)]) -> std::path::PathBuf {
++    let dir = std::env::temp_dir().join(format!("qip-{test}-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&dir);
++    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("scratch dir: {e}"));
++    for (name, body) in stubs {
++        let path = dir.join(name);
++        std::fs::write(&path, body).unwrap_or_else(|e| panic!("stub {name}: {e}"));
++        let status = Command::new("chmod")
++            .arg("+x")
++            .arg(&path)
++            .status()
++            .unwrap_or_else(|e| panic!("chmod: {e}"));
++        assert!(status.success(), "chmod +x {name} failed");
++    }
++    dir
++}
++
++const COPY_STEP: &str = "copy the signed digest to the secondary registry";
++
++/// R12-RES-9177: the signed digest reaches the secondary registry, or the run
++/// fails.
++///
++/// The step is executed, not read: a copy that "succeeded" while the replica
++/// held nothing, or held other bytes, is precisely what a region loss would
++/// discover too late. A stub `gcloud` answers each `describe` from the
++/// environment the case sets, and a stub `docker` records the copy it was
++/// asked to make, so each case says what the registry reported and what the
++/// step concluded.
++///
++/// Mutation: drop the read-back comparison (`if [ "$copied" != "$digest" ]`
++/// made `if false`). The different-digest and nothing-resolved cases are
++/// admitted and this fails naming them.
++#[test]
++fn the_signed_digest_is_copied_to_the_secondary_registry_and_refused_unless_it_reads_back_identical()
++ {
++    let workflow = read(DEPLOY);
++    let script = step_script(&workflow, COPY_STEP);
++    let dir = stub_dir(
++        "secondary-copy",
++        &[
++            (
++                "gcloud",
++                r#"#!/bin/bash
++case "$1 $2" in
++  'auth configure-docker') echo "$3" >> "$LOG.auth"; exit 0 ;;
++  'artifacts docker') ;;
++  *) echo "unexpected gcloud call: $*" >&2; exit 2 ;;
++esac
++ref="$5"
++case "$ref" in
++  "$PRIMARY_PREFIX"/*) value="$PRIMARY" ;;
++  "$SECONDARY_PREFIX"/*@*) value="$SECONDARY_BY_DIGEST" ;;
++  "$SECONDARY_PREFIX"/*) value="$SECONDARY_BY_TAG" ;;
++  *) echo "unexpected image: $ref" >&2; exit 2 ;;
++esac
++[ -n "$value" ] || { echo "ERROR: image not found: $ref" >&2; exit 1; }
++echo "$value"
++"#,
++            ),
++            ("docker", "#!/bin/bash\necho \"$*\" >> \"$LOG\"\n"),
++        ],
++    );
++    let path = format!("{}:/usr/bin:/bin", dir.display());
++    let log = dir.join("calls");
++    let primary = "us-east4-docker.pkg.dev/build-project/qip-dev";
++    let secondary = "us-west1-docker.pkg.dev/build-project/qip-dev-secondary";
++    let signed = "sha256:aaaa";
++    // (by tag, by digest) -> (exit code, docker calls)
++    let case = |by_tag: &str, by_digest: &str| -> (i32, String) {
++        let _ = std::fs::remove_file(&log);
++        let mut command = Command::new("bash");
++        command.arg("-c").arg(&script).env_clear();
++        command.env("PATH", &path);
++        command.env("LOG", &log);
++        command.env("DEPLOY_SHA", "abc123");
++        command.env("BINARY", "qip-api");
++        command.env("BUILD_REGISTRY", primary);
++        command.env("BUILD_REGISTRY_HOST", "us-east4-docker.pkg.dev");
++        command.env("SECONDARY_REGISTRY", secondary);
++        command.env("PRIMARY_PREFIX", primary);
++        command.env("SECONDARY_PREFIX", secondary);
++        command.env("PRIMARY", signed);
++        command.env("SECONDARY_BY_TAG", by_tag);
++        command.env("SECONDARY_BY_DIGEST", by_digest);
++        let code = command
++            .output()
++            .map_or(-1, |o| o.status.code().unwrap_or(-1));
++        (code, std::fs::read_to_string(&log).unwrap_or_default())
++    };
++
++    // The copy lands with the signed digest: success, and the copy was made
++    // from the primary's digest to the replica's commit tag.
++    let (code, calls) = case("", signed);
++    assert_eq!(
++        code, 0,
++        "a copy that read back the signed digest was refused"
++    );
++    assert_eq!(
++        calls.trim(),
++        format!(
++            "buildx imagetools create --tag {secondary}/qip-api:abc123 {primary}/qip-api@{signed}"
++        ),
++        "the step did not copy the signed digest by digest to the replica's commit tag"
++    );
++    let auth = std::fs::read_to_string(format!("{}.auth", log.display())).unwrap_or_default();
++    assert!(
++        auth.trim()
++            .split(',')
++            .any(|host| host == "us-west1-docker.pkg.dev"),
++        "docker was not given credentials for the secondary registry's host: {auth:?}"
++    );
++
++    // The replica answers with other bytes for the digest: refused.
++    let (code, _) = case("", "sha256:bbbb");
++    assert_ne!(
++        code, 0,
++        "the secondary resolved a different digest and the run was admitted"
++    );
++
++    // The replica answers nothing for the digest: refused.
++    let (code, _) = case("", "");
++    assert_ne!(
++        code, 0,
++        "the secondary resolved nothing and the run was admitted, so a copy that never \
++         landed would read as a release kept in two regions"
++    );
++
++    // A re-run finds the tag already holding the signed digest: no second
++    // copy, and success.
++    let (code, calls) = case(signed, signed);
++    assert_eq!(code, 0, "a re-run for a commit already copied was refused");
++    assert!(
++        calls.is_empty(),
++        "a re-run copied again onto an immutable tag: {calls:?}"
++    );
++
++    // The replica's tag already holds other bytes: refused, not overwritten.
++    let (code, calls) = case("sha256:cccc", signed);
++    assert_ne!(
++        code, 0,
++        "the replica's commit tag held other bytes and the run was admitted"
++    );
++    assert!(
++        calls.is_empty(),
++        "the step tried to copy over a tag holding other bytes: {calls:?}"
++    );
++    let _ = std::fs::remove_dir_all(&dir);
++}
++
++/// The copy runs only when a secondary registry is declared, and directly
++/// after the signature, so what is copied is what was signed and an
++/// environment with none declared — every one today — never reaches it.
++///
++/// Mutation: delete the step's `if:` line. This fails.
++#[test]
++fn the_copy_to_the_secondary_registry_runs_only_when_one_is_declared_and_only_after_signing() {
++    let workflow = read(DEPLOY);
++    let step = step_text(&workflow, COPY_STEP);
++    let header: Vec<&str> = step
++        .lines()
++        .take_while(|line| line.trim() != "run: |")
++        .map(str::trim)
++        .collect();
++    assert!(
++        header.contains(&"if: steps.identity.outputs.secondary_registry != ''"),
++        "the copy is not gated on the build tfvars declaring a secondary registry ({header:?}); \
++         it would run against a repository no environment has"
++    );
++    assert!(
++        !header
++            .iter()
++            .any(|line| line.starts_with("continue-on-error:")),
++        "the copy may fail without failing the job"
++    );
++    let signed = workflow.find("      - name: sign the pushed image\n");
++    let copied = workflow.find(&format!("      - name: {COPY_STEP}\n"));
++    let next = signed.and_then(|at| {
++        workflow[at + 1..]
++            .find("      - name: ")
++            .map(|offset| at + 1 + offset)
++    });
++    assert!(
++        matches!((signed, copied), (Some(s), Some(c)) if s < c) && next == copied,
++        "the copy is not the step directly after the signature"
++    );
++}
++
++/// The identity step reads the secondary region from the build
++/// environment's tfvars under the region's own refusals.
++///
++/// Executed in a scratch tree holding one tfvars, because the parse is shell
++/// and a `sed` that reads correctly and never matches is the failure a text
++/// check cannot see.
++///
++/// Mutation: make the character-class arm admit anything (`''|*[!a-z0-9-]*`
++/// to `''`). The upper-case and command-substitution cases are admitted and
++/// this fails naming them.
++#[test]
++fn the_identity_step_derives_the_secondary_registry_from_the_build_tfvars_and_refuses_a_malformed_one()
++ {
++    let workflow = read(DEPLOY);
++    let script = step_script(&workflow, "derive the identity from the tfvars");
++    assert!(
++        !script.contains("${{"),
++        "premise: the identity step substitutes no expression, so it can be run as written"
++    );
++    let root = std::env::temp_dir().join(format!("qip-secondary-identity-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&root);
++    let environment = root.join("infrastructure/environments/dev");
++    std::fs::create_dir_all(&environment).unwrap_or_else(|e| panic!("scratch tree: {e}"));
++    let output = root.join("github-output");
++    let derive = |line: &str| -> (i32, String) {
++        std::fs::write(
++            environment.join("terraform.tfvars"),
++            format!(
++                "project_id     = \"build-project\"\nproject_number = 123456789012\nregion         = \"us-east4\"\n{line}\n"
++            ),
++        )
++        .unwrap_or_else(|e| panic!("tfvars: {e}"));
++        let _ = std::fs::remove_file(&output);
++        let mut command = Command::new("bash");
++        command
++            .arg("-c")
++            .arg(&script)
++            .env_clear()
++            .current_dir(&root);
++        command.env("PATH", "/usr/bin:/bin");
++        command.env("TARGET_ENVIRONMENT", "dev");
++        command.env("BUILD_ENVIRONMENT", "dev");
++        command.env("GITHUB_OUTPUT", &output);
++        let code = command
++            .output()
++            .map_or(-1, |o| o.status.code().unwrap_or(-1));
++        let written = std::fs::read_to_string(&output).unwrap_or_default();
++        let secondary = written
++            .lines()
++            .find_map(|l| l.strip_prefix("secondary_registry="))
++            .map(str::to_string)
++            .unwrap_or_else(|| format!("<no secondary_registry line in {written:?}>"));
++        (code, secondary)
++    };
++
++    // Premise: the step runs to the end on this tree, or every refusal below
++    // would be a refusal of something else.
++    let (code, secondary) = derive("");
++    assert_eq!(code, 0, "the identity step failed on a well-formed tfvars");
++    assert_eq!(secondary, "", "no secondary_region line declared a replica");
++
++    for line in ["secondary_region = null", "secondary_region = null # off"] {
++        assert_eq!(
++            derive(line),
++            (0, String::new()),
++            "`{line}` declared a replica"
++        );
++    }
++    assert_eq!(
++        derive("secondary_region = \"us-west1\""),
++        (
++            0,
++            "us-west1-docker.pkg.dev/build-project/qip-dev-secondary".to_string()
++        ),
++        "a named secondary region did not produce the repository modules/registry declares"
++    );
++
++    for line in [
++        "secondary_region = \"US-WEST1\"",
++        "secondary_region = \"$(id)\"",
++        "secondary_region = \"us-west1;true\"",
++        "secondary_region = \"\"",
++        "secondary_region = us-west1",
++        "secondary_region = nul",
++        "secondary_region = \"us-east4\"",
++    ] {
++        let (code, _) = derive(line);
++        assert_ne!(
++            code, 0,
++            "`{line}` was admitted; a malformed or same-region secondary must stop the run \
++             rather than be read as none or pasted into a registry host"
++        );
++    }
++    let _ = std::fs::remove_dir_all(&root);
++}
++
+ #[test]
+ fn the_portal_build_id_follows_the_commit_epoch_deploy_passes_and_is_never_a_constant() {
+     // R12-CICD-10117. Next names `/_next/static/<id>/` and writes `BUILD_ID`
+diff --git a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
+index b1b437c9..970e8e6e 100644
+--- a/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
++++ b/backend/crates/tests/qip-acceptance/tests/infrastructure.rs
+@@ -15113,3 +15113,81 @@ fn every_asset_change_feed_publishes_to_the_change_topic() {
+         "the asset change feed publishes somewhere other than the asset change topic"
+     );
+ }
++
++/// R12-RES-9177: the secondary image repository is wired from the root and
++/// off in every committed environment.
++///
++/// `modules/registry/secondary.tf` declares the replica; it reaches an
++/// environment only through the root's `secondary_region`, and deploy.yml
++/// copies a signed digest there only when the build environment's tfvars
++/// name one. Two failures read alike and are both refused here. A root that
++/// declares the variable and stops passing it to `module.registry` plans no
++/// replica anywhere while every tfvars still looks configured; and a tfvars
++/// that drops the line, or names a region, turns on billed storage that
++/// owner decision 5 of 2026-10-25 holds off until a region is named with the
++/// deploy. Every environment states `null` explicitly so turning it on is a
++/// one-line diff a reviewer sees, not a default somebody forgot.
++///
++/// Mutation: remove `secondary_region = var.secondary_region` from the
++/// registry block, or set one tfvars to `"us-west1"`. Each fails here.
++#[test]
++fn every_environment_states_no_secondary_registry_and_the_root_passes_the_setting_to_the_registry()
++{
++    let block = root_module_block("registry");
++    assert!(
++        block
++            .lines()
++            .any(|line| collapsed(line) == "promotion_readers = var.registry_promotion_readers"),
++        "premise: the registry block read is the one that passes the promotion readers"
++    );
++    assert!(
++        block
++            .lines()
++            .any(|line| collapsed(line) == "secondary_region = var.secondary_region"),
++        "infrastructure/terraform/main.tf's module \"registry\" does not pass \
++         secondary_region; a region named in a tfvars would plan no replica and \
++         deploy.yml would copy into a repository that does not exist"
++    );
++
++    let variables = without_comments(&read("infrastructure/terraform/variables.tf"));
++    let at = variables
++        .find("variable \"secondary_region\" {")
++        .expect("infrastructure/terraform/variables.tf declares no secondary_region");
++    let declaration: String = variables[at..]
++        .lines()
++        .take_while(|line| !line.starts_with('}'))
++        .collect::<Vec<_>>()
++        .join("\n");
++    assert!(
++        declaration
++            .lines()
++            .any(|line| collapsed(line) == "default = null"),
++        "the root's secondary_region no longer defaults to null, so an environment \
++         that omits the line would bill a replica nobody named"
++    );
++
++    let tfvars = files_with_extension("infrastructure/environments", "tfvars");
++    assert!(
++        tfvars.len() >= 4,
++        "premise: the four environments' tfvars are read, found {tfvars:?}"
++    );
++    for path in &tfvars {
++        let text = std::fs::read_to_string(path)
++            .unwrap_or_else(|error| panic!("{} cannot be read: {error}", path.display()));
++        let settings: Vec<String> = text
++            .lines()
++            .filter(|line| {
++                line.strip_prefix("secondary_region")
++                    .is_some_and(|rest| rest.trim_start().starts_with('='))
++            })
++            .map(collapsed)
++            .collect();
++        assert_eq!(
++            settings,
++            vec!["secondary_region = null".to_string()],
++            "{} must state `secondary_region = null` exactly once: a replica bills, and \
++             owner decision 5 of 2026-10-25 holds it until a region is named with the deploy",
++            path.display()
++        );
++    }
++}
+diff --git a/infrastructure/environments/dev/terraform.tfvars b/infrastructure/environments/dev/terraform.tfvars
+index cc07894b..90f3919a 100644
+--- a/infrastructure/environments/dev/terraform.tfvars
++++ b/infrastructure/environments/dev/terraform.tfvars
+@@ -72,6 +72,11 @@ autonomy_ceiling = "paper_trading"
+ # Placeholder the owner fills in: a team label, never a personal identifier.
+ owner = "platform"
+ 
++# A copy of each signed release digest in a second region (R12-RES-9177):
++# storage, not a second execution region, and billed, so owner decision 5
++# of 2026-10-25 holds it off. Named with the deploy; deploy.yml reads it.
++secondary_region = null
++
+ venue_adapter_type = "simulated"
+ 
+ # Development environment uses the simulated venue (in-process matching engine)
+diff --git a/infrastructure/environments/prod/terraform.tfvars b/infrastructure/environments/prod/terraform.tfvars
+index 10e89208..3e4a6950 100644
+--- a/infrastructure/environments/prod/terraform.tfvars
++++ b/infrastructure/environments/prod/terraform.tfvars
+@@ -22,6 +22,11 @@ autonomy_ceiling = "paper_trading"
+ # Placeholder the owner fills in: a team label, never a personal identifier.
+ owner = "platform"
+ 
++# A copy of each signed release digest in a second region (R12-RES-9177):
++# storage, not a second execution region, and billed, so owner decision 5
++# of 2026-10-25 holds it off. Named with the deploy; deploy.yml reads it.
++secondary_region = null
++
+ # --- The trust zones (blueprint §46.1) ---------------------------------------
+ #
+ # The three zones the catalogue places a workload in. Same ranges as dev:
+diff --git a/infrastructure/environments/stage/terraform.tfvars b/infrastructure/environments/stage/terraform.tfvars
+index ea9800e9..c303c547 100644
+--- a/infrastructure/environments/stage/terraform.tfvars
++++ b/infrastructure/environments/stage/terraform.tfvars
+@@ -20,6 +20,11 @@ autonomy_ceiling = "paper_trading"
+ # Placeholder the owner fills in: a team label, never a personal identifier.
+ owner = "platform"
+ 
++# A copy of each signed release digest in a second region (R12-RES-9177):
++# storage, not a second execution region, and billed, so owner decision 5
++# of 2026-10-25 holds it off. Named with the deploy; deploy.yml reads it.
++secondary_region = null
++
+ # --- The trust zones (blueprint §46.1) ---------------------------------------
+ #
+ # The three zones the catalogue places a workload in. Same ranges as dev:
+diff --git a/infrastructure/environments/test/terraform.tfvars b/infrastructure/environments/test/terraform.tfvars
+index 41e5cfad..56f2b49c 100644
+--- a/infrastructure/environments/test/terraform.tfvars
++++ b/infrastructure/environments/test/terraform.tfvars
+@@ -20,6 +20,11 @@ autonomy_ceiling = "paper_trading"
+ # Placeholder the owner fills in: a team label, never a personal identifier.
+ owner = "platform"
+ 
++# A copy of each signed release digest in a second region (R12-RES-9177):
++# storage, not a second execution region, and billed, so owner decision 5
++# of 2026-10-25 holds it off. Named with the deploy; deploy.yml reads it.
++secondary_region = null
++
+ # --- The trust zones (blueprint §46.1) ---------------------------------------
+ #
+ # The three zones the catalogue places a workload in. Same ranges as dev:
+diff --git a/infrastructure/terraform/main.tf b/infrastructure/terraform/main.tf
+index 1a0bfcb0..afa0fd48 100644
+--- a/infrastructure/terraform/main.tf
++++ b/infrastructure/terraform/main.tf
+@@ -599,6 +599,11 @@ module "registry" {
+   # after dev is provisioned.
+   promotion_readers = var.registry_promotion_readers
+ 
++  # The replica in another region, null everywhere today (R12-RES-9177;
++  # owner decision 5 of 2026-10-25). deploy.yml reads the same tfvars line
++  # and copies each signed digest here only when one is named.
++  secondary_region = var.secondary_region
++
+   # The ring every keyed store's key lives in; the two GENERIC repositories
+   # are encrypted with a key the module creates there (SEC-046).
+   key_ring_id          = module.secrets.key_ring_id
+diff --git a/infrastructure/terraform/modules/registry/outputs.tf b/infrastructure/terraform/modules/registry/outputs.tf
+index fa8287de..9eec6c27 100644
+--- a/infrastructure/terraform/modules/registry/outputs.tf
++++ b/infrastructure/terraform/modules/registry/outputs.tf
+@@ -15,5 +15,10 @@ output "image_prefix" {
+ 
+ output "secondary_image_prefix" {
+   description = "The prefix of an image reference in the secondary repository, or null when none is declared."
+-  value       = var.secondary_region == null ? null : "${var.secondary_region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.images_secondary[0].name}"
++  # `repository_id` rather than `name`: Google returns the id as the name, and
++  # the id is known at plan, so the root harness
++  # (tests/secondary-registry.tftest.hcl) can assert the prefix deploy.yml
++  # copies to without an apply. It still indexes the planned repository, so
++  # with none declared there is no instance to read and the output is null.
++  value = var.secondary_region == null ? null : "${var.secondary_region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.images_secondary[0].repository_id}"
+ }
+diff --git a/infrastructure/terraform/outputs.tf b/infrastructure/terraform/outputs.tf
+index 1a1f7070..b0fa4ddb 100644
+--- a/infrastructure/terraform/outputs.tf
++++ b/infrastructure/terraform/outputs.tf
+@@ -98,6 +98,20 @@ output "image_prefix" {
+   value = module.registry.image_prefix
+ }
+ 
++output "secondary_image_prefix" {
++  description = <<-EOT
++    The prefix of an image reference in the secondary repository each signed
++    release digest is copied to (R12-RES-9177), or null when `secondary_region`
++    names none, which is every environment today.
++
++    deploy.yml derives the same prefix from the committed tfvars rather than
++    from this output, because it runs without the state; the two are the
++    same function of the same line, and the root harness plans this one.
++  EOT
++
++  value = module.registry.secondary_image_prefix
++}
++
+ output "evidence_bucket" {
+   description = "The write-once evidence bucket, for the mesh's evidence configuration."
+   value       = module.evidence.bucket_name
+diff --git a/infrastructure/terraform/tests/secondary-registry.tftest.hcl b/infrastructure/terraform/tests/secondary-registry.tftest.hcl
+new file mode 100644
+index 00000000..28c60273
+--- /dev/null
++++ b/infrastructure/terraform/tests/secondary-registry.tftest.hcl
+@@ -0,0 +1,145 @@
++# The secondary image repository, planned through the root (R12-RES-9177).
++#
++# `modules/registry/tests/secondary.tftest.hcl` proves the module declares the
++# repository when handed a region and refuses one in the primary's. What it
++# cannot prove is that the root hands it anything: a `secondary_region` the
++# root declared and never passed to `module.registry` would plan nothing in
++# every environment, which reads exactly like the null every environment
++# holds today. So the runs here plan the root, leave `module.registry`
++# un-overridden so its resources are really planned, and assert on the
++# root's own `secondary_image_prefix` output, which is read off the planned
++# secondary repository's name rather than off the variable.
++#
++# Both halves, as every gate here must show (ADR 0069): null plans no
++# secondary repository and a named region plans one; the region-shaped check
++# and the same-region check each refuse at the root variable.
++#
++# What this does not prove: anything about Google. The providers are mocked,
++# every run is `command = plan`, and no credential is used or project reached.
++# Whether a release digest actually lands in the copy is deploy.yml's check,
++# which reads the digest back from the secondary and refuses a mismatch.
++
++mock_provider "google" {}
++mock_provider "google-beta" {}
++
++variables {
++  project_id        = "secondary-registry-harness"
++  project_number    = 123456789012
++  environment       = "dev"
++  owner             = "platform"
++  github_repository = "example/example"
++  region            = "us-east4"
++
++  # The four zones dev declares; the catalogue refuses a workload whose zone
++  # this environment did not declare.
++  trust_zones = {
++    "application-identity" = { region = "us-east4", subnet_cidr = "10.0.32.0/24" }
++    "cognition"            = { region = "us-east4", subnet_cidr = "10.0.33.0/24" }
++    "intelligence"         = { region = "us-east4", subnet_cidr = "10.0.34.0/24" }
++    "management"           = { region = "us-east4", subnet_cidr = "10.0.35.0/24" }
++  }
++}
++
++# --- the admitting half ------------------------------------------------------
++
++# Not set, so this is the default every committed tfvars restates.
++run "no_secondary_region_plans_no_secondary_repository" {
++  command = plan
++
++  override_module {
++    target = module.ai
++    outputs = {
++      training_bucket         = "harness-training"
++      metadata_store_id       = "projects/secondary-registry-harness/locations/us-east4/metadataStores/harness"
++      serving_endpoint_id     = null
++      reachable_by_this_build = false
++    }
++  }
++  override_module {
++    target = module.evidence
++    outputs = {
++      bucket_name       = "harness-evidence"
++      bucket_url        = "gs://harness-evidence"
++      encryption_key_id = "projects/secondary-registry-harness/locations/us-east4/keyRings/harness/cryptoKeys/evidence"
++    }
++  }
++
++  assert {
++    condition     = output.secondary_image_prefix == null
++    error_message = "with secondary_region unset the root still planned a secondary repository, which bills a replica no environment asked for"
++  }
++}
++
++run "a_named_secondary_region_plans_the_secondary_repository_there" {
++  command = plan
++
++  override_module {
++    target = module.ai
++    outputs = {
++      training_bucket         = "harness-training"
++      metadata_store_id       = "projects/secondary-registry-harness/locations/us-east4/metadataStores/harness"
++      serving_endpoint_id     = null
++      reachable_by_this_build = false
++    }
++  }
++  override_module {
++    target = module.evidence
++    outputs = {
++      bucket_name       = "harness-evidence"
++      bucket_url        = "gs://harness-evidence"
++      encryption_key_id = "projects/secondary-registry-harness/locations/us-east4/keyRings/harness/cryptoKeys/evidence"
++    }
++  }
++
++  variables {
++    secondary_region = "us-west1"
++  }
++
++  # The prefix is built from the planned repository, so it is null if the
++  # root stopped passing the region, and names the wrong region or project
++  # if the module stopped reading what the root passed. deploy.yml derives
++  # the same string from the tfvars.
++  assert {
++    condition     = output.secondary_image_prefix == "us-west1-docker.pkg.dev/secondary-registry-harness/qip-dev-secondary"
++    error_message = "a named secondary_region did not reach module.registry's secondary repository, or that repository is not where deploy.yml copies to"
++  }
++}
++
++# --- the refusing half -------------------------------------------------------
++
++run "a_secondary_region_equal_to_the_primary_stops_the_plan" {
++  command = plan
++
++  variables {
++    # The region loss the replica exists for would take both.
++    secondary_region = "us-east4"
++  }
++
++  expect_failures = [var.secondary_region]
++}
++
++run "a_secondary_region_that_is_not_region_shaped_stops_the_plan" {
++  command = plan
++
++  variables {
++    # Upper case: Artifact Registry's locations are lower case, and deploy.yml
++    # pastes this into a registry host, so a value it would refuse is refused
++    # here first.
++    secondary_region = "US-WEST1"
++  }
++
++  expect_failures = [var.secondary_region]
++}
++
++run "a_multi_region_secondary_stops_the_plan" {
++  command = plan
++
++  variables {
++    # `us` is an Artifact Registry multi-region. The ruling is a replica in
++    # one other region, not a multi-region repository standing in for the
++    # signed one, so it is refused rather than admitted as region-shaped.
++    secondary_region = "us"
++  }
++
++  expect_failures = [var.secondary_region]
++}
+diff --git a/infrastructure/terraform/variables.tf b/infrastructure/terraform/variables.tf
+index b4fdb359..41ba05b5 100644
+--- a/infrastructure/terraform/variables.tf
++++ b/infrastructure/terraform/variables.tf
+@@ -2096,3 +2096,39 @@ variable "registry_promotion_readers" {
+   default     = []
+   nullable    = false
+ }
++
++# R12-RES-9177: the release artifact must survive the loss of the registry's
++# region. On that loss the nodes keep the images they already pulled and a
++# rollout pauses; what is gone is the one place the signed, attested digest
++# lives, and with it every rollback. A value here declares a second DOCKER
++# repository in another region (`modules/registry/secondary.tf`) that the
++# build run copies each signed digest into and then reads back.
++#
++# It is a replica and nothing more. The primary stays the repository images
++# are built into, signed in and promoted from; Binary Authorization attests a
++# digest, and a copy that preserves the digest carries no new trust decision.
++# It is storage in another region, not a second execution region, so ADR
++# 0035's one execution region is untouched; it bills, so owner decision 5 of
++# 2026-10-25 holds it and it is null in every environment until a region is
++# named with the deploy.
++#
++# The same two refusals as the module's, made here so the plan names the
++# root variable an operator set rather than a module input they never saw.
++variable "secondary_region" {
++  description = "The region of the secondary image repository each signed release digest is copied to, or null for none. Must differ from `region`."
++  type        = string
++  default     = null
++
++  validation {
++    condition     = var.secondary_region == null || can(regex("^[a-z]+-[a-z]+[0-9]$", var.secondary_region))
++    error_message = "secondary_region is a Google Cloud region name such as us-west1, or null."
++  }
++
++  validation {
++    # A "secondary" in the primary's own region shares its failure domain:
++    # the region loss it exists for takes both. Refused rather than accepted
++    # as a copy that protects against nothing.
++    condition     = var.secondary_region != var.region
++    error_message = "secondary_region equals region; a secondary repository in the primary's region is lost with it. Name another region, or leave it null."
++  }
++}

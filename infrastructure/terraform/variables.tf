@@ -2096,3 +2096,39 @@ variable "registry_promotion_readers" {
   default     = []
   nullable    = false
 }
+
+# R12-RES-9177: the release artifact must survive the loss of the registry's
+# region. On that loss the nodes keep the images they already pulled and a
+# rollout pauses; what is gone is the one place the signed, attested digest
+# lives, and with it every rollback. A value here declares a second DOCKER
+# repository in another region (`modules/registry/secondary.tf`) that the
+# build run copies each signed digest into and then reads back.
+#
+# It is a replica and nothing more. The primary stays the repository images
+# are built into, signed in and promoted from; Binary Authorization attests a
+# digest, and a copy that preserves the digest carries no new trust decision.
+# It is storage in another region, not a second execution region, so ADR
+# 0035's one execution region is untouched; it bills, so owner decision 5 of
+# 2026-10-25 holds it and it is null in every environment until a region is
+# named with the deploy.
+#
+# The same two refusals as the module's, made here so the plan names the
+# root variable an operator set rather than a module input they never saw.
+variable "secondary_region" {
+  description = "The region of the secondary image repository each signed release digest is copied to, or null for none. Must differ from `region`."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.secondary_region == null || can(regex("^[a-z]+-[a-z]+[0-9]$", var.secondary_region))
+    error_message = "secondary_region is a Google Cloud region name such as us-west1, or null."
+  }
+
+  validation {
+    # A "secondary" in the primary's own region shares its failure domain:
+    # the region loss it exists for takes both. Refused rather than accepted
+    # as a copy that protects against nothing.
+    condition     = var.secondary_region != var.region
+    error_message = "secondary_region equals region; a secondary repository in the primary's region is lost with it. Name another region, or leave it null."
+  }
+}

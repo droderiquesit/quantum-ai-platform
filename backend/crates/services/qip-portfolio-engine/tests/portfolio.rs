@@ -1090,3 +1090,201 @@ fn an_approved_thesis_without_a_return_forecast_is_refused() -> Result<()> {
     );
     Ok(())
 }
+
+// --- ADR 0228: grouped caps narrow one joint run ---------------------------
+
+/// R12-ASSET-4070: one construction run respects per-strategy, per-class,
+/// per-region and per-horizon budgets together. Four names, each cap set
+/// below what the unconstrained run would give its group, and every group's
+/// summed weight comes out at or under its cap, from a single
+/// `construct_grouped` call.
+///
+/// Mutation: pass the groups without the class dimension and the class cap
+/// is exceeded.
+#[test]
+fn one_construction_run_respects_strategy_class_region_and_horizon_caps_together() -> Result<()> {
+    use qip_portfolio_engine::construction::GroupCaps;
+    let theses = [
+        thesis("AAA", 0.9, 0.04),
+        thesis("BBB", 0.8, 0.035),
+        thesis("CCC", 0.7, 0.03),
+        thesis("DDD", 0.6, 0.025),
+    ];
+    let mandate = wide_mandate();
+    let free = build_capped(&theses, mandate, &BTreeMap::new())?;
+    let dimension = |name: &str, pairs: &[(&str, &str)], caps: &[(&str, f64)]| GroupCaps {
+        dimension: name.to_string(),
+        group_of: pairs
+            .iter()
+            .map(|(asset, group)| (object(asset).as_str().to_string(), group.to_string()))
+            .collect(),
+        caps: caps
+            .iter()
+            .map(|(group, cap)| (group.to_string(), *cap))
+            .collect(),
+    };
+    let groups = vec![
+        dimension(
+            "strategy",
+            &[("AAA", "s1"), ("BBB", "s1"), ("CCC", "s2"), ("DDD", "s2")],
+            &[("s1", 0.45), ("s2", 0.45)],
+        ),
+        dimension(
+            "class",
+            &[
+                ("AAA", "equity"),
+                ("CCC", "equity"),
+                ("BBB", "fx"),
+                ("DDD", "fx"),
+            ],
+            &[("equity", 0.30), ("fx", 0.50)],
+        ),
+        dimension(
+            "region",
+            &[("AAA", "na"), ("DDD", "na"), ("BBB", "eu"), ("CCC", "eu")],
+            &[("na", 0.40), ("eu", 0.40)],
+        ),
+        dimension(
+            "horizon",
+            &[
+                ("AAA", "short"),
+                ("BBB", "short"),
+                ("CCC", "long"),
+                ("DDD", "long"),
+            ],
+            &[("short", 0.42), ("long", 0.42)],
+        ),
+    ];
+    let class_free: f64 = ["AAA", "CCC"].iter().map(|s| weight_of(&free, s)).sum();
+    assert!(
+        class_free > 0.30 + 1e-6,
+        "premise: the free run puts {class_free} in the equity class, above its cap"
+    );
+    let grouped = constructor(mandate)?
+        .construct_grouped(
+            &theses,
+            &covariance(theses.len()),
+            &BTreeMap::new(),
+            equity(),
+            equity(),
+            &BTreeMap::new(),
+            &groups,
+            now(),
+            now(),
+            ProposalId::from_string("prop-grouped"),
+        )?
+        .proposal;
+    for dimension in &groups {
+        for (group, cap) in &dimension.caps {
+            let held: f64 = dimension
+                .group_of
+                .iter()
+                .filter(|(_, g)| *g == group)
+                .map(|(asset, _)| {
+                    grouped
+                        .legs
+                        .iter()
+                        .find(|leg| leg.object_id.as_str() == asset)
+                        .map_or(0.0, |leg| leg.target_weight)
+                })
+                .sum();
+            assert!(
+                held <= cap + 1e-6,
+                "{} group {group} holds {held}, above its {cap} cap",
+                dimension.dimension
+            );
+        }
+    }
+    assert!(
+        grouped.legs.iter().any(|leg| leg.target_weight > 0.0),
+        "premise: something is held"
+    );
+    Ok(())
+}
+
+/// Two dimensions that each reach the budget alone but cannot reach it
+/// together. The budget is pinned per dimension, so the solve came back
+/// breaching both groups and a proposal was drafted anyway, with the breach
+/// only as a compromise line; an independent review found it with this exact
+/// case. A breached group is now refused. Also refused: a grouping that
+/// names a name in no thesis, and a cap on a group with no member.
+///
+/// Mutation: remove the post-solve group check and the breach is drafted.
+#[test]
+fn grouped_caps_that_cannot_hold_together_refuse_the_proposal_rather_than_breach() -> Result<()> {
+    use qip_portfolio_engine::construction::GroupCaps;
+    let theses = [
+        thesis("AAA", 0.9, 0.04),
+        thesis("BBB", 0.8, 0.038),
+        thesis("CCC", 0.7, 0.036),
+        thesis("DDD", 0.6, 0.034),
+    ];
+    let mandate = Mandate {
+        position_cap: 0.25,
+        target_gross: 0.8,
+        ..Mandate::default()
+    };
+    let dimension = |name: &str, pairs: &[(&str, &str)], caps: &[(&str, f64)]| GroupCaps {
+        dimension: name.to_string(),
+        group_of: pairs
+            .iter()
+            .map(|(asset, group)| (object(asset).as_str().to_string(), group.to_string()))
+            .collect(),
+        caps: caps
+            .iter()
+            .map(|(group, cap)| (group.to_string(), *cap))
+            .collect(),
+    };
+    let run = |groups: &[GroupCaps]| {
+        constructor(mandate)?.construct_grouped(
+            &theses,
+            &covariance(theses.len()),
+            &BTreeMap::new(),
+            equity(),
+            equity(),
+            &BTreeMap::new(),
+            groups,
+            now(),
+            now(),
+            ProposalId::from_string("prop-grouped"),
+        )
+    };
+    let strategy = dimension(
+        "strategy",
+        &[("AAA", "s1"), ("BBB", "s1"), ("CCC", "s2"), ("DDD", "s2")],
+        &[("s1", 0.1)],
+    );
+    let region = dimension(
+        "region",
+        &[("AAA", "na"), ("BBB", "na"), ("CCC", "eu"), ("DDD", "eu")],
+        &[("eu", 0.1)],
+    );
+    // The premise: each dimension alone is met.
+    run(std::slice::from_ref(&strategy))?;
+    run(std::slice::from_ref(&region))?;
+
+    let refusal = match run(&[strategy, region]) {
+        Ok(outcome) => panic!(
+            "two caps that cannot hold together drafted a proposal: {:?}",
+            outcome.proposal.legs
+        ),
+        Err(refusal) => refusal,
+    };
+    assert!(
+        refusal.message().contains("above its cap"),
+        "refused for the wrong reason: {}",
+        refusal.message()
+    );
+
+    let absent = dimension("class", &[("AAA", "eq"), ("ZZZ", "eq")], &[("eq", 0.5)]);
+    assert!(
+        run(&[absent]).is_err(),
+        "a grouping naming a name in no thesis was ignored"
+    );
+    let empty = dimension("class", &[("AAA", "eq")], &[("eq", 0.5), ("nobody", 0.1)]);
+    assert!(
+        run(&[empty]).is_err(),
+        "a cap on a group with no member was ignored"
+    );
+    Ok(())
+}

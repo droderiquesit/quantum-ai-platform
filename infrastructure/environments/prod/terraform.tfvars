@@ -22,6 +22,11 @@ autonomy_ceiling = "paper_trading"
 # Placeholder the owner fills in: a team label, never a personal identifier.
 owner = "platform"
 
+# A copy of each signed release digest in a second region (R12-RES-9177):
+# storage, not a second execution region, and billed, so owner decision 5
+# of 2026-10-25 holds it off. Named with the deploy; deploy.yml reads it.
+secondary_region = null
+
 # --- The trust zones (blueprint §46.1) ---------------------------------------
 #
 # The three zones the catalogue places a workload in. Same ranges as dev:
