@@ -28968,6 +28968,73 @@ mod decide_tests {
         );
     }
 
+    /// R12-QUANT-4018: a promotion restored from the log passes the workload
+    /// check a live one does. A quantum-informed record naming a family the
+    /// foundry holds as not built is the record the live seam would refuse,
+    /// and a restart that put it back would serve a model nobody could have
+    /// promoted. The same record naming the built family restores, which
+    /// keeps the check from refusing every quantum-informed record.
+    ///
+    /// Mutation: drop the `require_restorable` call in
+    /// `resume_model_promotions` — the unbuilt record is restored.
+    #[test]
+    fn a_restored_quantum_informed_promotion_naming_an_unbuilt_family_is_refused_at_restart() {
+        use crate::model_serving::{
+            MODEL_PROMOTION_ORIGIN, ModelProducer, ModelPromotion, resume_model_promotions,
+        };
+        let record = |reference: &str, workload: &str| ModelPromotion {
+            reference: reference.to_string(),
+            name: reference.to_string(),
+            format: qip_ai::serving::ModelFormat::TeacherLinear,
+            artifact_digest: "0".repeat(64),
+            arity: 2,
+            distilled: None,
+            displaced: Vec::new(),
+            producer: ModelProducer::QuantumInformed {
+                baseline: "bar-baseline@0.1.0".to_string(),
+                workload: Some(workload.to_string()),
+            },
+            moved_by: None,
+            evidence: None,
+            permitted_locations: None,
+            stages: Vec::new(),
+            rollback_parent: None,
+            signature: None,
+            at: Timestamp::from_secs(1_760_000_000),
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut built = small_book_platform();
+        built
+            .journal_record(
+                record("qi-built@0.1.0", "PortfolioAllocation"),
+                MODEL_PROMOTION_ORIGIN,
+                now,
+            )
+            .expect("journaled");
+        let restored = resume_model_promotions(built.event_log()).expect("a built family restores");
+        assert!(
+            restored.contains_key("qi-built@0.1.0"),
+            "premise: {restored:?}"
+        );
+
+        let mut unbuilt = small_book_platform();
+        unbuilt
+            .journal_record(
+                record("qi-unbuilt@0.1.0", "GraphSearch"),
+                MODEL_PROMOTION_ORIGIN,
+                now,
+            )
+            .expect("journaled");
+        let refused = resume_model_promotions(unbuilt.event_log())
+            .expect_err("an unbuilt family was restored");
+        assert!(
+            refused.message().contains("qi-unbuilt@0.1.0")
+                && refused.message().contains("not built"),
+            "{}",
+            refused.message()
+        );
+    }
+
     /// R12-WORLD-9035: the cycle grows a future tree from the held world
     /// events, partitioned by each event's class, and the next cycle's bars
     /// reweight and prune it while every family stays a distribution and the
