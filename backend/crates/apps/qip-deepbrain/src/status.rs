@@ -25,7 +25,7 @@
 
 use qip_core::{Duration, Timestamp};
 use qip_observability::Metrics;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::config::DeepBrainConfig;
@@ -107,7 +107,7 @@ pub struct NodeStatus {
 /// a long cycle is the work, not a symptom, and the only thing a readiness
 /// signal tied to duration would achieve is taking the deepest analyses out of
 /// rotation first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Unready {
     /// Shutting down. Correct, not a fault: a node on its way out should stop
@@ -304,6 +304,30 @@ impl NodeStatus {
         }
         if self.cycles == 0 {
             return Some(Unready::Warming);
+        }
+        None
+    }
+
+    /// The readiness states a node's own run loop can genuinely be in when it
+    /// asks, in [`Self::unready`]'s order: halted, persistently failing.
+    ///
+    /// Not stalled: the loop asks at the top of a cycle, so it has just come
+    /// back, and a wedged loop cannot ask. Not stopping: that is set only
+    /// after the loop has ended, so a loop that reads it is a second run over
+    /// a finished status, and a stop is a request to end, not a loss. Not
+    /// warming, which is not an outage. Read independently of
+    /// [`Self::unready`] rather than filtered from it, because that answers
+    /// only the first state that holds: a node both stalled and failing
+    /// would report stalled there and read as healthy here.
+    ///
+    /// ADR 0214's loss signal: while this is `Some`, the AI platform is
+    /// lost and no new cognition is produced.
+    pub fn self_observed_outage(&self) -> Option<Unready> {
+        if self.halted {
+            return Some(Unready::Halted);
+        }
+        if self.consecutive_failures > self.failure_tolerance {
+            return Some(Unready::PersistentlyFailing);
         }
         None
     }

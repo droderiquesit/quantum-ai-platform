@@ -211,6 +211,20 @@ impl UniverseHistory {
             .collect()
     }
 
+    /// Whether the history names `object_id` at all.
+    pub fn is_named(&self, object_id: &ObjectId) -> bool {
+        self.listings.contains_key(object_id.as_str())
+    }
+
+    /// Whether `object_id` was listed at `at`: false for one the history
+    /// does not name, so a caller asks [`Self::is_named`] first where an
+    /// unnamed instrument should be judged some other way.
+    pub fn is_member_at(&self, object_id: &ObjectId, at: Timestamp) -> bool {
+        self.listings
+            .get(object_id.as_str())
+            .is_some_and(|listing| listing.is_member_at(at))
+    }
+
     fn listing_mut(&mut self, object_id: &ObjectId) -> Result<&mut Listing> {
         self.listings
             .get_mut(object_id.as_str())
