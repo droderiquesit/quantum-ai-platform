@@ -705,7 +705,7 @@ fn run() -> Result<()> {
         "  source alpha:     {}",
         if source_alpha_every == 0 {
             format!(
-                "disabled ({}=0 or unset)",
+                "disabled ({}=0)",
                 qip_deepbrain::source_alpha::SOURCE_ALPHA_EVERY_VARIABLE
             )
         } else {

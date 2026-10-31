@@ -1773,7 +1773,7 @@
       "backend/crates/apps/qip-deepbrain/src/operations.rs::CapabilitySwitch",
       "backend/crates/apps/qip-deepbrain/src/operations.rs::runbooks"
     ],
-    "gap": "Runbooks are committed code and are not signed. The deep brain installs no artefact signer: QIP_ARTEFACT_SIGNER is read only by qip-api (signing.rs), and the deep brain's package signer is unset (reflex packages are held_unsigned). Signing the set needs a signer in the deep brain's process (a KMS key grant, a protected-path Terraform change) and a verifier in Operations::new that refuses an unsigned or tampered set.",
+    "gap": "2026-10-31 (lane L6): not decided. Runbooks are compiled into the deep brain's binary, so a verifier inside Operations::build checking them against a digest the same build embeds proves nothing a tampered build could not also fake; a real check needs a signer outside the build (ADR 0110's KMS artefact_signing, null everywhere and billed, deferred by owner-decisions-2026-10-25 decision 5) or an ADR accepting the Binary Authorization attestation on the image as that signature. Either is the owner's. Earlier: Runbooks are committed code and are not signed. The deep brain installs no artefact signer: QIP_ARTEFACT_SIGNER is read only by qip-api (signing.rs), and the deep brain's package signer is unset (reflex packages are held_unsigned). Signing the set needs a signer in the deep brain's process (a KMS key grant, a protected-path Terraform change) and a verifier in Operations::new that refuses an unsigned or tampered set.",
     "implemented": true,
     "tested": true,
     "integrated": false,

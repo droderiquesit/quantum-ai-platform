@@ -1,9 +1,100 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_agents::registries::CapabilityRegistry;
+use qip_agents::memory::PromotionPolicy;
+use qip_agents::registries::{CapabilityRegistry, CitedEvaluation, OntologyRegistry};
 use qip_agents::research::{ResearchRegistry, Screening, Verdict};
 use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_contracts::expansion::{CapabilityEntry, CapabilityVerb};
+use qip_contracts::expansion::{OntologyTypeFamily, OntologyTypeSpec};
+
+/// ADR 0198: the Ontology Registry has one door above version one, `extend`,
+/// and it demands a passing evaluation. Until 2026-10-31 `register` admitted
+/// any higher version directly, so the evaluation guarded a door nobody had
+/// to use. Mutation: delete the `spec.version != 1` refusal in `register` —
+/// the direct version-two registration is admitted and the first `is_err`
+/// fails.
+#[test]
+fn a_type_above_version_one_enters_the_ontology_only_through_an_evaluated_extension() {
+    let spec = |version: u32| OntologyTypeSpec {
+        family: OntologyTypeFamily::Event,
+        name: "earnings-surprise".to_string(),
+        version,
+        schema: r#"{"type":"object"}"#.to_string(),
+        description: "an earnings print away from consensus".to_string(),
+    };
+    let mut registry = OntologyRegistry::new();
+    assert_eq!(registry.type_count(), 0, "premise: empty");
+    registry.register(spec(1)).unwrap();
+    assert!(
+        registry.register(spec(2)).is_err(),
+        "version two cannot be registered directly"
+    );
+    assert!(
+        registry.register(spec(7)).is_err(),
+        "nor any higher version"
+    );
+    assert!(
+        registry
+            .extend(
+                OntologyTypeFamily::Event,
+                "earnings-surprise",
+                r#"{"type":"object","required":["consensus"]}"#,
+                "names the consensus it was measured against",
+                &CitedEvaluation {
+                    id: "eval-9".to_string(),
+                    passed: false,
+                },
+            )
+            .is_err(),
+        "a failed evaluation extends nothing"
+    );
+    let next = registry
+        .extend(
+            OntologyTypeFamily::Event,
+            "earnings-surprise",
+            r#"{"type":"object","required":["consensus"]}"#,
+            "names the consensus it was measured against",
+            &CitedEvaluation {
+                id: "eval-9".to_string(),
+                passed: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(next, 2);
+    assert_eq!(
+        registry
+            .get_latest(OntologyTypeFamily::Event, "earnings-surprise")
+            .map(|t| t.version),
+        Some(2)
+    );
+    assert_eq!(registry.type_count(), 2, "both versions are kept");
+}
+
+/// ADR 0198: a lesson's promotion policy cannot have its floors lowered to a
+/// gate that cannot refuse. Mutation: drop the `minimum_support < 2` refusal
+/// in `PromotionPolicy::new` — the zero-support policy is admitted and the
+/// first assertion fails.
+#[test]
+fn a_promotion_policy_with_a_floor_that_cannot_refuse_is_itself_refused() {
+    assert!(PromotionPolicy::new(0, 0.65).is_err(), "no support floor");
+    assert!(PromotionPolicy::new(1, 0.65).is_err(), "one observation");
+    assert!(PromotionPolicy::new(4, 0.5).is_err(), "a coin flip");
+    assert!(PromotionPolicy::new(4, 1.5).is_err(), "above certainty");
+    assert!(PromotionPolicy::new(4, f64::NAN).is_err(), "not a number");
+    let policy = PromotionPolicy::new(4, 0.65).unwrap();
+    assert_eq!(policy.minimum_support(), 4);
+    assert_eq!(
+        policy,
+        PromotionPolicy::default(),
+        "the default states the same floors"
+    );
+    let decoded: Result<PromotionPolicy, _> =
+        serde_json::from_str(r#"{"minimum_support":0,"minimum_smoothed_support":0.65}"#);
+    assert!(
+        decoded.is_err(),
+        "a decoded policy goes through the same gate"
+    );
+}
 
 /// ADR 0158 decision 15: the one way the Capability Registry is populated is
 /// a promoted capability declaring its verb. Two promotions under one verb
