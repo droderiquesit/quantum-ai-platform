@@ -1693,9 +1693,11 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/microstructure_delta.rs:67 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:429 a_microstructure_delta_round_trips_and_its_residual_is_signed",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:438 a_microstructure_delta_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:438 a_microstructure_delta_refuses_each_broken_invariant",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold",
+      "docs/adr/0226-a-concluded-microstructure-delta-is-read-by-the-centres-divergence-hold-a-residual-may-keep-a-venues-hold-but-never-lift-one-or-size-anything.md"
     ],
-    "gap": "No production seam constructs or consumes MicrostructureDelta (grep of MicrostructureDeltaFields outside qip-contracts finds nothing). No residual records are emitted.",
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0226 under decision 10 of the 2026-10-31 owner rulings): the producer is the deep brain's tick campaigns, which conclude MicrostructureDeltas into its ambient journal (AmbientRecord::MicrostructureDelta). The receiver is built: Platform::admit_microstructure_delta re-admits each through MicrostructureDelta::new and keeps the latest per venue, and review_replay_divergence keeps a venue's divergence hold past a re-promotion while that delta's slippage or impact |observed - modelled| exceeds REPLAY_DIVERGENCE_THRESHOLD_BPS on at least REPLAY_DIVERGENCE_MIN_SAMPLE samples; a residual never lifts a hold or sizes anything (qip-kernel tests/central.rs::a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold; dropping the lookup fails it). Open: no transport carries a delta from the deep brain's process to qip-api's Platform — EventLog::open takes an exclusive lock on the journal and the two run as separate Cloud Run services — so admit_microstructure_delta has no production caller and the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,

@@ -623,6 +623,11 @@ pub struct Platform {
     /// Where each released strategy's divergence evidence starts again: the
     /// instant of the re-promotion that released it. Resumed with the holds.
     replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
+    /// The latest concluded microstructure delta per venue, re-admitted
+    /// through its contract (ADR 0226). Read only by the release of a
+    /// replay-divergence hold, which it may keep and never lift.
+    microstructure_deltas:
+        BTreeMap<String, qip_contracts::microstructure_delta::MicrostructureDelta>,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -6291,6 +6296,7 @@ impl Platform {
             tactical: None,
             replay_divergence_holds: replay_divergence_resumed.0,
             replay_divergence_windows: replay_divergence_resumed.1,
+            microstructure_deltas: BTreeMap::new(),
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -25572,6 +25578,46 @@ impl Platform {
         Ok(decision)
     }
 
+    /// Admit a concluded microstructure delta (ADR 0226, R12-CONTRACT-7074).
+    ///
+    /// Re-admitted through [`qip_contracts::microstructure_delta::MicrostructureDelta`]'s
+    /// contract, because the fields arrive from another process's journal
+    /// and a delta that does not validate is not evidence. Kept only if it
+    /// is the venue's latest by its window's end, so an older campaign read
+    /// late cannot overwrite a newer one. Refused past
+    /// [`crate::replay_divergence::MAX_DELTA_VENUES`] venues. Returns whether
+    /// it became the venue's latest.
+    pub fn admit_microstructure_delta(
+        &mut self,
+        fields: qip_contracts::microstructure_delta::MicrostructureDeltaFields,
+    ) -> Result<bool> {
+        let delta = qip_contracts::microstructure_delta::MicrostructureDelta::new(fields)?;
+        let venue = delta.venue.as_str().to_string();
+        match self.microstructure_deltas.get(&venue) {
+            Some(held) if held.window_end >= delta.window_end => return Ok(false),
+            None if self.microstructure_deltas.len()
+                >= crate::replay_divergence::MAX_DELTA_VENUES =>
+            {
+                return Err(Error::denied(format!(
+                    "the platform holds deltas for {} venues; a delta for {venue} is refused \
+                     rather than growing the set",
+                    crate::replay_divergence::MAX_DELTA_VENUES
+                )));
+            }
+            _ => {}
+        }
+        self.microstructure_deltas.insert(venue, delta);
+        Ok(true)
+    }
+
+    /// The latest concluded microstructure delta for `venue`, if any.
+    pub fn microstructure_delta(
+        &self,
+        venue: &str,
+    ) -> Option<&qip_contracts::microstructure_delta::MicrostructureDelta> {
+        self.microstructure_deltas.get(venue)
+    }
+
     /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
     /// has answered, then hold every registered strategy whose venue the
     /// twin now diverges from. Each change is journaled before the state
@@ -25589,6 +25635,7 @@ impl Platform {
         let mut problems = Vec::new();
         let mut restored = 0usize;
         let mut reduced = 0usize;
+        let mut kept: Vec<String> = Vec::new();
 
         let held: Vec<DivergenceHold> = self.replay_divergence_holds.values().cloned().collect();
         for hold in held {
@@ -25599,6 +25646,20 @@ impl Platform {
             .cloned() else {
                 continue;
             };
+            // A concluded residual still past the threshold keeps the hold
+            // (ADR 0226): the re-promotion was argued on the model the
+            // venue's own residuals say is still wrong.
+            if let Some(reason) = self
+                .microstructure_deltas
+                .get(&hold.venue)
+                .and_then(crate::replay_divergence::residual_keeps_hold)
+            {
+                kept.push(format!(
+                    "{}'s hold stands past its re-promotion: {reason}",
+                    hold.strategy
+                ));
+                continue;
+            }
             let entry = ReplayDivergenceEntry::restored(&hold, &repromotion, now);
             if let Err(error) = self.journal_record(entry, REPLAY_DIVERGENCE_ORIGIN, now) {
                 problems.push(format!(
@@ -25674,14 +25735,15 @@ impl Platform {
         if reduced == 0 && restored == 0 && self.replay_divergence_holds.is_empty() {
             return (None, problems);
         }
-        (
-            Some(format!(
-                "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
-                 re-promotion, {} held",
-                self.replay_divergence_holds.len()
-            )),
-            problems,
-        )
+        let mut summary = format!(
+            "replay divergence: {reduced} strategy grant(s) reduced, {restored} restored by \
+             re-promotion, {} held",
+            self.replay_divergence_holds.len()
+        );
+        if !kept.is_empty() {
+            summary.push_str(&format!("; {}", kept.join("; ")));
+        }
+        (Some(summary), problems)
     }
 
     /// The last Lane 2 refresh, `None` before the first cycle

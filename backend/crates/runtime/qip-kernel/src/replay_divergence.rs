@@ -77,6 +77,7 @@
 //! envelope is a different act with its own approval chain.
 
 use crate::platform::FillScore;
+use qip_contracts::microstructure_delta::MicrostructureDelta;
 use qip_contracts::signal::StrategyId;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -116,6 +117,47 @@ const _: () = assert!(REPLAY_DIVERGENCE_MIN_SAMPLE >= 1);
 /// places. A hold that could be configured to one would be a control that
 /// reads as protection and cannot narrow anything.
 pub const REPLAY_DIVERGENCE_MULTIPLIER: Decimal = Decimal::from_raw(500_000_000);
+
+/// Venues whose latest [`MicrostructureDelta`] the platform keeps. A bound,
+/// because the deltas arrive from another process's journal and a venue
+/// string the centre never configured must not grow a working set.
+pub const MAX_DELTA_VENUES: usize = 1_024;
+
+/// Why `delta` keeps a hold its re-promotion would otherwise release, or
+/// `None` where it does not (ADR 0226, R12-CONTRACT-7074).
+///
+/// The cell's own residuals, concluded by a tick campaign, are a second
+/// reading of the gap the twin's fill error measured. A slippage or impact
+/// residual — the two families stated in basis points, the twin's unit —
+/// whose `|observed - modelled|` is past [`REPLAY_DIVERGENCE_THRESHOLD_BPS`]
+/// on at least [`REPLAY_DIVERGENCE_MIN_SAMPLE`] samples says the venue is
+/// still not what the model prices, so a re-promotion argued on the model's
+/// replays does not release the hold. The rule only ever keeps a hold: no
+/// residual releases one, raises one, or sizes anything.
+pub fn residual_keeps_hold(delta: &MicrostructureDelta) -> Option<String> {
+    use qip_contracts::microstructure_delta::ResidualKind;
+    let threshold = Decimal::from_f64(REPLAY_DIVERGENCE_THRESHOLD_BPS)?;
+    delta
+        .residuals
+        .iter()
+        .filter(|r| matches!(r.kind, ResidualKind::Slippage | ResidualKind::Impact))
+        .filter(|r| r.samples >= REPLAY_DIVERGENCE_MIN_SAMPLE as u64)
+        .find(|r| r.error().abs() > threshold)
+        .map(|r| {
+            format!(
+                "{}'s {:?} residual on {} is {} against {} modelled over {} samples in delta {} \
+                 (window ending {}), past the {REPLAY_DIVERGENCE_THRESHOLD_BPS} bps threshold",
+                delta.venue.as_str(),
+                r.kind,
+                r.instrument,
+                r.observed,
+                r.modelled,
+                r.samples,
+                delta.delta_id,
+                delta.window_end.to_rfc3339()
+            )
+        })
+}
 
 /// The producer on every hold and release record, told apart from the
 /// promotion, grant and registration records that share
