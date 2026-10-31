@@ -24,6 +24,33 @@ use book::BookParameters;
 use narrative::SyntheticCompany;
 use price::{FactorModel, PriceState, ProcessParameters, Regime};
 
+/// The terms of a dated, cash-settled contract the exchange lists on one of
+/// its own names.
+///
+/// Why this exists: the kernel's rule pack carries a contract rule
+/// (`r70-contract-expires-before-horizon`, R12-REASON-3057) whose input is a
+/// derivative's expiry, and until this type no shipped default path listed a
+/// dated instrument — the demo world was four stocks and a bond, so the rule
+/// was on the cycle and its input never was. A contract priced by the exchange
+/// itself is the honest way to put one there: its price is the underlying's,
+/// carried to expiry, rather than a sixth random walk.
+#[derive(Clone, Debug)]
+pub struct ContractTerms {
+    /// The symbol of the instrument the contract settles against. It must be
+    /// listed in the same environment, and ahead of the contract, so the
+    /// contract reads the spot the same step produced; see
+    /// [`SyntheticEnvironment::demo`].
+    pub underlying_symbol: String,
+    /// The instant the contract stops trading and settles in cash.
+    pub expiry: Timestamp,
+    /// Units of the underlying one contract represents. A `Decimal` because
+    /// it multiplies a price into money downstream, and the crossing from
+    /// `f64` would otherwise happen in every reader.
+    pub multiplier: Decimal,
+    /// Annualised cost of carry the fair value is marked at.
+    pub carry_rate: f64,
+}
+
 /// One instrument in the synthetic world.
 #[derive(Clone, Debug)]
 pub struct SyntheticInstrument {
@@ -35,6 +62,10 @@ pub struct SyntheticInstrument {
     pub process: ProcessParameters,
     pub book: BookParameters,
     pub state: PriceState,
+    /// The contract terms, where this instrument is a dated contract rather
+    /// than a name with a price process of its own. `None` for every spot
+    /// instrument.
+    pub contract: Option<ContractTerms>,
 }
 
 impl SyntheticInstrument {
@@ -55,6 +86,7 @@ impl SyntheticInstrument {
             process,
             book,
             state: PriceState::new(initial_price, variance),
+            contract: None,
         }
     }
 
@@ -62,6 +94,102 @@ impl SyntheticInstrument {
         self.entity_id = Some(entity_id.into());
         self
     }
+
+    /// A cash-settled future on `underlying`, listed at `listed_at`.
+    ///
+    /// The contract has no price process of its own: its opening price is the
+    /// underlying's spot carried to `terms.expiry` at `terms.carry_rate`, and
+    /// every step re-marks it the same way from the spot that step produced
+    /// (see [`SyntheticEnvironment::step`]). The underlying's process is
+    /// copied only so the contract's opening variance is the spot's rather
+    /// than zero, which is what the book generator widens its quote on.
+    pub fn cash_settled_future_on(
+        underlying: &SyntheticInstrument,
+        object_id: ObjectId,
+        symbol: impl Into<String>,
+        venue: impl Into<String>,
+        terms: ContractTerms,
+        listed_at: Timestamp,
+        book: BookParameters,
+    ) -> Self {
+        let price = fair_value(underlying.state.price, &terms, listed_at);
+        let mut contract = Self::new(
+            object_id,
+            symbol,
+            venue,
+            price,
+            underlying.process.clone(),
+            book,
+        );
+        contract.contract = Some(terms);
+        contract
+    }
+}
+
+/// The spot carried to expiry: `spot * exp(carry * years_to_expiry)`. At and
+/// after expiry the contract is marked at spot, because that is what it
+/// settles to and the environment has no delisting; whether a position may be
+/// held into that is the kernel's contract rule's business, not the exchange's.
+fn fair_value(spot: f64, terms: &ContractTerms, at: Timestamp) -> f64 {
+    let remaining = if terms.expiry > at {
+        terms.expiry.since(at).as_years_f64()
+    } else {
+        0.0
+    };
+    spot * (terms.carry_rate * remaining).exp()
+}
+
+/// The contract month codes futures symbols carry, January first.
+const MONTH_CODES: [char; 12] = ['F', 'G', 'H', 'J', 'K', 'M', 'N', 'Q', 'U', 'V', 'X', 'Z'];
+
+/// Fewest days a front contract listed by [`SyntheticEnvironment::demo`] has
+/// left to run, so a hypothesis horizon of days resolves inside it and the
+/// kernel's margin reads positive until a claim really does stretch past the
+/// expiry.
+const FRONT_CONTRACT_MINIMUM_DAYS: i64 = 60;
+
+/// The expiry of the front contract listed at `listed_at`: the session open
+/// (14:30 UTC) of the first third Friday at least
+/// [`FRONT_CONTRACT_MINIMUM_DAYS`] after listing.
+///
+/// Derived from the listing instant rather than fixed, because the demo is
+/// started at whatever the deployment's clock says and a fixed date would be
+/// already expired on some start and a decade out on another — either makes
+/// the margin the contract rule reads a number nobody chose. Third Fridays
+/// are at most thirty-five days apart, so the third Friday of the third month
+/// after the listing month is never less than seventy days out; the search
+/// over the nearer months falls through to that one rather than to a guess.
+pub fn front_contract_expiry(listed_at: Timestamp) -> Timestamp {
+    let floor = listed_at.saturating_add(Duration::from_days(FRONT_CONTRACT_MINIMUM_DAYS));
+    let (year, month, _) = listed_at.civil_date();
+    let third_friday = |months_ahead: u32| -> Timestamp {
+        let index = (month - 1 + months_ahead) as i32;
+        let (y, m) = (
+            year + index.div_euclid(12),
+            (index.rem_euclid(12) + 1) as u32,
+        );
+        let first = Timestamp::from_civil(y, m, 1);
+        // Monday is weekday 0, so Friday is 4.
+        let first_friday = 1 + (4 + 7 - first.weekday()) % 7;
+        Timestamp::from_civil(y, m, first_friday + 14)
+            .saturating_add(Duration::from_mins(14 * 60 + 30))
+    };
+    (0..3)
+        .map(third_friday)
+        .find(|candidate| *candidate >= floor)
+        .unwrap_or_else(|| third_friday(3))
+}
+
+/// The symbol a contract on `underlying` expiring at `expiry` trades under:
+/// the underlying's symbol, the contract month code and the year's last
+/// digit, as listed futures are quoted.
+pub fn contract_symbol(underlying: &str, expiry: Timestamp) -> String {
+    let (year, month, _) = expiry.civil_date();
+    let code = MONTH_CODES
+        .get((month as usize).saturating_sub(1))
+        .copied()
+        .unwrap_or('Z');
+    format!("{underlying}{code}{}", year.rem_euclid(10))
 }
 
 /// A shock injected at a chosen instant.
@@ -108,6 +236,10 @@ impl ScriptedEvent {
     }
 }
 
+/// Folded into the seed for the contract stream (`SyntheticEnvironment::contract_rng`),
+/// so the two streams never coincide for any seed.
+const CONTRACT_STREAM_SALT: u64 = 0x434F_4E54_5241_4354; // "CONTRACT"
+
 /// Configuration for the synthetic environment.
 #[derive(Clone, Debug)]
 pub struct EnvironmentConfig {
@@ -149,6 +281,13 @@ pub struct SyntheticEnvironment {
     regime: Regime,
     config: EnvironmentConfig,
     rng: Xoshiro256,
+    /// The stream dated contracts draw their books and prints from, kept
+    /// apart from `rng` so listing a contract rewrites no spot path: every
+    /// seeded trajectory the tests and a replayed demo depend on stays
+    /// byte-identical whether or not a contract is listed on it. A contract
+    /// draws nothing for its price — that is the spot's, carried — so this
+    /// stream feeds only its microstructure.
+    contract_rng: Xoshiro256,
     cursor: Timestamp,
     step_index: u64,
     scripted: Vec<ScriptedEvent>,
@@ -183,6 +322,7 @@ impl SyntheticEnvironment {
             factors: FactorModel::standard(),
             regime: Regime::Normal,
             rng: Xoshiro256::seeded(config.seed),
+            contract_rng: Xoshiro256::seeded(config.seed ^ CONTRACT_STREAM_SALT),
             cursor: start,
             step_index: 0,
             scripted: Vec::new(),
@@ -192,10 +332,48 @@ impl SyntheticEnvironment {
         }
     }
 
-    /// The five-instrument demo world: two linked technology names, an energy
-    /// producer, a bank, and a government bond.
+    /// The six-instrument demo world: two linked technology names, an energy
+    /// producer, a bank, a government bond, and a cash-settled future on the
+    /// larger technology name.
+    ///
+    /// The future is the one dated contract on the shipped default path. It is
+    /// listed last, after its underlying, so each step marks it from the spot
+    /// that step produced; it has no company, so it narrates no news; and it
+    /// draws its book from the contract stream, so the five spot instruments'
+    /// paths are the ones they were before it was listed. The derivative desk
+    /// holds no permissions by default, so the kernel refuses every order on
+    /// it — which is the intended posture: the contract is there to be
+    /// reasoned about by the contract rule, not to be traded by the demo.
     pub fn demo(start: Timestamp, config: EnvironmentConfig) -> Self {
         let companies = narrative::demo_companies();
+        let vantage = SyntheticInstrument::new(
+            ObjectId::from_string("OBJ00000000000000000VNTG"),
+            "VNTG",
+            "XNYS",
+            318.75,
+            ProcessParameters::equity(1.10),
+            BookParameters::deep(),
+        )
+        .for_entity("ent-vantage");
+        let expiry = front_contract_expiry(start);
+        let future = SyntheticInstrument::cash_settled_future_on(
+            &vantage,
+            ObjectId::from_string("OBJ0000000000000000VNTGF"),
+            contract_symbol(&vantage.symbol, expiry),
+            "XCME",
+            ContractTerms {
+                underlying_symbol: vantage.symbol.clone(),
+                expiry,
+                // One contract is fifty units of the underlying, the size an
+                // equity-index contract carries; a multiplier of one would
+                // make the contract rule's subject indistinguishable from
+                // the stock in every reader but the expiry.
+                multiplier: Decimal::from_int(50),
+                carry_rate: 0.04,
+            },
+            start,
+            BookParameters::deep(),
+        );
         let instruments = vec![
             SyntheticInstrument::new(
                 ObjectId::from_string("OBJ00000000000000000NWSC"),
@@ -206,15 +384,7 @@ impl SyntheticEnvironment {
                 BookParameters::default(),
             )
             .for_entity("ent-northwind"),
-            SyntheticInstrument::new(
-                ObjectId::from_string("OBJ00000000000000000VNTG"),
-                "VNTG",
-                "XNYS",
-                318.75,
-                ProcessParameters::equity(1.10),
-                BookParameters::deep(),
-            )
-            .for_entity("ent-vantage"),
+            vantage,
             SyntheticInstrument::new(
                 ObjectId::from_string("OBJ00000000000000000MRDN"),
                 "MRDN",
@@ -247,6 +417,7 @@ impl SyntheticEnvironment {
                 ProcessParameters::government_bond(8.2),
                 BookParameters::illiquid(),
             ),
+            future,
         ];
         Self::new(instruments, companies, start, config)
     }
@@ -368,17 +539,52 @@ impl SyntheticEnvironment {
         let at = self.cursor;
         let regime = self.regime;
 
+        // A dated contract is marked from its underlying's state rather than
+        // stepped: the spot's variance, momentum and shocks become the
+        // contract's, so its book widens when the spot's does, and its price
+        // is the spot carried to expiry. Resolved before the mutable borrow
+        // below because the underlying is another entry of the same list.
+        let marked = self.instruments[index].contract.as_ref().and_then(|terms| {
+            self.instruments
+                .iter()
+                .find(|candidate| candidate.symbol == terms.underlying_symbol)
+                .map(|underlying| {
+                    let mut state = underlying.state.clone();
+                    state.price = fair_value(underlying.state.price, terms, at);
+                    state
+                })
+        });
+
         // Split the borrow: the process needs the factor model and the RNG.
         let instrument = &mut self.instruments[index];
-        price::step_process(
-            &mut instrument.state,
-            &instrument.process,
-            &self.factors,
-            regime,
-            step_years,
-            volatility_scale,
-            &mut self.rng,
-        );
+        match marked {
+            Some(state) => {
+                let previous = instrument.state.price;
+                instrument.state = state;
+                instrument.state.last_return = (instrument.state.price / previous).ln();
+            }
+            // A contract whose underlying is not listed keeps its last mark;
+            // the environment has no refusal path inside a step, and the
+            // constructor takes the underlying by reference so the demo
+            // cannot build one.
+            None if instrument.contract.is_some() => {}
+            None => {
+                price::step_process(
+                    &mut instrument.state,
+                    &instrument.process,
+                    &self.factors,
+                    regime,
+                    step_years,
+                    volatility_scale,
+                    &mut self.rng,
+                );
+            }
+        }
+        let rng = if instrument.contract.is_some() {
+            &mut self.contract_rng
+        } else {
+            &mut self.rng
+        };
 
         let object_id = instrument.object_id.clone();
         let venue = instrument.venue.clone();
@@ -405,7 +611,7 @@ impl SyntheticEnvironment {
             &book_parameters,
             regime,
             self.step_index,
-            &mut self.rng,
+            rng,
         );
         if let Some(quote) = book.to_quote() {
             records.push(SensedRecord::Quote(quote));
@@ -432,7 +638,7 @@ impl SyntheticEnvironment {
                 intensity,
                 fraction_of_day,
                 self.step_index * 1000 + index as u64,
-                &mut self.rng,
+                rng,
             );
             for trade in &trades {
                 step_volume += trade.size.to_f64();

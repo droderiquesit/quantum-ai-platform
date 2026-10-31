@@ -4046,14 +4046,15 @@
   {
     "id": "R12-AMBIENT-10175",
     "status": "PARTIAL",
-    "current": "Compute/attention market, specialist proposals and cognitive compiler (unsigned packages) exist in deepbrain.",
+    "current": "Phase 16's deliverables exist on the deep brain's default sweep and each has its proof: value-of-information sensing (ResearchLoop::emit states a raised gap's economic value on the signal and, since 2026-10-31, its urgency as the consumed share of the signal's own window via urgency_bp rather than a literal zero; cheapest_viable ranks observations on §9.10's product), the compute/attention market (run_market through MetaIntelligence::allocate_within, the attention router draining held signals by severity × economic value), recursive specialist creation (specialist proposals), and the cognitive compiler (CognitiveCompiler on the research sweep, packages held unsigned without a signer). The phase exit suite is backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs (a_sweep_grants_compute_through_the_market_to_the_research_the_residuals_raised; a_compiled_cognitive_package_with_no_signer_is_held_unsigned_and_never_published).",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero",
-      "backend/crates/services/qip-expansion",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
-      "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs"
+      "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs",
+      "backend/crates/apps/qip-deepbrain/src/research.rs emit: urgency_bp(now, expiry, signal_ttl); urgency_bp; cheapest_viable; run_market",
+      "backend/crates/apps/qip-deepbrain/src/research.rs tests a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero, a_gap_with_economic_value_launches_on_the_product_rank, a_raised_gaps_economic_value_reaches_the_signal_the_router_admits_by",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero (another lane's test of the same emit fix, carried in from origin/ccr-116bbb27-osu8n8 at merge)",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Phase exit test exists (qip-acceptance/tests/phase_16_exit.rs) but drives neither a specialist proposal nor an information request (info_launched stays zero on its fixture), so VOI acquisition is not proven end to end on the phase exit; the signal's own urgency_bp is now derived from its deadline (was literal 0) but nothing on a decision path reads it — VOI ranking reads AcquisitionCriteria.urgency_bp set in admit; deployable stays false.",
+    "gap": "2026-10-31 (lane L2b; independent read-only skeptic REFUTED on bar parts 1 and 4): the exit suite phase_16_exit.rs covers the compute market (units_granted > 0) and the compiler (held unsigned) and says itself that specialist proposal and value-of-information launch are not driven there, so two of the four deliverables have no exit test; urgency_bp(now, now + ttl, ttl) at emission always returns URGENCY_FLOOR_BP (a constant in disguise; nothing in production reads AmbientSignal::urgency_bp, and attention_value is severity x economic value), while the real deadline-based urgency is computed at desk admission (research.rs admit) and the exit suite does not prove it; and a specialist proposal produces only an Observation whose plan step is InstantiateSpecialist (qip-expansion plan.rs), gated on calibration >= MIN_EVALUATED, which no cycle fixture reaches, so recursive specialist creation is a proposal, not a creation. Closing it: an exit test per deliverable (a value-of-information launch on the product rank from a sweep; a specialist proposal that instantiates a specialist on the roster), and the signal's urgency computed from the deadline the launch is ranked against rather than restated at emission.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4064,10 +4065,10 @@
       "R12-AMBIENT-10094"
     ],
     "blocked_by": "",
-    "verification": "per-deliverable checks above",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test phase_16_exit && cargo +1.94.1 test -p qip-deepbrain --lib a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L2b (wave580): the row said no phase exit test existed; phase_16_exit.rs does, now cited. The one literal left — urgency_bp: 0 on a signal-raised Detection — is replaced by the deadline-derived figure. Mutation fired: restoring `urgency_bp: 0` in ResearchLoop::emit -> \"left: 0 right: 5000\"; restored byte for byte (cmp), test ok. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records. The emission change and its test are kept (the literal zero is gone and the mutation fired), but they move no production behaviour; the row's claim is withdrawn to what the exit suite proves.  Merge 2026-10-31 with origin/ccr-116bbb27-osu8n8: upstream had the same urgency fix in emit with its own crate-level test and an older gap text (phase_16_exit drives neither a specialist proposal nor an information request, info_launched zero); this lane's refuted gap kept, upstream evidence appended."
   },
   {
     "id": "R12-ARCH-10176",

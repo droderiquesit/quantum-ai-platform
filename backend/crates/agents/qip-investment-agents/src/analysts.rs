@@ -129,6 +129,29 @@ impl Agent for MacroAnalyst {
         let world = self.desk.world.get(ctx)?;
         let features = world.features();
 
+        // The geopolitical half of a macro view (R12-REASON-3012): every
+        // causal claim the world model holds under the geopolitical
+        // mechanism — trade, sanctions, conflict, regulatory environment —
+        // that lands on the subject or names its economy, known at the
+        // brief's instant. Read here rather than inferred from the macro
+        // series, because a sanction is a fact the series show only weeks
+        // later, if at all. The exposure is the sum of strength weighted by
+        // the claim's own confidence: a statistic over the graph, not money.
+        let geopolitical: Vec<&qip_world_model::CausalEdge> = world
+            .causal()
+            .edges()
+            .iter()
+            .filter(|edge| edge.mechanism == qip_world_model::Mechanism::Geopolitical)
+            .filter(|edge| edge.recorded_at <= brief.as_of)
+            .filter(|edge| {
+                edge.effect == subject.as_str() || edge.effect == economy || edge.cause == economy
+            })
+            .collect();
+        let geopolitical_risk: f64 = geopolitical
+            .iter()
+            .map(|edge| edge.strength.abs() * edge.confidence)
+            .sum();
+
         let mut readings = Vec::new();
         let mut missing = Vec::new();
         for (series, sign) in MACRO_SERIES {
@@ -184,10 +207,29 @@ impl Agent for MacroAnalyst {
             "sigma",
             &MACRO_SERIES.map(|(series, _)| series.feature()),
         ))
+        .fact(computed(
+            ctx,
+            "geopolitical_risk",
+            geopolitical_risk,
+            "exposure",
+            &["causal_graph"],
+        ))
+        .fact(computed(
+            ctx,
+            "geopolitical_claims",
+            geopolitical.len() as f64,
+            "count",
+            &["causal_graph"],
+        ))
         .evidence(
             readings
                 .iter()
                 .map(|(name, _, _, _)| format!("feature:{name}@{economy}"))
+                .chain(
+                    geopolitical
+                        .iter()
+                        .map(|edge| format!("causal:{}->{}:geopolitical", edge.cause, edge.effect)),
+                )
                 .collect(),
         )
         .falsifiers(vec![
@@ -761,6 +803,41 @@ impl Agent for CommoditiesAnalyst {
         let annualised_roll = (front.value - deferred.value) / front.value * (12.0 / months.value);
         let backwardated = deferred.value < front.value;
 
+        // The supply chain behind the curve (R12-REASON-3016): every causal
+        // claim the world model holds under the logistics or weather
+        // mechanism that lands on this commodity, known at the brief's
+        // instant, and every supplier relationship the graph holds into it.
+        // Read from the graph rather than inferred from the curve, because a
+        // closed strait or a frozen port shows in the curve only once the
+        // market has already repriced it. The exposure is the sum of each
+        // claim's strength weighted by its confidence: a statistic over the
+        // graph, not money.
+        let supply_claims: Vec<&qip_world_model::CausalEdge> = world
+            .causal()
+            .edges()
+            .iter()
+            .filter(|edge| {
+                matches!(
+                    edge.mechanism,
+                    qip_world_model::Mechanism::Logistics | qip_world_model::Mechanism::Weather
+                )
+            })
+            .filter(|edge| edge.recorded_at <= brief.as_of && edge.effect == subject.as_str())
+            .collect();
+        let supply_chain_exposure: f64 = supply_claims
+            .iter()
+            .map(|edge| edge.strength.abs() * edge.confidence)
+            .sum();
+        let supplier_links = world
+            .graph()
+            .predecessors(
+                subject.as_str(),
+                Some(qip_world_model::relationship::RelationshipKind::Supplies),
+                brief.as_of,
+                brief.as_of,
+            )
+            .len();
+
         FindingBuilder::new(
             ctx,
             brief.as_of,
@@ -793,7 +870,27 @@ impl Agent for CommoditiesAnalyst {
         .fact(front)
         .fact(deferred)
         .fact(months)
-        .evidence(vec![format!("curve:{}@{}", subject.as_str(), brief.as_of)])
+        .fact(computed(
+            ctx,
+            "supply_chain_exposure",
+            supply_chain_exposure,
+            "exposure",
+            &["causal_graph"],
+        ))
+        .fact(computed(
+            ctx,
+            "supplier_links",
+            supplier_links as f64,
+            "count",
+            &["relationship_graph"],
+        ))
+        .evidence(
+            std::iter::once(format!("curve:{}@{}", subject.as_str(), brief.as_of))
+                .chain(supply_claims.iter().map(|edge| {
+                    format!("causal:{}->{}:{:?}", edge.cause, edge.effect, edge.mechanism)
+                }))
+                .collect(),
+        )
         .falsifiers(vec![
             "the curve flattens or inverts within the horizon".to_string(),
             "storage or inventory data explains the shape, making the roll a cost rather than a signal"

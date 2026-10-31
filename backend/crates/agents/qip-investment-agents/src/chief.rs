@@ -540,6 +540,14 @@ pub fn standard_agents(
             manifests::regime_break_probe(reviewed_at),
             desk.clone(),
         )),
+        Arc::new(adversary::ManipulationProbe::new(
+            manifests::manipulation_probe(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(adversary::ModelFailureProbe::new(
+            manifests::model_failure_probe(reviewed_at),
+            desk.clone(),
+        )),
         Arc::new(portfolio_brain::PortfolioAssetAnalyst::new(
             manifests::portfolio_asset_brain(reviewed_at),
             desk,
