@@ -132,6 +132,107 @@ fn a_duplicate_of_a_registered_source_scores_no_uniqueness() -> Result<()> {
     Ok(())
 }
 
+/// ADR 0192, R12-EXPAND-1014: a candidate is admitted above Cold only by
+/// beating the registered source already covering its instruments. The
+/// duplicate of a registered source adds nothing, scores below its
+/// incumbent, and is held to Cold with the incumbent named in its basis; a
+/// candidate on an instrument nothing holds has no incumbent and keeps the
+/// routing its own scores earn. Mutation: delete the `held_to_incumbent`
+/// call in `assess_one` — the duplicate's basis no longer names `alpha` and
+/// the first assertion on it fails.
+#[test]
+fn a_worse_candidate_source_is_held_below_its_incumbent_and_a_new_instrument_is_not() -> Result<()>
+{
+    let mut finder = DataFinder::new(FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)?);
+    let mut probe = probe_for_both();
+    let first = finder.assess(
+        vec![candidate(
+            "alpha",
+            URL_A,
+            licensed_for(&[Usage::Derive])?,
+            &["EU0001"],
+        )?],
+        &mut probe,
+        now(),
+    )?;
+    let incumbent = first[0]
+        .scores()
+        .ok_or_else(|| Error::not_found("scores"))?
+        .composite();
+    assert!(
+        first[0].outcome().routing_class() < RoutingClass::Cold,
+        "premise: the incumbent itself is admitted above Cold: {:?}",
+        first[0].outcome()
+    );
+
+    // The same instrument from another host: worse than the incumbent.
+    let duplicate = finder.assess(
+        vec![candidate(
+            "beta",
+            URL_B,
+            licensed_for(&[Usage::Derive])?,
+            &["EU0001"],
+        )?],
+        &mut probe,
+        now(),
+    )?;
+    let worse = duplicate[0]
+        .scores()
+        .ok_or_else(|| Error::not_found("scores"))?
+        .composite();
+    assert!(
+        worse < incumbent,
+        "premise: the duplicate scores below the incumbent"
+    );
+    let registration = duplicate[0]
+        .registration()
+        .ok_or_else(|| Error::not_found("the duplicate is still collected, as Cold"))?;
+    assert!(
+        registration.routing().basis().contains("incumbent `alpha`"),
+        "the routing names the incumbent it was held to: {}",
+        registration.routing().basis()
+    );
+    assert_eq!(registration.routing().class(), RoutingClass::Cold);
+
+    // A new instrument from the same host: no incumbent, own routing.
+    let mut again = DataFinder::new(FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)?);
+    let mut probe = probe_for_both();
+    again.assess(
+        vec![candidate(
+            "alpha",
+            URL_A,
+            licensed_for(&[Usage::Derive])?,
+            &["EU0001"],
+        )?],
+        &mut probe,
+        now(),
+    )?;
+    let fresh = again.assess(
+        vec![candidate(
+            "beta",
+            URL_B,
+            licensed_for(&[Usage::Derive])?,
+            &["EU0002"],
+        )?],
+        &mut probe,
+        now(),
+    )?;
+    let own = fresh[0]
+        .registration()
+        .ok_or_else(|| Error::not_found("a new instrument registers"))?;
+    assert!(
+        !own.routing().basis().contains("incumbent"),
+        "no incumbent covers EU0002: {}",
+        own.routing().basis()
+    );
+    assert!(
+        own.routing().class() < RoutingClass::Cold,
+        "{:?}",
+        own.routing()
+    );
+    Ok(())
+}
+
 #[test]
 fn an_expensive_source_scores_worse_on_cost_than_a_free_one() -> Result<()> {
     let mut finder = DataFinder::new(FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)?);

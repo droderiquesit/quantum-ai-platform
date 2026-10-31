@@ -311,25 +311,28 @@
   {
     "id": "R12-EXPAND-1014",
     "status": "PARTIAL",
-    "current": "Model/strategy promotion benchmark-gated; deepbrain ResearchLoop promotes fill-bias corrections only on beating champion.",
+    "current": "Model and strategy promotion benchmark-gated (central/models.rs::require_calibrated_baseline; the deep brain's shadow stage against every production incumbent; the evolution champion); the deep brain promotes fill-bias corrections only on beating the uncorrected twin (Criterion::IncrementalValue). Since 2026-10-31, ADR 0192 names each class's benchmark and incumbent, and the source class is gated: DataFinder::assess_one holds a candidate whose instruments a registered source already covers to Cold routing unless its composite beats the best such incumbent, naming the incumbent and both composites in the routing basis (Routing::held_to_incumbent); a candidate on an instrument nothing holds has no incumbent and is routed on its own merits. Ontology types above version one enter only through an evaluated extension (ADR 0198); tools and specialists have no incumbent and ADR 0192 says so.",
     "evidence": [
+      "docs/adr/0192-every-capability-class-names-its-benchmark-and-its-incumbent-before-it-is-admitted.md",
+      "backend/crates/services/qip-data-finder/src/finder.rs::best_incumbent_for, assess_one (held_to_incumbent)",
+      "backend/crates/services/qip-data-finder/src/scoring.rs::Routing::held_to_incumbent",
+      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs::a_worse_candidate_source_is_held_below_its_incumbent_and_a_new_instrument_is_not",
       "backend/crates/runtime/qip-kernel/src/central/models.rs:65 require_calibrated_baseline",
       "backend/crates/runtime/qip-kernel/tests/models.rs:386 candidate refused without fitted baseline",
-      "backend/crates/services/qip-expansion/src/gap.rs:17 GapTrigger",
-      "backend/crates/apps/qip-deepbrain/src/signal_mapper.rs:24 imports qip_expansion; module never called"
+      "backend/crates/services/qip-expansion/tests/executor.rs::a_bias_that_does_not_hold_out_of_sample_records_its_null"
     ],
-    "gap": "Only model and strategy promotion is benchmark-gated (central/models.rs::require_calibrated_baseline). Source, ontology, tool and brain promotion each need their own gate and none exists; qip-deepbrain signal_mapper.rs imports qip_expansion and is never called. Re-read 2026-10-24.",
+    "gap": "The source gate holds routing, not admission, by ADR 0192 decision 2 (a redundant source is collected Cold so DATA-018 can retire it), so 'admitted only after a recorded benchmark beats the incumbent' is met for Hot and Warm routing and not for collection itself; a candidate whose instruments are only partly covered has no incumbent (ADR 0192 'what would make this wrong'); tools have no incumbent and widen on an attestation string (ADR 0198). No skeptic round ran on this slice; the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test models; cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-data-finder --test scoring_and_routing; cargo test -p qip-kernel --test models",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE, one slice per promotion kind; no code changed."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane N1-KERNEL-ACCEPT 2026-10-24: classed LARGE_SPLITTABLE, one slice per promotion kind; no code changed. 2026-10-31 L4b-expand: ADR 0192 body written under L4-quant's claim; the source gate landed. Mutation fired: deleting the held_to_incumbent call in assess_one failed the new test at the basis assertion (the duplicate's routing no longer named alpha); restored byte-for-byte (sha256 checked). qip-data-finder suite ok, kernel source_lifecycle/source_discovery/platform_services ok, qip-deepbrain ok, acceptance e2e ok. Kept PARTIAL: routing-not-admission by decision, no skeptic."
   },
   {
     "id": "R12-ASSET-1015",
@@ -4026,11 +4029,11 @@
   {
     "id": "R12-EXPAND-1174",
     "status": "PARTIAL",
-    "current": "Cells report outcomes to the centre and the LEARN stage learns from cells; no episode/residual/lesson exchange between brains.",
+    "current": "Cells report outcomes to the centre and the LEARN stage learns from cells; the kernel journals one validated KnowledgeDeltaRecord per admissible claim (R12-EXPAND-6039) and the deep brain's research sweep reads those records off the log, which is the one exchange of typed knowledge between two components with both a producer and a reader (2026-10-25). Residuals reach the sweep as fill scores; lessons stay in the LEARN stage's own memory; a cell's RegionalEpisodes stay in cell memory.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:8524 learn_from_cells"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Decided by ADR 0199 (2026-10-31), confirming ADR 0151 d4: a cell's RegionalEpisodes are carried on CellReport only when a central consumer names the decision they feed, in a frame designed for it over the mesh spine (ADR 0128), and none has; no SharedEpisode is built; lessons and residuals cross no brain boundary as typed artifacts. The scope items unbuilt are episode and lesson exchange between brains and any exchange with reflex cells beyond the report. The row stays PARTIAL citing the record.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4041,7 +4044,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-31 L4b-expand: ADR 0199 confirms ADR 0151 d4 and names the one working exchange (KnowledgeDeltaRecord read by the deep brain sweep); no code changed."
   },
   {
     "id": "R12-TICK-1175",

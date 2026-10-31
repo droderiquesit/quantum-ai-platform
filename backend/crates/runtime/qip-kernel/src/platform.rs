@@ -3246,6 +3246,33 @@ pub struct SourceAssessment {
     /// Registrations the catalogue refused, with its reason. Recorded rather
     /// than raised: one unusable entry must not lose the others.
     pub catalogue_problems: Vec<String>,
+    /// The Source Registry entry of every registration this pass made
+    /// (R12-EXPAND-6055): provenance, cost, licence, freshness and utility
+    /// as `RegisteredSource::entry` reads them off the registered source, so
+    /// the entry is consulted on the running path and travels with the
+    /// assessment rather than being derivable only by a test that opens the
+    /// finder. A registration the registry does not hold under its id is a
+    /// catalogue problem, not a silent gap.
+    pub entries: Vec<SourceRegistryView>,
+}
+
+/// One Source Registry entry as a running path read it
+/// (`qip_data_finder::decision::SourceRegistryEntry`, flattened to owned
+/// values for the record).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceRegistryView {
+    pub source_id: String,
+    /// Where the source was found.
+    pub discovered_from: String,
+    pub discovered_at: Timestamp,
+    pub monthly_fee: Decimal,
+    /// The licence identifier the registration was decided on. Every
+    /// registered source has one: the finder treats an unknown legality as
+    /// forbidden, so a candidate without a declared licence never registers.
+    pub licence: String,
+    pub freshness: qip_data_finder::coverage::UpdateFrequency,
+    pub routing: qip_data_finder::RoutingClass,
+    pub composite: f64,
 }
 
 impl SourceAssessment {
@@ -23912,6 +23939,7 @@ impl Platform {
         }
         let mut catalogued = Vec::new();
         let mut catalogue_problems = Vec::new();
+        let mut entries = Vec::new();
         // The owner is validated once, as a `NamedOperator`, before any entry
         // is built (R12-DATA-2020). The configured default is the process's
         // own name, and a catalogue entry owned by a process names nobody who
@@ -23924,6 +23952,44 @@ impl Platform {
         for decision in &decisions {
             if !decision.is_registered() {
                 continue;
+            }
+            // The registry entry, read where the registration is made
+            // (R12-EXPAND-6055). The finder admits no source without a
+            // declared licence, so an entry whose licence cannot be named is
+            // a registry that disagrees with its own decision, and is
+            // recorded as a problem rather than catalogued.
+            match self.data_finder.registry().get(decision.source_id()) {
+                Some(registered) => {
+                    let entry = registered.entry();
+                    match entry.licence.license() {
+                        Some(license) => entries.push(SourceRegistryView {
+                            source_id: decision.source_id().to_string(),
+                            discovered_from: entry.provenance.discovered_from().to_string(),
+                            discovered_at: entry.provenance.discovered_at(),
+                            monthly_fee: entry.cost.monthly_fee(),
+                            licence: license.identifier().to_string(),
+                            freshness: entry.freshness,
+                            routing: entry.utility.class(),
+                            composite: entry.utility.composite(),
+                        }),
+                        None => {
+                            catalogue_problems.push(format!(
+                                "source.{}: registered with no declared licence in its registry \
+                                 entry; not catalogued",
+                                decision.source_id()
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    catalogue_problems.push(format!(
+                        "source.{}: the decision says registered and the registry holds no \
+                         entry under that id; not catalogued",
+                        decision.source_id()
+                    ));
+                    continue;
+                }
             }
             let operator = match &operator {
                 Ok(operator) => operator,
@@ -23954,6 +24020,7 @@ impl Platform {
             decisions,
             catalogued,
             catalogue_problems,
+            entries,
         })
     }
 
