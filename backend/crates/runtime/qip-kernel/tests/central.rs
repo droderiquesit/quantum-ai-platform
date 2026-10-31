@@ -8988,6 +8988,276 @@ fn a_twin_that_diverges_from_a_venue_halves_the_grant_of_the_strategy_trading_th
     Ok(())
 }
 
+/// ADR 0226, R12-CONTRACT-7074: a concluded tick campaign's
+/// MicrostructureDelta keeps a venue's divergence hold past a re-promotion
+/// while its slippage residual is still past the threshold on a full sample,
+/// and a later delta inside the threshold lets the re-promotion release it.
+/// A residual only keeps: it never lifts a hold by itself and never sizes.
+///
+/// The failure this prevents: a cell's residuals reached the deep brain's
+/// ambient journal and nothing read them, so a strategy re-promoted on the
+/// twin's replays got its full size back while the venue's own residuals
+/// said the twin was still wrong there. Mutations: drop the
+/// `microstructure_deltas` lookup in `Platform::review_replay_divergence` —
+/// the hold releases under the diverging delta; key the deltas by venue
+/// alone — cell-b's clean delta displaces this cell's and releases it; let a
+/// silent delta pass in `residual_keeps_hold` — the LeadLag-only delta
+/// releases it.
+#[test]
+fn a_concluded_tick_campaigns_delta_keeps_the_venues_divergence_hold() -> Result<()> {
+    let mut platform = platform()?;
+    let desk = VenueId::new(platform.desk_venue());
+    let dependent = StrategyId::new("replay-dependent");
+    let control = StrategyId::new("replay-control");
+    register_at_venue(platform.central_mut(), &dependent, CELL, desk.clone())?;
+    walk_to(platform.central_mut(), &dependent, GateStage::Pilot)?;
+    register_at_venue(platform.central_mut(), &control, CELL, venue())?;
+    walk_to(platform.central_mut(), &control, GateStage::Pilot)?;
+    assert_ne!(desk, venue(), "premise: the two strategies trade apart");
+
+    platform.observe(tape_before_the_fills(90.0));
+    assert!(platform.replay_divergence_holds().is_empty());
+    let scoring = fill_and_score_twelve(&mut platform)?;
+    let errors: Vec<f64> = platform
+        .fill_scores()
+        .iter()
+        .filter_map(|score| score.trade_error_bps)
+        .collect();
+    assert!(
+        errors.len() >= qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE
+            && errors.iter().all(|error| {
+                error.abs() > qip_kernel::replay_divergence::REPLAY_DIVERGENCE_THRESHOLD_BPS
+            }),
+        "premise: the twin was not past the threshold on a full sample: {errors:?}"
+    );
+
+    // The hold: on the dependent strategy, at half, and on nothing else.
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a twin past the threshold at the strategy's venue did not hold its grant"
+    );
+    assert_eq!(
+        platform.replay_divergence_multiplier(&control),
+        Decimal::ONE,
+        "a strategy at a venue the twin never measured was held"
+    );
+    let records = replay_divergence_records(&platform)?;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].strategy, dependent.as_str());
+    assert_eq!(records[0].outcome, "reduced");
+    assert_eq!(records[0].venue, desk.as_str());
+    assert_eq!(records[0].benchmark_rerun, "required before re-promotion");
+    assert!(
+        records[0].calibration_observations >= 12,
+        "the hold does not show the twin being recalibrated on the live fills: {:?}",
+        records[0]
+    );
+    assert!(
+        platform.withdrawn_venues().is_empty(),
+        "a divergence withdrew a venue, which ADR 0062 reserves for feasibility evidence"
+    );
+
+    // The size: the dependent strategy's grant is half the control's.
+    let granted_at = scoring.saturating_add(Duration::from_hours(1));
+    let held = grant_pair(&mut platform, &dependent, granted_at)?;
+    let full = grant_pair(&mut platform, &control, granted_at)?;
+    let held_gross = held.gross_limit.expect("an issued grant carries its size");
+    let full_gross = full.gross_limit.expect("an issued grant carries its size");
+    assert_eq!(
+        held_gross * dec!("2"),
+        full_gross,
+        "the held strategy was granted {held_gross} against the control's {full_gross}"
+    );
+    assert!(
+        held.detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("diverged from the venue")),
+        "the grant does not say why it is smaller: {:?}",
+        held.detail
+    );
+
+    // Across cycles, and across a renewal, the size does not come back on
+    // its own: the twin's error is not re-read as a release.
+    let mut later = granted_at;
+    for _ in 0..3 {
+        later = later.saturating_add(Duration::from_days(1));
+        platform.run_cycle(later);
+        assert_eq!(
+            platform.replay_divergence_multiplier(&dependent),
+            dec!("0.5")
+        );
+    }
+    let renewed_at = later.saturating_add(Duration::from_hours(1));
+    let renewed = grant_pair(&mut platform, &dependent, renewed_at)?;
+    let control_renewed = grant_pair(&mut platform, &control, renewed_at)?;
+    assert_eq!(
+        renewed.gross_limit.expect("sized") * dec!("2"),
+        control_renewed.gross_limit.expect("sized"),
+        "a renewal signed while the hold stood came back at full size"
+    );
+
+    // A demotion is not a re-promotion: pushed down, the strategy is still
+    // held when LEARN next runs.
+    let demoted_at = renewed_at.saturating_add(Duration::from_hours(1));
+    platform.central_mut().factory_mut().demote(
+        &dependent,
+        GateStage::Shadow,
+        "research.desk",
+        "re-benchmarking on the recalibrated twin",
+        demoted_at,
+    )?;
+    platform.run_cycle(demoted_at);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a demotion released the hold"
+    );
+
+    // The re-promotion, through the operator route the ladder already has.
+    // Until LEARN reads it the hold stands; once it has, the hold is
+    // released, on the record, and the next grant is the control's size.
+    let repromoted_at = demoted_at.saturating_add(Duration::from_hours(1));
+    platform.approve_promotion(
+        &dependent,
+        &operator("alice.chen", repromoted_at),
+        "re-benchmarked on the recalibrated twin and the shadow record still holds",
+        repromoted_at,
+    )?;
+    let countersigned_at = repromoted_at.saturating_add(Duration::from_mins(2));
+    platform.approve_promotion(
+        &dependent,
+        &operator("bram.oduya", countersigned_at),
+        "the rerun benchmark was read independently against the shadow record",
+        countersigned_at,
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(&dependent),
+        GateStage::Pilot,
+        "premise: the pair did not re-promote the strategy"
+    );
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "the hold was released before LEARN read the re-promotion"
+    );
+    let delta = |id: &str, cell: &str, ends: Timestamp, kind, observed: i64, samples: u64| {
+        qip_contracts::microstructure_delta::MicrostructureDeltaFields {
+            schema_version: 1,
+            delta_id: id.to_string(),
+            cell: cell.to_string(),
+            venue: desk.clone(),
+            model_version: "twin-fill-v1".to_string(),
+            window_start: ends.saturating_sub(Duration::from_days(1)),
+            window_end: ends,
+            residuals: vec![qip_contracts::microstructure_delta::Residual {
+                kind,
+                instrument: "AAA".to_string(),
+                modelled: dec!("5"),
+                observed: Decimal::from_int(observed),
+                samples,
+            }],
+        }
+    };
+    use qip_contracts::microstructure_delta::ResidualKind::{LeadLag, Slippage};
+    let full = qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE as u64;
+
+    // A venue no registered strategy trades at takes no slot.
+    let mut stray = delta("delta-x", CELL, countersigned_at, Slippage, 5, full);
+    stray.venue = VenueId::new("XNOWHERE");
+    assert!(platform.admit_microstructure_delta(stray).is_err());
+
+    // The campaign concluded the venue is still 150 bps off the model.
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-1",
+        CELL,
+        countersigned_at,
+        Slippage,
+        155,
+        full
+    ))?);
+    let released_at = countersigned_at.saturating_add(Duration::from_hours(1));
+    let report = platform.run_cycle(released_at);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a re-promotion released the hold while the venue's own residual was past the threshold"
+    );
+    assert!(
+        report
+            .summarise()
+            .contains("hold stands past its re-promotion"),
+        "the kept hold is not on the record:\n{}",
+        report.summarise()
+    );
+
+    // An older delta read late does not displace the newer one, and another
+    // cell's clean delta does not stand in for this cell's.
+    assert!(!platform.admit_microstructure_delta(delta(
+        "delta-0",
+        CELL,
+        countersigned_at.saturating_sub(Duration::from_days(2)),
+        Slippage,
+        5,
+        full
+    ))?);
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-b",
+        "cell-b",
+        released_at,
+        Slippage,
+        25,
+        full
+    ))?);
+    let mut later = released_at.saturating_add(Duration::from_hours(1));
+    platform.run_cycle(later);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "one cell's clean delta released a hold another cell's residual still keeps"
+    );
+
+    // This cell's next campaign clears the venue, but a third cell's latest
+    // delta says nothing about slippage at a full sample: silence keeps it.
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-2",
+        CELL,
+        released_at,
+        Slippage,
+        25,
+        full
+    ))?);
+    assert!(platform.admit_microstructure_delta(delta(
+        "delta-c",
+        "cell-c",
+        released_at,
+        LeadLag,
+        25,
+        full
+    ))?);
+    later = later.saturating_add(Duration::from_hours(1));
+    platform.run_cycle(later);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        dec!("0.5"),
+        "a delta silent on slippage released the hold as if it had cleared the venue"
+    );
+
+    // Every cell's latest delta inside the threshold: the re-promotion releases it.
+    assert!(
+        platform
+            .admit_microstructure_delta(delta("delta-c2", "cell-c", later, Slippage, 25, full))?
+    );
+    later = later.saturating_add(Duration::from_hours(1));
+    platform.run_cycle(later);
+    assert_eq!(
+        platform.replay_divergence_multiplier(&dependent),
+        Decimal::ONE,
+        "residuals inside the threshold kept the hold the re-promotion answered"
+    );
+    Ok(())
+}
+
 /// Mutation: `Divergence::exceeds_threshold` returning `true` — fails at
 /// "an agreeing twin held the strategy".
 #[test]
