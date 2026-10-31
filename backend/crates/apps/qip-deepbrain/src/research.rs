@@ -1239,7 +1239,9 @@ pub struct ResearchLoop {
     /// expiry has already raised a gap (ADR 0227). Bounded by
     /// [`MAX_WORLD_STATE_PARTITIONS`].
     world_states: BTreeMap<String, (qip_contracts::world_model::WorldModelState, bool)>,
-    /// The last NOW review cycle read, so a sweep reads each review once.
+    /// The log sequence of the last NOW review read, so a sweep reads each
+    /// review once. A sequence, not a cycle: a restarted platform numbers
+    /// its cycles from zero again over the log it inherited.
     world_state_cursor: Option<u64>,
     /// The hosted model's reply tally, where one is installed (6040).
     replies: Option<(String, crate::language::ReplyTally)>,
@@ -1594,7 +1596,8 @@ impl ResearchLoop {
         self
     }
 
-    /// Read every NOW review the platform journaled since the last sweep,
+    /// Read every NOW review the platform journaled since the last sweep (by
+    /// log sequence),
     /// re-admit each `WorldModelState` it carries, keep the newest per
     /// partition, and return the partitions whose state has expired with no
     /// newer one and has not yet raised a gap (ADR 0227, R12-CONTRACT-7075).
@@ -1610,14 +1613,11 @@ impl ResearchLoop {
         now: Timestamp,
     ) -> Vec<(String, String)> {
         let mut newest = self.world_state_cursor;
-        for review in qip_kernel::now_stage::reviews(platform.event_log()) {
-            if self
-                .world_state_cursor
-                .is_some_and(|read| review.cycle <= read)
-            {
+        for (sequence, review) in qip_kernel::now_stage::reviews(platform.event_log()) {
+            if self.world_state_cursor.is_some_and(|read| sequence <= read) {
                 continue;
             }
-            newest = newest.max(Some(review.cycle));
+            newest = newest.max(Some(sequence));
             for fields in review.world_states {
                 let Ok(state) = qip_contracts::world_model::WorldModelState::new(fields) else {
                     continue;

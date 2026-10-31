@@ -1712,17 +1712,18 @@
   },
   {
     "id": "R12-CONTRACT-7075",
-    "status": "PARTIAL",
-    "current": "NowStage::run (every cycle, default path) calls NowBrain::world_model_state for each partition a pass moved a belief in and journals the validated WorldModelStateFields in NowReview.world_states on world_model.updated; each re-admits through WorldModelState::new and is stamped with the pass clock.",
+    "status": "COMPLETE",
+    "current": "NowStage::run (every cycle, default path) calls NowBrain::world_model_state for each partition a pass moved a belief in and journals the validated WorldModelStateFields in NowReview.world_states on world_model.updated; each re-admits through WorldModelState::new and is stamped with the pass clock. The receiver is the deep brain's default sweep (ADR 0227): ResearchLoop::expired_world_states reads each NOW review through qip_kernel::now_stage::reviews by log sequence, re-admits each state through WorldModelState::new, keeps the newest per partition, and raises one GapTrigger::ModelDrift gap for a partition whose newest state expired with no successor; it moves no size.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_newer_world_state_clears_the_expiry_of_the_one_it_replaced",
       "backend/crates/apps/qip-deepbrain/tests/research.rs::a_partition_whose_world_state_expired_queues_a_model_drift_gap",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:513 a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run world_states",
       "backend/crates/runtime/qip-kernel/tests/now_state.rs::a_pass_that_moves_a_belief_journals_the_world_model_state_of_the_partition_it_moved",
       "backend/crates/services/qip-world-model/src/now.rs::world_model_state",
       "docs/adr/0227-world-model-states-receiver-is-the-deep-brains-gap-detector-an-expired-partition-queues-re-estimation-and-moves-no-size.md"
     ],
-    "gap": "2026-10-31 (lane L2-INTEL, ADR 0227 under decision 10 of the 2026-10-31 owner rulings): the receiver is built on the deep brain's default sweep. ResearchLoop::expired_world_states reads every NOW review through qip_kernel::now_stage::reviews, re-admits each WorldModelState through WorldModelState::new, keeps the newest per partition, and raises one GapTrigger::ModelDrift observation (evidence world_state:<scope>) for a partition whose newest state passed expires_at with no successor; the state moves no size and chooses no action (qip-deepbrain tests/research.rs::a_partition_whose_world_state_expired_queues_a_model_drift_gap; dropping the read, or never marking an expiry reported, fails it). Not judged here: whether the requirement asks for more than a reader of the contract.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1730,10 +1731,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test now_state",
+    "verification": "cargo test -p qip-contracts --test section27_contracts; cargo test -p qip-deepbrain --test research world_state",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: producer landed; mutation (projection result dropped instead of pushed) failed the new test with an empty world_states. Kept PARTIAL for the receiving side."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: producer landed; mutation (projection result dropped instead of pushed) failed the new test with an empty world_states. Kept PARTIAL for the receiving side. 2026-10-31 lane L2-INTEL: PARTIAL -> COMPLETE under ADR 0227 (decision 10 of the 2026-10-31 owner rulings). Bar part 1: #[serde(default)] on WorldModelStateFields.causal_structure fails section27_contracts::a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field ('WorldModelState without `causal_structure` was admitted'), restored by cmp; the same mutation on `assumptions` survives because the contract's at-least-one check refuses the defaulted value. Part 2: producer NowStage::run and receiver ResearchLoop::sweep_over both on default paths (qip-deepbrain main.rs research: Some, run_with -> research_pass -> sweep). Part 3: n/a. Part 4: nothing withdrawn. The in-lane skeptic said COMPLETE once verification was corrected and that mutation run, and found a restart bug (a cycle-keyed cursor skips a restarted platform's reviews), fixed by keying on log sequence, plus a successor-state test it said was missing, added (mutation: never replace a held state fails it)."
   },
   {
     "id": "R12-CONTRACT-7076",

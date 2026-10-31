@@ -56,6 +56,10 @@ described.
   state's expiry raises no gap for the partition. A sweep after it raises
   exactly one, and the next sweep raises none. Dropping the read fails the
   test, and so does never marking an expiry reported.
+  `a_newer_world_state_clears_the_expiry_of_the_one_it_replaced` sweeps
+  between cycles. A partition refreshed before its state expires raises no
+  gap at the old expiry and one at the successor's. Never replacing a held
+  state fails it.
 - The working set is bounded at `MAX_WORLD_STATE_PARTITIONS`, and each
   review is read once, by cycle cursor.
 
@@ -71,7 +75,11 @@ described.
   research time, not capital.
 - The cursor and the newest-state table live in memory. After a restart,
   the first sweep re-reads every review and can report an expiry it
-  reported before the restart once more.
+  reported before the restart once more. The cursor is the log sequence and
+  not the review's cycle, because a platform restarted over an inherited
+  log numbers its cycles from zero again. A cycle cursor would skip every
+  review the new run wrote until it caught up, and the first draft had
+  exactly that bug.
 
 ## What would make this wrong
 

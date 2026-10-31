@@ -2191,21 +2191,10 @@ fn an_uncertain_sized_decision_becomes_an_information_request_at_the_cheapest_ob
     );
 }
 
-/// ADR 0227, R12-CONTRACT-7075: the deep brain's sweep reads the
-/// `WorldModelState` the NOW stage journals for each partition it moved,
-/// and a partition whose state passes its expiry with no newer one raises a
-/// model-drift gap, once. The state moves no size and chooses no action.
-///
-/// The failure this prevents: the NOW stage journaled a state per moved
-/// partition on `world_model.updated` and nothing read it, so a partition
-/// whose model had stopped being refreshed looked, to the curriculum, like
-/// one still described. Mutation: return no partitions from
-/// `ResearchLoop::expired_world_states` (drop the read) — no gap names the
-/// partition and the second assertion fails.
-#[test]
-fn a_partition_whose_world_state_expired_queues_a_model_drift_gap() {
-    use qip_contracts::world_model::WorldModelState;
-    use qip_kernel::now_stage::NowReview;
+/// A platform whose NOW stage tracks AAA and BBB, fed thirty calm days, so
+/// the next pass that reads a jump moves a belief and journals the
+/// partition's `WorldModelState` (ADR 0227's tests).
+fn now_platform() -> Platform {
     // A universe the NOW stage tracks, thirty calm days, then one jump: the
     // pass that reads the jump moves a belief and journals its partition.
     let day = |n: i64| start().saturating_add(Duration::from_days(n));
@@ -2253,13 +2242,33 @@ fn a_partition_whose_world_state_expired_queues_a_model_drift_gap() {
         })
         .collect();
     platform.observe(calm);
+    platform
+}
+
+/// ADR 0227, R12-CONTRACT-7075: the deep brain's sweep reads the
+/// `WorldModelState` the NOW stage journals for each partition it moved,
+/// and a partition whose state passes its expiry with no newer one raises a
+/// model-drift gap, once. The state moves no size and chooses no action.
+///
+/// The failure this prevents: the NOW stage journaled a state per moved
+/// partition on `world_model.updated` and nothing read it, so a partition
+/// whose model had stopped being refreshed looked, to the curriculum, like
+/// one still described. Mutation: return no partitions from
+/// `ResearchLoop::expired_world_states` (drop the read) — no gap names the
+/// partition and the second assertion fails.
+#[test]
+fn a_partition_whose_world_state_expired_queues_a_model_drift_gap() {
+    use qip_contracts::world_model::WorldModelState;
+    use qip_kernel::now_stage::NowReview;
+    let day = |n: i64| start().saturating_add(Duration::from_days(n));
+    let mut platform = now_platform();
     platform.run_cycle(start());
     platform.observe(vec![bar("AAA", start(), 130.0), bar("BBB", start(), 100.1)]);
     platform.run_cycle(day(1));
-    let reviews: Vec<NowReview> = qip_kernel::now_stage::reviews(platform.event_log());
+    let reviews: Vec<(u64, NowReview)> = qip_kernel::now_stage::reviews(platform.event_log());
     let states: Vec<WorldModelState> = reviews
         .iter()
-        .flat_map(|review| review.world_states.clone())
+        .flat_map(|(_, review)| review.world_states.clone())
         .map(|fields| WorldModelState::new(fields).unwrap_or_else(|e| panic!("{e}")))
         .collect();
     assert!(
@@ -2267,7 +2276,7 @@ fn a_partition_whose_world_state_expired_queues_a_model_drift_gap() {
         "premise: the NOW stage journaled a world-model state: {:?}",
         reviews
             .iter()
-            .map(|r| (r.cycle, r.deltas.len(), r.refused.clone()))
+            .map(|(_, r)| (r.cycle, r.deltas.len(), r.refused.clone()))
             .collect::<Vec<_>>()
     );
     let latest_expiry = states
@@ -2320,4 +2329,97 @@ fn a_partition_whose_world_state_expired_queues_a_model_drift_gap() {
         )
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(names_partition(&again), 0, "an expiry was reported twice");
+}
+
+/// ADR 0227: a partition that receives a newer `WorldModelState` before the
+/// old one expires raises no gap at the old expiry. The successor replaces
+/// it, and the gap waits for the successor's own expiry. Sweeps run between
+/// cycles, so each one reads only the reviews written since the last.
+///
+/// The failure this prevents: an expiry gap raised for a partition whose
+/// model had in fact been refreshed, which queues a re-estimation nobody
+/// needed. Mutation: never replace a held state in
+/// `ResearchLoop::expired_world_states` (`Some(_) => continue`). The old
+/// state expires as if it had no successor, and the first assertion after
+/// the second cycle fails.
+#[test]
+fn a_newer_world_state_clears_the_expiry_of_the_one_it_replaced() {
+    use qip_kernel::now_stage::NowReview;
+    let day = |n: i64| start().saturating_add(Duration::from_days(n));
+    let mut platform = now_platform();
+    platform.run_cycle(start());
+    platform.observe(vec![bar("AAA", start(), 130.0), bar("BBB", start(), 100.1)]);
+    platform.run_cycle(day(1));
+    let states = |platform: &Platform| -> Vec<qip_contracts::world_model::WorldModelStateFields> {
+        qip_kernel::now_stage::reviews(platform.event_log())
+            .into_iter()
+            .flat_map(|(_, review): (u64, NowReview)| review.world_states)
+            .collect()
+    };
+    let first = states(&platform);
+    assert!(
+        !first.is_empty(),
+        "premise: the first jump journaled a state"
+    );
+    let scope = first[0].scope.clone();
+    let first_expiry = first
+        .iter()
+        .filter(|s| s.scope == scope)
+        .map(|s| s.expires_at)
+        .max()
+        .unwrap_or_else(|| panic!("a state"));
+    let evidence = format!("world_state:{scope}");
+    let names = |round: &qip_deepbrain::research::ResearchRound| {
+        round
+            .signals
+            .iter()
+            .filter(|s| s.evidence_ids().iter().any(|e| e == &evidence))
+            .count()
+    };
+    let mut loop_ = research(coverage(&[]));
+    let read = loop_
+        .sweep(&platform, day(1), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&read), 0, "premise: a live state raises nothing");
+
+    // A second jump refreshes the partition before the first state expires.
+    let second_at = day(2);
+    assert!(
+        second_at < first_expiry,
+        "premise: the refresh lands before the first expiry"
+    );
+    platform.observe(vec![bar("AAA", day(1), 170.0), bar("BBB", day(1), 100.2)]);
+    platform.run_cycle(second_at);
+    let refreshed = states(&platform)
+        .into_iter()
+        .filter(|s| s.scope == scope)
+        .map(|s| s.expires_at)
+        .max()
+        .unwrap_or_else(|| panic!("a state"));
+    assert!(
+        refreshed > first_expiry,
+        "premise: the partition got a successor: {refreshed} vs {first_expiry}"
+    );
+    let between = loop_
+        .sweep(
+            &platform,
+            first_expiry.saturating_add(Duration::from_secs(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        names(&between),
+        0,
+        "a refreshed partition was gapped at its old state's expiry"
+    );
+    let after = loop_
+        .sweep(
+            &platform,
+            refreshed.saturating_add(Duration::from_secs(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&after), 1, "the successor's own expiry raised no gap");
 }
