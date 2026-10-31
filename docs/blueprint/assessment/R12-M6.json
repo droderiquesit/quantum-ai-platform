@@ -612,23 +612,29 @@
   {
     "id": "R12-EXPAND-6027",
     "status": "PARTIAL",
-    "current": "Source scoring/routing and bounded source-alpha history exist in qip-data-finder; outcome-driven reputation updating and adversarial detection not found.",
+    "current": "Source scoring and routing and a bounded source-alpha history exist in qip-data-finder. Since 2026-10-31 qip_contracts::expansion::SourceScore (source, subject, incremental gain and realised contribution in [-1, 1], samples, the window of senses, the SHA-256 of the aligned samples as their bits, scored_at) is produced by SourceAlphaDesk::score for every scored source-subject pair, validated, kept on the SourceAlphaRound, and written to the deep brain's ambient journal by AmbientJournal::record_source_scores from node::run_with, one record per pair, under its own lineage. The desk's cadence defaults to every cycle (DEFAULT_SOURCE_ALPHA_EVERY = 1; QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY=0 disables by name), so a node with a connector arm scores and journals on the default path.",
     "evidence": [
+      "backend/crates/libs/qip-contracts/src/expansion.rs::SourceScore",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score (records), ::DEFAULT_SOURCE_ALPHA_EVERY",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs::AmbientJournal::record_source_scores, AmbientRecord::SourceScore",
+      "backend/crates/apps/qip-deepbrain/src/node.rs run_with (record_source_scores beside the ambient sweep record)",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::tests::a_scored_connector_leaves_a_validated_source_score_citing_its_window",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::a_cycles_source_scores_are_journaled_as_records_citing_their_window",
       "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71",
       "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:90"
     ],
-    "gap": "EvidencePolicy/SourceScore updated from outcomes.",
+    "gap": "The desk scores a connector arm against the own stream, and every committed environment leaves deepbrain_connector null (QIP_CONNECTOR_SOURCE unset), so on the default path there is no arm to score and the journal receives no record; reaching one needs a connector and, for a hosted source, the egress path the 2026-10-18 note describes (zone policy and a Cloud NAT gateway, billed; owner decision). No EvidencePolicy record is produced (the requirement names either artifact). Outcome-driven reputation updating beyond the score and adversarial detection are not here. No skeptic round ran on this slice, so the row stays PARTIAL.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing EvidencePolicy / SourceScore)",
+    "verification": "cargo test -p qip-deepbrain --lib source_alpha; cargo test -p qip-deepbrain --test ambient_journal; cargo test -p qip-contracts --test expansion",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision. 2026-10-31 L4b-expand: SourceScore contract, producer, journal record and the every-cycle default landed. Mutations fired: dropping the records push failed the unit test at records.len() (0, expected 1); dropping the journal append failed the ambient_journal test at written (0, expected 1); each restored byte-for-byte (sha256 checked). The cadence unit test was updated to the decided default (unset = 1, 0 disables). Kept PARTIAL: input env-gated, no skeptic."
   },
   {
     "id": "R12-EXPAND-6028",
