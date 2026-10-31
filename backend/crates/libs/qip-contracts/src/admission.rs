@@ -33,9 +33,10 @@
 //! # What this slice does not yet do
 //!
 //! `MarketEvent` keeps its own fields and wire form — the lake and the spool
-//! hold millions of lines of it — and admits through [`Admission::new`]
-//! inside its constructor rather than becoming `Admitted<MarketMessage>` on
-//! the wire. Every `SensedRecord` producer does not yet build a header; the
+//! hold millions of lines of it — and admits through [`Admission::new`] and
+//! [`Admitted::admit`] inside its constructor rather than becoming
+//! `Admitted<MarketMessage>` on the wire. Every `SensedRecord` producer does
+//! not yet build a header; the
 //! kernel admits each record by the times it carries itself, with no
 //! entitlement and no source hash (see `Platform::absorb_records`). Both are
 //! named in R12-TICK-2053's gap.

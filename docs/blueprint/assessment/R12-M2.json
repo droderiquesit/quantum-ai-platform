@@ -1257,13 +1257,16 @@
   {
     "id": "R12-TICK-2053",
     "status": "PARTIAL",
-    "current": "qip-contracts MarketMessage/MarketEvent is the canonical edge type (orders, levels, trades, status, auction updates); central ingestion uses SensedRecord variants (Bar, Quote, Trade, News, ...). Two canonical schemas coexist.",
+    "current": "ADR 0132's admission header exists as qip_contracts::admission::Admission (event time, receive time, normalized time, uncertainty, source hash, entitlement). MarketEvent::new builds its header through Admission::new, which refuses a negative uncertainty, a lapsed entitlement, an empty source hash and an event received before it happened beyond the uncertainty (Admission::check_order), and exposes it as MarketEvent::admission(). Admissible is implemented for MarketMessage (venue time, capture time) and for SensedRecord (ticks, quotes and trades carry both times; books, bars, corporate actions and news carry the event time; macro, fundamental, alternative and reference records carry none). Admitted<T>::admit refuses a payload whose own times disagree with its header. The kernel's absorb_records refuses a SensedRecord whose own event time follows its own receive time, at zero doubt, and reports it as a capture problem on the cycle report rather than storing it.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/market_event.rs",
-      "backend/crates/libs/qip-contracts/src/message.rs",
-      "backend/crates/services/qip-market-ingestion/src/adapter.rs SensedRecord"
+      "backend/crates/libs/qip-contracts/src/admission.rs Admission::new, Admission::check_order, Admissible, Admitted::admit",
+      "backend/crates/libs/qip-contracts/src/market_event.rs MarketEvent::new builds the header through Admission::new; MarketEvent::admission",
+      "backend/crates/services/qip-market-ingestion/src/adapter.rs impl Admissible for SensedRecord",
+      "backend/crates/runtime/qip-kernel/src/platform.rs absorb_records admission arm (Admission::check_order at Duration::ZERO, capture problem)",
+      "backend/crates/libs/qip-contracts/tests/admission.rs an_admission_whose_event_time_follows_its_receive_time_beyond_uncertainty_is_refused, a_record_whose_own_times_disagree_with_its_header_is_refused, a_market_event_is_admitted_through_the_one_constructor_and_yields_its_header",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_tick_captured_before_it_happened_is_refused_at_admission_and_reported"
     ],
-    "gap": "Decided by ADR 0132 (accepted 2026-10-18): One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests. Code left: qip_contracts::admission::Admission and the Admitted wrappers for MarketMessage and SensedRecord, with refusal tests for disagreeing times.",
+    "gap": "2026-10-31: skeptic REFUTED on the COMPLETE bar: MarketEvent is not literally an Admitted<MarketMessage> (its header fields are filled from the Admission rather than the type holding one), SensedRecord carries no header or entitlement of its own and is checked only on its two own times, Admitted::admit has no production caller (putting it inside MarketEvent::new broke producers that stamp capture time and receive time from two clocks, and the deep brain's leak test needs a contaminated tick on the lake), ADR 0132's verification clause about typed variants is not addressed, and Deserialize bypasses every refusal. Remaining step: a SourceManifest-carried header on each SensedRecord admitted at the adapter seam, and MarketEvent as the Admitted wrapper once producers stamp one clock.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1271,10 +1274,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts --test admission; cargo test -p qip-kernel --test learning a_tick_captured_before",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Unify on one canonical market-event schema across edge and centre."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Unify on one canonical market-event schema across edge and centre. Lane L3b 2026-10-31: mutations, each fired and restored byte-for-byte: drop the order refusal in Admission::check_order; the admission test passes a tick received before it happened and fails. Drop the own-times comparison in Admitted::admit; the disagreeing-record test fails. Skip the kernel's admission arm; the learning test finds the forged tick stored and no capture problem. Fixtures adjusted rather than weakened: the market_event gap test's receive time moved 1 ns after its event (it stamped the event after receipt, which the header now refuses), and tick_desk's leak test forges the lake line after building an admitted event, because the forged line is what the replay exclusion exists for. Gates: cargo test -p qip-contracts 105+ passed across 27 binaries; qip-acceptance event_fabric_schema_lock 6 passed; qip-deepbrain tick_desk 10 passed; qip-kernel 67 binaries 1125 passed; qip-edge-node 48 binaries 320 passed with the 3 pre-existing fabric_envelope provenance failures fixed upstream at 61b7c247."
   },
   {
     "id": "R12-TICK-2054",

@@ -105,6 +105,13 @@ impl MarketEvent {
             recomputed,
             entitlement,
         )?;
+        // Not yet `Admitted::admit(payload, admission)`: producers across the
+        // tree stamp a payload's `capture_time` and the header's receive
+        // time from two clocks (the venue's line and the node's receipt),
+        // and the deep brain's leak-exclusion test needs a tick received
+        // before it happened to exist on the lake to be excluded from. The
+        // own-times rule is enforced by `Admitted::admit` for callers that
+        // build the wrapper, and is R12-TICK-2053's named remaining step.
         Ok(Self {
             payload,
             event_time: admission.event_time(),

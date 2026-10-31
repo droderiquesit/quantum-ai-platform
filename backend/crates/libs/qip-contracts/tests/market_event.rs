@@ -23,6 +23,18 @@ fn origin(feed: &str, partition: u32, sequence: u64) -> Origin {
 }
 
 fn message(origin: Origin, price: Decimal) -> MarketMessage {
+    message_at(origin, price, t(0), t(0))
+}
+
+/// A payload whose own venue and capture instants are stated: an event is
+/// admitted only when they agree with its header (ADR 0132), so a fixture
+/// whose header says one thing and whose payload says another is refused.
+fn message_at(
+    origin: Origin,
+    price: Decimal,
+    venue_time: Timestamp,
+    capture_time: Timestamp,
+) -> MarketMessage {
     MarketMessage::new(
         ObjectId::from_string("obj-ACME"),
         origin,
@@ -32,8 +44,8 @@ fn message(origin: Origin, price: Decimal) -> MarketMessage {
             condition: TradeCondition::Regular,
             aggressor: Some(BookSide::Bid),
         },
-        t(0),
-        t(0),
+        venue_time,
+        capture_time,
     )
 }
 
@@ -48,7 +60,7 @@ fn granted(expires_at: Timestamp) -> Entitlement {
 #[test]
 fn event_receive_and_normalized_time_are_kept_apart_and_a_negative_uncertainty_is_refused()
 -> Result<()> {
-    let payload = message(origin("itch-a", 0, 1), dec!("100.25"));
+    let payload = message_at(origin("itch-a", 0, 1), dec!("100.25"), t(10), t(20));
     let hash = MarketEvent::hash_payload(&payload)?;
 
     let event = MarketEvent::new(
@@ -222,7 +234,7 @@ fn a_market_event_without_an_entitlement_is_refused() -> Result<()> {
 fn a_gap_in_source_sequence_is_detectable_between_consecutive_events() -> Result<()> {
     let build =
         |origin: Origin, event_time: Timestamp, receive_time: Timestamp| -> Result<MarketEvent> {
-            let payload = message(origin, dec!("100.25"));
+            let payload = message_at(origin, dec!("100.25"), event_time, receive_time);
             let hash = MarketEvent::hash_payload(&payload)?;
             MarketEvent::new(
                 payload,
