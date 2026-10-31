@@ -156,6 +156,12 @@ pub const STANDING_POPULATION: &str = "tournament/standing";
 /// rather than a figure filled in to give the spawn an entrant. Whether that
 /// persistence carries information is what the tournament then scores; a
 /// specialist with no skill earns no influence and expires.
+///
+/// Once scored, it is one of the forecasters whose predicted failure the
+/// verifier society's model-risk critic reads in a prediction's dossier, so
+/// it can contribute to a refutation — ADR 0125 decision 2's veto, which
+/// removes a proposal and never creates or enlarges one. That is the only
+/// path from it to a decision.
 #[derive(Clone, Debug, PartialEq)]
 struct TemporarySpecialist {
     id: String,
@@ -870,10 +876,17 @@ impl TournamentStage {
                     }
                     forecasts.insert(id, up);
                 }
-                Err(error) => self
-                    .review
-                    .refused
-                    .push(format!("{question}/{id}: {}", error.message())),
+                Err(error) => {
+                    // A temporary the tournament will not hold is not live:
+                    // kept, it would block a respawn on its subject and be
+                    // refused again at every question until it expired.
+                    if temporary.as_ref().is_some_and(|t| t.id == id) {
+                        self.temporaries.remove(&subject);
+                    }
+                    self.review
+                        .refused
+                        .push(format!("{question}/{id}: {}", error.message()));
+                }
             }
         }
         if let Ok(Some(task)) = self.tournament.review_disagreement(&question, now) {
@@ -1214,7 +1227,16 @@ impl TournamentStage {
         self.review.retired = self.tournament.retire_expired(now);
         // The tournament also evicts expired temporaries on its own when
         // full, so expiry is read off the clock, not off the retired list.
-        self.temporaries.retain(|_, t| t.expires_at > now);
+        // The score history goes with it: a respawn on the subject reuses the
+        // id, and would otherwise vote on a record its predecessor earned.
+        let scores = &mut self.scores;
+        self.temporaries.retain(|_, t| {
+            let live = t.expires_at > now;
+            if !live {
+                scores.remove(&t.id);
+            }
+            live
+        });
         for forecaster in &self.review.retired {
             self.refuted.remove(forecaster);
         }
@@ -1866,6 +1888,21 @@ mod tests {
             stage.review.refused
         );
         assert!(stage.tournament.is_admitted(&temporary));
+        // Its question resolves, so it holds a record of its own.
+        let review = stage
+            .learn(
+                &settle(next.saturating_add(Duration::from_days(5)), hit),
+                None,
+                3,
+                next.saturating_add(Duration::from_days(6)),
+            )
+            .expect("learns")
+            .expect("a resolution is a record");
+        assert_eq!(review.resolved.len(), 1, "premise: its question resolved");
+        assert!(
+            stage.scores.contains_key(&temporary),
+            "premise: the temporary was scored"
+        );
 
         // And leaves at its expiry: retired, and absent from the next
         // question.
@@ -1875,6 +1912,10 @@ mod tests {
             .expect("learns")
             .expect("the retirement is a record");
         assert!(review.retired.contains(&temporary), "{review:?}");
+        assert!(
+            !stage.scores.contains_key(&temporary),
+            "a retired temporary's score history outlived it, so a respawn would vote on it"
+        );
         observe(&mut stage, &hypothesis("hyp-5-obj-AAA", expired), expired);
         assert!(
             !stage.review.opened[0].forecasts.contains_key(&temporary),

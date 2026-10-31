@@ -4562,10 +4562,11 @@
     "current": "Tournament (cap 4,096, temporaries with expiry) and ForecastMarket run every cycle: REASON opens a question the detector and analysts answer; LEARN resolves and scores. A library test scores 1,000 forecasters.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/central/foundry.rs:70",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::a_subject_the_population_missed_spawns_a_temporary_specialist_that_competes_until_it_expires",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS"
     ],
-    "gap": "Production admits only the detector and panel analysts; no path spawns specialist or temporary models. WorldModelSpawner proposes a federation branch (a hypothesis record, parent id, trigger residual) when a residual exceeds a threshold; it does not produce a forecaster, so admitting ForecasterKind::Temporary entrants from it would submit forecasts no model made. A temporary specialist needs a forecasting function per spawned entity (a fitted or rule-based model that answers the tournament question) and a residual signal that reaches the kernel; neither exists, and the live entrants stay the detector class and the panel analysts.",
+    "gap": "2026-10-31 (lane L2-INTEL): temporary specialists now spawn on the default cycle. TournamentStage::learn proposes a WorldModelSpawner branch when the aggregate's residual on a resolved question exceeds SPAWN_RESIDUAL (0.6), and admits a Laplace-smoothed outcome-frequency model on that subject as ForecasterKind::Temporary for 14 days (TournamentReview.spawned records the branch). REASON and LEARN reach the stage from run_cycle in qip-fastbrain and qip-deepbrain. The in-lane skeptic REFUTED it on bar part 4: production spawns at most one temporary per subject the platform asks questions on, so the population is the detector, the analysts and one entrant per subject, and 'thousands' rests on MAX_FORECASTERS and a library test, not on anything a composition root does. Also open: no test drives a Platform cycle through to a spawn, and the refused-admission arm (a full tournament drops the temporary rather than holding it live) is untested. A scored temporary can contribute to a verifier-society refutation (subtract-only, ADR 0125 decision 2).",
     "implemented": true,
     "tested": false,
     "integrated": false,
