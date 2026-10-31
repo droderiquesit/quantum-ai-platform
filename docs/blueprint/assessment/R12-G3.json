@@ -2043,24 +2043,27 @@
   {
     "id": "R12-WORLD-10091",
     "status": "PARTIAL",
-    "current": "lattice::route weights a horizon population from a reputation cache; lattice stage issues per-horizon forecasts from NOW latent returns.",
+    "current": "lattice::route weights a horizon population from a reputation cache; the lattice stage issues per-horizon forecasts from NOW latent returns, and for each forecast it issues this pass raises one qip_contracts::forecast::ForecastTask per solver kind (specialist model, agent, world model, simulator), surprise-triggered for a subject the NOW Brain was surprised by and state-vector-triggered for one with a promoted NOW return; a subject with neither raises none, and a still-current slot raises none again. The tasks ride on the journaled LatticeReview (kernel/forecast-lattice) on every shipped cycle.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs::route"
+      "backend/crates/services/qip-world-model/src/lattice.rs::route",
+      "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastTask, ForecastSolver, ForecastTrigger",
+      "backend/crates/libs/qip-contracts/tests/forecast_task.rs::a_task_over_no_time_or_about_nothing_is_refused_and_each_solver_gets_its_own (mutants: span check, blank-subject check, solver out of the id; all killed)",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::tasks_for, LatticeReview.tasks, a_surprise_fans_one_forecast_task_per_central_horizon_to_every_member_kind (mutants: a solver kind dropped, every task state-vector, an unpromoted subject fanned out, every slot due; all killed. Lane guard removed: survived, held by routing)"
     ],
-    "gap": "No Fabric task contracts; no fan-out to agents, world models or simulators; microsecond horizon never issued.",
+    "gap": "Skeptic 2026-10-31 PARTIAL: the tasks are a journaled record, not a dispatch: no agent, world model or simulator consumes them, and no Fabric task topic exists, so \"via Fabric task contracts\" is unmet. The microsecond horizon is never routed from the centre (the issue loop's central-lane guard and a population with no central microsecond model); ADR 0008 places that horizon in the cell but does not decline routing it, so the \"microsecond-to-year\" clause stays unmet under bar part 4. No test round-trips a journaled review to show the tasks survive. Mutation note: removing the lane guard survives, because routing refuses the microsecond horizon too.",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-WORLD-10090"
     ],
     "blocked_by": "",
-    "verification": "unit tests",
+    "verification": "cargo test -p qip-kernel --lib lattice_stage; cargo test -p qip-contracts --test forecast_task",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4-quant: built (4c3f2536), then corrected on the skeptic's findings (5a63750b): the first version fanned out unpromoted subjects as state-vector tasks and re-journaled the same up-to-512 tasks every cycle. Skeptic verdict PARTIAL."
   },
   {
     "id": "R12-MODEL-10092",
