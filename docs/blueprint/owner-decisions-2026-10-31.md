@@ -935,3 +935,54 @@ that narrows a security scanner, whatever the owner has delegated.
     the fleet Job to Binary Authorization's default policy is accepted. It
     fails closed, so the fleet worker image must be attested, or exempted by
     exact repository, before the next fleet apply. That is the owner's to do.
+
+19. **An edge node's pass-time rows close on a deployed node, not on the
+    startup template** (lane L2, on R12-ARCH-9014). The execution node's
+    startup template writes `QIP_VENUE_FEED=simulated`, so a node built from
+    it runs passes. That template is committed but no environment renders it:
+    `execution_nodes_enabled` is false in dev and `execution_nodes` is empty
+    everywhere else. It is therefore not a default path, and a row cannot
+    cite it as one. Making `qip-edge-node` run passes when `QIP_VENUE_FEED`
+    is unset would turn a refusal default into an admission, which the
+    fail-closed principle forbids. The rows stay PARTIAL on deployment. They
+    close when a deployed node runs passes and a game day is recorded
+    against it.
+
+20. **R12-RES-7106's follow-up reading of "contested"** (lane L6). Four
+    points, each accepted:
+    - `SymbolicDerivation`'s `SCHEMA_VERSION` moves from 1 to 2, and a
+      record verifies under the version it was sealed with.
+    - The fixture `PlatformConfig` may carry `licensed_datasets`. The default
+      stays unchanged, and a test pins the default.
+    - Under ADR 0238, "contested" means dissent on the evidence or the
+      direction. Two objections are excluded. A risk-control vote that only
+      reports a blocking limit is excluded, because that limit refuses at its
+      own gate. An adversarial re-argument against a position already held is
+      excluded, because otherwise the platform could never add to, hedge or
+      plan an exit from anything it holds. Each exclusion gets a test, and a
+      test also shows that genuine dissent is still contested.
+    - Test (1)'s assertion becomes "Unresolved and not sized", which is
+      stricter: the ADR removes the old property. Test (5) asserts that
+      nothing trades and the halt is journaled. The ACT kill gate keeps its
+      own unit test.
+    Taken together this is still a tightening against `main`, not an easing.
+
+21. **R12-CONTRACT-7067's health figures are figures already in the tree**
+    (lane L2). Model health is the lattice's `CALIBRATION_BRIER_BOUND` of
+    0.30, carried as `min_quality_bp` 7000 and named as the lattice's bound.
+    It is not called a promotion gate's floor, because no promotion gate
+    has a calibration floor. Data health is each slot's
+    `PolicyItem::time_to_live`. Neither needs a new figure from the owner.
+    `CALIBRATION_FLOOR` and `TAIL_BRIER_BAR` are not used, because neither
+    measures what the clause asks about.
+
+## Where this stopped (2026-11-01)
+
+Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
+limit · resets Nov 6, 1pm (UTC)" around 13:00 UTC on 2026-10-31. L1, L3 and
+L5 were idle with their work pushed, and the limit is the account's, so a
+message to any of them would meet the same refusal. The re-grade of the 389
+older rows stopped on the same limit. Its classifiers finished 22 of 26 batches, and no
+skeptic pass ran over them. Under the standing rule no further agent is
+spawned until the reset, so no older row is re-graded on the strength of
+that partial run. Decision 22 stays reserved for the re-grade.
