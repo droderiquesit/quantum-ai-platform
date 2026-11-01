@@ -4137,15 +4137,18 @@
   {
     "id": "R12-WORLD-1178",
     "status": "PARTIAL",
-    "current": "Federation supports branch/merge/renew/expiry/calibration; not integrated.",
+    "current": "The federation runs every UNDERSTAND from the platform's composition (federation_stage.rs, reached from Platform::run_cycle in every central binary). Members exist for global/markets, macro (ADR 0256), company (WORLD-3044), microstructure (order flow ADR 0255, regional members), portfolio/capital (funding draw ADR 0194; floor headroom ADR 0257), counterparty (venue refusal WORLD-3049; settlement ADR 0257), regional, self, scenario (stress world) and counterfactual (alternate future); they branch, merge, expire and are scored by calibration.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/federation.rs:482",
-      "backend/crates/services/qip-world-model/src/federation.rs:599"
+      "backend/crates/services/qip-world-model/src/federation.rs:599",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::the_floor_and_settlement_members_forecast_from_the_book_and_the_next_pass_answers_them",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations",
+      "docs/adr/0257-the-capital-floor-member-forecasts-the-books-floor-and-the-settlement-member-forecasts-settlement-each-resolved-from-the-ledgers-own-records-and-neither-enlarges-a-size.md"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Four scope items of the requirement have no member: geopolitical, supply-chain, physical and event models (grep -n -i 'geopolit\\|supply.chain\\|physical' federation_stage.rs finds none; REQUIRED_FAMILIES does not name them). The capital family still lacks collateral, optionality and capital mobility (ADR 0194). Each missing item needs a member reached from the cycle with a named test before the inspection check can pass.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -4153,7 +4156,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The federation runs every UNDERSTAND, so 'not integrated' is stale. Two members can be built now from the book the kernel already holds: a capital member forecasting the book's floor and a counterparty member forecasting settlement. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The capital member forecasts the book's floor and the counterparty member forecasts settlement, each resolved from the ledger's own records, and neither enlarges a size (body of claimed ADR 0194)."
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The federation runs every UNDERSTAND, so 'not integrated' is stale. Two members can be built now from the book the kernel already holds: a capital member forecasting the book's floor and a counterparty member forecasting settlement. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: The capital member forecasts the book's floor and the counterparty member forecasts settlement, each resolved from the ledger's own records, and neither enlarges a size (body of claimed ADR 0194). 2026-10-31 L2-INTEL: ADR 0257 (the ruling's ADR 0194 was already taken by WORLD-3048) added portfolio.capital-floor.global and counterparty.settlement.global; mutations of both resolvers, the settlement prior's outstanding term, the platform's headroom and its settlement total each fail a named test."
   },
   {
     "id": "R12-REASON-1179",

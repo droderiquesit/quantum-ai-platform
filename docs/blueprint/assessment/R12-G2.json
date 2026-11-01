@@ -352,9 +352,10 @@
       "backend/crates/libs/qip-contracts/src/degradation.rs:725 freshness, :776 sizing_multiplier",
       "backend/crates/edge/qip-edge/src/telemetry.rs:434 sizing multiplier recorded",
       "backend/crates/tests/qip-acceptance/tests/arch_004_regional_cell_autonomy.rs",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs",
+      "backend/crates/edge/qip-edge/tests/unevaluated.rs::a_cell_that_has_been_told_nothing_sizes_at_the_floor_rather_than_in_full (fails under mutation)"
     ],
-    "gap": "Deployment-level game day proving a cell continues with the centre unreachable.",
+    "gap": "Deployment (decision 19, 2026-10-31): the execution node's startup template is not a default path while no environment renders it (execution_nodes_enabled false or execution_nodes = {} everywhere), and making qip-edge-node run passes with QIP_VENUE_FEED unset would turn a refusal default into a running one, which fail-closed rules out. The row closes on a deployed node running passes, then a game day with the centre unreachable. Also open: only the BeliefState capability was mutated, and pauses() lets a cell of SituationalRecognition strategies complete passes while placing nothing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -365,7 +366,7 @@
     "verification": "cargo test -p qip-edge; game day on a deployed node",
     "work_item": "",
     "size": "M",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). 2026-10-31 L2-INTEL: mutation 'return Ok(report) when BeliefState is Unavailable' after self.narrowing(now) in Cell::work failed unevaluated.rs ('the uninformed cell stopped rather than narrowed') and qip-edge-node tests/pass.rs; restored by cmp. Independent skeptic: REFUTED for COMPLETE on bar part 2 (default path). contracts.rs::nothing_in_the_degradation_table_halts_the_platform asserts a const false the cell never calls, so it is not cited as proof."
   },
   {
     "id": "R12-GCP-9015",
