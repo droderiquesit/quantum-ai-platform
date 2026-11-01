@@ -46,6 +46,7 @@ pub mod commerce_research;
 pub mod compute_routing;
 pub mod confidence;
 pub mod config;
+pub mod counterfactual_alternatives;
 pub mod counterfactual_trial;
 pub mod cross_margin;
 pub mod cycle;
@@ -100,6 +101,7 @@ pub mod valuation;
 pub mod venue_admission;
 pub mod venue_measurement;
 pub mod venue_review;
+pub mod world_snapshot;
 pub mod yield_shelf;
 
 pub use asset_class_registry::{

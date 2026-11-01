@@ -303,6 +303,18 @@ fn prod_is_refused_on_every_trigger_by_deploy_and_infra() {
             job.contains("    needs: gate\n"),
             "`{named}` no longer needs `gate`, so it can run on a commit the gate refused"
         );
+        // R12-CICD-7120: the dependency proves nothing about what the job
+        // runs. A paper-gate hollowed to `run: true` kept the needs line
+        // and passed every test, so its command is pinned here too.
+        if named == "paper-gate" {
+            assert!(
+                job.contains(
+                    "        run: cargo test -p qip-acceptance --no-fail-fast --test paper_boundary \
+                     --test arch_007_paper_boundary --test prod_guard\n"
+                ),
+                "`paper-gate` no longer runs the paper boundary and prod guard suites"
+            );
+        }
     }
     assert!(
         deploy.contains("    needs: images\n"),

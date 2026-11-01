@@ -544,3 +544,198 @@ fn a_fired_leg_the_local_risk_gate_vetoes_is_never_sent() {
         "the same leg goes when the gate admits it"
     );
 }
+
+// ---- MESH-5061: the guard on every path an epoch enters by ----------------
+
+/// The seven fields of an epoch, each hollowed on an epoch that otherwise
+/// validates: built by hand, as a peer's encoder or a buggy originator would,
+/// rather than through `EpochDraft::build`, which refuses them first.
+fn hollowed() -> Vec<(&'static str, OpportunityEpoch)> {
+    let full = epoch();
+    vec![
+        (
+            "cycle",
+            OpportunityEpoch {
+                cycle: String::new(),
+                ..full.clone()
+            },
+        ),
+        (
+            "legs",
+            OpportunityEpoch {
+                legs: Vec::new(),
+                ..full.clone()
+            },
+        ),
+        (
+            "size",
+            OpportunityEpoch {
+                size: Decimal::ZERO,
+                ..full.clone()
+            },
+        ),
+        (
+            "min_edge_bps",
+            OpportunityEpoch {
+                min_edge_bps: d(-1),
+                ..full.clone()
+            },
+        ),
+        (
+            "model_versions",
+            OpportunityEpoch {
+                model_versions: Vec::new(),
+                ..full.clone()
+            },
+        ),
+        (
+            "ttl",
+            OpportunityEpoch {
+                ttl_nanos: 0,
+                ..full.clone()
+            },
+        ),
+        (
+            "max_recovery_loss",
+            OpportunityEpoch {
+                max_recovery_loss: d(-1),
+                ..full
+            },
+        ),
+    ]
+}
+
+/// The builder is not the only way an epoch arrives: a peer's Token frame is
+/// decoded straight into an `OpportunityEpoch`, and an originator may hand
+/// `open_epoch` one it built by hand. Both reach `PeerEndpoint::install`,
+/// whose `validate` call is the one guard on either path, and until this test
+/// only the builder's refusal was exercised. Dropping the call would have let
+/// a peer install an epoch with no cycle, no legs or no TTL, and nothing
+/// would have failed.
+///
+/// Mutation: drop the `validate` call in `PeerEndpoint::install`; every
+/// hollowed epoch is then installed on both paths and this fails.
+#[test]
+fn a_hollow_epoch_is_refused_naming_its_field_whether_a_peer_sends_it_or_a_node_opens_it() {
+    // Premise: the unhollowed epoch is admitted on both paths, so each
+    // refusal below is about the hollowed field.
+    let mut peer = PeerEndpoint::new("americas", limits());
+    peer.observe_clock_offset(0);
+    peer.receive(&token(&epoch()), at(0)).unwrap();
+    assert!(peer.epoch("opp-1").is_some());
+    let mut origin = PeerEndpoint::new("americas", limits());
+    origin.observe_clock_offset(0);
+    assert!(origin.open_epoch(epoch(), at(0)).is_ok());
+
+    let cases = hollowed();
+    assert_eq!(cases.len(), 7, "premise: all seven fields are hollowed");
+    for (field, hollow) in cases {
+        let mut peer = PeerEndpoint::new("americas", limits());
+        peer.observe_clock_offset(0);
+        let refused = peer
+            .receive(&token(&hollow), at(0))
+            .expect_err("a hollow epoch from a peer was installed");
+        assert!(
+            refused.message().contains(&format!("`{field}`")),
+            "{field} from a peer: {}",
+            refused.message()
+        );
+        assert!(peer.epoch("opp-1").is_none(), "{field}: installed anyway");
+        assert_eq!(
+            peer.refusals().last().map(|refusal| refusal.kind),
+            Some("invalid_epoch"),
+            "{field}: refused under the wrong kind"
+        );
+
+        let mut origin = PeerEndpoint::new("americas", limits());
+        origin.observe_clock_offset(0);
+        let refused = origin
+            .open_epoch(hollow, at(0))
+            .expect_err("a hollow epoch was opened");
+        // An epoch with no legs holds none of this node's, and `open_epoch`
+        // refuses that before it reaches `install`; every other field is
+        // refused by `install`'s own `validate`.
+        let named = if field == "legs" {
+            "holds no leg".to_string()
+        } else {
+            format!("`{field}`")
+        };
+        assert!(
+            refused.message().contains(&named),
+            "{field} opened locally: {}",
+            refused.message()
+        );
+        assert!(origin.epoch("opp-1").is_none(), "{field}: opened anyway");
+    }
+}
+
+// ---- MESH-1010: the leg bound, at both ends ---------------------------------
+
+/// `n` legs, each on its own node, the first on this endpoint's node.
+fn legs(n: usize) -> Vec<EpochLeg> {
+    (0..n)
+        .map(|index| {
+            let node = if index == 0 {
+                "americas".to_string()
+            } else {
+                format!("node-{index}")
+            };
+            leg(&format!("leg-{index}"), &node, 1)
+        })
+        .collect()
+}
+
+/// A distributed cycle has two to twenty legs (`MIN_LEGS..=MAX_LEGS`). Only
+/// the middle of that range was ever exercised, so a bound widened by one at
+/// either end — a one-leg "cycle" that is a single-venue order with no
+/// counterparty, or a twenty-one-leg one past what a token may fan out —
+/// would have been admitted with every test green. Both ends are held here,
+/// on the builder and on a peer's Token frame.
+///
+/// Mutation: widen the range in `OpportunityEpoch::validate` to `1..=21`,
+/// and the one- and twenty-one-leg epochs are admitted; this fails.
+#[test]
+fn an_epoch_of_one_leg_or_twenty_one_legs_is_refused_and_one_of_two_or_twenty_is_admitted() {
+    for (count, admitted) in [(1, false), (2, true), (20, true), (21, false)] {
+        let built = EpochDraft {
+            legs: Some(legs(count)),
+            ..draft()
+        }
+        .build(ceiling());
+        assert_eq!(built.is_ok(), admitted, "{count} legs built: {built:?}");
+        if !admitted {
+            let message = built
+                .err()
+                .map(|e| e.message().to_string())
+                .unwrap_or_default();
+            assert!(
+                message.contains("`legs`") && message.contains(&format!("holds {count} legs")),
+                "{count} legs: {message}"
+            );
+        }
+
+        // The same epoch from a peer, built by hand past the builder. A
+        // frame large enough for twenty-one legs needs a larger bound than
+        // the fixture's, so the frame limit is not what refuses it.
+        let hand = OpportunityEpoch {
+            legs: legs(count),
+            ..epoch()
+        };
+        let frame = encode(&PeerMessage::Token { epoch: hand }, 1 << 16).unwrap();
+        let mut peer = PeerEndpoint::new(
+            "americas",
+            PeerLimits {
+                max_frame: 1 << 16,
+                ..limits()
+            },
+        );
+        peer.observe_clock_offset(0);
+        let received = peer.receive(&frame, at(0));
+        assert_eq!(
+            received.is_ok(),
+            admitted,
+            "{count} legs from a peer: {received:?}"
+        );
+        assert_eq!(peer.epoch("opp-1").is_some(), admitted, "{count} legs held");
+    }
+}

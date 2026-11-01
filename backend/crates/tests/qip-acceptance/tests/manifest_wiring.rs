@@ -894,7 +894,7 @@ fn variables_read_by(
             // text scan can: a name the delegate's own crate declares means
             // that crate's declaration, not every same-named constant in the
             // workspace. Round 2's deep brain declared a second
-            // `PLAN_VARIABLE` (`QIP_DEEPBRAIN_BREADTH_PLAN`), and the edge
+            // `PLAN_VARIABLE` (`QIP_DEEPBRAIN_BREADTH_PLAN_PATH`), and the edge
             // node — whose `main.rs` uses its own `PLAN_VARIABLE`,
             // `QIP_STRATEGY_PLAN_PATH` — was reported as reading the deep
             // brain's breadth plan. A name declared nowhere in the crate
@@ -1494,18 +1494,16 @@ const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
      key ring's class keys and the bundle are applied and mounted.";
 
 /// The deep brain's research-warehouse sink (R12-DATA-9054).
-const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain streams \
-     graded theses to BigQuery only when `QIP_BIGQUERY_PROJECT` and \
-     `QIP_BIGQUERY_DATASET` are both set (`warehouse::OutcomeSink::from_lookup`), and \
-     refuses a half-named target. Every environment sets `enable_bigquery = false`, so \
-     there is no dataset to name, no TLS-terminating proxy applied for \
-     `QIP_GCP_ENDPOINT` to point at, and no credential for the others to carry; the \
-     banner prints the warehouse as off. `ManagedSettings::from_env` is asked for the \
-     BigQuery target only, so the Cloud Storage bucket and the Memorystore pair it also \
-     names are never read by this binary, though the source walk counts them with the \
-     rest of the family. The entries end together when an environment sets \
-     `enable_bigquery` and the catalogue names the deep brain's project, dataset, \
-     endpoint and one credential.";
+const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain loads \
+     graded theses into BigQuery by batch load from Cloud Storage (ADR 0240), and the \
+     catalogue names its project, dataset, staging bucket, location, the proxy endpoint \
+     and the metadata-server credential only where `local.deepbrain_warehouse` is \
+     non-null, which needs both `enable_bigquery` and `enable_cloud_storage` and is no \
+     environment today. The remaining credential spellings stay unset because the \
+     catalogue chooses the metadata server, and `ManagedSettings::from_env` is asked \
+     for the BigQuery target only, so the Cloud Storage bucket and the Memorystore pair \
+     it also names are never read by this binary, though the source walk counts them \
+     with the rest of the family.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
@@ -1722,32 +1720,12 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
-        "QIP_BIGQUERY_DATASET",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_BIGQUERY_PROJECT",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
         "QIP_CLOUD_STORAGE_BUCKET",
         NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
     ),
     (
         "qip-deepbrain",
         "QIP_GCP_ACCESS_TOKEN",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_ENDPOINT",
-        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_METADATA_SERVER",
         NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
     ),
     (
@@ -2245,19 +2223,10 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          against that set and refuses rather than assumes, so no value set \
          here can admit research the eligible set does not allow.",
     ),
-    (
-        "qip-deepbrain",
-        "QIP_DEEPBRAIN_BREADTH_PLAN",
-        "Unset, no breadth plan is installed and the node runs exactly as it \
-         did before the plane existed: no market is created on the simulated \
-         venue, no event-market or commerce source is polled, and every \
-         breadth hook in the cycle returns at its first line. Each section a \
-         plan carries commits the platform to something — a seeded market, \
-         paper event positions, paper purchases — so the absent value is the \
-         restrictive one, and a deployment sets it when the desk has written \
-         a plan, not before. A plan that cannot be read, parsed or honoured \
-         stops the process with exit 78 (`qip_deepbrain::breadth`).",
-    ),
+    // QIP_DEEPBRAIN_BREADTH_PLAN_PATH left this list with ADR 0245's dev
+    // mount: catalogue.tf's `optional_config_files.deepbrain` sets it behind
+    // `var.deepbrain_breadth_plan_file`, so the general rule covers it — set
+    // where a tfvars names a plan, left to the tfvars everywhere else.
     (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_RESEARCH_COMPUTE",

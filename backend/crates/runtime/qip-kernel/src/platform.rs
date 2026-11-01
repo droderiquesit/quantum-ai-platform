@@ -1169,6 +1169,10 @@ pub struct Platform {
     future_drivers: BTreeSet<String>,
     /// The bar close instant `future_tree` was last observed at.
     future_observed_at: Option<Timestamp>,
+    /// Each world-model domain's last journaled snapshot version and digest
+    /// (ADR 0191 decision 3), resumed from the log so the versions continue
+    /// across a restart. Read back for nothing else.
+    world_snapshots: BTreeMap<String, (u64, String)>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -6051,6 +6055,14 @@ impl Platform {
         // next claim on either side is admitted as if it were the first.
         let mut world_model = WorldModel::new();
         world_model.rebuild_evidence(Self::journaled_evidence_in(&event_log)?)?;
+        // The committed counterfactual arms resolved against the universe
+        // before it moves into the market view (R12-CAPITAL-4091); the menu
+        // below reads them.
+        let committed_arms = config
+            .counterfactual_alternatives
+            .as_ref()
+            .map(|declared| declared.resolve(&universe))
+            .unwrap_or_default();
         let world = Upstream::new(world_model);
         let research_memory = Upstream::new(ResearchMemory::new());
         let market = Upstream::new(MarketView {
@@ -6250,9 +6262,16 @@ impl Platform {
         // firm. The hedge is the first declared policy's instrument and beta
         // — the structure the hedge review would have proposed.
         let mut menu = AlternativeMenu::standard(delay);
+        // The committed alternatives (decision 17) fill an arm only where
+        // neither a hedge policy nor the arbitrage whitelist names one, and
+        // only with what resolves against this universe and is not the
+        // desk's own venue; anything else is no arm, never a refused set.
         if let Some(policy) = config.hedge_policies.first() {
             menu = menu.with_hedge(policy.instrument.clone(), policy.beta);
+        } else if let Some(arm) = &committed_arms.hedge {
+            menu = menu.with_hedge(arm.instrument.clone(), arm.ratio);
         }
+        let mut venue_named = false;
         if let Some(arbitrage) = &config.central.arbitrage
             && let Some((name, venue)) = arbitrage
                 .venues
@@ -6266,6 +6285,17 @@ impl Platform {
             costs.commission_bps = venue.taker_cost.to_f64() * 10_000.0;
             menu = menu.with_venue(VenueOption {
                 venue: VenueId::new(name.clone()),
+                costs,
+                firm_quotes: false,
+            });
+            venue_named = true;
+        }
+        if !venue_named && let Some(arm) = committed_arms.venue_other_than(broker.name()) {
+            let mut costs = CostModel::liquid_equity();
+            // As above: a fraction of notional crosses into basis points.
+            costs.commission_bps = arm.taker_cost.to_f64() * 10_000.0;
+            menu = menu.with_venue(VenueOption {
+                venue: VenueId::new(arm.name.clone()),
                 costs,
                 firm_quotes: false,
             });
@@ -6331,6 +6361,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            world_snapshots: crate::world_snapshot::resume(&event_log)?,
             journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
@@ -13381,6 +13412,58 @@ impl Platform {
         self.capture_problems.extend(problems);
     }
 
+    /// Journal a snapshot of each world-model domain whose content changed
+    /// since its last snapshot (ADR 0191 decision 3, R12-WORLD-7023): the
+    /// domain, its next version, its counts and a digest of its content as
+    /// true and known at `now`. A domain whose digest is unchanged adds
+    /// nothing to the log. A snapshot that cannot be read or journaled is a
+    /// capture problem; a failed journal still takes its version
+    /// ([`crate::world_snapshot::settle`]), so the retry next cycle uses the
+    /// next number and no two records claim one.
+    fn snapshot_world(&mut self, now: Timestamp) {
+        use crate::world_snapshot::{WORLD_SNAPSHOT_ORIGIN, domains_of, due, settle};
+        let domains = match domains_of(&self.world.read(), now) {
+            Ok(domains) => domains,
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the world model could not be read for its snapshot: {}",
+                    error.message()
+                ));
+                return;
+            }
+        };
+        for snapshot in due(domains, &self.world_snapshots, now) {
+            let (domain, version, digest) = (
+                snapshot.domain.clone(),
+                snapshot.version,
+                snapshot.digest.clone(),
+            );
+            let journaled = match self.journal_record(snapshot, WORLD_SNAPSHOT_ORIGIN, now) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.capture_problems.push(format!(
+                        "the {domain} snapshot at version {version} was not journaled: {}",
+                        error.message()
+                    ));
+                    false
+                }
+            };
+            settle(
+                &mut self.world_snapshots,
+                domain,
+                version,
+                digest,
+                journaled,
+            );
+        }
+    }
+
+    /// Each world-model domain's last journaled snapshot version and
+    /// digest (ADR 0191 decision 3).
+    pub const fn world_snapshot_versions(&self) -> &BTreeMap<String, (u64, String)> {
+        &self.world_snapshots
+    }
+
     /// The synthetic future tree the cycle tends (R12-WORLD-9035), if the
     /// held world events have grown one.
     pub const fn future_tree(&self) -> Option<&qip_twin::futures::FutureTree> {
@@ -13501,6 +13584,7 @@ impl Platform {
         self.observe_own_health(now);
         self.react_to_world_events(now);
         self.tend_futures(now);
+        self.snapshot_world(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -15093,7 +15177,7 @@ impl Platform {
     /// positive or any figure is not finite — a share of nothing is not a
     /// number, and the member is silent rather than reading that book as one
     /// that draws nothing.
-    fn capital_view(&self) -> Option<crate::federation_stage::CapitalView> {
+    fn capital_view(&self, now: Timestamp) -> Option<crate::federation_stage::CapitalView> {
         let equity = self.equity().to_f64();
         if !equity.is_finite() || equity <= 0.0 {
             return None;
@@ -15111,6 +15195,22 @@ impl Platform {
             leverage: gross / equity,
             net_share: net / equity,
             pending_theses: self.pending_theses.len(),
+            // ADR 0257: equity above the NAV floor the survival waterfall
+            // withholds — the emergency-reserve fraction of the same policy
+            // DECIDE sizes under, applied to this pass's equity — and what is
+            // still settling now. Neither reaches DECIDE through the member.
+            floor_headroom: {
+                let equity = self.equity();
+                equity
+                    .checked_mul(self.survival_policy().emergency_reserve_fraction())
+                    .and_then(|floor| equity.checked_sub(floor))
+                    .map(|headroom| headroom.to_f64())
+            },
+            // A total that overflowed is not zero: NaN keeps the settlement
+            // member silent rather than reading it as nothing outstanding.
+            unsettled: self
+                .unsettled_sale_proceeds(now)
+                .map_or(f64::NAN, |total| total.to_f64()),
         };
         [view.cash, view.cash_share, view.leverage, view.net_share]
             .iter()
@@ -15298,7 +15398,7 @@ impl Platform {
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
             }),
-            capital: self.capital_view(),
+            capital: self.capital_view(now),
             macros: self.macro_views(now),
             currencies: self.currency_views(now),
             counterparties: self.counterparty_views(),
@@ -25634,8 +25734,10 @@ impl Platform {
     /// market built from the traded instrument alone would make every set
     /// fail the moment a hedge policy was declared — and the declared hedge
     /// is exactly the alternative R12-CAPITAL-4091 asks the twin to price.
-    /// A hedge instrument with no held bars still reaches the twin and is
-    /// refused there by name rather than silently priced unhedged.
+    /// A hedge instrument with no held bars is not priced at all:
+    /// [`Self::evaluate_alternatives`] drops that one arm from the set
+    /// (decision 17), so the set has no different-hedge entry rather than an
+    /// unhedged figure filed under it, and every other arm is still priced.
     fn counterfactual_bars(&self, object_id: &ObjectId) -> Result<Vec<Bar>> {
         let mut bars = self
             .bar_history
@@ -25742,6 +25844,25 @@ impl Platform {
                 )
             }
         };
+        // A hedge arm whose instrument this platform holds no bars for is
+        // dropped for this set, not carried into the twin, which refuses a
+        // hedged alternative it cannot size and would refuse the whole set
+        // with it (decision 17: fail closed to "no arm", never to "all sets
+        // refused"). The set then simply has no different-hedge entry.
+        let unpriceable_hedge =
+            self.counterfactuals
+                .menu()
+                .hedge
+                .as_ref()
+                .is_some_and(|(hedge, _)| {
+                    hedge != &actual.object_id && !self.bar_history.contains_key(hedge.as_str())
+                });
+        if unpriceable_hedge {
+            return self
+                .counterfactuals
+                .without_hedge()
+                .evaluate(market, &decision, &actual, &realised);
+        }
         self.counterfactuals
             .evaluate(market, &decision, &actual, &realised)
     }
@@ -29164,6 +29285,113 @@ mod decide_tests {
             3,
             "a reaction was applied twice or not at all"
         );
+    }
+
+    /// ADR 0191 decision 3 (R12-WORLD-7023): each cycle journals a snapshot
+    /// of each world-model domain whose content changed, at the next version
+    /// for that domain. An unchanged world adds nothing, and a restarted
+    /// process over the same log continues the versions rather than
+    /// beginning them again.
+    ///
+    /// Mutations: drop the `snapshot_world` call from `run_cycle`; journal a
+    /// snapshot whether or not the digest changed; resume no versions at
+    /// start-up.
+    #[test]
+    fn each_world_model_domain_is_snapshotted_at_a_version_that_rises_only_when_it_changes_across_restarts()
+     {
+        use crate::world_snapshot::{CAUSAL_GRAPH, KNOWLEDGE_GRAPH, WORLD_SNAPSHOT_ORIGIN};
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        // `/tmp` stated directly, not looked up through the environment:
+        // `architecture.rs`'s environment scan reads every `src/` file with
+        // no test exemption (see `dormancy_boot_log_path`).
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-world-snapshot-{}-{}",
+            std::process::id(),
+            Timestamp::from_secs(1_760_000_000).as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let open = || {
+            let config = PlatformConfig::default()
+                .with_initial_equity(Decimal::from_int(200_000))
+                .with_event_log_file(&path);
+            let (context, _clock) =
+                qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                listed_test_universe(&["AAPL", "MSFT"]),
+                LimitSet::conservative_default(),
+            )
+            .expect("the platform assembles")
+        };
+        let snapshots = |platform: &Platform| -> usize {
+            platform
+                .event_log()
+                .events()
+                .filter(|e| {
+                    e.topic == qip_events::Topic::WorldModelSnapshot
+                        && e.lineage.producer == WORLD_SNAPSHOT_ORIGIN
+                })
+                .count()
+        };
+        let version = |platform: &Platform, domain: &str| {
+            platform.world_snapshot_versions().get(domain).cloned()
+        };
+        let relate = |platform: &Platform, to: &str, at: Timestamp| {
+            platform.world.update(|world| {
+                world
+                    .relate(
+                        Relationship::new("FOUNDRY", to, RelationshipKind::Supplies, 0.3, "filing"),
+                        at,
+                        at,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            });
+        };
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let day = |n: i64| t0.saturating_add(Duration::from_days(n));
+        {
+            let mut first = open();
+            relate(&first, "CHIPS", t0);
+            first.run_cycle(day(1));
+            let kg = version(&first, KNOWLEDGE_GRAPH).expect("the knowledge graph was snapshotted");
+            assert_eq!(kg.0, 1);
+            assert_eq!(version(&first, CAUSAL_GRAPH).map(|v| v.0), Some(1));
+            let journaled = snapshots(&first);
+            assert_eq!(journaled, 2, "one snapshot per domain on the first cycle");
+
+            // Nothing changed: nothing is journaled.
+            first.run_cycle(day(2));
+            assert_eq!(
+                snapshots(&first),
+                journaled,
+                "an unchanged world was snapshotted again"
+            );
+
+            // The knowledge graph changed and the causal graph did not.
+            relate(&first, "DEVICES", day(2));
+            first.run_cycle(day(3));
+            let kg2 = version(&first, KNOWLEDGE_GRAPH).expect("a snapshot");
+            assert_eq!(kg2.0, 2);
+            assert_ne!(kg2.1, kg.1, "a changed graph kept its digest");
+            assert_eq!(version(&first, CAUSAL_GRAPH).map(|v| v.0), Some(1));
+            assert_eq!(snapshots(&first), journaled + 1);
+        }
+
+        // A restart over the same log continues the versions.
+        let mut second = open();
+        assert_eq!(version(&second, KNOWLEDGE_GRAPH).map(|v| v.0), Some(2));
+        relate(&second, "SCREENS", day(4));
+        second.run_cycle(day(5));
+        assert_eq!(
+            version(&second, KNOWLEDGE_GRAPH).map(|v| v.0),
+            Some(3),
+            "a restarted process began the versions again"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// R12-WORLD-9037: the platform's company twin is built from the

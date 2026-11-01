@@ -386,3 +386,126 @@ fn no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candi
          non-simulated provider: {offenders:#?}"
     );
 }
+
+// --- QUANT-9040 / ADR 0275: one identity reaches IBM Quantum ---------------
+
+/// Each Cloud Run workload in `catalogue.tf` as `(name, binary, zone,
+/// secret ids it mounts)`, read from the file's layout: a workload block
+/// opens at four spaces as `name = {`, and its `binary`, `trust_zone` and
+/// `secret_ids["..."]` lines follow before the next block opens.
+fn catalogue_workloads() -> Vec<(String, String, String, Vec<String>)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../infrastructure/terraform/catalogue.tf");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let quoted = |line: &str| line.split('"').nth(1).map(str::to_string);
+    let mut workloads: Vec<(String, String, String, Vec<String>)> = Vec::new();
+    for line in text.lines() {
+        let opens = line.starts_with("    ")
+            && !line.starts_with("     ")
+            && line.trim_end().ends_with("= {");
+        if opens {
+            let name = line.trim().trim_end_matches("= {").trim().to_string();
+            workloads.push((name, String::new(), String::new(), Vec::new()));
+            continue;
+        }
+        let Some(current) = workloads.last_mut() else {
+            continue;
+        };
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("binary ") && current.1.is_empty() {
+            current.1 = quoted(trimmed).unwrap_or_default();
+        } else if trimmed.starts_with("trust_zone ") && current.2.is_empty() {
+            current.2 = quoted(trimmed).unwrap_or_default();
+        } else if let Some(at) = trimmed.find("secret_ids[\"")
+            && let Some(id) = trimmed[at..].split('"').nth(1)
+        {
+            current.3.push(id.to_string());
+        }
+    }
+    workloads.retain(|(_, binary, zone, _)| !binary.is_empty() && !zone.is_empty());
+    workloads
+}
+
+/// R12-QUANT-9040 (ADR 0275). IBM Quantum is reached by one identity
+/// only: a gateway workload of its own in the `optimisation` zone. It alone
+/// may build a connected `HostedProvider` or mount `qip-quantum-token`. No
+/// such workload is declared until a vendor is contracted, so today the
+/// set of crates allowed to make the call is `qip-quantum` itself and
+/// nothing else, and no workload may mount the token. A second caller wired
+/// into an existing binary, or the token mounted on one, fails here naming
+/// it and its zone. The egress half is
+/// `infrastructure::the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm`.
+///
+/// Mutations: add the call to `apps/qip-deepbrain/src/main.rs`; add it to
+/// `runtime/qip-kernel`; mount the token on the deep brain in
+/// `catalogue.tf`.
+#[test]
+fn only_the_optimisation_zone_gateway_identity_may_build_a_connected_hosted_provider_or_mount_the_quantum_token()
+ {
+    let workloads = catalogue_workloads();
+    // Premise: the catalogue was read, by its layout, and holds the known
+    // workloads with their zones and mounts.
+    let zone_of = |binary: &str| {
+        workloads
+            .iter()
+            .find(|(_, b, _, _)| b == binary)
+            .map(|(_, _, zone, _)| zone.clone())
+    };
+    assert_eq!(
+        zone_of("qip-deepbrain").as_deref(),
+        Some("cognition"),
+        "catalogue.tf was not read as expected; the guard cannot judge: {workloads:?}"
+    );
+    assert!(
+        workloads
+            .iter()
+            .any(|(_, _, _, mounts)| mounts.iter().any(|m| m == "qip-token-operator")),
+        "no secret mount was read from catalogue.tf; the mount check would be blind"
+    );
+
+    // The token: mounted only by an optimisation-zone workload.
+    let token_offenders: Vec<String> = workloads
+        .iter()
+        .filter(|(_, _, zone, mounts)| {
+            zone != "optimisation" && mounts.iter().any(|m| m == "qip-quantum-token")
+        })
+        .map(|(name, binary, zone, _)| format!("{name} ({binary}) in zone {zone}"))
+        .collect();
+    assert!(
+        token_offenders.is_empty(),
+        "qip-quantum-token is mounted outside the optimisation zone, which ADR 0275 reserves \
+         it for: {token_offenders:#?}"
+    );
+
+    // The connected provider: built only inside qip-quantum and in the crate
+    // of an optimisation-zone binary.
+    let allowed: Vec<String> = std::iter::once("libs/qip-quantum/".to_string())
+        .chain(
+            workloads
+                .iter()
+                .filter(|(_, _, zone, _)| zone == "optimisation")
+                .map(|(_, binary, _, _)| format!("apps/{binary}/")),
+        )
+        .collect();
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let token = "HostedProvider::connected(";
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let callers: Vec<String> = production_lines(&crates)
+        .into_iter()
+        .filter(|(_, _, line)| {
+            line.match_indices(token)
+                .any(|(i, _)| !line[..i].ends_with(is_ident))
+        })
+        .filter(|(file, _, _)| !allowed.iter().any(|prefix| file.starts_with(prefix)))
+        .map(|(file, number, line)| {
+            let binary = file.split('/').nth(1).unwrap_or_default().to_string();
+            let zone = zone_of(&binary).unwrap_or_else(|| "no workload".to_string());
+            format!("{file}:{number} ({binary}, zone {zone}): {}", line.trim())
+        })
+        .collect();
+    assert!(
+        callers.is_empty(),
+        "a connected HostedProvider is built outside the optimisation-zone gateway identity, \
+         which ADR 0275 reserves IBM Quantum for: {callers:#?}"
+    );
+}

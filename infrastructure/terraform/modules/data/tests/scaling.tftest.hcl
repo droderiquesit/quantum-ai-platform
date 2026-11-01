@@ -39,6 +39,18 @@ run "bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload" {
     error_message = "Each Bigtable cluster must sit in its own zone, or a zonal outage takes both."
   }
 
+  # Every cluster autoscales, from a floor of at least one node and with a
+  # ceiling not below it (R12-FINOPS-8041). Until this assertion the
+  # topology run checked cluster count and zones only, so a cluster that
+  # lost its autoscaling_config would have planned a fixed size unnoticed.
+  assert {
+    condition = alltrue([
+      for c in google_bigtable_instance.timeseries[0].cluster :
+      length(c.autoscaling_config) == 1 && c.autoscaling_config[0].min_nodes >= 1 && c.autoscaling_config[0].max_nodes >= c.autoscaling_config[0].min_nodes
+    ])
+    error_message = "Every Bigtable cluster must carry exactly one autoscaling_config with min_nodes >= 1 and max_nodes >= min_nodes (R12-FINOPS-8041)."
+  }
+
   assert {
     condition     = toset(keys(google_bigtable_app_profile.timeseries)) == toset(["ingest", "serve", "batch"])
     error_message = "The Bigtable instance must carry exactly the ingest, serve and batch app profiles (R12-DATA-9184)."

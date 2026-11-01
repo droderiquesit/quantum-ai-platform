@@ -188,7 +188,12 @@ fn run() -> Result<()> {
             .with_live_ceiling(AutonomyLevel::deployable(
                 std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
             )?)
-            .with_desk_chain(qip_deepbrain::node::DESK_CHAIN),
+            .with_desk_chain(qip_deepbrain::node::DESK_CHAIN)
+            // The committed counterfactual arms (R12-CAPITAL-4091, decision
+            // 17); a declaration that does not load stops the process.
+            .with_counterfactual_alternatives(
+                qip_kernel::counterfactual_alternatives::CounterfactualAlternatives::committed()?,
+            ),
     )?;
     // A committed tape, opened before the platform exists because the
     // platform's clock has to be the tape's: opportunities expire at tape
@@ -962,11 +967,13 @@ fn run() -> Result<()> {
         "  agency outbox:    {} (drafts only; external action stays refused)",
         outbox_destination.describe()
     );
-    // The research warehouse (`warehouse.rs`, R12-DATA-9054): resolved
-    // outcomes streamed to BigQuery. Off, and printed as off, in every
+    // The research warehouse (`warehouse.rs`, R12-DATA-9054, ADR 0240):
+    // resolved outcomes staged in Cloud Storage and batch-loaded into
+    // BigQuery; nothing streams rows. Off, and printed as off, in every
     // environment that names no QIP_BIGQUERY_PROJECT and
-    // QIP_BIGQUERY_DATASET; a half-named or unreachable target stops the
-    // process here rather than reading as a warehouse that is quietly absent.
+    // QIP_BIGQUERY_DATASET; a half-named, unstaged or unreachable target
+    // stops the process here rather than reading as a warehouse that is
+    // quietly absent.
     let mut warehouse = qip_deepbrain::warehouse::OutcomeSink::from_lookup(
         &|name| std::env::var(name).ok(),
         clock.clone(),
@@ -976,8 +983,9 @@ fn run() -> Result<()> {
         "  warehouse:        {}",
         if warehouse.is_some() {
             format!(
-                "resolved outcomes stream to {}",
-                qip_deepbrain::warehouse::OUTCOMES_TABLE
+                "resolved outcomes batch-loaded into {} from {}",
+                qip_deepbrain::warehouse::OUTCOMES_TABLE,
+                qip_deepbrain::warehouse::STAGING_PREFIX
             )
         } else {
             "off (QIP_BIGQUERY_PROJECT and QIP_BIGQUERY_DATASET unset)".to_string()

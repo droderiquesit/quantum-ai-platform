@@ -8122,6 +8122,9 @@ impl Cell {
             at: execution.at,
             shares,
         };
+        // ADR 0285: a fill at any venue is the other side of a layering
+        // pattern on this instrument.
+        self.conduct.filled(&fill.object_id, fill.side, fill.at);
         let overfill_detail = overfilled.then(|| {
             format!(
                 "order {} was sent for {} and the order-entry channel has now reported {} filled",
@@ -12152,6 +12155,34 @@ impl Cell {
         );
     }
 
+    /// Whether a requote from `from` to `to` moved an order on `side` away
+    /// from the touch, judged against the cell's own book (ADR 0285
+    /// decision 4). A buy (an order on the ask, in this cell's convention)
+    /// rests against the best bid and a sell against the best ask; a
+    /// requote is away when it made the order less aggressive and left it
+    /// strictly behind that touch. One that stayed or moved closer, or that
+    /// the cell has no usable book to judge, is not.
+    fn requote_moved_away(
+        &self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        side: BookSide,
+        from: Decimal,
+        to: Decimal,
+    ) -> bool {
+        let Some(book) = self.liquidity.get(venue, object_id) else {
+            return false;
+        };
+        match side {
+            BookSide::Ask => book
+                .best_bid()
+                .is_some_and(|touch| to < from && to < touch.price),
+            BookSide::Bid => book
+                .best_ask()
+                .is_some_and(|touch| to > from && to > touch.price),
+        }
+    }
+
     /// Seal a requote's second half, and move the open order to where it
     /// now rests.
     ///
@@ -12182,6 +12213,11 @@ impl Cell {
             if order.filled.is_zero() {
                 self.conduct
                     .cancelled_unfilled(venue, &object_id, side, now);
+                // ADR 0285: the requote also counts toward the layering arm,
+                // as away from the touch only when it moved the order further
+                // behind the touch it rests against.
+                let away = self.requote_moved_away(venue, &object_id, side, order.price, price);
+                self.conduct.requoted(venue, &object_id, side, away, now);
             }
             self.conduct.placed(venue, &object_id, side, now);
         }
@@ -13767,6 +13803,151 @@ mod crossing_tests {
                 "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
         }
+        Ok(())
+    }
+
+    /// A gateway that accepts every order and reports, when told, a fill.
+    #[derive(Debug, Default)]
+    struct ReportingGateway {
+        placed: Vec<(String, BookSide)>,
+        reports: Vec<ExecutionReport>,
+    }
+
+    impl Placer for ReportingGateway {
+        fn is_simulated(&self) -> bool {
+            true
+        }
+
+        fn place(
+            &mut self,
+            order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            self.placed.push((order_id.to_string(), side));
+            Ok(())
+        }
+
+        fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+            std::mem::take(&mut self.reports)
+        }
+    }
+
+    /// Four bids placed, the first requoted four times, each time further
+    /// below the best bid of 99; the requote after that is put to
+    /// `admit_replacement`. With `asks_fill`, a sell the cell sent first was
+    /// filled by the venue, through the cell's own fill confirmation.
+    fn layer_bids(asks_fill: bool) -> Result<(Cell, Result<()>)> {
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ReportingGateway::default();
+        let mut report = WorkReport::default();
+        let reference = Decimal::from_int(100);
+        if asks_fill {
+            let sell = netted(&[("alpha", "-100"), ("beta", "-40")], reference);
+            cell.place_net(&sell, at(10), &mut gateway, &mut report)?;
+            let (sold, side) = gateway.placed.last().cloned().expect("the sell went out");
+            assert_eq!(
+                side,
+                BookSide::Bid,
+                "premise: a sell is an order on the bid"
+            );
+            gateway.reports.push(ExecutionReport {
+                order_id: sold,
+                venue: venue(),
+                quantity: Decimal::from_int(140),
+                price: Decimal::from_int(99),
+                at: at(10),
+            });
+            let fills = cell.confirm_execution_reports(&mut gateway, at(10));
+            assert_eq!(fills.len(), 1, "premise: the sell filled");
+        }
+        let first = gateway.placed.len();
+        for second in 11..15 {
+            cell.place_net(
+                &one_sided_net(reference),
+                at(second),
+                &mut gateway,
+                &mut report,
+            )?;
+        }
+        assert_eq!(
+            gateway.placed.len() - first,
+            4,
+            "premise: four bids went out"
+        );
+        let (bid, side) = gateway.placed[first].clone();
+        assert_eq!(side, BookSide::Ask, "premise: a buy is an order on the ask");
+        let quantity = Decimal::from_int(140);
+        for (second, price) in [(20, "98"), (21, "97"), (22, "96"), (23, "95")] {
+            let price = Decimal::parse(price).expect("a decimal literal");
+            cell.admit_replacement(&bid, &object(), &venue(), side, quantity, price, at(second))?;
+            cell.record_replacement(&bid, &venue(), "r", quantity, price, at(second));
+        }
+        let fifth = cell.admit_replacement(
+            &bid,
+            &object(),
+            &venue(),
+            side,
+            quantity,
+            Decimal::from_int(94),
+            at(24),
+        );
+        Ok((cell, fifth))
+    }
+
+    /// ADR 0285, R12-EXEC-1068. Four requotes of a bid, each moving it
+    /// further behind the touch and none filled, are four withdrawals against
+    /// eight placements on that side: a half, under the cancel-before-fill
+    /// bound of three in four, so that gate admits the next one and always
+    /// would. What marks the layering is the other side: the cell's sell
+    /// filled meanwhile. With that fill the next bid requote is refused under
+    /// the conduct gate, journaled; without it the same requotes are a
+    /// market maker repricing and are admitted.
+    ///
+    /// Mutation: ignore the opposite-side fill in `layering_refusal` (treat
+    /// the fills as always present, or never), and one of the two halves
+    /// fails.
+    #[test]
+    fn a_cell_that_layers_its_bids_by_requoting_them_away_from_the_touch_while_its_asks_fill_is_refused_a_further_bid()
+    -> Result<()> {
+        // Premise: with no fill on the other side the same pattern is
+        // admitted, so the cancel-before-fill gate does not refuse it and
+        // the refusal below is the layering arm's alone.
+        let (_, admitted) = layer_bids(false)?;
+        assert!(
+            admitted.is_ok(),
+            "the cancel-before-fill gate refused a pattern under its bound: {admitted:?}"
+        );
+
+        let (cell, refused) = layer_bids(true)?;
+        let error = match refused {
+            Ok(()) => panic!("a bid layered while the asks filled was requoted again"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "denied", "{error}");
+        assert!(
+            error.message().contains("layering")
+                && error
+                    .message()
+                    .contains("requoted 4 of its last 4 buy order(s)"),
+            "{error}"
+        );
+        assert!(
+            cell.journal().entries().iter().any(|entry| matches!(
+                &entry.decision,
+                Decision::Refused { gate, reason }
+                    if gate == GATE_CONDUCT_SPOOFING && reason.contains("layering")
+            )),
+            "the layering refusal was not journaled under {GATE_CONDUCT_SPOOFING}"
+        );
         Ok(())
     }
 

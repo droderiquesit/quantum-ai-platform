@@ -278,3 +278,20 @@ run "with_an_image_there_is_exactly_one_job" {
     error_message = "a digest-pinned image must produce the one Job"
   }
 }
+
+# R12-SEC-9110: Cloud Run enforces the project's Binary Authorization policy
+# only on a job that asks for it. Without the block the worker image ran
+# unattested in a project whose default rule requires an attestation.
+run "the_job_is_held_to_the_projects_binary_authorization_policy" {
+  command = plan
+
+  assert {
+    condition     = length(google_cloud_run_v2_job.fleet[0].binary_authorization) == 1 && google_cloud_run_v2_job.fleet[0].binary_authorization[0].use_default == true
+    error_message = "the fleet Job must ask for the project's Binary Authorization policy (use_default = true)"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_job.fleet[0].binary_authorization[0].breakglass_justification == null
+    error_message = "the fleet Job must not carry a breakglass justification"
+  }
+}

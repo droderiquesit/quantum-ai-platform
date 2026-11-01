@@ -5182,9 +5182,14 @@ fn every_secret_level_grant_in_the_tree_is_pinned_and_names_its_secret_by_a_revi
     let pinned: std::collections::BTreeMap<String, Vec<String>> = [
         (
             "infrastructure/terraform/main.tf:committed_file",
+            // `merge(` and the breadth plan's slot since ADR 0245's dev mount:
+            // a committed, reviewed file (not a credential), read only by the
+            // deep brain, and only where the tfvars name a plan. The venue
+            // credential is still not among them.
             vec![
-                "for_each = {",
+                "for_each = merge({",
                 "secret_id = each.value.secret_id",
+                "secret_id = module.secrets.secret_ids[\"qip-deepbrain-breadth-plan\"]",
                 "secret_id = module.secrets.secret_ids[\"qip-egress-bootstrap\"]",
                 "secret_id = module.secrets.secret_ids[\"qip-universe-catalogue\"]",
             ],
@@ -8741,8 +8746,10 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
     );
 
     // The module: the path the variable carries is
-    // /etc/qip/<hash>/<file_name>, the object's content is the input's
-    // content under that same hash-named directory, and the volume is a
+    // /etc/qip/<hash>/<file_name>, where the hash is that file's own (ADR
+    // 0245) and never one taken over every file, so a second file cannot
+    // move the first; the object's content is the input's content under that
+    // same hash-named directory, and the volume is a
     // read-only mount of the bucket, on both kinds. The hash is in the path
     // rather than in the mount because the GA provider has no `mount_options`
     // to select a directory with; either way the variable names exactly the
@@ -8751,7 +8758,7 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
     assert!(
         sets(&module, "config_root", "\"/etc/qip\"")
             && module.contains(
-                "key => \"${local.config_root}/${local.config_prefix}/${file.file_name}\""
+                "key => \"${local.config_root}/${local.config_prefixes[key]}/${file.file_name}\""
             )
             && module.contains("file.env_file_variable => local.config_files[key]"),
         "the module no longer writes /etc/qip/<hash>/<file_name> into the _PATH variable"
@@ -8766,9 +8773,22 @@ fn every_workload_that_reads_the_universe_is_given_the_committed_catalogue_as_a_
             && sets(
                 object,
                 "name",
-                "\"${local.config_prefix}/${each.value.file_name}\""
+                "\"${local.config_prefixes[each.key]}/${each.value.file_name}\""
             ),
         "the config object's content or hash-named path is no longer the input's"
+    );
+    // Per file: each prefix hashes one file's digest, and no prefix is taken
+    // over the join of every file's, which is the form that moved the
+    // universe's path whenever a second file was added (ADR 0245).
+    assert!(
+        module.contains("key => substr(sha256(digest), 0, 16)")
+            && module.contains("for key, digest in local.config_file_hashes :"),
+        "the module no longer names each config file's directory by that file's own digest"
+    );
+    assert!(
+        !module.contains("join(\"\\n\", [for key in sort(keys(var.config_files))"),
+        "the module names a config directory by every file's digest again, so adding a file \
+         moves the universe's path"
     );
     assert!(
         module.contains("sha256(file.content)"),
@@ -15125,6 +15145,59 @@ fn every_asset_change_feed_publishes_to_the_change_topic() {
     );
 }
 
+/// ADR 0240: the catalogue hands the deep brain the research dataset's name,
+/// its staging bucket and its location by computing them the way
+/// `modules/data` does, because reading that module's outputs would be a
+/// cycle (it grants the deep brain's service account). Nothing probes the
+/// names at start-up, so this holds the two spellings equal: a drift would
+/// otherwise surface only as the first failed upload or load.
+///
+/// Mutation: change `local.deepbrain_warehouse.staging_bucket` to
+/// `qip-${var.environment}-staging-${var.region}` — the catalogue no longer
+/// spells the module's segment bucket and this fails.
+#[test]
+fn the_catalogue_names_the_warehouse_dataset_bucket_and_location_as_the_data_module_creates_them() {
+    let catalogue = without_comments(&read("infrastructure/terraform/catalogue.tf"));
+    let data = without_comments(&read("infrastructure/terraform/modules/data/main.tf"));
+    // The module's spellings, with its prefix expanded.
+    assert!(
+        data.contains(r#"prefix = "qip-${var.environment}""#),
+        "premise: modules/data prefixes every name with qip-<environment>"
+    );
+    assert!(
+        data.contains(r#"dataset_id = replace("${local.prefix}_research", "-", "_")"#),
+        "premise: the research dataset's name"
+    );
+    assert!(
+        data.contains(r#"name     = "${local.prefix}-segments-${var.region}""#),
+        "premise: the segment bucket's name"
+    );
+    let dataset = data
+        .split(r#"resource "google_bigquery_dataset" "research""#)
+        .nth(1)
+        .expect("the research dataset is declared");
+    assert!(
+        dataset[..dataset.find("\n}").unwrap_or(dataset.len())].contains("location   = var.region"),
+        "premise: the research dataset is regional, in var.region"
+    );
+    // The catalogue's, which must be the same strings.
+    for wanted in [
+        r#"deepbrain_warehouse = var.enable_bigquery && var.enable_cloud_storage ? {"#,
+        r#"dataset        = replace("qip-${var.environment}_research", "-", "_")"#,
+        r#"staging_bucket = "qip-${var.environment}-segments-${var.region}""#,
+        r#"location       = var.region"#,
+        r#"QIP_BIGQUERY_DATASET        = local.deepbrain_warehouse.dataset"#,
+        r#"QIP_BIGQUERY_STAGING_BUCKET = local.deepbrain_warehouse.staging_bucket"#,
+        r#"QIP_BIGQUERY_LOCATION       = local.deepbrain_warehouse.location"#,
+    ] {
+        assert!(
+            catalogue.contains(wanted),
+            "the catalogue does not hand the deep brain `{wanted}`, so its warehouse target \
+             would drift from what modules/data creates"
+        );
+    }
+}
+
 /// R12-RES-9177: the secondary image repository is wired from the root and
 /// off in every committed environment.
 ///
@@ -15201,4 +15274,59 @@ fn every_environment_states_no_secondary_registry_and_the_root_passes_the_settin
             path.display()
         );
     }
+}
+
+// --- committed-use discounts ------------------------------------------------
+
+/// The measurement rows of `docs/ops/execution-measurements.md` taken on a
+/// provisioned execution node: a table row naming an execution node that
+/// does not carry the document's "Not a deployment measurement." caveat,
+/// which every in-process row carries by rule.
+fn execution_node_measurements(document: &str) -> Vec<String> {
+    document
+        .lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| Capability |"))
+        .filter(|line| !line.contains("Not a deployment measurement"))
+        .filter(|line| line.contains("execution node"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// R12-FINOPS-10137. A committed-use discount buys a fixed amount of a
+/// machine shape for one or three years, and the shape the hot path needs is
+/// a number nobody has measured: every row in the execution measurements is
+/// an in-process figure on a shared container. So no
+/// `google_compute_region_commitment` may be declared anywhere under
+/// `infrastructure/terraform` until that document holds a row measured on a
+/// provisioned execution node. A refusal now rather than a promise.
+///
+/// Mutation: declare a `google_compute_region_commitment` in any `.tf` file
+/// under `infrastructure/terraform` and this test names it.
+#[test]
+fn no_committed_use_discount_is_declared_before_a_sizing_record_measured_on_an_execution_node() {
+    let document = read("docs/ops/execution-measurements.md");
+    let rows = document
+        .lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| Capability |"))
+        .count();
+    assert!(
+        rows > 0,
+        "premise: docs/ops/execution-measurements.md holds no measurement row"
+    );
+    let measured_on_a_node = execution_node_measurements(&document);
+
+    let declared: Vec<String> = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .filter(|path| {
+            let text = std::fs::read_to_string(path).expect("readable");
+            without_comments(&text).contains("resource \"google_compute_region_commitment\"")
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    assert!(
+        declared.is_empty() || !measured_on_a_node.is_empty(),
+        "{declared:?} declare a committed-use discount, and docs/ops/execution-measurements.md \
+         holds no row measured on a provisioned execution node; a commitment sized from an \
+         in-process figure buys a year of a shape nobody measured"
+    );
 }

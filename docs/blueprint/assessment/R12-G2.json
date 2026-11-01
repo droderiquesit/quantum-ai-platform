@@ -352,9 +352,10 @@
       "backend/crates/libs/qip-contracts/src/degradation.rs:725 freshness, :776 sizing_multiplier",
       "backend/crates/edge/qip-edge/src/telemetry.rs:434 sizing multiplier recorded",
       "backend/crates/tests/qip-acceptance/tests/arch_004_regional_cell_autonomy.rs",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs",
+      "backend/crates/edge/qip-edge/tests/unevaluated.rs::a_cell_that_has_been_told_nothing_sizes_at_the_floor_rather_than_in_full (fails under mutation)"
     ],
-    "gap": "Deployment-level game day proving a cell continues with the centre unreachable.",
+    "gap": "Deployment (decision 19, 2026-10-31): the execution node's startup template is not a default path while no environment renders it (execution_nodes_enabled false or execution_nodes = {} everywhere), and making qip-edge-node run passes with QIP_VENUE_FEED unset would turn a refusal default into a running one, which fail-closed rules out. The row closes on a deployed node running passes, then a game day with the centre unreachable. Also open: only the BeliefState capability was mutated, and pauses() lets a cell of SituationalRecognition strategies complete passes while placing nothing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -365,7 +366,7 @@
     "verification": "cargo test -p qip-edge; game day on a deployed node",
     "work_item": "",
     "size": "M",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). 2026-10-31 L2-INTEL: mutation 'return Ok(report) when BeliefState is Unavailable' after self.narrowing(now) in Cell::work failed unevaluated.rs ('the uninformed cell stopped rather than narrowed') and qip-edge-node tests/pass.rs; restored by cmp. Independent skeptic: REFUTED for COMPLETE on bar part 2 (default path). contracts.rs::nothing_in_the_degradation_table_halts_the_platform asserts a const false the cell never calls, so it is not cited as proof."
   },
   {
     "id": "R12-GCP-9015",
@@ -969,14 +970,16 @@
   {
     "id": "R12-QUANT-9040",
     "status": "PARTIAL",
-    "current": "Network side: only the optimisation trust zone may declare ibm-quantum egress, and egress-proxy lists the IBM hosts. Code side: HostedProvider has no transport and reports unavailable; no asynchronous gateway/queue exists; no edge or money crate can reach a solver.",
+    "current": "ADR 0275 (accepted) decides that one optimisation-zone gateway identity alone may construct a connected HostedProvider, mount qip-quantum-token and hold ibm-quantum egress; the deep brain stays in cognition and submits through QuantumGateway, today over SimulatedProvider. No such gateway workload is declared until a vendor is contracted (R12-QUANT-9007). A guard now refuses a second caller: qip-acceptance arch_033_quantum_path's only_the_optimisation_zone_gateway_identity_may_build_a_connected_hosted_provider_or_mount_the_quantum_token reads every crate's production source for HostedProvider::connected( outside qip-quantum and outside binaries catalogue.tf places in optimisation (none today), and catalogue.tf for a qip-quantum-token mount on a workload outside optimisation. The trust-zone egress half is pinned by the infrastructure suite.",
     "evidence": [
       "infrastructure/terraform/modules/trust-zones/main.tf:141-152",
       "infrastructure/terraform/variables.tf:377-378 IBM hosts",
       "backend/crates/tests/qip-acceptance/tests/stress.rs:1589",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1430 no_edge_cell_can_reach_a_quantum_solver, :1389"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1430 no_edge_cell_can_reach_a_quantum_solver, :1389",
+      "docs/adr/0275-ibm-quantum-is-reached-only-by-one-optimisation-zone-gateway-identity-which-alone-may-hold-a-connected-hosted-provider-the-quantum-token-and-ibm-quantum-egress.md",
+      "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs only_the_optimisation_zone_gateway_identity_may_build_a_connected_hosted_provider_or_mount_the_quantum_token (mutations: a HostedProvider::connected( call in qip-deepbrain's src, a qip-quantum-token mount on the api workload, deepbrain moved to optimisation: each killed)"
     ],
-    "gap": "Gateway service with queue, credential and transport.",
+    "gap": "IBM Quantum has no gateway workload, mount or egress until a vendor is contracted (R12-QUANT-9007). The guard against a second caller matches only a literal HostedProvider::connected( and a literal secret_ids[\"qip-quantum-token\"] in catalogue.tf, so an alias, a function pointer, a public factory inside qip-quantum, a variable-named mount or a GitOps-only volume passes it; egress is granted per zone, not per identity (skeptic 2026-10-31, recorded in ADR 0275's costs).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -984,10 +987,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture --test stress",
+    "verification": "cargo test -p qip-acceptance --test arch_033_quantum_path",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): IBM Quantum is reached by one identity only: a gateway workload of its own in the optimisation zone. Handed to lane L4 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: IBM Quantum is reached only by one optimisation-zone gateway identity, which alone may hold a connected hosted provider, the quantum token and ibm-quantum egress; the deep brain submits through QuantumGateway and holds none of the three.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): IBM Quantum is reached by one identity only: a gateway workload of its own in the optimisation zone. Handed to lane L4 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: IBM Quantum is reached only by one optimisation-zone gateway identity, which alone may hold a connected hosted provider, the quantum token and ibm-quantum egress; the deep brain submits through QuantumGateway and holds none of the three.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-10-31: ADR 0275 written and the guard built; one skeptic returned PARTIAL for the evasions in the gap; the ADR now records them and the sidecar's IBM listeners."
   },
   {
     "id": "R12-QUANT-9041",
@@ -2586,13 +2589,15 @@
   },
   {
     "id": "R12-SEC-9110",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Policy requires attestation and enforces block-and-audit (tested); every deploy signs by digest. Not proven to block an unattested revision in a live environment.",
     "evidence": [
-      "infrastructure/terraform/modules/binaryauthorization/main.tf:199-232",
-      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:74 the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks"
+      "infrastructure/terraform/modules/binaryauthorization/main.tf default_admission_rule: REQUIRE_ATTESTATION, ENFORCED_BLOCK_AND_AUDIT_LOG, require_attestations_by the build attestor; module.binary_authorization (terraform/main.tf) has no count, so it is on dev's committed path",
+      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs::the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs::every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held (useDefault true, no breakglass, every RunService)",
+      "infrastructure/fleet/main.tf google_cloud_run_v2_job.fleet binary_authorization { use_default = true }; infrastructure/fleet/tests/fleet.tftest.hcl the_job_is_held_to_the_projects_binary_authorization_policy"
     ],
-    "gap": "A deployed refusal proof. Corrected 2026-10-24: policy tests pass (security_controls 12 passed); the proof is an attempted deploy of an unattested digest to dev, a deployment run.",
+    "gap": "None for the requirement (2026-10-31 re-triage, ALREADY_COMPLETE). The requirement's verification is the rule's shape ('Default rule is REQUIRE_ATTESTATION with ENFORCED_BLOCK_AND_AUDIT_LOG naming the attestor'); the live-deploy proof was an agent restatement (commit fbeba318), and the AUDIT-5 bar part 4 applies the requirement text. Follow-up done: the fleet Job now asks for the project policy, which fails closed: the worker image must carry the build attestor's attestation or an exact-repository exemption before the Job runs it. Previous gap: A deployed refusal proof. Corrected 2026-10-24: policy tests pass (security_controls 12 passed); the proof is an attempted deploy of an unattested digest to dev, a deployment run.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2600,10 +2605,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "attempt to deploy an unattested digest in dev",
+    "verification": "cargo test -p qip-acceptance --test pipeline_waivers --test gitops; terraform test in infrastructure/fleet (mocked)",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-31 lane L6-platform: regraded COMPLETE. Mutation (scratch worktree): enforcement_mode set to DRYRUN_AUDIT_LOG_ONLY failed pipeline_waivers at pipeline_waivers.rs:85 (5 passed, 1 failed); restored with cmp, passed. The fleet run fails when the binary_authorization block is deleted (14 passed, 1 failed); restored, 15 passed."
   },
   {
     "id": "R12-CICD-9111",
@@ -3097,13 +3102,16 @@
   },
   {
     "id": "R12-SEC-9133",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Container scanning API enabled (tested), Trivy gates, BinAuthz enforced policy; not proven against a live revision.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:70",
-      "infrastructure/terraform/modules/binaryauthorization/main.tf:199"
+      "infrastructure/terraform/modules/services/main.tf containerscanning.googleapis.com in the always-on API map",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf default_admission_rule REQUIRE_ATTESTATION / ENFORCED_BLOCK_AND_AUDIT_LOG",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::the_container_scanning_api_is_enabled_for_the_registry",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_control_plane_binary_authorization_policy_requires_attestation_and_enforces_block",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs::every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held (binaryAuthorization.useDefault true on every RunService)"
     ],
-    "gap": "Live proof. Corrected 2026-10-24: container-scanning and BinAuthz tests pass (security_controls 12 passed); proof against a live revision needs a deployed Cloud Run revision.",
+    "gap": "None for the requirement (2026-10-31 re-triage, ALREADY_COMPLETE). The requirement's verification kind is 'plan: the control exists in Terraform and is asserted by a test or plan'; 'live proof' was the row's restatement, and the AUDIT-5 bar part 4 applies the requirement text. dev is applied (owner-decisions-2026-10-31 decision 5). Previous gap: Live proof. Corrected 2026-10-24: container-scanning and BinAuthz tests pass (security_controls 12 passed); proof against a live revision needs a deployed Cloud Run revision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3111,10 +3119,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-31 lane L6-platform: regraded COMPLETE. Mutations (scratch worktree): deleting the containerscanning.googleapis.com line failed security_controls::the_container_scanning_api_is_enabled_for_the_registry at security_controls.rs:197 (11 passed, 1 failed); useDefault: true set to false in envs/dev/fastbrain.yaml failed gitops::every_run_service_holds_the_invariants... at gitops.rs:2675 (51 passed, 1 failed); each restored with cmp, passed."
   },
   {
     "id": "R12-SEC-9134",

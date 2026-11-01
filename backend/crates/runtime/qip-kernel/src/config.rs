@@ -414,6 +414,17 @@ pub struct PlatformConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hedge_candidates: Vec<crate::hedge::HedgeCandidateDeclaration>,
 
+    /// The committed counterfactual alternatives every central root loads
+    /// (R12-CAPITAL-4091, decision 17): the different-hedge and
+    /// different-venue arms used where no hedge policy and no arbitrage
+    /// whitelist name one. Counterfactual only; never read as a hedge
+    /// policy. `None` for a configuration that loaded none, and omitted from
+    /// the serialised record then, so a digest over an older configuration
+    /// is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterfactual_alternatives:
+        Option<crate::counterfactual_alternatives::CounterfactualAlternatives>,
+
     /// Where idle cash may be parked, declared by an operator in a committed
     /// file the composition root reads (ADR 0159 decision 4). `None` — every
     /// process that names no file — means nothing is routed: there is no
@@ -608,6 +619,7 @@ impl Default for PlatformConfig {
             venue_registrations: Vec::new(),
             hedge_policies: Vec::new(),
             hedge_candidates: Vec::new(),
+            counterfactual_alternatives: None,
             yield_shelf: None,
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
@@ -735,6 +747,15 @@ impl PlatformConfig {
 
     /// Commit the instruments the Hedge Brain may search over. See
     /// [`PlatformConfig::hedge_candidates`].
+    /// Load the committed counterfactual alternatives (R12-CAPITAL-4091).
+    pub fn with_counterfactual_alternatives(
+        mut self,
+        alternatives: crate::counterfactual_alternatives::CounterfactualAlternatives,
+    ) -> Self {
+        self.counterfactual_alternatives = Some(alternatives);
+        self
+    }
+
     pub fn with_hedge_candidates(
         mut self,
         candidates: Vec<crate::hedge::HedgeCandidateDeclaration>,
