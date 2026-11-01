@@ -2591,6 +2591,103 @@ mod tests {
         Ok(Some(last))
     }
 
+    /// R12-EXPAND-6034: a challenger the learning desk promotes over the
+    /// champion advances the platform's model pack. The new pack names the
+    /// previous pack as its predecessor, lists the displaced champion as
+    /// removed and the challenger as added, and `pack_membership` rebuilds
+    /// it from `model_pack_lineage`. Until this test, the pack lineage was
+    /// proven only by kernel tests calling `promote_model` themselves, so a
+    /// desk whose promotion stopped reaching the kernel would have left the
+    /// lineage frozen at its first pack with nothing failing.
+    ///
+    /// Mutations: delete the `promote_model_from` call in
+    /// `LearningDesk::shadow_round`; skip `succeed_model_pack` in the
+    /// kernel's promotion path.
+    #[test]
+    fn a_challenger_the_learning_desk_promotes_over_the_champion_advances_the_platforms_model_pack()
+    -> Result<()> {
+        let mut platform = serving_platform()?;
+        let mut desk = learning_desk();
+        // One window per regime of `learnable_regimes`, so the challenger
+        // beats the champion by construction (see `through_shadow_on`).
+        let window = |offset: usize, len: usize| {
+            move |step: usize| {
+                super::tests_support::learnable_regimes(offset + len + step)[offset + step..]
+                    .to_vec()
+            }
+        };
+        desk.maybe_learn(&subject(), &window(0, 400)(0), REGIME, 1, at())?;
+        let first = through_shadow_on(&mut desk, &mut platform, window(0, 400), 1, at())?
+            .ok_or_else(|| Error::not_found("a champion candidate"))?;
+        let PromotionOutcome::Promoted {
+            reference: champion,
+            ..
+        } = &first
+        else {
+            return Err(Error::invalid(format!(
+                "premise: the champion was promoted: {}",
+                first.describe()
+            )));
+        };
+        let before = platform
+            .model_pack()
+            .cloned()
+            .ok_or_else(|| Error::not_found("the champion's pack"))?;
+        assert!(
+            before.added.contains_key(champion),
+            "premise: the first pack holds the champion"
+        );
+
+        let later = at().saturating_add(qip_core::Duration::from_hours(1));
+        desk.maybe_learn(&subject(), &window(1_000, 1_200)(0), REGIME, 10, later)?;
+        let second = through_shadow_on(&mut desk, &mut platform, window(1_000, 1_200), 10, later)?
+            .ok_or_else(|| Error::not_found("a challenger candidate"))?;
+        let PromotionOutcome::Promoted {
+            reference: challenger,
+            displaced,
+            ..
+        } = &second
+        else {
+            return Err(Error::invalid(format!(
+                "premise: the challenger was promoted: {}",
+                second.describe()
+            )));
+        };
+        assert!(
+            displaced.contains(champion),
+            "premise: the challenger displaced the champion: {}",
+            second.describe()
+        );
+
+        let after = platform
+            .model_pack()
+            .cloned()
+            .ok_or_else(|| Error::not_found("the challenger's pack"))?;
+        assert_ne!(after.id, before.id, "the pack did not advance");
+        assert_eq!(after.predecessor.as_deref(), Some(before.id.as_str()));
+        assert!(after.removed.contains(champion), "{after:?}");
+        assert!(after.added.contains_key(challenger), "{after:?}");
+        assert!(!after.kept.contains(champion), "{after:?}");
+
+        let lineage = platform.model_pack_lineage()?;
+        assert_eq!(
+            lineage.last(),
+            Some(&after),
+            "the log's lineage ends elsewhere"
+        );
+        let members = qip_kernel::model_serving::pack_membership(&lineage, &after.id)?;
+        assert_eq!(
+            members.get(challenger),
+            after.added.get(challenger),
+            "the rebuilt pack lost the challenger"
+        );
+        assert!(
+            !members.contains_key(champion),
+            "the rebuilt pack still holds the champion"
+        );
+        Ok(())
+    }
+
     /// R12-MODEL-9003: a restore applies the live registry's cap. A log
     /// holding more cards than the cap (two registries journaled into it)
     /// restores up to the cap and reports each card it refused once, for

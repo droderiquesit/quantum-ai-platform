@@ -236,6 +236,26 @@ pub struct SlippageObservation {
     pub slippage_bps: f64,
 }
 
+/// The lane a promoted research result was given (ADR 0149 decision 6,
+/// R12-EXPAND-6052), read from its compiled form and from nothing else: no
+/// latency-budget field decides it. Until this the round counted a refused
+/// compile as `packages["refused"]` and kept no record of which promoted
+/// question had gone where, so "this result is reflex-eligible" was a fact
+/// nobody could read back for a question.
+///
+/// Only [`PromotionLane::Reflex`] names a package. A research-lane record
+/// has nowhere to carry one, so a result the compiler refused cannot be
+/// recorded as having produced a package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromotionLane {
+    /// The discovery compiled inside `MAX_RULES`, `MAX_CONDITIONS` and
+    /// `MAX_ADJUSTMENT_BPS`. The package stays unsigned until the
+    /// two-person publish signs it (R12-REASON-7203).
+    Reflex { package_id: String },
+    /// The compiler refused it; it stays research, with the refusal.
+    Research { refusal: String },
+}
+
 /// A compiled reflex package and, if a signer was installed, its signed form.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompiledReflex {
@@ -776,6 +796,11 @@ pub struct ResearchRound {
     pub constructed: Vec<ConstructedSimulation>,
     /// Reflex packages, by outcome.
     pub packages: BTreeMap<&'static str, usize>,
+    /// The lane each question promoted this sweep was given, by question
+    /// (ADR 0149 d6, R12-EXPAND-6052). Every promoted question has one: a
+    /// promotion that reaches the end of its arm without one fails the
+    /// sweep.
+    pub lanes: BTreeMap<String, PromotionLane>,
     /// Every ambient signal this sweep routed, in routing order, for the
     /// ambient journal (`ambient_journal.rs`): a count on a cycle line is
     /// not a record anybody can replay.
@@ -3887,6 +3912,12 @@ impl ResearchLoop {
                     }
                     self.capabilities.push_back(capability);
                     self.distil(&question, &result, now, metrics, round)?;
+                    if !round.lanes.contains_key(&question) {
+                        return Err(Error::invalid(format!(
+                            "{question} was promoted and given no lane; every promoted \
+                             result is recorded reflex or research (ADR 0149 d6)"
+                        )));
+                    }
                     "promoted"
                 }
                 // `conclude` closes a complete campaign that failed a
@@ -3980,8 +4011,22 @@ impl ResearchLoop {
             }],
         };
         let compiled = match self.compiler.compile(&discovery, now) {
-            Ok(compiled) => compiled,
-            Err(_) => {
+            Ok(compiled) => {
+                round.lanes.insert(
+                    question.to_string(),
+                    PromotionLane::Reflex {
+                        package_id: compiled.package.package_id.clone(),
+                    },
+                );
+                compiled
+            }
+            Err(error) => {
+                round.lanes.insert(
+                    question.to_string(),
+                    PromotionLane::Research {
+                        refusal: error.message().to_string(),
+                    },
+                );
                 *round.packages.entry("refused").or_default() += 1;
                 metrics.count(REFLEX_PACKAGES, labels([("outcome", "refused")]));
                 return Ok(());
