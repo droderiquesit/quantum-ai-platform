@@ -2637,9 +2637,13 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
     let mut secrets_checked = 0usize;
     let mut sidecars_seen = 0usize;
     let mut committed_volumes_checked = 0usize;
+    let mut per_file_volumes_checked = 0usize;
+    let mut per_file_volumes_expected = 0usize;
+    let optional_arms = optional_config_file_arms();
     for environment in environment_directories() {
         let project = tfvars_value(&environment, "project_id")
             .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_id"));
+        let named_files = optional_config_files_named_by(&environment, &optional_arms);
         for (key, entry, service, siblings) in run_services(&environment) {
             let Some(entry) = entry else {
                 // A `NOT_A_CATALOGUE_WORKLOAD` service. OpenObserve carries
@@ -2982,6 +2986,63 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
             );
             committed_volumes_checked += 1;
 
+            // Every further committed file the tfvars name for this workload,
+            // the same way and in its own volume (ADR 0245 decision 3): a
+            // single-item secret volume `config-<key>`, projecting
+            // `qip-<key>-<environment>`, mounted at exactly the directory the
+            // file's own `_PATH` variable names. Cloud Run refuses two
+            // volumes at one path, so the universe's `config-files` above is
+            // untouched by it, and the hash in that directory is held to the
+            // committed bytes by the parity test.
+            let named = named_files.get(&key).map(Vec::as_slice).unwrap_or_default();
+            per_file_volumes_expected += named.len();
+            for (arm, _) in named {
+                let variable = &arm.env_file_variable;
+                let path = env
+                    .iter()
+                    .find(|(name, _, _)| name == variable)
+                    .and_then(|(_, value, _)| value.clone())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{describe} sets no {variable}, and {environment}'s tfvars name a \
+                             file for it in `{}`",
+                            arm.variable
+                        )
+                    });
+                let (directory, file) = path
+                    .rsplit_once('/')
+                    .filter(|(directory, file)| !directory.is_empty() && !file.is_empty())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{describe} sets {variable}={path}, which does not name a file \
+                             inside a directory"
+                        )
+                    });
+                assert_ne!(
+                    directory, universe_directory,
+                    "{describe} puts {variable}={path} in the universe's own directory; a \
+                     second file has its own hash directory (ADR 0245)"
+                );
+                let volume_name = format!("config-{}", arm.key);
+                assert_eq!(
+                    mounts.get(&volume_name).map(String::as_str),
+                    Some(directory),
+                    "{describe} does not mount `{volume_name}` at {directory}, the directory \
+                     {variable}={path} names; it mounts {mounts:?}"
+                );
+                let volume = volumes
+                    .get(&volume_name)
+                    .unwrap_or_else(|| panic!("{describe} declares no `{volume_name}` volume"));
+                assert_committed_file_volume(
+                    &describe,
+                    volume,
+                    &volume_name,
+                    &format!("qip-{}-{environment}", arm.key),
+                    file,
+                );
+                per_file_volumes_checked += 1;
+            }
+
             // The Envoy bootstrap the same way, wherever there is a sidecar to
             // read it: the one item is the name the sidecar's `-c` opens and
             // the mount is that name's directory. A sidecar without the
@@ -3133,6 +3194,18 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
         "{committed_volumes_checked} committed-file volumes were checked; a universe in each \
          of twelve services and a bootstrap beside each of eight sidecars is twenty, and a walk \
          that found fewer skipped a mount a revision will die on"
+    );
+    // Counted apart from the twenty, so the universe and bootstrap figure
+    // above still means exactly what it meant before ADR 0245.
+    assert_eq!(
+        per_file_volumes_checked, per_file_volumes_expected,
+        "{per_file_volumes_checked} per-file committed volume(s) were checked against the \
+         {per_file_volumes_expected} the tfvars name"
+    );
+    assert!(
+        per_file_volumes_expected >= 1,
+        "no environment's tfvars name an optional configuration file, so the per-file volume \
+         check compared nothing; dev's breadth plan is the case it was written for"
     );
     assert!(
         overrides_seen.get() >= 1,
@@ -5759,6 +5832,192 @@ fn optional_config_file_variables() -> BTreeSet<String> {
     .collect()
 }
 
+/// One arm of `catalogue.tf`'s `optional_config_files`: a file a workload
+/// mounts only where a root variable names one, as the catalogue declares it.
+#[derive(Debug, Clone)]
+struct OptionalConfigFile {
+    /// The catalogue workload the arm sits under (`api`, `deepbrain`, …).
+    workload: String,
+    /// The `config_files` key, which names the per-file volume
+    /// (`config-<key>`) and the secret (`qip-<key>-<environment>`) under
+    /// ADR 0245 decision 3.
+    key: String,
+    /// The root variable the arm is conditional on.
+    variable: String,
+    /// `content = file("${path.module}/../../${var.<variable>}")`: the bytes
+    /// are the committed file the variable names, so the per-file prefix can
+    /// be derived from the checkout. False for an arm whose content is
+    /// rendered (the KMS key versions), which no committed file holds.
+    from_committed_file: bool,
+    /// The `file_name` as written: a quoted literal, or
+    /// `basename(var.<variable>)`.
+    file_name: String,
+    /// The `QIP_…_PATH` variable the process reads the path from.
+    env_file_variable: String,
+}
+
+impl OptionalConfigFile {
+    /// The name the file is mounted under where `named` is the
+    /// repository-relative path the tfvars gave the variable.
+    fn mounted_file_name(&self, named: &str) -> String {
+        if self.file_name == format!("basename(var.{})", self.variable) {
+            named.rsplit('/').next().unwrap_or(named).to_string()
+        } else {
+            let literal = self.file_name.trim_matches('"');
+            assert!(
+                self.file_name.starts_with('"') && self.file_name.ends_with('"'),
+                "{CATALOGUE}'s `{}` arm names its file `{}`, which is neither a literal nor \
+                 `basename(var.{})`; this walk cannot say what the process is told to open",
+                self.key,
+                self.file_name,
+                self.variable
+            );
+            literal.to_string()
+        }
+    }
+}
+
+/// Every arm of `optional_config_files`, read line by line under the shape
+/// `catalogue.tf` writes: a workload at four spaces opening `merge(`, each
+/// arm a `var.x == null ? {} : {` line, its one key at eight spaces and the
+/// key's fields at ten. Cross-checked by the caller against
+/// `optional_config_file_variables`, so a reshaped block that this walk
+/// reads less of fails rather than checking fewer files.
+fn optional_config_file_arms() -> Vec<OptionalConfigFile> {
+    let block = block_under(
+        &without_comments(&read(CATALOGUE)),
+        "optional_config_files = {",
+    );
+    let mut arms: Vec<OptionalConfigFile> = Vec::new();
+    let mut workload: Option<String> = None;
+    let mut current: Option<OptionalConfigFile> = None;
+    for line in block.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+        if indent == 4
+            && let Some((name, _)) = trimmed.split_once(" = merge(")
+        {
+            workload = Some(name.trim().to_string());
+            continue;
+        }
+        if let Some(condition) = trimmed.strip_suffix(" == null ? {} : {") {
+            let variable = condition
+                .strip_prefix("var.")
+                .unwrap_or_else(|| {
+                    panic!("{CATALOGUE}'s optional arm `{trimmed}` is not keyed on a root variable")
+                })
+                .to_string();
+            current = Some(OptionalConfigFile {
+                workload: workload.clone().unwrap_or_else(|| {
+                    panic!("{CATALOGUE}'s optional arm on `{variable}` sits under no workload")
+                }),
+                key: String::new(),
+                variable,
+                from_committed_file: false,
+                file_name: String::new(),
+                env_file_variable: String::new(),
+            });
+            continue;
+        }
+        let Some(arm) = current.as_mut() else {
+            continue;
+        };
+        if indent == 6 && trimmed == "}," {
+            if let Some(arm) = current.take() {
+                arms.push(arm);
+            }
+            continue;
+        }
+        if indent == 8
+            && let Some(key) = trimmed.strip_suffix(" = {")
+        {
+            arm.key = key.trim().to_string();
+            continue;
+        }
+        let Some((field, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match field.trim() {
+            "content" => {
+                arm.from_committed_file =
+                    value == format!("file(\"${{path.module}}/../../${{var.{}}}\")", arm.variable);
+            }
+            "file_name" => arm.file_name = value.to_string(),
+            "env_file_variable" => arm.env_file_variable = value.trim_matches('"').to_string(),
+            _ => {}
+        }
+    }
+    for arm in &arms {
+        assert!(
+            !arm.key.is_empty() && !arm.file_name.is_empty() && !arm.env_file_variable.is_empty(),
+            "{CATALOGUE}'s optional arm on `{}` was read as {arm:?}; the walk lost its key, its \
+             file name or its variable",
+            arm.variable
+        );
+    }
+    arms
+}
+
+/// The per-file prefix `modules/cloudrun` names a configuration file's
+/// directory by (ADR 0245): the first sixteen hex characters of the SHA-256
+/// of the lowercase hex SHA-256 of the file's bytes.
+fn per_file_config_prefix(bytes: &[u8]) -> String {
+    let digest = qip_core::sha256_hex(bytes);
+    qip_core::sha256_hex(digest.as_bytes())[..16].to_string()
+}
+
+/// The optional configuration files an environment's tfvars name, as
+/// `workload => [(arm, mounted path)]`, each path derived from the committed
+/// bytes the tfvars name exactly as `modules/cloudrun` derives it.
+///
+/// An arm whose content is not a committed file cannot be derived from the
+/// checkout, so an environment that sets one is refused here, as every
+/// environment that set any optional file was before ADR 0245: the walk
+/// says it must be extended rather than leaving that file's path unchecked.
+fn optional_config_files_named_by(
+    environment: &str,
+    arms: &[OptionalConfigFile],
+) -> BTreeMap<String, Vec<(OptionalConfigFile, String)>> {
+    let mut named: BTreeMap<String, Vec<(OptionalConfigFile, String)>> = BTreeMap::new();
+    for arm in arms {
+        let Some(path) = tfvars_value(environment, &arm.variable) else {
+            continue;
+        };
+        assert!(
+            arm.from_committed_file,
+            "{environment}'s tfvars set `{}`, whose `{}` file is rendered rather than read from \
+             a committed path; this walk derives each mounted file's path from the committed \
+             bytes and cannot derive this one, so it must be extended before that environment's \
+             manifests can be checked",
+            arm.variable, arm.key
+        );
+        let bytes = std::fs::read(repository_root().join(&path)).unwrap_or_else(|error| {
+            panic!(
+                "{environment}'s tfvars set `{}` to `{path}`, which cannot be read ({error}); \
+                 `file()` would fail the plan the same way",
+                arm.variable
+            )
+        });
+        assert!(
+            !bytes.is_empty(),
+            "{environment}'s tfvars set `{}` to `{path}`, which is empty; modules/cloudrun \
+             refuses an empty config file, and a prefix derived from nothing names nothing",
+            arm.variable
+        );
+        let mounted = format!(
+            "/etc/qip/{}/{}",
+            per_file_config_prefix(&bytes),
+            arm.mounted_file_name(&path)
+        );
+        named
+            .entry(arm.workload.clone())
+            .or_default()
+            .push((arm.clone(), mounted));
+    }
+    named
+}
+
 /// Two paths in every `RunService` are not values anybody chose. They are
 /// names Terraform derives from the bytes of a committed file, and they
 /// change whenever the file does.
@@ -5808,30 +6067,43 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
         "{EGRESS_BOOTSTRAP} is empty; the object name this test derives would name nothing"
     );
 
-    // Premise: the universe is the only file in every workload's
-    // `config_files`. Since ADR 0245 each file's prefix is its own, so a
-    // second file no longer moves the universe's; the premise is kept
-    // because this test names only the universe's path and the egress
-    // bootstrap's, and a second mounted file is a manifest literal it would
-    // not check. Extend the test with that file when the premise first fails.
+    // Every optional file a tfvars names is a manifest literal too. Until
+    // ADR 0245's first second file (the dev breadth plan) this test refused
+    // any environment that set one, because it checked only the universe's
+    // path; it now derives each named file's own per-file path from the
+    // bytes the tfvars name and holds the manifest to it below. An arm whose
+    // content is rendered rather than committed is still refused where it
+    // is set (`optional_config_files_named_by`), for the old reason.
     let optional = optional_config_file_variables();
     assert!(
         !optional.is_empty(),
         "{CATALOGUE}'s `optional_config_files` local names no `var.*_file`; the scan that \
-         proves no environment mounts a second configuration file read nothing"
+         proves every second configuration file is checked read nothing"
+    );
+    let arms = optional_config_file_arms();
+    let arm_variables: BTreeSet<String> = arms.iter().map(|arm| arm.variable.clone()).collect();
+    assert_eq!(
+        arm_variables, optional,
+        "the arms read out of {CATALOGUE}'s `optional_config_files` are keyed on \
+         {arm_variables:?}, but the block names {optional:?}; the arm walk has lost one, and \
+         an environment setting it would mount a file whose path nothing here checks"
     );
     let environments = environment_directories();
-    for environment in &environments {
-        for variable in &optional {
-            assert!(
-                tfvars_value(environment, variable).is_none(),
-                "{environment}'s tfvars set `{variable}`, so that workload's `config_files` \
-                 holds a second file and modules/cloudrun's prefix is the hash of both \
-                 digests joined; this test derives the prefix from the universe alone and \
-                 must be extended before that environment's manifests can be right"
-            );
-        }
-    }
+    let named_files: BTreeMap<String, BTreeMap<String, Vec<(OptionalConfigFile, String)>>> =
+        environments
+            .iter()
+            .map(|environment| {
+                (
+                    environment.clone(),
+                    optional_config_files_named_by(environment, &arms),
+                )
+            })
+            .collect();
+    let expected_per_file: usize = named_files
+        .values()
+        .flat_map(|by_workload| by_workload.values())
+        .map(Vec::len)
+        .sum();
 
     // modules/cloudrun/main.tf: `config_file_hashes[key] = sha256(content)`
     // (lowercase hex) and `config_prefixes[key] = substr(sha256(digest), 0,
@@ -5847,6 +6119,7 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
     );
 
     let mut universe_paths = 0usize;
+    let mut per_file_paths = 0usize;
     let mut sidecars = 0usize;
     for environment in &environments {
         for (key, entry, service, _) in run_services(environment) {
@@ -5860,20 +6133,41 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
                 .filter_map(|(name, value, _)| value.map(|value| (name, value)))
                 .filter(|(_, value)| value.starts_with("/etc/qip/"))
                 .collect();
+            // The files this environment's tfvars name for this workload,
+            // each at the path derived from its own bytes; none, in every
+            // environment and workload that names none, which leaves the
+            // universe the one path exactly as before ADR 0245.
+            let named: &[(OptionalConfigFile, String)] = named_files
+                .get(environment.as_str())
+                .and_then(|by_workload| by_workload.get(&key))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             assert_eq!(
                 under_config_root.len(),
-                1,
+                1 + named.len(),
                 "{describe} mounts {} path(s) under /etc/qip ({under_config_root:?}); the \
-                 universe is the one configuration file every environment mounts, and a second \
-                 changes the directory both are published under",
-                under_config_root.len()
+                 universe is the one configuration file every environment mounts, and the only \
+                 others are the {} file(s) {environment}'s tfvars name for {key} ({:?}), each \
+                 under its own hash directory (ADR 0245)",
+                under_config_root.len(),
+                named.len(),
+                named
+                    .iter()
+                    .map(|(arm, path)| format!("{}={path}", arm.env_file_variable))
+                    .collect::<Vec<_>>()
             );
-            let (name, value) = &under_config_root[0];
+            let universe_entries: Vec<&(String, String)> = under_config_root
+                .iter()
+                .filter(|(name, _)| name == "QIP_UNIVERSE_PATH")
+                .collect();
             assert_eq!(
-                name.as_str(),
-                "QIP_UNIVERSE_PATH",
-                "{describe}'s one path under /etc/qip is `{name}`, not QIP_UNIVERSE_PATH"
+                universe_entries.len(),
+                1,
+                "{describe}'s paths under /etc/qip ({under_config_root:?}) carry \
+                 QIP_UNIVERSE_PATH {} time(s), not once",
+                universe_entries.len()
             );
+            let (_, value) = universe_entries[0];
             assert_eq!(
                 value, &universe_path,
                 "{describe} sets QIP_UNIVERSE_PATH={value}; Terraform publishes the committed \
@@ -5881,6 +6175,31 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
                  78 at start-up unable to read it (infra.yml run 114, 2026-10-13)"
             );
             universe_paths += 1;
+            for (name, value) in under_config_root
+                .iter()
+                .filter(|(name, _)| name != "QIP_UNIVERSE_PATH")
+            {
+                let (arm, expected) = named
+                    .iter()
+                    .find(|(arm, _)| &arm.env_file_variable == name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{describe} sets {name}={value} under /etc/qip, and \
+                             {environment}'s tfvars name no optional file for {key} read from \
+                             {name}; a path no tfvars asked for is a file Terraform never \
+                             publishes there"
+                        )
+                    });
+                assert_eq!(
+                    value, expected,
+                    "{describe} sets {name}={value}; Terraform publishes the file \
+                     {environment}'s tfvars name in `{}` at {expected}, the first sixteen hex \
+                     characters of the SHA-256 of that file's own SHA-256 (ADR 0245), and \
+                     nowhere else, so the process cannot read the path it was given",
+                    arm.variable
+                );
+                per_file_paths += 1;
+            }
 
             let containers = list_at(&service.value, &["spec", "template", "containers"]);
             let Some(sidecar) = containers
@@ -5921,6 +6240,20 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
         universe_paths >= 12,
         "{universe_paths} QIP_UNIVERSE_PATH value(s) were checked; three catalogue workloads \
          in four environments is twelve, and a walk that found fewer read the wrong tree"
+    );
+    assert_eq!(
+        per_file_paths, expected_per_file,
+        "{per_file_paths} per-file configuration path(s) were checked against the {expected_per_file} \
+         the tfvars name; a file a tfvars names and no manifest carries is a mount Terraform \
+         publishes and no revision reads"
+    );
+    // Premise for the arm above: dev names the breadth plan, so the
+    // per-file rule is exercised and not only declared. When no environment
+    // names an optional file any more, this is the line to revisit.
+    assert!(
+        expected_per_file >= 1,
+        "no environment's tfvars name an optional configuration file, so the per-file path \
+         check above compared nothing"
     );
     assert!(
         sidecars >= 8,

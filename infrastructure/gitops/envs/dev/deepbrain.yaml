@@ -65,6 +65,12 @@ spec:
         value: /var/run/secrets/qip/capital-envelope-key/capital-envelope-key
       - name: QIP_CYCLE_INTERVAL_SECONDS
         value: '300'
+      # The committed breadth plan (ADR 0245), at the directory Terraform
+      # names by this file's own hash, so it never moves the universe's
+      # path. The gitops suite recomputes the hash from
+      # data/breadth/dev-commerce-paper.json and refuses a stale literal.
+      - name: QIP_DEEPBRAIN_BREADTH_PLAN_PATH
+        value: /etc/qip/614c52034dfaf3db/dev-commerce-paper.json
       - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
         value: 0.0.0.0:8080
       - name: QIP_DEPLOYMENT
@@ -82,6 +88,8 @@ spec:
         mountPath: /var/run/secrets/qip/capital-envelope-key
       - name: config-files
         mountPath: /etc/qip/931c5fe44d20d1d9
+      - name: config-deepbrain-breadth-plan
+        mountPath: /etc/qip/614c52034dfaf3db
       startupProbe:
         initialDelaySeconds: 2
         periodSeconds: 3
@@ -164,6 +172,22 @@ spec:
         defaultMode: 292
         items:
         - path: universe.json
+          mode: 292
+          versionRef:
+            external: latest
+    # The committed breadth plan the same way, as its own single-item secret
+    # volume at its own hash directory (ADR 0245 decision 3): two volumes may
+    # not share a mount path, and a second item in `config-files` would put
+    # the plan under the universe's hash directory rather than its own.
+    # Written by infra.yml's seed step only where dev's tfvars name
+    # the same file; mode 292 for the reason config-files gives.
+    - name: config-deepbrain-breadth-plan
+      secret:
+        secretRef:
+          external: qip-deepbrain-breadth-plan-dev
+        defaultMode: 292
+        items:
+        - path: dev-commerce-paper.json
           mode: 292
           versionRef:
             external: latest

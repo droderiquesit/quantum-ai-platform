@@ -1,7 +1,7 @@
 //! Physical commerce research from the deep brain's breadth plan to the
 //! inventory ledger (R12-COMMERCE-5091 to -5097, -1087 to -1094, -1171).
 //!
-//! `main` reads `QIP_DEEPBRAIN_BREADTH_PLAN` and hands it to
+//! `main` reads `QIP_DEEPBRAIN_BREADTH_PLAN_PATH` and hands it to
 //! `qip_deepbrain::breadth::install`; unset is no commerce at all. These
 //! tests write the plan as the JSON file a deployment would, install it
 //! through that same function with a lookup standing in for the environment,
@@ -125,7 +125,7 @@ fn commerce_plan() -> Result<CommercePlan> {
     })
 }
 
-/// Write `plan` as the JSON file `QIP_DEEPBRAIN_BREADTH_PLAN` names, install
+/// Write `plan` as the JSON file `QIP_DEEPBRAIN_BREADTH_PLAN_PATH` names, install
 /// it through `breadth::install`, and run `cycles` hourly cycles.
 fn run(name: &str, plan: CommercePlan, cycles: usize) -> Result<Platform> {
     let text = serde_json::to_string(&BreadthPlan {

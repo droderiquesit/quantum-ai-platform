@@ -894,7 +894,7 @@ fn variables_read_by(
             // text scan can: a name the delegate's own crate declares means
             // that crate's declaration, not every same-named constant in the
             // workspace. Round 2's deep brain declared a second
-            // `PLAN_VARIABLE` (`QIP_DEEPBRAIN_BREADTH_PLAN`), and the edge
+            // `PLAN_VARIABLE` (`QIP_DEEPBRAIN_BREADTH_PLAN_PATH`), and the edge
             // node — whose `main.rs` uses its own `PLAN_VARIABLE`,
             // `QIP_STRATEGY_PLAN_PATH` — was reported as reading the deep
             // brain's breadth plan. A name declared nowhere in the crate
@@ -2223,19 +2223,10 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          against that set and refuses rather than assumes, so no value set \
          here can admit research the eligible set does not allow.",
     ),
-    (
-        "qip-deepbrain",
-        "QIP_DEEPBRAIN_BREADTH_PLAN",
-        "Unset, no breadth plan is installed and the node runs exactly as it \
-         did before the plane existed: no market is created on the simulated \
-         venue, no event-market or commerce source is polled, and every \
-         breadth hook in the cycle returns at its first line. Each section a \
-         plan carries commits the platform to something — a seeded market, \
-         paper event positions, paper purchases — so the absent value is the \
-         restrictive one, and a deployment sets it when the desk has written \
-         a plan, not before. A plan that cannot be read, parsed or honoured \
-         stops the process with exit 78 (`qip_deepbrain::breadth`).",
-    ),
+    // QIP_DEEPBRAIN_BREADTH_PLAN_PATH left this list with ADR 0245's dev
+    // mount: catalogue.tf's `optional_config_files.deepbrain` sets it behind
+    // `var.deepbrain_breadth_plan_file`, so the general rule covers it — set
+    // where a tfvars names a plan, left to the tfvars everywhere else.
     (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_RESEARCH_COMPUTE",

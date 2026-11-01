@@ -19,6 +19,24 @@ variable "secret_names" {
   type        = list(string)
 }
 
+variable "optional_secret_names" {
+  description = <<-EOT
+    Secrets that exist only where the root asked for them — today, a
+    committed file's container that exists only in an environment whose
+    tfvars name the file. Created exactly like `secret_names`, and kept apart
+    from it so that list stays a literal every acceptance walk can read: a
+    conditional there would need `concat()`, and the walks that prove each
+    mounted secret is created read `secret_names = [` line by line.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(setintersection(toset(var.optional_secret_names), toset(var.secret_names))) == 0
+    error_message = "A secret is named on both secret_names and optional_secret_names; it would be declared twice under one key, and which list governs it would be a guess."
+  }
+}
+
 variable "project_number" {
   description = <<-EOT
     The project's numeric id, which is not the project id and cannot be derived

@@ -863,13 +863,36 @@ jobs:
           # when the two differ. A committed path that is missing from the
           # checkout fails the step here, on purpose: a slot left holding
           # yesterday's file is the condition this list exists to end.
+          #
+          # The breadth plan is the one pair that is not every environment's.
+          # Terraform creates its container only where the tfvars set
+          # `deepbrain_breadth_plan_file`, so the loop asks the same tfvars —
+          # the reviewed file this workflow already derives its identity from,
+          # never a repository variable — and seeds the slot only where they
+          # name exactly this path. Unset, the slot is skipped and says why. Set
+          # to a different path, the step fails: the manifest's hash path would
+          # name one file and this list would seed another, and a revision
+          # reading the wrong plan is the condition this list exists to end.
           committed="qip-universe-catalogue=data/datasets/universe.json \
-            qip-egress-bootstrap=infrastructure/egress/envoy.yaml"
+            qip-egress-bootstrap=infrastructure/egress/envoy.yaml \
+            qip-deepbrain-breadth-plan=data/breadth/dev-commerce-paper.json"
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          breadth_plan="$(sed -n 's/^deepbrain_breadth_plan_file[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
           empty="$(sha256sum < /dev/null | cut -c1-64)"
           for pair in ${committed}; do
             slot="${pair%%=*}"
             path="${pair#*=}"
             name="$slot-$suffix"
+            if [ "$slot" = "qip-deepbrain-breadth-plan" ]; then
+              if [ -z "$breadth_plan" ]; then
+                echo "$tfvars names no deepbrain_breadth_plan_file; $name is not created here and is not seeded"
+                continue
+              fi
+              if [ "$breadth_plan" != "$path" ]; then
+                echo "$tfvars names deepbrain_breadth_plan_file = $breadth_plan, but this step seeds $name from $path; make the two agree before an apply mounts one file and the slot holds another" >&2
+                exit 1
+              fi
+            fi
             if ! gcloud secrets describe "$name" --project "$project" >/dev/null 2>&1; then
               echo "$name does not exist yet; an up's apply creates it and the next up or apps seeds it"
               continue

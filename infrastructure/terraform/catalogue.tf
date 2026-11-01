@@ -206,8 +206,8 @@ locals {
         }
       },
     )
-    # The deep brain's two optional files, following the API's three above
-    # rather than a convention of their own: a root variable names a path in
+    # The deep brain's optional files, following the API's above rather than
+    # a convention of their own: a root variable names a path in
     # this repository or renders nothing, read with file() so the bytes a
     # revision mounts are the bytes in the reviewed commit.
     deepbrain = merge(
@@ -237,6 +237,23 @@ locals {
           file_name         = "source-candidates.json"
           content_type      = "application/json"
           env_file_variable = "QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH"
+        }
+      },
+      # The breadth plan `qip_deepbrain::breadth` reads (R12-COMMERCE-5091):
+      # the Market Factory, event markets and commerce research the node
+      # installs before its first cycle. Unset, no breadth hook runs — the
+      # node's fail-closed default, because each section commits the platform
+      # to paper markets, positions or purchases. The file keeps its own name,
+      # so the path a manifest carries says which plan it is; ADR 0245 gives
+      # it its own hash directory, so mounting it never moves the universe's.
+      # Its secret container and grant are in main.tf, behind the same
+      # variable.
+      var.deepbrain_breadth_plan_file == null ? {} : {
+        deepbrain-breadth-plan = {
+          content           = file("${path.module}/../../${var.deepbrain_breadth_plan_file}")
+          file_name         = basename(var.deepbrain_breadth_plan_file)
+          content_type      = "application/json"
+          env_file_variable = "QIP_DEEPBRAIN_BREADTH_PLAN_PATH"
         }
       },
       # The desk's limit set (ADR 0061), or nothing — on every central root,

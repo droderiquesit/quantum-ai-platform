@@ -5182,9 +5182,14 @@ fn every_secret_level_grant_in_the_tree_is_pinned_and_names_its_secret_by_a_revi
     let pinned: std::collections::BTreeMap<String, Vec<String>> = [
         (
             "infrastructure/terraform/main.tf:committed_file",
+            // `merge(` and the breadth plan's slot since ADR 0245's dev mount:
+            // a committed, reviewed file (not a credential), read only by the
+            // deep brain, and only where the tfvars name a plan. The venue
+            // credential is still not among them.
             vec![
-                "for_each = {",
+                "for_each = merge({",
                 "secret_id = each.value.secret_id",
+                "secret_id = module.secrets.secret_ids[\"qip-deepbrain-breadth-plan\"]",
                 "secret_id = module.secrets.secret_ids[\"qip-egress-bootstrap\"]",
                 "secret_id = module.secrets.secret_ids[\"qip-universe-catalogue\"]",
             ],
