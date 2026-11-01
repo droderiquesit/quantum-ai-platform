@@ -171,7 +171,12 @@ fn run() -> Result<()> {
             // against; an empty list planned no hedge in any binary.
             .with_hedge_candidates(qip_kernel::config::paper_hedge_candidates(
                 &catalogue.universe,
-            )),
+            ))
+            // The committed counterfactual arms (R12-CAPITAL-4091, decision
+            // 17); a declaration that does not load stops the process.
+            .with_counterfactual_alternatives(
+                qip_kernel::counterfactual_alternatives::CounterfactualAlternatives::committed()?,
+            ),
     );
     config.central.arbitrage = arbitrage;
     if let Some(shelf) = load_yield_shelf()? {

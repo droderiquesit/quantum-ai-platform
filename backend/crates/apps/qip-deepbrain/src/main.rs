@@ -188,7 +188,12 @@ fn run() -> Result<()> {
             .with_live_ceiling(AutonomyLevel::deployable(
                 std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
             )?)
-            .with_desk_chain(qip_deepbrain::node::DESK_CHAIN),
+            .with_desk_chain(qip_deepbrain::node::DESK_CHAIN)
+            // The committed counterfactual arms (R12-CAPITAL-4091, decision
+            // 17); a declaration that does not load stops the process.
+            .with_counterfactual_alternatives(
+                qip_kernel::counterfactual_alternatives::CounterfactualAlternatives::committed()?,
+            ),
     )?;
     // A committed tape, opened before the platform exists because the
     // platform's clock has to be the tape's: opportunities expire at tape

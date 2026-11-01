@@ -3166,9 +3166,10 @@
     "current": "Tests forbid autoscaling the execution node group; reservations exist; no benchmark sizing record.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4748 reflex_capacity_is_never_scaled_by_a_reactive_autoscaler",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs nothing_in_the_terraform_autoscales_the_execution_node_group"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs nothing_in_the_terraform_autoscales_the_execution_node_group",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_committed_use_discount_is_declared_before_a_sizing_record_measured_on_an_execution_node"
     ],
-    "gap": "Benchmark sizing evidence.",
+    "gap": "Benchmark sizing evidence.\n2026-10-31 (lane L1-MONEY): refusal built: any google_compute_region_commitment under infrastructure/terraform fails the acceptance suite while docs/ops/execution-measurements.md holds no row measured on a provisioned execution node (a row naming one without the 'Not a deployment measurement' caveat). Remaining: the sizing record itself waits on an execution node, which stays off (decision 5).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3181,7 +3182,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): No commitment is bought on the hot path until a sizing record measured on a provisioned C4 execution node is committed, and that becomes a refusal now rather than a promise. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Owner ruling 2026-10-31 (IMPLEMENT): No commitment is bought on the hot path until a sizing record measured on a provisioned C4 execution node is committed, and that becomes a refusal now rather than a promise. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 lane L1-MONEY: mutation (declare a google_compute_region_commitment in a .tf file) fails the test naming the file; removed, passes. Stays PARTIAL per the ruling."
   },
   {
     "id": "R12-FINOPS-10138",
@@ -3616,7 +3617,7 @@
     "verification": "cargo test -p qip-fabricd --test broker; cargo test -p qip-events --test schema_compat",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " 2026-10-31 lane L1-MONEY (decision 14 regrade to COMPLETE attempted): one skeptic REFUTED. Bar 1 holds (unregistered produce refused before append; incompatible re-registration refused; CI lock). Bar 2 fails: qip-fabricd is built by no workflow and event_fabric_broker is null everywhere. Bar 4: at runtime the broker admits by (topic, version) and never checks body shape; body schemas come only from the lock compiled in, and the CI schema gate runs on pull requests only. Kept PARTIAL."
   },
   {
     "id": "R12-SEC-10157",
