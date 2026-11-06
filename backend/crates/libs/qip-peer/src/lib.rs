@@ -1304,6 +1304,27 @@ impl PeerEndpoint {
                         format!("FIRE for `{opp}` before every leg is reserved"),
                     ));
                 }
+                // The same bound `try_declare_fire` holds the coordinator
+                // to (R12-MESH-5070). A participant sets `fired` here and
+                // nowhere else, so without it a coordinator that skipped its
+                // own check, or a frame written by hand, would put this
+                // node's legs on the wire under a loss nobody bounded. The
+                // worst recovery is the epoch's own arithmetic, so the
+                // participant can compute it as the coordinator does.
+                match st.worst_recovery_loss() {
+                    Some(worst) if worst <= st.epoch.max_recovery_loss => {}
+                    worst => {
+                        return Err((
+                            "fire_loss_bound",
+                            format!(
+                                "FIRE for `{opp}` refused: the loss bound cannot be established, \
+                                 worst recovery loss {} against the declared bound {}",
+                                worst.map_or_else(|| "overflowed".to_string(), |w| w.to_string()),
+                                st.epoch.max_recovery_loss
+                            ),
+                        ));
+                    }
+                }
                 st.fired = true;
             }
             PeerMessage::Fill { leg, quantity, .. } => {
