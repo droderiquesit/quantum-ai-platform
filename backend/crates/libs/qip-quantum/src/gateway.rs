@@ -109,6 +109,11 @@ pub enum JobPoll {
     /// The result is the provider's own, error included.
     Completed {
         polls: u32,
+        /// The class the job was admitted under, so the caller can refuse
+        /// to adopt an answer from a class it did not ask for (R12-QUANT-4063):
+        /// a research class's answer reaching production authority would
+        /// otherwise rest on the caller only ever submitting one class.
+        class: JobClass,
         result: Result<QaoaResult>,
     },
     /// Ran out of patience. Its eventual answer will be discarded unread.
@@ -287,17 +292,24 @@ impl QuantumGateway {
         match received {
             Ok(result) => {
                 let polls = slot.polls;
-                state.slots.remove(&ticket);
-                state.stats.completed += 1;
-                Ok(JobPoll::Completed { polls, result })
-            }
-            Err(TryRecvError::Disconnected) => {
-                let polls = slot.polls;
-                let class = slot.class.name();
+                let class = slot.class;
                 state.slots.remove(&ticket);
                 state.stats.completed += 1;
                 Ok(JobPoll::Completed {
                     polls,
+                    class,
+                    result,
+                })
+            }
+            Err(TryRecvError::Disconnected) => {
+                let polls = slot.polls;
+                let admitted = slot.class;
+                let class = admitted.name();
+                state.slots.remove(&ticket);
+                state.stats.completed += 1;
+                Ok(JobPoll::Completed {
+                    polls,
+                    class: admitted,
                     result: Err(Error::unavailable(format!(
                         "the {class} job {}'s worker ended without an answer (the provider \
                          panicked); the classical baseline stands",
