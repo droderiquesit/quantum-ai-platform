@@ -206,3 +206,139 @@ fn no_shipped_path_streams_rows_into_the_warehouse() {
          Storage (ADR 0240): {streaming:?}"
     );
 }
+
+/// The warehouse client's own module: the one production source allowed to
+/// define the derived copy and to name its REST host.
+const WAREHOUSE_CLIENT: &str = "backend/crates/services/qip-mesh/src/bigquery.rs";
+
+/// Names the warehouse client as code.
+fn queries_a_derived_copy(code: &str) -> bool {
+    names_in_code(code, "BigQueryWarehouse")
+        || names_in_code(code, "qip_mesh::bigquery")
+        || names_in_code(code, "crate::bigquery")
+}
+
+/// Calls the BigQuery REST host. The URL form, because an operator message
+/// naming the host in prose is not a call, and every call needs the scheme.
+fn calls_the_bigquery_host(code: &str) -> bool {
+    code.contains("://bigquery.googleapis.com")
+}
+
+/// Reads a Spanner change stream: the Rust names a reader would carry, or
+/// the SQL a change-stream query is written in (`SELECT … FROM READ_<stream>`
+/// and `CREATE CHANGE STREAM`).
+fn reads_a_change_stream(code: &str) -> bool {
+    code.contains("change_stream")
+        || code.contains("ChangeStream")
+        || code.contains("changeStream")
+        || code.contains("FROM READ_")
+        || code.contains("CHANGE STREAM")
+}
+
+/// R12-LEDGER-8138, tightened after its skeptic. The guard above exempted
+/// the whole of `qip-mesh`, so a wrapper around `BigQueryWarehouse::query`
+/// placed beside the client passed; it saw no raw HTTP to the BigQuery host;
+/// and its change-stream check missed `READ_<stream>` SQL. Here every
+/// production source is scanned, `qip-mesh` included, and only the client's
+/// own module and the one write-only sink may name the warehouse.
+///
+/// Each detector is first run against a seeded fixture, so a detector that
+/// can no longer fire fails here instead of passing every tree.
+///
+/// Mutations: a `qip-mesh` module calling `BigQueryWarehouse::query`; a
+/// kernel source calling `https://bigquery.googleapis.com/...`; a
+/// `SELECT * FROM READ_ledger_stream(...)` string in `qip-ledgerd`. Each
+/// fails this test.
+#[test]
+fn no_production_source_outside_the_warehouse_module_and_its_one_insert_only_sink_queries_a_derived_copy_calls_the_bigquery_rest_host_or_reads_a_spanner_change_stream()
+ {
+    // Premise: every detector fires on what it is meant to refuse and stays
+    // quiet on prose and backticked names.
+    assert!(queries_a_derived_copy(
+        "let rows = qip_mesh::bigquery::BigQueryWarehouse::query(&w, sql)?;"
+    ));
+    assert!(!queries_a_derived_copy(
+        "Err(\"use `BigQueryWarehouse` for analytics\")"
+    ));
+    assert!(calls_the_bigquery_host(
+        "client.get(\"https://bigquery.googleapis.com/bigquery/v2/projects/p/queries\")"
+    ));
+    assert!(!calls_the_bigquery_host(
+        "\"a proxy that forwards to bigquery.googleapis.com is required\""
+    ));
+    assert!(reads_a_change_stream(
+        "\"SELECT ChangeRecord FROM READ_ledger_stream(start_timestamp => @t)\""
+    ));
+    assert!(reads_a_change_stream(
+        "\"CREATE CHANGE STREAM ledger_stream FOR ALL\""
+    ));
+    assert!(!reads_a_change_stream("const READ_TIMEOUT: u64 = 5;"));
+
+    let sources = production_sources();
+    assert!(
+        sources.len() > 100,
+        "premise: the walk reads the workspace's production sources, found {}",
+        sources.len()
+    );
+    assert!(
+        sources.iter().any(|(path, _)| path == WAREHOUSE_CLIENT),
+        "premise: the warehouse client's module is among the sources"
+    );
+
+    let mut allowed: BTreeSet<String> = WAREHOUSE_SINKS.iter().map(|s| s.to_string()).collect();
+    allowed.insert(WAREHOUSE_CLIENT.to_string());
+    let callers: BTreeSet<String> = sources
+        .iter()
+        .filter(|(_, code)| queries_a_derived_copy(code))
+        .map(|(path, _)| path.clone())
+        .collect();
+    let outside: Vec<&String> = callers
+        .iter()
+        .filter(|path| !allowed.contains(*path))
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "production sources outside the warehouse client and its write-only sink name the \
+         warehouse: {outside:?}; a warehouse is a derived copy and no decision may read from it"
+    );
+    for sink in WAREHOUSE_SINKS {
+        assert!(
+            callers.contains(sink),
+            "premise: the sink {sink} names the warehouse client, so the scan sees a use"
+        );
+        let (_, code) = sources
+            .iter()
+            .find(|(path, _)| path == sink)
+            .expect("the sink is among the sources");
+        assert!(
+            code.contains(".load("),
+            "premise: {sink} writes to the warehouse by its one call, a batch load (ADR 0240)"
+        );
+        assert!(
+            !code.contains(".query("),
+            "{sink} reads the warehouse back; a sink feeds analytics and reads nothing"
+        );
+    }
+
+    let host: Vec<&String> = sources
+        .iter()
+        .filter(|(path, _)| path != WAREHOUSE_CLIENT)
+        .filter(|(_, code)| calls_the_bigquery_host(code))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        host.is_empty(),
+        "production sources call the BigQuery REST host outside the warehouse client: {host:?}"
+    );
+
+    let streams: Vec<&String> = sources
+        .iter()
+        .filter(|(_, code)| reads_a_change_stream(code))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        streams.is_empty(),
+        "production sources read a change stream: {streams:?}; a change stream feeds \
+         analytics and derived caches, never a decision"
+    );
+}
