@@ -3705,7 +3705,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-11-06 lane L6-platform: gap rewritten from the 2026-11-01 re-triage (TEXT_ONLY), each citation re-read: ADR 0150 section A decision 2, ADR 0199 decision 3 and Foundry::platform's registrations. The re-triage's '22' and '64' size figures were not found in ADR 0150 section A and are not quoted. Status unchanged; no code."
+    "notes": "2026-11-06 lane L6-platform: gap rewritten from the 2026-11-01 re-triage (TEXT_ONLY), each citation re-read: ADR 0150 section A decision 2, ADR 0199 decision 3 and Foundry::platform's registrations. The re-triage's size figures (22 and 24) were not found in ADR 0150 section A and are not quoted. Status unchanged; no code."
   },
   {
     "id": "R12-COVERAGE-7157",
