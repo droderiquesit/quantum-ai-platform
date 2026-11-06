@@ -3694,7 +3694,7 @@
       "backend/crates/libs/qip-quantum/tests/foundry.rs:47",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112,155,175 classical baseline computed always; failed classical validation refused; backend/crates/services/qip-optimization-engine/tests/optimization.rs:202,436"
     ],
-    "gap": "Experimental learning path.",
+    "gap": "The optimisation clause holds: the portfolio QUBO is benchmarked against its classical baseline every run (qip-quantum tests/solvers.rs:112,155,175; ADR 0006). The experimental-learning clause is declined, not pending: ADR 0150 section A decision 2 builds a family only on a committed benefit case, and ADR 0199 decision 3 (2026-10-31) confirms that the quantum research families stay parked, with no FeatureEnsembleSelection family and no new QuantumExperiment producer. Foundry::platform (qip-quantum src/foundry.rs) registers only FamilyKind::PortfolioAllocation and records every other family not built. The owner refused L4-quant-research-families-adr0150.patch (owner-decisions-2026-10-31 decision 3). PARTIAL until the owner changes the requirement or the sizing note R12-EXPAND-6036 names is committed. Previous gap: Experimental learning path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3705,7 +3705,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-11-06 lane L6-platform: gap rewritten from the 2026-11-01 re-triage (TEXT_ONLY), each citation re-read: ADR 0150 section A decision 2, ADR 0199 decision 3 and Foundry::platform's registrations. The re-triage's '22' and '64' size figures were not found in ADR 0150 section A and are not quoted. Status unchanged; no code."
   },
   {
     "id": "R12-COVERAGE-7157",
@@ -4282,7 +4282,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:192-233 JobClass/admit_job refuses synchronous quantum jobs",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112,155,175 classical baseline computed always; failed classical validation refused; backend/crates/services/qip-optimization-engine/tests/optimization.rs:202,436"
     ],
-    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: the kernel submitting HypothesisSearch jobs to ComputeRouter, with a test that a result without classical validation is refused.",
+    "gap": "ADR 0134's 'code left' (the kernel submitting HypothesisSearch jobs to ComputeRouter) is overtaken and dropped: ADR 0150 section A decision 1 makes the portfolio QUBO the only quantum family, decision 3 forbids inventing a default-path problem to route one, and decision 6 makes no cycle problem QUBO-admissible; ADR 0190 keeps the parked families parked; owner decision 3 of 2026-10-31 refused the L4 research-families patch. Foundry::platform records SymbolicCombinatorialSearch (no cycle problem is QUBO-admissible) and ScenarioHypothesisSelection as not built, and JobClass::HypothesisSearch has no submitter outside foundry.rs. Benchmarking and independent verification hold for the one family (qip-quantum tests/solvers.rs:112,155,175). PARTIAL on the symbolic and scenario-selection clauses; reopened only through ADR 0150's committed benefit case or a measurement under it. Previous gap: Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: the kernel submitting HypothesisSearch jobs to ComputeRouter, with a test that a result without classical validation is refused.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4293,7 +4293,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Symbolic search plug-in."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Symbolic search plug-in. 2026-11-06 lane L6-platform: gap rewritten from the 2026-11-01 re-triage (TEXT_ONLY), each citation re-read: ADR 0150 section A decisions 1, 3 and 6, ADR 0190, owner decision 3, and `grep -rn HypothesisSearch backend/crates` finding no use outside qip-quantum src/foundry.rs. Status unchanged; no code."
   },
   {
     "id": "R12-COVERAGE-7184",
