@@ -3178,9 +3178,10 @@
     "current": "No change streams exist; nothing to assess.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf (no change stream)",
-      "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_decision_path_reads_a_balance_from_a_derived_copy (9fb4ebe3)"
+      "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_decision_path_reads_a_balance_from_a_derived_copy (9fb4ebe3)",
+      "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_production_source_outside_the_warehouse_module_and_its_one_insert_only_sink_queries_a_derived_copy_calls_the_bigquery_rest_host_or_reads_a_spanner_change_stream"
     ],
-    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.",
+    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.\n2026-11-06 (lane L1-MONEY, 57c3163d + follow-up): the guard scans qip-mesh too (only the client module and the one batch-load sink may name the warehouse), refuses the BigQuery REST API in both its URL and its relative /bigquery/v2/ path form outside the client, and refuses change-stream readers and FROM READ_/CHANGE STREAM SQL; each detector is checked against seeded fixtures. One skeptic REFUTED promotion on bar 3. Remaining: a type alias or grouped import (use qip_mesh::{bigquery::X}) passes the name scan; the GCS staging objects under warehouse-staging/ can be read back by any BlobStore holder unguarded; no Pub/Sub or Dataflow feed detector; the Memorystore cache (qip-storage redis.rs) as a derived copy is not covered; qip-api's qip-capital Book is a second balance source the guard's doc does not name.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3193,7 +3194,7 @@
     "verification": "cargo test -p qip-acceptance --test derived_copies (\"ok. 1 passed; 0 failed\")",
     "work_item": "",
     "size": "S",
-    "notes": " 2026-10-30 lane L1-MONEY: three mutations fired, each restored with cp+cmp: a new warehouse caller after node.rs's test module; a query in the sink; a change-stream reader in tail.rs. One code-reviewer skeptic round REFUTED (see gap). Kept PARTIAL."
+    "notes": " 2026-10-30 lane L1-MONEY: three mutations fired, each restored with cp+cmp: a new warehouse caller after node.rs's test module; a query in the sink; a change-stream reader in tail.rs. One code-reviewer skeptic round REFUTED (see gap). Kept PARTIAL. 2026-11-06 lane L1-MONEY: mutations fired (qip-mesh wrapper; kernel https URL; kernel relative /bigquery/v2 path; qip-ledgerd FROM READ_ SQL), each a temporary file removed afterwards. Skeptic REFUTED; kept PARTIAL."
   },
   {
     "id": "R12-LEDGER-8139",

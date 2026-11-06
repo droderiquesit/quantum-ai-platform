@@ -218,10 +218,14 @@ fn queries_a_derived_copy(code: &str) -> bool {
         || names_in_code(code, "crate::bigquery")
 }
 
-/// Calls the BigQuery REST host. The URL form, because an operator message
-/// naming the host in prose is not a call, and every call needs the scheme.
+/// Calls the BigQuery REST API: either the absolute URL, or the REST path
+/// the shipped client actually sends, which is relative, because it goes
+/// through `GcpAccess::request` to the configured plaintext egress proxy
+/// and never names the host at all. The skeptic on this guard found the
+/// URL form alone matched a call that cannot run while the real call form
+/// passed. An operator message naming the host in prose is neither.
 fn calls_the_bigquery_host(code: &str) -> bool {
-    code.contains("://bigquery.googleapis.com")
+    code.contains("://bigquery.googleapis.com") || code.contains("/bigquery/v2/")
 }
 
 /// Reads a Spanner change stream: the Rust names a reader would carry, or
@@ -246,7 +250,8 @@ fn reads_a_change_stream(code: &str) -> bool {
 /// can no longer fire fails here instead of passing every tree.
 ///
 /// Mutations: a `qip-mesh` module calling `BigQueryWarehouse::query`; a
-/// kernel source calling `https://bigquery.googleapis.com/...`; a
+/// kernel source calling `https://bigquery.googleapis.com/...`, or sending
+/// the client's own relative `/bigquery/v2/projects/{}/queries` path; a
 /// `SELECT * FROM READ_ledger_stream(...)` string in `qip-ledgerd`. Each
 /// fails this test.
 #[test]
@@ -262,6 +267,9 @@ fn no_production_source_outside_the_warehouse_module_and_its_one_insert_only_sin
     ));
     assert!(calls_the_bigquery_host(
         "client.get(\"https://bigquery.googleapis.com/bigquery/v2/projects/p/queries\")"
+    ));
+    assert!(calls_the_bigquery_host(
+        "access.request(Method::Post, &format!(\"/bigquery/v2/projects/{}/queries\", p))"
     ));
     assert!(!calls_the_bigquery_host(
         "\"a proxy that forwards to bigquery.googleapis.com is required\""
