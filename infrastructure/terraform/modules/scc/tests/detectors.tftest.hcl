@@ -78,3 +78,23 @@ run "with_the_switch_off_no_detector_and_no_mute_config_plans" {
     error_message = "with the switch off, nothing billable may plan, including a declared mute"
   }
 }
+
+# The refusal half. A mute is a decision to stop looking at a class of
+# finding, and its type decides whether it ever expires: anything but STATIC
+# or DYNAMIC is refused at plan rather than handed to the API to interpret.
+run "a_mute_config_of_an_unknown_type_is_refused" {
+  command = plan
+
+  variables {
+    enable_security_command_center = true
+    muted_findings = {
+      harness-mute = {
+        filter      = "category=\"HARNESS\""
+        description = "a mute whose type is neither STATIC nor DYNAMIC"
+        type        = "FOREVER"
+      }
+    }
+  }
+
+  expect_failures = [var.muted_findings]
+}
