@@ -21246,6 +21246,17 @@ impl Platform {
                         (reference, leg.quantity),
                     );
                 }
+                // A sell the construction targeted at zero weight is the
+                // desk's decision to divest, whatever the quantity it was
+                // floored to (R12-ASSET-1160): an exit leg is sized from
+                // narrowed capital times the held weight and floored to lots,
+                // so a full exit at or above cost sells less than the long,
+                // and the quantity rule alone books it as a trim.
+                if matches!(leg.side, qip_portfolio_engine::proposal::Side::Sell)
+                    && leg.target_weight.abs() < f64::EPSILON
+                {
+                    self.begin_deliberate_close(&order, true);
+                }
                 match self.submit_order(order, now) {
                     Ok(()) => {
                         released += 1;
@@ -23454,7 +23465,7 @@ impl Platform {
         // further without that routing. `Router::determine` returns a type that
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
-        self.begin_deliberate_close(&order);
+        self.begin_deliberate_close(&order, false);
         let subject = order.object_id.as_str().to_string();
         let conditions = self.pretrade_conditions(&subject);
         self.pretrade_routing = Some(
@@ -23571,7 +23582,12 @@ impl Platform {
     /// sizing that took the position to flat) is raised through
     /// [`Portfolio::flag_position`] first. A register that will not move is
     /// said on the cycle; it never stops the order.
-    fn begin_deliberate_close(&mut self, order: &Order) {
+    ///
+    /// `to_flat` is the construction's own statement that the sell targets
+    /// zero weight, which the ACT stage passes for such a leg; an order that
+    /// arrives by any other route carries no target and is judged by its
+    /// quantity alone.
+    fn begin_deliberate_close(&mut self, order: &Order, to_flat: bool) {
         if !matches!(order.side, Side::Sell) {
             return;
         }
@@ -23580,7 +23596,7 @@ impl Platform {
             .positions
             .get(order.object_id.as_str())
             .map_or(Decimal::ZERO, |lot| lot.quantity);
-        if !long.is_positive() || order.quantity < long {
+        if !long.is_positive() || (!to_flat && order.quantity < long) {
             return;
         }
         let id = ObjectId::from_string(order.object_id.as_str());

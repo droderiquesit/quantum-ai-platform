@@ -417,7 +417,7 @@ const ASSET_MANAGEMENT: [(&str, &str, &str, &str, &str); 10] = [
         "crates/runtime/qip-kernel/src/platform.rs",
         "fn begin_deliberate_close(",
         "crates/runtime/qip-kernel/tests/position_record.rs",
-        "fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held",
+        "fn a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_a_gain_moves_the_position_to_unwinding_although_the_sized_sell_is_below_the_long",
     ),
     (
         "hedging",

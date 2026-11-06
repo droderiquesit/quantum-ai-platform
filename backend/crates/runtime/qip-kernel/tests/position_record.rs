@@ -825,3 +825,82 @@ fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held() -> Re
     );
     Ok(())
 }
+
+/// R12-ASSET-1160, divestment on the default path: a cycle whose tape makes
+/// construction target a zero weight on a long held at a gain moves the
+/// position to `Unwinding`, although the sell it sizes is below the long.
+///
+/// The failure prevented: an exit leg is sized from narrowed free capital
+/// times the held weight and floored to whole lots, so a full exit at or
+/// above cost always sells less than the long. Judged by quantity alone, the
+/// desk's decision to divest booked as a trim and the position stayed `Held`
+/// (the gap an independent review found in the first version of this seam).
+///
+/// Mutation: delete the zero-target `begin_deliberate_close(&order, true)`
+/// call in `Platform::stage_act_orders` — the sell below the long leaves the
+/// position `Held` and the last assertion fails.
+#[test]
+fn a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_a_gain_moves_the_position_to_unwinding_although_the_sized_sell_is_below_the_long()
+-> Result<()> {
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("zero-target"), start())?;
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let (held, cost) = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: the first cycle opened a long in obj-AAA");
+    assert!(held.is_positive(), "premise: a long: {held}");
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Held)
+    );
+
+    // A rally past the entry, so the long is held at a gain when the next
+    // construction decides on it.
+    let mut price = 92.0_f64;
+    let mut bars = Vec::new();
+    for i in 0..10 {
+        let open = price;
+        price *= if i == 9 { 1.15 } else { 1.002 };
+        bars.push(bar(
+            "AAA",
+            start().saturating_add(Duration::from_days(i + 1)),
+            open,
+            price,
+        ));
+    }
+    assert!(
+        Decimal::from_f64(price).expect("a price") > cost,
+        "premise: the position is at a gain ({price} against a cost of {cost})"
+    );
+    platform.observe(bars);
+    let later = start().saturating_add(Duration::from_days(11));
+    let report = platform.run_cycle(later);
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+
+    let exit = platform
+        .proposals()
+        .iter()
+        .flat_map(|proposal| proposal.legs.iter())
+        .find(|leg| {
+            leg.object_id == aaa
+                && leg.target_weight == 0.0
+                && matches!(leg.side, qip_portfolio_engine::proposal::Side::Sell)
+        })
+        .expect("premise: the second construction targeted obj-AAA at zero weight");
+    assert!(
+        exit.quantity < held,
+        "premise: the sized exit ({}) is below the long ({held}), so the quantity rule alone \
+         would read it as a trim",
+        exit.quantity
+    );
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Unwinding),
+        "a sell the construction targeted at zero weight was not recorded as a divestment"
+    );
+    Ok(())
+}
