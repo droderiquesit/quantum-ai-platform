@@ -1141,8 +1141,7 @@ impl LedgerStore {
     /// without the operations (ADR 0123) [`Self::events`] also returns.
     pub fn fill_events(&self) -> Result<Vec<LedgerEvent>> {
         let mut events = Vec::new();
-        for (_, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
-            let record: ChainRecord = decode(value)?;
+        for record in self.chain_in_order()? {
             events.extend(record.event);
         }
         Ok(events)
@@ -1150,8 +1149,7 @@ impl LedgerStore {
 
     pub fn events(&self) -> Result<Vec<LedgerEvent>> {
         let mut events = Vec::new();
-        for (_, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
-            let record: ChainRecord = decode(value)?;
+        for record in self.chain_in_order()? {
             events.extend(record.event);
         }
         for (_, value) in self.store.scan_prefix(PREFIX_OPERATION)? {
@@ -1247,7 +1245,10 @@ impl LedgerStore {
     ) -> Result<Disposition> {
         let cell = delivery.record.cell();
         let held: Option<ChainRecord> =
-            self.read(&chain_key(cell, position.session, position.first))?;
+            match self.read(&chain_key(cell, position.session, position.first))? {
+                Some(record) => Some(record),
+                None => self.read(&legacy_chain_key(cell, position.session, position.first))?,
+            };
         let detail = match held {
             Some(record)
                 if record.last_seq == position.last && record.digest == position.digest =>
@@ -1396,14 +1397,21 @@ impl LedgerStore {
         LedgerObligations::from_balances(&self.balances()?, unit, as_of)
     }
 
+    /// Every chain record in chain order per cell and session: sorted by
+    /// the position the key names, because sharded keys do not sort in
+    /// chain order (R12-LEDGER-8137).
+    fn chain_in_order(&self) -> Result<Vec<ChainRecord>> {
+        let mut keyed = Vec::new();
+        for (key, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
+            keyed.push((chain_position(&key)?, decode::<ChainRecord>(value)?));
+        }
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(keyed.into_iter().map(|(_, record)| record).collect())
+    }
+
     /// Query all chain records (postings).
     pub fn chain_records(&self) -> Result<Vec<ChainRecord>> {
-        let mut records = Vec::new();
-        for (_, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
-            let record: ChainRecord = decode(value)?;
-            records.push(record);
-        }
-        Ok(records)
+        self.chain_in_order()
     }
 
     /// Get the current watermark, if one has been recorded.
@@ -1728,10 +1736,48 @@ fn lot_key(cell: &str, strategy: &str, lot: &str) -> String {
     format!("{PREFIX_LOT}{}/{}/{}", hex(cell), hex(strategy), hex(lot))
 }
 
+/// A chain record's key, sharded over (session, first) (R12-LEDGER-8137):
+/// `chain/<shard>/<cell>/<session>/<first>`. Unsharded, every apply for a
+/// cell wrote the next key in one ever-growing range, the hotspot the
+/// journal and watermark keys were already spread to avoid. The order a
+/// reader needs is recovered from the last three segments by
+/// [`chain_position`], never from key order.
 fn chain_key(cell: &str, session: u64, first: u64) -> String {
+    format!(
+        "{PREFIX_CHAIN}{:02x}/{}/{session:020}/{first:020}",
+        shard_of(session.rotate_left(32) ^ first),
+        hex(cell)
+    )
+}
+
+/// The key a chain record was written under before sharding, read so a
+/// store written by an earlier build still opens and still finds its
+/// duplicates.
+fn legacy_chain_key(cell: &str, session: u64, first: u64) -> String {
     format!("{PREFIX_CHAIN}{}/{session:020}/{first:020}", hex(cell))
 }
 
+/// (cell, session, first) from a chain key in either form: the last three
+/// segments, which both forms end in. A key that does not end in them is
+/// refused rather than sorted somewhere.
+fn chain_position(key: &str) -> Result<(String, u64, u64)> {
+    let mut segments = key.rsplit('/');
+    let first = segments.next().and_then(|s| s.parse().ok());
+    let session = segments.next().and_then(|s| s.parse().ok());
+    let cell = segments.next().map(str::to_string);
+    match (cell, session, first) {
+        (Some(cell), Some(session), Some(first)) => Ok((cell, session, first)),
+        _ => Err(Error::schema(format!(
+            "chain key {key} does not end in <cell>/<session>/<first>; the chain cannot be \
+             ordered past it"
+        ))),
+    }
+}
+
+/// One row per cell, rewritten on every commit for that cell
+/// (R12-LEDGER-8137): a per-cell hot row, bounded by the cell count rather
+/// than growing, and left unsharded because a cell's tail is read and
+/// written as one value. Recorded here so it is a stated choice.
 fn tail_key(cell: &str) -> String {
     format!("{PREFIX_TAIL}{}", hex(cell))
 }

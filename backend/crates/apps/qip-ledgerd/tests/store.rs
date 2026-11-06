@@ -1046,3 +1046,67 @@ fn ledger_exports_current_state_including_watermarks() {
         "exported watermark has correct digest"
     );
 }
+
+/// R12-LEDGER-8137. Consecutive deliveries for one cell used to write
+/// `chain/<cell>/<session>/<first>`, a key that only grows, so every apply
+/// for the cell landed at the end of one key range: the hotspot the journal
+/// and watermark keys had already been spread to avoid. The chain key is
+/// now sharded over (session, first), and the chain still reads back in
+/// sequence order, because order comes from the key's position segments.
+///
+/// Mutation: drop the shard segment from `chain_key` and the keys sort in
+/// write order again, so the test fails.
+#[test]
+fn consecutive_deliveries_for_one_cell_never_write_chain_keys_that_sort_in_write_order_and_the_chain_reads_back_in_sequence_order()
+ {
+    let dir = temp_dir("chain-hotspot");
+    let mut journal = Journal::new("cell-a", 1);
+    let records: Vec<P1Record> = (0..12)
+        .map(|n| {
+            journal.outcome(fill(
+                &format!("cell-a-1-o{n}"),
+                1 + n,
+                "100.00",
+                BookSide::Bid,
+                true,
+            ))
+        })
+        .collect();
+    {
+        let (store, _) = open(&dir);
+        consume(&store, &schedule(&records));
+        let events = store.fill_events().expect("the chain reads back");
+        assert_eq!(
+            events.len(),
+            12,
+            "premise: twelve fills, one booked event each"
+        );
+        let records = store.chain_records().expect("the chain reads back");
+        let lasts: Vec<u64> = records.iter().map(|record| record.last_seq).collect();
+        assert_eq!(
+            lasts,
+            (0..12).collect::<Vec<u64>>(),
+            "the chain does not read back in sequence order"
+        );
+    }
+    let raw = qip_storage::DurableStore::open(&dir, config()).expect("the store reopens");
+    let keys: Vec<String> = raw
+        .scan_prefix("chain/")
+        .expect("scan")
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(
+        keys.len(),
+        12,
+        "premise: one chain record per delivery: {keys:?}"
+    );
+    let firsts: Vec<u64> = keys
+        .iter()
+        .map(|key| key.rsplit('/').next().unwrap().parse().unwrap())
+        .collect();
+    assert!(
+        firsts.windows(2).any(|pair| pair[0] > pair[1]),
+        "the chain's keys sort in the order they were written: {keys:?}"
+    );
+}
