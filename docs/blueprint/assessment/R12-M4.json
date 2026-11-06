@@ -746,7 +746,7 @@
     "verification": "kernel test with quantum enabled reaching the QAOA arm",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Existing proof: qip-kernel compute_routing.rs the_compute_settings_attach_only_what_is_asked_and_refuse_what_they_do_not_know. 2026-10-24 (L4, wave580): decision recorded in docs/adr/0190-the-quantum-benefit-gates-of-adr-0150-stand-under-the-2026-10-24-delegation-and-the-parked-research-families-stay-parked.md; no status change."
+    "notes": "2026-10-24 M2-DATA-AGENTS: no code changed. Existing proof: qip-kernel compute_routing.rs the_compute_settings_attach_only_what_is_asked_and_refuse_what_they_do_not_know. 2026-10-24 (L4, wave580): decision recorded in docs/adr/0190-the-quantum-benefit-gates-of-adr-0150-stand-under-the-2026-10-24-delegation-and-the-parked-research-families-stay-parked.md; no status change. L4 2026-11-06: the wave1101 CODE_NOW closure was tried and its premise does not hold. With PlatformConfig::default().with_quantum(), routing.minimum_assets_for_quantum = 1 and a one-name mandate, quantum_assessment says 'attempting QAOA on statevector-simulator' every cycle, yet QuantumDispatch stays empty for eight cycles: the dispatch arm in qip-optimization-engine router.rs runs the value-of-information estimate (self.estimate(Substrate::Qpu, ..)) and its refusal, qpu_declined, stops gateway.submit. So no job is submitted and no contract record carries a quantum result. Making the test pass needs either a measured QPU record the estimate accepts or a policy change to that gate, which is not a test-only change; status unchanged."
   },
   {
     "id": "R12-QUANT-4033",
