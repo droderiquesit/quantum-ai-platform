@@ -836,9 +836,14 @@ fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held() -> Re
 /// desk's decision to divest booked as a trim and the position stayed `Held`
 /// (the gap an independent review found in the first version of this seam).
 ///
-/// Mutation: delete the zero-target `begin_deliberate_close(&order, true)`
-/// call in `Platform::stage_act_orders` — the sell below the long leaves the
-/// position `Held` and the last assertion fails.
+/// And the sell is sized to the long, so the decision to divest is not
+/// executed as a trim that leaves part of the position held under it (the
+/// second review's finding).
+///
+/// Mutations: pass `false` for `to_flat` to `submit_released` in
+/// `Platform::stage_act_orders` — the position stays `Held`; size the order
+/// from `leg.quantity` whatever `to_flat` says — less than the leg's quantity
+/// leaves the book and the last assertion fails.
 #[test]
 fn a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_a_gain_moves_the_position_to_unwinding_although_the_sized_sell_is_below_the_long()
 -> Result<()> {
@@ -901,6 +906,19 @@ fn a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_
         platform.position_lifecycle(aaa.as_str()),
         Some(PositionLifecycle::Unwinding),
         "a sell the construction targeted at zero weight was not recorded as a divestment"
+    );
+    // The divestment sold the long, not the floored leg: what left the book
+    // is more than the leg's whole quantity could have taken out of it.
+    let remaining = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .map_or(Decimal::ZERO, |(quantity, _)| *quantity);
+    assert!(
+        held - remaining > exit.quantity,
+        "the exit was sized to the floored leg ({}) rather than the long ({held}): {} left \
+         the book and {remaining} is still held",
+        exit.quantity,
+        held - remaining
     );
     Ok(())
 }

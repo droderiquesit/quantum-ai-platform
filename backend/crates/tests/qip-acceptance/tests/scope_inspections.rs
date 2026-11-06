@@ -360,8 +360,12 @@ fn every_arbitrage_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_na
 
 /// The ten items of "Asset management" (R12-ASSET-1160): (item, seam file,
 /// seam symbol, test file, test name). Every seam is on the kernel's cycle
-/// or an operator route the API composes, and every test drives the
-/// platform rather than the helper.
+/// or an operator route the API composes, on every binary's default
+/// configuration, and every test drives the platform rather than the
+/// helper. Hedging cites the hedge brain every binary feeds candidates to,
+/// not the declared-policy review no binary configures; horizons cite the
+/// per-position horizon construction records, not the central horizon gate
+/// a path variable arms.
 const ASSET_MANAGEMENT: [(&str, &str, &str, &str, &str); 10] = [
     (
         "portfolio construction",
@@ -380,7 +384,7 @@ const ASSET_MANAGEMENT: [(&str, &str, &str, &str, &str); 10] = [
     (
         "horizons",
         "crates/runtime/qip-kernel/src/platform.rs",
-        "pub fn arm_horizon_gate(",
+        "self.position_horizons",
         "crates/runtime/qip-kernel/tests/position_record.rs",
         "fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liquidity",
     ),
@@ -422,9 +426,9 @@ const ASSET_MANAGEMENT: [(&str, &str, &str, &str, &str); 10] = [
     (
         "hedging",
         "crates/runtime/qip-kernel/src/platform.rs",
-        "fn review_hedges(",
-        "crates/runtime/qip-kernel/tests/hedge.rs",
-        "fn a_declared_hedge_policy_is_surveyed_against_the_book_in_decide_and_reaches_the_log",
+        "fn run_hedge_brain(",
+        "crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs",
+        "fn a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue",
     ),
     (
         "attribution",
