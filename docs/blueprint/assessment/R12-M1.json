@@ -3229,18 +3229,18 @@
   },
   {
     "id": "R12-AMBIENT-1139",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The deep brain's node loop (qip-deepbrain node::run_with, called from main.rs) runs Platform::run_cycle on its own cadence, and every cycle's UNDERSTAND runs the kernel's LatticeStage, re-issues a forecast at each horizon whose last one expired, and journals the review as kernel/forecast-lattice (platform.rs journal_record). A node-level test drives run_with with no request and reads the journaled reviews.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/tests/forecast_lattice.rs::the_run_loop_journals_a_lattice_review_every_cycle_and_reissues_each_stale_horizon_unasked",
       "backend/crates/runtime/qip-kernel/src/platform.rs journal_record(lattice, \"kernel/forecast-lattice\", now)",
       "backend/crates/apps/qip-deepbrain/src/node.rs run_with"
     ],
-    "gap": "Awaiting an independent skeptic's read on promotion to COMPLETE.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "R12-AMBIENT-1005"
@@ -3249,7 +3249,7 @@
     "verification": "cd backend && cargo test -p qip-deepbrain --test forecast_lattice",
     "work_item": "",
     "size": "L",
-    "notes": "2026-11-06 L2-INTEL (wave1101 CODE_NOW): test added; mutation replacing the journal_record call with Ok(()) failed it ('one forecast-lattice review per cycle the node ran', left 0 right 3); restored by cmp."
+    "notes": "2026-11-06 L2-INTEL (wave1101 CODE_NOW): test added; mutation replacing the journal_record call with Ok(()) failed it ('one forecast-lattice review per cycle the node ran', left 0 right 3); restored by cmp. Independent skeptic 2026-11-06: HOLDS on all four bar parts — main.rs reaches node::run_with with no opt-in, run_cycle runs understand_now and lattice.run with no config gate, the test asks for nothing (on_cycle only advances a ManualClock), and the re-issue assertion has a non-vacuous premise. The forecasts live in the kernel lattice and are journaled to the platform event log, not to ambient_journal; the requirement names neither. Horizon coverage (microseconds to years) is R12-AMBIENT-3066's, not claimed here."
   },
   {
     "id": "R12-AMBIENT-1140",
