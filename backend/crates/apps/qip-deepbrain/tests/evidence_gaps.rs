@@ -363,3 +363,90 @@ fn a_started_simulation_item_is_gathered_with_a_dataset_digest() {
         _ => unreachable!(),
     }
 }
+
+/// ADR 0345 (R12-EXPAND-6065): a causal driver whose effects have no
+/// history becomes one coverage gap naming its dimension. The driver is
+/// read off the platform's own causal graph each sweep, so the same loop
+/// raises nothing for it before the claim and one gap after. A claim whose
+/// effect the platform does not trade (`WTI` here) raises nothing: it has
+/// no history to lack. Without the dimension the platform could reason
+/// through a driver for every one of its instruments and never ask for the
+/// data to price one of them.
+///
+/// Mutation: drop the driver rows from the map `sweep_over` hands
+/// `coverage` — the gap after the claim is not raised.
+#[test]
+fn a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming_its_dimension() {
+    let mut platform = platform();
+    let catalogue = BTreeMap::from([(
+        "Equity".to_string(),
+        BTreeSet::from(["obj-A".to_string(), "obj-B".to_string()]),
+    )]);
+    let mut loop_ = ResearchLoop::new(ResearchConfig::from_lookup(&unset).unwrap(), catalogue)
+        .unwrap()
+        .with_package_store(Arc::new(MemoryBlobStore::new()));
+    let (sources, jurisdictions) = deployed_bounds();
+    let driver_gaps = |loop_: &ResearchLoop| -> Vec<RaisedGap> {
+        queued_gaps(loop_)
+            .into_iter()
+            .filter(|g| {
+                g.signal
+                    .evidence
+                    .iter()
+                    .any(|e| e.starts_with("universe:causal_driver:"))
+            })
+            .collect()
+    };
+
+    loop_
+        .sweep(&platform, at(60), &sources, &jurisdictions)
+        .unwrap();
+    assert!(
+        queued_gaps(&loop_).iter().any(|g| g
+            .signal
+            .evidence
+            .iter()
+            .any(|e| e == "universe:asset_class:Equity")),
+        "premise: the coverage detector runs over this catalogue"
+    );
+    assert!(
+        driver_gaps(&loop_).is_empty(),
+        "premise: no driver is raised before the graph holds one"
+    );
+
+    for (cause, effect) in [("rates", "obj-A"), ("opec", "WTI")] {
+        platform
+            .claim_causal(
+                CausalEdge::new(
+                    cause,
+                    effect,
+                    Mechanism::DiscountRate,
+                    0.5,
+                    Duration::from_days(90),
+                    at(0),
+                )
+                .unwrap()
+                .with_confidence(0.8)
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    loop_
+        .sweep(&platform, at(120), &sources, &jurisdictions)
+        .unwrap();
+
+    let raised = driver_gaps(&loop_);
+    assert_eq!(raised.len(), 1, "{raised:#?}");
+    assert_eq!(
+        raised[0].signal.evidence,
+        ["detector:coverage", "universe:causal_driver:rates"].map(String::from)
+    );
+    assert!(
+        raised[0]
+            .signal
+            .observation
+            .starts_with("causal driver `rates` is unsupported"),
+        "{}",
+        raised[0].signal.observation
+    );
+}
