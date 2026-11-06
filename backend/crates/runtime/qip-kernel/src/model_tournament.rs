@@ -172,6 +172,11 @@ struct TemporarySpecialist {
     /// that branch's parent (ADR 0347): kept here so it leaves with the
     /// specialist and is bounded by the live temporaries.
     branch: String,
+    /// The resolution instant that spawned it. A respawn on the subject
+    /// reuses the forecaster id, and a predecessor's forecasts on questions
+    /// still open are scored under that id, so only questions opened after
+    /// this instant are the branch's own.
+    spawned_at: Timestamp,
     measured: BranchTally,
 }
 
@@ -218,6 +223,11 @@ struct PendingQuestion {
     subject: String,
     reference: f64,
     resolves_at: Timestamp,
+    /// When the question opened, so a branch counts only questions opened
+    /// after its spawn (ADR 0347). Absent on a question opened before this
+    /// field existed, which no branch counts.
+    #[serde(default)]
+    opened_at: Option<Timestamp>,
     /// The aggregate's probability of `up` when the question opened, the
     /// figure a resolution's residual is measured against.
     aggregate_up: Option<f64>,
@@ -776,6 +786,7 @@ impl TournamentStage {
                     ups: u32::from(up),
                     observed: 1,
                     branch: branch.id.clone(),
+                    spawned_at: now,
                     measured: BranchTally::default(),
                 },
             );
@@ -786,8 +797,10 @@ impl TournamentStage {
     /// Score the live branch on `pending`'s subject against its parent, on
     /// a question its specialist forecast: the specialist's own Brier score
     /// from `scores`, and the aggregate's at opening, in the same two-outcome
-    /// form [`Self::measure_aggregate`] uses. A question the specialist did
-    /// not forecast opened before the spawn, and is not out of sample.
+    /// form [`Self::measure_aggregate`] uses. Only a question that opened
+    /// strictly after the spawn counts: one opened at the spawn's instant
+    /// opened earlier in that cycle, and a respawn's reused id would
+    /// otherwise carry its predecessor's forecasts on questions still open.
     fn measure_branch(
         &mut self,
         pending: &PendingQuestion,
@@ -799,6 +812,11 @@ impl TournamentStage {
             .temporaries
             .get_mut(&pending.subject)
             .filter(|t| t.expires_at > now)
+            .filter(|t| {
+                pending
+                    .opened_at
+                    .is_some_and(|opened| opened > t.spawned_at)
+            })
         else {
             return;
         };
@@ -1130,6 +1148,7 @@ impl TournamentStage {
                 subject,
                 reference,
                 resolves_at,
+                opened_at: Some(now),
                 aggregate_up,
                 equal_up,
                 weights_earned,
@@ -2316,7 +2335,10 @@ mod tests {
 
         // It competes on the subject's next question, at its own model's
         // forecast: one outcome observed, Laplace-smoothed.
-        let next = resolved_at;
+        // A minute after the spawn: in a cycle REASON opens before LEARN
+        // spawns, so a question opened at the spawn's own instant opened
+        // before it and is not the branch's (ADR 0347).
+        let next = resolved_at.saturating_add(Duration::from_mins(1));
         observe(&mut stage, &hypothesis("hyp-3-obj-AAA", next), next);
         let opened = &stage.review.opened[0];
         let opened_aggregate = opened.aggregate_up;

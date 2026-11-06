@@ -58,7 +58,10 @@ population it branched from.
 3. **Each spawned branch is scored against its parent.** For every question
    on the branch's subject that its temporary specialist forecast, and so
    that opened after the spawn, the tournament records the specialist's
-   Brier score and the aggregate's, both as they stood at opening.
+   Brier score and the aggregate's, both as they stood at opening. Only a
+   question that opened strictly after the spawn counts: a respawn on the
+   subject reuses the forecaster id, and a predecessor's forecasts on
+   questions still open are scored under it.
    `TournamentReview.branch_measurements` journals each live branch's mean
    of both, cumulative since its spawn, on every cycle that scored one. The
    tally lives on the specialist and leaves with it at expiry.
@@ -68,10 +71,11 @@ population it branched from.
    decision 12 is not amended here: the built specialist keeps its
    `temporary:` id and its outcome-frequency model, and both remain
    departures from decision 12 that R12-EXPAND-6043 records as open.
-5. **Synthetic-venue resolutions.** The tournament resolves on bars, and no
-   bar carries a mark saying it came from a synthetic venue. This decision
-   cannot exclude them on this path, and says so rather than filtering on a
-   venue-name guess.
+5. **Synthetic-venue resolutions: the exclusion is declined, not met.** The
+   tournament resolves on bars. A bar names its venue, and the kernel names
+   some synthetic venues by string, but no bar carries a typed mark saying
+   it is synthetic. This decision does not filter on a venue-name list it
+   cannot show is complete.
 
 ## Consequences
 
@@ -85,8 +89,14 @@ population it branched from.
 ## What it costs
 
 - One record per live branch per scoring cycle on the tournament review.
-  The live temporaries bound it, and they are bounded by
-  `MAX_FORECASTERS`.
+  The live temporaries bound it: at most one per subject, kept until
+  expiry.
+- The parent figure is not a clean parent. The aggregate is pooled after
+  the specialist's own forecast has entered it, so "parent" is the
+  population with the branch included, and the two figures are pulled
+  toward each other. The tournament's leave-one-out pooling exists but is
+  private to `qip-learning-engine`; recording the aggregate without the
+  specialist at opening is the correction, and it is not made here.
 - A trigger fixed at 0.6 that no measurement chose. This decision ratifies
   the residual's kind, not its threshold; the threshold is still a
   constant.
