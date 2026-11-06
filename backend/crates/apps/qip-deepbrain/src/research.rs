@@ -830,6 +830,10 @@ pub struct ResearchRound {
     /// (R12-AMBIENT-1005/3064): the measured move that raised the signal,
     /// stated as a shock to stress against, generated with nobody asking.
     pub scenarios: Vec<ConditionalScenario>,
+    /// What changed in the held scenario branches this sweep
+    /// (R12-AMBIENT-1142): each added, re-shocked or retired branch, in
+    /// branch order.
+    pub branch_updates: Vec<ScenarioBranchUpdate>,
     /// Every assumption the loop holds and how it stands after this sweep
     /// (R12-AMBIENT-1143), in key order: written every sweep, so an
     /// assumption last challenged three sweeps ago reads as holding for
@@ -1158,6 +1162,122 @@ fn construct_simulation(
     ))
 }
 
+/// The most conditional scenario branches one loop holds (R12-AMBIENT-1142).
+/// A working-set bound, not a judgement about how many hypotheses matter: a
+/// signal arriving with the table full gets no branch, and says so by
+/// recording no `Added` update.
+pub const MAX_SCENARIO_BRANCHES: usize = 256;
+
+/// The branch id a signal's conditional scenario is held under.
+pub fn scenario_branch_id(signal_id: &str) -> String {
+    format!("branch:{signal_id}")
+}
+
+/// A conditional scenario held across sweeps (R12-AMBIENT-1142).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenarioBranch {
+    pub signal_id: String,
+    /// The subjects the signal named, re-read on every sweep's tape.
+    pub subjects: Vec<String>,
+    pub description: String,
+    /// The signal's expiry: the branch is retired at the first sweep at or
+    /// after it.
+    pub expires_at: Timestamp,
+    /// The digest of the inputs the branch was last shocked from.
+    pub input_digest: String,
+}
+
+/// What happened to a held scenario branch in one sweep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchChange {
+    Added,
+    Reshocked,
+    Retired,
+}
+
+/// One change to a held scenario branch, as the journal records it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenarioBranchUpdate {
+    pub branch_id: String,
+    pub signal_id: String,
+    pub change: BranchChange,
+    /// The inputs the branch stands on after the change; for a retired
+    /// branch, the inputs it was last shocked from.
+    pub input_digest: String,
+}
+
+/// A conditional shock built from a signal's subjects on the latest tape.
+struct BuiltShock {
+    shocks: Vec<FactorShock>,
+    inputs: String,
+    digest: String,
+}
+
+impl BuiltShock {
+    fn scenario(&self, signal_id: &str, description: String) -> Result<ConditionalScenario> {
+        let scenario = Scenario {
+            name: format!("conditional:{signal_id}"),
+            description,
+            shocks: self.shocks.clone(),
+            stressed_correlation: None,
+            liquidity_multiplier: 1.0,
+            historical: false,
+        };
+        scenario.validate()?;
+        let episode = SyntheticEpisode::new(
+            scenario.name.clone(),
+            SyntheticGenerator::Conditional,
+            qip_core::hash::sha256_hex(self.inputs.as_bytes()),
+            None,
+        )?;
+        Ok(ConditionalScenario {
+            signal_id: signal_id.to_string(),
+            scenario,
+            episode,
+        })
+    }
+}
+
+/// The latest measured move of each subject the platform holds a tape for,
+/// as a one-day shock, and the digest of the inputs: the signal id and the
+/// last two prices' bits, because a rounded price would let two tapes share
+/// a digest. `None` where no subject moved.
+fn conditional_shock(
+    signal_id: &str,
+    subjects: &[String],
+    history: &BTreeMap<String, Vec<f64>>,
+) -> Option<BuiltShock> {
+    let mut inputs = signal_id.to_string();
+    let shocks: Vec<FactorShock> = subjects
+        .iter()
+        .filter_map(|subject| {
+            let prices = history.get(subject)?;
+            let [.., previous, last] = prices.as_slice() else {
+                return None;
+            };
+            let moved = last / previous - 1.0;
+            (moved.is_finite() && moved != 0.0).then(|| {
+                inputs.push_str(&format!(
+                    "|{subject}|{}|{}",
+                    previous.to_bits(),
+                    last.to_bits()
+                ));
+                FactorShock::new(format!("price:{subject}"), moved, 1.0)
+            })
+        })
+        .collect();
+    if shocks.is_empty() {
+        return None;
+    }
+    let digest = qip_core::hash::sha256_hex(inputs.as_bytes());
+    Some(BuiltShock {
+        shocks,
+        inputs,
+        digest,
+    })
+}
+
 /// A stress scenario conditioned on one signal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConditionalScenario {
@@ -1355,6 +1475,11 @@ pub struct ResearchLoop {
     /// review once. A sequence, not a cycle: a restarted platform numbers
     /// its cycles from zero again over the log it inherited.
     world_state_cursor: Option<u64>,
+    /// The conditional scenario branches held across sweeps, by branch id
+    /// (R12-AMBIENT-1142): added from a risk or assumption signal, re-shocked
+    /// on each later tape, retired at the signal's expiry. Bounded by
+    /// [`MAX_SCENARIO_BRANCHES`].
+    scenario_branches: BTreeMap<String, ScenarioBranch>,
     /// The hosted model's reply tally, where one is installed (6040).
     replies: Option<(String, crate::language::ReplyTally)>,
     /// Assumption health by assumption, bounded by [`RETAINED`]: the entry
@@ -1565,6 +1690,7 @@ impl ResearchLoop {
             drifted_models: Vec::new(),
             world_states: BTreeMap::new(),
             world_state_cursor: None,
+            scenario_branches: BTreeMap::new(),
             replies: None,
             assumptions: BTreeMap::new(),
             ontology,
@@ -2528,7 +2654,7 @@ impl ResearchLoop {
         }
 
         // --- conditional scenarios: what the signal's move would do again --
-        self.conditional_scenarios(platform, &metrics, &mut round)?;
+        self.conditional_scenarios(platform, &metrics, &mut round, now)?;
 
         // --- curiosity: rank every candidate, then launch ------------------
         // The federation's own questions join the gaps' before the ranking, so
@@ -3143,68 +3269,113 @@ impl ResearchLoop {
         platform: &Platform,
         metrics: &Metrics,
         round: &mut ResearchRound,
+        now: Timestamp,
     ) -> Result<()> {
         let history = platform.price_history();
         let mut generated = Vec::new();
+        let mut updates = Vec::new();
+
+        // Retire first: a branch past its signal's expiry is no longer a
+        // hypothesis anything holds, and re-shocking it would keep stressing
+        // the book against a signal nobody is still raising.
+        let expired: Vec<String> = self
+            .scenario_branches
+            .iter()
+            .filter(|(_, branch)| branch.expires_at <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            if let Some(branch) = self.scenario_branches.remove(&id) {
+                updates.push(ScenarioBranchUpdate {
+                    branch_id: id,
+                    signal_id: branch.signal_id,
+                    change: BranchChange::Retired,
+                    input_digest: branch.input_digest,
+                });
+            }
+        }
+
+        // Add a branch for each new risk or assumption signal with a tape.
+        let mut added = BTreeSet::new();
         for signal in &round.signals {
             if !matches!(signal.class(), SignalClass::Risk | SignalClass::Assumption) {
                 continue;
             }
-            // The canonical inputs, as their bits: a rounded price would let
-            // two different tapes share a digest.
-            let mut inputs = signal.id().to_string();
-            let shocks: Vec<FactorShock> = signal
-                .affected_entities()
-                .iter()
-                .filter_map(|subject| {
-                    let prices = history.get(subject)?;
-                    let [.., previous, last] = prices.as_slice() else {
-                        return None;
-                    };
-                    let moved = last / previous - 1.0;
-                    (moved.is_finite() && moved != 0.0).then(|| {
-                        inputs.push_str(&format!(
-                            "|{subject}|{}|{}",
-                            previous.to_bits(),
-                            last.to_bits()
-                        ));
-                        FactorShock::new(format!("price:{subject}"), moved, 1.0)
-                    })
-                })
-                .collect();
-            if shocks.is_empty() {
+            let branch_id = scenario_branch_id(signal.id());
+            if self.scenario_branches.contains_key(&branch_id) || signal.expiry() <= now {
                 continue;
             }
-            let scenario = Scenario {
-                name: format!("conditional:{}", signal.id()),
-                description: format!(
-                    "hypothetical, conditioned on ambient signal {} ({:?}, {} bp): the latest \
-                     measured move of each affected subject, repeated over one day",
-                    signal.id(),
-                    signal.class(),
-                    signal.severity_bp()
-                ),
-                shocks,
-                stressed_correlation: None,
-                liquidity_multiplier: 1.0,
-                historical: false,
+            if self.scenario_branches.len() >= MAX_SCENARIO_BRANCHES {
+                // Refused rather than evicting a held branch: the bound is
+                // a working-set cap, and dropping an older hypothesis to make
+                // room would retire it without its signal expiring.
+                continue;
+            }
+            let subjects = signal.affected_entities().to_vec();
+            let Some(built) = conditional_shock(signal.id(), &subjects, &history) else {
+                continue;
             };
-            scenario.validate()?;
-            let episode = SyntheticEpisode::new(
-                scenario.name.clone(),
-                SyntheticGenerator::Conditional,
-                qip_core::hash::sha256_hex(inputs.as_bytes()),
-                None,
-            )?;
-            generated.push(ConditionalScenario {
+            let description = format!(
+                "hypothetical, conditioned on ambient signal {} ({:?}, {} bp): the latest \
+                 measured move of each affected subject, repeated over one day",
+                signal.id(),
+                signal.class(),
+                signal.severity_bp()
+            );
+            generated.push(built.scenario(signal.id(), description.clone())?);
+            updates.push(ScenarioBranchUpdate {
+                branch_id: branch_id.clone(),
                 signal_id: signal.id().to_string(),
-                scenario,
-                episode,
+                change: BranchChange::Added,
+                input_digest: built.digest.clone(),
+            });
+            self.scenario_branches.insert(
+                branch_id.clone(),
+                ScenarioBranch {
+                    signal_id: signal.id().to_string(),
+                    subjects,
+                    description,
+                    expires_at: signal.expiry(),
+                    input_digest: built.digest,
+                },
+            );
+            added.insert(branch_id);
+        }
+
+        // Re-shock every other held branch on its subjects' latest tape. A
+        // branch whose tape has not moved since it was last shocked keeps
+        // its scenario and records nothing: the same inputs are the same
+        // hypothesis.
+        for (id, branch) in &mut self.scenario_branches {
+            if added.contains(id) {
+                continue;
+            }
+            let Some(built) = conditional_shock(&branch.signal_id, &branch.subjects, &history)
+            else {
+                continue;
+            };
+            if built.digest == branch.input_digest {
+                continue;
+            }
+            generated.push(built.scenario(&branch.signal_id, branch.description.clone())?);
+            branch.input_digest = built.digest.clone();
+            updates.push(ScenarioBranchUpdate {
+                branch_id: id.clone(),
+                signal_id: branch.signal_id.clone(),
+                change: BranchChange::Reshocked,
+                input_digest: built.digest,
             });
         }
+        updates.sort_by(|a, b| a.branch_id.cmp(&b.branch_id));
         metrics.increment(AMBIENT_SCENARIOS, labels([]), generated.len() as u64);
         round.scenarios = generated;
+        round.branch_updates = updates;
         Ok(())
+    }
+
+    /// The scenario branches this loop holds, by branch id (R12-AMBIENT-1142).
+    pub fn scenario_branches(&self) -> &BTreeMap<String, ScenarioBranch> {
+        &self.scenario_branches
     }
 
     /// Conclude each retained fill-prediction campaign whose venue has

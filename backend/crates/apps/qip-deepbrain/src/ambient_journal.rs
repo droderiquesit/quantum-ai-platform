@@ -68,6 +68,13 @@ pub enum AmbientRecord {
         #[serde(default)]
         episode: Option<qip_contracts::expansion::SyntheticEpisode>,
     },
+    /// A held conditional scenario branch added, re-shocked or retired by
+    /// the sweep (R12-AMBIENT-1142), caused by its signal's record where
+    /// this sweep raised it.
+    ScenarioBranch {
+        cycle: u64,
+        update: crate::research::ScenarioBranchUpdate,
+    },
     /// Every assumption the loop holds and how it stands after the sweep
     /// (R12-AMBIENT-1143). Written every sweep the table is non-empty, so
     /// a sweep that challenged nothing still records what is holding.
@@ -319,6 +326,22 @@ impl AmbientJournal {
                     signal_id: generated.signal_id.clone(),
                     scenario: generated.scenario.clone(),
                     episode: Some(generated.episode.clone()),
+                },
+                at,
+                at,
+            )?;
+            count += 1;
+        }
+        for update in &round.branch_updates {
+            let caused = match by_signal.get(update.signal_id.as_str()) {
+                Some(parent) => lineage.caused_by(parent, AMBIENT_ORIGIN),
+                None => lineage.clone(),
+            };
+            self.append(
+                &caused,
+                AmbientRecord::ScenarioBranch {
+                    cycle,
+                    update: update.clone(),
                 },
                 at,
                 at,
