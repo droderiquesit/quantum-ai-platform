@@ -23,7 +23,14 @@ use qip_kernel::Platform;
 use qip_kernel::breadth::BreadthPlan;
 
 /// The variable naming the breadth plan's file.
-pub const PLAN_VARIABLE: &str = "QIP_DEEPBRAIN_BREADTH_PLAN";
+///
+/// Ends in `_PATH` because a deployment mounts the plan as a committed
+/// configuration file (ADR 0245), and `modules/cloudrun` refuses any
+/// `config_files` variable not matching `^QIP_[A-Z0-9_]*_PATH$`. It was
+/// `QIP_DEEPBRAIN_BREADTH_PLAN` while nothing mounted it; under that name the
+/// plan could reach no Cloud Run revision at all, so the rename is what makes
+/// the dev mount possible rather than a cosmetic change.
+pub const PLAN_VARIABLE: &str = "QIP_DEEPBRAIN_BREADTH_PLAN_PATH";
 
 /// The plan a deployment asked for, or `None` when the variable is unset or
 /// blank. `lookup` is the environment in the binary and a map in a test.

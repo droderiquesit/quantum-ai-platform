@@ -774,6 +774,10 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// Signed aggressor flow per (instrument, venue) since the last
+    /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
+    /// venues one cycle's trades name.
+    cycle_order_flow: BTreeMap<(String, String), qip_world_model::order_flow::FlowObservation>,
     /// The active-sensing requests the latest federation pass issued, each
     /// with the disagreement spread behind it in basis points (ADR 0158
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
@@ -1165,6 +1169,10 @@ pub struct Platform {
     future_drivers: BTreeSet<String>,
     /// The bar close instant `future_tree` was last observed at.
     future_observed_at: Option<Timestamp>,
+    /// Each world-model domain's last journaled snapshot version and digest
+    /// (ADR 0191 decision 3), resumed from the log so the versions continue
+    /// across a restart. Read back for nothing else.
+    world_snapshots: BTreeMap<String, (u64, String)>,
     /// The value policy over the episodes `research_memory` holds: which
     /// resolved analyst calls were surprising enough to keep whole and which
     /// are counted into a per-analyst summary (ADR 0152 decision 8,
@@ -6047,6 +6055,14 @@ impl Platform {
         // next claim on either side is admitted as if it were the first.
         let mut world_model = WorldModel::new();
         world_model.rebuild_evidence(Self::journaled_evidence_in(&event_log)?)?;
+        // The committed counterfactual arms resolved against the universe
+        // before it moves into the market view (R12-CAPITAL-4091); the menu
+        // below reads them.
+        let committed_arms = config
+            .counterfactual_alternatives
+            .as_ref()
+            .map(|declared| declared.resolve(&universe))
+            .unwrap_or_default();
         let world = Upstream::new(world_model);
         let research_memory = Upstream::new(ResearchMemory::new());
         let market = Upstream::new(MarketView {
@@ -6246,9 +6262,16 @@ impl Platform {
         // firm. The hedge is the first declared policy's instrument and beta
         // — the structure the hedge review would have proposed.
         let mut menu = AlternativeMenu::standard(delay);
+        // The committed alternatives (decision 17) fill an arm only where
+        // neither a hedge policy nor the arbitrage whitelist names one, and
+        // only with what resolves against this universe and is not the
+        // desk's own venue; anything else is no arm, never a refused set.
         if let Some(policy) = config.hedge_policies.first() {
             menu = menu.with_hedge(policy.instrument.clone(), policy.beta);
+        } else if let Some(arm) = &committed_arms.hedge {
+            menu = menu.with_hedge(arm.instrument.clone(), arm.ratio);
         }
+        let mut venue_named = false;
         if let Some(arbitrage) = &config.central.arbitrage
             && let Some((name, venue)) = arbitrage
                 .venues
@@ -6262,6 +6285,17 @@ impl Platform {
             costs.commission_bps = venue.taker_cost.to_f64() * 10_000.0;
             menu = menu.with_venue(VenueOption {
                 venue: VenueId::new(name.clone()),
+                costs,
+                firm_quotes: false,
+            });
+            venue_named = true;
+        }
+        if !venue_named && let Some(arm) = committed_arms.venue_other_than(broker.name()) {
+            let mut costs = CostModel::liquid_equity();
+            // As above: a fraction of notional crosses into basis points.
+            costs.commission_bps = arm.taker_cost.to_f64() * 10_000.0;
+            menu = menu.with_venue(VenueOption {
+                venue: VenueId::new(arm.name.clone()),
                 costs,
                 firm_quotes: false,
             });
@@ -6327,6 +6361,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            world_snapshots: crate::world_snapshot::resume(&event_log)?,
             journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
             release_packs: None,
@@ -6404,6 +6439,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            cycle_order_flow: BTreeMap::new(),
             federation_requests: Vec::new(),
             decision_uncertainties: Vec::new(),
             cycle_second_order: None,
@@ -12762,6 +12798,7 @@ impl Platform {
                 }
                 SensedRecord::Trade(trade) => {
                     self.ensure_world_object(trade.object_id.as_str(), trade.at);
+                    self.record_order_flow(&trade);
                     // "Last traded price" is the feature store's own
                     // definition of `close`, and a trade is exactly that.
                     // Use capture_time for known_at to preserve bitemporal distinction:
@@ -13375,6 +13412,58 @@ impl Platform {
         self.capture_problems.extend(problems);
     }
 
+    /// Journal a snapshot of each world-model domain whose content changed
+    /// since its last snapshot (ADR 0191 decision 3, R12-WORLD-7023): the
+    /// domain, its next version, its counts and a digest of its content as
+    /// true and known at `now`. A domain whose digest is unchanged adds
+    /// nothing to the log. A snapshot that cannot be read or journaled is a
+    /// capture problem; a failed journal still takes its version
+    /// ([`crate::world_snapshot::settle`]), so the retry next cycle uses the
+    /// next number and no two records claim one.
+    fn snapshot_world(&mut self, now: Timestamp) {
+        use crate::world_snapshot::{WORLD_SNAPSHOT_ORIGIN, domains_of, due, settle};
+        let domains = match domains_of(&self.world.read(), now) {
+            Ok(domains) => domains,
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "the world model could not be read for its snapshot: {}",
+                    error.message()
+                ));
+                return;
+            }
+        };
+        for snapshot in due(domains, &self.world_snapshots, now) {
+            let (domain, version, digest) = (
+                snapshot.domain.clone(),
+                snapshot.version,
+                snapshot.digest.clone(),
+            );
+            let journaled = match self.journal_record(snapshot, WORLD_SNAPSHOT_ORIGIN, now) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.capture_problems.push(format!(
+                        "the {domain} snapshot at version {version} was not journaled: {}",
+                        error.message()
+                    ));
+                    false
+                }
+            };
+            settle(
+                &mut self.world_snapshots,
+                domain,
+                version,
+                digest,
+                journaled,
+            );
+        }
+    }
+
+    /// Each world-model domain's last journaled snapshot version and
+    /// digest (ADR 0191 decision 3).
+    pub const fn world_snapshot_versions(&self) -> &BTreeMap<String, (u64, String)> {
+        &self.world_snapshots
+    }
+
     /// The synthetic future tree the cycle tends (R12-WORLD-9035), if the
     /// held world events have grown one.
     pub const fn future_tree(&self) -> Option<&qip_twin::futures::FutureTree> {
@@ -13495,6 +13584,7 @@ impl Platform {
         self.observe_own_health(now);
         self.react_to_world_events(now);
         self.tend_futures(now);
+        self.snapshot_world(now);
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next
@@ -14956,6 +15046,61 @@ impl Platform {
             .collect()
     }
 
+    /// A company twin over the supply relationships the world graph holds as
+    /// true and known at `now` (R12-WORLD-9037). Each `Supplies` fact
+    /// becomes a supply link whose share is the fact's weight (the graph's
+    /// "share of supply", read as the customer's share of input from that
+    /// supplier) and whose source is the fact's. Where a pair was stated more
+    /// than once, the latest recorded statement is kept.
+    ///
+    /// The twin is a simulation over facts, not a causal claim: that a
+    /// company supplies another is a fact, that a shock travels between them
+    /// is the twin's hypothesis, and nothing here writes a causal edge.
+    /// Refuses the graph's links if the twin would: shares that sum past a
+    /// customer's whole input are a data error to correct, not to clamp.
+    pub fn business_twin(&self, now: Timestamp) -> Result<qip_twin::business::BusinessTwin> {
+        use qip_world_model::relationship::RelationshipKind;
+        let world = self.world.read();
+        let mut latest: BTreeMap<(String, String), (Timestamp, qip_twin::business::SupplyLink)> =
+            BTreeMap::new();
+        for fact in world.graph().facts_at(now, now) {
+            let relationship = &fact.relationship;
+            if relationship.kind != RelationshipKind::Supplies {
+                continue;
+            }
+            let key = (relationship.from.clone(), relationship.to.clone());
+            if latest
+                .get(&key)
+                .is_some_and(|(at, _)| *at >= fact.recorded_at)
+            {
+                continue;
+            }
+            latest.insert(
+                key,
+                (
+                    fact.recorded_at,
+                    qip_twin::business::SupplyLink {
+                        supplier: relationship.from.clone(),
+                        customer: relationship.to.clone(),
+                        share: relationship.weight,
+                        source: relationship.source.clone(),
+                    },
+                ),
+            );
+        }
+        qip_twin::business::BusinessTwin::new(
+            latest
+                .into_values()
+                .map(|(_, link)| link)
+                // A supply stated at a weight of nothing carries nothing; the
+                // graph admits it, and the twin, which refuses a zero share,
+                // would otherwise refuse every other link with it.
+                .filter(|link| link.share > 0.0)
+                .collect(),
+            Vec::new(),
+        )
+    }
+
     /// Each instrument's issuer's latest fundamental surprise readable at
     /// `now` (R12-WORLD-3044): the `<metric>_surprise` company readings,
     /// newest by availability per entity, carried to every instrument the
@@ -15032,7 +15177,7 @@ impl Platform {
     /// positive or any figure is not finite — a share of nothing is not a
     /// number, and the member is silent rather than reading that book as one
     /// that draws nothing.
-    fn capital_view(&self) -> Option<crate::federation_stage::CapitalView> {
+    fn capital_view(&self, now: Timestamp) -> Option<crate::federation_stage::CapitalView> {
         let equity = self.equity().to_f64();
         if !equity.is_finite() || equity <= 0.0 {
             return None;
@@ -15050,11 +15195,105 @@ impl Platform {
             leverage: gross / equity,
             net_share: net / equity,
             pending_theses: self.pending_theses.len(),
+            // ADR 0257: equity above the NAV floor the survival waterfall
+            // withholds — the emergency-reserve fraction of the same policy
+            // DECIDE sizes under, applied to this pass's equity — and what is
+            // still settling now. Neither reaches DECIDE through the member.
+            floor_headroom: {
+                let equity = self.equity();
+                equity
+                    .checked_mul(self.survival_policy().emergency_reserve_fraction())
+                    .and_then(|floor| equity.checked_sub(floor))
+                    .map(|headroom| headroom.to_f64())
+            },
+            // A total that overflowed is not zero: NaN keeps the settlement
+            // member silent rather than reading it as nothing outstanding.
+            unsettled: self
+                .unsettled_sale_proceeds(now)
+                .map_or(f64::NAN, |total| total.to_f64()),
         };
         [view.cash, view.cash_share, view.leverage, view.net_share]
             .iter()
             .all(|x| x.is_finite())
             .then_some(view)
+    }
+
+    /// Add `trade`'s signed volume to this cycle's order flow (ADR 0255). A
+    /// trade whose venue stated no aggressor contributes nothing: guessing a
+    /// side from the quote would be the platform inventing the flow it then
+    /// forecasts from. Nor does a print that formed no price — a late
+    /// report, a correction, an off-exchange cross — because a block crossed
+    /// away from the book says who traded, not who was taking the spread,
+    /// and `qip_market::microstructure` counts only price-forming prints too.
+    fn record_order_flow(&mut self, trade: &qip_market::quote::Trade) {
+        if !trade.condition.is_price_forming() {
+            return;
+        }
+        let Some(side) = trade.aggressor else {
+            return;
+        };
+        let key = (trade.object_id.as_str().to_string(), trade.venue.clone());
+        let flow = self.cycle_order_flow.entry(key).or_insert_with(|| {
+            qip_world_model::order_flow::FlowObservation {
+                object_id: trade.object_id.clone(),
+                venue: qip_contracts::venue::VenueId::new(&trade.venue),
+                observed_at: trade.at,
+                buy_volume: Decimal::ZERO,
+                sell_volume: Decimal::ZERO,
+                buy_count: 0,
+                sell_count: 0,
+            }
+        });
+        flow.observed_at = flow.observed_at.max(trade.at);
+        match side {
+            qip_market::book::Side::Buy => {
+                flow.buy_volume += trade.size;
+                flow.buy_count += 1;
+            }
+            qip_market::book::Side::Sell => {
+                flow.sell_volume += trade.size;
+                flow.sell_count += 1;
+            }
+        }
+    }
+
+    /// The latest macro surprise per series readable at `now`, for the
+    /// macro member (ADR 0256). A surprise exists only where the release
+    /// stated a consensus; one whose sources carry the synthetic tag is
+    /// marked simulated.
+    fn macro_views(&self, now: Timestamp) -> Vec<crate::federation_stage::MacroView> {
+        let world = self.world.read();
+        qip_world_model::now::macro_surprises(&world, now)
+            .into_iter()
+            .map(|reading| crate::federation_stage::MacroView {
+                simulated: reading
+                    .sources
+                    .iter()
+                    .any(|s| s == qip_world_model::now::MACRO_SIMULATED_SOURCE),
+                series: reading.subject,
+                surprise: reading.value,
+                valid_at: reading.valid_at,
+            })
+            .collect()
+    }
+
+    /// The latest fixing per currency series readable at `now`, for the
+    /// macro member (ADR 0256). A fixing from a synthetic tape is marked
+    /// simulated by the same source tag as a surprise.
+    fn currency_views(&self, now: Timestamp) -> Vec<crate::federation_stage::CurrencyView> {
+        let world = self.world.read();
+        qip_world_model::now::currency_levels(&world, now)
+            .into_iter()
+            .map(|reading| crate::federation_stage::CurrencyView {
+                simulated: reading
+                    .sources
+                    .iter()
+                    .any(|s| s == qip_world_model::now::MACRO_SIMULATED_SOURCE),
+                series: reading.subject,
+                level: reading.value,
+                valid_at: reading.valid_at,
+            })
+            .collect()
     }
 
     /// Each venue the platform routes to, as the counterparty member reads it
@@ -15107,6 +15346,13 @@ impl Platform {
         let mut thin_subjects = 0;
         let causal_views = self.causal_views(now);
         let surprises = self.fundamental_surprises(now);
+        // This cycle's flow, taken so the next cycle starts empty: the
+        // member reads one cycle's prints, never an accumulating history.
+        let mut flows: BTreeMap<String, Vec<qip_world_model::order_flow::FlowObservation>> =
+            BTreeMap::new();
+        for ((subject, _), flow) in std::mem::take(&mut self.cycle_order_flow) {
+            flows.entry(subject).or_default().push(flow);
+        }
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -15127,6 +15373,7 @@ impl Platform {
                 spread_ratio: self.spread_ratio(subject),
                 causal: causal_views.get(subject).copied(),
                 fundamental_surprise: surprises.get(subject).copied(),
+                order_flow: flows.remove(subject).unwrap_or_default(),
             });
         }
         let level = self.autonomy.level();
@@ -15151,7 +15398,9 @@ impl Platform {
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
             }),
-            capital: self.capital_view(),
+            capital: self.capital_view(now),
+            macros: self.macro_views(now),
+            currencies: self.currency_views(now),
             counterparties: self.counterparty_views(),
         };
         // State what rides on each instrument before the pass (AMBIENT-10093),
@@ -18476,6 +18725,12 @@ impl Platform {
         // `free` is the budget before the governor and the multipliers took
         // anything from it: the reference the leg quantities are reported
         // against, by the constructor in this same pass (ADR 0148 decision 5).
+        // No grouped caps are passed (R12-ASSET-4070, ADR 0228 decision 4):
+        // no class, region, strategy or horizon budget has a risk record, and
+        // even a row at the gross target that cannot bind changed the
+        // solver's feasibility report on the fast-brain tape, so a
+        // placeholder group is not inert. A budget lands here, through
+        // `construct_grouped`, only with its own record.
         let outcome = self.constructor.construct_referenced(
             theses,
             &covariance,
@@ -25479,8 +25734,10 @@ impl Platform {
     /// market built from the traded instrument alone would make every set
     /// fail the moment a hedge policy was declared — and the declared hedge
     /// is exactly the alternative R12-CAPITAL-4091 asks the twin to price.
-    /// A hedge instrument with no held bars still reaches the twin and is
-    /// refused there by name rather than silently priced unhedged.
+    /// A hedge instrument with no held bars is not priced at all:
+    /// [`Self::evaluate_alternatives`] drops that one arm from the set
+    /// (decision 17), so the set has no different-hedge entry rather than an
+    /// unhedged figure filed under it, and every other arm is still priced.
     fn counterfactual_bars(&self, object_id: &ObjectId) -> Result<Vec<Bar>> {
         let mut bars = self
             .bar_history
@@ -25587,6 +25844,25 @@ impl Platform {
                 )
             }
         };
+        // A hedge arm whose instrument this platform holds no bars for is
+        // dropped for this set, not carried into the twin, which refuses a
+        // hedged alternative it cannot size and would refuse the whole set
+        // with it (decision 17: fail closed to "no arm", never to "all sets
+        // refused"). The set then simply has no different-hedge entry.
+        let unpriceable_hedge =
+            self.counterfactuals
+                .menu()
+                .hedge
+                .as_ref()
+                .is_some_and(|(hedge, _)| {
+                    hedge != &actual.object_id && !self.bar_history.contains_key(hedge.as_str())
+                });
+        if unpriceable_hedge {
+            return self
+                .counterfactuals
+                .without_hedge()
+                .evaluate(market, &decision, &actual, &realised);
+        }
         self.counterfactuals
             .evaluate(market, &decision, &actual, &realised)
     }
@@ -29008,6 +29284,168 @@ mod decide_tests {
                 .count(),
             3,
             "a reaction was applied twice or not at all"
+        );
+    }
+
+    /// ADR 0191 decision 3 (R12-WORLD-7023): each cycle journals a snapshot
+    /// of each world-model domain whose content changed, at the next version
+    /// for that domain. An unchanged world adds nothing, and a restarted
+    /// process over the same log continues the versions rather than
+    /// beginning them again.
+    ///
+    /// Mutations: drop the `snapshot_world` call from `run_cycle`; journal a
+    /// snapshot whether or not the digest changed; resume no versions at
+    /// start-up.
+    #[test]
+    fn each_world_model_domain_is_snapshotted_at_a_version_that_rises_only_when_it_changes_across_restarts()
+     {
+        use crate::world_snapshot::{CAUSAL_GRAPH, KNOWLEDGE_GRAPH, WORLD_SNAPSHOT_ORIGIN};
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        // `/tmp` stated directly, not looked up through the environment:
+        // `architecture.rs`'s environment scan reads every `src/` file with
+        // no test exemption (see `dormancy_boot_log_path`).
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-world-snapshot-{}-{}",
+            std::process::id(),
+            Timestamp::from_secs(1_760_000_000).as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let open = || {
+            let config = PlatformConfig::default()
+                .with_initial_equity(Decimal::from_int(200_000))
+                .with_event_log_file(&path);
+            let (context, _clock) =
+                qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                listed_test_universe(&["AAPL", "MSFT"]),
+                LimitSet::conservative_default(),
+            )
+            .expect("the platform assembles")
+        };
+        let snapshots = |platform: &Platform| -> usize {
+            platform
+                .event_log()
+                .events()
+                .filter(|e| {
+                    e.topic == qip_events::Topic::WorldModelSnapshot
+                        && e.lineage.producer == WORLD_SNAPSHOT_ORIGIN
+                })
+                .count()
+        };
+        let version = |platform: &Platform, domain: &str| {
+            platform.world_snapshot_versions().get(domain).cloned()
+        };
+        let relate = |platform: &Platform, to: &str, at: Timestamp| {
+            platform.world.update(|world| {
+                world
+                    .relate(
+                        Relationship::new("FOUNDRY", to, RelationshipKind::Supplies, 0.3, "filing"),
+                        at,
+                        at,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            });
+        };
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let day = |n: i64| t0.saturating_add(Duration::from_days(n));
+        {
+            let mut first = open();
+            relate(&first, "CHIPS", t0);
+            first.run_cycle(day(1));
+            let kg = version(&first, KNOWLEDGE_GRAPH).expect("the knowledge graph was snapshotted");
+            assert_eq!(kg.0, 1);
+            assert_eq!(version(&first, CAUSAL_GRAPH).map(|v| v.0), Some(1));
+            let journaled = snapshots(&first);
+            assert_eq!(journaled, 2, "one snapshot per domain on the first cycle");
+
+            // Nothing changed: nothing is journaled.
+            first.run_cycle(day(2));
+            assert_eq!(
+                snapshots(&first),
+                journaled,
+                "an unchanged world was snapshotted again"
+            );
+
+            // The knowledge graph changed and the causal graph did not.
+            relate(&first, "DEVICES", day(2));
+            first.run_cycle(day(3));
+            let kg2 = version(&first, KNOWLEDGE_GRAPH).expect("a snapshot");
+            assert_eq!(kg2.0, 2);
+            assert_ne!(kg2.1, kg.1, "a changed graph kept its digest");
+            assert_eq!(version(&first, CAUSAL_GRAPH).map(|v| v.0), Some(1));
+            assert_eq!(snapshots(&first), journaled + 1);
+        }
+
+        // A restart over the same log continues the versions.
+        let mut second = open();
+        assert_eq!(version(&second, KNOWLEDGE_GRAPH).map(|v| v.0), Some(2));
+        relate(&second, "SCREENS", day(4));
+        second.run_cycle(day(5));
+        assert_eq!(
+            version(&second, KNOWLEDGE_GRAPH).map(|v| v.0),
+            Some(3),
+            "a restarted process began the versions again"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// R12-WORLD-9037: the platform's company twin is built from the
+    /// supply facts its world graph holds, so a shock to an upstream company
+    /// reaches the companies it supplies, at each customer's share, and a
+    /// supply fact not yet known is not in the twin.
+    ///
+    /// A supply stated at a weight of nothing carries nothing and is left
+    /// out, rather than making the twin refuse every other link with it.
+    ///
+    /// Mutations: build the twin from no facts, from every relationship
+    /// kind, or from facts not yet known; keep the zero-weight supply.
+    #[test]
+    fn the_platforms_company_twin_carries_a_suppliers_shock_to_its_customers_from_the_graph() {
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let platform = small_book_platform();
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let later = t0.saturating_add(Duration::from_days(30));
+        platform.world.update(|world| {
+            for (from, to, kind, weight, known) in [
+                ("FOUNDRY", "CHIPS", RelationshipKind::Supplies, 0.4, t0),
+                ("CHIPS", "DEVICES", RelationshipKind::Supplies, 0.5, t0),
+                ("CHIPS", "RIVAL", RelationshipKind::Competitor, 1.0, t0),
+                (
+                    "FOUNDRY",
+                    "LATECOMER",
+                    RelationshipKind::Supplies,
+                    0.9,
+                    later,
+                ),
+                // A supply the graph admits at a weight of nothing.
+                ("FARM", "DEVICES", RelationshipKind::Supplies, 0.0, t0),
+            ] {
+                world
+                    .relate(
+                        Relationship::new(from, to, kind, weight, "filing"),
+                        t0,
+                        known,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            }
+        });
+        let now = t0.saturating_add(Duration::from_days(1));
+        let twin = platform.business_twin(now).expect("a twin from the graph");
+        assert_eq!(twin.len(), 2, "only the supply facts known now are links");
+        let response = twin.shock_entity("FOUNDRY", -0.10, 4).expect("a shock");
+        let change = |e: &str| response.effects.get(e).map(|x| x.change);
+        assert!((change("CHIPS").expect("reached") - -0.04).abs() < 1e-12);
+        assert!((change("DEVICES").expect("reached") - -0.02).abs() < 1e-12);
+        assert!(change("RIVAL").is_none(), "a competitor is not a customer");
+        assert!(
+            change("LATECOMER").is_none(),
+            "a fact not yet known was in the twin"
         );
     }
 

@@ -98,6 +98,20 @@ output "image_prefix" {
   value = module.registry.image_prefix
 }
 
+output "secondary_image_prefix" {
+  description = <<-EOT
+    The prefix of an image reference in the secondary repository each signed
+    release digest is copied to (R12-RES-9177), or null when `secondary_region`
+    names none, which is every environment today.
+
+    deploy.yml derives the same prefix from the committed tfvars rather than
+    from this output, because it runs without the state; the two are the
+    same function of the same line, and the root harness plans this one.
+  EOT
+
+  value = module.registry.secondary_image_prefix
+}
+
 output "evidence_bucket" {
   description = "The write-once evidence bucket, for the mesh's evidence configuration."
   value       = module.evidence.bucket_name

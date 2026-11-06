@@ -672,6 +672,44 @@ jobs:
                 ;;
             esac
           fi
+
+          # The secondary image repository (R12-RES-9177), from the same
+          # committed file and under the same refusals as the region: the
+          # replica in another region each signed digest is copied into, so
+          # a loss of the build registry's region does not lose the release
+          # artifact. `modules/registry/secondary.tf` names it
+          # qip-<env>-secondary in the build project. `null` or no line is
+          # none, which is every environment today (owner decision 5 of
+          # 2026-10-25), and the copy step below does not run. Anything else
+          # that is not a quoted region is refused rather than read as none:
+          # a typo that silently dropped the copy would be the loss this
+          # setting exists to prevent.
+          secondary_registry=""
+          secondary_line="$(grep -E '^[[:space:]]*secondary_region[[:space:]]*=' "$build_tfvars" || true)"
+          if [ -n "$secondary_line" ]; then
+            secondary_region="$(printf '%s\n' "$secondary_line" | head -1 | sed 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//')"
+            if [ "$secondary_region" != "null" ]; then
+              case "$secondary_region" in
+                \"*\") secondary_region="${secondary_region#\"}"; secondary_region="${secondary_region%\"}" ;;
+                *)
+                  echo "$build_tfvars sets secondary_region to '$secondary_region'; only a quoted region or null is read." >&2
+                  exit 1
+                  ;;
+              esac
+              case "$secondary_region" in
+                ''|*[!a-z0-9-]*)
+                  echo "$build_tfvars names a secondary region containing a character a region cannot: '$secondary_region'" >&2
+                  echo "Permitted: lowercase letters, digits and -" >&2
+                  exit 1
+                  ;;
+              esac
+              if [ "$secondary_region" = "$build_region" ]; then
+                echo "$build_tfvars names the build region $build_region as the secondary region; a copy there is lost with the primary." >&2
+                exit 1
+              fi
+              secondary_registry="${secondary_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}-secondary"
+            fi
+          fi
           {
             echo "project=$project"
             echo "region=$region"
@@ -681,6 +719,7 @@ jobs:
             echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
             echo "registry_host=${build_region}-docker.pkg.dev"
             echo "registry=${build_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}"
+            echo "secondary_registry=${secondary_registry}"
             # The names modules/build-pool gives the pool, its identity and
             # its staging bucket: pure functions of the build project. Change
             # them there and here in one diff.
@@ -1181,6 +1220,77 @@ jobs:
             --attestor "${BINAUTHZ_ATTESTOR}" \
             --attestor-project "${GCP_PROJECT}" \
             --keyversion "${BINAUTHZ_KEY_VERSION}"
+
+      # Copy the signed digest to the secondary registry (R12-RES-9177), and
+      # read it back.
+      #
+      # A loss of the build registry's region must not lose the release
+      # artifact: the nodes keep what they pulled, but every rollback and
+      # every later promotion names a digest that lived only there. So once
+      # the digest is signed, the same bytes go to the replica the build
+      # environment's tfvars declare. Only when one is declared — the `if`
+      # is the switch, and it is off in every environment today.
+      #
+      # The digest is the one the sign step attested: both resolve the same
+      # `binary:<sha>` tag, which the registry's immutable tags pin to one
+      # set of bytes. `imagetools create` with one source and nothing to
+      # merge or annotate pushes the source's manifest bytes unchanged under
+      # the new tag and copies each blob by digest, so the copy has the same
+      # digest; a `docker pull`/`tag`/`push` goes through the daemon's store
+      # and is not guaranteed to. Binary Authorization's attestation names
+      # that digest, so it covers the copy without a second signature.
+      #
+      # Nothing is assumed to have landed. The secondary is asked for
+      # `binary@<digest>` afterwards and the run fails unless it answers
+      # with exactly that digest: a copy that failed quietly, or a tag in
+      # the replica already holding other bytes, would otherwise leave a
+      # region loss to discover that the artifact was never there.
+      - name: copy the signed digest to the secondary registry
+        if: steps.identity.outputs.secondary_registry != ''
+        env:
+          BUILD_REGISTRY: ${{ steps.identity.outputs.registry }}
+          BUILD_REGISTRY_HOST: ${{ steps.identity.outputs.registry_host }}
+          SECONDARY_REGISTRY: ${{ steps.identity.outputs.secondary_registry }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          set -euo pipefail
+          digest="$(gcloud artifacts docker images describe \
+            "${BUILD_REGISTRY}/${BINARY}:${DEPLOY_SHA}" \
+            --format='value(image_summary.digest)')"
+          case "$digest" in
+            sha256:*) ;;
+            *)
+              echo "the build registry reports no digest for ${BINARY}:${DEPLOY_SHA} ('${digest}'); nothing is copied." >&2
+              exit 1
+              ;;
+          esac
+          secondary_host="${SECONDARY_REGISTRY%%/*}"
+          gcloud auth configure-docker "${BUILD_REGISTRY_HOST},${secondary_host}" --quiet
+
+          # A re-run for the same commit finds the tag already there. The
+          # replica's tags are immutable too, so the same digest under it is
+          # success and a different one is a refusal, never an overwrite.
+          present="$(gcloud artifacts docker images describe \
+            "${SECONDARY_REGISTRY}/${BINARY}:${DEPLOY_SHA}" \
+            --format='value(image_summary.digest)' 2>/dev/null || true)"
+          if [ -z "$present" ]; then
+            docker buildx imagetools create \
+              --tag "${SECONDARY_REGISTRY}/${BINARY}:${DEPLOY_SHA}" \
+              "${BUILD_REGISTRY}/${BINARY}@${digest}"
+          elif [ "$present" != "$digest" ]; then
+            echo "${SECONDARY_REGISTRY}/${BINARY}:${DEPLOY_SHA} already holds ${present}, not the signed ${digest}." >&2
+            echo "The replica's tags are immutable; find out what put those bytes there before anything is promoted." >&2
+            exit 1
+          fi
+
+          copied="$(gcloud artifacts docker images describe \
+            "${SECONDARY_REGISTRY}/${BINARY}@${digest}" \
+            --format='value(image_summary.digest)' 2>/dev/null || true)"
+          if [ "$copied" != "$digest" ]; then
+            echo "the secondary registry resolves ${BINARY}@${digest} to '${copied}'; the release artifact is not in ${SECONDARY_REGISTRY}." >&2
+            exit 1
+          fi
+          echo "${BINARY}@${digest} is in ${SECONDARY_REGISTRY} as well as ${BUILD_REGISTRY}."
 
   # ── Record ─────────────────────────────────────────────────────────────
   #

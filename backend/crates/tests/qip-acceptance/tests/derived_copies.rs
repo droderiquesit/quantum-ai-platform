@@ -146,8 +146,8 @@ fn no_decision_path_reads_a_balance_from_a_derived_copy() {
             .find(|(path, _)| path == sink)
             .expect("the sink is among the sources");
         assert!(
-            code.contains(".insert("),
-            "premise: {sink} writes to the warehouse"
+            code.contains(".load("),
+            "premise: {sink} writes to the warehouse by batch load (ADR 0240)"
         );
         assert!(
             !code.contains(".query("),
@@ -167,5 +167,42 @@ fn no_decision_path_reads_a_balance_from_a_derived_copy() {
         streams.is_empty(),
         "production sources name a change-stream reader: {streams:?}; a change stream feeds \
          analytics and derived caches, never a decision"
+    );
+}
+
+/// ADR 0240 decision 5: the warehouse is fed by batch load, and no shipped
+/// path streams rows. Every streaming write goes through `InsertRow` and
+/// BigQuery's `insertAll`, so a production source outside the client that
+/// names either is a streaming path. The client keeps `insert` for its own
+/// tests; nothing shipped may call it.
+///
+/// Mutation: restore `OutcomeSink::ship`'s streaming call
+/// (`self.warehouse.insert(OUTCOMES_TABLE, rows)` over `InsertRow`s) — the
+/// sink names `InsertRow` and this fails.
+#[test]
+fn no_shipped_path_streams_rows_into_the_warehouse() {
+    let sources = production_sources();
+    assert!(
+        sources.len() > 100,
+        "premise: the walk reads the workspace's production sources, found {}",
+        sources.len()
+    );
+    let client = "backend/crates/services/qip-mesh/src/bigquery.rs";
+    assert!(
+        sources
+            .iter()
+            .any(|(path, code)| path == client && names_in_code(code, "insertAll")),
+        "premise: the client still holds the streaming call this guard keeps out of shipped code"
+    );
+    let streaming: Vec<&String> = sources
+        .iter()
+        .filter(|(path, _)| path != client)
+        .filter(|(_, code)| names_in_code(code, "InsertRow") || names_in_code(code, "insertAll"))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        streaming.is_empty(),
+        "shipped sources stream rows into the warehouse; it is fed by batch load from Cloud \
+         Storage (ADR 0240): {streaming:?}"
     );
 }

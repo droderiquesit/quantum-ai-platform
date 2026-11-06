@@ -451,9 +451,13 @@
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/chief.rs:370 standard_agents: no capital specialist",
       "backend/crates/runtime/qip-kernel/src/platform.rs:21671 forecast_capital_demand, kernel-side",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::CapitalPosition",
+      "backend/crates/agents/qip-investment-agents/src/control.rs RiskControl::analyse capital facts",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_risk_control_drops_capital_position_from_coverage",
+      "backend/crates/runtime/qip-kernel/src/platform.rs brief_the_desk_on_risk, brief_the_desk_on_book"
     ],
-    "gap": "No capital specialist, and the kernel half is not done: Desk::new is given a BookView and RiskView at assembly (empty book, initial equity) that nothing updates, while only world, market and research memory are Upstreams. Feeding them is a kernel change with a behavioural consequence that needs a decision: RiskView with the live risk_state and limits makes the Risk agent veto against the real book instead of the assembly-time empty one, and BookView needs a qip_portfolio::Portfolio rebuilt from the desk's fills. Then an agent in qip-investment-agents can cover cash, gross, leverage, funding and grants.",
+    "gap": "No capital specialist, by ADR 0147 decision 8 (a second control over the same RiskState would be a correlated second finding from one origin). The views are fed: Platform::brief_the_desk_on_risk writes the live risk_state and limits into the desk's RiskView, and brief_the_desk_on_book writes the position register and marks into BookView, before each panel (qip-kernel platform.rs). 2026-10-31 (lane L1-MONEY): RiskControl::analyse reports cash, funding_buffer, margin_utilisation and survival_gross_ceiling as computed facts, each only where the state holds it, and Scope::CapitalPosition is covered by them, so removing the risk control drops the scope. No veto, limit or figure reads them. Remaining: the requirement names a Capital Brain covering grants, placement and compounding, and none of those is reported; and until the first construction derives a survival ceiling the desk's RiskView carries the assembly seed (the empty book's whole equity), so survival_gross_ceiling reports that seed until then.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -464,7 +468,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0147 decision 8 stands: no capital specialist agent is added, because a second control over the same RiskState would be a correlated second finding from one origin. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0147 decision 8 stands: no capital specialist agent is added, because a second control over the same RiskState would be a correlated second finding from one origin. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: mutation (drop the capital facts from RiskControl::analyse) fails the test at the cash fact; restored with cp+cmp, passes. qip-investment-agents organisation 60 passed 0 failed. Stays PARTIAL per the ruling."
   },
   {
     "id": "R12-RISK-3021",
@@ -993,13 +997,16 @@
   },
   {
     "id": "R12-WORLD-3043",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No macro/geopolitical federation member; NOW Brain estimates economy state from macro surprises but is not a federation member.",
-    "evidence": [],
-    "gap": "Build and register.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_reports_it_silent",
+      "docs/adr/0256-the-macro-member-forecasts-each-series-next-surprise-from-the-catalogued-connectors-labels-the-synthetic-tapes-surprises-simulated-and-may-only-narrow.md"
+    ],
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0256 under decision 10 of the 2026-10-31 owner rulings, amending ADR 0151 decision 10's source clause): the macro member is built on the default cycle. macro.surprise-persistence.global reads FederationInputs.macros (now::macro_surprises; a surprise exists only where a release stated consensus) and FederationInputs.currencies (now::currency_levels for FX.<base>.<quote> fixings, read by their move). It forecasts once per release that the series' next surprise, or next move, goes the same way; the next reading resolves it; patience is 60 days of elapsed time (MACRO_PATIENCE), not passes; a synthetic tape's release is labelled ':simulated'; it reaches no size (qip-kernel tests/symbolic_federation.rs::a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_reports_it_silent and federation_stage unit tests a_macro_forecast_waits_for_its_next_release_in_time_not_in_passes and a_currency_fixing_that_moves_is_forecast_to_keep_moving_and_the_next_fixing_answers_it; seven mutations each fail one). Open: none of the three catalogued macro connectors states a consensus, so switching one on gives currency moves (Frankfurter) and no surprise — rates and policy surprises come only from the narrative vendor adapter or the synthetic tape until a consensus source is admitted; trade, conflict and sanctions have no licensed source; and no required population family names the macro scope, so an absent macro member does not yet fail the population check.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1007,7 +1014,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Build the macro member now on the on-chain member's pattern. It reads the NOW macro partition, forecasts its own series, and is resolved by the next reading, so it speaks the day a catalogued connector is switched on at the deploy and says it is silent until then. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The macro member forecasts each series' next published level from the catalogued connectors, reads a surprise only where a source states consensus and labels the synthetic tape's surprises simulated, and it may only narrow (amends ADR 0151 decision 10's source clause)."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Build the macro member now on the on-chain member's pattern. It reads the NOW macro partition, forecasts its own series, and is resolved by the next reading, so it speaks the day a catalogued connector is switched on at the deploy and says it is silent until then. Handed to lane L2 (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The macro member forecasts each series' next published level from the catalogued connectors, reads a surprise only where a source states consensus and labels the synthetic tape's surprises simulated, and it may only narrow (amends ADR 0151 decision 10's source clause). 2026-10-31 lane L2-INTEL: MISSING -> PARTIAL under ADR 0256; the member is registered and produces state on the default cycle."
   },
   {
     "id": "R12-WORLD-3044",
@@ -1058,10 +1065,12 @@
     "status": "PARTIAL",
     "current": "World-model modules liquidity, order_flow, lead_lag, price_impact, arbitrage_state, execution_state.",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::signed_trade_flow_gives_the_order_flow_member_a_view",
       "backend/crates/services/qip-world-model/src/lib.rs:19-40 module list",
-      "backend/crates/services/qip-world-model/tests/liquidity.rs"
+      "backend/crates/services/qip-world-model/tests/liquidity.rs",
+      "docs/adr/0255-the-simulated-tapes-aggressor-side-feeds-an-order-flow-member-labelled-simulated-which-may-only-narrow-and-a-licensed-tape-replaces-the-source-and-not-the-member.md"
     ],
-    "gap": "Not started. The bar tape carries OHLCV and no buy/sell split, so an order-flow imbalance (qip_world_model::order_flow::FlowObservation) cannot be formed from it, and nothing in the kernel absorbs a FlowObservation or a price-impact observation; a microstructure member fed from bars would be the regional member again. Needs a producer of signed flow or trade-side data before the member has anything of its own to say.",
+    "gap": "2026-10-31 (lane L2-INTEL, ADR 0255 under decision 10 of the 2026-10-31 owner rulings, amending ADR 0151 decision 6): an order-flow member is built on the default cycle. Platform::record_order_flow sums each cycle's signed aggressor volume per instrument and venue from Trade::aggressor, skipping a print that names no side or forms no price (late, corrected, off-exchange); UNDERSTAND passes it through FederationInputs (InstrumentView.order_flow) to markets.order-flow.global.micro, declared on sense:trade-aggressor:simulated, which answers the instrument's next-close proposition (qip-kernel tests/symbolic_federation.rs::signed_trade_flow_gives_the_order_flow_member_a_view; reading every print as a buy, dropping the price-forming filter, or keeping last cycle's flow each fails it). It can only narrow because the federation's one power over DECIDE is Narrowing::of_spread below one; the test does not exercise that. Open: the source is the platform's own simulated tape, so the member's record says nothing about a real market until a licensed tape with aggressor side is admitted under ADR 0157. Also open against the requirement text: of liquidity, order flow, venues, lead/lag, impact, arbitrage and execution state only order flow (and the existing markets.microstructure.home.micro spread member) has a member, and no required population family names the microstructure scope, so an absent order-flow member does not yet fail the population check.",
     "implemented": true,
     "tested": true,
     "integrated": true,

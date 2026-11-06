@@ -825,3 +825,68 @@ fn a_replay_reads_a_copy_of_the_spool_and_leaves_a_torn_tail_where_it_found_it()
     );
     Ok(())
 }
+
+/// R12-REFLEX-8066: the timing mode's two halves over the fixture spool.
+/// Every re-driven pass is timed by the monotonic clock outside the cell,
+/// the summary's percentiles are latencies a pass actually took, and the
+/// timing changes nothing the replay reproduces. Mutation: drop the
+/// `pass_latencies` push in `replay`, or summarise an empty set as zeros.
+#[test]
+fn a_timed_replay_times_every_pass_it_re_drives_and_still_reproduces() -> Result<()> {
+    use qip_edge_node::replay::LatencySummary;
+    let recorded = record()?;
+    let session = RecordedSession::from_spool(&recorded.spool)?;
+    let clock = Arc::new(ManualClock::new(t(0)));
+    let report = replay(
+        &session,
+        rebuilt(Arc::clone(&clock), &session)?,
+        &recorded.control,
+        &trust()?,
+        &clock,
+    )?;
+    assert_eq!(report.verdict, Verdict::Reproduced, "{}", report.describe());
+    assert_eq!(
+        report.pass_latencies.len() as u64,
+        report.passes,
+        "every re-driven pass is timed, once"
+    );
+    let summary = LatencySummary::of(&report.pass_latencies).expect("passes were timed");
+    assert_eq!(summary.samples as u64, PASSES);
+    assert!(summary.p50 <= summary.p90 && summary.p90 <= summary.p99 && summary.p99 <= summary.max);
+    assert!(
+        report.pass_latencies.contains(&summary.p50)
+            && report.pass_latencies.contains(&summary.max),
+        "a percentile is not a latency any pass took"
+    );
+    assert_eq!(
+        LatencySummary::of(&[]),
+        None,
+        "no pass timed is no distribution"
+    );
+    Ok(())
+}
+
+/// The host tuning a timing run is labelled with is read from the kernel
+/// command line, word by word, and an absent one says so. Mutation: match
+/// by substring and `nohz_full=3` is read for an `isolcpus` lookup's
+/// neighbour, or `hugepagesz=2M` for `hugepages`.
+#[test]
+fn the_host_tuning_is_read_whole_word_from_the_kernel_command_line() {
+    use qip_edge_node::replay::host_tuning;
+    let tuned = host_tuning(
+        "BOOT_IMAGE=/vmlinuz ro hugepagesz=2M hugepages=512 isolcpus=2-3 nohz_full=2-3 quiet",
+    );
+    assert_eq!(
+        tuned,
+        vec![
+            ("isolcpus", "2-3".to_string()),
+            ("nohz_full", "2-3".to_string()),
+            ("hugepages", "512".to_string()),
+        ]
+    );
+    let untuned = host_tuning("BOOT_IMAGE=/vmlinuz ro hugepagesz=2M quiet");
+    assert!(
+        untuned.iter().all(|(_, value)| value == "unset"),
+        "{untuned:?}"
+    );
+}

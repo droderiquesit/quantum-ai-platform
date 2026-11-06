@@ -672,6 +672,11 @@ pub struct CellConfig {
     /// chaos and e2e suites and the legacy node mode on a spool nobody
     /// writes. Only [`Self::with_journal_wire`] turns it on.
     pub journal_wire: bool,
+    /// Whether the node hands this cell a custody reading derived from the
+    /// venue's own custody statements (ADR 0242, R12-RES-7099). Armed only
+    /// by [`Self::with_custody_statements`]; a cell without it records no
+    /// custody row and sizes on none, as before.
+    pub custody_statements: bool,
     /// This build's own identity (ADR 0155 section 14), or `None` on a cell
     /// built without the wire. Armed only by [`Self::with_build_identity`];
     /// a cell with no identity has no deployment halt to report.
@@ -789,6 +794,7 @@ impl CellConfig {
             cross_source_tolerance: DEFAULT_CROSS_SOURCE_TOLERANCE,
             feed_loss_playbook: FeedLossPlaybook::Hedge,
             journal_wire: false,
+            custody_statements: false,
             build_identity: None,
             product_classes: BTreeMap::new(),
             authority_bounds_required: false,
@@ -916,6 +922,14 @@ impl CellConfig {
     #[must_use]
     pub fn with_journal_wire(mut self) -> Self {
         self.journal_wire = true;
+        self
+    }
+
+    /// Arm the custody reading (ADR 0242): the node derives custody's
+    /// freshness from the venue's custody statements and hands it to the
+    /// cell, which records the row and sizes by it.
+    pub fn with_custody_statements(mut self) -> Self {
+        self.custody_statements = true;
         self
     }
 
@@ -1648,6 +1662,9 @@ pub struct Cell {
     /// touches it, for the same reason the polled wire keeps its own
     /// release.
     journal_pressure: Option<JournalPressure>,
+    /// The custody reading the node last handed in (ADR 0242), or `None`
+    /// before one arrives or on a cell built without custody statements.
+    custody: Option<Freshness>,
     dropcopy: DropCopyReconciler,
     /// The arbitrage desk, if the composition root installed one. `None` is
     /// a cell that runs strategy programs and scans no graph, which is every
@@ -1968,6 +1985,7 @@ impl Cell {
             policy_halt_barrier: None,
             polled_halt: None,
             journal_pressure,
+            custody: None,
             dropcopy: DropCopyReconciler::new(),
             desk: None,
             journal: if config.journal_trimmed_on_ship {
@@ -3186,9 +3204,42 @@ impl Cell {
     ///   venues the venue-health record has quarantined, when the cell holds
     ///   one.
     ///
-    /// Custody is not recorded: a cell has no reading of it, and a row
-    /// without a reading would be a number nobody computed.
+    /// Custody is recorded only once the node has handed in a reading
+    /// ([`Self::observe_custody`], ADR 0242): until then a cell has no
+    /// reading of it, and a row without a reading would be a number nobody
+    /// computed.
     pub fn narrowing(&self, now: Timestamp) -> DegradationState {
+        let mut state = self.narrowing_without_custody(now);
+        // ADR 0242: the custody reading the node handed in, recorded only
+        // once one was; a cell nobody hands a reading records no row.
+        if let Some(custody) = self.custody {
+            state.observe(Capability::Custody, custody);
+        }
+        state
+    }
+
+    /// Hand the cell custody's freshness as the node derived it from the
+    /// venue's own custody statements (ADR 0242, R12-RES-7099): stale past
+    /// two statement periods, unavailable past four or with none since the
+    /// node started. The cell records the row and sizes by it, so it can
+    /// only narrow.
+    ///
+    /// Refused on a cell built without custody statements, rather than
+    /// ignored, for the reason [`Self::apply_journal_pressure`] gives: a
+    /// reading the cell would drop is a reading the node believes in force.
+    pub fn observe_custody(&mut self, reading: Freshness) -> Result<()> {
+        if !self.config.custody_statements {
+            return Err(Error::invalid(
+                "this cell was built without custody statements and sizes on no custody \
+                 reading; build it from CellConfig::with_custody_statements, or stop handing it \
+                 readings",
+            ));
+        }
+        self.custody = Some(reading);
+        Ok(())
+    }
+
+    fn narrowing_without_custody(&self, now: Timestamp) -> DegradationState {
         let mut state = Self::narrowing_of(self.policy.as_ref(), self.journal_pressure, now);
         let share = |lost: usize, total: usize| {
             if lost == 0 {
@@ -4039,11 +4090,13 @@ impl Cell {
     /// stage then a formality that reads as a control.
     ///
     /// **An absent manifest admits a plan with no inline model and refuses
-    /// one with any.** The slot is produced nowhere yet
-    /// (`grep -rn 'ModelManifest' backend/crates --include=*.rs | grep -v '/tests/' | grep -v qip-contracts`
-    /// returned nothing on 2026-09-19), so today every plan carrying a model
-    /// is refused and every plan without one is unaffected. That is the
-    /// fail-closed reading: a cell that holds no list of promoted models
+    /// one with any.** The slot is produced by `qip-api`'s mesh from the
+    /// kernel's promoted set (`Platform::model_manifest_targeted`; locate it
+    /// with `grep -n 'payload.trained_models' backend/crates/apps/qip-api/src/mesh.rs`,
+    /// read 2026-10-31; this said "produced nowhere" until then), so a cell
+    /// holds a manifest only once a policy carrying one has reached it. Until
+    /// then every plan carrying a model is refused and every plan without
+    /// one is unaffected. That is the fail-closed reading: a cell that holds no list of promoted models
     /// has no grounds to say a model was promoted. Freshness is deliberately
     /// not consulted — the slot's staleness narrows the cell's capability
     /// table elsewhere, and a stale manifest is still the last set the
@@ -5390,6 +5443,14 @@ impl Cell {
         // which §6.2 answers with a smaller size. Only this dependency row is
         // compounded here — the ledger is already the journal wire's, and the
         // feed and session rows act per venue through their own gates.
+        // And custody, on a cell armed for it (ADR 0242): a position the
+        // cell cannot confirm the venue still holds is sized smaller.
+        let custody = if self.config.custody_statements {
+            self.degradation
+                .multiplier(Capability::Custody, narrowing.observed(Capability::Custody))
+        } else {
+            Decimal::ONE
+        };
         let multiplier = narrowing
             .sizing_multiplier()
             .checked_mul(self.journal_sizing_multiplier())
@@ -5399,6 +5460,7 @@ impl Cell {
                         .multiplier(Capability::Clock, narrowing.observed(Capability::Clock)),
                 )
             })
+            .and_then(|size| size.checked_mul(custody))
             .unwrap_or(Decimal::ZERO);
         // Freshness is a function of `now`, so this is the instant it becomes
         // known and the only instant at which the recorded value is what the
@@ -8060,6 +8122,9 @@ impl Cell {
             at: execution.at,
             shares,
         };
+        // ADR 0285: a fill at any venue is the other side of a layering
+        // pattern on this instrument.
+        self.conduct.filled(&fill.object_id, fill.side, fill.at);
         let overfill_detail = overfilled.then(|| {
             format!(
                 "order {} was sent for {} and the order-entry channel has now reported {} filled",
@@ -12090,6 +12155,34 @@ impl Cell {
         );
     }
 
+    /// Whether a requote from `from` to `to` moved an order on `side` away
+    /// from the touch, judged against the cell's own book (ADR 0285
+    /// decision 4). A buy (an order on the ask, in this cell's convention)
+    /// rests against the best bid and a sell against the best ask; a
+    /// requote is away when it made the order less aggressive and left it
+    /// strictly behind that touch. One that stayed or moved closer, or that
+    /// the cell has no usable book to judge, is not.
+    fn requote_moved_away(
+        &self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        side: BookSide,
+        from: Decimal,
+        to: Decimal,
+    ) -> bool {
+        let Some(book) = self.liquidity.get(venue, object_id) else {
+            return false;
+        };
+        match side {
+            BookSide::Ask => book
+                .best_bid()
+                .is_some_and(|touch| to < from && to < touch.price),
+            BookSide::Bid => book
+                .best_ask()
+                .is_some_and(|touch| to > from && to > touch.price),
+        }
+    }
+
     /// Seal a requote's second half, and move the open order to where it
     /// now rests.
     ///
@@ -12120,6 +12213,11 @@ impl Cell {
             if order.filled.is_zero() {
                 self.conduct
                     .cancelled_unfilled(venue, &object_id, side, now);
+                // ADR 0285: the requote also counts toward the layering arm,
+                // as away from the touch only when it moved the order further
+                // behind the touch it rests against.
+                let away = self.requote_moved_away(venue, &object_id, side, order.price, price);
+                self.conduct.requoted(venue, &object_id, side, away, now);
             }
             self.conduct.placed(venue, &object_id, side, now);
         }
@@ -13705,6 +13803,151 @@ mod crossing_tests {
                 "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
         }
+        Ok(())
+    }
+
+    /// A gateway that accepts every order and reports, when told, a fill.
+    #[derive(Debug, Default)]
+    struct ReportingGateway {
+        placed: Vec<(String, BookSide)>,
+        reports: Vec<ExecutionReport>,
+    }
+
+    impl Placer for ReportingGateway {
+        fn is_simulated(&self) -> bool {
+            true
+        }
+
+        fn place(
+            &mut self,
+            order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            self.placed.push((order_id.to_string(), side));
+            Ok(())
+        }
+
+        fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+            std::mem::take(&mut self.reports)
+        }
+    }
+
+    /// Four bids placed, the first requoted four times, each time further
+    /// below the best bid of 99; the requote after that is put to
+    /// `admit_replacement`. With `asks_fill`, a sell the cell sent first was
+    /// filled by the venue, through the cell's own fill confirmation.
+    fn layer_bids(asks_fill: bool) -> Result<(Cell, Result<()>)> {
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ReportingGateway::default();
+        let mut report = WorkReport::default();
+        let reference = Decimal::from_int(100);
+        if asks_fill {
+            let sell = netted(&[("alpha", "-100"), ("beta", "-40")], reference);
+            cell.place_net(&sell, at(10), &mut gateway, &mut report)?;
+            let (sold, side) = gateway.placed.last().cloned().expect("the sell went out");
+            assert_eq!(
+                side,
+                BookSide::Bid,
+                "premise: a sell is an order on the bid"
+            );
+            gateway.reports.push(ExecutionReport {
+                order_id: sold,
+                venue: venue(),
+                quantity: Decimal::from_int(140),
+                price: Decimal::from_int(99),
+                at: at(10),
+            });
+            let fills = cell.confirm_execution_reports(&mut gateway, at(10));
+            assert_eq!(fills.len(), 1, "premise: the sell filled");
+        }
+        let first = gateway.placed.len();
+        for second in 11..15 {
+            cell.place_net(
+                &one_sided_net(reference),
+                at(second),
+                &mut gateway,
+                &mut report,
+            )?;
+        }
+        assert_eq!(
+            gateway.placed.len() - first,
+            4,
+            "premise: four bids went out"
+        );
+        let (bid, side) = gateway.placed[first].clone();
+        assert_eq!(side, BookSide::Ask, "premise: a buy is an order on the ask");
+        let quantity = Decimal::from_int(140);
+        for (second, price) in [(20, "98"), (21, "97"), (22, "96"), (23, "95")] {
+            let price = Decimal::parse(price).expect("a decimal literal");
+            cell.admit_replacement(&bid, &object(), &venue(), side, quantity, price, at(second))?;
+            cell.record_replacement(&bid, &venue(), "r", quantity, price, at(second));
+        }
+        let fifth = cell.admit_replacement(
+            &bid,
+            &object(),
+            &venue(),
+            side,
+            quantity,
+            Decimal::from_int(94),
+            at(24),
+        );
+        Ok((cell, fifth))
+    }
+
+    /// ADR 0285, R12-EXEC-1068. Four requotes of a bid, each moving it
+    /// further behind the touch and none filled, are four withdrawals against
+    /// eight placements on that side: a half, under the cancel-before-fill
+    /// bound of three in four, so that gate admits the next one and always
+    /// would. What marks the layering is the other side: the cell's sell
+    /// filled meanwhile. With that fill the next bid requote is refused under
+    /// the conduct gate, journaled; without it the same requotes are a
+    /// market maker repricing and are admitted.
+    ///
+    /// Mutation: ignore the opposite-side fill in `layering_refusal` (treat
+    /// the fills as always present, or never), and one of the two halves
+    /// fails.
+    #[test]
+    fn a_cell_that_layers_its_bids_by_requoting_them_away_from_the_touch_while_its_asks_fill_is_refused_a_further_bid()
+    -> Result<()> {
+        // Premise: with no fill on the other side the same pattern is
+        // admitted, so the cancel-before-fill gate does not refuse it and
+        // the refusal below is the layering arm's alone.
+        let (_, admitted) = layer_bids(false)?;
+        assert!(
+            admitted.is_ok(),
+            "the cancel-before-fill gate refused a pattern under its bound: {admitted:?}"
+        );
+
+        let (cell, refused) = layer_bids(true)?;
+        let error = match refused {
+            Ok(()) => panic!("a bid layered while the asks filled was requoted again"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "denied", "{error}");
+        assert!(
+            error.message().contains("layering")
+                && error
+                    .message()
+                    .contains("requoted 4 of its last 4 buy order(s)"),
+            "{error}"
+        );
+        assert!(
+            cell.journal().entries().iter().any(|entry| matches!(
+                &entry.decision,
+                Decision::Refused { gate, reason }
+                    if gate == GATE_CONDUCT_SPOOFING && reason.contains("layering")
+            )),
+            "the layering refusal was not journaled under {GATE_CONDUCT_SPOOFING}"
+        );
         Ok(())
     }
 

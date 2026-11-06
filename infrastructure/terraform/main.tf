@@ -384,6 +384,21 @@ module "secrets" {
     "qip-egress-bootstrap",
   ]
 
+  # The committed files beside those two that exist only where an
+  # environment's tfvars name one, created by the same resource with the same
+  # key, CMEK and rotation as every slot above. Held off `secret_names` only
+  # because that list is a literal the acceptance walks read line by line; a
+  # null variable here creates no container at all, so an environment that
+  # mounts no breadth plan holds no empty slot for one and receives no
+  # rotation notice about it.
+  #
+  # The deep brain's breadth plan, `var.deepbrain_breadth_plan_file`, read
+  # from `QIP_DEEPBRAIN_BREADTH_PLAN_PATH` (ADR 0245: one secret and one
+  # volume per committed file, so it never moves the universe's path).
+  # Seeded by infra.yml's committed list, which writes it only where the
+  # tfvars name the same file.
+  optional_secret_names = var.deepbrain_breadth_plan_file == null ? [] : ["qip-deepbrain-breadth-plan"]
+
   # The venue credential is granted nowhere in this module. Its one reader is
   # the execution node's own account, bound in `modules/execution-node` behind
   # the same ceiling predicate and the node's shadow mode (module
@@ -395,7 +410,8 @@ module "secrets" {
   console_enabled = var.console_egress_cidr != null
 }
 
-# The read each central workload needs on the two committed files above.
+# The read each central workload needs on the committed files above: the two
+# every environment holds, and the breadth plan where the tfvars name one.
 #
 # At the root rather than in `modules/cloudrun`, deliberately. That module's
 # `mounted` grant is keyed on `secret_mounts`, and every entry there is a
@@ -423,7 +439,7 @@ module "secrets" {
 # for a shape that is harmless here would be an exception a real key could
 # wear next time.
 resource "google_secret_manager_secret_iam_member" "committed_file" {
-  for_each = {
+  for_each = merge({
     "api-universe" = {
       workload  = "api"
       secret_id = module.secrets.secret_ids["qip-universe-catalogue"]
@@ -444,7 +460,16 @@ resource "google_secret_manager_secret_iam_member" "committed_file" {
       workload  = "fastbrain"
       secret_id = module.secrets.secret_ids["qip-universe-catalogue"]
     }
-  }
+    }, var.deepbrain_breadth_plan_file == null ? {} : {
+    # The deep brain's breadth plan, only where the tfvars name one: the
+    # container exists under the same condition (`optional_secret_names`
+    # above), so the index below is never evaluated against a slot that was
+    # not created, and the one reader is the one workload that mounts it.
+    "deepbrain-breadth-plan" = {
+      workload  = "deepbrain"
+      secret_id = module.secrets.secret_ids["qip-deepbrain-breadth-plan"]
+    }
+  })
 
   project   = var.project_id
   secret_id = each.value.secret_id
@@ -598,6 +623,11 @@ module "registry" {
   # build their own (R12 CICD-9112). Empty in every environment until one
   # after dev is provisioned.
   promotion_readers = var.registry_promotion_readers
+
+  # The replica in another region, null everywhere today (R12-RES-9177;
+  # owner decision 5 of 2026-10-25). deploy.yml reads the same tfvars line
+  # and copies each signed digest here only when one is named.
+  secondary_region = var.secondary_region
 
   # The ring every keyed store's key lives in; the two GENERIC repositories
   # are encrypted with a key the module creates there (SEC-046).

@@ -794,6 +794,43 @@ variable "source_candidates_file" {
   }
 }
 
+variable "deepbrain_breadth_plan_file" {
+  description = <<-EOT
+    A committed breadth plan (`qip_kernel::breadth::BreadthPlan`) the deep
+    brain mounts and reads as `QIP_DEEPBRAIN_BREADTH_PLAN_PATH`, or null for
+    a deployment that runs no Market Factory, event market or commerce
+    research at all.
+
+    Same convention as the venue registrations above: a path in this
+    repository, read with `file()` at plan time, so the plan a revision
+    carries is the plan a reviewer read and the plan names it by hash. Null
+    renders no configuration file and therefore no variable, and an unset
+    variable is the deep brain's documented fail-closed default: no breadth
+    hook runs. Set, the file is mounted under its own content-hash directory
+    (ADR 0245), so it never moves the universe's path, and a plan the
+    platform refuses stops the process with exit 78 rather than running less
+    than it says.
+
+    Narrower than the other optional files: only a file directly under
+    `data/breadth/`, because that is the one directory whose files are
+    breadth plans, and a plan's sections commit the platform to paper
+    markets, positions and purchases. A path with no `/` after the directory
+    also cannot hop out of it, which is why no separate `..` check is
+    needed. Mounting a plan also needs its own secret container
+    (`qip-deepbrain-breadth-plan`, created in `main.tf` only when this is
+    set), the seed step's committed list in `infra.yml`, and the
+    environment's `deepbrain.yaml` naming the per-file path.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.deepbrain_breadth_plan_file == null ? true : can(regex("^data/breadth/[a-z0-9][a-z0-9._-]*\\.json$", var.deepbrain_breadth_plan_file))
+    error_message = "The deep brain's breadth plan is a repository-relative path directly under data/breadth/ ending in .json, its file name starting with a lower-case letter or digit — read with file() from the commit, and used as the mounted file's name, which modules/cloudrun requires to match ^[a-z0-9][a-z0-9._-]*$. An absolute path, a subdirectory, a parent-directory hop or a file elsewhere in the tree would let a plan mount bytes that are not a reviewed breadth plan."
+  }
+}
+
 variable "deepbrain_discover_every" {
   description = <<-EOT
     How many deep-brain research cycles run between source-discovery passes,
@@ -2095,4 +2132,40 @@ variable "registry_promotion_readers" {
   type        = set(string)
   default     = []
   nullable    = false
+}
+
+# R12-RES-9177: the release artifact must survive the loss of the registry's
+# region. On that loss the nodes keep the images they already pulled and a
+# rollout pauses; what is gone is the one place the signed, attested digest
+# lives, and with it every rollback. A value here declares a second DOCKER
+# repository in another region (`modules/registry/secondary.tf`) that the
+# build run copies each signed digest into and then reads back.
+#
+# It is a replica and nothing more. The primary stays the repository images
+# are built into, signed in and promoted from; Binary Authorization attests a
+# digest, and a copy that preserves the digest carries no new trust decision.
+# It is storage in another region, not a second execution region, so ADR
+# 0035's one execution region is untouched; it bills, so owner decision 5 of
+# 2026-10-25 holds it and it is null in every environment until a region is
+# named with the deploy.
+#
+# The same two refusals as the module's, made here so the plan names the
+# root variable an operator set rather than a module input they never saw.
+variable "secondary_region" {
+  description = "The region of the secondary image repository each signed release digest is copied to, or null for none. Must differ from `region`."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.secondary_region == null || can(regex("^[a-z]+-[a-z]+[0-9]$", var.secondary_region))
+    error_message = "secondary_region is a Google Cloud region name such as us-west1, or null."
+  }
+
+  validation {
+    # A "secondary" in the primary's own region shares its failure domain:
+    # the region loss it exists for takes both. Refused rather than accepted
+    # as a copy that protects against nothing.
+    condition     = var.secondary_region != var.region
+    error_message = "secondary_region equals region; a secondary repository in the primary's region is lost with it. Name another region, or leave it null."
+  }
 }

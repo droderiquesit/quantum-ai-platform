@@ -77,6 +77,39 @@ pub const MEMBER_LEASE: Duration = Duration::from_days(7);
 
 /// The members, by id. Fixed, so a replay of the log names the same models.
 pub const MOMENTUM: &str = "markets.momentum.global.micro";
+/// The order-flow member (ADR 0255, R12-WORLD-3046): signed aggressor
+/// volume per instrument per cycle, read from the paper feed's own
+/// aggressor side and labelled simulated by its source, so a licensed tape
+/// later replaces the source and not the member.
+pub const ORDER_FLOW: &str = "markets.order-flow.global.micro";
+
+/// The macro member (ADR 0256, R12-WORLD-3043): whether each series' next
+/// release surprises its consensus in the same direction as its last one.
+pub const MACRO: &str = "macro.surprise-persistence.global";
+
+/// The source the macro member declares: the catalogued macro connectors.
+/// It speaks the day one is switched on at the deploy and is silent until.
+pub const MACRO_SOURCE: &str = "sense:macro-connectors";
+
+/// How long a macro forecast waits for its series' next release, in time
+/// and not in passes. Releases are monthly at best and a deployed cycle runs
+/// every few minutes or faster, so any count of passes would abandon every
+/// macro forecast before reality could answer it.
+pub const MACRO_PATIENCE: Duration = Duration::from_days(60);
+
+/// Series the macro member remembers a last release for. A bound on top of
+/// the catalogue, because the readings arrive from the feature store.
+pub const MAX_MACRO_SERIES: usize = 1_024;
+
+/// The source the order-flow member declares: the simulated tape's
+/// aggressor side, named as simulated wherever the member is listed.
+pub const ORDER_FLOW_SOURCE: &str = "sense:trade-aggressor:simulated";
+
+/// How strongly a fully one-sided cycle of flow leans the member's view of
+/// the next close, on the logistic scale. Declared, not fitted: at 1.0 a
+/// cycle of pure buying reads as 0.73 up, short of the tape members' reach,
+/// because one cycle of one-sided prints is weak evidence of the next close.
+pub const ORDER_FLOW_SLOPE: f64 = 1.0;
 pub const REVERSION: &str = "markets.reversion.global.meso";
 pub const STRESS_SCENARIO: &str = "markets.stress-world.global.macro";
 pub const STANDING_ASIDE: &str = "markets.standing-aside.global.meso";
@@ -106,6 +139,13 @@ pub const CAPITAL: &str = "portfolio.capital.global";
 /// The counterparty member (R12-WORLD-3049): will the next pass record a
 /// feasibility refusal at this venue?
 pub const COUNTERPARTY: &str = "network.counterparty.global";
+/// The capital-floor member (R12-WORLD-1178, ADR 0257): will the next pass
+/// find less room between the book's equity and the survival waterfall's
+/// NAV floor than this one did?
+pub const CAPITAL_FLOOR: &str = "portfolio.capital-floor.global";
+/// The settlement member (R12-WORLD-1178, ADR 0257): will the next pass
+/// still hold desk sale proceeds in settlement?
+pub const SETTLEMENT: &str = "counterparty.settlement.global";
 /// The most venues one pass forecasts for; a bound on the propositions the
 /// member opens, not a forecast about which venues matter.
 pub const COUNTERPARTY_MAX_VENUES: usize = 32;
@@ -167,6 +207,10 @@ pub struct InstrumentView {
     pub causal: Option<CausalView>,
     /// Latest quoted spread over its own median, where one was measured.
     pub spread_ratio: Option<f64>,
+    /// This cycle's signed aggressor flow per venue (ADR 0255): trades
+    /// with no aggressor side contributed nothing. Empty where no trade
+    /// stated one, and the order-flow member is then silent on it.
+    pub order_flow: Vec<qip_world_model::order_flow::FlowObservation>,
     /// The instrument's issuer's latest reported fundamental surprise against
     /// consensus, as a fraction (R12-WORLD-3044); `None` where no issuer of it
     /// has reported one, which is what leaves the company member silent.
@@ -213,6 +257,47 @@ pub struct ChainView {
     pub confirmed_trades: u64,
 }
 
+/// One macro series' latest surprise against its consensus, as the macro
+/// member reads it (ADR 0256). Only a release that stated a consensus has a
+/// surprise, so a series without one is absent rather than read as zero.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MacroView {
+    pub series: String,
+    /// Value minus consensus, as the world model recorded it.
+    pub surprise: f64,
+    /// The release's reference period: what tells a new release from one
+    /// already read.
+    pub valid_at: Timestamp,
+    /// The release came from a synthetic tape, and its proposition says so.
+    pub simulated: bool,
+}
+
+/// One currency series' latest fixing, as the macro member reads it
+/// (ADR 0256): a fixing states no consensus, so the member reads its move
+/// from the previous fixing instead of a surprise.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurrencyView {
+    pub series: String,
+    pub level: f64,
+    pub valid_at: Timestamp,
+    pub simulated: bool,
+}
+
+/// The proposition one fixing's move forecast answers: the next fixing
+/// moves the same way as this one did.
+pub fn currency_proposition(series: &str, cycle: u64, simulated: bool) -> String {
+    let label = if simulated { ":simulated" } else { "" };
+    format!("macro:{series}{label}:move-persists@{cycle}")
+}
+
+/// The proposition one release's persistence forecast answers. A simulated
+/// release's proposition carries the label, so the journal never records a
+/// synthetic surprise's forecast as one about a real economy.
+pub fn macro_proposition(series: &str, cycle: u64, simulated: bool) -> String {
+    let label = if simulated { ":simulated" } else { "" };
+    format!("macro:{series}{label}:surprise-persists@{cycle}")
+}
+
 /// What the capital member reads (R12-WORLD-3048, ADR 0194): the paper
 /// book's funding and leverage, as statistics. Built only where equity is
 /// positive, because a share of nothing is not a number; the member is
@@ -232,6 +317,14 @@ pub struct CapitalView {
     /// Approved theses waiting for construction: the book's open claims on
     /// capital for the next pass.
     pub pending_theses: usize,
+    /// Equity less the NAV floor the survival policy withholds from it
+    /// (ADR 0257), as `f64`: the capital-floor member compares the next
+    /// pass's against it. `None` where the floor does not compute, and the
+    /// member is silent rather than reading such a book as one with no floor.
+    pub floor_headroom: Option<f64>,
+    /// Desk sale proceeds still in settlement this pass (ADR 0257), as
+    /// `f64`; zero when nothing is outstanding.
+    pub unsettled: f64,
 }
 
 /// What the counterparty member reads about one venue (R12-WORLD-3049): the
@@ -267,6 +360,10 @@ pub struct FederationInputs {
     /// The paper book's funding state, for the capital member; `None` where
     /// equity is not positive.
     pub capital: Option<CapitalView>,
+    /// The latest macro surprise per series readable this pass (ADR 0256).
+    pub macros: Vec<MacroView>,
+    /// The latest currency fixing per series readable this pass (ADR 0256).
+    pub currencies: Vec<CurrencyView>,
     /// The venues the platform routes to, for the counterparty member: the
     /// desk's broker and every venue the refusal window names.
     pub counterparties: Vec<CounterpartyView>,
@@ -492,6 +589,28 @@ enum Pending {
         cash: f64,
         cycle: u64,
     },
+    Floor {
+        headroom: f64,
+        cycle: u64,
+    },
+    Settlement {
+        cycle: u64,
+    },
+    Macro {
+        series: String,
+        positive: bool,
+        valid_at: Timestamp,
+        cycle: u64,
+        since: Timestamp,
+    },
+    Currency {
+        series: String,
+        level: f64,
+        up: bool,
+        valid_at: Timestamp,
+        cycle: u64,
+        since: Timestamp,
+    },
     Counterparty {
         venue: String,
         /// The forecasting pass's instant.
@@ -512,7 +631,23 @@ impl Pending {
             | Self::Halted { cycle }
             | Self::Chain { cycle, .. }
             | Self::Funding { cycle, .. }
-            | Self::Counterparty { cycle, .. } => *cycle,
+            | Self::Floor { cycle, .. }
+            | Self::Settlement { cycle }
+            | Self::Counterparty { cycle, .. }
+            | Self::Macro { cycle, .. }
+            | Self::Currency { cycle, .. } => *cycle,
+        }
+    }
+
+    /// Whether this forecast has waited past its patience: a macro or
+    /// currency forecast by elapsed time ([`MACRO_PATIENCE`]), every other by
+    /// passes ([`FEDERATION_PENDING_CYCLES`]).
+    fn exhausted(&self, cycle: u64, now: Timestamp) -> bool {
+        match self {
+            Self::Macro { since, .. } | Self::Currency { since, .. } => {
+                now.since(*since) >= MACRO_PATIENCE
+            }
+            _ => cycle.saturating_sub(self.cycle()) >= FEDERATION_PENDING_CYCLES,
         }
     }
 }
@@ -525,6 +660,13 @@ pub struct FederationStage {
     pending: BTreeMap<String, Pending>,
     /// The confirmed trade count the on-chain member last read.
     last_chain_trades: Option<u64>,
+    /// The reference period of the last release the macro member read, per
+    /// series (ADR 0256): a release is fed once, not every pass it stays
+    /// readable. Bounded by [`MAX_MACRO_SERIES`].
+    last_macro: BTreeMap<String, Timestamp>,
+    /// The last fixing the macro member read per currency series: its level
+    /// and period. Bounded by [`MAX_MACRO_SERIES`] with `last_macro`.
+    last_fixing: BTreeMap<String, (f64, Timestamp)>,
     /// Account-currency exposure per subject, as the composition root last
     /// stated it ([`Self::set_stakes`]); what a disagreement's value of
     /// information is scaled by. Empty means nothing is at stake anywhere
@@ -887,6 +1029,16 @@ pub fn counterparty_proposition(venue: &str, cycle: u64) -> String {
     format!("counterparty:{venue}:refuses-next-pass@{cycle}")
 }
 
+/// The proposition the next pass's floor headroom answers (ADR 0257).
+pub fn floor_proposition(cycle: u64) -> String {
+    format!("capital:floor-headroom-narrows-next-pass@{cycle}")
+}
+
+/// The proposition the next pass's unsettled sale proceeds answer (ADR 0257).
+pub fn settlement_proposition(cycle: u64) -> String {
+    format!("settlement:proceeds-outstanding-next-pass@{cycle}")
+}
+
 /// The proposition the next pass's book cash answers (ADR 0194).
 pub fn funding_proposition(cycle: u64) -> String {
     format!("capital:funding-draw-next-pass@{cycle}")
@@ -1045,6 +1197,17 @@ impl FederationStage {
                 0.25,
             ),
             declare(
+                ORDER_FLOW.into(),
+                "markets",
+                "global",
+                1,
+                Abstraction::Micro,
+                "order-flow-imbalance",
+                ModelKind::Observational,
+                &[ORDER_FLOW_SOURCE],
+                0.25,
+            ),
+            declare(
                 REVERSION.into(),
                 "markets",
                 "global",
@@ -1156,6 +1319,39 @@ impl FederationStage {
                 "funding-draw",
                 ModelKind::Observational,
                 &["kernel:capital", "kernel:pending-theses"],
+                0.25,
+            ),
+            declare(
+                CAPITAL_FLOOR.into(),
+                "portfolio/capital",
+                "global",
+                1,
+                Abstraction::Meso,
+                "floor-headroom",
+                ModelKind::Observational,
+                &["kernel:capital", "kernel:sizing-budget"],
+                0.25,
+            ),
+            declare(
+                SETTLEMENT.into(),
+                "counterparty/network",
+                "global",
+                1,
+                Abstraction::Meso,
+                "settlement-outstanding",
+                ModelKind::Observational,
+                &["kernel:unsettled-sales"],
+                0.25,
+            ),
+            declare(
+                MACRO.into(),
+                "macro",
+                "global",
+                30,
+                Abstraction::Macro,
+                "surprise-persistence",
+                ModelKind::Observational,
+                &[MACRO_SOURCE],
                 0.25,
             ),
             declare(
@@ -1350,12 +1546,41 @@ impl FederationStage {
                     0.6,
                 )
             });
+            // The order-flow member's view (ADR 0255): this cycle's signed
+            // aggressor volume summed across venues, as an imbalance in
+            // [-1, 1]. Its evidence grows with the prints that stated a side,
+            // up to twenty; with none it is silent rather than even, because
+            // a tape that named no aggressor told it nothing.
+            let flow_view = {
+                let (buy, sell, prints) =
+                    view.order_flow
+                        .iter()
+                        .fold((0.0_f64, 0.0_f64, 0_u64), |(b, s, n), o| {
+                            (
+                                b + o.buy_volume.to_f64(),
+                                s + o.sell_volume.to_f64(),
+                                n + o.buy_count + o.sell_count,
+                            )
+                        });
+                let total = buy + sell;
+                (total > 0.0 && total.is_finite()).then(|| {
+                    let imbalance = (buy - sell) / total;
+                    (
+                        ORDER_FLOW.to_string(),
+                        logistic(ORDER_FLOW_SLOPE * imbalance),
+                        (prints as f64 / 20.0).min(1.0),
+                        0.4,
+                        0.6,
+                    )
+                })
+            };
             let mut any = false;
             for (model, probability, evidence_fit, causal_coherence, uncertainty) in views
                 .into_iter()
                 .map(|(m, p, f, c, u)| (m.to_string(), p, f, c, u))
                 .chain(domain_view)
                 .chain(company_view)
+                .chain(flow_view)
                 .chain(std::iter::once(causal_view))
             {
                 let model = model.as_str();
@@ -1508,6 +1733,201 @@ impl FederationStage {
                     Pending::Funding {
                         cash: capital.cash,
                         cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
+        // The capital-floor member (ADR 0257): will the room between equity
+        // and the survival floor narrow by the next pass? An exposed book is
+        // the one a mark can move, so leverage leans the view. A stated
+        // prior, not a fit; calibration charges every miss. Silent where the
+        // floor did not compute.
+        if let Some((capital, headroom)) = inputs
+            .capital
+            .and_then(|c| c.floor_headroom.map(|h| (c, h)))
+            .filter(|(_, h)| h.is_finite())
+        {
+            let probability = 0.2 + 0.5 * capital.leverage.clamp(0.0, 1.0);
+            let proposition = floor_proposition(inputs.cycle);
+            if feed(
+                &mut self.federation,
+                CAPITAL_FLOOR,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability,
+                    evidence_fit: 0.5,
+                    causal_coherence: 0.5,
+                    uncertainty: 0.5,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Floor {
+                        headroom,
+                        cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
+        // The settlement member (ADR 0257): will the next pass still hold
+        // sale proceeds in settlement? Proceeds outstanding now are the
+        // likeliest to be outstanding next, since a settlement cycle is
+        // longer than a pass; none outstanding needs a sale first. Stated
+        // priors, scored by calibration.
+        if let Some(capital) = inputs.capital.filter(|c| c.unsettled.is_finite()) {
+            let probability = if capital.unsettled > 0.0 { 0.7 } else { 0.1 };
+            let proposition = settlement_proposition(inputs.cycle);
+            if feed(
+                &mut self.federation,
+                SETTLEMENT,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability,
+                    evidence_fit: 0.5,
+                    causal_coherence: 0.5,
+                    uncertainty: 0.4,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Settlement {
+                        cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
+        // The macro member (ADR 0256): a release that surprised its
+        // consensus is read as likelier than not to be followed by a surprise
+        // the same way — persistence, declared not fitted, at 0.6. Fed once
+        // per release; a pass with no new release leaves it silent.
+        for view in inputs
+            .macros
+            .iter()
+            .filter(|v| v.surprise.is_finite() && v.surprise != 0.0)
+        {
+            let newer = self
+                .last_macro
+                .get(&view.series)
+                .is_none_or(|read| view.valid_at > *read);
+            if !newer {
+                continue;
+            }
+            if !self.last_macro.contains_key(&view.series)
+                && self.last_macro.len() + self.last_fixing.len() >= MAX_MACRO_SERIES
+            {
+                refused.push((
+                    MACRO.to_string(),
+                    format!(
+                        "{} is a new series past the {MAX_MACRO_SERIES}-series bound; its \
+                         release is not read",
+                        view.series
+                    ),
+                ));
+                continue;
+            }
+            self.last_macro.insert(view.series.clone(), view.valid_at);
+            let proposition = macro_proposition(&view.series, inputs.cycle, view.simulated);
+            if feed(
+                &mut self.federation,
+                MACRO,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability: 0.6,
+                    evidence_fit: if view.simulated { 0.15 } else { 0.3 },
+                    causal_coherence: 0.4,
+                    uncertainty: 0.7,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Macro {
+                        series: view.series.clone(),
+                        positive: view.surprise > 0.0,
+                        valid_at: view.valid_at,
+                        cycle: inputs.cycle,
+                        since: now,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
+        // Currencies (ADR 0256): a fixing has no consensus and so no
+        // surprise; the member reads its move from the previous fixing and
+        // forecasts, at the same declared persistence, that the next fixing
+        // moves the same way. The first fixing of a series only seeds the
+        // level; a fixing equal to the last states no direction.
+        for view in inputs.currencies.iter().filter(|v| v.level.is_finite()) {
+            let previous = self.last_fixing.get(&view.series).copied();
+            if previous.is_some_and(|(_, at)| view.valid_at <= at) {
+                continue;
+            }
+            if previous.is_none()
+                && self.last_macro.len() + self.last_fixing.len() >= MAX_MACRO_SERIES
+            {
+                refused.push((
+                    MACRO.to_string(),
+                    format!(
+                        "{} is a new series past the {MAX_MACRO_SERIES}-series bound; its \
+                         fixing is not read",
+                        view.series
+                    ),
+                ));
+                continue;
+            }
+            self.last_fixing
+                .insert(view.series.clone(), (view.level, view.valid_at));
+            let Some((last, _)) = previous.filter(|(last, _)| (*last - view.level).abs() > 0.0)
+            else {
+                continue;
+            };
+            let proposition = currency_proposition(&view.series, inputs.cycle, view.simulated);
+            if feed(
+                &mut self.federation,
+                MACRO,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability: 0.6,
+                    evidence_fit: if view.simulated { 0.15 } else { 0.3 },
+                    causal_coherence: 0.4,
+                    uncertainty: 0.7,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Currency {
+                        series: view.series.clone(),
+                        level: view.level,
+                        up: view.level > last,
+                        valid_at: view.valid_at,
+                        cycle: inputs.cycle,
+                        since: now,
                     },
                 );
                 propositions.push(proposition);
@@ -1838,6 +2258,43 @@ impl FederationStage {
                     inputs.capital.map(|c| Some(c.cash < *cash))
                 }
                 Pending::Funding { .. } => None,
+                // Answered by the next pass's floor: a book whose floor was
+                // not computed that pass leaves it waiting.
+                Pending::Floor { headroom, cycle } if *cycle < inputs.cycle => inputs
+                    .capital
+                    .and_then(|c| c.floor_headroom)
+                    .filter(|h| h.is_finite())
+                    .map(|h| Some(h < *headroom)),
+                Pending::Floor { .. } => None,
+                Pending::Settlement { cycle } if *cycle < inputs.cycle => inputs
+                    .capital
+                    .filter(|c| c.unsettled.is_finite())
+                    .map(|c| Some(c.unsettled > 0.0)),
+                Pending::Settlement { .. } => None,
+                // Answered by the series' next release: did it surprise the
+                // same way? A release of exactly consensus answers `false`.
+                Pending::Macro {
+                    series,
+                    positive,
+                    valid_at,
+                    ..
+                } => inputs
+                    .macros
+                    .iter()
+                    .find(|v| &v.series == series && v.valid_at > *valid_at)
+                    .map(|v| Some((v.surprise > 0.0) == *positive && v.surprise != 0.0)),
+                // Answered by the series' next fixing: did it move the same way?
+                Pending::Currency {
+                    series,
+                    level,
+                    up,
+                    valid_at,
+                    ..
+                } => inputs
+                    .currencies
+                    .iter()
+                    .find(|v| &v.series == series && v.valid_at > *valid_at)
+                    .map(|v| Some((v.level > *level) == *up && (v.level - *level).abs() > 0.0)),
                 Pending::Counterparty {
                     venue,
                     since,
@@ -1874,9 +2331,7 @@ impl FederationStage {
                     self.federation.abandon(&proposition, now);
                     abandoned.push(proposition);
                 }
-                None if inputs.cycle.saturating_sub(waiting.cycle())
-                    >= FEDERATION_PENDING_CYCLES =>
-                {
+                None if waiting.exhausted(inputs.cycle, now) => {
                     self.federation.abandon(&proposition, now);
                     abandoned.push(proposition);
                 }
@@ -1961,6 +2416,7 @@ mod tests {
                 spread_ratio: Some(1.2),
                 causal: None,
                 fundamental_surprise: None,
+                order_flow: Vec::new(),
             }],
             system: SystemView {
                 halted: false,
@@ -1973,6 +2429,8 @@ mod tests {
             },
             chain: chain.map(|confirmed_trades| ChainView { confirmed_trades }),
             capital: None,
+            macros: Vec::new(),
+            currencies: Vec::new(),
             counterparties: Vec::new(),
         }
     }
@@ -1986,6 +2444,8 @@ mod tests {
             leverage: 1.0 - cash / 1_000.0,
             net_share: 1.0 - cash / 1_000.0,
             pending_theses: waiting,
+            floor_headroom: Some(cash),
+            unsettled: 0.0,
         }
     }
 
@@ -2009,15 +2469,35 @@ mod tests {
         // issuer has reported a surprise, so this one has (R12-WORLD-3044).
         let mut fed_inputs = inputs(1, 100.0, day(0), Some(3));
         fed_inputs.instruments[0].fundamental_surprise = Some(0.05);
+        // The order-flow member produces state only where a print stated its
+        // aggressor (ADR 0255), so this instrument has one cycle's flow.
+        fed_inputs.instruments[0].order_flow = vec![qip_world_model::order_flow::FlowObservation {
+            object_id: qip_core::ObjectId::from_string("AAA"),
+            venue: qip_contracts::venue::VenueId::new("XNYS"),
+            observed_at: day(0),
+            buy_volume: Decimal::from_int(300),
+            sell_volume: Decimal::from_int(100),
+            buy_count: 3,
+            sell_count: 1,
+        }];
         // The capital member produces state only for a book with positive
         // equity, so this one has one (R12-WORLD-3048).
         fed_inputs.capital = Some(book(1_000.0, 0));
         // The counterparty member forecasts for each venue it is handed
         // (R12-WORLD-3049); this desk routes to one.
         fed_inputs.counterparties = vec![venue("DESK", &[], 0.0)];
+        // The macro member produces state only for a release that surprised
+        // its consensus (ADR 0256), so this pass reads one.
+        fed_inputs.currencies = Vec::new();
+        fed_inputs.macros = vec![MacroView {
+            series: "US.CPI.YOY".into(),
+            surprise: 0.3,
+            valid_at: day(0),
+            simulated: false,
+        }];
         let review = stage.run(&fed_inputs, day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 13, "{review:?}");
+        assert_eq!(review.population.len(), 17, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -2027,12 +2507,13 @@ mod tests {
         assert_eq!(spanned.kinds.len(), 3);
         assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
         assert!(review.silent.is_empty(), "{:?}", review.silent);
-        // One instrument proposition with nine views (seven tape members, the
-        // company member and the causal model), plus self, capital, one venue
-        // and chain.
-        assert_eq!(review.arbitrations.len(), 5);
+        // One instrument proposition with ten views (seven tape members, the
+        // company member, the order-flow member and the causal model), plus
+        // self, capital, capital floor, settlement (ADR 0257), macro, one
+        // venue and chain.
+        assert_eq!(review.arbitrations.len(), 8);
         let instrument = &review.arbitrations[0];
-        assert_eq!(instrument.disagreement.views.len(), 9);
+        assert_eq!(instrument.disagreement.views.len(), 10);
         // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
         // members are in the population and each produced a view on the instrument.
         for member in [RARE_REGIME, ALTERNATE_FUTURE, CAUSAL_GLOBAL] {
@@ -2152,6 +2633,7 @@ mod tests {
                 spread_ratio: None,
                 causal: None,
                 fundamental_surprise: None,
+                order_flow: Vec::new(),
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -2231,6 +2713,7 @@ mod tests {
                 spread_ratio: None,
                 causal: None,
                 fundamental_surprise: None,
+                order_flow: Vec::new(),
             });
         }
         inputs.instruments[0].returns = series(40, 0.01);
@@ -2405,8 +2888,11 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: thirteen members, no branch, and nothing scored yet to decide on.
-        assert_eq!(first.population.len(), 13);
+        // Premise: seventeen members (the counterparty member,
+        // R12-WORLD-3049, the order-flow member, ADR 0255, the macro member,
+        // ADR 0256, and the floor and settlement members, ADR 0257, among
+        // them), no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 17);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -2414,7 +2900,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 14);
+        assert_eq!(second.population.len(), 18);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -2517,7 +3003,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 15);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 19);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -2526,20 +3012,114 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 15 live, two branches merged away, one result: 14, every root kept.
+        // 19 live, two branches merged away, one result: 18, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 14, "{live:?}");
+        assert_eq!(live.len(), 18, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 14);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 18);
+    }
+
+    /// ADR 0256: a macro forecast waits for its series' next release in
+    /// time, not in passes. The skeptic's finding: patience was 90 passes on
+    /// the premise of daily cycles, and a deployed cycle runs every 300 s on
+    /// the deep brain and every 100 ms on the fast brain, so every monthly
+    /// forecast was abandoned within hours and nothing was ever scored.
+    /// Mutation: count a macro forecast's patience in passes
+    /// (`FEDERATION_PENDING_CYCLES`) — it is abandoned before the release.
+    #[test]
+    fn a_macro_forecast_waits_for_its_next_release_in_time_not_in_passes() {
+        let mut stage = FederationStage::new();
+        let release = |surprise: f64, period: i64| MacroView {
+            series: "US.CPI.YOY".into(),
+            surprise,
+            valid_at: day(period),
+            simulated: false,
+        };
+        let mut first = inputs(1, 100.0, day(0), None);
+        first.macros = vec![release(0.3, -20)];
+        stage.run(&first, day(0));
+        let proposition = macro_proposition("US.CPI.YOY", 1, false);
+        // Two hundred passes inside one day, no new release.
+        for cycle in 2..202 {
+            let mut quiet = inputs(cycle, 100.0, day(0), None);
+            quiet.macros = vec![release(0.3, -20)];
+            let review = stage.run(
+                &quiet,
+                day(0).saturating_add(Duration::from_mins(cycle as i64)),
+            );
+            assert!(
+                !review.abandoned.contains(&proposition),
+                "abandoned after {cycle} passes inside one day"
+            );
+        }
+        // The next release, thirty days on, answers it.
+        let mut next = inputs(202, 100.0, day(0), None);
+        next.macros = vec![release(0.4, 10)];
+        let review = stage.run(&next, day(30));
+        let resolution = review
+            .resolved
+            .iter()
+            .find(|r| r.proposition == proposition)
+            .expect("the next release answered the forecast");
+        assert!(resolution.outcome);
+    }
+
+    /// ADR 0256: a currency fixing states no consensus, so the macro member
+    /// reads its move. The first fixing seeds the level, the second's move is
+    /// forecast to persist, and the third answers it. Mutation: record the
+    /// move inverted (`view.level < last`) — the forecast resolves false.
+    #[test]
+    fn a_currency_fixing_that_moves_is_forecast_to_keep_moving_and_the_next_fixing_answers_it() {
+        let mut stage = FederationStage::new();
+        let fixing = |level: f64, period: i64| CurrencyView {
+            series: "FX.EUR.USD".into(),
+            level,
+            valid_at: day(period),
+            simulated: false,
+        };
+        let pass = |stage: &mut FederationStage, cycle: u64, level: f64, period: i64| {
+            let mut i = inputs(cycle, 100.0, day(0), None);
+            i.currencies = vec![fixing(level, period)];
+            stage.run(&i, day(period))
+        };
+        let seeded = pass(&mut stage, 1, 1.10, 0);
+        assert!(
+            !seeded
+                .arbitrations
+                .iter()
+                .any(|a| a.proposition.starts_with("macro:FX.EUR.USD")),
+            "a first fixing has no move to forecast"
+        );
+        let moved = pass(&mut stage, 2, 1.12, 1);
+        let proposition = currency_proposition("FX.EUR.USD", 2, false);
+        assert!(
+            moved
+                .arbitrations
+                .iter()
+                .any(|a| a.proposition == proposition),
+            "a fixing that moved was not forecast: {:?}",
+            moved
+                .arbitrations
+                .iter()
+                .map(|a| a.proposition.clone())
+                .collect::<Vec<_>>()
+        );
+        let answered = pass(&mut stage, 3, 1.13, 2);
+        let resolution = answered
+            .resolved
+            .iter()
+            .find(|r| r.proposition == proposition)
+            .expect("the next fixing answered the move forecast");
+        assert!(resolution.outcome, "a move that persisted resolved false");
     }
 
     #[test]
@@ -2790,6 +3370,105 @@ mod tests {
             "{:?}",
             fourth.silent
         );
+    }
+
+    /// R12-WORLD-1178 (ADR 0257): the capital-floor member forecasts whether
+    /// the room above the survival floor narrows and the settlement member
+    /// whether sale proceeds are still settling; the next pass's book answers
+    /// both either way; a book whose floor did not compute leaves the floor
+    /// member silent; and neither proposition is one the federation's
+    /// narrowing reads, so neither can move a size.
+    ///
+    /// Mutations: resolve the floor on headroom rising; resolve settlement on
+    /// nothing outstanding; drop the outstanding term of the settlement view;
+    /// feed either member nothing.
+    #[test]
+    fn the_floor_and_settlement_members_forecast_from_the_book_and_the_next_pass_answers_them() {
+        let view_of = |review: &FederationReview, proposition: &str, model: &str| {
+            review
+                .arbitrations
+                .iter()
+                .find(|a| a.proposition == proposition)
+                .and_then(|a| a.disagreement.views.iter().find(|v| v.model == model))
+                .map(|v| v.probability)
+        };
+        let with = |cycle: u64, at: Timestamp, headroom: Option<f64>, unsettled: f64| {
+            let mut fed = inputs(cycle, 100.0 + cycle as f64, at, Some(1));
+            let mut view = book(800.0, 0);
+            view.floor_headroom = headroom;
+            view.unsettled = unsettled;
+            fed.capital = Some(view);
+            fed
+        };
+        let mut stage = FederationStage::new();
+        let first = stage.run(&with(1, day(0), Some(900.0), 250.0), day(0));
+        assert!(view_of(&first, &floor_proposition(1), CAPITAL_FLOOR).is_some());
+        let outstanding = view_of(&first, &settlement_proposition(1), SETTLEMENT)
+            .expect("the settlement member forecast");
+        assert!(!first.silent.contains(&CAPITAL_FLOOR.to_string()));
+        assert!(!first.silent.contains(&SETTLEMENT.to_string()));
+
+        // Less room above the floor and nothing settling: both answered.
+        let second = stage.run(&with(2, day(1), Some(850.0), 0.0), day(1));
+        let resolved = |review: &FederationReview, proposition: String| {
+            review
+                .resolved
+                .iter()
+                .find(|r| r.proposition == proposition)
+                .map(|r| (r.outcome, r.forecasts.keys().cloned().collect::<Vec<_>>()))
+        };
+        let (narrowed, by) =
+            resolved(&second, floor_proposition(1)).expect("the next pass's floor resolved it");
+        assert!(narrowed, "headroom fell and the floor resolved false");
+        assert!(by.contains(&CAPITAL_FLOOR.to_string()));
+        let (settling, by) = resolved(&second, settlement_proposition(1))
+            .expect("the next pass's settlement resolved it");
+        assert!(
+            !settling,
+            "nothing was settling and the proposition resolved true"
+        );
+        assert!(by.contains(&SETTLEMENT.to_string()));
+        let idle = view_of(&second, &settlement_proposition(2), SETTLEMENT)
+            .expect("the settlement member forecast");
+        assert!(
+            outstanding > idle,
+            "proceeds outstanding did not raise the settlement view ({outstanding} vs {idle})"
+        );
+
+        // More room and a sale settling: the opposite answers.
+        let third = stage.run(&with(3, day(2), Some(950.0), 40.0), day(2));
+        let (narrowed, _) =
+            resolved(&third, floor_proposition(2)).expect("the next pass's floor resolved it");
+        assert!(!narrowed, "headroom rose and the floor resolved true");
+        let (settling, _) = resolved(&third, settlement_proposition(2))
+            .expect("the next pass's settlement resolved it");
+        assert!(
+            settling,
+            "a sale was settling and the proposition resolved false"
+        );
+
+        // A floor that did not compute: that member is silent, the other is
+        // not.
+        let fourth = stage.run(&with(4, day(3), None, 0.0), day(3));
+        assert!(view_of(&fourth, &floor_proposition(4), CAPITAL_FLOOR).is_none());
+        assert!(fourth.silent.contains(&CAPITAL_FLOOR.to_string()));
+        assert!(!fourth.silent.contains(&SETTLEMENT.to_string()));
+
+        // The only power the federation has over DECIDE is the narrowing,
+        // and it reads instrument propositions: removing both members'
+        // arbitrations leaves every narrowing exactly as it was.
+        for review in [&first, &second, &third, &fourth] {
+            let mut without = review.clone();
+            without.arbitrations.retain(|a| {
+                !a.proposition.starts_with("capital:floor")
+                    && !a.proposition.starts_with("settlement:")
+            });
+            assert!(without.arbitrations.len() < review.arbitrations.len());
+            assert_eq!(
+                narrowings_of(review, ["AAA".to_string()]),
+                narrowings_of(&without, ["AAA".to_string()])
+            );
+        }
     }
 
     /// R12-WORLD-3049: the counterparty member forecasts, per venue, whether

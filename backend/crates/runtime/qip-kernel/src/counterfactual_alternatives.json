@@ -1,0 +1,6 @@
+{
+  "hedge": null,
+  "hedge_absent_reason": "the committed universe holds no index or hedge instrument, and a hedge instrument and its ratio are a person's declaration (decision 17 of 2026-10-31); none is declared",
+  "venue": null,
+  "venue_absent_reason": "no alternate venue and taker cost is on record in the tree: the only source is the arbitrage whitelist QIP_ARBITRAGE_POLICY_PATH names, which no environment sets (decision 17 of 2026-10-31)"
+}

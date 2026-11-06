@@ -72,6 +72,11 @@ autonomy_ceiling = "paper_trading"
 # Placeholder the owner fills in: a team label, never a personal identifier.
 owner = "platform"
 
+# A copy of each signed release digest in a second region (R12-RES-9177):
+# storage, not a second execution region, and billed, so owner decision 5
+# of 2026-10-25 holds it off. Named with the deploy; deploy.yml reads it.
+secondary_region = null
+
 venue_adapter_type = "simulated"
 
 # Development environment uses the simulated venue (in-process matching engine)
@@ -419,6 +424,21 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # here: `crane digest docker.io/openobserve/openobserve:v0.92.2` answers this
 # same sha256, so the tag had not moved under the reviewed line.
 vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b"
+
+# --- The deep brain's breadth plan: the one optional file dev names ---
+#
+# The committed commerce-only paper plan (ruling decision 10 of 2026-10-31,
+# R12-COMMERCE-5091/5095/5097), mounted as the deep brain's second config
+# file under its own content-hash directory (ADR 0245), so the universe's
+# path does not move. Every purchase is through the simulated merchant and
+# every sale on the simulated marketplace; no figure reaches the desk's
+# sizing or capital, and the plan carries no Market Factory section. Unset,
+# no breadth hook runs, which is what test, stage and prod keep. Naming it
+# here also creates `qip-deepbrain-breadth-plan-dev` (one Secret Manager
+# container) and has infra.yml's seed step write these bytes into it; the
+# path in gitops/envs/dev/deepbrain.yaml is the hash of exactly this file,
+# and qip-acceptance's gitops suite refuses the manifest if they disagree.
+deepbrain_breadth_plan_file = "data/breadth/dev-commerce-paper.json"
 
 # --- The six optional files the central roots can be given, and why none
 # --- is named here ---

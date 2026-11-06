@@ -550,6 +550,290 @@ esac
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A scratch directory holding executable stubs, unique to one test.
+fn stub_dir(test: &str, stubs: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("qip-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("scratch dir: {e}"));
+    for (name, body) in stubs {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap_or_else(|e| panic!("stub {name}: {e}"));
+        let status = Command::new("chmod")
+            .arg("+x")
+            .arg(&path)
+            .status()
+            .unwrap_or_else(|e| panic!("chmod: {e}"));
+        assert!(status.success(), "chmod +x {name} failed");
+    }
+    dir
+}
+
+const COPY_STEP: &str = "copy the signed digest to the secondary registry";
+
+/// R12-RES-9177: the signed digest reaches the secondary registry, or the run
+/// fails.
+///
+/// The step is executed, not read: a copy that "succeeded" while the replica
+/// held nothing, or held other bytes, is precisely what a region loss would
+/// discover too late. A stub `gcloud` answers each `describe` from the
+/// environment the case sets, and a stub `docker` records the copy it was
+/// asked to make, so each case says what the registry reported and what the
+/// step concluded.
+///
+/// Mutation: drop the read-back comparison (`if [ "$copied" != "$digest" ]`
+/// made `if false`). The different-digest and nothing-resolved cases are
+/// admitted and this fails naming them.
+#[test]
+fn the_signed_digest_is_copied_to_the_secondary_registry_and_refused_unless_it_reads_back_identical()
+ {
+    let workflow = read(DEPLOY);
+    let script = step_script(&workflow, COPY_STEP);
+    let dir = stub_dir(
+        "secondary-copy",
+        &[
+            (
+                "gcloud",
+                r#"#!/bin/bash
+case "$1 $2" in
+  'auth configure-docker') echo "$3" >> "$LOG.auth"; exit 0 ;;
+  'artifacts docker') ;;
+  *) echo "unexpected gcloud call: $*" >&2; exit 2 ;;
+esac
+ref="$5"
+case "$ref" in
+  "$PRIMARY_PREFIX"/*) value="$PRIMARY" ;;
+  "$SECONDARY_PREFIX"/*@*) value="$SECONDARY_BY_DIGEST" ;;
+  "$SECONDARY_PREFIX"/*) value="$SECONDARY_BY_TAG" ;;
+  *) echo "unexpected image: $ref" >&2; exit 2 ;;
+esac
+[ -n "$value" ] || { echo "ERROR: image not found: $ref" >&2; exit 1; }
+echo "$value"
+"#,
+            ),
+            ("docker", "#!/bin/bash\necho \"$*\" >> \"$LOG\"\n"),
+        ],
+    );
+    let path = format!("{}:/usr/bin:/bin", dir.display());
+    let log = dir.join("calls");
+    let primary = "us-east4-docker.pkg.dev/build-project/qip-dev";
+    let secondary = "us-west1-docker.pkg.dev/build-project/qip-dev-secondary";
+    let signed = "sha256:aaaa";
+    // (by tag, by digest) -> (exit code, docker calls)
+    let case = |by_tag: &str, by_digest: &str| -> (i32, String) {
+        let _ = std::fs::remove_file(&log);
+        let mut command = Command::new("bash");
+        command.arg("-c").arg(&script).env_clear();
+        command.env("PATH", &path);
+        command.env("LOG", &log);
+        command.env("DEPLOY_SHA", "abc123");
+        command.env("BINARY", "qip-api");
+        command.env("BUILD_REGISTRY", primary);
+        command.env("BUILD_REGISTRY_HOST", "us-east4-docker.pkg.dev");
+        command.env("SECONDARY_REGISTRY", secondary);
+        command.env("PRIMARY_PREFIX", primary);
+        command.env("SECONDARY_PREFIX", secondary);
+        command.env("PRIMARY", signed);
+        command.env("SECONDARY_BY_TAG", by_tag);
+        command.env("SECONDARY_BY_DIGEST", by_digest);
+        let code = command
+            .output()
+            .map_or(-1, |o| o.status.code().unwrap_or(-1));
+        (code, std::fs::read_to_string(&log).unwrap_or_default())
+    };
+
+    // The copy lands with the signed digest: success, and the copy was made
+    // from the primary's digest to the replica's commit tag.
+    let (code, calls) = case("", signed);
+    assert_eq!(
+        code, 0,
+        "a copy that read back the signed digest was refused"
+    );
+    assert_eq!(
+        calls.trim(),
+        format!(
+            "buildx imagetools create --tag {secondary}/qip-api:abc123 {primary}/qip-api@{signed}"
+        ),
+        "the step did not copy the signed digest by digest to the replica's commit tag"
+    );
+    let auth = std::fs::read_to_string(format!("{}.auth", log.display())).unwrap_or_default();
+    assert!(
+        auth.trim()
+            .split(',')
+            .any(|host| host == "us-west1-docker.pkg.dev"),
+        "docker was not given credentials for the secondary registry's host: {auth:?}"
+    );
+
+    // The replica answers with other bytes for the digest: refused.
+    let (code, _) = case("", "sha256:bbbb");
+    assert_ne!(
+        code, 0,
+        "the secondary resolved a different digest and the run was admitted"
+    );
+
+    // The replica answers nothing for the digest: refused.
+    let (code, _) = case("", "");
+    assert_ne!(
+        code, 0,
+        "the secondary resolved nothing and the run was admitted, so a copy that never \
+         landed would read as a release kept in two regions"
+    );
+
+    // A re-run finds the tag already holding the signed digest: no second
+    // copy, and success.
+    let (code, calls) = case(signed, signed);
+    assert_eq!(code, 0, "a re-run for a commit already copied was refused");
+    assert!(
+        calls.is_empty(),
+        "a re-run copied again onto an immutable tag: {calls:?}"
+    );
+
+    // The replica's tag already holds other bytes: refused, not overwritten.
+    let (code, calls) = case("sha256:cccc", signed);
+    assert_ne!(
+        code, 0,
+        "the replica's commit tag held other bytes and the run was admitted"
+    );
+    assert!(
+        calls.is_empty(),
+        "the step tried to copy over a tag holding other bytes: {calls:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The copy runs only when a secondary registry is declared, and directly
+/// after the signature, so what is copied is what was signed and an
+/// environment with none declared — every one today — never reaches it.
+///
+/// Mutation: delete the step's `if:` line. This fails.
+#[test]
+fn the_copy_to_the_secondary_registry_runs_only_when_one_is_declared_and_only_after_signing() {
+    let workflow = read(DEPLOY);
+    let step = step_text(&workflow, COPY_STEP);
+    let header: Vec<&str> = step
+        .lines()
+        .take_while(|line| line.trim() != "run: |")
+        .map(str::trim)
+        .collect();
+    assert!(
+        header.contains(&"if: steps.identity.outputs.secondary_registry != ''"),
+        "the copy is not gated on the build tfvars declaring a secondary registry ({header:?}); \
+         it would run against a repository no environment has"
+    );
+    assert!(
+        !header
+            .iter()
+            .any(|line| line.starts_with("continue-on-error:")),
+        "the copy may fail without failing the job"
+    );
+    let signed = workflow.find("      - name: sign the pushed image\n");
+    let copied = workflow.find(&format!("      - name: {COPY_STEP}\n"));
+    let next = signed.and_then(|at| {
+        workflow[at + 1..]
+            .find("      - name: ")
+            .map(|offset| at + 1 + offset)
+    });
+    assert!(
+        matches!((signed, copied), (Some(s), Some(c)) if s < c) && next == copied,
+        "the copy is not the step directly after the signature"
+    );
+}
+
+/// The identity step reads the secondary region from the build
+/// environment's tfvars under the region's own refusals.
+///
+/// Executed in a scratch tree holding one tfvars, because the parse is shell
+/// and a `sed` that reads correctly and never matches is the failure a text
+/// check cannot see.
+///
+/// Mutation: make the character-class arm admit anything (`''|*[!a-z0-9-]*`
+/// to `''`). The upper-case and command-substitution cases are admitted and
+/// this fails naming them.
+#[test]
+fn the_identity_step_derives_the_secondary_registry_from_the_build_tfvars_and_refuses_a_malformed_one()
+ {
+    let workflow = read(DEPLOY);
+    let script = step_script(&workflow, "derive the identity from the tfvars");
+    assert!(
+        !script.contains("${{"),
+        "premise: the identity step substitutes no expression, so it can be run as written"
+    );
+    let root = std::env::temp_dir().join(format!("qip-secondary-identity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let environment = root.join("infrastructure/environments/dev");
+    std::fs::create_dir_all(&environment).unwrap_or_else(|e| panic!("scratch tree: {e}"));
+    let output = root.join("github-output");
+    let derive = |line: &str| -> (i32, String) {
+        std::fs::write(
+            environment.join("terraform.tfvars"),
+            format!(
+                "project_id     = \"build-project\"\nproject_number = 123456789012\nregion         = \"us-east4\"\n{line}\n"
+            ),
+        )
+        .unwrap_or_else(|e| panic!("tfvars: {e}"));
+        let _ = std::fs::remove_file(&output);
+        let mut command = Command::new("bash");
+        command
+            .arg("-c")
+            .arg(&script)
+            .env_clear()
+            .current_dir(&root);
+        command.env("PATH", "/usr/bin:/bin");
+        command.env("TARGET_ENVIRONMENT", "dev");
+        command.env("BUILD_ENVIRONMENT", "dev");
+        command.env("GITHUB_OUTPUT", &output);
+        let code = command
+            .output()
+            .map_or(-1, |o| o.status.code().unwrap_or(-1));
+        let written = std::fs::read_to_string(&output).unwrap_or_default();
+        let secondary = written
+            .lines()
+            .find_map(|l| l.strip_prefix("secondary_registry="))
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("<no secondary_registry line in {written:?}>"));
+        (code, secondary)
+    };
+
+    // Premise: the step runs to the end on this tree, or every refusal below
+    // would be a refusal of something else.
+    let (code, secondary) = derive("");
+    assert_eq!(code, 0, "the identity step failed on a well-formed tfvars");
+    assert_eq!(secondary, "", "no secondary_region line declared a replica");
+
+    for line in ["secondary_region = null", "secondary_region = null # off"] {
+        assert_eq!(
+            derive(line),
+            (0, String::new()),
+            "`{line}` declared a replica"
+        );
+    }
+    assert_eq!(
+        derive("secondary_region = \"us-west1\""),
+        (
+            0,
+            "us-west1-docker.pkg.dev/build-project/qip-dev-secondary".to_string()
+        ),
+        "a named secondary region did not produce the repository modules/registry declares"
+    );
+
+    for line in [
+        "secondary_region = \"US-WEST1\"",
+        "secondary_region = \"$(id)\"",
+        "secondary_region = \"us-west1;true\"",
+        "secondary_region = \"\"",
+        "secondary_region = us-west1",
+        "secondary_region = nul",
+        "secondary_region = \"us-east4\"",
+    ] {
+        let (code, _) = derive(line);
+        assert_ne!(
+            code, 0,
+            "`{line}` was admitted; a malformed or same-region secondary must stop the run \
+             rather than be read as none or pasted into a registry host"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn the_portal_build_id_follows_the_commit_epoch_deploy_passes_and_is_never_a_constant() {
     // R12-CICD-10117. Next names `/_next/static/<id>/` and writes `BUILD_ID`

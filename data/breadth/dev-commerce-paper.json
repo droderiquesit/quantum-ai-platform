@@ -41,6 +41,7 @@
     "days_on_market": 2,
     "daily_capital_cost": "0.0001",
     "purchase_tax_rate": "0.05",
+    "chargeback_rate": "0.01",
     "account": {
       "id": "paper-account",
       "identity_class": "desk",
@@ -54,7 +55,9 @@
     },
     "total_ceiling": "100000",
     "fraud_merchants": [],
-    "counterfeit_gtins": [],
+    "counterfeit_gtins": [
+      "0000000000031"
+    ],
     "counterfeit_sellers": [
       "synthetic-counterfeit-seller"
     ],

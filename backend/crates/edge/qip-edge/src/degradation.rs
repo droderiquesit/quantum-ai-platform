@@ -65,6 +65,10 @@ pub enum FreshnessBound {
     /// the cell the reading (`crate::pressure`); the cell reads no clock for
     /// [`Capability::Ledger`] and has no duration of its own to state.
     SpoolReading,
+    /// The node judges the venue's custody statements by their age in
+    /// statement periods and hands the cell the reading (ADR 0242); the cell
+    /// reads no clock for [`Capability::Custody`].
+    StatementReading,
     /// Derived from the policy-fed rows, so it ages as they do; the duration
     /// is the shortest of their times to live, the instant the first of them
     /// can go stale and the fabric row with it.
@@ -80,7 +84,7 @@ impl FreshnessBound {
             | Self::Quarantine(bound)
             | Self::PerBook(bound)
             | Self::DerivedFromPayload(bound) => Some(*bound),
-            Self::SpoolReading => None,
+            Self::SpoolReading | Self::StatementReading => None,
         }
     }
 }
@@ -123,6 +127,9 @@ impl DegradationEnvelope {
         .collect();
         if config.journal_wire {
             required.insert(Capability::Ledger);
+        }
+        if config.custody_statements {
+            required.insert(Capability::Custody);
         }
         if config.venue_health.is_some() {
             required.insert(Capability::VenueSession);
@@ -196,6 +203,12 @@ impl DegradationEnvelope {
             rows.insert(
                 Capability::Ledger,
                 dependency(Capability::Ledger, FreshnessBound::SpoolReading),
+            );
+        }
+        if config.custody_statements {
+            rows.insert(
+                Capability::Custody,
+                dependency(Capability::Custody, FreshnessBound::StatementReading),
             );
         }
         if let Some(policy) = config.venue_health {

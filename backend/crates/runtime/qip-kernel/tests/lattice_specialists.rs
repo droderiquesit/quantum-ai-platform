@@ -189,6 +189,7 @@ fn surprise(series: &str, value: f64, available: Timestamp) -> WorldReading {
         value,
         valid_at: available,
         available_at: available,
+        sources: Vec::new(),
     }
 }
 
