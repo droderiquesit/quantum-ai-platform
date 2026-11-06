@@ -376,9 +376,13 @@ fn offering_one_output_to_the_model_risk_gate_retires_only_the_caveat_it_answers
     assert!(before_text.contains("no model risk file has been filed"));
     assert!(before_text.contains("has been asked nothing"));
 
-    let refusal = plane
-        .model_risk_mut()
-        .admit(&models, honest_explanation()?, now());
+    let refusal = plane.model_risk_mut().admit(
+        &models,
+        honest_explanation()?,
+        "calm",
+        &std::collections::BTreeMap::new(),
+        now(),
+    );
     assert!(
         refusal.is_err(),
         "a model with no risk file must not be admitted"

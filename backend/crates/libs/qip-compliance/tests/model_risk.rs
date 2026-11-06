@@ -116,7 +116,13 @@ fn a_model_without_a_risk_file_cannot_drive_a_decision() -> Result<()> {
 
     let mut register = ModelRiskRegister::new();
     let error = register
-        .admit(&models, honest_explanation()?, now())
+        .admit(
+            &models,
+            honest_explanation()?,
+            "calm",
+            &std::collections::BTreeMap::new(),
+            now(),
+        )
         .expect_err("a model with no risk file must not drive a decision");
     assert!(error.message().contains(REFERENCE));
     assert!(error.message().contains("risk file"));
@@ -132,7 +138,13 @@ fn an_overdue_review_blocks_use_until_somebody_reviews_it() -> Result<()> {
     // Today it is fine.
     assert!(
         register
-            .admit(&models, honest_explanation()?, now())
+            .admit(
+                &models,
+                honest_explanation()?,
+                "calm",
+                &std::collections::BTreeMap::new(),
+                now()
+            )
             .is_ok()
     );
 
@@ -140,7 +152,13 @@ fn an_overdue_review_blocks_use_until_somebody_reviews_it() -> Result<()> {
     // changed; the obligation to look at it did.
     let later = now().saturating_add(Duration::from_days(60));
     let error = register
-        .admit(&models, honest_explanation()?, later)
+        .admit(
+            &models,
+            honest_explanation()?,
+            "calm",
+            &std::collections::BTreeMap::new(),
+            later,
+        )
         .expect_err("an overdue risk file must block use");
     assert!(error.message().contains("due for review"));
     assert_eq!(register.overdue(later).len(), 1);
@@ -157,7 +175,13 @@ fn an_overdue_review_blocks_use_until_somebody_reviews_it() -> Result<()> {
     )?;
     assert!(
         register
-            .admit(&models, honest_explanation()?, later)
+            .admit(
+                &models,
+                honest_explanation()?,
+                "calm",
+                &std::collections::BTreeMap::new(),
+                later
+            )
             .is_ok()
     );
     Ok(())
@@ -248,7 +272,13 @@ fn a_model_used_outside_its_validated_range_is_refused() -> Result<()> {
     )?;
 
     let error = register
-        .admit(&models, out_of_range, now())
+        .admit(
+            &models,
+            out_of_range,
+            "calm",
+            &std::collections::BTreeMap::new(),
+            now(),
+        )
         .expect_err("a model used outside its validated range must be refused");
     assert!(error.message().contains("adv_participation"));
     assert!(error.message().contains("actual 0.4"));
@@ -264,7 +294,13 @@ fn a_retired_model_cannot_drive_a_decision_however_good_its_risk_file() -> Resul
     models.retire(REFERENCE, now())?;
 
     let error = register
-        .admit(&models, honest_explanation()?, now())
+        .admit(
+            &models,
+            honest_explanation()?,
+            "calm",
+            &std::collections::BTreeMap::new(),
+            now(),
+        )
         .expect_err("a retired model must not drive a decision");
     assert!(error.message().contains(REFERENCE));
     Ok(())
@@ -325,9 +361,21 @@ fn every_admission_decision_is_recorded_whichever_way_it_went() -> Result<()> {
     let models = eligible_model()?;
     let mut register = ModelRiskRegister::new();
 
-    let _ = register.admit(&models, honest_explanation()?, now());
+    let _ = register.admit(
+        &models,
+        honest_explanation()?,
+        "calm",
+        &std::collections::BTreeMap::new(),
+        now(),
+    );
     register.file(current_risk_file()?);
-    let admitted = register.admit(&models, honest_explanation()?, now())?;
+    let admitted = register.admit(
+        &models,
+        honest_explanation()?,
+        "calm",
+        &std::collections::BTreeMap::new(),
+        now(),
+    )?;
 
     assert_eq!(admitted.output(), dec!("0.18"));
     assert_eq!(admitted.model_reference(), REFERENCE);
@@ -474,7 +522,13 @@ fn a_model_nobody_independent_has_reviewed_cannot_drive_a_decision_however_well_
     let mut register = ModelRiskRegister::new();
     register.file(file);
     let error = register
-        .admit(&models, honest_explanation()?, now())
+        .admit(
+            &models,
+            honest_explanation()?,
+            "calm",
+            &std::collections::BTreeMap::new(),
+            now(),
+        )
         .expect_err("a model only its builders validated must not drive a decision");
     assert!(
         error.message().contains("independent review"),
@@ -498,8 +552,65 @@ fn a_model_nobody_independent_has_reviewed_cannot_drive_a_decision_however_well_
     register.file(current_risk_file()?);
     assert!(
         register
-            .admit(&models, honest_explanation()?, now())
+            .admit(
+                &models,
+                honest_explanation()?,
+                "calm",
+                &std::collections::BTreeMap::new(),
+                now()
+            )
             .is_ok()
+    );
+    Ok(())
+}
+
+/// R12-RISK-4099. The register checked eligibility without the decision's
+/// regime, so a model whose skill was measured only in a calm market was
+/// admitted for a stressed decision exactly as for a calm one. It now asks
+/// `qip_ai` for eligibility in the decision's regime and on its inputs.
+///
+/// Mutation: revert `evaluate` to `require_for_decision` and the stressed
+/// admission is let through.
+#[test]
+fn a_model_validated_only_in_calm_is_refused_by_the_model_risk_register_for_a_stressed_decision()
+-> Result<()> {
+    let mut models = ModelRegistry::new();
+    let card = ModelCard::new(
+        ModelId::from_string("m-vol-forecast"),
+        "vol-forecast",
+        "2.1.0",
+        "quant-research",
+        now().saturating_sub(Duration::from_days(200)),
+    )
+    .with_purpose("forecast realised volatility one day ahead")
+    .with_validated_regime("calm");
+    models.register(card)?;
+    models.record_evaluation(
+        REFERENCE,
+        EvaluationRecord {
+            evaluated_at: now().saturating_sub(Duration::from_days(10)),
+            dataset: "holdout.2024".to_string(),
+            metrics: Default::default(),
+            passed: true,
+        },
+    )?;
+    models.promote(REFERENCE, now().saturating_sub(Duration::from_days(5)))?;
+    assert!(
+        models.require_for_decision(REFERENCE, now()).is_ok(),
+        "premise: the model is eligible without regard to regime"
+    );
+    let mut register = ModelRiskRegister::new();
+    register.file(current_risk_file()?);
+    let inputs = std::collections::BTreeMap::new();
+
+    register.admit(&models, honest_explanation()?, "calm", &inputs, now())?;
+    let error = register
+        .admit(&models, honest_explanation()?, "stressed", &inputs, now())
+        .expect_err("a model validated only in calm was admitted for a stressed decision");
+    assert!(
+        error.message().contains("never scored in stressed"),
+        "refused for another reason: {}",
+        error.message()
     );
     Ok(())
 }
