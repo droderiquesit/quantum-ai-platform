@@ -127,7 +127,24 @@ impl SolverKind {
     }
 }
 
+/// The prefix every quantum result's evidence id carries (R12-QUANT-4044),
+/// owned here by the producer's contract. A quantum-assisted selection is a
+/// selection aid for simulation and never causal proof, and
+/// `qip-world-model`'s causal graph refuses any edge citing an id with this
+/// prefix. It was a literal in the world model alone, and no producer was
+/// bound to it, so an edge citing a real quantum result passed the guard.
+pub const QUANTUM_EVIDENCE_PREFIX: &str = "quantum:";
+
 impl SolverResult {
+    /// The id a quantum result is cited by, `quantum:<request id>:quantum`,
+    /// for a [`SolverKind::Quantum`] result only. The classical baseline and
+    /// the quantum-inspired search are classical algorithms and cite as
+    /// themselves, so they carry no quantum id.
+    pub fn evidence_id(&self) -> Option<String> {
+        (self.kind == SolverKind::Quantum)
+            .then(|| format!("{QUANTUM_EVIDENCE_PREFIX}{}:quantum", self.request_id))
+    }
+
     /// Create a solver result.
     ///
     /// Validates that the assignment matches the problem size and that the
