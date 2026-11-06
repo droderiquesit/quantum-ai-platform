@@ -363,3 +363,64 @@ fn a_retired_started_item_closes_as_unproductive() {
         "a second retirement is visible"
     );
 }
+
+/// ADR 0348 (R12-EXPAND-6061): a contradiction observation on a sweep
+/// opens one registry contradiction. Two sources disagree on AAA's
+/// direction; the detector raises one contradiction, the desk admits it,
+/// and the research registry holds one unresolved contradiction under the
+/// question's campaign id citing the signal's evidence. An item raised by
+/// any other trigger (the fill residual) opens none.
+///
+/// Mutation: drop the contradiction record in `offer_by_deadline`.
+#[test]
+fn a_contradiction_observation_on_a_sweep_opens_one_registry_contradiction() {
+    use qip_agents::research::campaign_id;
+    use qip_expansion::desk::{Admission, question_for};
+    use qip_expansion::detectors::{Reading, contradictions};
+    use qip_expansion::gap::GapTrigger;
+
+    let (desk_with_residual, _) = started_desk();
+    assert!(
+        desk_with_residual
+            .research()
+            .unresolved_contradictions()
+            .is_empty(),
+        "premise: a fill residual opens no contradiction"
+    );
+
+    let mut desk = desk();
+    let observation = contradictions(&[
+        Reading {
+            subject: "AAA".to_string(),
+            source: "momentum".to_string(),
+            up: true,
+        },
+        Reading {
+            subject: "AAA".to_string(),
+            source: "reversal".to_string(),
+            up: false,
+        },
+    ])
+    .pop()
+    .expect("premise: two sources disagreeing on AAA is a contradiction");
+    let raised = raise(observation).unwrap();
+    assert_eq!(raised.trigger, GapTrigger::Contradiction, "premise");
+    let question = question_for(&raised);
+    let evidence = raised.signal.evidence.clone();
+    let admission = desk.offer(
+        raised,
+        &BTreeSet::new(),
+        &BTreeSet::from(["US".to_string()]),
+    );
+    assert!(
+        !matches!(admission, Admission::Refused { .. }),
+        "premise: the contradiction was admitted: {admission:?}"
+    );
+    let open = desk.research().unresolved_contradictions();
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].campaign, campaign_id(&question).unwrap());
+    let mut cited = evidence;
+    cited.sort();
+    cited.dedup();
+    assert_eq!(open[0].evidence, cited);
+}
