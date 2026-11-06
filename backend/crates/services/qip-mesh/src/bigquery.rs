@@ -117,6 +117,10 @@ pub struct BigQueryConfig {
     pub query_timeout_ms: u64,
     /// Endpoint and credential.
     pub access: GcpAccess,
+    /// The dataset's location (`us-east4`, `US`). A load job runs there, and
+    /// BigQuery finds a job outside the default region only when the request
+    /// names it, so a load is refused without one (ADR 0240).
+    pub location: Option<String>,
 }
 
 impl BigQueryConfig {
@@ -130,7 +134,14 @@ impl BigQueryConfig {
             max_query_polls: DEFAULT_MAX_QUERY_POLLS,
             query_timeout_ms: DEFAULT_QUERY_TIMEOUT_MS,
             access: GcpAccess::unconfigured(),
+            location: None,
         }
+    }
+
+    /// Name the dataset's location, which every load job is sent with.
+    pub fn with_location(mut self, location: impl Into<String>) -> Self {
+        self.location = Some(location.into());
+        self
     }
 
     /// Supply the endpoint and credential.
@@ -425,6 +436,18 @@ pub struct QueryPage {
     pub cache_hit: bool,
 }
 
+/// Where a load job stands (ADR 0240).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum LoadState {
+    /// Accepted and not finished: the rows are not yet in the table.
+    Pending,
+    /// Finished without an error; `output_rows` when BigQuery reported it.
+    Done { output_rows: Option<u64> },
+    /// Finished with an error, or refused: nothing was appended.
+    Failed { reason: String },
+}
+
 /// The research warehouse.
 ///
 /// # What it does not promise
@@ -670,6 +693,170 @@ impl BigQueryWarehouse {
             submitted,
             rejected,
         })
+    }
+
+    /// Ask BigQuery to load one staged newline-delimited JSON object into
+    /// `table` (ADR 0240): the warehouse's write path.
+    ///
+    /// `job_id` is the caller's, derived from the batch, so a caller that lost
+    /// the response asks again with the same id and is told the job exists
+    /// rather than loading the rows twice; that answer is read back as the
+    /// job's state. The load tolerates no bad record and ignores no unknown
+    /// column, and creates no table, so a schema mistake fails the job instead
+    /// of dropping data.
+    ///
+    /// The returned state is what BigQuery said when it accepted the job,
+    /// usually [`LoadState::Pending`]. A caller counts the rows written only
+    /// when [`Self::load_state`] later says [`LoadState::Done`].
+    pub fn load(&self, table: &str, source_uri: &str, job_id: &str) -> Result<LoadState> {
+        if !self.is_available() {
+            return Err(self.unavailable());
+        }
+        validate_resource_name("table", table)?;
+        validate_job_id(job_id)?;
+        let location = self.job_location()?;
+        if !source_uri.starts_with("gs://") || source_uri.len() <= "gs://".len() {
+            return Err(Error::invalid(format!(
+                "a load reads from Cloud Storage, and {source_uri:?} is not a gs:// object"
+            )));
+        }
+        let payload = serde_json::json!({
+            "jobReference": {
+                "projectId": self.config.project,
+                "jobId": job_id,
+                "location": location,
+            },
+            "configuration": {
+                "load": {
+                    "sourceUris": [source_uri],
+                    "sourceFormat": "NEWLINE_DELIMITED_JSON",
+                    "destinationTable": {
+                        "projectId": self.config.project,
+                        "datasetId": self.config.dataset,
+                        "tableId": table,
+                    },
+                    "writeDisposition": "WRITE_APPEND",
+                    "createDisposition": "CREATE_NEVER",
+                    "maxBadRecords": 0,
+                    "ignoreUnknownValues": false,
+                },
+            },
+        });
+        let path = format!(
+            "/bigquery/v2/projects/{}/jobs",
+            percent_encode(&self.config.project)
+        );
+        let request = self
+            .config
+            .access
+            .request(Method::Post, &path)?
+            .with_header("content-type", "application/json; charset=utf-8")
+            .with_body(serde_json::to_vec(&payload)?);
+        let response = self.client.send(&request).map_err(Error::from)?;
+        // The job already exists: this is the retry decision 2 describes, and
+        // the job's own state is the answer.
+        if response.status == 409 {
+            return self.load_state(job_id);
+        }
+        if !response.is_success() {
+            return Err(status_refusal(
+                &self.service(),
+                response.status,
+                &response.body_excerpt(),
+            ));
+        }
+        self.decode_job(response.body_as_str().map_err(Error::from)?, job_id)
+    }
+
+    /// The state of the load job `job_id`.
+    pub fn load_state(&self, job_id: &str) -> Result<LoadState> {
+        if !self.is_available() {
+            return Err(self.unavailable());
+        }
+        validate_job_id(job_id)?;
+        let path = format!(
+            "/bigquery/v2/projects/{}/jobs/{}?location={}",
+            percent_encode(&self.config.project),
+            percent_encode(job_id),
+            percent_encode(self.job_location()?)
+        );
+        let request = self.config.access.request(Method::Get, &path)?;
+        let response = self.client.send(&request).map_err(Error::from)?;
+        if !response.is_success() {
+            return Err(status_refusal(
+                &self.service(),
+                response.status,
+                &response.body_excerpt(),
+            ));
+        }
+        self.decode_job(response.body_as_str().map_err(Error::from)?, job_id)
+    }
+
+    /// The location a load job runs in, refused when unset: a job sent
+    /// without one runs where the dataset is, and is then invisible to a
+    /// `jobs.get` that does not name it, so a pending load could never be
+    /// seen finished.
+    fn job_location(&self) -> Result<&str> {
+        self.config
+            .location
+            .as_deref()
+            .filter(|location| !location.trim().is_empty())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "{} has no dataset location configured; a load job is sent with its location \
+                     so that its state can be read back",
+                    self.service()
+                ))
+            })
+    }
+
+    fn decode_job(&self, text: &str, job_id: &str) -> Result<LoadState> {
+        let job: WireJob = serde_json::from_str(text).map_err(|error| {
+            Error::schema(format!(
+                "{} sent a job this decoder cannot read: {error}",
+                self.service()
+            ))
+        })?;
+        if let Some(reference) = &job.job_reference
+            && reference.job_id != job_id
+        {
+            return Err(Error::schema(format!(
+                "{} answered about job {} when asked about {job_id}",
+                self.service(),
+                reference.job_id
+            )));
+        }
+        let Some(status) = job.status else {
+            return Err(Error::schema(format!(
+                "{} answered about job {job_id} with no status, so whether it ran is unknown",
+                self.service()
+            )));
+        };
+        // An error result is the job's verdict even when the state says DONE:
+        // a failed load finishes, and finishing is not succeeding.
+        if let Some(error) = status.error_result {
+            return Ok(LoadState::Failed {
+                reason: format!(
+                    "{}: {}",
+                    error.reason.unwrap_or_else(|| "unspecified".to_string()),
+                    error.message.unwrap_or_else(|| "no message".to_string())
+                ),
+            });
+        }
+        match status.state.as_deref() {
+            Some("DONE") => Ok(LoadState::Done {
+                output_rows: job
+                    .statistics
+                    .and_then(|statistics| statistics.load)
+                    .and_then(|load| load.output_rows)
+                    .and_then(|rows| rows.parse().ok()),
+            }),
+            Some("PENDING" | "RUNNING") => Ok(LoadState::Pending),
+            other => Err(Error::schema(format!(
+                "{} reports job {job_id} in state {other:?}, which is none BigQuery documents",
+                self.service()
+            ))),
+        }
     }
 
     /// Run a query and read its whole result set.
@@ -935,6 +1122,22 @@ fn decode_row(columns: &[String], row: &WireRow, service: &str) -> Result<QueryR
     Ok(out)
 }
 
+/// A load job id is the caller's dedup key: BigQuery allows letters,
+/// digits, `_` and `-`, up to 1024 characters.
+fn validate_job_id(job_id: &str) -> Result<()> {
+    if job_id.is_empty()
+        || job_id.len() > 1024
+        || !job_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(Error::invalid(format!(
+            "{job_id:?} is not a BigQuery job id: use 1 to 1024 letters, digits, `_` or `-`"
+        )));
+    }
+    Ok(())
+}
+
 /// Refuse a project, dataset or table name that cannot go in a request line.
 ///
 /// Validated rather than trusted because all three are interpolated into the
@@ -1102,4 +1305,36 @@ struct WireRow {
 struct WireCell {
     #[serde(default)]
     v: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireJob {
+    job_reference: Option<JobReference>,
+    status: Option<WireJobStatus>,
+    statistics: Option<WireJobStatistics>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireJobStatus {
+    state: Option<String>,
+    error_result: Option<WireJobError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireJobError {
+    reason: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireJobStatistics {
+    load: Option<WireLoadStatistics>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireLoadStatistics {
+    output_rows: Option<String>,
 }

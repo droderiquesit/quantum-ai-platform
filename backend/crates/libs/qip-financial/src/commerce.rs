@@ -263,6 +263,10 @@ pub struct FeasibilityInput {
     pub daily_capital_cost: Option<Decimal>,
     /// Tax on the purchase (for example import VAT), as a fraction of goods.
     pub purchase_tax_rate: Option<Decimal>,
+    /// The declared paper chargeback rate, a fraction of the expected sale
+    /// value in `[0, 1)` (ADR 0246). Reserved against expected resale, so it
+    /// can only lower a margin; nothing is booked for it.
+    pub chargeback_rate: Option<Decimal>,
 }
 
 /// The six figures feasibility owes, plus the parts that explain them.
@@ -277,6 +281,9 @@ pub struct Assessment {
     pub return_risk: Decimal,
     pub inventory_carry: Decimal,
     pub capital_lockup: Decimal,
+    /// The chargeback reserve already taken out of `expected_resale`: the
+    /// declared rate on the expected gross sale value (ADR 0246).
+    pub chargeback_reserve: Decimal,
 }
 
 fn need<T: Clone>(v: &Option<T>, what: &str) -> Result<T> {
@@ -296,6 +303,13 @@ impl FeasibilityInput {
         let days = need(&self.days_on_market, "the expected days on market")?;
         let capital = need(&self.daily_capital_cost, "the daily cost of capital")?;
         let tax_rate = need(&self.purchase_tax_rate, "the purchase tax rate")?;
+        let chargeback_rate = need(&self.chargeback_rate, "the chargeback rate")?;
+        if chargeback_rate.is_negative() || chargeback_rate >= Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "the chargeback rate {chargeback_rate} is outside [0, 1); a rate of one or more \
+                 would reserve the whole sale, and a negative one would add to it"
+            )));
+        }
         if self.resale.is_empty() {
             return Err(Error::invalid(
                 "feasibility needs a resale price distribution; supply it rather than assessing without it",
@@ -317,6 +331,11 @@ impl FeasibilityInput {
             expected_price += mul("the expected price", *price, *p)?;
         }
         let arb = terms.arbitrage(quantity, unit_price, declared, expected_price)?;
+        // The reserve is on the gross the buyer pays, not the proceeds after
+        // fees: a chargeback reverses the payment, and the larger base is the
+        // one that can only lower the margin further.
+        let gross_sale = mul("the expected gross sale", expected_price, quantity)?;
+        let chargeback_reserve = mul("the chargeback reserve", gross_sale, chargeback_rate)?;
         let landed = arb.cost;
         let purchase_tax = mul("the purchase tax", landed.goods, tax_rate)?;
         let time_to_sale_days = landed.elapsed_days + days;
@@ -335,12 +354,13 @@ impl FeasibilityInput {
             )?;
         Ok(Assessment {
             all_in_cost: landed.total() + purchase_tax,
-            expected_resale: arb.proceeds,
+            expected_resale: arb.proceeds - chargeback_reserve,
             time_to_sale_days,
             return_risk: terms.returns.rate,
             inventory_carry,
             capital_lockup,
             purchase_tax,
+            chargeback_reserve,
             landed,
         })
     }

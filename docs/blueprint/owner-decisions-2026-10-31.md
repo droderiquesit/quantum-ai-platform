@@ -899,3 +899,90 @@ that narrows a security scanner, whatever the owner has delegated.
     as one patch. The same round applied L6's
     `l6-res-9177-secondary-registry.patch`, which defaults off in every
     environment and bills nothing until a region is named.
+
+17. **R12-CAPITAL-4091's counterfactual menu invents no figures** (lane L1,
+    decided 10:45 UTC). The hedge arm needs an instrument and a ratio, and the
+    venue arm a venue and a taker cost. The committed universe holds six
+    synthetic single names and no index or hedge instrument, so any default
+    would be a figure somebody made up. The declaration therefore ships no
+    hedge arm, with the reason stated. It carries a venue arm only if a venue
+    and its cost are already stated in the tree, and otherwise none. It stays
+    counterfactual-only: it scores fills and is not loaded into the hedge
+    policies, so the hedge review journals no proposal from it. It is
+    embedded under `backend/` in `qip-kernel` and resolved against the loaded
+    universe at assembly. Anything it cannot resolve drops that one arm and
+    never refuses the whole set, because a set refused for one missing
+    instrument would leave every fill unscored. The row stays PARTIAL until a
+    person declares a hedge instrument and ratio.
+
+18. **R12-RES-7106's eligibility rule stands, and the fixtures change**
+    (lane L6, decided 11:00 UTC). Under the ruled ADR 0238 an acting problem
+    the constraints leave unsatisfiable is Unresolved and never sized. With
+    that in place, the default cycle forms no proposal on any fixture tape:
+    the best admitted confidence on 192 single-instrument tapes is 4823 bp,
+    against the 5000 bp `r10-eligible` needs. That breaks 38 tests whose
+    premise is that a cycle trades. Changing `r10-eligible`'s premises would
+    be a threshold change, and a test-only seam to set the rule pack is
+    refused by ADR 0212 decision 7. So the fixtures change: each of the 38
+    keeps every assertion byte-identical, and only its inputs build an
+    uncontested panel at or above eligibility. At least five are spot-checked
+    with a mutation of the code they guard, and a new test pins that a
+    contested panel forms no proposal. Kill-switch tests that reached ACT's
+    gate keep a fixture that still reaches it, and the new stop in REASON
+    gets its own test. A journal sealed before the change must still verify
+    under the rule in force when it was sealed. If that needs a schema
+    change, the lane stops and asks before merging. Lane L6's tightening of
+    the fleet Job to Binary Authorization's default policy is accepted. It
+    fails closed, so the fleet worker image must be attested, or exempted by
+    exact repository, before the next fleet apply. That is the owner's to do.
+
+19. **An edge node's pass-time rows close on a deployed node, not on the
+    startup template** (lane L2, on R12-ARCH-9014). The execution node's
+    startup template writes `QIP_VENUE_FEED=simulated`, so a node built from
+    it runs passes. That template is committed but no environment renders it:
+    `execution_nodes_enabled` is false in dev and `execution_nodes` is empty
+    everywhere else. It is therefore not a default path, and a row cannot
+    cite it as one. Making `qip-edge-node` run passes when `QIP_VENUE_FEED`
+    is unset would turn a refusal default into an admission, which the
+    fail-closed principle forbids. The rows stay PARTIAL on deployment. They
+    close when a deployed node runs passes and a game day is recorded
+    against it.
+
+20. **R12-RES-7106's follow-up reading of "contested"** (lane L6). Four
+    points, each accepted:
+    - `SymbolicDerivation`'s `SCHEMA_VERSION` moves from 1 to 2, and a
+      record verifies under the version it was sealed with.
+    - The fixture `PlatformConfig` may carry `licensed_datasets`. The default
+      stays unchanged, and a test pins the default.
+    - Under ADR 0238, "contested" means dissent on the evidence or the
+      direction. Two objections are excluded. A risk-control vote that only
+      reports a blocking limit is excluded, because that limit refuses at its
+      own gate. An adversarial re-argument against a position already held is
+      excluded, because otherwise the platform could never add to, hedge or
+      plan an exit from anything it holds. Each exclusion gets a test, and a
+      test also shows that genuine dissent is still contested.
+    - Test (1)'s assertion becomes "Unresolved and not sized", which is
+      stricter: the ADR removes the old property. Test (5) asserts that
+      nothing trades and the halt is journaled. The ACT kill gate keeps its
+      own unit test.
+    Taken together this is still a tightening against `main`, not an easing.
+
+21. **R12-CONTRACT-7067's health figures are figures already in the tree**
+    (lane L2). Model health is the lattice's `CALIBRATION_BRIER_BOUND` of
+    0.30, carried as `min_quality_bp` 7000 and named as the lattice's bound.
+    It is not called a promotion gate's floor, because no promotion gate
+    has a calibration floor. Data health is each slot's
+    `PolicyItem::time_to_live`. Neither needs a new figure from the owner.
+    `CALIBRATION_FLOOR` and `TAIL_BRIER_BAR` are not used, because neither
+    measures what the clause asks about.
+
+## Where this stopped (2026-11-01)
+
+Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
+limit · resets Nov 6, 1pm (UTC)" around 13:00 UTC on 2026-10-31. L1, L3 and
+L5 were idle with their work pushed, and the limit is the account's, so a
+message to any of them would meet the same refusal. The re-grade of the 389
+older rows stopped on the same limit. Its classifiers finished 22 of 26 batches, and no
+skeptic pass ran over them. Under the standing rule no further agent is
+spawned until the reset, so no older row is re-graded on the strength of
+that partial run. Decision 22 stays reserved for the re-grade.

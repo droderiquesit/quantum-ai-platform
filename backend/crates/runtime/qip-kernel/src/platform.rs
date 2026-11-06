@@ -6055,6 +6055,14 @@ impl Platform {
         // next claim on either side is admitted as if it were the first.
         let mut world_model = WorldModel::new();
         world_model.rebuild_evidence(Self::journaled_evidence_in(&event_log)?)?;
+        // The committed counterfactual arms resolved against the universe
+        // before it moves into the market view (R12-CAPITAL-4091); the menu
+        // below reads them.
+        let committed_arms = config
+            .counterfactual_alternatives
+            .as_ref()
+            .map(|declared| declared.resolve(&universe))
+            .unwrap_or_default();
         let world = Upstream::new(world_model);
         let research_memory = Upstream::new(ResearchMemory::new());
         let market = Upstream::new(MarketView {
@@ -6254,9 +6262,16 @@ impl Platform {
         // firm. The hedge is the first declared policy's instrument and beta
         // — the structure the hedge review would have proposed.
         let mut menu = AlternativeMenu::standard(delay);
+        // The committed alternatives (decision 17) fill an arm only where
+        // neither a hedge policy nor the arbitrage whitelist names one, and
+        // only with what resolves against this universe and is not the
+        // desk's own venue; anything else is no arm, never a refused set.
         if let Some(policy) = config.hedge_policies.first() {
             menu = menu.with_hedge(policy.instrument.clone(), policy.beta);
+        } else if let Some(arm) = &committed_arms.hedge {
+            menu = menu.with_hedge(arm.instrument.clone(), arm.ratio);
         }
+        let mut venue_named = false;
         if let Some(arbitrage) = &config.central.arbitrage
             && let Some((name, venue)) = arbitrage
                 .venues
@@ -6270,6 +6285,17 @@ impl Platform {
             costs.commission_bps = venue.taker_cost.to_f64() * 10_000.0;
             menu = menu.with_venue(VenueOption {
                 venue: VenueId::new(name.clone()),
+                costs,
+                firm_quotes: false,
+            });
+            venue_named = true;
+        }
+        if !venue_named && let Some(arm) = committed_arms.venue_other_than(broker.name()) {
+            let mut costs = CostModel::liquid_equity();
+            // As above: a fraction of notional crosses into basis points.
+            costs.commission_bps = arm.taker_cost.to_f64() * 10_000.0;
+            menu = menu.with_venue(VenueOption {
+                venue: VenueId::new(arm.name.clone()),
                 costs,
                 firm_quotes: false,
             });
@@ -15151,7 +15177,7 @@ impl Platform {
     /// positive or any figure is not finite — a share of nothing is not a
     /// number, and the member is silent rather than reading that book as one
     /// that draws nothing.
-    fn capital_view(&self) -> Option<crate::federation_stage::CapitalView> {
+    fn capital_view(&self, now: Timestamp) -> Option<crate::federation_stage::CapitalView> {
         let equity = self.equity().to_f64();
         if !equity.is_finite() || equity <= 0.0 {
             return None;
@@ -15169,6 +15195,22 @@ impl Platform {
             leverage: gross / equity,
             net_share: net / equity,
             pending_theses: self.pending_theses.len(),
+            // ADR 0257: equity above the NAV floor the survival waterfall
+            // withholds — the emergency-reserve fraction of the same policy
+            // DECIDE sizes under, applied to this pass's equity — and what is
+            // still settling now. Neither reaches DECIDE through the member.
+            floor_headroom: {
+                let equity = self.equity();
+                equity
+                    .checked_mul(self.survival_policy().emergency_reserve_fraction())
+                    .and_then(|floor| equity.checked_sub(floor))
+                    .map(|headroom| headroom.to_f64())
+            },
+            // A total that overflowed is not zero: NaN keeps the settlement
+            // member silent rather than reading it as nothing outstanding.
+            unsettled: self
+                .unsettled_sale_proceeds(now)
+                .map_or(f64::NAN, |total| total.to_f64()),
         };
         [view.cash, view.cash_share, view.leverage, view.net_share]
             .iter()
@@ -15356,7 +15398,7 @@ impl Platform {
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
             }),
-            capital: self.capital_view(),
+            capital: self.capital_view(now),
             macros: self.macro_views(now),
             currencies: self.currency_views(now),
             counterparties: self.counterparty_views(),
@@ -25692,8 +25734,10 @@ impl Platform {
     /// market built from the traded instrument alone would make every set
     /// fail the moment a hedge policy was declared — and the declared hedge
     /// is exactly the alternative R12-CAPITAL-4091 asks the twin to price.
-    /// A hedge instrument with no held bars still reaches the twin and is
-    /// refused there by name rather than silently priced unhedged.
+    /// A hedge instrument with no held bars is not priced at all:
+    /// [`Self::evaluate_alternatives`] drops that one arm from the set
+    /// (decision 17), so the set has no different-hedge entry rather than an
+    /// unhedged figure filed under it, and every other arm is still priced.
     fn counterfactual_bars(&self, object_id: &ObjectId) -> Result<Vec<Bar>> {
         let mut bars = self
             .bar_history
@@ -25800,6 +25844,25 @@ impl Platform {
                 )
             }
         };
+        // A hedge arm whose instrument this platform holds no bars for is
+        // dropped for this set, not carried into the twin, which refuses a
+        // hedged alternative it cannot size and would refuse the whole set
+        // with it (decision 17: fail closed to "no arm", never to "all sets
+        // refused"). The set then simply has no different-hedge entry.
+        let unpriceable_hedge =
+            self.counterfactuals
+                .menu()
+                .hedge
+                .as_ref()
+                .is_some_and(|(hedge, _)| {
+                    hedge != &actual.object_id && !self.bar_history.contains_key(hedge.as_str())
+                });
+        if unpriceable_hedge {
+            return self
+                .counterfactuals
+                .without_hedge()
+                .evaluate(market, &decision, &actual, &realised);
+        }
         self.counterfactuals
             .evaluate(market, &decision, &actual, &realised)
     }

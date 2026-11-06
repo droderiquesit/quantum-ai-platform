@@ -139,6 +139,13 @@ pub const CAPITAL: &str = "portfolio.capital.global";
 /// The counterparty member (R12-WORLD-3049): will the next pass record a
 /// feasibility refusal at this venue?
 pub const COUNTERPARTY: &str = "network.counterparty.global";
+/// The capital-floor member (R12-WORLD-1178, ADR 0257): will the next pass
+/// find less room between the book's equity and the survival waterfall's
+/// NAV floor than this one did?
+pub const CAPITAL_FLOOR: &str = "portfolio.capital-floor.global";
+/// The settlement member (R12-WORLD-1178, ADR 0257): will the next pass
+/// still hold desk sale proceeds in settlement?
+pub const SETTLEMENT: &str = "counterparty.settlement.global";
 /// The most venues one pass forecasts for; a bound on the propositions the
 /// member opens, not a forecast about which venues matter.
 pub const COUNTERPARTY_MAX_VENUES: usize = 32;
@@ -310,6 +317,14 @@ pub struct CapitalView {
     /// Approved theses waiting for construction: the book's open claims on
     /// capital for the next pass.
     pub pending_theses: usize,
+    /// Equity less the NAV floor the survival policy withholds from it
+    /// (ADR 0257), as `f64`: the capital-floor member compares the next
+    /// pass's against it. `None` where the floor does not compute, and the
+    /// member is silent rather than reading such a book as one with no floor.
+    pub floor_headroom: Option<f64>,
+    /// Desk sale proceeds still in settlement this pass (ADR 0257), as
+    /// `f64`; zero when nothing is outstanding.
+    pub unsettled: f64,
 }
 
 /// What the counterparty member reads about one venue (R12-WORLD-3049): the
@@ -574,6 +589,13 @@ enum Pending {
         cash: f64,
         cycle: u64,
     },
+    Floor {
+        headroom: f64,
+        cycle: u64,
+    },
+    Settlement {
+        cycle: u64,
+    },
     Macro {
         series: String,
         positive: bool,
@@ -609,6 +631,8 @@ impl Pending {
             | Self::Halted { cycle }
             | Self::Chain { cycle, .. }
             | Self::Funding { cycle, .. }
+            | Self::Floor { cycle, .. }
+            | Self::Settlement { cycle }
             | Self::Counterparty { cycle, .. }
             | Self::Macro { cycle, .. }
             | Self::Currency { cycle, .. } => *cycle,
@@ -1005,6 +1029,16 @@ pub fn counterparty_proposition(venue: &str, cycle: u64) -> String {
     format!("counterparty:{venue}:refuses-next-pass@{cycle}")
 }
 
+/// The proposition the next pass's floor headroom answers (ADR 0257).
+pub fn floor_proposition(cycle: u64) -> String {
+    format!("capital:floor-headroom-narrows-next-pass@{cycle}")
+}
+
+/// The proposition the next pass's unsettled sale proceeds answer (ADR 0257).
+pub fn settlement_proposition(cycle: u64) -> String {
+    format!("settlement:proceeds-outstanding-next-pass@{cycle}")
+}
+
 /// The proposition the next pass's book cash answers (ADR 0194).
 pub fn funding_proposition(cycle: u64) -> String {
     format!("capital:funding-draw-next-pass@{cycle}")
@@ -1285,6 +1319,28 @@ impl FederationStage {
                 "funding-draw",
                 ModelKind::Observational,
                 &["kernel:capital", "kernel:pending-theses"],
+                0.25,
+            ),
+            declare(
+                CAPITAL_FLOOR.into(),
+                "portfolio/capital",
+                "global",
+                1,
+                Abstraction::Meso,
+                "floor-headroom",
+                ModelKind::Observational,
+                &["kernel:capital", "kernel:sizing-budget"],
+                0.25,
+            ),
+            declare(
+                SETTLEMENT.into(),
+                "counterparty/network",
+                "global",
+                1,
+                Abstraction::Meso,
+                "settlement-outstanding",
+                ModelKind::Observational,
+                &["kernel:unsettled-sales"],
                 0.25,
             ),
             declare(
@@ -1676,6 +1732,79 @@ impl FederationStage {
                     proposition.clone(),
                     Pending::Funding {
                         cash: capital.cash,
+                        cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
+        // The capital-floor member (ADR 0257): will the room between equity
+        // and the survival floor narrow by the next pass? An exposed book is
+        // the one a mark can move, so leverage leans the view. A stated
+        // prior, not a fit; calibration charges every miss. Silent where the
+        // floor did not compute.
+        if let Some((capital, headroom)) = inputs
+            .capital
+            .and_then(|c| c.floor_headroom.map(|h| (c, h)))
+            .filter(|(_, h)| h.is_finite())
+        {
+            let probability = 0.2 + 0.5 * capital.leverage.clamp(0.0, 1.0);
+            let proposition = floor_proposition(inputs.cycle);
+            if feed(
+                &mut self.federation,
+                CAPITAL_FLOOR,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability,
+                    evidence_fit: 0.5,
+                    causal_coherence: 0.5,
+                    uncertainty: 0.5,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Floor {
+                        headroom,
+                        cycle: inputs.cycle,
+                    },
+                );
+                propositions.push(proposition);
+            }
+        }
+
+        // The settlement member (ADR 0257): will the next pass still hold
+        // sale proceeds in settlement? Proceeds outstanding now are the
+        // likeliest to be outstanding next, since a settlement cycle is
+        // longer than a pass; none outstanding needs a sale first. Stated
+        // priors, scored by calibration.
+        if let Some(capital) = inputs.capital.filter(|c| c.unsettled.is_finite()) {
+            let probability = if capital.unsettled > 0.0 { 0.7 } else { 0.1 };
+            let proposition = settlement_proposition(inputs.cycle);
+            if feed(
+                &mut self.federation,
+                SETTLEMENT,
+                Assessment {
+                    proposition: proposition.clone(),
+                    probability,
+                    evidence_fit: 0.5,
+                    causal_coherence: 0.5,
+                    uncertainty: 0.4,
+                    at: now,
+                },
+                &mut fed,
+                &mut refused,
+                &mut self.views,
+                &self.branches,
+            ) {
+                self.pending.insert(
+                    proposition.clone(),
+                    Pending::Settlement {
                         cycle: inputs.cycle,
                     },
                 );
@@ -2129,6 +2258,19 @@ impl FederationStage {
                     inputs.capital.map(|c| Some(c.cash < *cash))
                 }
                 Pending::Funding { .. } => None,
+                // Answered by the next pass's floor: a book whose floor was
+                // not computed that pass leaves it waiting.
+                Pending::Floor { headroom, cycle } if *cycle < inputs.cycle => inputs
+                    .capital
+                    .and_then(|c| c.floor_headroom)
+                    .filter(|h| h.is_finite())
+                    .map(|h| Some(h < *headroom)),
+                Pending::Floor { .. } => None,
+                Pending::Settlement { cycle } if *cycle < inputs.cycle => inputs
+                    .capital
+                    .filter(|c| c.unsettled.is_finite())
+                    .map(|c| Some(c.unsettled > 0.0)),
+                Pending::Settlement { .. } => None,
                 // Answered by the series' next release: did it surprise the
                 // same way? A release of exactly consensus answers `false`.
                 Pending::Macro {
@@ -2302,6 +2444,8 @@ mod tests {
             leverage: 1.0 - cash / 1_000.0,
             net_share: 1.0 - cash / 1_000.0,
             pending_theses: waiting,
+            floor_headroom: Some(cash),
+            unsettled: 0.0,
         }
     }
 
@@ -2353,7 +2497,7 @@ mod tests {
         }];
         let review = stage.run(&fed_inputs, day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 15, "{review:?}");
+        assert_eq!(review.population.len(), 17, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -2365,8 +2509,9 @@ mod tests {
         assert!(review.silent.is_empty(), "{:?}", review.silent);
         // One instrument proposition with ten views (seven tape members, the
         // company member, the order-flow member and the causal model), plus
-        // self, capital, macro, one venue and chain.
-        assert_eq!(review.arbitrations.len(), 6);
+        // self, capital, capital floor, settlement (ADR 0257), macro, one
+        // venue and chain.
+        assert_eq!(review.arbitrations.len(), 8);
         let instrument = &review.arbitrations[0];
         assert_eq!(instrument.disagreement.views.len(), 10);
         // WORLD-3051 and -3042: the rare-regime, alternate-future and causal
@@ -2743,10 +2888,11 @@ mod tests {
     fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
         let mut stage = FederationStage::new();
         let first = stage.run(&rising(1, 100.0, day(0)), day(0));
-        // Premise: fifteen members (the counterparty member, R12-WORLD-3049,
-        // the order-flow member, ADR 0255, and the macro member, ADR 0256,
-        // among them), no branch, and nothing scored yet to decide on.
-        assert_eq!(first.population.len(), 15);
+        // Premise: seventeen members (the counterparty member,
+        // R12-WORLD-3049, the order-flow member, ADR 0255, the macro member,
+        // ADR 0256, and the floor and settlement members, ADR 0257, among
+        // them), no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 17);
         assert!(branch_ids(&stage, day(0)).is_empty());
         let second = stage.run(&rising(2, 101.0, day(1)), day(1));
         let instrument = &second.arbitrations[0];
@@ -2754,7 +2900,7 @@ mod tests {
         assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
         let branches = branch_ids(&stage, day(1));
         assert_eq!(branches.len(), 1, "{branches:?}");
-        assert_eq!(second.population.len(), 16);
+        assert_eq!(second.population.len(), 18);
         let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
         assert_eq!(lineage.parents.len(), 1);
         assert!(branches[0].starts_with(&lineage.parents[0]));
@@ -2857,7 +3003,7 @@ mod tests {
             expired: Vec::new(),
             research: None,
         };
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 17);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 19);
         let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
         stage.act_on_decisions(
             std::slice::from_ref(&arbitration),
@@ -2866,20 +3012,20 @@ mod tests {
             &mut refused,
         );
         assert!(refused.is_empty(), "{refused:?}");
-        // 17 live, two branches merged away, one result: 16, every root kept.
+        // 19 live, two branches merged away, one result: 18, every root kept.
         let live: Vec<String> = stage
             .federation()
             .live_specs(day(0))
             .iter()
             .map(|s| s.id().to_string())
             .collect();
-        assert_eq!(live.len(), 16, "{live:?}");
+        assert_eq!(live.len(), 18, "{live:?}");
         assert!(roots.iter().all(|r| live.contains(r)));
         assert_eq!(stage.branches.len(), 1);
         // Replaying the same decision has no live pair left to fold.
         stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
         assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(stage.federation().live_specs(day(0)).len(), 16);
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 18);
     }
 
     /// ADR 0256: a macro forecast waits for its series' next release in
@@ -3224,6 +3370,105 @@ mod tests {
             "{:?}",
             fourth.silent
         );
+    }
+
+    /// R12-WORLD-1178 (ADR 0257): the capital-floor member forecasts whether
+    /// the room above the survival floor narrows and the settlement member
+    /// whether sale proceeds are still settling; the next pass's book answers
+    /// both either way; a book whose floor did not compute leaves the floor
+    /// member silent; and neither proposition is one the federation's
+    /// narrowing reads, so neither can move a size.
+    ///
+    /// Mutations: resolve the floor on headroom rising; resolve settlement on
+    /// nothing outstanding; drop the outstanding term of the settlement view;
+    /// feed either member nothing.
+    #[test]
+    fn the_floor_and_settlement_members_forecast_from_the_book_and_the_next_pass_answers_them() {
+        let view_of = |review: &FederationReview, proposition: &str, model: &str| {
+            review
+                .arbitrations
+                .iter()
+                .find(|a| a.proposition == proposition)
+                .and_then(|a| a.disagreement.views.iter().find(|v| v.model == model))
+                .map(|v| v.probability)
+        };
+        let with = |cycle: u64, at: Timestamp, headroom: Option<f64>, unsettled: f64| {
+            let mut fed = inputs(cycle, 100.0 + cycle as f64, at, Some(1));
+            let mut view = book(800.0, 0);
+            view.floor_headroom = headroom;
+            view.unsettled = unsettled;
+            fed.capital = Some(view);
+            fed
+        };
+        let mut stage = FederationStage::new();
+        let first = stage.run(&with(1, day(0), Some(900.0), 250.0), day(0));
+        assert!(view_of(&first, &floor_proposition(1), CAPITAL_FLOOR).is_some());
+        let outstanding = view_of(&first, &settlement_proposition(1), SETTLEMENT)
+            .expect("the settlement member forecast");
+        assert!(!first.silent.contains(&CAPITAL_FLOOR.to_string()));
+        assert!(!first.silent.contains(&SETTLEMENT.to_string()));
+
+        // Less room above the floor and nothing settling: both answered.
+        let second = stage.run(&with(2, day(1), Some(850.0), 0.0), day(1));
+        let resolved = |review: &FederationReview, proposition: String| {
+            review
+                .resolved
+                .iter()
+                .find(|r| r.proposition == proposition)
+                .map(|r| (r.outcome, r.forecasts.keys().cloned().collect::<Vec<_>>()))
+        };
+        let (narrowed, by) =
+            resolved(&second, floor_proposition(1)).expect("the next pass's floor resolved it");
+        assert!(narrowed, "headroom fell and the floor resolved false");
+        assert!(by.contains(&CAPITAL_FLOOR.to_string()));
+        let (settling, by) = resolved(&second, settlement_proposition(1))
+            .expect("the next pass's settlement resolved it");
+        assert!(
+            !settling,
+            "nothing was settling and the proposition resolved true"
+        );
+        assert!(by.contains(&SETTLEMENT.to_string()));
+        let idle = view_of(&second, &settlement_proposition(2), SETTLEMENT)
+            .expect("the settlement member forecast");
+        assert!(
+            outstanding > idle,
+            "proceeds outstanding did not raise the settlement view ({outstanding} vs {idle})"
+        );
+
+        // More room and a sale settling: the opposite answers.
+        let third = stage.run(&with(3, day(2), Some(950.0), 40.0), day(2));
+        let (narrowed, _) =
+            resolved(&third, floor_proposition(2)).expect("the next pass's floor resolved it");
+        assert!(!narrowed, "headroom rose and the floor resolved true");
+        let (settling, _) = resolved(&third, settlement_proposition(2))
+            .expect("the next pass's settlement resolved it");
+        assert!(
+            settling,
+            "a sale was settling and the proposition resolved false"
+        );
+
+        // A floor that did not compute: that member is silent, the other is
+        // not.
+        let fourth = stage.run(&with(4, day(3), None, 0.0), day(3));
+        assert!(view_of(&fourth, &floor_proposition(4), CAPITAL_FLOOR).is_none());
+        assert!(fourth.silent.contains(&CAPITAL_FLOOR.to_string()));
+        assert!(!fourth.silent.contains(&SETTLEMENT.to_string()));
+
+        // The only power the federation has over DECIDE is the narrowing,
+        // and it reads instrument propositions: removing both members'
+        // arbitrations leaves every narrowing exactly as it was.
+        for review in [&first, &second, &third, &fourth] {
+            let mut without = review.clone();
+            without.arbitrations.retain(|a| {
+                !a.proposition.starts_with("capital:floor")
+                    && !a.proposition.starts_with("settlement:")
+            });
+            assert!(without.arbitrations.len() < review.arbitrations.len());
+            assert_eq!(
+                narrowings_of(review, ["AAA".to_string()]),
+                narrowings_of(&without, ["AAA".to_string()])
+            );
+        }
     }
 
     /// R12-WORLD-3049: the counterparty member forecasts, per venue, whether
