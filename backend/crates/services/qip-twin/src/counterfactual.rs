@@ -602,6 +602,20 @@ impl CounterfactualEngine {
         self.horizon
     }
 
+    /// This engine with the different-hedge arm removed: the same seed,
+    /// horizon and every other arm. For a caller that holds no history for
+    /// the hedge instrument, so it can price every other alternative rather
+    /// than have the twin refuse the whole set for one arm it cannot size.
+    pub fn without_hedge(&self) -> Self {
+        let mut menu = self.menu.clone();
+        menu.hedge = None;
+        Self {
+            seed: self.seed,
+            menu,
+            horizon: self.horizon,
+        }
+    }
+
     /// Fix an alternative against what was knowable at the decision.
     ///
     /// Refuses a view that has seen past the decision. That refusal is the

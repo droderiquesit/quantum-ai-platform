@@ -925,7 +925,7 @@ fn serve_one(mut stream: std::net::TcpStream, endpoint: &MeshEndpoint) {
 /// The cell's acknowledgement of a policy it applied reaches the fabric's
 /// spool after the turn that flushed it, on the journal stream the drain
 /// delivers to `reflex-journal.local` (the policy-ack half of
-/// R12-REFLEX-5034; telemetry is not yet a fabric record).
+/// R12-REFLEX-5034; telemetry is not a fabric record (ADR 0133 d4)).
 ///
 /// Mutation: drop `Decision::PolicyApplied` entries in `SpoolWriter`'s
 /// journal handling (or stop flushing in `DecisionLoop::turn`) and the
@@ -989,6 +989,83 @@ fn a_node_whose_fabric_certificate_is_not_current_says_so_in_its_health_body() -
         body["workload_certificate"]["source"],
         "certificate_authority_service"
     );
+    Ok(())
+}
+
+/// ADR 0133 decision 4, pinned (R12-REFLEX-5034): telemetry leaves the node
+/// only by the scrape, and is not a fabric record kind. The requirement text
+/// names telemetry beside the journal and outcomes; the design answers it with
+/// one source, and this keeps it one. A turn that records metrics writes them
+/// to the registry the scrape serves and to nothing on the spool: every spooled
+/// record is one of the writer's eight declared kinds, on the P1 or P2 stream
+/// the drain delivers, and none is P4 telemetry bound for `telemetry.local`.
+///
+/// Mutation: add a `RecordKind` whose turn writes a metric snapshot to the
+/// spool, and its record is neither a declared binding's topic nor on a
+/// drained stream; this fails.
+#[test]
+fn telemetry_leaves_the_node_only_by_the_scrape_and_no_spool_record_carries_a_metric() -> Result<()>
+{
+    use qip_edge_node::event_fabric::writer::RecordKind;
+    use qip_events::event_fabric::policy::QosClass;
+    use qip_observability::metrics::names;
+    const DECLARED: [RecordKind; 8] = [
+        RecordKind::JournalRecorded,
+        RecordKind::OutcomeRecorded,
+        RecordKind::ChainSpan,
+        RecordKind::PassMarked,
+        RecordKind::FeatureDigested,
+        RecordKind::MarketEventApplied,
+        RecordKind::GapP2,
+        RecordKind::GapP1,
+    ];
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let registry = Arc::clone(rig.decisions.cell().metrics_registry());
+
+    let _watchdog = Watchdog::arm("the turns' records reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 10;
+    let spooled = loop {
+        rig.decisions.turn(t(second))?;
+        second += 1;
+        let spooled = writer::records(&rig.spool)?;
+        if spooled.len() >= 2 {
+            break spooled;
+        }
+        assert!(waited.elapsed() < PATIENCE, "no turn reached the spool");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+
+    // Premise: the turns recorded metrics, into the registry the scrape
+    // serves, so a spool free of them is the design and not an idle loop.
+    let snapshot = registry.snapshot();
+    assert!(
+        snapshot.counter_total(names::EDGE_WORK_PASSES) > 0,
+        "premise: the turns ran no pass into the scrape registry"
+    );
+
+    let topics: Vec<_> = DECLARED.iter().map(|kind| kind.binding().topic).collect();
+    for record in &spooled {
+        assert!(
+            topics.contains(&record.event.topic),
+            "a spooled record on {:?} is none of the writer's eight declared kinds",
+            record.event.topic
+        );
+        assert!(
+            matches!(
+                record.stream,
+                QosClass::P1Outcomes | QosClass::P2MarketJournal
+            ),
+            "a spooled record rides {:?}, which no drain delivers; telemetry is the \
+             scrape's alone (ADR 0133 d4)",
+            record.stream
+        );
+        assert!(
+            !format!("{:?}", record.event).contains(names::EDGE_WORK_PASSES),
+            "a spooled record carries a metric the scrape already serves"
+        );
+    }
     Ok(())
 }
 

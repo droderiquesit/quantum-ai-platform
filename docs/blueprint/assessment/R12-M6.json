@@ -798,13 +798,14 @@
   {
     "id": "R12-EXPAND-6034",
     "status": "PARTIAL",
-    "current": "Champion/challenger and distillation (qip-training distil with fidelity and step-cost budget) run in the deep brain; ModelPack types exist in contracts and kernel; larger slow-lane model families absent.",
+    "current": "Champion/challenger and distillation run in the deep brain. Each promotion LearningDesk::shadow_round makes through Platform::promote_model_from advances the kernel's lineage record (qip-kernel model_serving.rs ModelPack, which ADR 0149 d2 renames ModelSetVersion; not yet renamed): the new record names its predecessor, the displaced models as removed and the challenger as added. learning.rs a_challenger_the_learning_desk_promotes_over_the_champion_advances_the_platforms_model_pack asserts this from the desk's own promotion and rebuilds the record with pack_membership from model_pack_lineage. The shipped deep brain reaches this path (main.rs node::run_with -> node.rs maybe_learn -> evolution.rs promote_candidate). No promotion drafts the contract qip_contracts::policy::ModelPack, the record a cell verifies.",
     "evidence": [
       "backend/crates/services/qip-training/src/distill.rs:217 latency budget refusal",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:139 distil"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:139 distil",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_challenger_the_learning_desk_promotes_over_the_champion_advances_the_platforms_model_pack (mutations: promote_model_from in shadow_round replaced by an Err; succeed_model_pack skipped in the kernel's promotion path)"
     ],
-    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
+    "gap": "ADR 0149 d2: rename the kernel ModelPack to ModelSetVersion (set_membership, model_set_lineage). ADR 0149 d3: after each successful promote_model_from in LearningDesk::shadow_round, write one unsigned contract ModelPack draft whose rollback_parent is the previous signed pack's artifact digest, carrying the ModelSetVersion id, refusing to write when expiry, universes or budget are absent; the deep brain never signs it (R12-REASON-7203). Shared with R12-CONTRACT-7064. Larger slow-lane models and new architectures stay declined under decision 5 (R12-MODEL-7007).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -812,10 +813,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
-    "verification": "cargo test (crate producing ModelPack lineage)",
+    "verification": "cargo test -p qip-deepbrain --lib a_challenger_the_learning_desk",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-10-31: the decider's closure (test of the kernel lineage from the desk) is done; one skeptic returned PARTIAL because the governing skeptic closure (ADR 0149 d2 rename, d3 draft pack) is not built, and both stay in the gap."
   },
   {
     "id": "R12-EXPAND-6035",
@@ -1230,11 +1231,13 @@
   {
     "id": "R12-EXPAND-6052",
     "status": "PARTIAL",
-    "current": "Distillation to a step-cost-bounded student exists; no lane-promotion record or path to a reflex cell.",
+    "current": "ResearchLoop::distil records a PromotionLane for every promoted question on ResearchRound.lanes, derived from the compiled form (ADR 0149 d6): Reflex { package_id } when compile accepts the discovery inside MAX_RULES, MAX_CONDITIONS and MAX_ADJUSTMENT_BPS, Research { refusal } otherwise, with no package. A promoted question left without a lane fails the sweep. No latency-budget field is added. The shipped deep brain runs this (main.rs ResearchLoop::new_for_node, node.rs maybe_sweep). Test: research_market.rs a_promoted_correction_inside_the_reflex_bounds_is_recorded_reflex_and_one_past_them_research.",
     "evidence": [
-      "backend/crates/services/qip-training/src/distill.rs:217"
+      "backend/crates/apps/qip-deepbrain/src/research.rs PromotionLane, ResearchRound.lanes, ResearchLoop::distil",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_promoted_correction_inside_the_reflex_bounds_is_recorded_reflex_and_one_past_them_research (mutations: Reflex on the refused arm; no lane on the refused arm)",
+      "docs/adr/0149 decision 6"
     ],
-    "gap": "No campaign, lineage or promotion record carries a latency budget, so a lane cannot be chosen from one: ResearchLoop::distil compiles a reflex package from every promoted fill-bias correction whatever its budget. Choosing Research / WarmService / Reflex needs a latency-budget field on the campaign or its desk item (a contract change in qip-contracts expansion and qip-expansion promotion.rs), and Reflex publication needs the ADR 0110 package signer, which no deployment installs (packages are held_unsigned).",
+    "gap": "WarmService is not built (ADR 0149 d6): no artefact form would occupy it. Reflex-lane packages are held_unsigned on the shipped deep brain because no deployment installs the package signer (R12-REASON-7203). The lane record is neither printed by ResearchRound::describe nor journaled, so it is readable only from the in-memory round. Only Reflex reaches the package deque by an early return in distil, not by type.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1242,10 +1245,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-deepbrain --test research_market",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0149 decision 6 already decided this, and I keep it. A promoted result's lane is read from its compiled form, and no latency-budget field is added. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0149 decision 6 already decided this, and I keep it. A promoted result's lane is read from its compiled form, and no latency-budget field is added. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-10-31: built to the closure; one skeptic CONFIRMED the closure and named the limits now in the gap; the refusal assertion matches the bound's sentence rather than a bare 500."
   },
   {
     "id": "R12-EXPAND-6053",

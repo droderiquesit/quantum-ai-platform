@@ -19,8 +19,25 @@
 //! cancelling before execution. An order pulled by a halt's mass cancel or
 //! from a failed venue was pulled by an event the cell did not choose, and
 //! counting those would let one venue outage convict the desk of a pattern
-//! it never ran. A requote is a cancel and a replacement at a new price —
-//! the order's intent to trade survives it — and is not counted either.
+//! it never ran. A requote whose order had nothing filled is counted, as a
+//! withdrawal and a placement on the same side of the same book
+//! (R12-GOV-6126): a fast enough repricer was otherwise the place-and-cancel
+//! pattern on the one path this window never saw.
+//!
+//! **Requote layering is a second arm, beside that ratio and never in its
+//! place** (ADR 0285, amending ADR 0155 section 13 by a new record). A
+//! requote counts toward it only when it moved the order **away from the
+//! touch**. The arm needs three things together: at least `min_cancellations`
+//! of one side's requotes moved away, those are more than `max_cancel_ratio`
+//! of that side's requotes, and the same instrument **filled on the opposite
+//! side**, at any venue. That is the layering shape. Orders rest on one side
+//! to lean on the price and are pulled before they trade, while the other
+//! side takes the benefit. A market maker's requotes at or inside the touch
+//! are trying to trade and never count. The bound is this policy's own; no
+//! second number is chosen. Counting every requote as a withdrawal and a
+//! placement keeps the cancel ratio of exactly this pattern under three in
+//! four for ever, which is why the arm reads different facts rather than a
+//! larger count.
 //!
 //! Keyed by venue, instrument and side, because a pattern is one side of
 //! one book: a desk resting bids that expire while its asks fill is still
@@ -111,7 +128,25 @@ enum Event {
     CancelledUnfilled,
 }
 
+/// One requote of an order with nothing filled: whether it moved the order
+/// away from the touch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Requote {
+    away_from_touch: bool,
+}
+
 type Key = (VenueId, ObjectId, BookSide);
+
+/// Fills are keyed by instrument and side alone: the benefit of layering one
+/// venue's book can be taken at another (ADR 0285 decision 1).
+type FillKey = (ObjectId, BookSide);
+
+fn opposite(side: BookSide) -> BookSide {
+    match side {
+        BookSide::Ask => BookSide::Bid,
+        BookSide::Bid => BookSide::Ask,
+    }
+}
 
 /// The cell's record of what it placed and withdrew unfilled, per side of
 /// each book, over the policy's window.
@@ -119,6 +154,8 @@ type Key = (VenueId, ObjectId, BookSide);
 pub struct ConductWatch {
     policy: ConductPolicy,
     events: BTreeMap<Key, VecDeque<(Timestamp, Event)>>,
+    requotes: BTreeMap<Key, VecDeque<(Timestamp, Requote)>>,
+    fills: BTreeMap<FillKey, VecDeque<(Timestamp, ())>>,
 }
 
 impl ConductWatch {
@@ -126,7 +163,36 @@ impl ConductWatch {
         Self {
             policy,
             events: BTreeMap::new(),
+            requotes: BTreeMap::new(),
+            fills: BTreeMap::new(),
         }
+    }
+
+    /// A requote of an order on this side of this book that had nothing
+    /// filled, and whether it moved the order away from the touch (ADR 0285).
+    /// The caller judges the touch against its own book; one it cannot judge
+    /// is not away.
+    pub fn requoted(
+        &mut self,
+        venue: &VenueId,
+        object: &ObjectId,
+        side: BookSide,
+        away_from_touch: bool,
+        at: Timestamp,
+    ) {
+        let window = self.policy.window;
+        let requotes = self
+            .requotes
+            .entry((venue.clone(), object.clone(), side))
+            .or_default();
+        bounded_push(requotes, at, window, Requote { away_from_touch });
+    }
+
+    /// A fill of this instrument on this side, at any venue.
+    pub fn filled(&mut self, object: &ObjectId, side: BookSide, at: Timestamp) {
+        let window = self.policy.window;
+        let fills = self.fills.entry((object.clone(), side)).or_default();
+        bounded_push(fills, at, window, ());
     }
 
     /// An order the venue accepted from the cell.
@@ -152,6 +218,64 @@ impl ConductWatch {
     /// Why a further order on this side of this book would continue a
     /// place-and-cancel pattern, or `None` when it would not.
     pub fn refusal(
+        &mut self,
+        venue: &VenueId,
+        object: &ObjectId,
+        side: BookSide,
+        now: Timestamp,
+    ) -> Option<String> {
+        self.cancel_ratio_refusal(venue, object, side, now)
+            .or_else(|| self.layering_refusal(venue, object, side, now))
+    }
+
+    /// The layering arm (ADR 0285): one side's requotes away from the touch,
+    /// past the policy's minimum and ratio, while the instrument filled on
+    /// the opposite side at any venue.
+    fn layering_refusal(
+        &mut self,
+        venue: &VenueId,
+        object: &ObjectId,
+        side: BookSide,
+        now: Timestamp,
+    ) -> Option<String> {
+        let window = self.policy.window;
+        let requotes = self
+            .requotes
+            .get_mut(&(venue.clone(), object.clone(), side))?;
+        prune(requotes, now, window);
+        let away = requotes.iter().filter(|(_, r)| r.away_from_touch).count();
+        if away < self.policy.min_cancellations || requotes.is_empty() {
+            return None;
+        }
+        // Counts, not money, as in the cancel ratio.
+        let ratio = Decimal::from(away as i64).checked_div(Decimal::from(requotes.len() as i64))?;
+        if ratio <= self.policy.max_cancel_ratio {
+            return None;
+        }
+        let fills = self.fills.get_mut(&(object.clone(), opposite(side)))?;
+        prune(fills, now, window);
+        if fills.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "the cell requoted {away} of its last {} {} order(s) for {} at {} away from the \
+             touch within {} s while {} filled on the other side, past the {} bound; a further \
+             order of that shape would continue a layering pattern, so none is placed until \
+             the window holds less",
+            requotes.len(),
+            match side {
+                BookSide::Ask => "buy",
+                BookSide::Bid => "sell",
+            },
+            object.as_str(),
+            venue.as_str(),
+            window.as_millis() / 1_000,
+            object.as_str(),
+            self.policy.max_cancel_ratio,
+        ))
+    }
+
+    fn cancel_ratio_refusal(
         &mut self,
         venue: &VenueId,
         object: &ObjectId,
@@ -194,15 +318,26 @@ impl ConductWatch {
     fn push(&mut self, key: Key, at: Timestamp, event: Event) {
         let window = self.policy.window;
         let events = self.events.entry(key).or_default();
-        prune(events, at, window);
-        if events.len() >= MAX_EVENTS_PER_KEY {
-            events.pop_front();
-        }
-        events.push_back((at, event));
+        bounded_push(events, at, window, event);
     }
 }
 
-fn prune(events: &mut VecDeque<(Timestamp, Event)>, now: Timestamp, window: Duration) {
+/// Every queue here is bounded twice: pruned to the window, and capped at
+/// [`MAX_EVENTS_PER_KEY`] with the oldest dropped first.
+fn bounded_push<T>(
+    events: &mut VecDeque<(Timestamp, T)>,
+    at: Timestamp,
+    window: Duration,
+    event: T,
+) {
+    prune(events, at, window);
+    if events.len() >= MAX_EVENTS_PER_KEY {
+        events.pop_front();
+    }
+    events.push_back((at, event));
+}
+
+fn prune<T>(events: &mut VecDeque<(Timestamp, T)>, now: Timestamp, window: Duration) {
     while let Some((at, _)) = events.front() {
         if now.since(*at) < window {
             break;
