@@ -3312,7 +3312,7 @@ impl ResearchLoop {
                 continue;
             }
             let subjects = signal.affected_entities().to_vec();
-            let Some(built) = conditional_shock(signal.id(), &subjects, &history) else {
+            let Some(built) = conditional_shock(signal.id(), &subjects, history) else {
                 continue;
             };
             let description = format!(
@@ -3350,7 +3350,7 @@ impl ResearchLoop {
             if added.contains(id) {
                 continue;
             }
-            let Some(built) = conditional_shock(&branch.signal_id, &branch.subjects, &history)
+            let Some(built) = conditional_shock(&branch.signal_id, &branch.subjects, history)
             else {
                 continue;
             };
