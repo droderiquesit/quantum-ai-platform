@@ -250,11 +250,6 @@ struct SymbolicReading {
     /// The pack and version the derivation ran under.
     pack: (String, u32),
     infeasible: Option<String>,
-    /// The acting constraints are unsatisfiable and nothing collided (ADR
-    /// 0238): scored in shadow, never sized. A third reason to form no
-    /// proposal, and not interchangeable with the other two either: it
-    /// keeps review's approval, because review did approve it.
-    unresolved: Option<String>,
 }
 
 /// How many of the platform's own executions the desk's adversary probe is
@@ -16895,16 +16890,7 @@ impl Platform {
                     veto_rules: symbolic_veto_rules,
                     pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
-                    unresolved: symbolic_unresolved,
-                } = self.reason_symbolically(
-                    &opportunity,
-                    &reasoned,
-                    // Dissent about the thesis, not every negative finding:
-                    // a limit report and a re-argument objection on a held
-                    // position are not contest (ADR 0238, owner decision 20).
-                    report.contests_the_thesis(),
-                    now,
-                );
+                } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
                 // ADR 0212: a derivation that contradicts itself is a
                 // conclusion no money may rest on, whatever review said, so
                 // it is demoted here beside the veto and the decision below
@@ -16953,7 +16939,7 @@ impl Platform {
                         report.findings.len(),
                         report.runs.len(),
                         report.coverage() * 100.0,
-                        if report.contests_the_thesis() {
+                        if report.is_contested() {
                             ", contested"
                         } else {
                             ""
@@ -17060,26 +17046,6 @@ impl Platform {
                     // tournament's review in LEARN.
                     outcome = outcome.with_problem(format!(
                         "approved but refuted by the verifier society: {refutation}"
-                    ));
-                    DecisionTaken::NotSizeable
-                } else if let Some(unresolved) = symbolic_unresolved {
-                    // ADR 0238, R12-RES-7106: review approved it, the
-                    // verifier society did not refute it (that arm is
-                    // first because a falsified explanation is the more
-                    // specific finding, and ADR 0170 owns its words), and the
-                    // platform's own acting constraints are unsatisfiable,
-                    // so the conclusion is unresolved. Its derivation, with
-                    // the constraints that block acting and the premises
-                    // that would have to change, is already on the log under
-                    // `kernel/symbolic`; its claim was written above, so
-                    // LEARN grades it like any other and it is scored in
-                    // shadow. Nothing is queued for DECIDE. A contested
-                    // thesis lands here — dissent is not a contradiction and
-                    // is not reported as one — and if that leaves the paper
-                    // book empty, that is what the eligibility rule says.
-                    outcome = outcome.with_problem(format!(
-                        "symbolically unresolved, scored in shadow, no proposal formed: \
-                         {unresolved}"
                     ));
                     DecisionTaken::NotSizeable
                 } else {
@@ -17497,7 +17463,6 @@ impl Platform {
             self.symbolic_rule_pack.version,
         );
         let infeasible = derivation.infeasibility();
-        let unresolved = derivation.unresolved();
         let problem = self
             .journal_record(derivation, "kernel/symbolic", now)
             .err()
@@ -17514,7 +17479,6 @@ impl Platform {
             veto_rules,
             pack,
             infeasible,
-            unresolved,
         }
     }
 
@@ -30284,89 +30248,6 @@ mod decide_tests {
         );
     }
 
-    /// Owner decision 20: ACT's kill-switch gate stays a control somebody
-    /// can reach. Since ADR 0238 a globally tripped switch stops every
-    /// thesis in REASON (`r10-eligible` requires `kill_switch = false`), so
-    /// no cycle hands ACT a leg while halted, and the gate behind it — the
-    /// order manager's halt check, which also guards every order a road
-    /// other than REASON sends — would otherwise be proven by nothing. This
-    /// drives it directly: legs sized while trading was allowed, the switch
-    /// tripped before release, and ACT refuses every one under the
-    /// `kill-switch` gate with nothing filled.
-    ///
-    /// Mutation: skip the halt check in `OrderManager`'s pre-trade sequence
-    /// (`qip-execution-engine/src/oms.rs`); the orders are released and the
-    /// refusal assertions fail.
-    #[test]
-    fn acts_kill_switch_gate_refuses_every_sized_leg_once_the_switch_trips_and_fills_nothing() {
-        let mut platform = small_book_platform();
-        feed_history(&mut platform, "AAPL", 30);
-        feed_history(&mut platform, "MSFT", 30);
-        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
-        platform
-            .pending_theses
-            .push(justified(thesis("MSFT", -0.4)));
-        let now = Timestamp::from_secs(1_760_000_100);
-        platform.stage_decide(now);
-        let legs = platform
-            .proposals
-            .last()
-            .expect("a proposal is recorded")
-            .legs
-            .len();
-        assert!(
-            legs > 0,
-            "premise: legs were sized while trading was allowed"
-        );
-
-        platform.autonomy.kill_switch_mut().trip_global(
-            now,
-            "operator",
-            "an operator halted the platform",
-        );
-        let outcome = platform.stage_act(now, &CorrelationId::from_string("corr-kill-switch-gate"));
-
-        assert_eq!(outcome.produced, 0, "an order was released while halted");
-        assert!(
-            platform.orders.fills().is_empty(),
-            "a halted ACT filled an order"
-        );
-        let refusals = platform.orders.refusals();
-        assert_eq!(
-            refusals.len(),
-            legs,
-            "not every sized leg met the gate: {refusals:?}"
-        );
-        assert!(
-            refusals.iter().all(|order| matches!(
-                order.refusal,
-                Some(qip_execution_engine::oms::RefusalReason::Halted { .. })
-            )),
-            "a leg was refused by something other than the halt: {refusals:?}"
-        );
-        assert!(
-            outcome
-                .problems
-                .iter()
-                .any(|problem| problem.contains("trading is halted for platform")),
-            "ACT did not say why: {:?}",
-            outcome.problems
-        );
-        let gates: Vec<String> = platform
-            .outcomes()
-            .refusals()
-            .iter()
-            .filter_map(|row| match &row.decision.action {
-                qip_twin::capture::Action::Rejected { gate, .. } => Some(gate.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            !gates.is_empty() && gates.iter().all(|gate| gate == "kill-switch"),
-            "the refusals were not journaled under the kill-switch gate: {gates:?}"
-        );
-    }
-
     #[test]
     fn a_sized_leg_is_released_as_whole_lots_and_the_installed_gate_admits_it() {
         // The optimiser sizes a leg as notional over price, a fraction; the
@@ -34381,17 +34262,6 @@ mod self_model_tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
 
-    // The kernel suites' shared eligible scenario (ADR 0238, owner decision
-    // 18). Included rather than declared with `#[path]`, which inside an
-    // inline module of `platform.rs` resolves under a directory that does not
-    // exist; the file carries no inner attribute so that it can be.
-    mod eligible_panel {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/eligible_panel.rs"
-        ));
-    }
-
     fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
     }
@@ -34424,8 +34294,6 @@ mod self_model_tests {
                     LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
                 )
                 .venue("XNYS")
-                // The economy `eligible_panel`'s macro calendar is for.
-                .geography("US")
                 .sector(Sector::InformationTechnology)
                 .price(Decimal::from_int(100))
                 .provenance(Provenance::synthetic("test", start()))
@@ -34436,25 +34304,17 @@ mod self_model_tests {
         universe
     }
 
-    /// Noise rising by [`eligible_panel::DRIFT`] and dropping nine percent on
-    /// its last bar, with the context `eligible_panel` adds, so a detector
-    /// finds something and REASON forms a hypothesis that clears the shipped
-    /// eligibility rule uncontested and is sized. Until ADR 0238 this was the
-    /// founding tape, a jump two thirds of the way in; its thesis is
-    /// contested, so it is now unresolved and no construction follows from it.
+    /// The founding tape: noise with a jump two thirds of the way in, so a
+    /// detector finds something and REASON forms a hypothesis.
     fn tape() -> Vec<qip_market_ingestion::adapter::SensedRecord> {
         use qip_market::bar::{Bar, Interval};
         let mut price = 100.0_f64;
-        let mut records: Vec<qip_market_ingestion::adapter::SensedRecord> = (0..120_usize)
+        (0..120_usize)
             .map(|i| {
                 let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
-                let drop = if i == 119 {
-                    -0.09
-                } else {
-                    eligible_panel::DRIFT
-                };
+                let jump = if i == 80 { 0.09 } else { 0.0 };
                 let open = price;
-                price *= 1.0 + noise + drop;
+                price *= 1.0 + noise + jump;
                 let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
                 qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
                     object_id: ObjectId::from_string("obj-AAA"),
@@ -34471,13 +34331,7 @@ mod self_model_tests {
                     quality: qip_financial::quality::DataQuality::default(),
                 }))
             })
-            .collect();
-        records.extend(eligible_panel::context(
-            "US",
-            &[ObjectId::from_string("obj-AAA")],
-            start(),
-        ));
-        records
+            .collect()
     }
 
     fn reasoning_platform() -> Platform {
@@ -34486,7 +34340,6 @@ mod self_model_tests {
                 minimum_surviving_confidence: 0.10,
                 ..qip_reasoning_engine::redteam::ReviewPolicy::default()
             },
-            licensed_datasets: eligible_panel::licensed_datasets(),
             ..PlatformConfig::default()
         };
         let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
@@ -39825,56 +39678,15 @@ mod symbolic_contradiction_tests {
             .expect("the platform assembles")
     }
 
-    /// The shipped pack with `r10-eligible`'s two sizing premises —
-    /// `confidence_bp >= 5000` and `contested = false` — taken out, so this
-    /// tape's contested, low-confidence thesis is eligible and its acting
-    /// problem satisfiable.
-    ///
-    /// Why a test needs it (ADR 0238): under the shipped pack this tape is
-    /// unresolved and trades nothing, so it can no longer be the control that
-    /// shows a legless book is a contradiction's doing — every book on it is
-    /// legless. This pack restores a tape that trades, and the contradiction
-    /// test then differs from it by the two colliding rules and nothing else.
-    /// It loosens no shipped premise: the platform holds `rule_pack()` and
-    /// nothing outside these tests sets `symbolic_rule_pack`.
-    fn admitting_pack() -> RulePack {
-        let mut pack = crate::symbolic_stage::rule_pack();
-        let r10 = pack
-            .rules
-            .iter_mut()
-            .find(|r| r.id == "r10-eligible")
-            .expect("premise: the shipped pack has r10-eligible");
-        let Cond::And(premises) = &mut r10.when else {
-            panic!("premise: r10-eligible is a conjunction: {:?}", r10.when);
-        };
-        let before = premises.len();
-        premises.retain(|p| {
-            !matches!(p, Cond::Cmp { fact, .. } if fact == "confidence_bp" || fact == "contested")
-        });
-        assert_eq!(
-            premises.len(),
-            before - 2,
-            "premise: exactly the two sizing premises were taken out"
-        );
-        pack
-    }
-
-    /// [`admitting_pack`] plus a revision of two rules that conclude opposite
+    /// The shipped pack plus a revision of two rules that conclude opposite
     /// values of one fact from the same premise, an approved review. Both
     /// fire on every approved hypothesis, contested or not, so the pack
     /// derives `second_reviewer` one way and then refuses the step that
     /// would set it the other. A premise that `r10-eligible` must hold would
-    /// not do: under the shipped pack this tape's thesis is contested, so
-    /// `r10` never fires, which is how the first draft of this test passed a
-    /// pack it meant to break.
+    /// not do: this tape's thesis is contested, so `r10` never fires, which
+    /// is how the first draft of this test passed a pack it meant to break.
     fn self_contradicting_pack() -> RulePack {
-        let mut pack = admitting_pack();
-        add_colliding_rules(&mut pack);
-        pack
-    }
-
-    /// The two colliding rules, added to `pack`.
-    fn add_colliding_rules(pack: &mut RulePack) {
+        let mut pack = crate::symbolic_stage::rule_pack();
         let approved = || Cond::Cmp {
             fact: "status".into(),
             op: Op::Eq,
@@ -39891,6 +39703,7 @@ mod symbolic_contradiction_tests {
                 value: Value::Bool(value),
             });
         }
+        pack
     }
 
     /// Every derivation on the log, decoded but not re-verified: a record
@@ -39923,24 +39736,15 @@ mod symbolic_contradiction_tests {
     /// rule firing", so before ADR 0212 the hypothesis review approved went
     /// on to be sized and sent with a self-contradicting proof on the log.
     ///
-    /// The control is the same tape under [`admitting_pack`], which proposes
-    /// a leg and opens a position, so a legless book on the other side is the
-    /// contradiction's doing: the revised pack is the control's plus the two
-    /// colliding rules. Until ADR 0238 the control was the shipped pack; that
-    /// pack now leaves this contested tape unresolved and trades nothing on
-    /// it, so it could no longer tell a contradiction's empty book from its
-    /// own. The last block keeps the shipped pack in view: with the collision
-    /// added to it the mark is still `Infeasible`, never `Unresolved`, because
-    /// a contradiction outranks an unsatisfiable acting problem.
-    ///
-    /// Mutations: skip the `symbolic_infeasibility` arm in `stage_reason`
-    /// (the thesis is queued and the position opens); record
-    /// `contradictions` without the pack's words and `alternates` as empty in
-    /// `feasibility_of` (the trace assertions fail).
+    /// The control is the same tape under the shipped pack, which proposes a
+    /// leg and opens a position, so a legless book on the other side is the
+    /// contradiction's doing. Mutations: skip the `symbolic_infeasibility`
+    /// arm in `stage_reason` (the thesis is queued and the position opens);
+    /// record `contradictions` without the pack's words and `alternates` as
+    /// empty in `feasibility_of` (the trace assertions fail).
     #[test]
     fn a_contradictory_derivation_yields_infeasible_with_its_trace_and_blocks_money_movement() {
         let mut control = platform();
-        control.symbolic_rule_pack = admitting_pack();
         control.observe(tape());
         let report = control.run_cycle(start());
         let reason = report.stage(Stage::Reason).expect("reason ran");
@@ -39951,7 +39755,7 @@ mod symbolic_contradiction_tests {
         );
         assert!(
             reason.detail.contains("; sized on conviction"),
-            "premise: under the admitting pack the thesis is queued: {}",
+            "premise: under the shipped pack the thesis is queued: {}",
             reason.detail
         );
         assert!(
@@ -39962,9 +39766,9 @@ mod symbolic_contradiction_tests {
             !control.positions_at_cost().is_empty(),
             "premise: the control's cycle opens a position"
         );
-        let admitted = journaled(&control);
-        assert_eq!(admitted.len(), 1, "premise: one derivation is journaled");
-        assert_eq!(admitted[0].feasibility, Some(Feasibility::Feasible));
+        let shipped = journaled(&control);
+        assert_eq!(shipped.len(), 1, "premise: one derivation is journaled");
+        assert_eq!(shipped[0].feasibility, Some(Feasibility::Feasible));
 
         let mut revised = platform();
         revised.symbolic_rule_pack = self_contradicting_pack();
@@ -40066,78 +39870,27 @@ mod symbolic_contradiction_tests {
             "an infeasible conclusion moved money: {:?}",
             revised.positions_at_cost()
         );
-
-        // A contradiction outranks an unsatisfiable acting problem (ADR 0238
-        // decision 2). The shipped pack leaves this tape's acting problem
-        // unsatisfiable; with the collision added to it the record must
-        // still say the reasoning collided, not merely that it was not
-        // eligible, and the stage must report it in those words.
-        let mut shipped_revised = platform();
-        let mut pack = crate::symbolic_stage::rule_pack();
-        add_colliding_rules(&mut pack);
-        shipped_revised.symbolic_rule_pack = pack;
-        shipped_revised.observe(tape());
-        let report = shipped_revised.run_cycle(start());
-        let reason = report.stage(Stage::Reason).expect("reason ran");
-        let derivations = journaled(&shipped_revised);
-        assert_eq!(derivations.len(), 1, "premise: one derivation is journaled");
-        assert!(
-            matches!(
-                derivations[0].feasibility,
-                Some(Feasibility::Infeasible { .. })
-            ),
-            "an unresolved mark displaced a contradiction: {:?}",
-            derivations[0].feasibility
-        );
-        assert!(
-            reason
-                .problems
-                .iter()
-                .any(|p| p.starts_with("symbolically infeasible, no proposal formed: "))
-                && reason
-                    .problems
-                    .iter()
-                    .all(|p| !p.starts_with("symbolically unresolved")),
-            "{:?}",
-            reason.problems
-        );
-        assert!(shipped_revised.pending_theses.is_empty());
-
-        for platform in [&control, &revised, &shipped_revised] {
+        for platform in [&control, &revised] {
             assert!(!platform.orders().has_live_fills());
             assert!(!platform.is_live_capable());
         }
     }
 
-    /// ADR 0238, R12-RES-7106: a contested thesis is unresolved, not
-    /// infeasible. Its acting problem is unsatisfiable, so it keeps its
-    /// trace and alternates, is scored in shadow through the claim REASON
-    /// writes, and is never queued to be sized.
+    /// ADR 0150 decision 14, preserved by ADR 0212: a merely contested
+    /// thesis is not a contradiction. Its derivation is feasible, it is
+    /// queued, it is sized on a conviction narrower than the confidence it
+    /// was admitted on, and its proposal carries a leg.
     ///
-    /// This test replaces
-    /// `a_contested_thesis_is_not_a_contradiction_and_still_forms_a_proposal_sized_small`,
-    /// which asserted ADR 0212 decision 1's property: a contested thesis is
-    /// feasible, queued and sized small. The owner ruled on 2026-10-31 that
-    /// R12-RES-7106's "unsatisfied constraints" clause stands as written,
-    /// and ADR 0238 reverses that property. So the test asserts the new one.
-    /// It is not a weakening. Every assertion that dissent is not a
-    /// contradiction is kept: `Infeasible` is refused, `infeasibility()` is
-    /// `None`, and no problem says infeasible. The sizing assertions are
-    /// replaced by stricter ones: no thesis queued, no leg, no position.
-    ///
-    /// The failure prevented: a thesis the platform's own eligibility rule
-    /// refuses is sized anyway because nothing in its reasoning collided.
-    /// Before ADR 0238 this tape's contested thesis opened a position.
-    ///
-    /// Mutations: in `stage_reason`, queue an unresolved thesis (skip the
-    /// `symbolic_unresolved` arm), and the queue and leg assertions fail; in
-    /// `feasibility_sealed_under`, return `Feasible` for an unsatisfiable
-    /// acting step,
-    /// and the mark assertion fails; drop `eligible &&` in `contradictions`
-    /// (ADR 0212's mutation), and the thesis is marked `Infeasible` and the
-    /// mark assertion fails.
+    /// The failure prevented: widening "contradiction" to cover an
+    /// unsatisfiable acting problem — which every contested thesis has,
+    /// because `r10-eligible` requires an uncontested panel — would refuse
+    /// every contested thesis review approved and stop the platform learning
+    /// about exactly the questions it was least sure of. Mutation: in
+    /// `contradictions`, list an unsatisfiable acting problem whatever the
+    /// verdict (drop the `eligible &&`) — this thesis is marked infeasible
+    /// and the feasibility assertion fails.
     #[test]
-    fn a_contested_thesis_is_unresolved_not_a_contradiction_and_forms_no_proposal() {
+    fn a_contested_thesis_is_not_a_contradiction_and_still_forms_a_proposal_sized_small() {
         let mut platform = platform();
         platform.observe(tape());
         let report = platform.run_cycle(start());
@@ -40147,118 +39900,57 @@ mod symbolic_contradiction_tests {
             "premise: the panel contests this thesis: {}",
             reason.detail
         );
-        assert!(
-            reason.detail.contains("hypothesis approved at confidence "),
-            "premise: review approves the contested thesis, so what stops it is the mark: {}",
-            reason.detail
-        );
         let derivations = crate::symbolic_stage::replay(&platform).expect("the log replays");
         assert_eq!(derivations.len(), 1, "premise: one derivation is journaled");
-        let derivation = &derivations[0];
         assert!(
             matches!(
-                derivation.acting,
+                derivations[0].acting,
                 crate::symbolic_stage::Step::Derived(
                     qip_reasoning_engine::constraint::Answer::Unsatisfiable { .. }
                 )
             ),
-            "premise: a contested thesis's acting problem is unsatisfiable: {:?}",
-            derivation.acting
+            "premise: a contested thesis's acting problem is unsatisfiable, which is the case \
+             a careless reading of 'unsatisfied constraints' would block: {:?}",
+            derivations[0].acting
         );
         assert_eq!(
-            derivation.veto(),
-            None,
-            "premise: no hard stop vetoes it, so the block below is ADR 0238's"
-        );
-
-        // Unresolved, not infeasible, with its trace and alternates kept.
-        let Some(Feasibility::Unresolved {
-            violated_assumptions,
-            alternates,
-        }) = &derivation.feasibility
-        else {
-            panic!(
-                "a contested thesis was not marked unresolved (Infeasible here means dissent \
-                 was marked as a contradiction): {:?}",
-                derivation.feasibility
-            );
-        };
-        assert_eq!(
-            derivation.infeasibility(),
-            None,
-            "dissent was reported as a contradiction"
+            derivations[0].feasibility,
+            Some(Feasibility::Feasible),
+            "dissent was marked as a contradiction"
         );
         assert!(
-            violated_assumptions
-                .iter()
-                .any(|v| v == "constraint: acting-requires-eligibility"),
-            "the mark does not name the constraint that blocks acting: {violated_assumptions:?}"
+            reason.detail.contains("hypothesis approved at confidence "),
+            "a contested thesis was not approved: {}",
+            reason.detail
         );
+        let admitted = number_after(&reason.detail, "hypothesis approved at confidence ");
+        let sized_on = number_after(&reason.detail, "; sized on conviction ");
         assert!(
-            violated_assumptions
-                .iter()
-                .all(|v| derivation.violated_assumptions.contains(v)),
-            "the mark names a constraint the record's trace does not: {violated_assumptions:?} \
-             against {:?}",
-            derivation.violated_assumptions
-        );
-        let alternates = alternates.derived().expect("the alternates were searched");
-        assert!(
-            alternates
-                .iter()
-                .any(|a| a == "r10-eligible: needs contested = false (recorded true)"),
-            "the alternates do not name the premise dissent failed: {alternates:?}"
-        );
-
-        // Scored in shadow: the claim was written and waits to be graded.
-        assert!(
-            platform.predictions().iter().any(|p| p.is_open()
-                && p.claim
-                    .as_ref()
-                    .is_some_and(|c| c.hypothesis_id.as_str() == derivation.hypothesis_id)),
-            "the unresolved thesis left no open claim, so nothing scores it: {:?}",
-            platform.predictions()
-        );
-
-        // Never sized: nothing queued, no leg, no position, and the reason
-        // reported in its own words.
-        assert!(
-            !reason.detail.contains("; sized on conviction"),
-            "an unresolved thesis was queued for sizing: {}",
+            sized_on < admitted - 0.005,
+            "a contested thesis was sized on {sized_on}, not below the {admitted} it was \
+             admitted on: {}",
             reason.detail
         );
         assert!(
-            platform.pending_theses.is_empty(),
-            "an unresolved thesis is waiting to be sized"
-        );
-        assert!(
-            platform.proposals().iter().all(|p| p.legs.is_empty()),
-            "an unresolved thesis formed a proposal leg: {:?}",
+            platform.proposals().iter().any(|p| !p.legs.is_empty()),
+            "a contested thesis formed no proposal: {:?}",
             platform.proposals()
-        );
-        assert!(
-            platform.positions_at_cost().is_empty(),
-            "an unresolved thesis moved money: {:?}",
-            platform.positions_at_cost()
-        );
-        assert!(
-            reason.problems.iter().any(|p| p
-                .starts_with("symbolically unresolved, scored in shadow, no proposal formed: ")
-                && p.contains("r10-eligible: needs contested = false")),
-            "the refusal was not reported with its alternates: {:?}",
-            reason.problems
         );
         assert!(
             reason.problems.iter().all(|p| !p.contains("infeasible")),
             "{:?}",
             reason.problems
         );
-        assert!(
-            reason.detail.contains(", unresolved, scored in shadow"),
-            "the stage detail does not say the derivation is unresolved: {}",
-            reason.detail
-        );
-        assert!(!platform.orders().has_live_fills());
-        assert!(!platform.is_live_capable());
+    }
+
+    fn number_after(detail: &str, marker: &str) -> f64 {
+        let (_, rest) = detail
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("no `{marker}` in: {detail}"));
+        let digits: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        digits.parse().expect("a number")
     }
 }

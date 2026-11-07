@@ -27,9 +27,6 @@ use qip_kernel::platform::Platform;
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
 
-#[path = "support/eligible_panel.rs"]
-mod eligible_panel;
-
 /// The liquidity every fixture in this file states, because nothing states it
 /// for them any more.
 ///
@@ -62,9 +59,6 @@ fn universe() -> Universe {
                 fixture_liquidity(),
             )
             .venue("XNYS")
-            // The economy the macro analyst reads `eligible_panel`'s calendar
-            // for; with no calendar fed it has nothing to read either way.
-            .geography("US")
             .sector(Sector::InformationTechnology)
             .price(dec!("100"))
             .provenance(Provenance::synthetic("test", start()))
@@ -283,22 +277,15 @@ mod idle {
         }))
     }
 
-    /// A series rising by [`eligible_panel::DRIFT`] under its noise that drops
-    /// nine percent on its last bar, which the panel reads as an undervalued
-    /// long the mandate permits, with the context `eligible_panel` adds so the
-    /// panel is uncontested and clears the shipped eligibility rule (ADR 0238,
-    /// owner decision 18).
+    /// A quiet series that drops nine percent on its last bar, which the panel
+    /// reads as an undervalued long the mandate permits.
     fn tape() -> Vec<SensedRecord> {
         const BARS: usize = 120;
         let mut price = 100.0_f64;
-        let mut records: Vec<SensedRecord> = (0..BARS)
+        (0..BARS)
             .map(|i| {
                 let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
-                let drop = if i == BARS - 1 {
-                    -0.09
-                } else {
-                    eligible_panel::DRIFT
-                };
+                let drop = if i == BARS - 1 { -0.09 } else { 0.0 };
                 let open = price;
                 price *= 1.0 + noise + drop;
                 bar(
@@ -307,9 +294,7 @@ mod idle {
                     price,
                 )
             })
-            .collect();
-        records.extend(eligible_panel::context("US", &[object("AAA")], start()));
-        records
+            .collect()
     }
 
     /// 25% of what the cycle declined to release may be routed, in three
@@ -332,7 +317,6 @@ mod idle {
                 minimum_surviving_confidence: 0.10,
                 ..ReviewPolicy::default()
             },
-            licensed_datasets: eligible_panel::licensed_datasets(),
             ..PlatformConfig::default()
         };
         if let Some(text) = declaration {

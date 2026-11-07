@@ -41,9 +41,6 @@ use qip_reasoning_engine::redteam::ReviewPolicy;
 use qip_risk::hedge::HedgeAxis;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
-#[path = "support/eligible_panel.rs"]
-mod eligible_panel;
-
 /// See the module note: low enough that the panel approves a thesis on the
 /// synthetic tape. Not the shipped value.
 const REVIEW_FLOOR: f64 = 0.10;
@@ -75,9 +72,6 @@ fn config() -> PlatformConfig {
             minimum_surviving_confidence: REVIEW_FLOOR,
             ..ReviewPolicy::default()
         },
-        // The vendor datasets the tape's alternative data comes from (see
-        // `eligible_panel`).
-        licensed_datasets: eligible_panel::licensed_datasets(),
         ..PlatformConfig::default()
     }
 }
@@ -120,29 +114,20 @@ fn bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
     }))
 }
 
-/// A series rising by [`eligible_panel::DRIFT`] under its noise that drops
-/// nine percent on its final bar: a `PriceMove` read as
-/// `Claim::Undervalued`, a long the mandate permits. The context
-/// `eligible_panel` adds rides with it, so the panel is uncontested and the
-/// thesis clears the shipped eligibility rule (ADR 0238, owner decision 18).
+/// A quiet series that drops nine percent on its final bar: a `PriceMove`
+/// read as `Claim::Undervalued`, a long the mandate permits.
 fn tape(symbol: &str) -> Vec<SensedRecord> {
     let mut price = 100.0_f64;
-    let mut records: Vec<SensedRecord> = (0..TAPE)
+    (0..TAPE)
         .map(|i| {
             let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
-            let drop = if i == TAPE - 1 {
-                DROP
-            } else {
-                eligible_panel::DRIFT
-            };
+            let drop = if i == TAPE - 1 { DROP } else { 0.0 };
             let open = price;
             price *= 1.0 + noise + drop;
             let at = start().saturating_sub(Duration::from_days((TAPE - i) as i64));
             bar(symbol, at, open, price)
         })
-        .collect();
-    records.extend(eligible_panel::context("US", &[object(symbol)], start()));
-    records
+        .collect()
 }
 
 /// A file-backed log in a directory of this test's own, so a second process
