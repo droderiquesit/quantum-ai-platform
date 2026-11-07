@@ -7139,11 +7139,22 @@ impl Cell {
         if !self.config.borrow_required || side != BookSide::Bid {
             return Ok(());
         }
-        let held = self.position(venue, object_id).max(Decimal::ZERO);
-        let needed = quantity - held;
+        // What the stated availability must cover is every sale the cell
+        // has outstanding here, not this one alone (R12-REFLEX-5038): the
+        // short it already holds, borrowed by its confirmed sales, plus what
+        // its resting sells will need once they fill, plus this sale, less
+        // the long that covers them. Judged one sale at a time, two sales
+        // each within the statement went out together and borrowed twice
+        // what the venue said it would lend.
+        let position = self.position(venue, object_id);
+        let held = position.max(Decimal::ZERO);
+        let shorted = (-position).max(Decimal::ZERO);
+        let resting = self.resting_sells(venue, object_id);
+        let needed = quantity + resting - held;
         if !needed.is_positive() {
             return Ok(());
         }
+        let needed = needed + shorted;
         let instrument = object_id.as_str();
         let reason = match (
             self.funding.borrow_availability(instrument),
@@ -7183,6 +7194,24 @@ impl Cell {
             now,
         );
         Err(Error::denied(reason))
+    }
+
+    /// The unfilled remainder of the cell's open sells of `object_id` at
+    /// `venue`: borrow those sells will need when they fill, which a further
+    /// sale's borrow check must count (R12-REFLEX-5038).
+    fn resting_sells(&self, venue: &VenueId, object_id: &ObjectId) -> Decimal {
+        self.working
+            .values()
+            .map(|working| &working.order)
+            .filter(|order| {
+                order.closed.is_none()
+                    && order.side == BookSide::Bid
+                    && &order.venue == venue
+                    && &order.object_id == object_id
+            })
+            .fold(Decimal::ZERO, |sum, order| {
+                sum + (order.quantity - order.filled).max(Decimal::ZERO)
+            })
     }
 
     /// Why `justification` cannot be sent at `now`, or `None` when it can
@@ -14049,6 +14078,78 @@ mod crossing_tests {
             price,
             at(15),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_short_sale_that_would_exceed_the_stated_borrow_once_the_first_resting_sell_is_counted_is_refused_under_gate_borrow()
+    -> Result<()> {
+        // R12-REFLEX-5038. The borrow check judged each sale alone against
+        // the venue's statement, so two sales each within it went out
+        // together and borrowed twice what the venue said it would lend. The
+        // venue states three; each net below sells two, and the first rests
+        // unfilled.
+        use crate::funding::{BorrowAvailability, FundingRate};
+        use qip_core::dec;
+        let instrument = object().as_str().to_string();
+        let armed = || -> Result<Cell> {
+            let config = CellConfig::new(CELL, "europe-west2")
+                .with_venue(venue())
+                .with_borrow_required();
+            let features =
+                FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+            let mut cell = Cell::new(config, features)?;
+            cell.track(book());
+            deploy_marketable(&mut cell, "alpha")?;
+            deploy_marketable(&mut cell, "beta")?;
+            raise_signal(&mut cell, "alpha");
+            raise_signal(&mut cell, "beta");
+            cell.set_borrow_availability(
+                instrument.clone(),
+                BorrowAvailability::available(dec!("3")),
+            );
+            cell.set_funding_rate(instrument.clone(), FundingRate::new(Decimal::ZERO));
+            Ok(cell)
+        };
+        let sale = || netted(&[("alpha", "-1"), ("beta", "-1")], Decimal::from_int(100));
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+
+        // Premise: one sale of two, within the three stated, goes, and rests
+        // as an open sell the cell holds.
+        let mut cell = armed()?;
+        let mut report = WorkReport::default();
+        cell.place_net(&sale(), at(10), &mut gateway, &mut report)?;
+        assert_eq!(gateway.placed.len(), 1, "premise: {:?}", report.refusals);
+        assert_eq!(
+            cell.resting_sells(&venue(), &object()),
+            Decimal::from_int(2),
+            "premise: the first sale rests unfilled"
+        );
+
+        // The second sale is within the statement alone and past it with the
+        // first counted: four borrowed against three.
+        let before = cell.journal().entries().len();
+        let second = cell.place_net(&sale(), at(11), &mut gateway, &mut report);
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "a second sale past the stated borrow reached the venue: {second:?}"
+        );
+        let gates: Vec<String> = cell
+            .journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter_map(|entry| match &entry.decision {
+                Decision::Refused { gate, reason } if gate == GATE_BORROW => Some(reason.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(gates.len(), 1, "not refused under {GATE_BORROW}: {gates:?}");
+        assert!(gates[0].contains("needs 4 borrowed"), "{}", gates[0]);
         Ok(())
     }
 
