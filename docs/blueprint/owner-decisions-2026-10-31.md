@@ -976,6 +976,22 @@ that narrows a security scanner, whatever the owner has delegated.
     `CALIBRATION_FLOOR` and `TAIL_BRIER_BAR` are not used, because neither
     measures what the clause asks about.
 
+23. **The router's value-of-information gate is not eased for a test**
+    (lane L4, on R12-QUANT-4032 and R12-QUANT-4063, 2026-11-06). With the
+    quantum path on, the router attempts QAOA on the statevector simulator
+    every cycle. Its value-of-information estimate for a QPU job declines
+    the job, so the gateway's submit is never reached. No contract record
+    then carries a quantum result, and the rows' closure test cannot pass
+    as written. That gate is what stops a QPU job the estimate cannot
+    justify, so it is not relaxed, and no test seam goes around it. Easing
+    a guard so that a test passes is the trade the rules forbid.
+    R12-QUANT-4032 stays PARTIAL and is regraded EXTERNAL: it closes on a
+    measured QPU record, which needs a hosted provider. Its test may land
+    only if it asserts today's behaviour, that the estimate declines and
+    nothing is submitted, and a mutation proves it does. R12-QUANT-4063's
+    router half does not depend on the gate and is codeable now: a polled
+    answer is adopted only for `JobClass::Optimisation`.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
