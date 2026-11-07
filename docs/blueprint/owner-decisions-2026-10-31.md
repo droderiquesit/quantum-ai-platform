@@ -992,6 +992,24 @@ that narrows a security scanner, whatever the owner has delegated.
     router half does not depend on the gate and is codeable now: a polled
     answer is adopted only for `JobClass::Optimisation`.
 
+24. **R12-EXPAND-6036 is a measurement, and nothing is built for it yet**
+    (lane L4, 2026-11-07). The row's closure asks whether every size a
+    parked quantum family poses is at most 22, and says to land the parked
+    patch if any size falls in (22, 24]. Reading the code does not settle
+    that question:
+    - No single constant bounds the sizes the parked families pose
+      (`FeatureEnsembleSelection`, `GraphSearch`).
+    - The active QAOA portfolio QUBO has `theses.len()` variables, and no
+      per-cycle cap on approved theses was found.
+    - The row's wording conflates that active family with the parked ones.
+
+    A run over the committed six-name synthetic universe would not
+    establish production sizes. So the row stays PARTIAL and is regraded
+    DEPENDS: it closes on sizes measured over a real universe. The
+    parked-family patch is not landed. No cap on approved theses is
+    invented, because a cap is a figure and figures are a person's to
+    give. The missing cap is recorded on the row as an open question.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
