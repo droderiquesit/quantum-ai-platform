@@ -856,7 +856,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:178 research family not built",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 baseline always computed"
     ],
-    "gap": "Declined by decision: ADR 0150 A2 and ADR 0190, confirmed by ADR 0199 (2026-10-31). No FeatureEnsembleSelection family, no new QuantumExperiment producer, and L4-quant's parked research-families patch stays parked until a committed note shows a posed problem size above the exact limit (22) and at or below MAX_QUBITS (24). The one family (portfolio allocation) keeps its classical-baseline benchmark. The row stays PARTIAL citing the records.",
+    "gap": "Declined by decision: ADR 0150 A2 and ADR 0190, confirmed by ADR 0199 (2026-10-31). No FeatureEnsembleSelection family, no new QuantumExperiment producer, and L4-quant's parked research-families patch stays parked until a committed note shows a posed problem size above the exact limit (22) and at or below MAX_QUBITS (24). The one family (portfolio allocation) keeps its classical-baseline benchmark. The row stays PARTIAL citing the records.  2026-11-07 (decision 24, DEPENDS): the wave1101 closure (a sizing note, then land the parked families if a posed size lies in (22, 24]) is a measurement, not a code change, and was not built. Three facts read from the code: no single constant bounds the posed sizes of the parked families FeatureEnsembleSelection (the deep brain's candidate feature count) and GraphSearch (graph sizes); the active QAOA portfolio QUBO's size is theses.len() in Platform::construct_from, with no per-cycle cap on approved theses; and the closure's wording conflates that active family with the parked ones. A run over the committed six-name synthetic universe would not establish production sizes, so the note needs measured sizes over a real universe. Open question for a person, not a defect: whether approved theses per cycle should be capped, and at what figure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -867,7 +867,7 @@
     "verification": "cargo test (crate producing QuantumExperiment / Benchmark)",
     "work_item": "",
     "size": "XL",
-    "notes": "ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact. 2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. 2026-10-24 (L4, wave580): decision recorded in docs/adr/0190-the-quantum-benefit-gates-of-adr-0150-stand-under-the-2026-10-24-delegation-and-the-parked-research-families-stay-parked.md; no status change. 2026-10-31 L4b-expand: ADR 0199 confirms ADR 0150 A2 and ADR 0190; no code changed."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact. 2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. 2026-10-24 (L4, wave580): decision recorded in docs/adr/0190-the-quantum-benefit-gates-of-adr-0150-stand-under-the-2026-10-24-delegation-and-the-parked-research-families-stay-parked.md; no status change. 2026-10-31 L4b-expand: ADR 0199 confirms ADR 0150 A2 and ADR 0190; no code changed. Parent decision 24 (2026-11-07): not CODE_NOW; regraded DEPENDS; no parked-family patch and no invented cap."
   },
   {
     "id": "R12-EXPAND-6037",
