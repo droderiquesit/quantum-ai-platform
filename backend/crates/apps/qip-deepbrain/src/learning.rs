@@ -128,7 +128,9 @@ use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
 use qip_evolution::scoring::{Outcome, Scoreboard};
 use qip_kernel::Platform;
-use qip_kernel::central::models::{ModelRegistration, register_fit, require_calibrated_baseline};
+use qip_kernel::central::models::{
+    ModelRegistration, record_subject, register_fit, require_calibrated_baseline,
+};
 use qip_kernel::model_serving::{MIN_SHADOW_ROUNDS, ModelProducer};
 use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
@@ -2267,6 +2269,7 @@ impl LearningDesk {
         if let Some(card) = self.registry.get_mut(&baseline_registration.reference) {
             lineage.record_on(card);
             record_validation_scope(card, regime, &dataset)?;
+            record_subject(card, subject.as_str())?;
             stamp_provenance(card, &provenance);
             card.self_fitted = true;
         }
@@ -2326,6 +2329,7 @@ impl LearningDesk {
                 if let Some(card) = self.registry.get_mut(&registration.reference) {
                     lineage.record_on(card);
                     record_validation_scope(card, regime, &dataset)?;
+                    record_subject(card, subject.as_str())?;
                     stamp_provenance(card, &provenance);
                     card.self_fitted = true;
                 }
@@ -4691,6 +4695,14 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             vec![REGIME]
+        );
+        // R12-MODEL-10096: the card names the one subject it was fitted on,
+        // so the structural-break critic reads that subject's crossings and
+        // not every watched subject's. Mutation: drop `record_subject` from
+        // `maybe_learn`'s registration, and this is `None`.
+        assert_eq!(
+            qip_kernel::central::models::subject_of(card),
+            Some(subject().as_str())
         );
         assert_eq!(
             card.training_bounds.keys().cloned().collect::<Vec<_>>(),
