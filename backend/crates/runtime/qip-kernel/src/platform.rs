@@ -16896,10 +16896,9 @@ impl Platform {
                 // it is demoted here beside the veto and the decision below
                 // forms no proposal on it. Dissent does not reach this arm.
                 if symbolic_veto.is_some() || symbolic_infeasibility.is_some() {
-                    reasoned.hypothesis.status =
-                        qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected;
+                    reasoned.hypothesis.demote();
                 }
-                let approved = reasoned.hypothesis.status.is_actionable();
+                let approved = reasoned.hypothesis.status().is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
                 // denominator the other two are read against: approved plus
@@ -16945,7 +16944,7 @@ impl Platform {
                         } else {
                             ""
                         },
-                        reasoned.hypothesis.status.as_str(),
+                        reasoned.hypothesis.status().as_str(),
                         reasoned.hypothesis.effective_confidence(),
                         // Which state the small number means, and not only
                         // that it is small. `effective_confidence` above has
@@ -17382,7 +17381,7 @@ impl Platform {
             cycle: self.cycle,
             hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
             subject: subject.as_str().to_string(),
-            status: hypothesis.status.as_str().to_string(),
+            status: hypothesis.status().as_str().to_string(),
             confidence: hypothesis.effective_confidence(),
             contested,
             dissenters: reasoned.dissenters.len(),

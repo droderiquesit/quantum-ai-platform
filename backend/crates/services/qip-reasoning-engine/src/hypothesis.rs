@@ -295,7 +295,10 @@ pub struct Hypothesis {
     pub formed_at: Timestamp,
     /// The point in time the hypothesis reasons as of.
     pub as_of: Timestamp,
-    pub status: HypothesisStatus,
+    /// Private (R12-QUANT-4042): read through [`Hypothesis::status`] and set
+    /// only by [`Hypothesis::apply_review`]. A public field let any holder
+    /// mark a thesis Approved without the red team having read it.
+    status: HypothesisStatus,
     /// Hypothesis class, used to look up the base rate. Deliberately a
     /// declared class rather than free text so priors cannot be picked to fit.
     pub class: String,
@@ -441,6 +444,57 @@ impl Hypothesis {
         };
         hypothesis.validate()?;
         Ok(hypothesis)
+    }
+
+    /// Where the hypothesis is in its life.
+    pub fn status(&self) -> HypothesisStatus {
+        self.status
+    }
+
+    /// Set the status to a red-team review's verdict, the one writer of it.
+    /// Refuses a review of another hypothesis, and re-validates, so an
+    /// Approved verdict on a thesis with no non-exploration support is
+    /// refused here as well as at the review.
+    pub fn apply_review(&mut self, review: &crate::redteam::ReviewOutcome) -> Result<()> {
+        if review.hypothesis_id != self.hypothesis_id.as_str() {
+            return Err(Error::invalid(format!(
+                "a review of {} cannot set the status of {}; apply the hypothesis's own review",
+                review.hypothesis_id,
+                self.hypothesis_id.as_str()
+            )));
+        }
+        let previous = self.status;
+        self.status = review.verdict;
+        if let Err(error) = self.validate() {
+            self.status = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Reject the hypothesis whatever review said: the one writer besides
+    /// [`Self::apply_review`], and it only narrows. The kernel demotes a
+    /// thesis whose symbolic derivation vetoed or contradicted itself
+    /// (ADR 0212).
+    pub fn demote(&mut self) {
+        self.status = HypothesisStatus::Rejected;
+    }
+
+    /// The effective confidence the evidence would give with every quantum
+    /// exploration item removed (R12-QUANT-4042, §11): exploration proposes
+    /// where to look and measures nothing, so this is the confidence the
+    /// thesis's empirical evidence alone supports.
+    pub fn confidence_without_exploration(&self) -> f64 {
+        let mut empirical = self.clone();
+        empirical.evidence = crate::evidence::EvidenceSet::from_items(
+            self.evidence
+                .iter()
+                .filter(|e| e.kind != crate::evidence::EvidenceKind::QuantumExploration)
+                .cloned()
+                .collect(),
+        );
+        empirical.revise();
+        empirical.effective_confidence()
     }
 
     /// Recompute confidence after the evidence set changed.
@@ -598,6 +652,19 @@ impl Hypothesis {
     pub fn validate(&self) -> Result<()> {
         if self.statement.trim().is_empty() {
             return Err(Error::invalid("hypothesis has no statement"));
+        }
+        if self.status == HypothesisStatus::Approved
+            && !self
+                .evidence
+                .with_stance(crate::evidence::Stance::Supports)
+                .iter()
+                .any(|e| e.kind != crate::evidence::EvidenceKind::QuantumExploration)
+        {
+            return Err(Error::denied(format!(
+                "hypothesis {} is approved on quantum exploration alone; exploration is research \
+                 and not validation, so test it against observed data first (R12-QUANT-4042)",
+                self.hypothesis_id.as_str()
+            )));
         }
         if self.class.trim().is_empty() {
             return Err(Error::invalid(format!(
