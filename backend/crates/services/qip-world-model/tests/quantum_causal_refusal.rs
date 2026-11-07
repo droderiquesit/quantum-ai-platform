@@ -234,3 +234,58 @@ fn a_causal_edge_citing_quantum_evidence_is_refused_on_every_insertion_path() {
         "a quantum citation reached an edge's evidence"
     );
 }
+
+/// R12-QUANT-4044: the id a real quantum result is cited by is refused as
+/// causal evidence. The prefix was a literal in the world model alone and
+/// the producer's ids (`portfolio-allocation:<cycle>`) did not carry it, so
+/// an edge citing the platform's one quantum result passed the guard. The
+/// id now comes from the producer's contract, `SolverResult::evidence_id`,
+/// and the guard reads the same constant. The classical baseline carries no
+/// quantum id, so an edge citing it is not refused for that.
+///
+/// Mutation: build `evidence_id` without `QUANTUM_EVIDENCE_PREFIX`.
+#[test]
+fn an_edge_citing_a_produced_quantum_result_is_refused_and_one_citing_its_baseline_is_not() {
+    use qip_contracts::quantum::{SolverKind, SolverResult};
+    let request = "portfolio-allocation:1";
+    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], -1.0, 0, request).unwrap();
+    let classical = SolverResult::new(SolverKind::Classical, vec![true], -1.0, 0, request).unwrap();
+    let cited = quantum
+        .evidence_id()
+        .expect("a quantum result has a quantum id");
+    assert_eq!(
+        classical.evidence_id(),
+        None,
+        "the baseline cited as quantum"
+    );
+
+    let edge = |evidence: String| CausalEdge {
+        cause: "price_a".to_string(),
+        effect: "price_b".to_string(),
+        mechanism: Mechanism::Sentiment,
+        strength: 0.5,
+        lag: Duration::from_hours(1),
+        confidence: 0.7,
+        evidence: vec![evidence],
+        recorded_at: now(),
+        decayed_at: None,
+        adjusted_for: BTreeSet::new(),
+        suspected_confounders: BTreeSet::new(),
+        holds_in: BTreeSet::new(),
+        fails_in: BTreeSet::new(),
+        failure_run: None,
+        retired: None,
+        evidence_unretrievable: false,
+    };
+    let mut model = WorldModel::new();
+    assert!(
+        model.claim_causal(edge(cited.clone())).is_err(),
+        "an edge citing the produced quantum id `{cited}` was admitted"
+    );
+    assert!(
+        model
+            .claim_causal(edge(format!("{request}:classical")))
+            .is_ok(),
+        "premise: an edge citing a classical result is admitted"
+    );
+}
