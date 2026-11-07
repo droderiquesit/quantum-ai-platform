@@ -204,6 +204,19 @@ impl RegimeTransitions {
             .max()
     }
 
+    /// The instant `subject` last crossed a regime boundary, or `None` where
+    /// it never has (R12-MODEL-10096). The verifier's structural-break critic
+    /// reads this for a model fitted on one subject: the all-subject
+    /// [`Self::latest_crossing`] refuted every model whenever any watched
+    /// subject crossed, so one subject's spread blowing out demoted models
+    /// of instruments whose market had not moved at all.
+    pub fn latest_crossing_for(&self, subject: &str) -> Option<Timestamp> {
+        self.marks
+            .get(subject)
+            .filter(|mark| mark.previous.is_some())
+            .map(|mark| mark.entered_at)
+    }
+
     /// The regime `subject` was last observed in, for a report.
     pub fn regime_of(&self, subject: &str) -> Option<&str> {
         self.marks.get(subject).map(|mark| mark.current.as_str())
