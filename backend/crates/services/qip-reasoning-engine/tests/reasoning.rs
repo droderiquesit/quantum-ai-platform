@@ -1452,7 +1452,17 @@ fn the_action_bar_refuses_a_thesis_with_no_primary_source() {
         ),
     ]);
     let mut hypothesis = Hypothesis::form(draft(secondary, sound_chain())).unwrap();
-    hypothesis.status = HypothesisStatus::Approved;
+    hypothesis
+        .apply_review(&qip_reasoning_engine::redteam::ReviewOutcome {
+            hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
+            reviewed_at: now(),
+            challenges: Vec::new(),
+            confidence_before: 0.0,
+            confidence_after: 0.0,
+            verdict: HypothesisStatus::Approved,
+            rationale: "a test's review".to_string(),
+        })
+        .unwrap();
     let refusal = hypothesis.meets_action_bar(0.1).unwrap_err();
     assert!(refusal.contains("primary source"));
 }
@@ -1508,7 +1518,7 @@ fn the_engine_forms_and_reviews_a_hypothesis_from_agent_findings() -> Result<()>
         ],
         Some(0.2),
     ))?;
-    assert_eq!(outcome.hypothesis.status, HypothesisStatus::Approved);
+    assert_eq!(outcome.hypothesis.status(), HypothesisStatus::Approved);
     assert!(outcome.dissenters.is_empty());
     assert!(outcome.narrate().contains("Mechanism:"));
     Ok(())
@@ -1941,4 +1951,112 @@ fn a_hypothesis_whose_only_support_is_a_quantum_exploration_result_is_rejected_b
         "observed support beside an exploration result was refused as research-only: {:?}",
         outcome.kinds()
     );
+}
+
+/// R12-QUANT-4042: one weak primary item beside quantum exploration no
+/// longer clears the research-only check. Eight exploration items lift a
+/// thesis over the surviving floor that its single weak market observation
+/// alone leaves far below it. The old check fired only when every
+/// supporting item was exploration, so this thesis passed it; it is now
+/// refused with a fatal `ResearchOnlySupport`.
+///
+/// Mutation: drop `leans_on_exploration` from the research-only condition.
+#[test]
+fn a_weak_primary_item_beside_quantum_exploration_does_not_clear_the_research_only_check() {
+    let mut items = vec![evidence(
+        "m1",
+        EvidenceKind::MarketObservation,
+        Stance::Supports,
+        "xnys",
+        0.3,
+        0.5,
+    )];
+    for i in 0..8 {
+        items.push(evidence(
+            &format!("q{i}"),
+            EvidenceKind::QuantumExploration,
+            Stance::Supports,
+            &format!("qaoa-{i}"),
+            0.25,
+            0.9,
+        ));
+    }
+    let hypothesis =
+        Hypothesis::form(draft(EvidenceSet::from_items(items), sound_chain())).unwrap();
+    let floor = ReviewPolicy::default().minimum_surviving_confidence;
+    assert!(
+        hypothesis.effective_confidence() >= floor
+            && hypothesis.confidence_without_exploration() < floor,
+        "premise: exploration lifts the thesis over the floor ({} with, {} without)",
+        hypothesis.effective_confidence(),
+        hypothesis.confidence_without_exploration()
+    );
+    let mut team = RedTeam::new(ReviewPolicy::default());
+    let outcome = team.review(&hypothesis, Some(0.1), now(), &mut ids());
+    assert!(
+        outcome
+            .fatal()
+            .iter()
+            .any(|c| c.kind == ChallengeKind::ResearchOnlySupport),
+        "a thesis lifted by exploration passed the research-only check: {:?}",
+        outcome.kinds()
+    );
+}
+
+/// R12-QUANT-4042: a hypothesis's status is set only through its own review,
+/// and an Approved verdict on exploration alone is refused even there. A
+/// review of another hypothesis is refused, and the status is left as it
+/// was. The premise is that the same review applied to a thesis with
+/// observed support is accepted.
+///
+/// Mutation: drop the exploration-only refusal from `Hypothesis::validate`.
+#[test]
+fn an_approved_verdict_on_quantum_exploration_alone_is_refused_when_applied() {
+    let review = |id: &str| qip_reasoning_engine::redteam::ReviewOutcome {
+        hypothesis_id: id.to_string(),
+        reviewed_at: now(),
+        challenges: Vec::new(),
+        confidence_before: 0.0,
+        confidence_after: 0.0,
+        verdict: HypothesisStatus::Approved,
+        rationale: "a test's review".to_string(),
+    };
+    let explored = EvidenceSet::from_items(vec![
+        evidence(
+            "q1",
+            EvidenceKind::QuantumExploration,
+            Stance::Supports,
+            "qaoa-a",
+            0.25,
+            0.9,
+        ),
+        evidence(
+            "q2",
+            EvidenceKind::QuantumExploration,
+            Stance::Supports,
+            "qaoa-b",
+            0.25,
+            0.9,
+        ),
+    ]);
+    let mut hypothesis = Hypothesis::form(draft(explored, sound_chain())).unwrap();
+    assert!(hypothesis.apply_review(&review("hyp-1")).is_err());
+    assert_eq!(
+        hypothesis.status(),
+        HypothesisStatus::Draft,
+        "a refused review moved the status"
+    );
+    assert!(hypothesis.apply_review(&review("hyp-other")).is_err());
+
+    let observed = EvidenceSet::from_items(vec![evidence(
+        "m1",
+        EvidenceKind::MarketObservation,
+        Stance::Supports,
+        "xnys",
+        0.95,
+        0.8,
+    )]);
+    let mut grounded = Hypothesis::form(draft(observed, sound_chain())).unwrap();
+    grounded.apply_review(&review("hyp-1")).unwrap();
+    assert_eq!(grounded.status(), HypothesisStatus::Approved);
 }

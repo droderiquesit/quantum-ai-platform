@@ -383,7 +383,19 @@ impl RedTeam {
             && supporting
                 .iter()
                 .all(|e| e.kind == EvidenceKind::QuantumExploration);
-        if exploration_only {
+        // One weak primary item beside the exploration once cleared the
+        // all-exploration test. So the thesis is also judged on what its
+        // empirical evidence alone supports: where the exploration is what
+        // lifts it over the surviving floor, its approval would rest on
+        // research. A thesis below the floor with or without the exploration
+        // is the confidence floor's to refuse, not this check's.
+        let floor = self.policy.minimum_surviving_confidence;
+        let leans_on_exploration = supporting
+            .iter()
+            .any(|e| e.kind == EvidenceKind::QuantumExploration)
+            && hypothesis.effective_confidence() >= floor
+            && hypothesis.confidence_without_exploration() < floor;
+        if exploration_only || leans_on_exploration {
             raise(
                 ChallengeKind::ResearchOnlySupport,
                 Severity::Fatal,
