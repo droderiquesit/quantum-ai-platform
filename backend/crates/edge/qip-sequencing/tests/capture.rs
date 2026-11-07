@@ -23,6 +23,15 @@ fn t(millis: i64) -> Timestamp {
 
 /// A trade the venue stamped at `venue_ms` and this cell received 2 ms later.
 fn trade(sequence: u64, venue_ms: i64) -> Result<MarketEvent> {
+    trade_with_uncertainty(sequence, venue_ms, Duration::from_millis(5))
+}
+
+/// The same trade, with the uncertainty the cell stated for it.
+fn trade_with_uncertainty(
+    sequence: u64,
+    venue_ms: i64,
+    uncertainty: Duration,
+) -> Result<MarketEvent> {
     let payload = MarketMessage::new(
         ObjectId::from_string("obj-ACME"),
         Origin::new(VenueId::new("XNYS"), "itch-a", 0, sequence),
@@ -41,7 +50,7 @@ fn trade(sequence: u64, venue_ms: i64) -> Result<MarketEvent> {
         t(venue_ms),
         t(venue_ms + 2),
         t(venue_ms + 2),
-        Duration::from_millis(5),
+        uncertainty,
         hash,
         Entitlement::Granted {
             dataset: "xnys-itch".to_string(),
@@ -95,6 +104,38 @@ fn an_event_is_stored_with_the_offset_correction_once_the_estimate_is_trustworth
     assert_eq!(late.arrival_order.as_deref(), Some("before"));
     assert_eq!(late.sequence, Some(6));
     assert!(late.validate().is_ok());
+    Ok(())
+}
+
+/// R12-RES-7103: an event the cell captured while its clock row read stale
+/// carries an uncertainty `Cell::clock_uncertainty` widened. Once the
+/// stream's discipline has converged, the capture path used to store the
+/// discipline's own estimate instead, which is narrower, and the Tick Lake
+/// then under-stated the error the tick desk's ClockPrecision reads.
+/// Mutation: store the disciplined estimate alone and this fails.
+#[test]
+fn an_event_the_cell_captured_while_its_clock_row_read_stale_keeps_its_widened_uncertainty_after_the_discipline_converged()
+-> Result<()> {
+    let mut capture = stream()?;
+    for i in 0..5_u64 {
+        capture.capture(&trade(i + 1, i as i64 * 100)?, None)?;
+    }
+    let widened = Duration::from_millis(250);
+    let stale = capture.capture(&trade_with_uncertainty(6, 500, widened)?, None)?;
+    // Premise: the discipline has converged, so the event was placed by the
+    // offset estimate and not by its own stated uncertainty.
+    assert_eq!(stale.corrections.len(), 1, "{:?}", stale.corrections);
+    assert_eq!(stale.corrections[0].kind, "offset_estimate");
+    let estimate = Duration::from_nanos(stale.corrections[0].uncertainty_nanos.ceil() as i64);
+    assert!(
+        estimate < widened,
+        "premise: the estimate ({estimate:?}) is narrower than the widened uncertainty"
+    );
+    assert!(
+        stale.uncertainty >= widened,
+        "the widened uncertainty {widened:?} was narrowed to {:?} in storage",
+        stale.uncertainty
+    );
     Ok(())
 }
 

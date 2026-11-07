@@ -1021,8 +1021,10 @@ fn the_parts_of_an_attribution_sum_to_the_whole_exactly() -> Result<()> {
     let attribution = Attribution::of(&trade)?;
     assert!(attribution.identity_holds());
     // Not approximately: these are exact decimals, so the equality is real.
-    assert_eq!(attribution.expected_net(), dec!("91"));
-    assert_eq!(attribution.realised_net(), dec!("107"));
+    // One unit of each of the ten kinds expected, and the same realised
+    // with slippage at five.
+    assert_eq!(attribution.expected_net(), dec!("90"));
+    assert_eq!(attribution.realised_net(), dec!("106"));
     assert_eq!(attribution.gross_surprise(), dec!("20"));
     assert_eq!(attribution.total_cost_surprise(), dec!("4"));
     assert_eq!(

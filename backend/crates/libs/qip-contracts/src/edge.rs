@@ -6,11 +6,11 @@
 //! the trade. Reporting a net number without its parts is how a strategy runs
 //! for a month before anyone notices the fees.
 //!
-//! Two of the nine deductions are not charged by the market at all.
+//! Two of the ten deductions are not charged by the market at all.
 //! [`DeductionKind::ComputeCost`] and [`DeductionKind::DataCost`] are what the
 //! platform spent reaching the decision and reading the inputs it decided
 //! from. They are here rather than in a separate budget for the same reason
-//! the other seven are here: a cost that is accounted for somewhere else is a
+//! the other eight are here: a cost that is accounted for somewhere else is a
 //! cost the edge calculation does not have to survive, and the aggregate of
 //! trades that each cleared their market costs while none cleared their
 //! inference bill is a loss nobody sees coming.
@@ -58,6 +58,12 @@ pub enum DeductionKind {
     /// rather than in a subscription line nobody nets against edge, because a
     /// signal that only pays when its data is free is not a signal.
     DataCost,
+    /// What crossing back out costs when a non-atomic plan strands a leg
+    /// (R12-MESH-5069): the probability a later leg misses, times the size
+    /// left holding after the first, times the cost of crossing that book
+    /// back out at the touch. Zero, stated, for a plan whose every conversion
+    /// settles atomically, because nothing can be stranded.
+    Unwind,
 }
 
 impl DeductionKind {
@@ -72,11 +78,12 @@ impl DeductionKind {
             Self::Uncertainty => "uncertainty",
             Self::ComputeCost => "compute_cost",
             Self::DataCost => "data_cost",
+            Self::Unwind => "unwind",
         }
     }
 
     /// Every kind, so a caller can assert it has considered all of them.
-    pub const fn all() -> [Self; 9] {
+    pub const fn all() -> [Self; 10] {
         [
             Self::Spread,
             Self::Fees,
@@ -87,6 +94,7 @@ impl DeductionKind {
             Self::Uncertainty,
             Self::ComputeCost,
             Self::DataCost,
+            Self::Unwind,
         ]
     }
 }
