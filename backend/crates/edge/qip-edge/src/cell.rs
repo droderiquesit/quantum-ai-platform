@@ -1217,6 +1217,11 @@ pub struct WorkReport {
     /// reason `feasibility_venues` is a side table (R12-MESH-5068). Only
     /// `admit_cycle` pushes here.
     pub refused_legs: Vec<(usize, Vec<RefusedLeg>)>,
+    /// Set on the report of a pass that failed after sending: the gate the
+    /// pass refused under last and the pass number (ADR 0209). The cell sets
+    /// it before keeping the report for [`Cell::take_failed_report`]; `None`
+    /// on every pass that finished.
+    pub failed_pass: Option<FailedPass>,
     /// Every internal cross booked this pass (§27.1). A cross is a trade
     /// between two of the platform's own strategies; it is reported rather
     /// than merely journaled so a caller can see it without replaying the
@@ -1383,6 +1388,19 @@ pub struct ExecutionReport {
     pub quantity: Decimal,
     pub price: Decimal,
     pub at: Timestamp,
+}
+
+/// The gate a failed pass's report is refused under when it recorded no
+/// refusal to be marked with (ADR 0209 decision 4).
+pub const GATE_FAILED_PASS_UNMARKED: &str = "failed_pass_unmarked";
+
+/// What marks a failed pass's report when it is shipped (ADR 0209).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FailedPass {
+    /// The gate of the last refusal the pass recorded.
+    pub gate: String,
+    /// The cell's pass counter at that pass.
+    pub pass: u64,
 }
 
 /// An order the gateway withdrew without sending, because the instant it was
@@ -1676,6 +1694,9 @@ pub struct Cell {
     /// Bounded by [`MAX_OPEN_ORDERS`]; see the constant for the refusal at
     /// the bound.
     working: BTreeMap<String, Working>,
+    /// The report of a pass that failed after sending, held until the
+    /// caller takes it (ADR 0209).
+    failed_report: Option<WorkReport>,
     /// Every fill the order-entry channel has confirmed on an order still in
     /// `working`. This is the cell's side of reconciliation. Until this
     /// existed the cell wrote a fill here the moment the venue *accepted* an
@@ -1994,6 +2015,7 @@ impl Cell {
                 Journal::new()
             },
             working: BTreeMap::new(),
+            failed_report: None,
             confirmed: Vec::new(),
             positions: BTreeMap::new(),
             strategy_positions: BTreeMap::new(),
@@ -5258,6 +5280,61 @@ impl Cell {
             halted: self.is_halted(),
             ..WorkReport::default()
         };
+        match self.work_into(now, gateway, &mut report) {
+            Ok(()) => Ok(report),
+            Err(error) => {
+                // ADR 0209: what a failed pass sent is still what ran. Kept
+                // for the caller to take and ship, never dropped with the
+                // error; a failed pass that sent nothing has nothing to bill.
+                if !report.orders.is_empty() {
+                    match report.refusals.last().map(|(gate, _)| gate.clone()) {
+                        Some(gate) => {
+                            report.failed_pass = Some(FailedPass {
+                                gate,
+                                pass: self.pass,
+                            });
+                            self.failed_report = Some(report);
+                        }
+                        // Fail closed: a failed pass that recorded no
+                        // refusal names no gate to mark it with, and an
+                        // unmarked report is never shipped.
+                        None => {
+                            self.journal.record(
+                                Decision::Refused {
+                                    gate: GATE_FAILED_PASS_UNMARKED.to_string(),
+                                    reason: format!(
+                                        "pass {} failed after sending {} order(s) and recorded no \
+                                     refusal to mark its report with; the report is refused \
+                                     whole rather than shipped unmarked: {}",
+                                        self.pass,
+                                        report.orders.len(),
+                                        error.message()
+                                    ),
+                                },
+                                now,
+                            );
+                        }
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// The report of the last pass that failed after sending at least one
+    /// order, taken once (ADR 0209). `None` when no such pass is waiting.
+    pub fn take_failed_report(&mut self) -> Option<WorkReport> {
+        self.failed_report.take()
+    }
+
+    /// [`Self::work`]'s pass, into a report the caller owns, so an error
+    /// leaves the orders already sent where [`Self::work`] can keep them.
+    fn work_into(
+        &mut self,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<()> {
         // Recorded before the halt check, so a halted cell still counts its
         // passes. A refusal count with no pass count underneath it cannot tell
         // "nothing was refused" from "the cell never ran".
@@ -5344,7 +5421,7 @@ impl Cell {
         // as long as it stayed quiet. Before the halt check: a halted cell's
         // books go wrong like any other's.
         self.expire_sequence_gaps(now)?;
-        self.review_venues(now, &mut report);
+        self.review_venues(now, report);
 
         self.record_halt();
 
@@ -5377,10 +5454,10 @@ impl Cell {
             } else {
                 GATE_JOURNAL_PRESSURE
             };
-            self.refuse(&mut report, gate, "the cell is halted", now);
-            return Ok(report);
+            self.refuse(report, gate, "the cell is halted", now);
+            return Ok(());
         }
-        self.apply_feed_loss_playbook(gateway, now, &mut report);
+        self.apply_feed_loss_playbook(gateway, now, report);
 
         // The class of the gateway this pass was handed, before a signal is
         // raised or a net is formed. `Cell::send` refuses each order at the
@@ -5401,8 +5478,8 @@ impl Cell {
                  {}; no order is formed this pass. Attach a simulated gateway, or stop the cell",
                 self.autonomy.ceiling().as_str()
             );
-            self.refuse(&mut report, GATE_LIVE_VENUE, &reason, now);
-            return Ok(report);
+            self.refuse(report, GATE_LIVE_VENUE, &reason, now);
+            return Ok(());
         }
 
         // §36.3's node-crash row: a cell that restarted forms no order until
@@ -5426,8 +5503,8 @@ impl Cell {
                 pending.len(),
                 pending.join(", ")
             );
-            self.refuse(&mut report, GATE_AWAITING_RECONCILIATION, &detail, now);
-            return Ok(report);
+            self.refuse(report, GATE_AWAITING_RECONCILIATION, &detail, now);
+            return Ok(());
         }
 
         // The degradation table, consulted once per pass. Everything below
@@ -5504,7 +5581,7 @@ impl Cell {
         // Cleared before the disposition path refills it: the lots this
         // pass was told to unwind are this pass's grounds and no later one's.
         self.instructed_unwinds.clear();
-        let retired = self.disposition_intents(now, &mut report, &mut intents);
+        let retired = self.disposition_intents(now, report, &mut intents);
 
         let vector = self.features.evaluate(now)?;
         report.features = vector.clone();
@@ -5518,7 +5595,7 @@ impl Cell {
             // envelope would net against its own unwind.
             if retired.contains(&id) {
                 self.refuse(
-                    &mut report,
+                    report,
                     GATE_DISPOSITION,
                     &format!(
                         "strategy {id} is retired at the centre and its lot here is being \
@@ -5536,7 +5613,7 @@ impl Cell {
                 && narrowing.pauses(deployed.class)
             {
                 self.refuse(
-                    &mut report,
+                    report,
                     "degradation_pause",
                     &format!("strategy {id} pauses while its capability is degraded"),
                     now,
@@ -5555,7 +5632,7 @@ impl Cell {
                 Ok(Some(signal)) => signal,
                 Ok(None) => continue,
                 Err(error) => {
-                    self.refuse(&mut report, "strategy_runtime", error.message(), now);
+                    self.refuse(report, "strategy_runtime", error.message(), now);
                     continue;
                 }
             };
@@ -5567,7 +5644,7 @@ impl Cell {
                 || !signal.conviction.shrunk().is_finite()
             {
                 self.refuse(
-                    &mut report,
+                    report,
                     GATE_SIGNAL_CONVICTION,
                     &format!(
                         "strategy {} raised a {} signal on {} whose conviction is not a finite \
@@ -5586,7 +5663,7 @@ impl Cell {
                 .is_some_and(|edge| !edge.is_finite())
             {
                 self.refuse(
-                    &mut report,
+                    report,
                     GATE_SIGNAL_EDGE,
                     &format!(
                         "strategy {} raised a {} signal on {} whose stated edge is not a finite \
@@ -5618,7 +5695,7 @@ impl Cell {
             self.metrics.signal(signal.kind);
             report.signals.push(signal.clone());
 
-            if let Some(intent) = self.intent_for(&signal, multiplier, now, &mut report)? {
+            if let Some(intent) = self.intent_for(&signal, multiplier, now, report)? {
                 intents.push(intent);
             }
         }
@@ -5629,7 +5706,7 @@ impl Cell {
         // because a leg is never netted. Every leg is judged by the same
         // feasibility gate the directional intents meet below, then held
         // until the nets have gone out.
-        let cycles = self.scan_cycles(now, multiplier, &narrowing, &mut report)?;
+        let cycles = self.scan_cycles(now, multiplier, &narrowing, report)?;
 
         // The feasibility gate, between collection and netting (§18.1). An
         // intent that cannot execute at its size never enters the netting
@@ -5639,7 +5716,7 @@ impl Cell {
         // fee's bite — would land on all of them. `retain` judges in place,
         // so the gate allocates nothing per pass.
         intents.retain(|intent| {
-            let feasible = self.admit_feasible(intent, now, &mut report);
+            let feasible = self.admit_feasible(intent, now, report);
             if !feasible {
                 // The region hold this intent took in phase one, given back:
                 // it will not reach a net, so it can never be committed.
@@ -5664,7 +5741,7 @@ impl Cell {
             self.metrics.netting_ratio(ratio);
         }
         for net_intent in &nets {
-            if let Some(order) = self.place_net(net_intent, now, gateway, &mut report)? {
+            if let Some(order) = self.place_net(net_intent, now, gateway, report)? {
                 report.orders.push(order);
             }
         }
@@ -5674,19 +5751,19 @@ impl Cell {
         // order is the point. A cell that opened fresh cycles while an older
         // one sat half-formed would be spending its open-order capacity on
         // opportunities it has not committed to ahead of the one it has.
-        self.resume_rested_cycles(now, gateway, &mut report)?;
+        self.resume_rested_cycles(now, gateway, report)?;
 
         // Cycles go out after the nets. Never through `net`: each leg is
         // sent by the same order path a net intent uses, one leg after
         // another in the plan's order, least reversible first.
         for cycle in &cycles {
-            self.place_cycle(cycle, now, gateway, &mut report)?;
+            self.place_cycle(cycle, now, gateway, report)?;
         }
 
         if self.config.net_edge_margin_bp.is_some() {
             self.metrics.edgeless_signals(report.edgeless_signals);
         }
-        Ok(report)
+        Ok(())
     }
 
     /// Build a reduce-only intent for each lot the applied policy's
