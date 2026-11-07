@@ -39,6 +39,9 @@ use qip_risk::hedge_search::InstrumentClass;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_streaming::envelope::StreamEnvelope;
 
+#[path = "support/eligible_panel.rs"]
+mod eligible_panel;
+
 /// The file every central root reads, relative to this crate so the test
 /// reads the committed artefact and not a copy of it.
 const COMMITTED: &str = concat!(
@@ -76,6 +79,7 @@ fn platform(universe: Universe) -> Result<Platform> {
             minimum_surviving_confidence: 0.10,
             ..ReviewPolicy::default()
         },
+        licensed_datasets: eligible_panel::licensed_datasets(),
         ..PlatformConfig::default()
     }
     .with_hedge_candidates(candidates);
@@ -108,19 +112,32 @@ fn bar(object: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
     }))
 }
 
-/// A quiet series ending in `drop` on its last bar.
+/// A series rising by [`eligible_panel::DRIFT`] under its noise and ending
+/// in `drop` on its last bar, with the context `eligible_panel` adds so the
+/// thesis the drop raises is uncontested and clears the shipped eligibility
+/// rule (ADR 0238, owner decision 18).
 fn tape(object: &str, phase: f64, drop: f64) -> Vec<SensedRecord> {
     let mut price = 100.0_f64;
-    (0..120)
+    let mut records: Vec<SensedRecord> = (0..120)
         .map(|i| {
             let noise = ((i as f64 * 0.7548776662 + phase) % 1.0 - 0.5) * 0.008;
-            let last = if i == 119 { drop } else { 0.0 };
+            let last = if i == 119 {
+                drop
+            } else {
+                eligible_panel::DRIFT
+            };
             let open = price;
             price *= 1.0 + noise + last;
             let at = start().saturating_sub(Duration::from_days(120 - i));
             bar(object, at, open, price)
         })
-        .collect()
+        .collect();
+    records.extend(eligible_panel::context(
+        "US",
+        &[ObjectId::from_string(object)],
+        start(),
+    ));
+    records
 }
 
 /// A print in every catalogue name, which is the only thing that gives a

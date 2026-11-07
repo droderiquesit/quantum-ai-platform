@@ -61,6 +61,32 @@ pub struct OrganisationReport {
     pub backlog_refused: Vec<String>,
 }
 
+/// A finding [`OrganisationReport::contests_the_thesis`] does not count as
+/// dissent: risk control's limit report, and an adversarial review whose
+/// every objection is that the book already holds the subject.
+fn is_procedural_objection(finding: &AgentFinding) -> bool {
+    if finding.agent_id == crate::manifests::ids::RISK {
+        return true;
+    }
+    if finding.agent_id != crate::manifests::ids::ADVERSARIAL {
+        return false;
+    }
+    let fact = |label: &str| {
+        finding
+            .facts
+            .iter()
+            .find(|fact| fact.label == label)
+            .map(|fact| fact.value)
+    };
+    match (
+        fact("objection_count"),
+        fact(crate::review::HOLDING_OBJECTION_COUNT),
+    ) {
+        (Some(all), Some(holding)) => all > 0.0 && (all - holding).abs() < f64::EPSILON,
+        _ => false,
+    }
+}
+
 impl OrganisationReport {
     /// Findings that took a direction, by direction.
     pub fn directional(&self) -> (Vec<&AgentFinding>, Vec<&AgentFinding>) {
@@ -98,6 +124,36 @@ impl OrganisationReport {
     pub fn is_contested(&self) -> bool {
         let (positive, negative) = self.directional();
         !positive.is_empty() && !negative.is_empty()
+    }
+
+    /// Whether the panel disputes the thesis itself (ADR 0238, owner
+    /// decision 20): a finding on each side, counting only dissent about
+    /// the thesis's evidence or direction.
+    ///
+    /// Since ADR 0238 a contested thesis is unresolved and never sized, so
+    /// what counts as contest decides what the platform may trade. Two
+    /// objections are deliberately not counted, because neither is a view on
+    /// the thesis:
+    ///
+    /// - **Risk control reporting a blocking limit.** Its direction is
+    ///   negative exactly when a limit blocks, and that limit still refuses
+    ///   at its own gate. Counting it again here would stop every thesis on
+    ///   a limited book in REASON, including the reduce-only exit and every
+    ///   hedge, which is what the limit exists to let through.
+    /// - **The adversarial reviewer's re-argument objection**, raised only
+    ///   because the book already holds the subject. Counting it would mean
+    ///   never adding to, hedging or planning the exit of a held position.
+    ///   Any other objection the reviewer raises still counts: a finding
+    ///   whose objections are not all [`HOLDING_OBJECTION`]s is dissent.
+    ///
+    /// [`Self::is_contested`] is the raw two-sided count and is kept for
+    /// the records that report it.
+    ///
+    /// [`HOLDING_OBJECTION`]: crate::review::HOLDING_OBJECTION
+    pub fn contests_the_thesis(&self) -> bool {
+        let (positive, negative) = self.directional();
+        positive.iter().any(|f| !is_procedural_objection(f))
+            && negative.iter().any(|f| !is_procedural_objection(f))
     }
 
     /// Fraction of the agents asked that produced an informative finding.
@@ -553,4 +609,163 @@ pub fn standard_agents(
             desk,
         )),
     ]
+}
+#[cfg(test)]
+mod contest_tests {
+    //! ADR 0238 as owner decision 20 reads it: what counts as a panel
+    //! contesting the thesis. A contested thesis is unresolved and never
+    //! sized, so a finding counted here that is not dissent about the thesis
+    //! stops trades the platform's own controls exist to let through.
+
+    use super::*;
+    use qip_agents::finding::{Direction, NumericFact};
+    use qip_core::time::Timestamp;
+
+    fn at() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn finding(agent: &str, direction: Direction, facts: &[(&str, f64)]) -> AgentFinding {
+        let mut finding = AgentFinding::new(
+            AgentRunId::from_string(format!("run-{agent}")),
+            agent,
+            at(),
+            at(),
+            format!("{agent} on the thesis"),
+        );
+        finding.direction = direction;
+        finding.conviction = 0.5;
+        finding.facts = facts
+            .iter()
+            .map(|(label, value)| NumericFact::computed(*label, *value, "count", agent, Vec::new()))
+            .collect();
+        finding
+    }
+
+    fn report(findings: Vec<AgentFinding>) -> OrganisationReport {
+        OrganisationReport {
+            as_of: at(),
+            question: "is AAA undervalued".to_string(),
+            runs: Vec::new(),
+            findings,
+            deferred: Vec::new(),
+            failed: Vec::new(),
+            missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
+        }
+    }
+
+    fn supporter() -> AgentFinding {
+        finding(manifests::ids::EQUITY, Direction::Positive, &[])
+    }
+
+    /// Exclusion (a). The failure prevented: a book under a blocking limit
+    /// had every thesis on it — the reduce-only exit and every hedge
+    /// included — stopped in REASON by risk control's limit report, a
+    /// refusal the limit already makes at its own gate. Mutation: drop the
+    /// `ids::RISK` arm of `is_procedural_objection` and this fails.
+    #[test]
+    fn a_risk_control_limit_report_alone_does_not_contest_the_thesis() {
+        let panel = report(vec![
+            supporter(),
+            finding(
+                manifests::ids::RISK,
+                Direction::Negative,
+                &[("blocking_breach_count", 1.0)],
+            ),
+        ]);
+        assert!(
+            panel.is_contested(),
+            "premise: the panel has a finding on each side"
+        );
+        assert!(
+            !panel.contests_the_thesis(),
+            "a limit report was counted as dissent about the thesis"
+        );
+    }
+
+    /// Exclusion (b), and its edge. The failure prevented: a thesis on a
+    /// position the book already holds was always contested by the
+    /// reviewer's re-argument objection, so the platform could never add
+    /// to, hedge or plan the exit of a held position. Any other objection
+    /// beside it is still dissent. Mutation: drop the reviewer arm of
+    /// `is_procedural_objection` and the first assertion fails; count the
+    /// reviewer out whatever it objects to and the second fails.
+    #[test]
+    fn a_reviewer_objecting_only_that_the_book_holds_the_name_does_not_contest_the_thesis() {
+        let holding_only = report(vec![
+            supporter(),
+            finding(
+                manifests::ids::ADVERSARIAL,
+                Direction::Negative,
+                &[
+                    ("objection_count", 1.0),
+                    (crate::review::HOLDING_OBJECTION_COUNT, 1.0),
+                ],
+            ),
+        ]);
+        assert!(
+            holding_only.is_contested(),
+            "premise: one finding each side"
+        );
+        assert!(
+            !holding_only.contests_the_thesis(),
+            "the re-argument objection alone was counted as dissent"
+        );
+
+        let with_another_objection = report(vec![
+            supporter(),
+            finding(
+                manifests::ids::ADVERSARIAL,
+                Direction::Negative,
+                &[
+                    ("objection_count", 2.0),
+                    (crate::review::HOLDING_OBJECTION_COUNT, 1.0),
+                ],
+            ),
+        ]);
+        assert!(
+            with_another_objection.contests_the_thesis(),
+            "an objection about the thesis itself was dropped with the holding one"
+        );
+    }
+
+    /// The rule the exclusions narrow, held in place: a genuine finding
+    /// against the thesis contests it, whatever procedural objections sit
+    /// beside it. The kernel half — that such a panel's thesis is
+    /// unresolved and forms no proposal — is
+    /// `qip-kernel/tests/symbolic_federation.rs`'s
+    /// `a_cycle_whose_panel_is_contested_forms_no_proposal_and_journals_its_routing_as_unresolved`,
+    /// whose dissent is the simulation analyst's. Mutation: make
+    /// `contests_the_thesis` ignore every negative finding and this fails.
+    #[test]
+    fn a_genuine_opposing_finding_still_contests_the_thesis() {
+        let panel = report(vec![
+            supporter(),
+            finding(manifests::ids::SIMULATION, Direction::Negative, &[]),
+            finding(
+                manifests::ids::RISK,
+                Direction::Negative,
+                &[("blocking_breach_count", 1.0)],
+            ),
+            finding(
+                manifests::ids::ADVERSARIAL,
+                Direction::Negative,
+                &[
+                    ("objection_count", 1.0),
+                    (crate::review::HOLDING_OBJECTION_COUNT, 1.0),
+                ],
+            ),
+        ]);
+        assert!(
+            panel.contests_the_thesis(),
+            "an analyst's finding against the thesis was not counted as dissent"
+        );
+        let unopposed = report(vec![supporter()]);
+        assert!(
+            !unopposed.contests_the_thesis(),
+            "premise: one side alone is no contest"
+        );
+    }
 }

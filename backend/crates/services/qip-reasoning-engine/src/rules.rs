@@ -67,7 +67,12 @@ impl Cond {
         }
     }
 
-    pub(crate) fn holds(&self, facts: &BTreeMap<String, Value>) -> bool {
+    /// Whether the condition holds over `facts`, by the same evaluation
+    /// [`RulePack::evaluate`] fires rules on. Public so a caller explaining
+    /// why a rule did not fire (the kernel's unresolved acting mark, ADR
+    /// 0238) names the premise that failed by the engine's own reading of
+    /// it rather than by a second evaluator that could disagree.
+    pub fn holds(&self, facts: &BTreeMap<String, Value>) -> bool {
         match self {
             Cond::Present { fact } => facts.contains_key(fact),
             Cond::Cmp { fact, op, value } => facts.get(fact).is_some_and(|have| {
