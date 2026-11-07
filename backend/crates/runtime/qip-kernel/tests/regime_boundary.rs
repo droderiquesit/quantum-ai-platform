@@ -409,3 +409,73 @@ fn a_model_evaluated_before_the_market_crossed_a_regime_boundary_is_refused_prom
     );
     Ok(())
 }
+
+/// R12-MODEL-10096: the structural-break critic judges a model against its
+/// own subject's regime crossings. `obj-BBB`'s spread blows out after the
+/// model was evaluated; a model fitted on `obj-AAA`, whose market did not
+/// move, is still promoted, and the same model fitted on `obj-BBB` is
+/// refused. Before this, the critic read the all-subject latest crossing and
+/// so refused every model whenever any watched subject crossed.
+///
+/// Mutation: make `Platform::regime_crossing_for` return the all-subject
+/// `latest_regime_crossing()` whatever the card names — the `obj-AAA` model
+/// is refused and the first assertion fails.
+#[test]
+fn a_model_is_judged_against_its_own_subjects_regime_crossing_and_not_another_subjects()
+-> Result<()> {
+    use qip_ai::registry::ModelRegistry;
+    use qip_kernel::central::models::{record_subject, register_fit, subject_of};
+    use qip_training::local::SkillPolicy;
+    use qip_training::serve::InTreeProvider;
+
+    let teacher = teacher("regime-subject-linear")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let promote = |subject: &str| -> Result<Result<()>> {
+        let mut platform = serving_platform_after(true)?;
+        let mut registry = ModelRegistry::new();
+        let registration = register_fit(
+            &mut registry,
+            &teacher,
+            &SkillPolicy::default(),
+            "regime-tests",
+            start(),
+        )?;
+        assert!(
+            registration.passed,
+            "premise: the fit cleared the skill bar"
+        );
+        let card = registry
+            .get_mut(&registration.reference)
+            .unwrap_or_else(|| panic!("premise: the card is registered"));
+        record_subject(card, subject)?;
+        assert_eq!(
+            subject_of(card),
+            Some(subject),
+            "premise: the subject is on the card"
+        );
+        Ok(platform
+            .promote_model(
+                &mut registry,
+                &artifact,
+                None,
+                &[],
+                start().saturating_add(Duration::from_secs(120)),
+            )
+            .map(|_| ()))
+    };
+
+    let untouched = promote("obj-AAA")?;
+    assert!(
+        untouched.is_ok(),
+        "a model on a subject that did not cross was refused for another subject's crossing: \
+         {untouched:?}"
+    );
+    let crossed = promote("obj-BBB")?
+        .expect_err("a model on the subject that crossed after its evaluation was promoted");
+    assert!(
+        crossed.message().contains("structural_break"),
+        "refused for another reason: {}",
+        crossed.message()
+    );
+    Ok(())
+}

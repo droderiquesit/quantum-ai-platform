@@ -17216,6 +17216,21 @@ impl Platform {
         self.regime_transitions.latest_crossing()
     }
 
+    /// The regime crossing that bears on `card` (R12-MODEL-10096): its own
+    /// subject's latest crossing where the card records one, and otherwise
+    /// every subject's latest. The fallback is the restrictive one: a card
+    /// that does not say what market it describes is judged against all of
+    /// them rather than none.
+    pub(crate) fn regime_crossing_for(
+        &self,
+        card: &qip_ai::registry::ModelCard,
+    ) -> Option<Timestamp> {
+        match crate::central::models::subject_of(card) {
+            Some(subject) => self.regime_transitions.latest_crossing_for(subject),
+            None => self.latest_regime_crossing(),
+        }
+    }
+
     /// Every catalogue dataset held quarantined, and every dataset produced
     /// from one, for the verifier society's data-poisoning critic.
     pub(crate) fn quarantined_datasets(&self) -> BTreeSet<String> {

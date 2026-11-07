@@ -2169,9 +2169,13 @@
     "current": "Verifier society (qip-learning-engine verifier.rs) refutes predictions/forecasters/models; refutation blocks forecaster promotion and refuses promote_model_from, journaled. No VerificationResult contract; no reweight/retire of a promoted model.",
     "evidence": [
       "backend/crates/services/qip-lifecycle/src/demotion.rs",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:595"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:595",
+      "backend/crates/runtime/qip-kernel/tests/regime_boundary.rs::a_model_is_judged_against_its_own_subjects_regime_crossing_and_not_another_subjects",
+      "backend/crates/runtime/qip-kernel/src/regime_transition.rs RegimeTransitions::latest_crossing_for",
+      "backend/crates/runtime/qip-kernel/src/central/models.rs record_subject, subject_of (MODEL_SUBJECT)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs maybe_learn records the fitted subject on baseline and challenger cards"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): a per-round re-verification that rolled back refuted production models was built and reverted unpushed, because its skeptic showed it would demote healthy models. RegimeShiftCritic::attack_model refutes any card whose evaluation predates the latest regime crossing, and Platform::latest_regime_crossing is the maximum over every subject. Card evaluations are written once at registration, so after any subject crossed, every production model would be refuted and rolled back round after round. The remaining step is per-subject regime crossings and a renewed evaluation before re-verifying, then demotion on refutation. The VerificationResult contract exists (qip-contracts challenge.rs) and the row's earlier text saying otherwise is stale.",
+    "gap": "2026-11-07 L2-INTEL: the promotion-time defect is fixed — a card records the subject it was fitted on and the structural-break critic reads that subject's latest crossing (all subjects only for a card that names none). Still open: LEARN does not re-verify a production card after its subject crosses, require a renewed evaluation newer than the crossing, or roll a refuted card back through rollback_model journaling ModelVerified. Earlier gap: 2026-10-30 (lane L2-INTEL): a per-round re-verification that rolled back refuted production models was built and reverted unpushed, because its skeptic showed it would demote healthy models. RegimeShiftCritic::attack_model refutes any card whose evaluation predates the latest regime crossing, and Platform::latest_regime_crossing is the maximum over every subject. Card evaluations are written once at registration, so after any subject crossed, every production model would be refuted and rolled back round after round. The remaining step is per-subject regime crossings and a renewed evaluation before re-verifying, then demotion on refutation. The VerificationResult contract exists (qip-contracts challenge.rs) and the row's earlier text saying otherwise is stale.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2182,7 +2186,7 @@
     "verification": "cargo test -p qip-lifecycle",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-11-07 L2-INTEL: mutations, each restored by cmp: regime_crossing_for returning the all-subject crossing failed a_model_is_judged_against_its_own_subjects_regime_crossing_and_not_another_subjects (the obj-AAA model refused for obj-BBB's crossing); dropping record_subject from maybe_learn failed a_model_fitted_in_one_regime_is_listed_ineligible_in_another (left None)."
   },
   {
     "id": "R12-CAPITAL-10097",

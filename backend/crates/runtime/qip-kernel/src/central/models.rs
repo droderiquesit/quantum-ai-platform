@@ -53,6 +53,41 @@ pub const DEFAULT_RESOURCE_BUDGET: ResourceBudget = ResourceBudget {
     max_memory_bytes: 1_048_576,
 };
 const CALIBRATION_SCALE: &str = "calibration_scale";
+
+/// The card parameter naming the one subject a model was fitted on
+/// (R12-MODEL-10096), so the structural-break critic judges the model against
+/// its own market's regime crossings and not every watched subject's.
+pub const MODEL_SUBJECT: &str = "subject";
+
+/// Record on `card` the subject it was fitted on. Refuses a blank subject,
+/// and a card that already names a different one: a model is fitted on one
+/// tape, and a card claiming two would be judged against whichever crossing
+/// was read first.
+pub fn record_subject(card: &mut ModelCard, subject: &str) -> Result<()> {
+    if subject.trim().is_empty() {
+        return Err(Error::invalid(format!(
+            "{}: a model's subject must be named; leave it unrecorded instead, and the \
+             card is judged against every subject's crossings",
+            card.reference()
+        )));
+    }
+    if let Some(held) = card.parameters.get(MODEL_SUBJECT)
+        && held != subject
+    {
+        return Err(Error::invalid(format!(
+            "{} already names subject {held}, so it cannot also be fitted on {subject}",
+            card.reference()
+        )));
+    }
+    card.parameters
+        .insert(MODEL_SUBJECT.to_string(), subject.to_string());
+    Ok(())
+}
+
+/// The subject `card` records it was fitted on, if any.
+pub fn subject_of(card: &ModelCard) -> Option<&str> {
+    card.parameters.get(MODEL_SUBJECT).map(String::as_str)
+}
 const CALIBRATION_OFFSET: &str = "calibration_offset";
 
 /// Refuse to evaluate a candidate unless the classical baseline it is judged
