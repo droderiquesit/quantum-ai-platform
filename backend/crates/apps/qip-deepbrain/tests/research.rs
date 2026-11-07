@@ -2425,3 +2425,135 @@ fn a_newer_world_state_clears_the_expiry_of_the_one_it_replaced() {
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(names(&after), 1, "the successor's own expiry raised no gap");
 }
+
+/// ADR 0346 (R12-EXPAND-6067): a persistent belief discrepancy queues
+/// exactly one item naming its origin. The federation forecast `rates` up
+/// three cycles running and the market resolved each against it; the third
+/// sweep raises one specialist item whose evidence names the detector and
+/// every resolved proposition, and a fourth sweep against it raises nothing
+/// more. A subject the federation called right (`fx`) and one where it took
+/// no side (`vol`, at one half) raise nothing, so the item is about the
+/// belief and not about a resolution existing. No belief price level is
+/// read: the watch sees only the arbitrated probability and the outcome.
+///
+/// Mutation: feed the tracker every resolved subject rather than those
+/// resolved against the federation.
+#[test]
+fn a_persistent_belief_discrepancy_queues_exactly_one_item_naming_its_origin() {
+    use qip_deepbrain::research::{BeliefWatch, PERSIST_SWEEPS};
+    use qip_expansion::gap::raise;
+    use qip_kernel::federation_stage::Resolution;
+
+    let resolved = |proposition: String, ensemble: f64, outcome: bool| Resolution {
+        proposition,
+        outcome,
+        closed: Vec::new(),
+        forecasts: Default::default(),
+        ensemble: Some(ensemble),
+    };
+    let cycle = |n: u64| {
+        vec![
+            resolved(format!("macro:rates:move-persists@{n}"), 0.8, false),
+            resolved(format!("macro:fx:move-persists@{n}"), 0.7, true),
+            resolved(format!("macro:vol:move-persists@{n}"), 0.5, false),
+        ]
+    };
+    let mut watch = BeliefWatch::new().unwrap();
+    let mut log: Vec<Vec<Resolution>> = Vec::new();
+    let mut raised = Vec::new();
+    for n in 1..=u64::from(PERSIST_SWEEPS) + 1 {
+        log.push(cycle(n));
+        let read: Vec<&[Resolution]> = log.iter().map(Vec::as_slice).collect();
+        let out = watch.feed(&read);
+        if n < u64::from(PERSIST_SWEEPS) {
+            assert!(
+                out.is_empty(),
+                "raised before persisting: sweep {n}: {out:?}"
+            );
+        }
+        raised.push(out);
+    }
+    let items: Vec<_> = raised.into_iter().flatten().collect();
+    assert_eq!(items.len(), 1, "{items:#?}");
+    let item = &items[0];
+    assert_eq!(
+        item.evidence,
+        [
+            "belief-discrepancy",
+            "detector:persistent_discrepancy",
+            "persistent:macro:rates:move-persists",
+            "resolved:macro:rates:move-persists@1",
+            "resolved:macro:rates:move-persists@2",
+            "resolved:macro:rates:move-persists@3",
+        ]
+        .map(String::from)
+    );
+    assert!(
+        item.observation.contains("`macro:rates:move-persists`"),
+        "{}",
+        item.observation
+    );
+    // It is a research item the desk can queue: one class, a specialist's.
+    let gap = raise(item.clone()).unwrap();
+    assert_eq!(gap.signal.evidence, item.evidence);
+    assert_eq!(watch.tracked(), 1, "only the discrepant subject is tracked");
+}
+
+/// ADR 0346: the latest resolution of a subject is the one of the latest
+/// cycle, not the last listed. A review lists resolutions in proposition
+/// order, so `@10` comes before `@9`; the federation called `@9` right and
+/// `@10` wrong, and the subject is flagged. And a watch counts reviews
+/// read, not cycle numbers: a log whose cycles restart from one (a
+/// restarted platform over the same journal) is still read past.
+///
+/// Mutation: drop the sort by cycle. The restart half has no mutation to
+/// run: `BeliefWatch::feed` takes no cycle number, so no cursor can be
+/// written on one; the assertion keeps it that way.
+#[test]
+fn the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_the_watch() {
+    use qip_deepbrain::research::{BeliefWatch, PERSIST_SWEEPS, belief_discrepancies};
+    use qip_kernel::federation_stage::Resolution;
+
+    let resolved = |proposition: &str, ensemble: f64, outcome: bool| Resolution {
+        proposition: proposition.to_string(),
+        outcome,
+        closed: Vec::new(),
+        forecasts: Default::default(),
+        ensemble: Some(ensemble),
+    };
+    let listed = [
+        resolved("macro:rates:move-persists@10", 0.8, false),
+        resolved("macro:rates:move-persists@9", 0.8, true),
+    ];
+    assert!(
+        listed[0].proposition < listed[1].proposition,
+        "premise: proposition order puts @10 first"
+    );
+    let flagged = belief_discrepancies(listed.iter());
+    assert_eq!(
+        flagged.get("macro:rates:move-persists"),
+        Some(&vec!["macro:rates:move-persists@10".to_string()]),
+        "{flagged:?}"
+    );
+
+    // Cycles 7, 8, then a restart numbering from 1 again: three reviews,
+    // each against the federation, persist.
+    let mut watch = BeliefWatch::new().unwrap();
+    let reviews: Vec<Vec<Resolution>> = [7, 8, 1]
+        .iter()
+        .map(|n| {
+            vec![resolved(
+                &format!("macro:rates:move-persists@{n}"),
+                0.8,
+                false,
+            )]
+        })
+        .collect();
+    assert_eq!(reviews.len(), PERSIST_SWEEPS as usize, "premise");
+    let mut raised = 0;
+    for read in 1..=reviews.len() {
+        let slices: Vec<&[Resolution]> = reviews[..read].iter().map(Vec::as_slice).collect();
+        raised += watch.feed(&slices).len();
+    }
+    assert_eq!(raised, 1, "the review after the restart was skipped");
+}
