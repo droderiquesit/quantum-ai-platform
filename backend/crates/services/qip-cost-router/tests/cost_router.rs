@@ -80,11 +80,11 @@ fn market_costs(edge: NetEdge, each: Decimal) -> Result<NetEdge> {
     ] {
         edge = edge.deduct(Deduction::new(kind, each, "modelled by the cell")?);
     }
-    edge.deduct(Deduction::new(
+    Ok(edge.deduct(Deduction::new(
         DeductionKind::Unwind,
         Decimal::ZERO,
         "none: one decision, no later leg to strand",
-    )?)
+    )?))
 }
 
 // --- the ladder -------------------------------------------------------------
