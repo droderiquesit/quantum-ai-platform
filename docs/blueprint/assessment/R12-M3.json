@@ -2136,9 +2136,12 @@
       "services/qip-learning-engine/src/tournament.rs::tests::a_forecaster_whose_synthetic_capital_falls_loses_weight_and_compute",
       "services/qip-learning-engine/src/tournament.rs::tests::cost_and_latency_each_move_influence",
       "services/qip-learning-engine/src/tournament.rs::tests::a_regime_change_predicted_to_break_a_forecaster_reweights_the_ensemble",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::influence_among"
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::influence_among",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::tests::a_detectors_step_count_is_ranked_only_against_other_detectors_and_never_against_money",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs CostMeter, Tournament::influence_among per-meter cost medians",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs observe_reasoning: detector cost = evidence items examined, CostMeter::Steps"
     ],
-    "gap": "Detectors are not metered: a detector is an in-cycle deterministic function whose hypothesis is formed at the pass instant (formed_at equals as_of), so a measured latency would be zero or a wall-clock reading the log could not replay, and no compute cost is metered for it. The aggregate still feeds no decision. Needs a replayable meter on the detector run (counted work, not wall time) before cost and latency can enter as measured.",
+    "gap": "2026-11-07 L2-INTEL: detectors are now metered by counted work (evidence items examined, CostMeter::Steps), ranked only among step-metered forecasters per ADR 0149 decision 13, so cost moves a detector's influence. Open: a detector's latency stays the neutral factor (zero by construction, per the same decision), so detectors earn nothing from latency; awaiting a skeptic on whether that leaves the requirement's latency clause unmet for them. Earlier gap: Detectors are not metered: a detector is an in-cycle deterministic function whose hypothesis is formed at the pass instant (formed_at equals as_of), so a measured latency would be zero or a wall-clock reading the log could not replay, and no compute cost is metered for it. The aggregate still feeds no decision. Needs a replayable meter on the detector run (counted work, not wall time) before cost and latency can enter as measured.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2149,7 +2152,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The information factor can only penalise negative information, never reward positive or penalise zero. a_forecaster_duplicating_another_adds_no_information asserts the information_value score, not the influence weight. The tournament is advisory by its own doc (model_tournament.rs:51-56), so 'influence' moves a recorded aggregate, not a decision. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; the grader closure (meter elapsed time per detector) would journal a non-replayable figure. Left PARTIAL with the corrected gap."
+    "notes": "Round-2 independent audit, 2026-10-11: The information factor can only penalise negative information, never reward positive or penalise zero. a_forecaster_duplicating_another_adds_no_information asserts the information_value score, not the influence weight. The tournament is advisory by its own doc (model_tournament.rs:51-56), so 'influence' moves a recorded aggregate, not a decision. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; the grader closure (meter elapsed time per detector) would journal a non-replayable figure. Left PARTIAL with the corrected gap. 2026-11-07 L2-INTEL: mutations, each restored by cmp: reading every forecaster's meter as Spend (one pooled median) failed a_detectors_step_count_is_ranked_only_against_other_detectors_and_never_against_money (cheap's cost factor 0.952 vs 0.980); the kernel detector's cost back to None failed an_important_prediction_journals_a_challenge_exchange_on_its_tournament_review (left None). The step count is not passed to the vote contract's compute cost, which stays zero for a step-metered entrant."
   },
   {
     "id": "R12-MODEL-3091",
