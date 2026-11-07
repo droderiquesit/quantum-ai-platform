@@ -5217,6 +5217,28 @@ pub struct MandateSubscribed {
 /// The producer of [`MandateSubscribed`].
 const MANDATE_SUBSCRIPTION_ORIGIN: &str = "kernel/mandate-subscription";
 
+/// The journalled record that a commerce unit's movement was queued for the
+/// desk ledger (R12-COMMERCE-5096): the whole `PhysicalInventory`
+/// [`qip_contracts::ledger_operation::LedgerOperation`], written by
+/// [`Platform::queue_inventory_moves`] before the operation is queued.
+/// Without it a restart lost every movement the desk had not yet shipped,
+/// and the desk ledger's warehouse account stopped replaying to the units
+/// the commerce ledger held. Journalled whole and re-sent as written on
+/// resume, as [`MandateSubscribed`] is: the ledger books each id once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommerceInventoryQueued {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+impl EventBody for CommerceInventoryQueued {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer of [`CommerceInventoryQueued`], its own origin so a reader of
+/// the other `LedgerOperationRecorded` producers never meets this body.
+const COMMERCE_INVENTORY_ORIGIN: &str = "kernel/commerce-inventory";
+
 impl EventBody for CapitalGrantRecalled {
     const TOPIC: Topic = Topic::LedgerOperationRecorded;
     const SCHEMA_VERSION: u32 = 1;
@@ -6693,6 +6715,9 @@ impl Platform {
         platform.queue_private_commitments(now)?;
         // Every mandate subscription this log recorded, re-queued as written.
         platform.requeue_mandate_subscriptions()?;
+        // Every commerce inventory movement this log recorded, re-queued as
+        // written (R12-COMMERCE-5096).
+        platform.requeue_commerce_inventory()?;
         // Every capital grant this log funded or recalled, re-queued as
         // written and in the order written: the plane's envelopes do not
         // survive a restart but the ledger's debt to the books they funded
@@ -8063,6 +8088,25 @@ impl Platform {
             });
             match built {
                 Ok(operation) => {
+                    // Journalled before it is queued, so a restart re-sends
+                    // it; a movement the log will not take is reported and
+                    // not queued, rather than queued unrecoverably.
+                    if let Err(error) = self.journal_record(
+                        CommerceInventoryQueued {
+                            operation: operation.clone(),
+                        },
+                        COMMERCE_INVENTORY_ORIGIN,
+                        now,
+                    ) {
+                        problems.push(format!(
+                            "commerce unit {} {} was not queued for the ledger, because the log \
+                             would not take its record: {}",
+                            movement.unit,
+                            movement.stage,
+                            error.message()
+                        ));
+                        continue;
+                    }
                     self.commerce_inventory_operations = sequence;
                     self.desk_operations.push(operation);
                 }
@@ -8143,6 +8187,30 @@ impl Platform {
         )?;
         self.subscribed_mandates.insert(mandate);
         self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Re-queue every commerce inventory movement the log holds, as written
+    /// and in the order written (R12-COMMERCE-5096), and resume the
+    /// movement sequence after the highest one journalled, so a movement
+    /// queued after a restart never reuses a sequence. The ledger answers a
+    /// resend of a booked movement with a duplicate, so re-sending every
+    /// journalled one books each exactly once.
+    fn requeue_commerce_inventory(&mut self) -> Result<()> {
+        let mut recorded = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == COMMERCE_INVENTORY_ORIGIN
+                && record.event.topic == CommerceInventoryQueued::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                recorded.push(frame.decode::<CommerceInventoryQueued>()?.body.operation);
+            }
+        }
+        for operation in recorded {
+            self.commerce_inventory_operations =
+                self.commerce_inventory_operations.max(operation.sequence);
+            self.desk_operations.push(operation);
+        }
         Ok(())
     }
 

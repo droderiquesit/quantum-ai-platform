@@ -1872,3 +1872,80 @@ fn a_commerce_plan_without_a_chargeback_rate_is_refused_at_load() -> Result<()> 
     }
     Ok(())
 }
+
+/// R12-COMMERCE-5096. A commerce receipt queued for the desk ledger and not
+/// yet shipped used to live only in memory, so a restart lost it and the
+/// desk ledger's warehouse account stopped replaying to the units the
+/// commerce ledger held. Each movement is now journalled before it is
+/// queued and re-queued from the log on resume, exactly once each.
+///
+/// Mutations: skip `requeue_commerce_inventory` at assembly, or drop the
+/// journal write in `queue_inventory_moves`; either way the restarted
+/// process queues no movement and the test fails.
+#[test]
+fn a_commerce_receipt_queued_and_not_yet_drained_before_a_restart_is_requeued_from_the_journal_and_books_exactly_one_physical_inventory_operation_after_resume()
+-> Result<()> {
+    use qip_contracts::ledger_operation::{LedgerOperation, OperationKind};
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-commerce-inventory-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let make = || -> Result<Platform> {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+    };
+    let inventory = |platform: &Platform| -> Vec<LedgerOperation> {
+        platform
+            .pending_desk_operations()
+            .iter()
+            .filter(|operation| matches!(operation.kind, OperationKind::PhysicalInventory { .. }))
+            .cloned()
+            .collect()
+    };
+
+    let queued = {
+        let mut platform = make()?;
+        platform.install_breadth(
+            &BreadthPlan {
+                commerce: Some(commerce_plan()?),
+                ..BreadthPlan::default()
+            },
+            start(),
+        )?;
+        let mut at = start();
+        for _ in 0..6 {
+            platform.run_cycle(at);
+            at = at.saturating_add(Duration::from_hours(1));
+        }
+        inventory(&platform)
+    };
+    assert!(
+        !queued.is_empty(),
+        "premise: the first process queued a commerce movement for the desk ledger"
+    );
+
+    // The restart installs no breadth plan, so every movement it holds came
+    // from the log.
+    let restarted = make()?;
+    let requeued = inventory(&restarted);
+    assert_eq!(
+        requeued, queued,
+        "the restart did not re-queue the journalled movements as written, once each"
+    );
+    let ids: std::collections::BTreeSet<&str> = requeued
+        .iter()
+        .map(|operation| operation.operation_id.as_str())
+        .collect();
+    assert_eq!(ids.len(), requeued.len(), "a movement was queued twice");
+    Ok(())
+}
