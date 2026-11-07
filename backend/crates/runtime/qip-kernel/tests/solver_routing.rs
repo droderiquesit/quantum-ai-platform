@@ -469,3 +469,62 @@ fn a_discrete_solve_is_stated_in_the_quantum_contract_with_its_classical_baselin
     assert!(contract_records(&continuous)?.is_empty());
     Ok(())
 }
+
+/// R12-QUANT-4032 (decision 23): with quantum enabled and a one-variable
+/// discrete problem the routing policy admits, the router's assessment
+/// attempts QAOA, and its value-of-information estimate declines the job:
+/// with no measured QPU record nothing is submitted, no answer is
+/// harvested, and no contract record carries a quantum result. The gate is
+/// what stops a QPU job its estimate cannot justify, so this pins it rather
+/// than routing around it; the row closes on a measured QPU record, which
+/// needs a hosted provider.
+///
+/// Mutation: let the dispatch arm's estimate refuse nothing.
+#[test]
+fn with_quantum_enabled_the_value_of_information_gate_declines_an_unmeasured_qpu_job() -> Result<()>
+{
+    let mut config = PlatformConfig {
+        review: ReviewPolicy {
+            minimum_surviving_confidence: REVIEW_FLOOR,
+            ..ReviewPolicy::default()
+        },
+        mandate: qip_portfolio_engine::construction::Mandate {
+            maximum_holdings: Some(1),
+            ..qip_portfolio_engine::construction::Mandate::default()
+        },
+        ..PlatformConfig::default()
+    }
+    .with_quantum();
+    config.routing.minimum_assets_for_quantum = 1;
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    platform.observe(bars("AAA", 120));
+    for cycle in 0..4_u64 {
+        platform.run_cycle(start().saturating_add(Duration::from_mins(5 * cycle as i64)));
+        let routing = entry_for(&platform, cycle + 1)?
+            .solver_routing
+            .ok_or_else(|| qip_core::error::Error::not_found("a solver comparison"))?;
+        assert!(
+            routing.quantum_note.starts_with("attempting QAOA"),
+            "premise: the assessment admitted the quantum arm: {}",
+            routing.quantum_note
+        );
+        assert_eq!(
+            routing.quantum_dispatch.submitted, None,
+            "cycle {cycle} submitted a QPU job no measurement justified"
+        );
+        assert_eq!(routing.quantum_dispatch.harvested, None);
+    }
+    let records = contract_records(&platform)?;
+    assert!(
+        !records.is_empty(),
+        "premise: the discrete solves were stated"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|r| r.decision.quantum_result().is_none()),
+        "a quantum result reached the contract without a submitted job"
+    );
+    Ok(())
+}

@@ -1491,35 +1491,30 @@
   },
   {
     "id": "R12-MESH-5063",
-    "status": "PARTIAL",
-    "current": "declare_fire refuses unless all legs fully reserved and loss bound established; saga.rs coordinator calls it. Env-gated peer mesh. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
+    "status": "COMPLETE",
+    "current": "FIRE is encoded in one place, qip_peer::PeerEndpoint::try_declare_fire. It refuses under fire_condition (reservation_shortfall), expired and fire_loss_bound before it encodes. A participant applies a FIRE only when every leg is reserved, and try_send_leg refuses under before_fire unless the epoch fired. No path declares FIRE or sends a peer leg without passing these guards, whether or not the env-gated peer mesh is configured; the execution-node module's peer_mesh switch is null in every environment.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/peer.rs:1175",
-      "backend/crates/libs/qip-contracts/src/peer.rs:1241",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_declare_fire (reservation_shortfall, fire_loss_bound)",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_send_leg (before_fire)",
+      "backend/crates/libs/qip-peer/src/lib.rs PeerMessage::Fire arm (every_leg_reserved, loss bound)",
       "services/qip-mesh/tests/peer.rs::fire_is_declared_exactly_when_every_leg_is_reserved_and_no_leg_precedes_it",
       "services/qip-mesh/tests/peer.rs::a_leg_reserved_for_less_than_its_requirement_does_not_meet_the_fire_condition",
       "services/qip-mesh/tests/peer_guarantees.rs::a_cycle_whose_reservation_condition_is_not_met_within_its_ttl_is_rejected_by_name_and_sends_no_leg",
-      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
-      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
-      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
+      "edge/qip-peer-link/tests/saga.rs::a_leg_whose_unwind_bound_does_not_cover_the_cells_exit_is_declined_and_no_leg_is_sent",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl"
     ],
-    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
+    "gap": "None against the requirement's text. It is a prohibition (FIRE never precedes reservation, no leg before FIRE), so bar part 3 applies: the guards sit on the only paths by which FIRE is encoded or applied and a leg is sent. A deployed peered node is not required for that (owner decision 5 keeps it unbought).",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "R12-MESH-5062"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
+    "verification": "cargo test -p qip-mesh --test peer fire_is_declared_exactly_when; cargo test -p qip-mesh --test peer_guarantees; cargo test -p qip-peer-link --test saga",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated. 2026-11-06 lane L5-EDGE (wave1101 queue, ALREADY_COMPLETE, file unverified): code re-read. The only PeerMessage::Fire construction outside tests is try_declare_fire (lib.rs:1739); the other three matches are patterns. PARTIAL -> COMPLETE under bar part 3. Mutations, each restored byte-for-byte (cmp): delete the reservation_shortfall block in try_declare_fire, which fails fire_is_declared_exactly_when_every_leg_is_reserved_and_no_leg_precedes_it at peer.rs:322; delete the `if !st.fired` check in try_send_leg, which fails the same test at peer.rs:326. The dependency on R12-MESH-5062 is dropped: atomic in-region reservation cannot make FIRE precede reservation. Stale qip-contracts/src/peer.rs citations are replaced by qip-peer symbols."
   },
   {
     "id": "R12-MESH-5064",
@@ -1675,21 +1670,17 @@
   },
   {
     "id": "R12-MESH-5070",
-    "status": "PARTIAL",
-    "current": "declare_fire refuses unestablished/exceeded loss bound by name; saga.rs calls it when env-gated peer mesh is configured. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
+    "status": "COMPLETE",
+    "current": "Both places that set an epoch fired refuse past the loss bound under fire_loss_bound. try_declare_fire refuses before the coordinator encodes FIRE. Since 2026-11-06 the participant's PeerMessage::Fire arm also refuses, so a coordinator that skipped its check, or a hand-written FIRE frame, cannot put a participant's legs on the wire. A leg is sent only by try_send_leg, which requires fired. The env-gated peer mesh's switch is null in every environment.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/peer.rs:1208",
-      "backend/crates/libs/qip-contracts/src/peer.rs:656",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_declare_fire (fire_loss_bound)",
+      "backend/crates/libs/qip-peer/src/lib.rs PeerMessage::Fire arm (fire_loss_bound on receipt)",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_send_leg",
       "services/qip-mesh/tests/peer_guarantees.rs::a_cycle_whose_loss_bound_cannot_be_established_is_rejected_by_name_and_sends_no_leg",
-      "services/qip-mesh/tests/peer.rs::fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it",
-      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
-      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
-      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
+      "services/qip-mesh/tests/peer_guarantees.rs::a_participant_that_receives_fire_for_an_epoch_whose_worst_recovery_loss_exceeds_its_declared_bound_refuses_it_by_name_and_sends_no_leg",
+      "services/qip-mesh/tests/peer.rs::fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it"
     ],
-    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
+    "gap": "None against the requirement's text. It is a prohibition, so bar part 3 applies: the loss-bound guard sits in both places fired is set, the only gate before a leg is sent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1697,10 +1688,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer_guarantees; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
+    "verification": "cargo test -p qip-mesh --test peer_guarantees",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
+    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated. 2026-11-06 lane L5-EDGE (wave1101 queue, CODE_NOW, file unverified): code re-read. The participant's PeerMessage::Fire arm set fired after checking only every_leg_reserved, so one path reached a sent leg without the bound. It now applies the coordinator's worst_recovery_loss check. New test a_participant_that_receives_fire_..._refuses_it_by_name_and_sends_no_leg; its premise is that the same FIRE under a covering bound is applied and the leg goes. Mutation: delete the receive-side bound check, which fails it at peer_guarantees.rs:601 (the FIRE is applied); restored byte-for-byte (cmp). PARTIAL -> COMPLETE under bar part 3."
   },
   {
     "id": "R12-EXEC-5071",

@@ -3882,18 +3882,13 @@
   {
     "id": "R12-MESH-1166",
     "status": "PARTIAL",
-    "current": "Protocol types in qip-mesh; multi-leg execution in qip-execution-engine multileg; no transport, no clock sync. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
+    "current": "The reflex mesh's five scope items each have a seam the edge node's root reaches and a test. qip-edge-node main.rs reads PeerSettings and calls qip_peer_link::spawn, over wire.rs's TCP with mutual TLS. Peer exchange: PeerLink. Clock sync: qip-peer's ClockProbe/ClockEcho. Reservations: ReservationBook. Opportunity epochs: OpportunityEpoch::validate. Bounded-loss multi-leg sagas: qip-peer-link's Saga and declare_fire's loss bound. The inspection qip-acceptance scope_inspections.rs::every_reflex_mesh_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_named_test holds the map. The earlier text ('no transport, no clock sync') was stale.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:180",
-      "backend/crates/services/qip-execution-engine/src/multileg.rs",
-      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
-      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
-      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::REFLEX_MESH_SCOPE",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_reflex_mesh_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_named_test",
+      "backend/crates/apps/qip-edge-node/src/main.rs (PeerSettings::read, qip_peer_link::spawn)"
     ],
-    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
+    "gap": "2026-11-06 (lane L5-EDGE): every scope item maps to a seam and a test, held by the inspection. The row stays PARTIAL on bar part 2: the spawn is behind the peer-mesh switch, null in every environment, until R12-MESH-10112's funded peer pair (FUNDING), as R12-MESH-1167 does.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3901,10 +3896,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
+    "verification": "cargo test -p qip-acceptance --test scope_inspections every_reflex_mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
+    "notes": " Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated. 2026-11-06 lane L5-EDGE (wave1101 queue, CODE_NOW, file unverified): every seam and test the closure named was confirmed present before mapping. Mutation: respell `pub fn declare_fire(` in qip-peer as `pub fn declare_fire (`, which compiles and fails the inspection at the sagas row (a rename would not compile, so it proves nothing about the inspection); restored byte-for-byte (cmp)."
   },
   {
     "id": "R12-MESH-1167",
