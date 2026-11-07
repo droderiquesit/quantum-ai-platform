@@ -967,10 +967,22 @@ const SITES: &[(&str, &str, &str, usize, Class)] = &[
     (
         "runtime/qip-kernel/src/platform.rs",
         ".submit(",
-        "submit_order",
+        "submit_released",
         1,
         Class::Forwards {
             to: "OrderManager::submit",
+        },
+    ),
+    // `Platform::submit_order` keeps its signature for every other caller and
+    // forwards to `submit_released` with no zero-target statement
+    // (R12-ASSET-1160).
+    (
+        "runtime/qip-kernel/src/platform.rs",
+        ".submit_released(",
+        "submit_order",
+        1,
+        Class::Forwards {
+            to: "OrderManager::submit via Platform::submit_released",
         },
     ),
     (
@@ -982,14 +994,15 @@ const SITES: &[(&str, &str, &str, usize, Class)] = &[
             to: "OrderManager::submit",
         },
     ),
-    // `Platform::submit_order` reached from the ACT stage.
+    // The ACT stage's door, carrying whether construction targeted the sell
+    // at zero weight (R12-ASSET-1160).
     (
         "runtime/qip-kernel/src/platform.rs",
-        ".submit_order(",
+        ".submit_released(",
         "stage_act_orders",
         1,
         Class::Forwards {
-            to: "OrderManager::submit via Platform::submit_order",
+            to: "OrderManager::submit via Platform::submit_released",
         },
     ),
     // The venue adapters' `Broker::submit` bodies. `Broker::submit` has one
@@ -1133,6 +1146,7 @@ const TOKENS: &[&str] = &[
     ".place(",
     ".submit(",
     ".submit_order(",
+    ".submit_released(",
     ".list_book(",
     ".set_book(",
     ".with_book(",

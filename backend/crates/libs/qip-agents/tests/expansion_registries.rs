@@ -507,6 +507,12 @@ mod campaign_identity {
         let null = Verdict::Null {
             evidence: "failed leakage".to_string(),
         };
+        let bench = qip_agents::research::BenchmarkRef::new(
+            "fill-bias capability",
+            "the uncorrected twin",
+            "IncrementalValue",
+        )
+        .unwrap();
         // No experiment, another question's experiment, and a bare campaign
         // id with no stage are each refused; the premise is that the id used
         // below is the one a correct reference would carry.
@@ -519,7 +525,7 @@ mod campaign_identity {
         ] {
             assert!(
                 registry
-                    .record_concluded("Does momentum persist?", null.clone(), &bad)
+                    .record_concluded("Does momentum persist?", null.clone(), &bad, Some(&bench))
                     .is_err(),
                 "{bad:?} was accepted"
             );
@@ -532,7 +538,7 @@ mod campaign_identity {
             experiment_ref(&id, "historical"),
         ];
         let version = registry
-            .record_concluded("Does momentum persist?", null, &refs)
+            .record_concluded("Does momentum persist?", null, &refs, Some(&bench))
             .unwrap();
         assert_eq!(version, 1);
         let held = registry.history("DOES MOMENTUM PERSIST?");
@@ -545,4 +551,141 @@ mod campaign_identity {
             "sorted and de-duplicated"
         );
     }
+}
+
+/// ADR 0348 (R12-EXPAND-6061): an entry missing a declared field is
+/// refused. A concluded verdict with no benchmark, a benchmark naming no
+/// incumbent, and a contradiction citing no evidence or keyed by something
+/// that is not a campaign id are each refused, and nothing is recorded. The
+/// premise is that the same entry with every field is accepted.
+///
+/// Mutation: accept a Supported verdict with no benchmark.
+#[test]
+fn an_entry_missing_a_declared_field_is_refused() {
+    use qip_agents::research::{BenchmarkRef, campaign_id, experiment_ref};
+    let question = "Does the twin miss fills at XSIM?";
+    let id = campaign_id(question).unwrap();
+    let refs = [experiment_ref(&id, "shadow")];
+    let supported = Verdict::Supported {
+        evidence: "promoted".to_string(),
+    };
+    let bench = BenchmarkRef::new(
+        "fill-bias capability",
+        "the uncorrected twin",
+        "IncrementalValue",
+    )
+    .unwrap();
+
+    let mut registry = ResearchRegistry::new();
+    assert!(
+        registry
+            .record_concluded(question, supported.clone(), &refs, None)
+            .is_err(),
+        "a Supported verdict with no benchmark was accepted"
+    );
+    assert!(registry.history(question).is_empty());
+    assert!(BenchmarkRef::new("fill-bias capability", " ", "IncrementalValue").is_err());
+    assert!(registry.record_contradiction(&id, &[]).is_err());
+    assert!(
+        registry
+            .record_contradiction(&id, &[" ".to_string()])
+            .is_err()
+    );
+    assert!(
+        registry
+            .record_contradiction("price-vs-belief", &["detector:contradiction".to_string()])
+            .is_err(),
+        "a contradiction keyed by a subject, not a campaign, was accepted"
+    );
+    assert!(registry.unresolved_contradictions().is_empty());
+
+    // Every field present: accepted, and the benchmark is kept on the version.
+    let version = registry
+        .record_concluded(question, supported, &refs, Some(&bench))
+        .unwrap();
+    assert_eq!(version, 1);
+    assert_eq!(
+        registry.history(question)[0].benchmark.as_ref(),
+        Some(&bench)
+    );
+}
+
+/// ADR 0348: a contradiction stays unresolved until a campaign on the same
+/// id concludes. An `Open` verdict on the question does not resolve it, a
+/// concluded verdict on another question does not, and the concluded one
+/// on its own question does, naming the version. The open question is
+/// listed while its latest verdict is `Open`, and not after.
+///
+/// Mutation: let record_concluded skip the resolution.
+#[test]
+fn a_contradiction_stays_unresolved_until_a_campaign_on_the_same_id_concludes() {
+    use qip_agents::research::{BenchmarkRef, campaign_id, experiment_ref};
+    let question = "Do the two drift detectors disagree on AAA?";
+    let other = "Does the twin miss fills at XSIM?";
+    let id = campaign_id(question).unwrap();
+    let bench = BenchmarkRef::new(
+        "fill-bias capability",
+        "the uncorrected twin",
+        "IncrementalValue",
+    )
+    .unwrap();
+    let null = Verdict::Null {
+        evidence: "failed IncrementalValue".to_string(),
+    };
+    let mut registry = ResearchRegistry::new();
+    registry
+        .record_contradiction(&id, &["detector:contradiction".to_string()])
+        .unwrap();
+    registry
+        .record_contradiction(
+            &id,
+            &[
+                "detector:contradiction".to_string(),
+                "drift:AAA".to_string(),
+            ],
+        )
+        .unwrap();
+    let open = registry.unresolved_contradictions();
+    assert_eq!(open.len(), 1, "a repeat opened a second record: {open:?}");
+    assert_eq!(
+        open[0].evidence,
+        ["detector:contradiction", "drift:AAA"].map(String::from)
+    );
+
+    registry.record(question, Verdict::Open).unwrap();
+    assert_eq!(registry.open_questions().len(), 1);
+    assert_eq!(
+        registry.unresolved_contradictions().len(),
+        1,
+        "Open resolved it"
+    );
+    let other_id = campaign_id(other).unwrap();
+    registry
+        .record_concluded(
+            other,
+            null.clone(),
+            &[experiment_ref(&other_id, "shadow")],
+            Some(&bench),
+        )
+        .unwrap();
+    assert_eq!(
+        registry.unresolved_contradictions().len(),
+        1,
+        "another campaign's verdict resolved it"
+    );
+
+    let version = registry
+        .record_concluded(
+            question,
+            null,
+            &[experiment_ref(&id, "shadow")],
+            Some(&bench),
+        )
+        .unwrap();
+    assert!(registry.unresolved_contradictions().is_empty());
+    assert!(
+        registry.open_questions().is_empty(),
+        "a concluded question is still listed open"
+    );
+    assert_eq!(version, 2);
 }

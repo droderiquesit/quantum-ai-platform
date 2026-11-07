@@ -1183,7 +1183,29 @@ impl ComputeRouter {
                             polls,
                         ));
                     }
-                    Ok(JobPoll::Completed { polls, result }) => {
+                    Ok(JobPoll::Completed { polls, class, .. })
+                        if class != JobClass::Optimisation =>
+                    {
+                        // R12-QUANT-4063: only an optimisation job's answer may
+                        // reach a production decision. The router submits no
+                        // other class, and this holds that without resting on
+                        // it: an answer from a research class is discarded
+                        // unread and the classical baseline stands.
+                        dispatch.harvested = Some(pending.ticket.id());
+                        dispatch.notes.push(format!(
+                            "quantum job {} came back as a {} job, not an optimisation job; \
+                             its answer is discarded unread and the classical baseline stands",
+                            pending.ticket.id(),
+                            class.name()
+                        ));
+                        harvested = Some(quantum_measurement(
+                            &pending,
+                            MeasurementOutcome::Stale,
+                            None,
+                            polls.saturating_add(1),
+                        ));
+                    }
+                    Ok(JobPoll::Completed { polls, result, .. }) => {
                         dispatch.harvested = Some(pending.ticket.id());
                         dispatch.harvested_after_cycles = Some(polls);
                         // `polls` counts the polls that found the job still

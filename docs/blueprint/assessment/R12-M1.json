@@ -3229,23 +3229,27 @@
   },
   {
     "id": "R12-AMBIENT-1139",
-    "status": "MISSING",
-    "current": "No always-running ambient process maintains forecasts; kernel forecasts are computed per cycle on request.",
-    "evidence": [],
-    "gap": "An ambient loop in deepbrain.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "status": "COMPLETE",
+    "current": "The deep brain's node loop (qip-deepbrain node::run_with, called from main.rs) runs Platform::run_cycle on its own cadence, and every cycle's UNDERSTAND runs the kernel's LatticeStage, re-issues a forecast at each horizon whose last one expired, and journals the review as kernel/forecast-lattice (platform.rs journal_record). A node-level test drives run_with with no request and reads the journaled reviews.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/tests/forecast_lattice.rs::the_run_loop_journals_a_lattice_review_every_cycle_and_reissues_each_stale_horizon_unasked",
+      "backend/crates/runtime/qip-kernel/src/platform.rs journal_record(lattice, \"kernel/forecast-lattice\", now)",
+      "backend/crates/apps/qip-deepbrain/src/node.rs run_with"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test forecast_lattice",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-11-06 L2-INTEL (wave1101 CODE_NOW): test added; mutation replacing the journal_record call with Ok(()) failed it ('one forecast-lattice review per cycle the node ran', left 0 right 3); restored by cmp. Independent skeptic 2026-11-06: HOLDS on all four bar parts — main.rs reaches node::run_with with no opt-in, run_cycle runs understand_now and lattice.run with no config gate, the test asks for nothing (on_cycle only advances a ManualClock), and the re-issue assertion has a non-vacuous premise. The forecasts live in the kernel lattice and are journaled to the platform event log, not to ambient_journal; the requirement names neither. Horizon coverage (microseconds to years) is R12-AMBIENT-3066's, not claimed here."
   },
   {
     "id": "R12-AMBIENT-1140",
@@ -3305,19 +3309,22 @@
   },
   {
     "id": "R12-AMBIENT-1142",
-    "status": "PARTIAL",
-    "current": "The deep brain's ambient loop maintains scenario branches without a request: ResearchLoop::sweep_over, run on every deep-brain sweep from the node loop, calls conditional_scenarios (research.rs), which for every Risk or Assumption signal of the round turns the signal's own last move on each affected subject into a one-day FactorShock scenario, keyed on the signal's inputs so a replay yields the same digest, and journals it as AmbientRecord::Scenario caused by that signal. The schedule is the sweep cadence; nothing outside the loop asks for a scenario.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop holds scenario_branches across sweeps (research.rs, bounded at MAX_SCENARIO_BRANCHES): a risk or assumption signal with a tape adds a branch, a later tape re-shocks the same branch id, and the branch retires at the first sweep at or after its signal's expiry; each change is a ScenarioBranchUpdate the ambient journal records as AmbientRecord::ScenarioBranch, caused by its signal's record. Driven from node::run_with.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over -> self.conditional_scenarios(platform, &metrics, &mut round) (the one call, on the default sweep), fn conditional_scenarios",
       "backend/crates/apps/qip-deepbrain/src/node.rs:586 research.maybe_sweep on the node loop; ResearchConfig::default every_cycles 1 (research.rs:417), no committed environment sets QIP_DEEPBRAIN_RESEARCH_EVERY",
       "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::Scenario",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (asserts the risk surprise yields a journaled scenario carrying the 30% move as a one-day shock)"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (asserts the risk surprise yields a journaled scenario carrying the 30% move as a one-day shock)",
+      "backend/crates/apps/qip-deepbrain/tests/scenario_branches.rs::a_risk_signals_scenario_branch_is_added_reshocked_on_the_next_tape_and_retired_at_expiry",
+      "backend/crates/apps/qip-deepbrain/src/research.rs ResearchLoop::conditional_scenarios, scenario_branches",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::ScenarioBranch"
     ],
-    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar parts 4 and 1): scenarios are generated afresh each sweep and overwritten (research.rs:2620 round.scenarios = generated), nothing is kept on the loop between sweeps, so no branch is updated, carried forward or retired, and the journaled Scenario is write-only (its only reader is the journal writer, ambient_journal.rs:230); and the named test calls loop_.sweep and ambient.record itself (tests/ambient_journal.rs:397-414), never maybe_sweep or the node loop, so the schedule clause (\"on a schedule without external request\") is not what the test proves. Closing it: a ScenarioBranches state on ResearchLoop that each sweep updates (re-shocks a held branch on the subject's new tape, retires one whose signal has lapsed) and journals the update, read by at least the simulation or risk path, plus a node-level test through maybe_sweep.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "R12-AMBIENT-1005"
@@ -3326,7 +3333,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-25 lane L2b (wave580): the row said MISSING while the code and its test had landed; record corrected, no code change. Mutation run as the test's own comment names: deleting the self.conditional_scenarios(..) call in sweep_over -> FAILED at ambient_journal.rs:472 \"the risk surprise yields a scenario\"; restored byte for byte (cmp), test result: ok. 1 passed. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held part 2 (default cadence on). Row moves MISSING -> PARTIAL: generation and journaling exist on the default path, maintenance does not."
+    "notes": "2026-10-25 lane L2b (wave580): the row said MISSING while the code and its test had landed; record corrected, no code change. Mutation run as the test's own comment names: deleting the self.conditional_scenarios(..) call in sweep_over -> FAILED at ambient_journal.rs:472 \"the risk surprise yields a scenario\"; restored byte for byte (cmp), test result: ok. 1 passed. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held part 2 (default cadence on). Row moves MISSING -> PARTIAL: generation and journaling exist on the default path, maintenance does not. 2026-11-06 L2-INTEL: node-level test added; mutations, each restored by cmp: clearing scenario_branches at the start of each sweep failed it ('the same branch was not re-shocked on the new tape'); never retiring failed it ('the branch was not retired at its signal's expiry'). tests/ambient_journal.rs still passes (11 passed). Independent skeptic 2026-11-06: HOLDS — main.rs passes research and ambient to run_with by default (every_cycles 1; the journal resolves to a file beside the event log or in memory when unset, never off), the test only advances a clock, and the 2026-10-25 skeptic's 'read by the simulation or risk path' is not in the requirement text, which asks to maintain, update on a schedule and journal. Noted: a held branch on a still tape writes no Scenario record, and a branch's expiry is fixed at its add."
   },
   {
     "id": "R12-AMBIENT-1143",
@@ -3750,7 +3757,7 @@
       "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs:586",
       "backend/crates/libs/qip-financial/tests/valuation.rs:138"
     ],
-    "gap": "2026-10-31: Divestment is not on the default path. begin_deliberate_close unwinds a position only when a sell's quantity covers the whole long, and construct_from sizes an exit leg as narrowed free capital times the held weight (lot x average cost / equity), floored to whole lots, so a full exit at or above cost always sells less than the long and is recorded as a trim. Plain code: in stage_act_orders, begin the unwind for a sell leg whose target_weight is zero on a held long, and prove it with a run_cycle test whose tape makes the construction size that leg; plan_secondary_exit still has no production caller. The inspection table names a seam and a test per item but proves only that the strings exist.",
+    "gap": "2026-11-06: divestment now runs on the default cycle: stage_act_orders sizes a sell the construction targeted at zero weight to the long the book holds (never more, so no short) and moves the position Held -> Flagged -> Unwinding through Portfolio::begin_unwind, after submit_order's wallet-halt and borrow refusals. Remaining: (1) the position never reaches Closed on the default venue: the simulated broker fills 0.6 of an order immediately and floors the fill to lots, so the long decays 49.8 -> 20.4 -> 8.4 -> ... -> 0.6 and the last lot never fills (probed over ten cycles), the systemic immediate-fill limit, not this seam; (2) no test yet proves a zero-target sell stopped by the wallet halt or the borrow rule leaves the position Held; (3) secondary_exit::plan_secondary_exit still has no production caller (not required by the requirement's 'divestment', per the second review). The ten-item inspection map is in qip-acceptance scope_inspections.rs, hedging citing run_hedge_brain and horizons the per-position horizon, the seams every binary reaches by default.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3758,10 +3765,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection: scope_inspections.rs maps all ten items to a seam and a named test (mutation: renaming the divestment test fails it naming `divestment`); divestment seam: position_record.rs test, mutation-verified by deleting the begin_deliberate_close call (Held instead of Unwinding) and by dropping the trim guard (a trim unwound).",
+    "verification": "integration (run_cycle): qip-kernel tests/position_record.rs a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_a_gain_moves_the_position_to_unwinding_although_the_sized_sell_is_below_the_long; mutations: to_flat passed false (left Some(Held)), order sized from leg.quantity (9 of 49.8 left the book against a 15.6 leg); inspection: scope_inspections every_asset_management_scope_item_names_a_seam_and_a_test_that_still_exist.",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'corporate actions not evidenced' is stale: the kernel queues and applies corporate actions (queue_corporate_action, apply_due_corporate_actions, apply_corporate_action, with unit tests in platform.rs); hedging is a production DECIDE-stage survey. | 2026-10-31 lane L3-DATA: wired Portfolio::begin_unwind at submit_order and committed the per-item scope map in qip-acceptance. Independent skeptic REFUTED promotion: the divestment seam fires on the default cycle only for loss-making full exits, because exit legs are sized from narrowed capital and floored to lots; row stays PARTIAL with that step in the gap."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'corporate actions not evidenced' is stale: the kernel queues and applies corporate actions (queue_corporate_action, apply_due_corporate_actions, apply_corporate_action, with unit tests in platform.rs); hedging is a production DECIDE-stage survey. | 2026-10-31 lane L3-DATA: wired Portfolio::begin_unwind at submit_order and committed the per-item scope map in qip-acceptance. Independent skeptic REFUTED promotion: the divestment seam fires on the default cycle only for loss-making full exits, because exit legs are sized from narrowed capital and floored to lots; row stays PARTIAL with that step in the gap. | 2026-11-06 lane L3-DATA (wave1101 CODE_NOW): second skeptic REFUTED the first fix (it relabelled the position but still sold the floored leg, ran before the wallet/borrow refusals, and cited off-by-default hedging and horizon seams); all four fixed. Stays PARTIAL on the residual last lot the simulated venue never fills."
   },
   {
     "id": "R12-CAPITAL-1161",
@@ -3875,18 +3882,13 @@
   {
     "id": "R12-MESH-1166",
     "status": "PARTIAL",
-    "current": "Protocol types in qip-mesh; multi-leg execution in qip-execution-engine multileg; no transport, no clock sync. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
+    "current": "The reflex mesh's five scope items each have a seam the edge node's root reaches and a test. qip-edge-node main.rs reads PeerSettings and calls qip_peer_link::spawn, over wire.rs's TCP with mutual TLS. Peer exchange: PeerLink. Clock sync: qip-peer's ClockProbe/ClockEcho. Reservations: ReservationBook. Opportunity epochs: OpportunityEpoch::validate. Bounded-loss multi-leg sagas: qip-peer-link's Saga and declare_fire's loss bound. The inspection qip-acceptance scope_inspections.rs::every_reflex_mesh_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_named_test holds the map. The earlier text ('no transport, no clock sync') was stale.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:180",
-      "backend/crates/services/qip-execution-engine/src/multileg.rs",
-      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
-      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
-      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::REFLEX_MESH_SCOPE",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_reflex_mesh_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_named_test",
+      "backend/crates/apps/qip-edge-node/src/main.rs (PeerSettings::read, qip_peer_link::spawn)"
     ],
-    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
+    "gap": "2026-11-06 (lane L5-EDGE): every scope item maps to a seam and a test, held by the inspection. The row stays PARTIAL on bar part 2: the spawn is behind the peer-mesh switch, null in every environment, until R12-MESH-10112's funded peer pair (FUNDING), as R12-MESH-1167 does.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3894,10 +3896,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
+    "verification": "cargo test -p qip-acceptance --test scope_inspections every_reflex_mesh",
     "work_item": "",
     "size": "L",
-    "notes": " Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
+    "notes": " Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated. 2026-11-06 lane L5-EDGE (wave1101 queue, CODE_NOW, file unverified): every seam and test the closure named was confirmed present before mapping. Mutation: respell `pub fn declare_fire(` in qip-peer as `pub fn declare_fire (`, which compiles and fails the inspection at the sagas row (a rename would not compile, so it proves nothing about the inspection); restored byte-for-byte (cmp)."
   },
   {
     "id": "R12-MESH-1167",

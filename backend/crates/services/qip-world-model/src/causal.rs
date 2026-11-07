@@ -1037,8 +1037,9 @@ impl PropagationResult {
 /// The prefix a quantum result's evidence id carries. A quantum-assisted
 /// selection of counterfactual or intervention branches is a selection aid
 /// for expensive simulation, never causal proof (R12-QUANT-4044, §11), so no
-/// causal edge cites one, by any path.
-pub const QUANTUM_EVIDENCE_PREFIX: &str = "quantum:";
+/// causal edge cites one, by any path. Owned by the producer's contract
+/// (`SolverResult::evidence_id`), so the guard and the id cannot drift.
+pub use qip_contracts::quantum::QUANTUM_EVIDENCE_PREFIX;
 
 /// How many refused insertions [`CausalGraph::refused`] keeps, newest last.
 pub const REFUSED_EDGE_HISTORY: usize = 64;

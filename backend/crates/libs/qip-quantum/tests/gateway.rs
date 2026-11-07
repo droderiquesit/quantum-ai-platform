@@ -169,7 +169,7 @@ fn submitting_returns_before_the_provider_answers_and_a_poll_never_waits() -> Re
         .map_err(|_| qip_core::error::Error::io("the provider hung up"))?;
     wait_until_ready(&gateway, ticket)?;
     match gateway.poll(ticket)? {
-        JobPoll::Completed { polls, result } => {
+        JobPoll::Completed { polls, result, .. } => {
             assert_eq!(polls, 1);
             assert_eq!(result?.assignment, vec![0, 0, 0]);
         }
@@ -257,4 +257,35 @@ fn a_gateway_with_no_slots_or_no_patience_is_refused() {
             "{limits:?} was accepted"
         );
     }
+}
+
+/// R12-QUANT-4063: a completed job reports the class it was admitted under,
+/// so the router can refuse to adopt an answer from a class it did not ask
+/// for. An optimisation job and a hypothesis-search job run on one gateway;
+/// each comes back naming its own class.
+///
+/// Mutation: report `JobClass::Optimisation` for every completed job.
+#[test]
+fn a_completed_job_names_the_class_it_was_admitted_under() -> Result<()> {
+    use qip_quantum::foundry::JobClass;
+    let gateway = QuantumGateway::new(
+        Arc::new(SimulatedProvider::new(7)),
+        GatewayLimits::default(),
+    )?;
+    for class in [JobClass::Optimisation, JobClass::HypothesisSearch] {
+        let ticket = gateway.submit(
+            class.name(),
+            Delivery::Polled,
+            qubo(),
+            QaoaSettings::default(),
+        )?;
+        wait_until_ready(&gateway, ticket)?;
+        match gateway.poll(ticket)? {
+            JobPoll::Completed {
+                class: reported, ..
+            } => assert_eq!(reported, class),
+            other => panic!("a returned {} job was reported as {other:?}", class.name()),
+        }
+    }
+    Ok(())
 }
