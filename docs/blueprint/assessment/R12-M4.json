@@ -937,9 +937,11 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:192-210",
       "backend/crates/services/qip-reasoning-engine/src/evidence.rs EvidenceKind::QuantumExploration",
       "backend/crates/services/qip-reasoning-engine/src/redteam.rs ResearchOnlySupport",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_hypothesis_whose_only_support_is_a_quantum_exploration_result_is_rejected_by_adversarial_review"
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_hypothesis_whose_only_support_is_a_quantum_exploration_result_is_rejected_by_adversarial_review",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs a_weak_primary_item_beside_quantum_exploration_does_not_clear_the_research_only_check (mutation: drop leans_on_exploration), an_approved_verdict_on_quantum_exploration_alone_is_refused_when_applied (mutation: drop the exploration-only refusal in validate)",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs a_finding_citing_a_quantum_result_is_typed_as_exploration (mutation: type every finding as computation)"
     ],
-    "gap": "2026-10-30 (L4, commit 8d4f0bb1, skeptic REFUTED). Closed: EvidenceKind::QuantumExploration exists (not primary, ceiling no higher than a rumour) and RedTeam::review raises a Fatal ResearchOnlySupport challenge when every supporting item is one. Still open: the guard is on one path only, since Hypothesis.status is a pub field any holder can set to Approved; a quantum result reaching an agent finding is typed Computation by engine.rs evidence_from_finding, so the all-exploration check never sees it and NoPrimarySource is only Serious within the default tolerance; one trivial primary item beside exploration clears the check, however much weight exploration carries; qip-expansion validated paths are unaudited; no producer exists (ADR 0150 A2), so the guard has run only in its test.",
+    "gap": "2026-10-30 (L4, commit 8d4f0bb1, skeptic REFUTED). Closed: EvidenceKind::QuantumExploration exists (not primary, ceiling no higher than a rumour) and RedTeam::review raises a Fatal ResearchOnlySupport challenge when every supporting item is one. Still open: the guard is on one path only, since Hypothesis.status is a pub field any holder can set to Approved; a quantum result reaching an agent finding is typed Computation by engine.rs evidence_from_finding, so the all-exploration check never sees it and NoPrimarySource is only Serious within the default tolerance; one trivial primary item beside exploration clears the check, however much weight exploration carries; qip-expansion validated paths are unaudited; no producer exists (ADR 0150 A2), so the guard has run only in its test.  2026-11-07: the guard now sits on every path to Approved. Hypothesis.status is private, read through status() and set only by apply_review(review), which refuses another hypothesis's review and re-validates, or by demote(), which only narrows (the kernel's ADR 0212 demotion). Hypothesis::validate refuses an Approved hypothesis with no supporting item other than QuantumExploration. RedTeam raises a fatal ResearchOnlySupport when exploration is what lifts a thesis over minimum_surviving_confidence (with it at or above the floor, without it below), as well as when every supporting item is exploration; this narrows the closure's wording, which would also have fired on theses below the floor either way, which the confidence floor already refuses. evidence_from_finding types a finding as QuantumExploration when any of its evidence ids carries qip-contracts' QUANTUM_EVIDENCE_PREFIX. Still open: no production finding cites a quantum id today, so the typing has fired only in tests.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -950,7 +952,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-30 (L4), commit 8d4f0bb1: mutant (disable the check) killed at the challenge-kind assertion, restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
+    "notes": "2026-10-30 (L4), commit 8d4f0bb1: mutant (disable the check) killed at the challenge-kind assertion, restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL. L4 2026-11-07: built to the wave1101 closure, with the red-team condition narrowed as recorded in the gap; status unchanged pending a skeptic."
   },
   {
     "id": "R12-QUANT-4043",

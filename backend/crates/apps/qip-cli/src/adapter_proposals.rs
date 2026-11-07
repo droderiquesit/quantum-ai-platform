@@ -28,6 +28,7 @@ use qip_data_finder::decision::DecisionOutcome;
 use qip_data_finder::ingestion::{IngestionPlan, descriptor_for, plan_for};
 use qip_data_finder::probe::{NetworkProbe, SourceProbe};
 use qip_kernel::Platform;
+use qip_kernel::platform::SourceRegistryView;
 use qip_market_ingestion::adapter::SourceDescriptor;
 
 /// The user agent a proposal's probes identify as: an operator's review,
@@ -42,6 +43,10 @@ pub enum Proposal {
         source: String,
         plan: Box<IngestionPlan>,
         descriptor: Box<SourceDescriptor>,
+        /// The Source Registry entry the assessment read for it
+        /// (R12-EXPAND-6055): what a reviewer must see before building an
+        /// adapter, and what the registry, not this tool, holds.
+        entry: Box<SourceRegistryView>,
     },
     /// Not approved, so no adapter is proposed, and the finder's reason.
     None { source: String, reason: String },
@@ -61,6 +66,7 @@ impl Proposal {
                 source,
                 plan,
                 descriptor,
+                entry,
             } => {
                 let mut lines = vec![
                     format!("{source}: PROPOSED adapter `{}`", plan.adapter_name),
@@ -73,6 +79,14 @@ impl Proposal {
                         "  provider:      {} ({:?})",
                         descriptor.provider, descriptor.licensing
                     ),
+                    format!(
+                        "  provenance:    found at {} on {}",
+                        entry.discovered_from, entry.discovered_at
+                    ),
+                    format!("  monthly fee:   {}", entry.monthly_fee),
+                    format!("  licence:       {}", entry.licence),
+                    format!("  updates:       {:?}", entry.freshness),
+                    format!("  routing:       {:?}", entry.routing),
                 ];
                 if plan.requires_buffering() {
                     lines.push(
@@ -114,18 +128,44 @@ pub fn propose(
         };
         for decision in &assessment.decisions {
             let source = decision.source_id().to_string();
+            // One candidate per pass, so every catalogue problem this
+            // assessment raised is about this registration, and so is its
+            // registry entry (R12-EXPAND-6055).
+            let entry = assessment
+                .entries
+                .iter()
+                .find(|view| view.source_id == source);
             let proposal = match decision.outcome() {
+                DecisionOutcome::Registered(_) if !assessment.catalogue_problems.is_empty() => {
+                    Proposal::None {
+                        reason: format!(
+                            "registered, but not catalogued, so no adapter is proposed: {}",
+                            assessment.catalogue_problems.join("; ")
+                        ),
+                        source,
+                    }
+                }
                 DecisionOutcome::Registered(_) => {
-                    match platform.registered_sources().get(&source) {
-                        Some(registered) => Proposal::Adapter {
+                    match (platform.registered_sources().get(&source), entry) {
+                        (Some(registered), Some(entry)) => Proposal::Adapter {
                             source,
                             plan: Box::new(plan_for(registered)),
                             descriptor: Box::new(descriptor_for(registered)),
+                            entry: Box::new(entry.clone()),
+                        },
+                        // Registered and carrying no registry entry is a
+                        // registry that cannot say what it registered: no
+                        // reviewer should build on it.
+                        (Some(_), None) => Proposal::None {
+                            reason: "registered, but the source registry holds no entry a \
+                                     reviewer can read for it"
+                                .to_string(),
+                            source,
                         },
                         // Registered by the decision and absent from the
                         // registry is a disagreement inside the finder; said,
                         // not papered over with a plan built from the decision.
-                        None => Proposal::None {
+                        (None, _) => Proposal::None {
                             reason: "registered by the decision but absent from the registry"
                                 .to_string(),
                             source,
