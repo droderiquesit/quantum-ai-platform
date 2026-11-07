@@ -226,3 +226,77 @@ fn an_approved_streaming_source_is_proposed_as_a_buffered_push_adapter() -> Resu
     );
     Ok(())
 }
+
+/// R12-EXPAND-6055: an operator's propose pass prints, for each approved
+/// source, the provenance, monthly fee, licence, update frequency and
+/// routing the source registry holds, and withholds the adapter for a
+/// registration the catalogue could not record. The registry entry is the
+/// one `Platform::assess_sources` read; before this the pass ignored it and
+/// a reviewer built an adapter without seeing the terms it was decided on.
+///
+/// Mutation: delete the `entries.push` in `Platform::assess_sources`; the
+/// approved source then carries no entry and the licence line is missing.
+#[test]
+fn an_operators_propose_pass_prints_the_registry_entry_and_withholds_an_uncatalogued_registration()
+-> Result<()> {
+    let probe = || {
+        served(
+            InMemoryProbe::new(),
+            "open.example",
+            OPEN_URL,
+            "User-agent: *\nAllow: /\n",
+        )
+    };
+    let mut platform = platform()?;
+    let proposals = propose(
+        &mut platform,
+        &[entry("open", OPEN_URL)?],
+        Some(&mut probe()),
+        start(),
+    )?;
+    let open = &proposals[0];
+    assert!(
+        matches!(open, Proposal::Adapter { .. }),
+        "premise: the finder approves the open source: {open:?}"
+    );
+    let lines = open.lines();
+    for expected in [
+        "  provenance:    found at a curated directory of exchange data vendors",
+        "  monthly fee:   0",
+        "  licence:       vendor-terms-2026",
+        "  updates:       Minutely",
+        "  routing:       ",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "missing `{expected}` in {lines:#?}"
+        );
+    }
+
+    // An owner named like a process is refused by the catalogue, so the
+    // registration is not catalogued and no adapter is proposed for it.
+    let config = PlatformConfig {
+        owner: "qip-cli".to_string(),
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut uncatalogued = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )?;
+    let proposals = propose(
+        &mut uncatalogued,
+        &[entry("open", OPEN_URL)?],
+        Some(&mut probe()),
+        start(),
+    )?;
+    assert!(
+        matches!(&proposals[0], Proposal::None { reason, .. } if reason.starts_with("registered, but not catalogued")),
+        "an uncatalogued registration was proposed: {:?}",
+        proposals[0]
+    );
+    Ok(())
+}

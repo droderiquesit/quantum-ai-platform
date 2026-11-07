@@ -74,7 +74,7 @@ pub struct ReasoningOutcome {
 
 impl ReasoningOutcome {
     pub fn is_actionable(&self) -> bool {
-        self.hypothesis.status.is_actionable()
+        self.hypothesis.status().is_actionable()
     }
 
     /// A one-paragraph account of the reasoning, for the decision record.
@@ -249,7 +249,7 @@ impl ReasoningEngine {
         self.sequence += counter;
 
         let mut hypothesis = hypothesis;
-        hypothesis.status = review.verdict;
+        hypothesis.apply_review(&review)?;
 
         Ok(ReasoningOutcome {
             hypothesis,
@@ -265,10 +265,10 @@ impl ReasoningEngine {
     /// Returns the reason for refusal rather than a bare boolean: "did not
     /// meet the bar" is not something anyone can act on.
     pub fn clears_action_bar(&self, outcome: &ReasoningOutcome) -> std::result::Result<(), String> {
-        if outcome.hypothesis.status != HypothesisStatus::Approved {
+        if outcome.hypothesis.status() != HypothesisStatus::Approved {
             return Err(format!(
                 "hypothesis was {}: {}",
-                outcome.hypothesis.status.as_str(),
+                outcome.hypothesis.status().as_str(),
                 outcome.review.rationale
             ));
         }
@@ -312,9 +312,21 @@ fn evidence_from_finding(
     stance: Stance,
     evidence_id: EvidenceId,
 ) -> Evidence {
+    // A finding that cites a quantum result relays exploration, whatever
+    // agent relayed it (R12-QUANT-4042): typed as computation, it cleared the
+    // red team's exploration check by passing through an agent.
+    let kind = if finding
+        .evidence
+        .iter()
+        .any(|id| id.starts_with(qip_contracts::quantum::QUANTUM_EVIDENCE_PREFIX))
+    {
+        EvidenceKind::QuantumExploration
+    } else {
+        EvidenceKind::Computation
+    };
     Evidence::new(
         evidence_id,
-        EvidenceKind::Computation,
+        kind,
         stance,
         finding.claim.clone(),
         finding.run_id.as_str().to_string(),
@@ -337,5 +349,48 @@ fn diagnosticity_of(finding: &AgentFinding) -> f64 {
         2 => 0.55,
         3..=4 => 0.70,
         _ => 0.80,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_core::Timestamp;
+    use qip_core::ids::AgentRunId;
+
+    /// R12-QUANT-4042: a finding that cites a quantum result is typed as
+    /// exploration, whatever agent relayed it. Typed as computation it
+    /// cleared the red team's exploration checks by passing through an
+    /// agent. A finding citing only ordinary records stays computation.
+    ///
+    /// Mutation: type every finding as computation.
+    #[test]
+    fn a_finding_citing_a_quantum_result_is_typed_as_exploration() {
+        let at = Timestamp::from_secs(1_760_000_000);
+        let finding = |records: Vec<String>| {
+            AgentFinding::new(
+                AgentRunId::from_string("run-q"),
+                "quant-analyst",
+                at,
+                at,
+                "a view",
+            )
+            .with_evidence(records)
+        };
+        let quantum = evidence_from_finding(
+            &finding(vec![
+                "rec-1".to_string(),
+                "quantum:portfolio-allocation:1:quantum".to_string(),
+            ]),
+            Stance::Supports,
+            EvidenceId::from_string("e1"),
+        );
+        assert_eq!(quantum.kind, EvidenceKind::QuantumExploration);
+        let ordinary = evidence_from_finding(
+            &finding(vec!["rec-1".to_string()]),
+            Stance::Supports,
+            EvidenceId::from_string("e2"),
+        );
+        assert_eq!(ordinary.kind, EvidenceKind::Computation);
     }
 }

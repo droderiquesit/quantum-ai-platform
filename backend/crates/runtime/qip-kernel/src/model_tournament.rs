@@ -1653,7 +1653,17 @@ mod tests {
                 models: Vec::new(),
             })
             .expect("a well-formed draft forms");
-            formed.status = status;
+            formed
+                .apply_review(&qip_reasoning_engine::redteam::ReviewOutcome {
+                    hypothesis_id: formed.hypothesis_id.as_str().to_string(),
+                    reviewed_at: at,
+                    challenges: Vec::new(),
+                    confidence_before: 0.0,
+                    confidence_after: 0.0,
+                    verdict: status,
+                    rationale: "a test's review".to_string(),
+                })
+                .expect("the test's review applies");
             formed
         };
         let report = OrganisationReport {
