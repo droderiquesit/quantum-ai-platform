@@ -5217,6 +5217,28 @@ pub struct MandateSubscribed {
 /// The producer of [`MandateSubscribed`].
 const MANDATE_SUBSCRIPTION_ORIGIN: &str = "kernel/mandate-subscription";
 
+/// The journalled record that a commerce unit's movement was queued for the
+/// desk ledger (R12-COMMERCE-5096): the whole `PhysicalInventory`
+/// [`qip_contracts::ledger_operation::LedgerOperation`], written by
+/// [`Platform::queue_inventory_moves`] before the operation is queued.
+/// Without it a restart lost every movement the desk had not yet shipped,
+/// and the desk ledger's warehouse account stopped replaying to the units
+/// the commerce ledger held. Journalled whole and re-sent as written on
+/// resume, as [`MandateSubscribed`] is: the ledger books each id once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CommerceInventoryQueued {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+impl EventBody for CommerceInventoryQueued {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer of [`CommerceInventoryQueued`], its own origin so a reader of
+/// the other `LedgerOperationRecorded` producers never meets this body.
+const COMMERCE_INVENTORY_ORIGIN: &str = "kernel/commerce-inventory";
+
 impl EventBody for CapitalGrantRecalled {
     const TOPIC: Topic = Topic::LedgerOperationRecorded;
     const SCHEMA_VERSION: u32 = 1;
@@ -6693,6 +6715,9 @@ impl Platform {
         platform.queue_private_commitments(now)?;
         // Every mandate subscription this log recorded, re-queued as written.
         platform.requeue_mandate_subscriptions()?;
+        // Every commerce inventory movement this log recorded, re-queued as
+        // written (R12-COMMERCE-5096).
+        platform.requeue_commerce_inventory()?;
         // Every capital grant this log funded or recalled, re-queued as
         // written and in the order written: the plane's envelopes do not
         // survive a restart but the ledger's debt to the books they funded
@@ -8063,6 +8088,25 @@ impl Platform {
             });
             match built {
                 Ok(operation) => {
+                    // Journalled before it is queued, so a restart re-sends
+                    // it; a movement the log will not take is reported and
+                    // not queued, rather than queued unrecoverably.
+                    if let Err(error) = self.journal_record(
+                        CommerceInventoryQueued {
+                            operation: operation.clone(),
+                        },
+                        COMMERCE_INVENTORY_ORIGIN,
+                        now,
+                    ) {
+                        problems.push(format!(
+                            "commerce unit {} {} was not queued for the ledger, because the log \
+                             would not take its record: {}",
+                            movement.unit,
+                            movement.stage,
+                            error.message()
+                        ));
+                        continue;
+                    }
                     self.commerce_inventory_operations = sequence;
                     self.desk_operations.push(operation);
                 }
@@ -8143,6 +8187,30 @@ impl Platform {
         )?;
         self.subscribed_mandates.insert(mandate);
         self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Re-queue every commerce inventory movement the log holds, as written
+    /// and in the order written (R12-COMMERCE-5096), and resume the
+    /// movement sequence after the highest one journalled, so a movement
+    /// queued after a restart never reuses a sequence. The ledger answers a
+    /// resend of a booked movement with a duplicate, so re-sending every
+    /// journalled one books each exactly once.
+    fn requeue_commerce_inventory(&mut self) -> Result<()> {
+        let mut recorded = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == COMMERCE_INVENTORY_ORIGIN
+                && record.event.topic == CommerceInventoryQueued::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                recorded.push(frame.decode::<CommerceInventoryQueued>()?.body.operation);
+            }
+        }
+        for operation in recorded {
+            self.commerce_inventory_operations =
+                self.commerce_inventory_operations.max(operation.sequence);
+            self.desk_operations.push(operation);
+        }
         Ok(())
     }
 
@@ -16828,10 +16896,9 @@ impl Platform {
                 // it is demoted here beside the veto and the decision below
                 // forms no proposal on it. Dissent does not reach this arm.
                 if symbolic_veto.is_some() || symbolic_infeasibility.is_some() {
-                    reasoned.hypothesis.status =
-                        qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected;
+                    reasoned.hypothesis.demote();
                 }
-                let approved = reasoned.hypothesis.status.is_actionable();
+                let approved = reasoned.hypothesis.status().is_actionable();
                 // Recorded here, where review's verdict becomes known, rather
                 // than inferred later from the order count. `created` is the
                 // denominator the other two are read against: approved plus
@@ -16877,7 +16944,7 @@ impl Platform {
                         } else {
                             ""
                         },
-                        reasoned.hypothesis.status.as_str(),
+                        reasoned.hypothesis.status().as_str(),
                         reasoned.hypothesis.effective_confidence(),
                         // Which state the small number means, and not only
                         // that it is small. `effective_confidence` above has
@@ -17329,7 +17396,7 @@ impl Platform {
             cycle: self.cycle,
             hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
             subject: subject.as_str().to_string(),
-            status: hypothesis.status.as_str().to_string(),
+            status: hypothesis.status().as_str().to_string(),
             confidence: hypothesis.effective_confidence(),
             contested,
             dissenters: reasoned.dissenters.len(),
@@ -21221,7 +21288,26 @@ impl Platform {
                     ));
                     continue;
                 }
-                let quantity = self.whole_lots(leg.object_id.as_str(), leg.quantity);
+                // A sell the construction targeted at zero weight is the
+                // desk's decision to divest (R12-ASSET-1160), so it is sized to
+                // the long the book holds rather than to the leg: the leg is
+                // narrowed free capital times the held weight, floored to
+                // lots, which at or above cost always leaves part of the long
+                // held under a decision to be rid of it. Never more than the
+                // long, so a divestment cannot open a short.
+                let to_flat = matches!(leg.side, qip_portfolio_engine::proposal::Side::Sell)
+                    && leg.target_weight.abs() < f64::EPSILON;
+                let held_long = self
+                    .capital
+                    .positions
+                    .get(leg.object_id.as_str())
+                    .map_or(Decimal::ZERO, |lot| lot.quantity);
+                let sized = if to_flat && held_long.is_positive() {
+                    held_long
+                } else {
+                    leg.quantity
+                };
+                let quantity = self.whole_lots(leg.object_id.as_str(), sized);
                 if !quantity.is_positive() {
                     refused += 1;
                     problems.push(format!(
@@ -21261,7 +21347,7 @@ impl Platform {
                         (reference, leg.quantity),
                     );
                 }
-                match self.submit_order(order, now) {
+                match self.submit_released(order, to_flat, now) {
                     Ok(()) => {
                         released += 1;
                         *placed_by_proposal
@@ -23454,6 +23540,15 @@ impl Platform {
     /// and a record that kept only the first could say what the platform earned
     /// and not what it declined.
     pub fn submit_order(&mut self, order: Order, now: Timestamp) -> Result<()> {
+        self.submit_released(order, false, now)
+    }
+
+    /// [`Self::submit_order`], carrying whether the construction targeted
+    /// this sell at zero weight (`to_flat`), which only the ACT stage knows.
+    /// The unwind it implies is recorded after the wallet-halt and borrow
+    /// refusals, so an order those controls stop before it exists leaves the
+    /// position where it was.
+    fn submit_released(&mut self, order: Order, to_flat: bool, now: Timestamp) -> Result<()> {
         // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
         // not traded into. Before the pre-trade routing on purpose: the
         // desk's own books disagree with the custodian's about this asset,
@@ -23469,7 +23564,7 @@ impl Platform {
         // further without that routing. `Router::determine` returns a type that
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
-        self.begin_deliberate_close(&order);
+        self.begin_deliberate_close(&order, to_flat);
         let subject = order.object_id.as_str().to_string();
         let conditions = self.pretrade_conditions(&subject);
         self.pretrade_routing = Some(
@@ -23586,7 +23681,12 @@ impl Platform {
     /// sizing that took the position to flat) is raised through
     /// [`Portfolio::flag_position`] first. A register that will not move is
     /// said on the cycle; it never stops the order.
-    fn begin_deliberate_close(&mut self, order: &Order) {
+    ///
+    /// `to_flat` is the construction's own statement that the sell targets
+    /// zero weight, which the ACT stage passes for such a leg; an order that
+    /// arrives by any other route carries no target and is judged by its
+    /// quantity alone.
+    fn begin_deliberate_close(&mut self, order: &Order, to_flat: bool) {
         if !matches!(order.side, Side::Sell) {
             return;
         }
@@ -23595,7 +23695,7 @@ impl Platform {
             .positions
             .get(order.object_id.as_str())
             .map_or(Decimal::ZERO, |lot| lot.quantity);
-        if !long.is_positive() || order.quantity < long {
+        if !long.is_positive() || (!to_flat && order.quantity < long) {
             return;
         }
         let id = ObjectId::from_string(order.object_id.as_str());
@@ -23605,8 +23705,8 @@ impl Platform {
             .and_then(|_| self.asset_book.begin_unwind(&id));
         if let Err(error) = moved {
             self.capture_problems.push(format!(
-                "selling {} of {} takes the position to flat and the lifecycle register could \
-                 not record the unwind: {}",
+                "selling {} of {} divests the position and the lifecycle register could not \
+                 record the unwind: {}",
                 order.quantity,
                 order.object_id.as_str(),
                 error.message()

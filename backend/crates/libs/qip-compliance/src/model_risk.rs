@@ -596,14 +596,22 @@ impl ModelRiskRegister {
     /// The explanation is required rather than optional. Its existence already
     /// proves it reconciles, so requiring it here means no output reaches a
     /// decision without an attribution somebody can inspect afterwards.
+    ///
+    /// `regime` and `inputs` are the decision's (R12-RISK-4099): the card
+    /// must have been validated in that regime and every input it has a
+    /// training range for must lie inside it. Eligibility checked without
+    /// them would admit a model validated only in a calm market for a
+    /// stressed decision.
     pub fn admit(
         &mut self,
         models: &ModelRegistry,
         explanation: Explanation,
+        regime: &str,
+        inputs: &BTreeMap<String, f64>,
         now: Timestamp,
     ) -> Result<AdmittedOutput> {
         let reference = explanation.model_reference().to_string();
-        let outcome = self.evaluate(models, &explanation, now);
+        let outcome = self.evaluate(models, &explanation, regime, inputs, now);
         self.admissions.push(AdmissionRecord {
             at: now,
             model_reference: reference.clone(),
@@ -629,10 +637,12 @@ impl ModelRiskRegister {
         &self,
         models: &ModelRegistry,
         explanation: &Explanation,
+        regime: &str,
+        inputs: &BTreeMap<String, f64>,
         now: Timestamp,
     ) -> Result<()> {
         let reference = explanation.model_reference();
-        models.require_for_decision(reference, now)?;
+        models.require_for_decision_in(reference, regime, inputs, now)?;
         let file = self.files.get(reference).ok_or_else(|| {
             Error::denied(format!(
                 "{reference} has no model risk file; a model with no recorded intended use, \
