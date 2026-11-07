@@ -525,3 +525,91 @@ fn a_cycle_whose_loss_bound_cannot_be_established_is_rejected_by_name_and_sends_
         coordinator.refusals()
     );
 }
+
+// ---- MESH-5070 -------------------------------------------------------------
+
+/// Both nodes reserve every leg of `e`; the coordinator's frames reach europe,
+/// so europe holds the reservation condition met in full.
+fn europe_with_every_leg_reserved(e: &OpportunityEpoch) -> PeerEndpoint {
+    let mut coordinator = node_holding("americas", e);
+    let mut europe = node_holding("europe", e);
+    let ReservationOutcome::Reserved(frames) = coordinator
+        .reserve_own_legs(
+            "opp-1",
+            at(1),
+            &mut ReservationBook::new(d(1000)),
+            &open_gate,
+        )
+        .unwrap()
+    else {
+        panic!("premise: the coordinator reserves");
+    };
+    for frame in &frames {
+        europe.receive(frame, at(2)).unwrap();
+    }
+    europe
+        .reserve_own_legs(
+            "opp-1",
+            at(2),
+            &mut ReservationBook::new(d(1000)),
+            &open_gate,
+        )
+        .unwrap();
+    europe
+}
+
+fn fire_frame() -> Vec<u8> {
+    encode(
+        &PeerMessage::Fire {
+            opportunity: "opp-1".into(),
+            sequence: 1,
+        },
+        MAX_FRAME,
+    )
+    .unwrap()
+}
+
+/// The coordinator refuses to declare FIRE past the loss bound, but a
+/// participant sets `fired` on receipt of the frame, and until R12-MESH-5070
+/// it checked only that every leg was reserved. A coordinator that skipped its
+/// own check, or a FIRE frame written by hand, put the participant's legs on
+/// the wire under a worst recovery the epoch never bounded. The guard now sits
+/// in both places `fired` is set.
+///
+/// Mutation: delete the receive-side bound check in the participant's
+/// `PeerMessage::Fire` arm, and europe accepts the FIRE and sends its leg.
+#[test]
+fn a_participant_that_receives_fire_for_an_epoch_whose_worst_recovery_loss_exceeds_its_declared_bound_refuses_it_by_name_and_sends_no_leg()
+ {
+    // Premise: with a bound that covers the worst recovery (2 + 3), the same
+    // FIRE is applied and the leg goes, so the refusal below is the bound's.
+    let covered = epoch_over(vec![leg("a", "americas", 2), leg("b", "europe", 3)], 5);
+    let mut europe = europe_with_every_leg_reserved(&covered);
+    europe.receive(&fire_frame(), at(3)).unwrap();
+    assert!(europe.is_fired("opp-1"));
+    europe.send_leg("opp-1", "b", at(4), &open_gate).unwrap();
+    assert!(europe.leg_sent("opp-1", "b"));
+
+    let tight = epoch_over(vec![leg("a", "americas", 2), leg("b", "europe", 3)], 4);
+    let mut europe = europe_with_every_leg_reserved(&tight);
+    assert!(
+        europe.refusals().is_empty(),
+        "premise: the reservation condition is met at europe"
+    );
+    let refused = europe
+        .receive(&fire_frame(), at(3))
+        .expect_err("a FIRE past the loss bound was applied");
+    assert!(
+        refused
+            .message()
+            .contains("loss bound cannot be established")
+            && refused.message().contains('5')
+            && refused.message().contains('4'),
+        "{}",
+        refused.message()
+    );
+    assert_eq!(kinds(&europe), vec!["fire_loss_bound"]);
+    assert!(!europe.is_fired("opp-1"));
+    assert!(europe.send_leg("opp-1", "b", at(4), &open_gate).is_err());
+    assert!(!europe.leg_sent("opp-1", "b"));
+}

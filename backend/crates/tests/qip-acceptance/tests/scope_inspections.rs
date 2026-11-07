@@ -358,6 +358,95 @@ fn every_arbitrage_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_na
     }
 }
 
+/// R12-MESH-1166: the reflex mesh's scope, item by item: peer exchange,
+/// clock sync, reservations, opportunity epochs and bounded-loss multi-leg
+/// sagas. Each is held to the seam the edge node's composition root reaches
+/// and a test that drives it. The root reads the peer settings and spawns the
+/// link, and every row below runs inside what that spawn starts. A seam
+/// renamed away or a test deleted fails here naming the item. What this does
+/// not claim: that two deployed nodes exchange anything. The spawn is behind
+/// the peer-mesh switch, null in every environment, and the row's gap says so.
+const REFLEX_MESH_SCOPE: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "peer exchange",
+        "crates/edge/qip-peer-link/src/wire.rs",
+        "pub struct PeerLink",
+        "crates/edge/qip-peer-link/tests/peer_mesh.rs",
+        "fn two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_socket",
+    ),
+    (
+        "clock sync",
+        "crates/libs/qip-peer/src/lib.rs",
+        "ClockProbe {",
+        "crates/libs/qip-peer/tests/clock.rs",
+        "fn a_token_is_admitted_only_while_every_counterpartys_clock_is_measured_and_in_bound",
+    ),
+    (
+        "clock sync",
+        "crates/libs/qip-peer/src/lib.rs",
+        "ClockProbe {",
+        "crates/services/qip-mesh/tests/peer_rules.rs",
+        "fn a_node_whose_clock_drifts_out_of_bound_after_joining_neither_fires_nor_sends",
+    ),
+    (
+        "reservations",
+        "crates/libs/qip-peer/src/lib.rs",
+        "pub struct ReservationBook",
+        "crates/services/qip-mesh/tests/peer.rs",
+        "fn reservations_never_exceed_the_leg_or_the_grant_and_are_released_when_the_epoch_ends",
+    ),
+    (
+        "opportunity epochs",
+        "crates/libs/qip-peer/src/lib.rs",
+        "pub fn validate(&self, ttl_ceiling: Duration)",
+        "crates/services/qip-mesh/tests/peer.rs",
+        "fn an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted",
+    ),
+    (
+        "bounded-loss multi-leg sagas",
+        "crates/libs/qip-peer/src/lib.rs",
+        "pub fn declare_fire(",
+        "crates/services/qip-mesh/tests/peer.rs",
+        "fn realized_recovery_loss_never_passes_the_bound_over_every_order_of_unwinds",
+    ),
+    (
+        "bounded-loss multi-leg sagas",
+        "crates/edge/qip-peer-link/src/saga.rs",
+        "pub struct Saga",
+        "crates/edge/qip-peer-link/tests/saga.rs",
+        "fn two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its_unwind",
+    ),
+];
+
+#[test]
+fn every_reflex_mesh_scope_item_maps_to_a_seam_a_composition_root_reaches_and_a_named_test() {
+    // Premise: all five items are mapped, so an item dropped from the list
+    // fails here rather than leaving the inspection green over four.
+    let items: std::collections::BTreeSet<&str> =
+        REFLEX_MESH_SCOPE.iter().map(|row| row.0).collect();
+    assert_eq!(
+        items.len(),
+        5,
+        "premise: exchange, clocks, reservations, epochs and sagas are each mapped: {items:?}"
+    );
+    // The root: the node reads the peer settings and spawns the link, and
+    // every seam below runs on what that spawn starts.
+    holds(
+        "crates/apps/qip-edge-node/src/main.rs",
+        "PeerSettings::read(",
+        "peer settings read at the node's root",
+    );
+    holds(
+        "crates/apps/qip-edge-node/src/main.rs",
+        "qip_peer_link::spawn(settings, Arc::clone(&clock))",
+        "peer link spawned at the node's root",
+    );
+    for (item, seam_file, seam, test_file, test) in REFLEX_MESH_SCOPE {
+        holds(seam_file, seam, item);
+        holds(test_file, test, item);
+    }
+}
+
 /// The ten items of "Asset management" (R12-ASSET-1160): (item, seam file,
 /// seam symbol, test file, test name). Every seam is on the kernel's cycle
 /// or an operator route the API composes, and every test drives the
