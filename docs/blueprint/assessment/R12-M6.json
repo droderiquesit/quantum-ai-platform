@@ -805,18 +805,20 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:139 distil",
       "backend/crates/apps/qip-deepbrain/src/learning.rs a_challenger_the_learning_desk_promotes_over_the_champion_advances_the_platforms_model_pack (mutations: promote_model_from in shadow_round replaced by an Err; succeed_model_pack skipped in the kernel's promotion path)"
     ],
-    "gap": "ADR 0149 d2: rename the kernel ModelPack to ModelSetVersion (set_membership, model_set_lineage). ADR 0149 d3: after each successful promote_model_from in LearningDesk::shadow_round, write one unsigned contract ModelPack draft whose rollback_parent is the previous signed pack's artifact digest, carrying the ModelSetVersion id, refusing to write when expiry, universes or budget are absent; the deep brain never signs it (R12-REASON-7203). Shared with R12-CONTRACT-7064. Larger slow-lane models and new architectures stay declined under decision 5 (R12-MODEL-7007).",
+    "gap": "Waits on R12-CONTRACT-7064 (lane L2), which takes ADR 0149 d2 and d3 as one isolated change announced to every lane: d2 renames the kernel ModelPack to ModelSetVersion (set_membership, model_set_lineage); d3 writes, after each successful promote_model_from in LearningDesk::shadow_round, one unsigned contract ModelPack draft whose rollback_parent is the previous signed pack's artifact digest, carrying the ModelSetVersion id, refusing to write when expiry, universes or budget are absent; the deep brain never signs it (R12-REASON-7203). Larger slow-lane models and new architectures stay declined under decision 5 (R12-MODEL-7007).",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": [],
+    "depends_on": [
+      "R12-CONTRACT-7064"
+    ],
     "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-deepbrain --lib a_challenger_the_learning_desk",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-10-31: the decider's closure (test of the kernel lineage from the desk) is done; one skeptic returned PARTIAL because the governing skeptic closure (ADR 0149 d2 rename, d3 draft pack) is not built, and both stay in the gap."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-10-31: the decider's closure (test of the kernel lineage from the desk) is done; one skeptic returned PARTIAL because the governing skeptic closure (ADR 0149 d2 rename, d3 draft pack) is not built, and both stay in the gap. Parent 2026-10-31: L4 does not take ADR 0149 d2/d3; they stay with R12-CONTRACT-7064's owner, lane L2."
   },
   {
     "id": "R12-EXPAND-6035",
@@ -1538,13 +1540,15 @@
   {
     "id": "R12-EXPAND-6065",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/detectors.rs:503 coverage measures three CoverageDimensions (asset class, venue, geography) over the map coverage_universe (detectors.rs:474) builds from the universe; the deployed deep brain builds that map at backend/crates/apps/qip-deepbrain/src/main.rs:232 and the sweep raises one Observation per weak dimension value.",
+    "current": "ADR 0345 (accepted, amends ADR 0151 d12) makes the causal driver a coverage dimension: CoverageDimension::CausalDriver, and qip-expansion causal_driver_universe maps each live (cause, effect) claim in the platform's causal graph to the effect when the catalogue holds it as an instrument. ResearchLoop::sweep_over adds these rows each sweep from the graph as it stands and hands them to the coverage detector beside asset class, venue and geography, so a driver whose effects lack history raises one coverage gap naming its dimension. The shipped deep brain runs this sweep, but its only causal-edge writer (the temporal-precedence discovery) claims edges only between subjects that already have price history, so no shipped edge can yet raise a driver gap; the test seeds its claims through Platform::claim_causal, which no app calls.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/tests/research.rs:103 an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router",
       "backend/crates/services/qip-expansion/tests/loop.rs:153 a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension",
-      "backend/crates/services/qip-expansion/tests/loop.rs:206 a_coverage_key_naming_an_unmeasured_dimension_is_refused"
+      "backend/crates/services/qip-expansion/tests/loop.rs:206 a_coverage_key_naming_an_unmeasured_dimension_is_refused",
+      "docs/adr/0345-causal-driver-coverage-is-measured-on-the-graphs-own-drivers-against-the-history-of-the-instruments-they-reach-and-language-waits-for-a-source-record-that-states-one.md",
+      "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming_its_dimension (mutations: coverage handed the static map; the instruments-only filter dropped)"
     ],
-    "gap": "Languages and causal drivers are not measured: nothing in the tree records a document language per source or a causal-driver inventory to measure coverage against, so CoverageDimension deliberately has no arm for either.",
+    "gap": "No production writer claims an edge whose effect lacks history, so the dimension has not fired outside tests. Language is not a coverage dimension: no source record states the language of what it admits, and ADR 0345 decision 5 keeps it out until one does. The causal graph has no edge cap, so the sweep's pass over it grows with the graph (ADR 0345's costs). The ontology seeding reads the static catalogue map, so no causal-driver ontology type is registered.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1552,10 +1556,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion --test loop a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension",
+    "verification": "cargo test -p qip-deepbrain --test evidence_gaps",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: venue and geography added on the deployed path (three of five dimensions); mutations dropping the Venue row from coverage_universe and reading an unknown key prefix as an asset class each fail their test. Status unchanged until languages and causal drivers have a measured source. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): This row needs no capital. Decision 8 filed it with the live-capital rows from the triage's bucket, and I take it out. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Causal-driver coverage is measured on the graph's own drivers against the history of the instruments they reach, and language waits for a source record that states one (amends ADR 0151 decision 12)."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: venue and geography added on the deployed path (three of five dimensions); mutations dropping the Venue row from coverage_universe and reading an unknown key prefix as an asset class each fail their test. Status unchanged until languages and causal drivers have a measured source. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): This row needs no capital. Decision 8 filed it with the live-capital rows from the triage's bucket, and I take it out. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Causal-driver coverage is measured on the graph's own drivers against the history of the instruments they reach, and language waits for a source record that states one (amends ADR 0151 decision 12). L4 2026-10-31: ADR 0345 and the dimension built; skeptic pending. Skeptic 2026-10-31: PARTIAL; closure met, the dimension cannot fire on a shipped binary today, and ADR 0345's 'graph bounded by its own capacity' was wrong and is corrected."
   },
   {
     "id": "R12-EXPAND-6066",
@@ -1581,11 +1585,14 @@
   {
     "id": "R12-EXPAND-6067",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/detectors.rs:481 PersistenceTracker raises MissedOpportunity when a flagged subject persists for PERSIST_SWEEPS, called at backend/crates/apps/qip-deepbrain/src/research.rs:450",
+    "current": "ADR 0346 (accepted, amends ADR 0151 d12): no belief price level is built. qip-deepbrain research.rs BeliefWatch is a second PersistenceTracker reading federation_stage::replay each sweep. A subject (the proposition without its @cycle) is flagged in a sweep when its latest fresh resolution, by cycle, went against the arbitrated probability (above one half and false, or below and true); flags on PERSIST_SWEEPS consecutive sweeps raise one specialist observation tagged belief-discrepancy and citing up to sixteen resolved propositions. The watch counts reviews read rather than cycle numbers, so a restart that renumbers cycles over the same journal does not blind it. It covers non-price propositions too, and moves nothing.",
     "evidence": [
-      "backend/crates/services/qip-expansion/tests/loop.rs:194 a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence"
+      "backend/crates/services/qip-expansion/tests/loop.rs:194 a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence",
+      "docs/adr/0346-a-price-belief-discrepancy-is-a-federation-forecast-the-market-keeps-resolving-against-measured-in-probability-and-no-belief-price-level-is-built.md",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_persistent_belief_discrepancy_queues_exactly_one_item_naming_its_origin (mutation: every resolved subject counted as against)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_the_watch (mutation: drop the sort by cycle)"
     ],
-    "gap": "Persistence is over price-anomaly flags, not price-vs-belief discrepancies, and no per-subject belief level exists to compare a price against: Platform::calibration() is a CalibrationReport of hit rates by class and agent, and the belief priors (qip-contracts policy.rs BeliefPriors, issued through &mut Platform::issue_belief_priors) are probabilities per key, not price levels. Closing it needs the kernel to expose a read-only belief price per subject first; the queued item also triggers no specialist, simulator, feed or model family (6049's executor work).",
+    "gap": "Persistence is counted in sweeps, not in the resolutions the ruling names: several resolutions in one sweep count once, and a subject resolved less often than the sweep never persists. One untrusted review anywhere in the log disables the detector, reported only on the round. The sweep_over wiring and the desk queueing are untested: the tests drive BeliefWatch::feed and raise() directly, and the closure's mutation (feed the anomaly flags) was not run. Testing a raised discrepancy with a specialist or a simulator is R12-EXPAND-6049's executor work.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1593,10 +1600,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-deepbrain --test research a_persistent_belief",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Beliefs are probabilities, so no belief price level is built. A price/belief discrepancy is the federation's arbitrated probability landing on the wrong side of what the price then did, for the same subject, on PERSIST_SWEEPS consecutive resolutions. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A price/belief discrepancy is a federation forecast the market keeps resolving against, measured in probability, and no belief price level is built (amends ADR 0151 decision 12)."
+    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Beliefs are probabilities, so no belief price level is built. A price/belief discrepancy is the federation's arbitrated probability landing on the wrong side of what the price then did, for the same subject, on PERSIST_SWEEPS consecutive resolutions. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A price/belief discrepancy is a federation forecast the market keeps resolving against, measured in probability, and no belief price level is built (amends ADR 0151 decision 12). L4 2026-10-31: ADR 0346 and BeliefWatch built; skeptic pending. Skeptic 2026-10-31: PARTIAL; fixed the lexicographic 'latest' (@10 before @9) and the cycle cursor a restart would blind, corrected ADR 0346's sweeps-versus-resolutions wording and its 'price' scope; the rest is in the gap."
   },
   {
     "id": "R12-EXPAND-6068",
