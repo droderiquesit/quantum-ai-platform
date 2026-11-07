@@ -19,9 +19,11 @@
 //!   (`analyst:<agent>`), at `½ + ½ × sign × effective conviction`, with the
 //!   run's metered cost and wall-clock latency.
 //!
-//! Detectors are not metered, so their forecasts carry zero cost and zero
-//! latency. That favours them on those two factors and is stated here so the
-//! factor is not read as measured for them.
+//! A detector's cost is the evidence items it examined, on the step meter
+//! (ADR 0149 decision 13), ranked only among step-metered entrants and never
+//! against an analyst's money. Its latency is unmetered: the hypothesis is
+//! formed at the pass instant, so it reads the neutral factor, neither best
+//! nor worst, and is not a measured latency.
 //!
 //! The forecasts are categorical rather than full §9.14 [`Forecast`]
 //! contracts on purpose: a panel finding states a direction and a

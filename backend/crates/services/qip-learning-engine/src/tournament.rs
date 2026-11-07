@@ -1480,9 +1480,24 @@ impl Tournament {
                 .last()
                 .map_or(CostMeter::Spend, |s| s.cost_meter)
         };
+        // The mean cost over only the scores on the forecaster's own meter:
+        // a forecaster whose older scores were money and newer ones steps
+        // must not have micros and steps averaged into one number.
+        let cost_mean = |f: &Forecaster| -> Option<f64> {
+            if f.all_scores().next().is_none() {
+                return Some(0.0);
+            }
+            let on = meter(f);
+            let values: Vec<f64> = f
+                .all_scores()
+                .filter(|s| s.cost_meter == on)
+                .filter_map(|s| s.cost)
+                .collect();
+            Measure::mean(&values, "").value()
+        };
         let mut costs_by_meter: BTreeMap<CostMeter, Vec<f64>> = BTreeMap::new();
         for f in &active {
-            if let Some(cost) = mean(f, |s| s.cost) {
+            if let Some(cost) = cost_mean(f) {
                 costs_by_meter.entry(meter(f)).or_default().push(cost);
             }
         }
@@ -1540,7 +1555,7 @@ impl Tournament {
                     calibration,
                     information,
                     cost: relative(
-                        mean(f, |s| s.cost),
+                        cost_mean(f),
                         cost_medians.get(&meter(f)).copied().unwrap_or(0.0),
                     ),
                     latency: relative(mean(f, |s| s.latency_ms), latency_median),
@@ -2466,6 +2481,54 @@ mod tests {
                 alone[analyst].cost
             );
         }
+        Ok(())
+    }
+
+    /// R12-MODEL-3090: a forecaster whose meter changed is ranked on its own
+    /// meter's scores alone. "switched" spent a thousand micros a forecast
+    /// before it was re-metered and ten steps after; "peer" was ten steps
+    /// throughout. On steps they did the same work, so they earn the same cost
+    /// factor. The failure this prevents: averaging the old micros with the
+    /// new steps reads switched as fifty times dearer than its peer, in a unit
+    /// nobody converted.
+    ///
+    /// Mutation: take the cost mean over every metered score whatever its
+    /// meter, and the two factors differ.
+    #[test]
+    fn a_forecaster_whose_meter_changed_is_ranked_on_its_current_meter_alone() -> Result<()> {
+        let mut t = Tournament::new();
+        for name in ["switched", "peer"] {
+            t.admit(spec(name), at(0))?;
+        }
+        let rounds = PROMOTION_SAMPLE as i64;
+        for i in 0..rounds {
+            let day = 2 * i;
+            let id = format!("s-{day}");
+            t.open(question(&id, "quiet", day), at(day))?;
+            let mut switched = forecast("switched", &id, 7_000, day);
+            if i < rounds / 2 {
+                switched.cost = Some(1_000.0);
+                switched.cost_meter = CostMeter::Spend;
+            } else {
+                switched.cost = Some(10.0);
+                switched.cost_meter = CostMeter::Steps;
+            }
+            t.submit(&id, switched, at(day))?;
+            let mut peer = forecast("peer", &id, 7_000, day);
+            peer.cost = Some(10.0);
+            peer.cost_meter = CostMeter::Steps;
+            t.submit(&id, peer, at(day))?;
+            t.resolve(&id, resolution("up", 30.0, day + 1), at(day + 1))?;
+        }
+        t.review_promotions(&BTreeMap::new());
+        let influence = t.influence("quiet");
+        assert_eq!(influence.len(), 2, "premise: both weighed: {influence:?}");
+        assert!(
+            (influence["switched"].cost - influence["peer"].cost).abs() < 1e-12,
+            "the old meter's scores leaked into the new one's mean: {} vs {}",
+            influence["switched"].cost,
+            influence["peer"].cost
+        );
         Ok(())
     }
 
