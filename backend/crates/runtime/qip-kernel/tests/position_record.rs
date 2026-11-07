@@ -922,3 +922,81 @@ fn a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_
     );
     Ok(())
 }
+
+/// R12-ASSET-1015, the private-stages half: a capital call on a private
+/// fund's commitment moves its lifecycle from committed to funding, and the
+/// stage is read through the class's own lifecycle engine.
+///
+/// The failure prevented: the registry named a private-stages engine for
+/// the class and nothing in the kernel ever moved a private stage, so a
+/// commitment that had been called read exactly like one never drawn.
+///
+/// Mutation: stop `private_stage` adding the capital-call event — the stage
+/// stays committed and the last assertion fails.
+#[test]
+fn a_capital_call_on_a_private_funds_commitment_moves_its_lifecycle_from_committed_to_funding()
+-> Result<()> {
+    use qip_financial::cashflow::CallConsequence;
+    use qip_financial::private_stage::PrivateStage;
+    use qip_kernel::platform::CapitalCallNotice;
+    use qip_risk_engine::autonomy::OperatorIdentity;
+
+    // Undrawn, so the stage the call moves it to is visible.
+    let fund = FinancialObject::builder(
+        object("FUND"),
+        "FUND",
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: dec!("400000"),
+        called_capital: Decimal::ZERO,
+        distributed_capital: Decimal::ZERO,
+        residual_value: dec!("160000"),
+        stage: "buyout".to_string(),
+        lockup_years: 1.0,
+        capital_call_notice_days: 10,
+        call_schedule: None,
+    }))
+    .provenance(Provenance::synthetic("administrator", start()))
+    .build(start())?;
+    let fund_id = object("FUND");
+    let mut universe = Universe::new();
+    universe.insert(fund)?;
+    let mut platform = in_memory(universe, config())?;
+    assert_eq!(
+        platform.private_stage(fund_id.as_str()),
+        Some(PrivateStage::Committed),
+        "premise: the fund's commitment is recorded and nothing is drawn"
+    );
+    assert_eq!(
+        platform.private_stage("obj-NOT-A-COMMITMENT"),
+        None,
+        "an instrument with no commitment has no private stage"
+    );
+
+    let now = start().saturating_add(Duration::from_mins(5));
+    platform.record_capital_call(
+        fund_id.as_str(),
+        CapitalCallNotice {
+            reference: "call-1".to_string(),
+            amount: dec!("50000"),
+            due: now.saturating_add(Duration::from_days(10)),
+            consequence: CallConsequence::Interest {
+                annual_rate_bps: 3_650,
+            },
+        },
+        &OperatorIdentity::verified("ops-carol", "oidc", now),
+        now,
+    )?;
+    assert_eq!(
+        platform.private_stage(fund_id.as_str()),
+        Some(PrivateStage::Funding),
+        "a capital call did not move the commitment's lifecycle"
+    );
+    Ok(())
+}
