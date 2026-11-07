@@ -45,6 +45,7 @@ pub mod feed;
 pub mod golden;
 pub mod http;
 pub mod json;
+pub mod ledger_obligations;
 pub mod ledger_views;
 pub mod mesh;
 pub mod missing;
