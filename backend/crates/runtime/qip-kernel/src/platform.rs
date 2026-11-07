@@ -21274,7 +21274,26 @@ impl Platform {
                     ));
                     continue;
                 }
-                let quantity = self.whole_lots(leg.object_id.as_str(), leg.quantity);
+                // A sell the construction targeted at zero weight is the
+                // desk's decision to divest (R12-ASSET-1160), so it is sized to
+                // the long the book holds rather than to the leg: the leg is
+                // narrowed free capital times the held weight, floored to
+                // lots, which at or above cost always leaves part of the long
+                // held under a decision to be rid of it. Never more than the
+                // long, so a divestment cannot open a short.
+                let to_flat = matches!(leg.side, qip_portfolio_engine::proposal::Side::Sell)
+                    && leg.target_weight.abs() < f64::EPSILON;
+                let held_long = self
+                    .capital
+                    .positions
+                    .get(leg.object_id.as_str())
+                    .map_or(Decimal::ZERO, |lot| lot.quantity);
+                let sized = if to_flat && held_long.is_positive() {
+                    held_long
+                } else {
+                    leg.quantity
+                };
+                let quantity = self.whole_lots(leg.object_id.as_str(), sized);
                 if !quantity.is_positive() {
                     refused += 1;
                     problems.push(format!(
@@ -21314,7 +21333,7 @@ impl Platform {
                         (reference, leg.quantity),
                     );
                 }
-                match self.submit_order(order, now) {
+                match self.submit_released(order, to_flat, now) {
                     Ok(()) => {
                         released += 1;
                         *placed_by_proposal
@@ -23507,6 +23526,15 @@ impl Platform {
     /// and a record that kept only the first could say what the platform earned
     /// and not what it declined.
     pub fn submit_order(&mut self, order: Order, now: Timestamp) -> Result<()> {
+        self.submit_released(order, false, now)
+    }
+
+    /// [`Self::submit_order`], carrying whether the construction targeted
+    /// this sell at zero weight (`to_flat`), which only the ACT stage knows.
+    /// The unwind it implies is recorded after the wallet-halt and borrow
+    /// refusals, so an order those controls stop before it exists leaves the
+    /// position where it was.
+    fn submit_released(&mut self, order: Order, to_flat: bool, now: Timestamp) -> Result<()> {
         // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
         // not traded into. Before the pre-trade routing on purpose: the
         // desk's own books disagree with the custodian's about this asset,
@@ -23522,7 +23550,7 @@ impl Platform {
         // further without that routing. `Router::determine` returns a type that
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
-        self.begin_deliberate_close(&order);
+        self.begin_deliberate_close(&order, to_flat);
         let subject = order.object_id.as_str().to_string();
         let conditions = self.pretrade_conditions(&subject);
         self.pretrade_routing = Some(
@@ -23639,7 +23667,12 @@ impl Platform {
     /// sizing that took the position to flat) is raised through
     /// [`Portfolio::flag_position`] first. A register that will not move is
     /// said on the cycle; it never stops the order.
-    fn begin_deliberate_close(&mut self, order: &Order) {
+    ///
+    /// `to_flat` is the construction's own statement that the sell targets
+    /// zero weight, which the ACT stage passes for such a leg; an order that
+    /// arrives by any other route carries no target and is judged by its
+    /// quantity alone.
+    fn begin_deliberate_close(&mut self, order: &Order, to_flat: bool) {
         if !matches!(order.side, Side::Sell) {
             return;
         }
@@ -23648,7 +23681,7 @@ impl Platform {
             .positions
             .get(order.object_id.as_str())
             .map_or(Decimal::ZERO, |lot| lot.quantity);
-        if !long.is_positive() || order.quantity < long {
+        if !long.is_positive() || (!to_flat && order.quantity < long) {
             return;
         }
         let id = ObjectId::from_string(order.object_id.as_str());
@@ -23658,8 +23691,8 @@ impl Platform {
             .and_then(|_| self.asset_book.begin_unwind(&id));
         if let Err(error) = moved {
             self.capture_problems.push(format!(
-                "selling {} of {} takes the position to flat and the lifecycle register could \
-                 not record the unwind: {}",
+                "selling {} of {} divests the position and the lifecycle register could not \
+                 record the unwind: {}",
                 order.quantity,
                 order.object_id.as_str(),
                 error.message()
