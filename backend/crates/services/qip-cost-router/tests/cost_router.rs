@@ -64,7 +64,9 @@ fn feed(reads: u64) -> Result<DataSource> {
 }
 
 /// The seven deductions the market charges, so a test can concentrate on the
-/// two the platform charges itself.
+/// two the platform charges itself, plus the unwind a stranded leg would cost
+/// (R12-MESH-5069), stated as zero: these edges stand for a single decision,
+/// with no later leg to miss.
 fn market_costs(edge: NetEdge, each: Decimal) -> Result<NetEdge> {
     let mut edge = edge;
     for kind in [
@@ -78,7 +80,11 @@ fn market_costs(edge: NetEdge, each: Decimal) -> Result<NetEdge> {
     ] {
         edge = edge.deduct(Deduction::new(kind, each, "modelled by the cell")?);
     }
-    Ok(edge)
+    edge.deduct(Deduction::new(
+        DeductionKind::Unwind,
+        Decimal::ZERO,
+        "none: one decision, no later leg to strand",
+    )?)
 }
 
 // --- the ladder -------------------------------------------------------------
