@@ -266,6 +266,11 @@ impl<'a> CrossMarketPair<'a> {
                 DeductionKind::DataCost,
                 Decimal::ZERO,
                 "not modelled here; the amortised licence cost of both venues' feeds belongs to whoever pays for them, not to this crate, which is handed the books",
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::Unwind,
+                Decimal::ZERO,
+                "not modelled here; whether one venue's leg can be left standing is the execution layer's to price, as its round trip is",
             )?);
 
         let plan = LegPlan::new(vec![

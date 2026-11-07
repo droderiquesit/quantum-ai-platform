@@ -219,7 +219,8 @@ impl NetEdgeCalculator {
             Decimal::ONE - per_edge.fill_probability,
             "fill shortfall",
         )?;
-        let before_uncertainty = before_fill - fill_shortfall;
+        let unwind = self.unwind_deduction(pricing, size, per_edge.fill_probability)?;
+        let before_uncertainty = before_fill - fill_shortfall - unwind;
         let (uncertainty, confidence_f64) =
             self.uncertainty_deduction(before_uncertainty, age, pricing.fewest_observations)?;
 
@@ -337,6 +338,19 @@ impl NetEdgeCalculator {
                     pricing.conversions.len(),
                     Decimal::ONE - per_edge.fill_probability
                 ),
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::Unwind,
+                unwind,
+                if pricing.all_atomic {
+                    "none: every conversion settles atomically, so no leg can be stranded".to_string()
+                } else {
+                    format!(
+                        "a later leg misses with probability {}, stranding the size held after \
+                         the first conversion, which crosses that book back out at the touch",
+                        Decimal::ONE - per_edge.fill_probability
+                    )
+                },
             )?);
 
         // The check that makes the other eight load-bearing. It cannot catch a
@@ -420,6 +434,38 @@ impl NetEdgeCalculator {
         let cost_f64 = self.assumptions.funding_rate_annual_f64.max(0.0) * years_f64;
         let fraction = from_statistic(cost_f64, "funding cost")?;
         mul(size, fraction.max(Decimal::ZERO), "funding deduction")
+    }
+
+    /// R12-MESH-5069: the expected cost of crossing back out when a
+    /// non-atomic plan strands its first leg. `(1 - fill_probability)` is the
+    /// chance a later leg misses; the size the plan holds after the first
+    /// conversion is `size`, in units of the starting instrument as every
+    /// other deduction here; and crossing back out costs the first
+    /// conversion's own spread fraction again, measured by the same sweep
+    /// [`book_cost_fractions`] reads. An atomic plan strands nothing and
+    /// deducts zero.
+    fn unwind_deduction(
+        &self,
+        pricing: &PathPricing,
+        size: Decimal,
+        fill_probability: Decimal,
+    ) -> Result<Decimal> {
+        if pricing.all_atomic {
+            return Ok(Decimal::ZERO);
+        }
+        let Some(first) = pricing.conversions.first() else {
+            return Ok(Decimal::ZERO);
+        };
+        let notional = first.notional()?;
+        let mut crossing = Decimal::ZERO;
+        if notional > Decimal::ZERO {
+            for leg in &first.legs {
+                let weight = div(leg.notional()?, notional, "unwind leg weight")?;
+                crossing += mul(weight, leg.spread_fraction()?, "unwind crossing")?;
+            }
+        }
+        let stranded = mul(size, Decimal::ONE - fill_probability, "stranded size")?;
+        mul(stranded, crossing, "unwind deduction")
     }
 
     fn collateral_deduction(&self, size: Decimal, all_atomic: bool) -> Result<Decimal> {
