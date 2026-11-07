@@ -126,6 +126,16 @@ impl CaptureStream {
         // place by; the event's own stated uncertainty, widened by any
         // monotonic floor the discipline applied, is the honest placement.
         let placed = match Placed::from_disciplined(&disciplined) {
+            // R12-RES-7103: the discipline's estimate is a statistic over the
+            // stream, and it can be narrower than the uncertainty the cell
+            // stated for this one event — `Cell::clock_uncertainty` widens it
+            // while the clock row reads stale. Storing the narrower figure
+            // under-stated the error in the Tick Lake, and the tick desk's
+            // ClockPrecision label read it as precise. The wider of the two
+            // is kept: an uncertainty is never narrowed in storage.
+            Ok(placed) if placed.uncertainty() < event.uncertainty() => {
+                Placed::new(placed.event_time(), event.uncertainty(), placed.arrival())?
+            }
             Ok(placed) => placed,
             Err(_) => {
                 let floored = disciplined

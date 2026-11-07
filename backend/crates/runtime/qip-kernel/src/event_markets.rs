@@ -621,6 +621,20 @@ impl EventMarketPlane {
                         ));
                         continue;
                     }
+                    // R12-EVENT-5084: a book stamped after this pass is
+                    // leakage, as a future-stamped observation is, and it is
+                    // dropped here rather than held until `price` refuses it,
+                    // so it cannot shadow the last book that was knowable.
+                    if book.at > now {
+                        found.problems.push(format!(
+                            "a book for {market_id} outcome {outcome} is stamped {}, after this \
+                             pass at {}, and was dropped: a price readable before it was \
+                             published is leakage",
+                            book.at.to_rfc3339(),
+                            now.to_rfc3339()
+                        ));
+                        continue;
+                    }
                     found.books += 1;
                     self.books
                         .entry(market_id)
@@ -726,6 +740,20 @@ impl EventMarketPlane {
     ) -> Result<(OutcomeDistribution, Valuation)> {
         let mut weights: BTreeMap<OutcomeId, Decimal> = BTreeMap::new();
         for (outcome, book) in books {
+            // The intake already drops such a book; this refuses one that
+            // reached `price` by any other path. A belief built from a book
+            // published after the pass is point-in-time leakage, and a
+            // backtest over it would look better than anything that could
+            // have traded.
+            if book.at > now {
+                return Err(Error::invalid(format!(
+                    "the book for outcome {outcome} is stamped {}, after the pass at {}; a \
+                     distribution priced from it would be readable before it was published, \
+                     which is leakage",
+                    book.at.to_rfc3339(),
+                    now.to_rfc3339()
+                )));
+            }
             let band = implied_band(book, &market.fees, market.payoff())?;
             weights.insert(outcome.clone(), band.midpoint()?.value());
         }
