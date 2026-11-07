@@ -279,6 +279,32 @@ impl Drop for Fabric {
     }
 }
 
+/// A connection first seen `Held`, read once more for up to `wait`: still
+/// silent is held; a status line is a late answer; a close with nothing
+/// written is a drop. Any other first classification is returned as it was.
+fn settle(mut socket: TcpStream, stall: Stall, wait: StdDuration) -> (TcpStream, Stall) {
+    if stall != Stall::Held {
+        return (socket, stall);
+    }
+    socket.set_read_timeout(Some(wait)).unwrap();
+    let mut answer = Vec::new();
+    let mut chunk = [0u8; 256];
+    let settled = loop {
+        match socket.read(&mut chunk) {
+            Ok(0) if answer.is_empty() => break Stall::Dropped,
+            Ok(0) => break Stall::Answered(parse_status(&answer)),
+            Ok(n) => {
+                answer.extend_from_slice(&chunk[..n]);
+                if answer.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break Stall::Answered(parse_status(&answer));
+                }
+            }
+            Err(_) => break Stall::Held,
+        }
+    };
+    (socket, settled)
+}
+
 fn parse_status(answer: &[u8]) -> Option<u16> {
     let text = String::from_utf8_lossy(answer);
     text.split_whitespace().nth(1)?.parse().ok()
@@ -341,6 +367,47 @@ fn p4_producers_holding_every_connection_slot_cannot_starve_a_p0_commit() {
             .map(|handle| handle.join().unwrap())
             .collect()
     });
+    // A connection silent through its first wait is either held for its
+    // body or shed by an accept loop that answered late: on a loaded host
+    // the 503 can arrive after three seconds, and counting it held made the
+    // bulk-share premise read 53 against 48 (round 15's workspace gate).
+    // One further bounded look tells the two apart without loosening the
+    // premise: a held connection stays silent until the listener's read
+    // timeout (`ServerLimits::default().read_timeout`, fifteen seconds),
+    // well past this look, while a shed one is answered within the refused
+    // request deadline of its accept.
+    // The looks run together, not one after another: forty-eight sequential
+    // four-second reads would outlast the listener's read timeout and see
+    // every held connection answered by it.
+    let flood: Vec<(TcpStream, Stall)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = flood
+            .into_iter()
+            .map(|(socket, stall)| {
+                let fabric = &fabric;
+                scope.spawn(move || {
+                    // A close with nothing written is the handshake cap, not
+                    // a slot decision, which `stalled_agent_connection`
+                    // already answers by opening a fresh connection; the
+                    // second look keeps that rule rather than counting a
+                    // connection that never reached a slot.
+                    let (mut socket, mut stall) = settle(socket, stall, StdDuration::from_secs(4));
+                    for _ in 0..20 {
+                        if stall != Stall::Dropped {
+                            break;
+                        }
+                        let (fresh, first) =
+                            fabric.stalled_agent_connection(StdDuration::from_secs(3));
+                        (socket, stall) = settle(fresh, first, StdDuration::from_secs(4));
+                    }
+                    (socket, stall)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
     let shed = flood
         .iter()
         .filter(|(_, stall)| *stall == Stall::Answered(Some(503)))
@@ -349,14 +416,19 @@ fn p4_producers_holding_every_connection_slot_cannot_starve_a_p0_commit() {
         .iter()
         .filter(|(_, stall)| *stall == Stall::Held)
         .count();
+    // Every classification, so a failed premise says where the rest went.
+    let mut tally: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (_, stall) in &flood {
+        *tally.entry(format!("{stall:?}")).or_default() += 1;
+    }
     assert_eq!(
         held,
         limits.max_concurrent - limits.reserved_for_priority,
-        "premise: the flood fills the whole bulk share and holds it"
+        "premise: the flood fills the whole bulk share and holds it: {tally:?}"
     );
     assert_eq!(
         shed, limits.reserved_for_priority,
-        "every connection past the bulk share is answered 503 before its body is read"
+        "every connection past the bulk share is answered 503 before its body is read: {tally:?}"
     );
 
     // The clause: with the bulk share full, the controller's P0 produce —
