@@ -8,11 +8,51 @@
 //! unexited predecessor, an exited phase with no exit tests, an exit test that
 //! no longer exists under its name, a phase that is not the blueprint's, and
 //! a capability carried ahead of its phase with no stated switch.
+//!
+//! ADR 0258 adds a ratchet: a capability carried ahead of its phase must name
+//! a switch that keeps it off, unless it is one of [`UNGATED`], the ten that
+//! had none on 2026-10-31. That list may only shrink.
 
 use qip_acceptance::{files_with_extension, read};
 use serde_json::Value;
 
 const REGISTER: &str = "docs/architecture/phase-register.json";
+
+/// The capabilities carried ahead of their phase with switch `none` on
+/// 2026-10-31, as `(phase, capability)` (ADR 0258). The owner declined to add
+/// switches to code that already runs paper, because switching off the
+/// survival gate or the cycle to satisfy an ordering clause would remove
+/// protections, but ruled that nothing new arrives ungated. So this list may
+/// only shrink: a new `none` entry is refused, and an entry that gains a
+/// switch, or whose phase is entered, must leave the list, so that a later
+/// `none` cannot reuse its place.
+const UNGATED: [(u64, &str); 10] = [
+    (
+        1,
+        "Artifact Registry with immutable tags, Binary Authorization attestation and the reproducibility check in deploy.yml",
+    ),
+    (
+        6,
+        "Cloud Run warm services (qip-api, fastbrain, deepbrain, portal)",
+    ),
+    (
+        8,
+        "The eight-stage cycle with agents, world model, reasoning and learning in qip-kernel",
+    ),
+    (
+        9,
+        "agent-guard, agent-lanes, the sandbox workflow and the model gateway",
+    ),
+    (
+        10,
+        "QAOA against SimulatedProvider with a classical baseline every time (ADR 0006); qip-agency",
+    ),
+    (11, "NOW lattice and forecast lattice in qip-kernel"),
+    (12, "model tournament and verifier society"),
+    (14, "solver routing in qip-kernel"),
+    (15, "survival gate, hedge and capital calls in qip-kernel"),
+    (16, "ambient intake and specialist spawning"),
+];
 
 fn phases() -> Vec<Value> {
     let register: Value = serde_json::from_str(&read(REGISTER))
@@ -33,6 +73,7 @@ fn text<'a>(phase: &'a Value, key: &str) -> &'a str {
 fn refusals(phases: &[Value], test_source: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     let mut refused = Vec::new();
     let mut previous_exited = true;
+    let mut ungated_seen = Vec::new();
     for (index, phase) in phases.iter().enumerate() {
         let number = phase["phase"].as_u64();
         if number != Some(index as u64) {
@@ -79,9 +120,33 @@ fn refusals(phases: &[Value], test_source: &dyn Fn(&str) -> Option<String>) -> V
                         ));
                     }
                 }
+                if ahead["switch"].as_str() == Some("none") {
+                    let capability = ahead["capability"].as_str().unwrap_or("").to_string();
+                    let key = (index as u64, capability);
+                    if UNGATED.iter().any(|(p, c)| *p == key.0 && *c == key.1) {
+                        ungated_seen.push(key);
+                    } else {
+                        refused.push(format!(
+                            "phase {index} carries {:?} ahead of phase with switch none; \
+                             a capability added ahead of its phase must name a switch that keeps it off (ADR 0258)",
+                            key.1
+                        ));
+                    }
+                }
             }
         }
         previous_exited = state == "exited";
+    }
+    for (phase, capability) in UNGATED {
+        if !ungated_seen
+            .iter()
+            .any(|(p, c)| *p == phase && c == capability)
+        {
+            refused.push(format!(
+                "UNGATED still lists phase {phase}'s {capability:?}, which the register no longer \
+                 carries ahead of phase with switch none; remove it, the list may only shrink (ADR 0258)"
+            ));
+        }
     }
     refused
 }
@@ -218,6 +283,88 @@ fn an_exited_phase_with_no_exit_test_or_a_renamed_one_is_refused() {
         refused
             .iter()
             .any(|r| r.ends_with("which does not exist as a #[test]")),
+        "{refused:?}"
+    );
+}
+
+/// ADR 0258: an eleventh capability ahead of its phase with no switch is
+/// refused. The failure this prevents is the one the owner named: a new
+/// capability arriving ungated beside the ten that were allowed to stay.
+#[test]
+fn a_capability_added_ahead_of_its_phase_with_no_switch_is_refused() {
+    let committed = phases();
+    // Premise: the committed register carries exactly the ten, so the
+    // ratchet is not vacuous and the list is not wider than the register.
+    let ungated: Vec<(u64, String)> = committed
+        .iter()
+        .filter(|p| p["state"] == "not_entered")
+        .flat_map(|p| {
+            let number = p["phase"].as_u64().unwrap_or(u64::MAX);
+            p["ahead_of_phase"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|a| a["switch"] == "none")
+                .map(move |a| (number, a["capability"].as_str().unwrap_or("").to_string()))
+        })
+        .collect();
+    assert_eq!(ungated.len(), UNGATED.len(), "{ungated:#?}");
+
+    let mut mutated = committed;
+    let added = serde_json::json!({
+        "capability": "a new capability nobody gated",
+        "reason": "arrived ahead of phase",
+        "switch": "none",
+    });
+    mutated[2]["ahead_of_phase"]
+        .as_array_mut()
+        .unwrap_or_else(|| panic!("premise: phase 2 has an ahead_of_phase array"))
+        .push(added);
+    let refused = refusals(&mutated, &committed_source);
+    assert!(
+        refused.iter().any(|r| r.starts_with(
+            "phase 2 carries \"a new capability nobody gated\" ahead of phase with switch none;"
+        )),
+        "{refused:?}"
+    );
+    // One of the ten copied to another phase is a new entry, not the old one.
+    let mut moved = phases();
+    let entry = moved[1]["ahead_of_phase"][0].clone();
+    assert_eq!(
+        entry["switch"], "none",
+        "premise: phase 1's first entry is ungated"
+    );
+    moved[2]["ahead_of_phase"]
+        .as_array_mut()
+        .unwrap_or_else(|| panic!("premise: phase 2 has an ahead_of_phase array"))
+        .push(entry);
+    let refused = refusals(&moved, &committed_source);
+    assert!(
+        refused
+            .iter()
+            .any(|r| r.starts_with("phase 2 carries \"Artifact Registry")),
+        "{refused:?}"
+    );
+}
+
+/// ADR 0258: one of the ten that gains a switch must leave the list. The
+/// failure this prevents is a ratchet that never shrinks: a slot freed by a
+/// capability that gained a switch, left in the list, would admit a later
+/// ungated capability under the same name.
+#[test]
+fn an_ungated_capability_that_gains_a_switch_must_leave_the_list() {
+    let mut mutated = phases();
+    assert_eq!(
+        mutated[1]["ahead_of_phase"][0]["switch"], "none",
+        "premise: phase 1's first entry is one of the ten"
+    );
+    mutated[1]["ahead_of_phase"][0]["switch"] = Value::from("gitops_enabled");
+    let refused = refusals(&mutated, &committed_source);
+    assert!(
+        refused
+            .iter()
+            .any(|r| r.starts_with("UNGATED still lists phase 1's \"Artifact Registry")),
         "{refused:?}"
     );
 }
