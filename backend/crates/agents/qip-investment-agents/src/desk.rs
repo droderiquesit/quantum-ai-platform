@@ -140,6 +140,38 @@ pub struct ModelsView {
     pub drifted: Vec<String>,
 }
 
+/// One automated-market-maker pool as the confirmed chain holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoolReading {
+    pub pool: String,
+    pub reserve_base: qip_core::Decimal,
+    pub reserve_quote: qip_core::Decimal,
+    /// Swaps through the pool since it was first seen.
+    pub trades: u64,
+}
+
+/// The chain as the kernel last confirmed it (R12-ASSET-3017): protocol
+/// state at the confirmation depth, reorganisations and the bridge
+/// transfers they failed, pool liquidity and on-chain flow. `observed` is
+/// false until the kernel has absorbed any block, which the Crypto/On-chain
+/// Brain reports as no data rather than as a quiet chain.
+#[derive(Debug, Default)]
+pub struct ChainView {
+    pub observed: bool,
+    /// The deepest block the confirmed view includes, when the chain is that
+    /// deep.
+    pub confirmed_block: Option<u64>,
+    /// Reorganisations absorbed since the process started, and the deepest.
+    pub reorgs: usize,
+    pub deepest_reorg: u32,
+    /// Bridge transfers failed because a reorganisation withdrew their
+    /// deposit.
+    pub bridged_transfers_failed: usize,
+    /// Swaps counted in the confirmed view.
+    pub confirmed_trades: Option<u64>,
+    pub pools: Vec<PoolReading>,
+}
+
 /// Trading restrictions by object id.
 ///
 /// Deterministic data rather than a model's reading of a policy document:
@@ -182,6 +214,11 @@ pub struct Desk {
     /// it feeds every REASON, and a test hands one in through
     /// [`Desk::with_models`].
     pub models: Gated<ModelsView>,
+    /// The chain as the kernel last confirmed it (R12-ASSET-3017). Empty
+    /// from [`Desk::new`]; the kernel re-points this gate at the slot it
+    /// feeds every REASON, and a test hands one in through
+    /// [`Desk::with_chain`].
+    pub chain: Gated<ChainView>,
 }
 
 impl Desk {
@@ -220,7 +257,21 @@ impl Desk {
                 Capability::ReadModelRegistry,
                 "model-registry",
             ),
+            // On-chain state is market data: blocks, pools and flows the
+            // platform observes, with nothing of its own in them.
+            chain: Gated::new(
+                ChainView::default(),
+                Capability::ReadMarketData,
+                "chain-state",
+            ),
         }
+    }
+
+    /// The desk with `chain` behind the chain-state gate, under the
+    /// capability and label [`Desk::new`] chose for it.
+    pub fn with_chain(mut self, chain: ChainView) -> Self {
+        self.chain = Gated::new(chain, self.chain.required(), self.chain.label());
+        self
     }
 
     /// The desk with `models` behind the model-registry gate, under the

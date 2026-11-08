@@ -152,8 +152,8 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
-    ModelsView, RiskView, TradeSide,
+    BookView, ChainView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth,
+    MarketView, ModelsView, PoolReading, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -504,6 +504,13 @@ pub struct Platform {
     /// because a chain's identity comes from the blocks rather than from
     /// configuration.
     chain: Option<ChainState>,
+    /// Reorganisations absorbed since this process started, the deepest one
+    /// and the bridge transfers they failed (R12-ASSET-3017). `observe_chain`
+    /// reports each call's counts; these are what the Crypto/On-chain
+    /// Brain reads across calls.
+    chain_reorgs: usize,
+    chain_deepest_reorg: u32,
+    chain_bridges_failed: usize,
     /// The confirmation depth this deployment requires before reading state.
     confirmations: Confirmations,
     /// Cross-chain transfers in flight, and what became of them.
@@ -1139,6 +1146,10 @@ pub struct Platform {
     /// reported past their drift threshold. Rebuilt before every REASON by
     /// `brief_the_desk_on_models`.
     models: Upstream<ModelsView>,
+    /// The confirmed chain as the desk's Crypto/On-chain Brain reads it
+    /// (R12-ASSET-3017), rebuilt before every REASON by
+    /// `brief_the_desk_on_chain`.
+    chain_view: Upstream<ChainView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -6151,6 +6162,8 @@ impl Platform {
         desk.executions = executions.gate(desk.executions.required(), desk.executions.label());
         let models = Upstream::new(ModelsView::default());
         desk.models = models.gate(desk.models.required(), desk.models.label());
+        let chain_view = Upstream::new(ChainView::default());
+        desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6394,6 +6407,9 @@ impl Platform {
             source_leads: qip_data_finder::freshness::LeadLedger::new(),
             catalog: Catalog::new(),
             chain: None,
+            chain_reorgs: 0,
+            chain_deepest_reorg: 0,
+            chain_bridges_failed: 0,
             confirmations: Confirmations::exactly(config.chain_confirmations),
             bridges: BridgeLedger::new(),
             predictions: Vec::new(),
@@ -6601,6 +6617,7 @@ impl Platform {
             book,
             executions,
             models,
+            chain_view,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -11889,6 +11906,55 @@ impl Platform {
         }
     }
 
+    /// Write the confirmed chain into the slot the desk's Crypto/On-chain
+    /// Brain reads, before the panel is convened (R12-ASSET-3017): the
+    /// reorganisations and failed bridge transfers absorbed so far, and the
+    /// pools and swap count at the confirmation depth. Unobserved until a
+    /// block has been absorbed, which the brain reports as no data.
+    fn brief_the_desk_on_chain(&self) {
+        let observed = self.chain.is_some();
+        let confirmed = self.confirmed_chain().ok();
+        let pools: Vec<PoolReading> = confirmed
+            .as_ref()
+            .map(|view| {
+                view.state()
+                    .pools()
+                    .map(|(id, pool)| PoolReading {
+                        pool: id.to_string(),
+                        reserve_base: pool.reserve_base,
+                        reserve_quote: pool.reserve_quote,
+                        trades: pool.trades,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let confirmed_block = confirmed
+            .as_ref()
+            .and_then(qip_chain::ConfirmedView::as_of)
+            .map(|block| block.get());
+        let confirmed_trades = confirmed.as_ref().map(|view| view.state().trades());
+        let (reorgs, deepest_reorg, bridged_transfers_failed) = (
+            self.chain_reorgs,
+            self.chain_deepest_reorg,
+            self.chain_bridges_failed,
+        );
+        self.chain_view.update(|view| {
+            view.observed = observed;
+            view.confirmed_block = confirmed_block;
+            view.reorgs = reorgs;
+            view.deepest_reorg = deepest_reorg;
+            view.bridged_transfers_failed = bridged_transfers_failed;
+            view.confirmed_trades = confirmed_trades;
+            view.pools = pools;
+        });
+    }
+
+    /// The chain the desk's Crypto/On-chain Brain reads, as REASON last wrote
+    /// it.
+    pub fn desk_chain_view(&self) -> Reading<'_, ChainView> {
+        self.chain_view.read()
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -16523,6 +16589,7 @@ impl Platform {
         self.brief_the_desk_on_book();
         self.brief_the_desk_on_executions();
         self.brief_the_desk_on_models();
+        self.brief_the_desk_on_chain();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
@@ -25025,6 +25092,9 @@ impl Platform {
                         );
                     }
                     absorption.bridged_transfers_failed += failed.len();
+                    self.chain_reorgs += 1;
+                    self.chain_deepest_reorg = self.chain_deepest_reorg.max(reorg.depth());
+                    self.chain_bridges_failed += failed.len();
                 }
                 Err(error) => absorption.problems.push(error.message().to_string()),
             }
