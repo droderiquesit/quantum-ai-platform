@@ -703,6 +703,35 @@ pub fn missing_causal_links(
         .collect()
 }
 
+/// Anomalous subjects the causal graph cannot explain (R12-EXPAND-6011):
+/// one causal-link gap per subject the sweep's own detectors flagged that
+/// has no live claim into it at the sweep's instant. The contested-claim
+/// form above waits on a world fabric a connector feeds; this one reads the
+/// platform's own anomaly detectors, so it runs on the default path. A
+/// subject the graph explains raises nothing: its move has a candidate cause
+/// already, and the anomaly is the detectors' business, not the graph's.
+pub fn unexplained_anomalies(
+    flagged: &BTreeSet<String>,
+    explained: &BTreeSet<String>,
+) -> Vec<Observation> {
+    let total = flagged.len();
+    flagged
+        .iter()
+        .filter(|subject| !explained.contains(*subject))
+        .map(|subject| {
+            observe(
+                Origin::MissingCausalLink,
+                GapTrigger::Surprise,
+                Wanting::CausalLink,
+                format!("`{subject}` moved anomalously and no live causal claim explains it"),
+                "market",
+                vec![format!("anomalous:{subject}")],
+                1.0 / total as f64,
+            )
+        })
+        .collect()
+}
+
 /// How many theory deltas against one rule make the finding fully severe.
 /// One contradiction is a finding; three against the same rule is a theory
 /// in question. A ratio, so the severity is the share of that bar reached

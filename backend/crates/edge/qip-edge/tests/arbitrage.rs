@@ -736,6 +736,85 @@ fn the_cap_refuses_the_excess_and_counts_it() -> Result<()> {
     Ok(())
 }
 
+/// R12-MESH-5068: a cycle refused at the cap is declined as surely as one
+/// refused whole, and the centre can price what declining it cost only if the
+/// refusal says what it was. Until this carried legs, the cap's refusal reached
+/// the centre as a gate and a reason and nothing to price. The legs it carries
+/// are the cycle the cap kept out: the three orders the roomy pass sent that
+/// the capped pass did not. Mutation: drop the `refused_legs` push in the
+/// `arbitrage_cap` arm, and the refusal carries none.
+#[test]
+fn a_cycle_refused_at_the_cap_carries_its_legs_to_the_centre() -> Result<()> {
+    let books = || -> Result<Vec<VenueState>> {
+        let mut books = ethereum_books()?;
+        books.extend(solana_books()?);
+        Ok(books)
+    };
+    let leg_of =
+        |object: &str, side: String, quantity: Decimal| (object.to_string(), side, quantity);
+    let (mut cell, _) = cell_with(books()?, desk(two_triangle_graph()?, 2)?, None)?;
+    let roomy = cell.work(t(10), &mut RecordingGateway::default())?;
+    assert_eq!(roomy.orders.len(), 6, "the premise failed: {roomy:?}");
+
+    let (mut cell, _) = cell_with(books()?, desk(two_triangle_graph()?, 1)?, None)?;
+    let capped = cell.work(t(10), &mut RecordingGateway::default())?;
+    assert_eq!(capped.orders.len(), 3, "the premise failed: {capped:?}");
+    let sent: Vec<_> = capped
+        .orders
+        .iter()
+        .map(|order| {
+            leg_of(
+                order.object_id.as_str(),
+                format!("{:?}", order.side),
+                order.quantity,
+            )
+        })
+        .collect();
+    let mut kept_out: Vec<_> = roomy
+        .orders
+        .iter()
+        .map(|order| {
+            leg_of(
+                order.object_id.as_str(),
+                format!("{:?}", order.side),
+                order.quantity,
+            )
+        })
+        .filter(|leg| !sent.contains(leg))
+        .collect();
+    kept_out.sort();
+    assert_eq!(
+        kept_out.len(),
+        3,
+        "premise: one triangle was kept out: {kept_out:?}"
+    );
+
+    let delta = cell.state_delta(&capped, t(10));
+    let at_cap: Vec<_> = delta
+        .refusals
+        .iter()
+        .filter(|refusal| refusal.gate == "arbitrage_cap")
+        .collect();
+    assert_eq!(at_cap.len(), 1, "the premise failed: {:?}", delta.refusals);
+    let mut carried: Vec<_> = at_cap[0]
+        .legs
+        .iter()
+        .map(|leg| {
+            leg_of(
+                leg.object_id.as_str(),
+                format!("{:?}", leg.side),
+                leg.quantity,
+            )
+        })
+        .collect();
+    carried.sort();
+    assert_eq!(
+        carried, kept_out,
+        "the cap's refusal does not carry the cycle it kept out"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_orders_series_moves_by_the_venue_the_legs_went_to() -> Result<()> {
     // The series a scraper reads. Asserted from a snapshot of the registry

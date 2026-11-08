@@ -61,6 +61,13 @@ fn book(market: &str, bids: &[(&str, &str)], asks: &[(&str, &str)]) -> OrderBook
 /// The same percent-wide ETH/BTC dislocation the pipeline tests use, with
 /// edge 0 (USDT to ETH) the one the per-conversion costs are put on.
 fn triangular() -> Result<(ArbitrageGraph, StaticLiquidity)> {
+    triangular_with_first_bid("3000.0")
+}
+
+/// [`triangular`] with the first book's bid at `bid`. The cycle buys ETH at
+/// that book's ask, so a lower bid widens the spread it would cross back
+/// out at without changing what the cycle pays.
+fn triangular_with_first_bid(bid: &str) -> Result<(ArbitrageGraph, StaticLiquidity)> {
     let cx = venue("CX");
     let mut graph = ArbitrageGraph::new();
     graph.register_venue(
@@ -100,7 +107,7 @@ fn triangular() -> Result<(ArbitrageGraph, StaticLiquidity)> {
     let depth = StaticLiquidity::new()
         .with_book(
             cx.clone(),
-            book("ETHUSDT", &[("3000.0", "200")], &[("3000.1", "200")]),
+            book("ETHUSDT", &[(bid, "200")], &[("3000.1", "200")]),
             20,
         )
         .with_book(
@@ -493,6 +500,106 @@ fn raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle
     assert!(
         refused_at.is_some(),
         "a year of cross-region coordination still left the cycle worth taking at {previous}"
+    );
+    Ok(())
+}
+
+/// The cycle priced with a fill probability of `fill` on edge 0 and the
+/// first book's bid at `bid`, atomic as the book prices it or, with `atomic`
+/// false, as a plan a leg of which can revert. The candidate is the one the
+/// search finds before the fill is stated: the search's own rate carries the
+/// fill too, and would drop the cycle for both kinds alike before the net
+/// edge ever saw the difference.
+fn priced(bid: &str, fill: &str, atomic: bool) -> Result<NetEdge> {
+    let (mut graph, depth) = triangular_with_first_bid(bid)?;
+    let candidate = search_candidates(&graph, &SearchSettings::default())
+        .into_iter()
+        .next()
+        .ok_or_else(|| qip_core::Error::invalid("no candidate"))?;
+    graph.set_costs(
+        0,
+        EdgeCosts {
+            fill_probability: d(fill),
+            ..EdgeCosts::default()
+        },
+    )?;
+    let mut pricing = price_path(&graph, &depth, &candidate, d(SIZE))?;
+    pricing.all_atomic = atomic;
+    NetEdgeCalculator::new(EdgeAssumptions::default()).calculate(&pricing, at())
+}
+
+fn unwind_of(edge: &NetEdge) -> Decimal {
+    edge.deductions()
+        .iter()
+        .filter(|deduction| deduction.kind == DeductionKind::Unwind)
+        .fold(Decimal::ZERO, |sum, deduction| sum + deduction.amount)
+}
+
+const FILL: &str = "0.9";
+
+/// R12-MESH-5069. A non-atomic plan can fill its first leg and miss a later
+/// one, and the cell is then left holding the first leg's output, which it
+/// has to cross back out of at that book's touch. The net edge priced
+/// latency but no such unwind, so a cycle whose later legs might miss read
+/// as worth taking however wide the book it would be stranded in. The unwind
+/// cost is raised here by widening that book. An atomic plan strands
+/// nothing, so its unwind line stays zero throughout.
+///
+/// Mutation: price the unwind deduction at `Decimal::ZERO`, and the
+/// non-atomic cycle is never refused where the atomic one is not.
+#[test]
+fn raising_the_unwind_cost_of_a_non_atomic_cycle_lowers_its_net_edge_until_the_scanner_refuses_it_and_an_atomic_cycles_unwind_does_not_move()
+-> Result<()> {
+    // Premise: the triangle prices as atomic, and at the one-tick book it is
+    // worth taking either way, so a refusal below is the unwind's.
+    let (graph, depth) = triangular()?;
+    let candidate = search_candidates(&graph, &SearchSettings::default())
+        .into_iter()
+        .next()
+        .ok_or_else(|| qip_core::Error::invalid("no candidate"))?;
+    assert!(price_path(&graph, &depth, &candidate, d(SIZE))?.all_atomic);
+    let narrow = priced("3000.0", FILL, false)?;
+    assert!(narrow.is_positive(), "{}", narrow.summarise());
+    assert!(narrow.require_complete().is_ok());
+    // And a certain fill strands nothing, whatever the book.
+    assert_eq!(unwind_of(&priced("2900", "1", false)?), Decimal::ZERO);
+
+    let mut previous = unwind_of(&narrow);
+    assert!(
+        previous > Decimal::ZERO,
+        "premise: a fill of {FILL} can strand the first leg"
+    );
+    let mut refused_where_atomic_was_not = None;
+    for bid in [
+        "2999", "2995", "2990", "2980", "2950", "2900", "2800", "2500",
+    ] {
+        let non_atomic = priced(bid, FILL, false)?;
+        let atomic = priced(bid, FILL, true)?;
+        assert_eq!(
+            unwind_of(&atomic),
+            Decimal::ZERO,
+            "an atomic cycle was charged an unwind at a bid of {bid}: {}",
+            atomic.summarise()
+        );
+        let unwind = unwind_of(&non_atomic);
+        assert!(
+            unwind > previous,
+            "a wider book at {bid} did not raise the unwind: {}",
+            non_atomic.summarise()
+        );
+        previous = unwind;
+        assert!(
+            non_atomic.net() < atomic.net(),
+            "the unwind did not lower the non-atomic net edge at a bid of {bid}"
+        );
+        if !non_atomic.is_positive() && atomic.is_positive() {
+            refused_where_atomic_was_not = Some(bid);
+            break;
+        }
+    }
+    assert!(
+        refused_where_atomic_was_not.is_some(),
+        "no book width refused the non-atomic cycle while the atomic one still cleared; last unwind {previous}"
     );
     Ok(())
 }
