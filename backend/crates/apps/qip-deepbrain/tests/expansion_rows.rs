@@ -1627,3 +1627,84 @@ fn a_campaign_the_sweep_runs_leaves_a_validated_experiment_pack_that_the_journal
         "the record is the round's pack, field for field"
     );
 }
+
+/// The causal-link gaps a deployed sweep queued, by the subject each names.
+fn unexplained_gaps(research: &ResearchLoop) -> BTreeSet<String> {
+    research
+        .desk()
+        .queue()
+        .ranked()
+        .iter()
+        .filter_map(|entry| entry.origin())
+        .flat_map(|origin| origin.signal.evidence.iter())
+        .filter_map(|e| e.strip_prefix("anomalous:"))
+        .map(String::from)
+        .collect()
+}
+
+/// R12-EXPAND-6011: a subject the platform's own anomaly detectors flag
+/// and the causal graph cannot explain becomes a causal-link gap, on a
+/// deployed sweep with no connector feeding the world fabric. The contested
+/// form of this detector waits on such a fabric, so before this the gap
+/// was never raised on the default path.
+///
+/// Mutation: drop the `unexplained_anomalies` call in `sweep_over`.
+#[test]
+fn an_anomalous_subject_no_causal_claim_explains_becomes_a_causal_link_gap() {
+    let platform = jumped();
+    let (licensed, eligible) = deployed_bounds();
+    let mut research = deployed(BTreeMap::new());
+    let round = research
+        .maybe_sweep(&platform, 1, t0(), &licensed, &eligible)
+        .unwrap()
+        .expect("the deployed default sweeps every cycle");
+    assert!(
+        round.anomalies >= 3,
+        "premise: the jumps are anomalies: {round:?}"
+    );
+    assert_eq!(
+        round.contested_claims, 0,
+        "premise: no fabric feeds the sweep"
+    );
+    assert_eq!(
+        unexplained_gaps(&research),
+        ["obj-A", "obj-B", "obj-C"].map(String::from).into(),
+        "{round:?}"
+    );
+}
+
+/// R12-EXPAND-6011: an anomalous subject the causal graph does explain
+/// raises no causal-link gap; its move has a candidate cause already. The
+/// other two jumps, unexplained, still do.
+///
+/// Mutation: drop the `explained` filter in `unexplained_anomalies`.
+#[test]
+fn an_anomalous_subject_the_causal_graph_explains_raises_no_causal_link_gap() {
+    use qip_world_model::causal::{CausalEdge, Mechanism};
+    let mut platform = jumped();
+    platform
+        .claim_causal(
+            CausalEdge::new(
+                "rates",
+                "obj-A",
+                Mechanism::DiscountRate,
+                0.5,
+                Duration::from_days(90),
+                t0().saturating_sub(Duration::from_days(1)),
+            )
+            .unwrap()
+            .with_confidence(0.8)
+            .unwrap(),
+        )
+        .unwrap();
+    let (licensed, eligible) = deployed_bounds();
+    let mut research = deployed(BTreeMap::new());
+    research
+        .maybe_sweep(&platform, 1, t0(), &licensed, &eligible)
+        .unwrap()
+        .expect("the deployed default sweeps every cycle");
+    assert_eq!(
+        unexplained_gaps(&research),
+        ["obj-B", "obj-C"].map(String::from).into()
+    );
+}

@@ -9168,6 +9168,24 @@ impl Cell {
                     ),
                     now,
                 );
+                // R12-MESH-5068: a cycle refused at the cap is as declined as
+                // one refused whole, and what declining it cost is priced the
+                // same way, so it carries its proposed legs. A cycle whose
+                // legs cannot be formed has none to carry; `arbitrage_legs`
+                // below is that case, and it carries none either.
+                if let Ok(legs) =
+                    opportunity.cycle_legs(&strategy, now, now.saturating_add(validity))
+                {
+                    let refused: Vec<RefusedLeg> = legs
+                        .into_iter()
+                        .map(Into::into)
+                        .map(|intent: Intent| refused_leg(&intent))
+                        .collect();
+                    if refused.len() <= qip_contracts::wire::MAX_REFUSED_LEGS {
+                        let index = report.refusals.len() - 1;
+                        report.refused_legs.push((index, refused));
+                    }
+                }
                 continue;
             }
             if self.autonomy.level() == AutonomyLevel::Observation {
