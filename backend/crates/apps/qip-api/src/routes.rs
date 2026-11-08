@@ -884,6 +884,11 @@ pub struct Api {
     /// `Api` assembled directly (tests, embedders) that ships nothing and says
     /// nothing.
     desk_shipper: Option<Mutex<qip_desk_ship::DeskShipper>>,
+    /// Reads `qip-ledgerd`'s obligations before each cycle (R12-CAPITAL-4086).
+    /// `None` is an `Api` assembled directly (tests, embedders) that reads
+    /// nothing; the binary always installs one, which says at start-up when
+    /// it has no URL.
+    ledger_obligations: Option<crate::ledger_obligations::LedgerObligationsReader>,
 }
 
 impl std::fmt::Debug for Api {
@@ -916,6 +921,7 @@ impl Api {
             stream_limits: StreamLimits::default(),
             pulse: Arc::new(HealthPulse::default()),
             desk_shipper: None,
+            ledger_obligations: None,
         }
     }
 
@@ -1110,6 +1116,15 @@ impl Api {
     /// process has been up — and the one question an incident review asks is
     /// what happened before the restart.
     /// Ship the desk's ledger records after every cycle this API runs.
+    /// Read the ledger's obligations before every cycle (R12-CAPITAL-4086).
+    pub fn with_ledger_obligations(
+        mut self,
+        reader: crate::ledger_obligations::LedgerObligationsReader,
+    ) -> Self {
+        self.ledger_obligations = Some(reader);
+        self
+    }
+
     pub fn with_desk_shipper(mut self, shipper: qip_desk_ship::DeskShipper) -> Self {
         self.desk_shipper = Some(Mutex::new(shipper));
         self
@@ -2287,6 +2302,25 @@ impl Api {
                         )
                     }
                 };
+                // The ledger's obligations at the cycle's instant, installed
+                // before the cycle runs so the survival waterfall reserves
+                // what the ledger holds (R12-CAPITAL-4086). A reading that
+                // cannot be taken or installed is a cycle problem, and the
+                // cycle runs on the last reading held.
+                if let Some(reader) = &self.ledger_obligations {
+                    match reader.read(now) {
+                        Ok(None) => {}
+                        Ok(Some(obligations)) => {
+                            if let Err(error) = platform.observe_ledger_obligations(obligations) {
+                                platform.note_ledger_obligations_problem(format!(
+                                    "the ledger's obligations were read and not installed: {}",
+                                    error.message()
+                                ));
+                            }
+                        }
+                        Err(problem) => platform.note_ledger_obligations_problem(problem),
+                    }
+                }
                 let report = platform.run_cycle(now);
                 // Recorded before anything that can fail below, so the page
                 // shows the cycle even when the archive or the mesh does not.

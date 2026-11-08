@@ -25743,6 +25743,13 @@ impl Platform {
         Ok(())
     }
 
+    /// Note that the ledger's obligations could not be read before this
+    /// cycle (R12-CAPITAL-4086), to be surfaced beside every other capture
+    /// problem: the cycle runs on the last reading held, and says so.
+    pub fn note_ledger_obligations_problem(&mut self, problem: impl Into<String>) {
+        self.capture_problems.push(problem.into());
+    }
+
     /// Note a problem with shipping the desk's records, to be surfaced beside
     /// every other capture problem in the next cycle's record. The shipper is
     /// outside the kernel and cannot reach the capture list itself.

@@ -1447,6 +1447,15 @@ const NO_CLOUD_MONITORING_ROUTE_GRANT_OR_POLICY_EXISTS_YET: &str = "The \
      so an absent value still means off.";
 
 /// The edge node's fabric partition, which has no broker to name.
+const NO_LEDGERD_IS_DEPLOYED: &str = "qip-api reads qip-ledgerd's obligations \
+     before every cycle when this names the ledger's read listener \
+     (R12-CAPITAL-4086), and no environment runs qip-ledgerd: its variable \
+     is null everywhere and no image carries it. Absent, qip-api says so at \
+     start in a loud banner, reads nothing, and the survival waterfall \
+     reserves no obligation the ledger holds, which is the honest state of a \
+     deployment with no ledger to read. The entry ends when qip-ledgerd is \
+     deployed and the catalogue sets this from a root variable.";
+
 const NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE: &str = "The node's spool drains to a \
      `qip-fabricd` partition when one is named, and no environment runs a \
      fabric broker an execution node can reach: there is no fabricd in the \
@@ -1506,6 +1515,7 @@ const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain l
      with the rest of the family.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    ("qip-api", "QIP_LEDGERD_URL", NO_LEDGERD_IS_DEPLOYED),
     (
         "qip-api",
         "QIP_METRICS_EXPORT_PROJECT",
