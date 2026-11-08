@@ -1331,6 +1331,82 @@ fn an_overround_book_set_is_normalised_into_a_distribution_proportional_to_its_m
     Ok(())
 }
 
+/// The three-outcome books of the test above, each stamped `at`.
+fn three_outcome_books(
+    at: Timestamp,
+) -> Vec<(qip_prediction::OutcomeId, qip_market::book::OrderBook)> {
+    [
+        ("cut", "0.45", "0.55"),
+        ("hold", "0.35", "0.45"),
+        ("hike", "0.25", "0.35"),
+    ]
+    .iter()
+    .map(|(id, bid, ask)| {
+        let price = |text: &str| Decimal::parse(text).expect("a literal price");
+        (
+            qip_prediction::OutcomeId::new(*id),
+            qip_market::book::OrderBook::from_levels(
+                qip_core::ObjectId::from_string(format!("SYNTH-PREDICT-{}", id.to_uppercase())),
+                EVENT_VENUE,
+                at,
+                vec![qip_market::book::BookLevel::new(price(bid), dec!("10"))],
+                vec![qip_market::book::BookLevel::new(price(ask), dec!("10"))],
+            ),
+        )
+    })
+    .collect()
+}
+
+/// R12-EVENT-5084, the leakage half: a belief priced from a book published
+/// after the pass is readable before it was knowable, which is the
+/// point-in-time leak a backtest cannot see. `take_observations` already
+/// refused a future-stamped observation; nothing refused a future-stamped
+/// book, and the distribution is built from books. Mutation: delete the
+/// `book.at > now` check in `EventMarketPlane::price` and the leaked books
+/// price to a distribution.
+#[test]
+fn a_market_whose_outcome_book_is_stamped_after_the_pass_is_refused_as_leakage_and_the_same_books_at_the_pass_price_to_one()
+-> Result<()> {
+    let market = qip_prediction::demo_market(
+        VenueId::new(EVENT_VENUE),
+        start().saturating_add(Duration::from_days(30)),
+        qip_prediction::FeeSchedule::new(0, 0, 0)?,
+    )?;
+
+    // Premise: stamped at the pass, the same books price to a distribution
+    // summing to one, so a refusal below is the stamp and nothing else.
+    let knowable = three_outcome_books(start());
+    let borrowed: Vec<_> = knowable
+        .iter()
+        .map(|(id, book)| (id.clone(), book))
+        .collect();
+    let (belief, valuation) = EventMarketPlane::price(&market, &borrowed, start())?;
+    let total: Decimal = valuation.fair_values.values().copied().sum();
+    assert_eq!(
+        total,
+        Decimal::ONE,
+        "premise: the knowable books price to one"
+    );
+    assert_eq!(
+        belief.outcomes().count(),
+        3,
+        "premise: every outcome is priced"
+    );
+
+    let leaked = three_outcome_books(start().saturating_add(Duration::from_secs(1)));
+    let borrowed: Vec<_> = leaked.iter().map(|(id, book)| (id.clone(), book)).collect();
+    let refused = EventMarketPlane::price(&market, &borrowed, start());
+    let message = match refused {
+        Ok(_) => panic!("books stamped after the pass were priced into a distribution"),
+        Err(error) => error.message().to_string(),
+    };
+    assert!(
+        message.contains("leakage"),
+        "the refusal does not name leakage: {message}"
+    );
+    Ok(())
+}
+
 /// The event plane's quotes and listings after one installed cycle, under
 /// the full register less every `(authority, action, product)` in `revoked`.
 fn event_cycle_without(

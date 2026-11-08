@@ -23783,6 +23783,37 @@ impl Platform {
         Err(Error::denied(reason))
     }
 
+    /// Where the private position behind `commitment` stands on its own
+    /// lifecycle (R12-ASSET-1015), derived from what the commitment book
+    /// records rather than kept beside it, so a resumed process reads the
+    /// stage its log implies: committed until anything is called, funding
+    /// once the record or a filed notice has drawn on it. `None` when no
+    /// commitment is recorded, or its instrument's class is not run on the
+    /// private-stages engine.
+    pub fn private_stage(
+        &self,
+        commitment: &str,
+    ) -> Option<qip_financial::private_stage::PrivateStage> {
+        use qip_financial::private_stage::{PrivateEvent, PrivateStage};
+        let record = self.commitments.get(commitment)?;
+        let class = self
+            .market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(commitment))
+            .map(|object| object.asset_class)?;
+        if self.asset_class_registry.lifecycle_of(class).ok()?
+            != crate::asset_class_registry::LifecycleEngine::PrivateStages
+        {
+            return None;
+        }
+        let mut events = vec![PrivateEvent::Commitment];
+        if record.called().is_positive() || record.calls().next().is_some() {
+            events.push(PrivateEvent::CapitalCall);
+        }
+        PrivateStage::replay(&events).ok()
+    }
+
     /// Put an order the wallet halt stopped on the record and refuse it.
     fn refuse_for_wallet_halt(
         &mut self,

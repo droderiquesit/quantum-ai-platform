@@ -294,6 +294,11 @@ fn walk(
             DeductionKind::DataCost,
             Decimal::ZERO,
             "not modelled here; the amortised licence cost of these books belongs to whoever pays for the feed, not to this crate, which is handed them",
+        )?)
+        .deduct(Deduction::new(
+            DeductionKind::Unwind,
+            Decimal::ZERO,
+            "not modelled here; a set whose legs do not all fill is the execution layer's to price, as its round trip is",
         )?);
 
     let cost = match kind {
