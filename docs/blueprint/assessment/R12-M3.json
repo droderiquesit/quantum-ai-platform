@@ -379,9 +379,12 @@
     "current": "backend/crates/runtime/qip-kernel/src/federation_stage.rs:74 ON_CHAIN world-model member observing one chain:confirmed-view feature; 'crypto/on-chain' is a required federation family (backend/crates/runtime/qip-kernel/src/federation_stage.rs:290)",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:465 member declaration",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:928 unit test that the family goes uncovered when the member expires"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:928 unit test that the family goes uncovered when the member expires",
+      "backend/crates/agents/qip-investment-agents/src/crypto_brain.rs (CryptoOnChainAnalyst, Scope::CryptoOnChain)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs (removing_the_crypto_onchain_brain_drops_crypto_onchain_from_coverage; the_crypto_onchain_brain_reports_an_unobserved_chain_as_no_data)",
+      "backend/crates/runtime/qip-kernel/tests/bridges.rs (after_observe_chain_absorbs_a_reorg_the_crypto_onchain_brains_slot_reports_its_depth)"
     ],
-    "gap": "No specialist covering protocol state, token economics, bridges, liquidity, smart contracts and on-chain flows; one observational federation member is not a brain.",
+    "gap": "2026-11-08 (wave1101 CODE_NOW): the Crypto/On-chain Brain is constructed in the production organisation (standard_agents, roster twenty-six) and reads the desk's chain slot, which the kernel writes every REASON from its confirmed view (reorgs and the deepest, failed bridge transfers, pool reserves, confirmed swaps); removing it drops Scope::CryptoOnChain from coverage. Remaining: (1) on every shipped binary the slot is unobserved, because Platform::observe_chain has no production caller until on-chain capture has a licensed source record (ADR 0157, R12-TICK-1175), so the brain reports no data on the default path; (2) token economics and smart contracts, two of the six scope items, have no source in the tree and are named as such in the finding's caveats.",
     "implemented": false,
     "tested": false,
     "integrated": true,
@@ -389,10 +392,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "integration: organisation.rs coverage and no-data tests; kernel bridges.rs reorg-reaches-the-slot test. Mutations: drop the analyst from standard_agents (premise finding missing, scope uncovered), drop the unobserved early return (a quiet chain reported), stop stage_reason calling brief_the_desk_on_chain (slot unobserved); each restored with cp and cmp.",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. | 2026-11-08 lane L3-DATA: built per the wave1101 closure; PARTIAL on the unlicensed chain source and the two scope items nothing in the tree sources."
   },
   {
     "id": "R12-ASSET-3018",
