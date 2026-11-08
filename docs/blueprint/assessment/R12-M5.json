@@ -322,9 +322,10 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent::chain_correlation",
       "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event",
+      "docs/blueprint/lanes/l1-ledger-5014-chain-opened-wip.patch (unapplied)"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: SourceEvent gains the ChainOpened journal sequence and the settlement posting names the fill's event, with an acceptance walk ledger to journal to intent.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: SourceEvent gains the ChainOpened journal sequence and the settlement posting names the fill's event, with an acceptance walk ledger to journal to intent.\n2026-11-08 (decision 26): blocked on the fabric schema versioning ADR (first v1 to v2 move). The chain_opened slice (SourceEvent and Decision::Filled field, the cell stamping each fill with its ChainOpened sequence, PaperFill copying it) is held unapplied in docs/blueprint/lanes/l1-ledger-5014-chain-opened-wip.patch, because it changes the shape of reflex.journal_recorded and reflex.outcome_recorded. Still unbuilt: the walk test (cash posting -> fill -> order -> ChainOpened -> signals, and forward again) and the Settled hop, which needs R12-LEDGER-5011's posting.",
     "implemented": true,
     "tested": false,
     "integrated": true,
