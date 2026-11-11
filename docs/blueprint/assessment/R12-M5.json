@@ -2469,7 +2469,7 @@
       "backend/crates/runtime/qip-kernel/tests/asset_classes.rs:257",
       "backend/crates/services/qip-capital/src/margin.rs:34"
     ],
-    "gap": "Perpetual funding and full settlement models wired into the cycle.",
+    "gap": "Perpetual funding and full settlement models wired into the cycle. 2026-11-11 (batch l6-c1-01, read against the code, nothing built): the central object model has no perpetual instrument (qip-financial InstrumentType has Future, Forward, Option, VarianceSwap and VolatilityIndexFuture, and FutureDetails demands an expiry), the only funding rate in the tree is the cell's qip_edge::funding::FundingRate, whose period its own doc leaves 'to the caller to track', and no source supplies a funding rate to the centre; so wiring perpetual funding into the cycle first needs a decision (new ADR) on how a perpetual is represented, what period a funding rate accrues over and which record supplies it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
