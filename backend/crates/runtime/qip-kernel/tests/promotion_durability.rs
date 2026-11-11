@@ -35,6 +35,49 @@ fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
 
+/// ADR 0392: run the four promotion tests on `teacher`'s artifact over a
+/// recorded window of the two features every fixture here is fitted on —
+/// sixty later rows of the same process — and assert the premise that it
+/// passed them, so a refusal further on is about the promotion.
+fn tested(
+    registry: &mut qip_ai::registry::ModelRegistry,
+    teacher: &qip_training::local::TrainedTeacher,
+) -> qip_core::error::Result<()> {
+    use qip_training::serve::InTreeProvider;
+    let mut rows = Vec::new();
+    let mut targets = Vec::new();
+    let mut times = Vec::new();
+    for i in 200..260usize {
+        let a = (i as f64 * 0.37).sin();
+        let b = (i as f64 * 0.11).cos();
+        let residual = ((i * 7919) % 13) as f64 / 13.0 * 0.02 - 0.01;
+        rows.push(vec![a, b]);
+        targets.push(0.5 * a - 0.25 * b + 0.1 + residual);
+        times.push(start().saturating_add(qip_core::Duration::from_mins(i as i64)));
+    }
+    let recorded = qip_training::dataset::TrainingDataset::new(
+        format!("{}-recorded", teacher.name()),
+        teacher.feature_names().to_vec(),
+        rows,
+        targets,
+        times,
+    )?;
+    let artifact = InTreeProvider::pack(teacher)?;
+    let tests = qip_kernel::central::models::run_promotion_tests(
+        &InTreeProvider,
+        registry,
+        &artifact,
+        &recorded,
+        start(),
+    )?;
+    assert_eq!(
+        tests.gap(&artifact.digest),
+        None,
+        "premise: the fit passed its four promotion tests"
+    );
+    Ok(())
+}
+
 fn platform(config: PlatformConfig) -> Result<Platform> {
     let (context, _clock) = Context::deterministic(start(), config.seed);
     let mut platform = Platform::new_serving(
@@ -87,6 +130,7 @@ fn registered(registry: &mut ModelRegistry, teacher: &TrainedTeacher) -> Result<
         "promotion-durability",
         start(),
     )?;
+    tested(registry, teacher)?;
     assert!(
         registration.passed,
         "premise: the fit cleared the skill bar"

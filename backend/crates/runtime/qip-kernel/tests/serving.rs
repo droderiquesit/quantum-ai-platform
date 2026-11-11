@@ -18,7 +18,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Context, ModelId, Timestamp};
 use qip_events::Topic;
 use qip_financial::universe::Universe;
-use qip_kernel::central::models::register_fit;
+use qip_kernel::central::models::{register_fit, run_promotion_tests};
 use qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
@@ -121,6 +121,21 @@ fn registered(registry: &mut ModelRegistry, teacher: &TrainedTeacher) -> Result<
         registration.passed,
         "premise: the fit cleared the skill bar ({:?})",
         registration.verdict
+    );
+    // ADR 0392: the four promotion tests, run on the tail of the data the
+    // fit was held out on, so a refusal further on is not about them.
+    let (_, recorded) = dataset(teacher.dataset())?.split_at_fraction(0.25)?;
+    let tests = run_promotion_tests(
+        &InTreeProvider,
+        registry,
+        &InTreeProvider::pack(teacher)?,
+        &recorded,
+        start(),
+    )?;
+    assert_eq!(
+        tests.gap(&InTreeProvider::pack(teacher)?.digest),
+        None,
+        "premise: the fit passed its four promotion tests"
     );
     Ok(registration.reference)
 }

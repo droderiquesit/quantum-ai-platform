@@ -1786,6 +1786,19 @@ impl LearningDesk {
                 reason: error.message().to_string(),
             }));
         }
+        // ADR 0392 (R12-MODEL-10202): the four promotion tests, run by the
+        // kernel on the rows this round scored — bars this process observed
+        // after the fit, with the move each one's next bar realised. A
+        // failed test is written on the card and the promotion below refuses
+        // naming it; a window the tests cannot run on is refused here.
+        if let Err(error) =
+            platform.test_model_for_promotion(&mut self.registry, &shadow.artifact, &scored, now)
+        {
+            return Ok(Some(PromotionOutcome::NotPromoted {
+                reference,
+                reason: format!("its promotion tests could not run: {}", error.message()),
+            }));
+        }
         // The bytes first (R12-MODEL-9003): a promotion whose artifact is not
         // stored could not be rescored after a restart, so a store that
         // refuses the write refuses the promotion. Rendered as the registry
@@ -2943,6 +2956,32 @@ mod tests {
     /// Record a completed shadow stage for a desk-fitted card, for a test that
     /// stages a promotion by hand to reach a branch past it. The registry
     /// refuses to promote a self-fitted card any other way (R12-EXPAND-6070).
+    /// ADR 0392 fixture: the four promotion tests, run on the held-out rows
+    /// of the desk's current candidate, with the premise that it passed
+    /// them. For the tests here that promote through the platform directly
+    /// and are about what follows a promotion.
+    fn tested(desk: &mut LearningDesk, artifact: &ModelArtifact) -> Result<()> {
+        let recorded = desk
+            .candidate
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a candidate to test"))?
+            .holdout
+            .clone();
+        let tests = qip_kernel::central::models::run_promotion_tests(
+            &InTreeProvider,
+            &mut desk.registry,
+            artifact,
+            &recorded,
+            at(),
+        )?;
+        assert_eq!(
+            tests.gap(&artifact.digest),
+            None,
+            "premise: the candidate passed its four promotion tests"
+        );
+        Ok(())
+    }
+
     fn completed_shadow(registry: &mut ModelRegistry, reference: &str) -> Result<()> {
         registry.enter_shadow(reference, at())?;
         for round in 1..=i64::from(MIN_SHADOW_ROUNDS) {
@@ -3287,6 +3326,7 @@ mod tests {
         )?;
         let later = at().saturating_add(qip_core::Duration::from_mins(1));
         completed_shadow(&mut desk.registry, &second_reference)?;
+        tested(&mut desk, &second_artifact)?;
         platform.promote_model(
             &mut desk.registry,
             &second_artifact,
@@ -3804,6 +3844,7 @@ mod tests {
         )?;
         let promoted_at = at().saturating_add(qip_core::Duration::from_mins(10));
         completed_shadow(&mut desk.registry, &second)?;
+        tested(&mut desk, &second_artifact)?;
         platform.promote_model(
             &mut desk.registry,
             &second_artifact,
@@ -4254,6 +4295,7 @@ mod tests {
                         .teacher,
                 )?;
                 completed_shadow(&mut desk.registry, &reference)?;
+                tested(desk, &artifact)?;
                 Ok((reference, artifact))
             };
             let (v1, a1) = fit(&mut desk, 1)?;
@@ -4751,6 +4793,26 @@ mod tests {
                 .is_some_and(|s| s.starts_with("shadow since"))
         );
         assert!(platform.promotion_verifies(record));
+        // ADR 0392 (R12-MODEL-10202): the desk had the kernel run the four
+        // promotion tests on the rows its last shadow round scored — this
+        // subject's own later bars — and each is on the signed record.
+        let tests = desk
+            .registry()
+            .get(&reference)
+            .and_then(|card| card.promotion_tests.clone())
+            .ok_or_else(|| Error::not_found("the promoted card's promotion tests"))?;
+        assert_eq!(tests.gap(&record.artifact_digest), None);
+        assert_eq!(tests.window, dataset_name(&subject()));
+        for name in qip_ai::registry::PROMOTION_TESTS {
+            assert!(
+                record
+                    .stages
+                    .iter()
+                    .any(|stage| stage.starts_with(&format!("{name}: "))),
+                "the record must carry a {name} stage: {:?}",
+                record.stages
+            );
+        }
 
         // A second subject's fit shadows, then meets a window it cannot
         // predict: the round is lost and the model retired.

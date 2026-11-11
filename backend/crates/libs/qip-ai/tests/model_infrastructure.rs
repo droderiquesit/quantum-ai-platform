@@ -806,7 +806,35 @@ fn drift_on_a_degenerate_sample_is_neutral() {
 
 // --- promote with an artifact (ADR 0083) --------------------------------------
 
+use qip_ai::registry::{PROMOTION_TESTS, PromotionTest, PromotionTests};
 use qip_ai::serving::{ModelArtifact, ModelFormat, digest_of};
+
+/// The card with the four promotion tests on record, passed, on
+/// `artifact`'s bytes (ADR 0392): the premise of every test here that
+/// expects a promotion, so a refusal it asserts is about something else.
+/// The registry is a library and runs no test itself; the kernel's
+/// `run_promotion_tests` is what writes this record in production.
+fn tested_on(mut card: ModelCard, artifact: &ModelArtifact) -> ModelCard {
+    card.promotion_tests = Some(PromotionTests {
+        artifact_digest: artifact.digest.clone(),
+        window: "recorded-2025".to_string(),
+        rows: 64,
+        ran_at: now(),
+        results: PROMOTION_TESTS
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_string(),
+                    PromotionTest {
+                        passed: true,
+                        evidence: "measured on the recorded window".to_string(),
+                    },
+                )
+            })
+            .collect(),
+    });
+    card
+}
 
 fn artifact_for(card: &ModelCard, intercept: f64) -> ModelArtifact {
     ModelArtifact::new(
@@ -826,7 +854,7 @@ fn promoting_with_an_artifact_names_it_on_the_card_and_publishes_it_under_its_di
     let card = evaluated_card(now(), true);
     let artifact = artifact_for(&card, 0.1);
     registry
-        .register(card)
+        .register(tested_on(card, &artifact))
         .expect("a registry below its cap admits a card");
     assert!(
         registry
@@ -923,7 +951,7 @@ fn a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference
     let second = artifact_for(&card, 0.3);
     assert_ne!(first.digest, second.digest, "the premise failed");
     registry
-        .register(card)
+        .register(tested_on(card, &first))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&first, now()).unwrap();
 
@@ -987,7 +1015,7 @@ fn a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_arti
     let parent = successor_card("2.1.0");
     let parent_artifact = artifact_for(&parent, 0.1);
     registry
-        .register(parent)
+        .register(tested_on(parent, &parent_artifact))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&parent_artifact, now()).unwrap();
 
@@ -995,7 +1023,7 @@ fn a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_arti
     let child_artifact = artifact_for(&child, 0.2);
     assert_ne!(parent_artifact.digest, child_artifact.digest, "premise");
     registry
-        .register(child)
+        .register(tested_on(child, &child_artifact))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&child_artifact, now()).unwrap();
     registry.retire("regime-classifier@2.1.0", now()).unwrap();
@@ -1045,7 +1073,7 @@ fn a_model_with_no_recorded_parent_cannot_be_rolled_back() {
     let card = successor_card("2.1.0");
     let artifact = artifact_for(&card, 0.1);
     registry
-        .register(card)
+        .register(tested_on(card, &artifact))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&artifact, now()).unwrap();
 
@@ -1359,4 +1387,83 @@ fn a_registry_at_its_cap_refuses_a_new_card_and_admits_a_replacement() {
         .register(replacement)
         .expect("a replacement at the cap is admitted");
     assert_eq!(registry.len(), MAX_CARDS);
+}
+
+#[test]
+fn an_artifact_is_refused_while_any_one_of_its_four_promotion_tests_is_missing_failed_or_on_other_bytes()
+ {
+    // R12-MODEL-10202 (ADR 0392): no model is promoted without replay,
+    // calibration, classical-baseline and envelope tests. Before the gate a
+    // card with a passing evaluation and nothing else was promoted. Each
+    // way of lacking a test is tried on its own, and each refusal must name
+    // the test and leave the card where it was.
+    let card = evaluated_card(now(), true);
+    let artifact = artifact_for(&card, 0.1);
+    let other_bytes = artifact_for(&card, 0.3);
+    let attempt = |card: ModelCard| {
+        let mut registry = ModelRegistry::new();
+        registry
+            .register(card)
+            .expect("a registry below its cap admits a card");
+        let outcome = registry.promote_artifact(&artifact, now());
+        let after = registry.get("regime-classifier@2.1.0").unwrap().clone();
+        (outcome, after)
+    };
+
+    // Premise: with all four on record, passed, on these bytes, it promotes.
+    let (outcome, after) = attempt(tested_on(card.clone(), &artifact));
+    assert!(outcome.is_ok(), "premise: a fully tested card promotes");
+    assert_eq!(after.stage, ModelStage::Production);
+
+    let refused = |card: ModelCard, expected: &str| {
+        let (outcome, after) = attempt(card);
+        let error = outcome.expect_err("an untested artifact must be refused");
+        assert_eq!(error.code(), "denied");
+        assert!(
+            error.message().contains(expected),
+            "the refusal must say {expected:?}: {}",
+            error.message()
+        );
+        assert_eq!(
+            after.stage,
+            ModelStage::Development,
+            "a refused card must not move"
+        );
+        assert_eq!(after.artifact_digest, None, "a refused card names no bytes");
+    };
+
+    // No tests at all.
+    refused(card.clone(), "it has no promotion tests on record");
+    assert_eq!(PROMOTION_TESTS.len(), 4, "premise: there are four tests");
+    for name in PROMOTION_TESTS {
+        // One test missing.
+        let mut missing = tested_on(card.clone(), &artifact);
+        missing
+            .promotion_tests
+            .as_mut()
+            .unwrap()
+            .results
+            .remove(name);
+        refused(missing, &format!("it has no {name} test on record"));
+        // One test failed.
+        let mut failed = tested_on(card.clone(), &artifact);
+        failed
+            .promotion_tests
+            .as_mut()
+            .unwrap()
+            .results
+            .get_mut(name)
+            .unwrap()
+            .passed = false;
+        refused(failed, &format!("it failed its {name} test"));
+    }
+    // All four passed, on other bytes.
+    assert_ne!(
+        other_bytes.digest, artifact.digest,
+        "premise: two artifacts"
+    );
+    refused(
+        tested_on(card, &other_bytes),
+        &format!("its promotion tests ran on artifact {}", other_bytes.digest),
+    );
 }
