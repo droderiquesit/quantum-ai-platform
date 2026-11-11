@@ -3116,7 +3116,7 @@
     "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept for the neural coupling the requirement names. Mutation fired: verify's intervention comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). Owner ruling 2026-10-31 (REGRADE_TEXT): Neural coupling is out of scope, as ADR 0150 decision 7 already decided: a neural output has no trace a person can re-derive, and nothing the platform cannot replay touches a size."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept for the neural coupling the requirement names. Mutation fired: verify's intervention comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). Owner ruling 2026-10-31 (REGRADE_TEXT): Neural coupling is out of scope, as ADR 0150 decision 7 already decided: a neural output has no trace a person can re-derive, and nothing the platform cannot replay touches a size. 2026-11-11 independent verification (wave1111 fw-a-01): a_journaled_intervention_the_causal_graph_does_not_reach_at_its_instant_is_refused_on_replay passes. Mutation: verify's intervention refusal disabled (`if false && !reproduces`) -> the test fails at tests/symbolic_federation.rs:841 'a corrupted derivation was accepted as reproducible'; restored, passes. Held PARTIAL per the ruling: neural coupling is out by ADR 0150 decision 7."
   },
   {
     "id": "R12-REASON-1133",
