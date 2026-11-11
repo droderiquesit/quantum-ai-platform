@@ -1010,6 +1010,29 @@ that narrows a security scanner, whatever the owner has delegated.
     invented, because a cap is a figure and figures are a person's to
     give. The missing cap is recorded on the row as an open question.
 
+25. **RES-7106's seven tests change their inputs, not their assertions**
+    (lane L6, 2026-11-07). After decision 20, ADR 0238's stop on a
+    contested panel also catches seven more tests in other crates. Each
+    one assumes that a cycle trades:
+    - two in `qip-api` `proposals.rs`
+    - two in `qip-deepbrain` `research.rs`
+    - two in `qip-fastbrain` `tape.rs`
+    - one in `qip-kernel` `position_record`
+
+    They are restored under decision 18's conditions. Every assertion
+    stays byte-identical. Only a test's inputs change, so that it builds
+    an uncontested panel at or above `r10-eligible`. Each of the two
+    `qip-fastbrain` tape cases gets its own fixture tape. The committed
+    shared tape is not changed: other suites and the tape gate read it,
+    and decision 18 already accepts that the default cycle on it forms no
+    proposal. In each file at least one changed test is mutation-checked
+    against the code it guards. A test that cannot reach eligibility
+    without changing an asserted value, the shipped rule pack or a
+    threshold is parked and reported, never weakened. The work is pushed
+    only on a green full-workspace gate. One disclosure: the lane amended
+    one local, unpushed revert commit, so no pushed history was
+    rewritten.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly

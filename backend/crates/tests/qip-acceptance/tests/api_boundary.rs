@@ -1449,6 +1449,19 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // an empty release outside `local` when none are configured. It can
         // only remove a distillate from what a cell is told to run.
         "admit_model_packs",
+        // `observe_ledger_obligations` — R12-CAPITAL-4086, reached from the
+        // cycle route through `ledger_obligations::LedgerObligationsReader`:
+        // installs the reading `qip-ledgerd` itself served at the cycle's
+        // instant, in the class of `admit_source` — the platform's record
+        // of a fact its source of record stated. Nothing a caller sends
+        // reaches it: the route takes no body and the figures are the
+        // ledger's fold, which the platform refuses if older than the one it
+        // holds or in another unit.
+        "observe_ledger_obligations",
+        // `note_ledger_obligations_problem` — the same seam's failure path:
+        // a cycle-record line saying the reading was not taken. It changes
+        // nothing the cycle decides on.
+        "note_ledger_obligations_problem",
     ]
     .into_iter()
     .collect();
