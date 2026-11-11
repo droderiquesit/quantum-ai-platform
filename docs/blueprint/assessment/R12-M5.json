@@ -2462,14 +2462,19 @@
   },
   {
     "id": "R12-COVERAGE-5102",
-    "status": "PARTIAL",
-    "current": "Derivative registered (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:513); derivative orders refused until the desk is granted the type (backend/crates/runtime/qip-kernel/tests/asset_classes.rs:257); margin model in qip-capital margin.rs; greeks in qip-financial extensions.",
+    "status": "COMPLETE",
+    "current": "Derivative is registered (VolatilitySurface engine, exchange T0 settlement, portfolio margin) and a derivative order is refused before it exists until the desk is granted that instrument type. Options carry greeks (qip-financial extensions) and futures and perpetuals carry their initial and maintenance margin in their own record; the margin model is qip-capital margin.rs. Since 2026-11-11 (ADR 0395) a perpetual is its own instrument type, InstrumentType::PerpetualFuture with Extension::Perpetual(PerpetualDetails), with no expiry. Its settlement model is funding: qip_kernel::financing::FinancingRegister funds every perpetual at assembly as the premium of its price over its underlying's price, per the funding interval its own record states, and the UNDERSTAND stage reports the count and raises each perpetual it could not fund as a problem. A perpetual assembles, is refused an order until the desk holds the PerpetualFuture permission (a Future grant does not admit it) and then fills on the simulated venue, stamped simulated.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:513",
       "backend/crates/runtime/qip-kernel/tests/asset_classes.rs:257",
-      "backend/crates/services/qip-capital/src/margin.rs:34"
+      "backend/crates/services/qip-capital/src/margin.rs:34",
+      "docs/adr/0395-a-perpetual-is-a-future-with-no-expiry-and-its-funding-is-the-premium-over-its-underlying-per-interval-its-own-record-states.md",
+      "backend/crates/libs/qip-financial/src/asset_class.rs::InstrumentType::PerpetualFuture",
+      "backend/crates/libs/qip-financial/src/extensions.rs::PerpetualDetails",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::fund_perpetual",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::a_perpetual_assembles_is_funded_from_its_premium_and_trades_on_paper_only_once_granted"
     ],
-    "gap": "Perpetual funding and full settlement models wired into the cycle. 2026-11-11 (batch l6-c1-01, read against the code, nothing built): the central object model has no perpetual instrument (qip-financial InstrumentType has Future, Forward, Option, VarianceSwap and VolatilityIndexFuture, and FutureDetails demands an expiry), the only funding rate in the tree is the cell's qip_edge::funding::FundingRate, whose period its own doc leaves 'to the caller to track', and no source supplies a funding rate to the centre; so wiring perpetual funding into the cycle first needs a decision (new ADR) on how a perpetual is represented, what period a funding rate accrues over and which record supplies it.",
+    "gap": "None inside the repository. By decision (ADR 0395) the derived funding is reported and not booked to the ledger, and no venue-published funding rate is read: no source supplies one. Booking funding waits on such a source and its own ADR.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2477,23 +2482,30 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test financing --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-11-11 batch l6-d2-01, ADR 0395 under decision 28: perpetual representation and funding built. cargo test -p qip-kernel --test financing a_perpetual: 'test result: ok. 1 passed; 0 failed'. Five mutations fired and were restored byte-for-byte: premium taken over the perpetual's own price (rate 0.00990099, not 0.01); zero funding interval admitted; perpetual count dropped from the summary; derivative_gate skipping the per-type permission ('a futures grant admitted a perpetual'); the Derivative record dropped from AssetClassRegistry::shipped (assembly refuses: 'equity is hedged with derivative, which this registry does not hold')."
   },
   {
     "id": "R12-COVERAGE-5103",
-    "status": "PARTIAL",
-    "current": "DigitalAsset is registered (term structure, T0 exchange settlement, satoshi grid); a crypto spot assembles and an order fills on the simulated broker. Since 2026-11-11 a tokenized representation (InstrumentType::TokenizedSecurity, classed DigitalAsset) and a crypto derivative (a Future whose underlying is a Cryptocurrency, classed Derivative) each assemble, are ordered and fill on the same simulated gateway, stamped simulated; the crypto future is refused before an order exists until the desk holds the Future permission. qip-chain has a bridge model and qip-brokers a DEX simulator.",
+    "status": "COMPLETE",
+    "current": "DigitalAsset is registered (term structure, T0 exchange settlement, satoshi grid); a crypto spot assembles and an order fills on the simulated broker. A tokenized representation (InstrumentType::TokenizedSecurity, classed DigitalAsset) and a crypto derivative (a Future whose underlying is a Cryptocurrency, classed Derivative) each assemble, are ordered and fill on the same simulated gateway, stamped simulated; the crypto future is refused before an order exists until the desk holds the Future permission. qip-chain has a bridge model and qip-brokers a DEX simulator; by ADR 0155 section 17 DexVenue stays a feasibility and cost model and every class uses the one simulated gateway. Since 2026-11-11 (ADR 0396) digital-asset proceeds settle on paper through a simulated chain: an operator declares a venue's terms with Platform::declare_chain_settlement (finality depth, block interval, optional bridge delay and fee; a zero depth, a non-positive interval and a negative delay are refused), and a DigitalAsset sale there is withheld from survival sizing until fill + depth x block interval + bridge delay, with the bridge fee withheld for good (Platform::chain_bridge_fees). An equity at the same venue still settles on the calendar; a venue with no declared terms settles a coin on its calendar as before. The module is arithmetic only: nothing is signed or broadcast and no order path is added. No shipped binary declares terms; the figures are an operator's to give.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:762",
       "backend/crates/services/qip-chain/src/lib.rs",
       "backend/crates/services/qip-brokers/src/dex.rs",
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped",
-      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_tokenized_security_and_a_crypto_future_trade_on_the_simulated_gateway_and_the_future_waits_for_its_grant"
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_tokenized_security_and_a_crypto_future_trade_on_the_simulated_gateway_and_the_future_waits_for_its_grant",
+      "docs/adr/0396-digital-asset-proceeds-settle-on-paper-through-a-simulated-chain-at-an-operator-declared-finality-depth-and-a-bridge-is-a-declared-delay-and-fee.md",
+      "backend/crates/runtime/qip-kernel/src/chain_settlement.rs::ChainSettlementTerms",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::declare_chain_settlement",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::register_settlement",
+      "backend/crates/runtime/qip-kernel/tests/chain_settlement.rs::a_coins_proceeds_wait_on_the_declared_finality_and_bridge_and_the_fee_is_never_released",
+      "backend/crates/runtime/qip-kernel/tests/chain_settlement.rs::a_venue_with_no_declared_chain_terms_settles_a_coin_on_its_calendar_as_before",
+      "backend/crates/runtime/qip-kernel/tests/chain_settlement.rs::chain_terms_that_would_release_proceeds_at_once_are_refused_not_defaulted"
     ],
-    "gap": "By decision (ADR 0155 section 17, 2026-10-24) DexVenue stays a feasibility and cost model, a digital-asset order uses the same simulated gateway as every class, and qip-kernel takes no qip-brokers dependency; no on-chain order path, bridge or settlement simulator is built. What remains is the owner ruling of 2026-10-31 (ADR_THEN_IMPLEMENT): digital-asset proceeds settling on paper through a simulated chain (operator-declared finality depth, a bridge as a declared delay and fee, nothing signed or broadcast). That needs its ADR claimed and accepted first and none exists (2026-11-11: grep -il 'finality depth' docs/adr/*.md finds only ADR 0155, which defers it); nothing was built around it.",
+    "gap": "None inside the repository. By decision (ADR 0155 section 17, ADR 0396) no on-chain order path exists, the bridge fee is withheld from sizing and not booked to the ledger (no ledger kind books one), and a chain reorganisation of a paper fill is not simulated. The finality depth, block interval and bridge terms for a real deployment are an operator's figures and none is shipped.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2501,10 +2513,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test chain_settlement --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Crypto trades on paper through the same simulated gateway as every class, and its settlement is simulated there too. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Digital assets settle on paper through a simulated chain: proceeds wait on an operator-declared finality depth, a bridge is a declared delay and fee, and nothing signs or broadcasts a transaction. 2026-11-11 batch l6-c1-01: the missing trade test added, no production code changed. cargo test -p qip-kernel --test asset_classes: 'test result: ok. 8 passed; 0 failed'. Mutations that fired: the DigitalAsset record dropped from AssetClassRegistry::shipped -> assembly refuses naming obj-AAA-TOKEN ('is a digital_asset and no record registers that class'); Platform::derivative_gate returning Ok for every derivative -> 'an ungranted crypto future got an order'. Both restored byte-for-byte. Kept PARTIAL: the simulated chain settlement needs a new ADR."
+    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Crypto trades on paper through the same simulated gateway as every class, and its settlement is simulated there too. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Digital assets settle on paper through a simulated chain: proceeds wait on an operator-declared finality depth, a bridge is a declared delay and fee, and nothing signs or broadcasts a transaction. 2026-11-11 batch l6-c1-01: the missing trade test added, no production code changed. cargo test -p qip-kernel --test asset_classes: 'test result: ok. 8 passed; 0 failed'. Mutations that fired: the DigitalAsset record dropped from AssetClassRegistry::shipped -> assembly refuses naming obj-AAA-TOKEN ('is a digital_asset and no record registers that class'); Platform::derivative_gate returning Ok for every derivative -> 'an ungranted crypto future got an order'. Both restored byte-for-byte. Kept PARTIAL: the simulated chain settlement needs a new ADR. 2026-11-11 batch l6-d2-01, ADR 0396 under decision 28: simulated chain settlement built. cargo test -p qip-kernel --test chain_settlement: 'test result: ok. 3 passed; 0 failed'. Nine mutations fired and were restored byte-for-byte: finality depth dropped from available_at (released 132s early); bridge delay dropped (released 600s early); chain terms read for every class (the equity released on the chain's clock); the fee never added to the withheld total; declared terms ignored (coin stays on the calendar); a default given to an undeclared venue (coin released within the hour); a zero depth, a zero block interval and a negative bridge delay each admitted."
   },
   {
     "id": "R12-COVERAGE-5104",
