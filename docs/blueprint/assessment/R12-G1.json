@@ -1906,9 +1906,13 @@
   },
   {
     "id": "R12-FABRIC-8084",
-    "status": "PARTIAL",
-    "current": "The batch header carries magic/version, message type, schema id/version, flags, producer id/epoch, sequence, logical timestamp and the CRC32C. Event id, trace id, source timestamp and payload length ride each record under its own CRC. The partition is broker-stamped inside ADR 0129's format-version-2 BrokerOrigin {region, partition, principal}, under the batch CRC, by Broker::stamp_origin. That runs only for batches an authenticated session produces (produce_from): a batch appended through produce_to carries no origin, and so no partition.",
+    "status": "COMPLETE",
+    "current": "The batch header carries magic/version, message type, schema id/version, flags, producer id/epoch, sequence, logical timestamp and the CRC32C; event id, trace id, source timestamp and payload length ride each record under its own CRC. The partition is broker-stamped on every append by Broker::stamp_origin, which both produce paths call: alone as a partition-only origin tag for produce_to and sessionless producers, inside ADR 0129's v2 BrokerOrigin {region, partition, principal} for an authenticated session, under the batch CRC either way. A producer-stated partition or origin is refused.",
     "evidence": [
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:595 Broker::stamp_origin (stamp_broker_partition on every append; called from both admission paths at :1057 and :1229)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:993 every_append_names_its_partition_even_without_a_session_or_a_region",
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs:731 every_broker_stamped_layout_round_trips_equal_and_refuses_every_single_bit_flip",
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs:602 a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption",
       "backend/crates/libs/qip-events/src/event_fabric/codec.rs Batch::origin, BrokerOrigin, stamp_broker_origin",
       "backend/crates/libs/qip-events/tests/event_fabric_codec.rs::a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption",
       "backend/crates/libs/qip-events/tests/event_fabric_origin.rs",
@@ -1918,7 +1922,7 @@
       "backend/crates/libs/qip-events/tests/event_fabric_codec.rs a_partition_stamped_without_a_session_round_trips_and_a_flipped_bit_in_it_is_corruption, every_broker_stamped_layout_round_trips_equal_and_refuses_every_single_bit_flip",
       "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs every_append_names_its_partition_even_without_a_session_or_a_region"
     ],
-    "gap": "2026-10-25 (lane L1-MONEY, 17300548, c885dafd, fix after it): the partition is now stamped on every broker append, produce_to and sessionless producers included, as a partition-only origin tag inside the v2 header and the batch CRC. Every-field round trip, re-encode byte identity and an exhaustive single-bit flip run over both stamped layouts, and a producer-stated partition is refused. Still PARTIAL by the two-round rule: skeptic round 1 REFUTED on evidence (since added); round 2 REFUTED because c885dafd committed a mutation through a botched restore. That line was restored in the next commit and both mutations re-fired against clean code, but no third skeptic round was run.",
+    "gap": "None in the repository. 2026-11-11 (fw-c-01, independent third verification round, no owner ruling needed): the row's own bar is met. Every-field round trip with re-encode byte identity and an exhaustive single-bit flip over both stamped layouts pass (event_fabric_codec 11 passed, event_fabric_origin 7 passed, event_fabric_broker 15 passed); mutation replacing stamp_broker_partition in Broker::stamp_origin with a no-op fails every_append_names_its_partition_even_without_a_session_or_a_region with left None, right Some(2); restored byte for byte (git diff empty) and it passes. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1926,7 +1930,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events (131 passed, 0 failed); cargo test -p qip-streaming (134 passed, 0 failed); event_fabric_codec \"ok. 11 passed; 0 failed\"; event_fabric_broker \"ok. 15 passed; 0 failed\"; qip-fabricd 58/0, qip-ledgerd 51/0, qip-transport 156/0, qip-desk-ship 10/0, qip-edge-node 303/0 (on 17300548)",
+    "verification": "cargo test -p qip-events --test event_fabric_codec --test event_fabric_origin && cargo test -p qip-streaming --test event_fabric_broker (11, 7 and 15 passed, 0 failed, 2026-11-11)",
     "work_item": "",
     "size": "S",
     "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160. 2026-10-24 parent session, merge 4: back to PARTIAL. L1's flag-bit partition (ADR 0160) and L5's version-2 origin collided in the codec. The version-2 format was kept; ADR 0160 was not landed. L1's flipped-bit test was re-pointed at the version-2 origin. Mutation: omitting the origin's partition from encode and decoding it as 0 fails it with left Some(0), right Some(7). Restored by copy, cmp clean, and the suite reads 'ok. 9 passed'. 2026-10-25 lane L1-MONEY: mutations fired, each restored byte-for-byte: encode tag 0 for partition-only; disagreement refusal off; broker drops the partition stamp; tag-1 decode drops the partition; stated-partition refusal off. Two code-reviewer skeptic rounds, both REFUTED (evidence; then a committed mutation, since fixed). Kept PARTIAL by the owner's two-round rule. 2026-10-25 lane L1b-fabric: its own partition-field design was dropped on the parent's instruction in favour of this (lane L1's) encoding; what L1b kept on top of it: `FabricEnvelope::open` refuses a read of a batch as any partition but `Batch::partition` whether or not an origin is stamped (event_fabric_origin.rs::an_in_process_batch_carries_its_partition_without_an_origin_and_is_refused_as_another), and `catch_up` and `rebuild_from_archive` refuse to hydrate a batch stamped for another partition (`require_stamped_for`)."
