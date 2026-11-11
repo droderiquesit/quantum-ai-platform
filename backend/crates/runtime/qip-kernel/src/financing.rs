@@ -39,7 +39,7 @@ use qip_capital_fabric::FxRates;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, ObjectId, Timestamp};
 use qip_financial::asset_class::InstrumentType;
-use qip_financial::extensions::{Extension, FxDetails, PerpetualDetails, RepoDetails};
+use qip_financial::extensions::{Constituent, Extension, FxDetails, PerpetualDetails, RepoDetails};
 use qip_financial::object::FinancialObject;
 use qip_financial::universe::Universe;
 
@@ -121,6 +121,26 @@ pub struct PerpetualFunding {
     pub payment_per_contract: Decimal,
 }
 
+/// One index or basket, valued from the constituents its own record states
+/// (ADR 0397).
+///
+/// Reported by the cycle and read by nothing that sizes or decides: the
+/// composite's own quote stays its mark. What this adds is the figure the
+/// quote can be checked against, and the exposure behind one unit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompositeValuation {
+    /// Constituent id to the value it contributes to one unit of the
+    /// composite: `units × price`, before any divisor. The look-through
+    /// exposure of one unit.
+    pub exposure: BTreeMap<String, Decimal>,
+    /// The sum of `exposure`, divided by the index divisor where the record
+    /// states one.
+    pub value: Decimal,
+    /// The composite's own price in the universe.
+    pub quoted: Decimal,
+    pub currency: Currency,
+}
+
 /// The financing valuations of one universe, as it stood at assembly.
 ///
 /// `BTreeMap` throughout: the summary and the problems are decided by
@@ -133,6 +153,7 @@ pub struct FinancingRegister {
     forwards: BTreeMap<String, FxForwardValuation>,
     repos: BTreeMap<String, RepoValuation>,
     perpetuals: BTreeMap<String, PerpetualFunding>,
+    composites: BTreeMap<String, CompositeValuation>,
     /// Object id to why it could not be valued. Held rather than dropped: an
     /// unvalued forward that vanished would read as a universe with none.
     refusals: BTreeMap<String, String>,
@@ -188,6 +209,31 @@ impl FinancingRegister {
                     match fund_perpetual(object, perpetual, universe) {
                         Ok(funding) => {
                             register.perpetuals.insert(id, funding);
+                        }
+                        Err(error) => {
+                            register.refusals.insert(id, error.to_string());
+                        }
+                    }
+                }
+                (InstrumentType::Index, Extension::Index(index)) => {
+                    match value_composite(
+                        object,
+                        &index.constituents,
+                        Some(index.divisor),
+                        universe,
+                    ) {
+                        Ok(valuation) => {
+                            register.composites.insert(id, valuation);
+                        }
+                        Err(error) => {
+                            register.refusals.insert(id, error.to_string());
+                        }
+                    }
+                }
+                (InstrumentType::SyntheticBasket, Extension::Structured(basket)) => {
+                    match value_composite(object, &basket.constituents, None, universe) {
+                        Ok(valuation) => {
+                            register.composites.insert(id, valuation);
                         }
                         Err(error) => {
                             register.refusals.insert(id, error.to_string());
@@ -281,6 +327,15 @@ impl FinancingRegister {
         self.perpetuals.iter()
     }
 
+    /// The index or basket valued under `object_id`, if it could be.
+    pub fn composite(&self, object_id: &str) -> Option<&CompositeValuation> {
+        self.composites.get(object_id)
+    }
+
+    pub fn composites(&self) -> impl Iterator<Item = (&String, &CompositeValuation)> {
+        self.composites.iter()
+    }
+
     pub fn forwards(&self) -> impl Iterator<Item = (&String, &FxForwardValuation)> {
         self.forwards.iter()
     }
@@ -326,16 +381,19 @@ impl FinancingRegister {
         if self.forwards.is_empty()
             && self.repos.is_empty()
             && self.perpetuals.is_empty()
+            && self.composites.is_empty()
             && self.refusals.is_empty()
         {
             return String::new();
         }
         format!(
             "; financing register values {} FX forward(s) by covered interest parity and {} \
-             repo(s) and funds {} perpetual(s) from the premium over the underlying, {} unvalued",
+             repo(s) and funds {} perpetual(s) from the premium over the underlying and values {} \
+             index(es) and basket(s) from their constituents, {} unvalued",
             self.forwards.len(),
             self.repos.len(),
             self.perpetuals.len(),
+            self.composites.len(),
             self.refusals.len()
         )
     }
@@ -347,6 +405,88 @@ impl FinancingRegister {
             .map(|(id, reason)| format!("financing instrument {id} is unvalued: {reason}"))
             .collect()
     }
+}
+
+/// Value one index or basket from the constituents its record states.
+///
+/// Refused rather than guessed: a record stating no constituents, a
+/// constituent named twice, units that are not positive, a constituent that
+/// is absent, unpriced or priced in another currency, and an index divisor
+/// that is not positive.
+fn value_composite(
+    object: &FinancialObject,
+    constituents: &[Constituent],
+    divisor: Option<Decimal>,
+    universe: &Universe,
+) -> Result<CompositeValuation> {
+    if constituents.is_empty() {
+        return Err(Error::invalid(
+            "the record states no constituents, so there is nothing to value it from; state \
+             each constituent and its units, a composition is not assumed",
+        ));
+    }
+    let overflow = || Error::numeric("the composite's value arithmetic overflowed");
+    let mut exposure = BTreeMap::new();
+    let mut total = Decimal::ZERO;
+    for constituent in constituents {
+        if !constituent.units.is_positive() {
+            return Err(Error::invalid(format!(
+                "constituent {} is held at {} units; state a positive holding or drop it",
+                constituent.object_id, constituent.units
+            )));
+        }
+        let member = universe
+            .get(&ObjectId::from_string(constituent.object_id.as_str()))
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "constituent {} is not in the universe, so its price is unknown; add it, a \
+                     composite is not valued around a missing member",
+                    constituent.object_id
+                ))
+            })?;
+        if !member.price.is_positive() {
+            return Err(Error::invalid(format!(
+                "constituent {} is priced at {}, which values nothing",
+                constituent.object_id, member.price
+            )));
+        }
+        if member.currency != object.currency {
+            return Err(Error::invalid(format!(
+                "constituent {} is priced in {} and the composite in {}; a sum across two \
+                 currencies is not a value",
+                constituent.object_id, member.currency, object.currency
+            )));
+        }
+        let contributed = constituent
+            .units
+            .checked_mul(member.price)
+            .ok_or_else(overflow)?;
+        if exposure
+            .insert(constituent.object_id.clone(), contributed)
+            .is_some()
+        {
+            return Err(Error::invalid(format!(
+                "constituent {} is stated twice; state its whole holding once",
+                constituent.object_id
+            )));
+        }
+        total = total.checked_add(contributed).ok_or_else(overflow)?;
+    }
+    let value = match divisor {
+        Some(divisor) if !divisor.is_positive() => {
+            return Err(Error::invalid(format!(
+                "the index divisor is {divisor}; a level is not divided by a non-positive figure"
+            )));
+        }
+        Some(divisor) => total.checked_div(divisor).ok_or_else(overflow)?,
+        None => total,
+    };
+    Ok(CompositeValuation {
+        exposure,
+        value,
+        quoted: object.price,
+        currency: object.currency,
+    })
 }
 
 /// Fund one perpetual from its own terms and the universe's two prices.

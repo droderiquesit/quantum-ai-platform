@@ -18,8 +18,8 @@ use qip_core::{Context, Currency, Decimal, ObjectId, Timestamp, dec};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::extensions::{
-    BondDetails, CouponFrequency, CreditRating, DayCount, Extension, FxDetails, PerpetualDetails,
-    RepoDetails, Seniority,
+    BondDetails, Constituent, CouponFrequency, CreditRating, DayCount, Extension, FxDetails,
+    IndexDetails, PerpetualDetails, RepoDetails, Seniority, StructuredProductDetails,
 };
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
@@ -472,7 +472,8 @@ fn a_perpetual_assembles_is_funded_from_its_premium_and_trades_on_paper_only_onc
 
     let (detail, problems) = understand_problems(&mut platform);
     assert!(
-        detail.contains("funds 2 perpetual(s) from the premium over the underlying, 2 unvalued"),
+        detail.contains("funds 2 perpetual(s) from the premium over the underlying")
+            && detail.contains(", 2 unvalued"),
         "the UNDERSTAND stage does not report the funding: {detail}"
     );
     for (id, reason) in [
@@ -533,5 +534,129 @@ fn a_perpetual_assembles_is_funded_from_its_premium_and_trades_on_paper_only_onc
         fills.iter().all(|fill| fill.simulated),
         "a perpetual fill was not stamped simulated"
     );
+    Ok(())
+}
+
+fn held(object_id: &str, units: Decimal) -> Constituent {
+    Constituent {
+        object_id: object_id.to_string(),
+        units,
+    }
+}
+
+fn index(id: &str, divisor: Decimal, constituents: Vec<Constituent>) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::Index,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .price(dec!("160"))
+    .provenance(provenance())
+    .extension(Extension::Index(IndexDetails {
+        methodology: "price weighted".to_string(),
+        constituent_count: u32::try_from(constituents.len()).unwrap_or(u32::MAX),
+        rebalance_frequency: "quarterly".to_string(),
+        divisor,
+        is_total_return: false,
+        constituents,
+    }))
+    .build(start())
+}
+
+fn basket(id: &str, constituents: Vec<Constituent>) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::SyntheticBasket,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .price(dec!("300"))
+    .provenance(provenance())
+    .extension(Extension::Structured(StructuredProductDetails {
+        payoff_description: "units of two names".to_string(),
+        maturity: start().saturating_add(Duration::from_days(30)),
+        principal_protected: false,
+        participation_rate: 1.0,
+        barrier_level: None,
+        underlying_object_ids: constituents
+            .iter()
+            .map(|constituent| constituent.object_id.clone())
+            .collect(),
+        constituents,
+        issuer: "paper".to_string(),
+        greeks: None,
+    }))
+    .build(start())
+}
+
+/// R12-COVERAGE-5099, ADR 0397: an index held a count and a divisor and a
+/// basket held ids, so nothing could value either from what it holds or say
+/// what one unit is exposed to. Each now states its constituents and their
+/// units; the register values it from them and the cycle reports it, and
+/// one that states none, or names a member the universe lacks, is a problem
+/// and not a guess.
+///
+/// Mutations that fired: ignoring the divisor in `value_composite` puts the
+/// index at 320, not 160; taking the constituent's units without its price
+/// puts the index at 1.5; valuing a record with no constituents at zero
+/// loses the first refusal; skipping a missing member values the basket
+/// around it.
+#[test]
+fn an_index_and_a_basket_are_valued_from_their_stated_constituents_and_one_that_states_none_is_refused()
+-> Result<()> {
+    let both = || vec![held("obj-AAA", dec!("2")), held("obj-BBB", dec!("1"))];
+    let mut platform = assemble(vec![
+        coin("obj-AAA", dec!("100"))?,
+        coin("obj-BBB", dec!("120"))?,
+        index("obj-IDX", dec!("2"), both())?,
+        basket("obj-BASKET", both())?,
+        index("obj-IDX-BARE", dec!("2"), Vec::new())?,
+        basket(
+            "obj-BASKET-GONE",
+            vec![held("obj-AAA", dec!("1")), held("obj-ABSENT", dec!("1"))],
+        )?,
+    ])?;
+    let register = platform.financing_register();
+    let level = register
+        .composite("obj-IDX")
+        .unwrap_or_else(|| panic!("the index was not valued: {:?}", register.problems()));
+    // (2 × 100 + 1 × 120) / 2.
+    assert_eq!(level.value, dec!("160"));
+    assert_eq!(level.quoted, dec!("160"));
+    let whole = register
+        .composite("obj-BASKET")
+        .expect("the basket was not valued");
+    // No divisor: one basket unit is its holdings.
+    assert_eq!(whole.value, dec!("320"));
+    assert_eq!(whole.quoted, dec!("300"));
+    // The look-through of one unit, by member.
+    assert_eq!(whole.exposure.get("obj-AAA"), Some(&dec!("200")));
+    assert_eq!(whole.exposure.get("obj-BBB"), Some(&dec!("120")));
+    assert_eq!(whole.exposure.len(), 2);
+    assert!(register.composite("obj-IDX-BARE").is_none());
+    assert!(register.composite("obj-BASKET-GONE").is_none());
+
+    let (detail, problems) = understand_problems(&mut platform);
+    assert!(
+        detail.contains("values 2 index(es) and basket(s) from their constituents, 2 unvalued"),
+        "the UNDERSTAND stage does not report the composites: {detail}"
+    );
+    for (id, reason) in [
+        ("obj-IDX-BARE", "states no constituents"),
+        (
+            "obj-BASKET-GONE",
+            "constituent obj-ABSENT is not in the universe",
+        ),
+    ] {
+        assert!(
+            problems.iter().any(|problem| problem
+                .starts_with(&format!("financing instrument {id} is unvalued:"))
+                && problem.contains(reason)),
+            "{id} did not reach the cycle report: {problems:?}"
+        );
+    }
     Ok(())
 }

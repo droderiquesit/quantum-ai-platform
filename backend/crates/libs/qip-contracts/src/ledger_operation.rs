@@ -312,6 +312,21 @@ pub enum OperationKind {
         unit: String,
         amount: Decimal,
     },
+    /// A corporate action applied to a book's holding at a venue (ADR 0397,
+    /// R12-COVERAGE-5099). Establish is Dr trading, Cr venue: a cash dividend
+    /// received in the quote unit, or the units a split adds in the
+    /// instrument's own unit. Unwind is the same accounts swapped: the units
+    /// a reverse split takes away. The contra is the venue, as a fill's is,
+    /// and never an accrual: a credit there is read back as cash owed.
+    CorporateAction {
+        book: Book,
+        venue: String,
+        /// The action's idempotency key.
+        action: String,
+        unit: String,
+        amount: Decimal,
+        phase: Phase,
+    },
     /// A mandate subscribes capital into treasury (Establish: Dr treasury, Cr
     /// mandate) or redeems it (Unwind). R12-LEDGER-5021.
     MandateSubscription {
@@ -578,6 +593,23 @@ impl LedgerOperationFields {
                 est,
             )
             .to_vec(),
+            OperationKind::CorporateAction {
+                book,
+                venue,
+                unit,
+                amount,
+                phase,
+                ..
+            } => pair(
+                book.trading(),
+                Account::Venue {
+                    venue: venue.clone(),
+                },
+                unit,
+                *amount,
+                *phase,
+            )
+            .to_vec(),
             OperationKind::MandateSubscription {
                 mandate,
                 treasury,
@@ -667,6 +699,10 @@ impl Contract for LedgerOperationFields {
             | OperationKind::Commitment { amount, .. }
             | OperationKind::TaxCharge { amount, .. }
             | OperationKind::MandateSubscription { amount, .. } => {
+                positive(c, "amount", *amount)?;
+            }
+            OperationKind::CorporateAction { action, amount, .. } => {
+                named(c, "action", action)?;
                 positive(c, "amount", *amount)?;
             }
             OperationKind::CapitalGrantFunded { grant, .. } => {

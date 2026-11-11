@@ -2393,15 +2393,22 @@
   },
   {
     "id": "R12-COVERAGE-5099",
-    "status": "PARTIAL",
-    "current": "Equity is registered with corporate actions (asset_class_registry.rs; qip-market corporate_action.rs). A basket and an index are instruments already: InstrumentType::Index (Equity) with Extension::Index(IndexDetails { methodology, constituent_count, rebalance_frequency, divisor, is_total_return }) and InstrumentType::SyntheticBasket (StructuredProduct) with Extension::Structured naming its underlying_object_ids. Each assembles, an order in it passes the desk control path and fills at the simulated venue, and each is refused when its class record is withdrawn or that withdrawal is itself refused. Platform::apply_corporate_action adjusts the retained history and the open lot and journals the action in the event log.",
+    "status": "COMPLETE",
+    "current": "Equity is registered with corporate actions (asset_class_registry.rs; qip-market corporate_action.rs). A basket and an index are instruments: InstrumentType::Index (Equity) with Extension::Index(IndexDetails) and InstrumentType::SyntheticBasket (StructuredProduct) with Extension::Structured. Each assembles, an order in it passes the desk control path and fills at the simulated venue, and each is refused when its class record is withdrawn. Since 2026-11-11 (ADR 0397) each states its constituents and their units in its own record (qip_financial::extensions::Constituent), and qip_kernel::financing::FinancingRegister values an index as sum(units x price) / divisor and a basket as sum(units x price), holds the per-constituent contribution as the look-through exposure of one unit, and the UNDERSTAND stage reports the count and raises as a problem every composite that states no constituents or names a member the universe lacks. Platform::apply_corporate_action adjusts the retained history and the open lot, journals the action, and since 2026-11-11 queues a ledger operation for it: OperationKind::CorporateAction (Dr trading, Cr venue), the units a split adds in the instrument's unit or a dividend's cash in the quote unit, journalled as CorporateActionBooked before it is queued and re-queued with the same id after a restart without being booked again by the re-fed tape.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/extensions.rs::IndexDetails",
       "backend/crates/libs/qip-financial/src/asset_class.rs (Index, SyntheticBasket)",
       "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::apply_corporate_action"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::apply_corporate_action",
+      "docs/adr/0397-a-basket-or-index-states-its-constituents-in-its-own-record-and-an-applied-corporate-action-is-booked-to-the-ledger-as-its-own-operation-kind.md",
+      "backend/crates/libs/qip-financial/src/extensions.rs::Constituent",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::value_composite",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::CorporateAction",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::book_corporate_action",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::an_index_and_a_basket_are_valued_from_their_stated_constituents_and_one_that_states_none_is_refused",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs::an_applied_split_and_dividend_are_queued_for_the_ledger_once_and_survive_a_restart"
     ],
-    "gap": "Two things remain. (1) A basket or index is a record with no constituent weights: IndexDetails holds a count and a divisor and StructuredProductDetails holds underlying ids without weights, so nothing values either from its constituents or assembles an exposure through them. (2) An applied corporate action is journaled in the event log and adjusts the lot, but no LedgerEvent is posted for it, so the double-entry ledger of record never sees a split's unit change or a dividend. The triage closure's premise that no basket or index kind exists is wrong.",
+    "gap": "None inside the repository. By decision (ADR 0397) the composite valuation is reported beside the quote and nothing sizes or hedges on it, because no rebalance feed keeps stated units current; and a dividend is booked in the desk's quote unit, as the kernel credits it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2409,10 +2416,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test financing --test ledger --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A basket or an index carries its constituents and their weights. It is valued only from those constituents' prices. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A basket or an index is valued and risked through its weighted constituents, and an applied corporate action books one LedgerOperation that the book's LotAdjusted record carries, under ADR 0153 decision 1.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A basket or an index carries its constituents and their weights. It is valued only from those constituents' prices. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A basket or an index is valued and risked through its weighted constituents, and an applied corporate action books one LedgerOperation that the book's LotAdjusted record carries, under ADR 0153 decision 1.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-11 batch l6-d2-01, ADR 0397 under decision 28: constituents and the corporate-action ledger kind built. cargo test -p qip-kernel --test financing --test ledger an_: 'test result: ok. 3 passed' and 'test result: ok. 16 passed'. Nine mutations fired and were restored byte-for-byte: the index divisor ignored (320, not 160); a constituent's price dropped (1.5); a record with no constituents valued; a missing member skipped; the split's ledger call dropped; the dividend's dropped; the post-split quantity booked instead of the change (120, not 60); the re-queue at resume skipped; the trading leg posted as a credit."
   },
   {
     "id": "R12-COVERAGE-5100",

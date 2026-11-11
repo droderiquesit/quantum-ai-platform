@@ -3754,6 +3754,142 @@ fn a_split_the_book_took_before_a_restart_is_on_the_log_and_is_not_taken_again_w
     Ok(())
 }
 
+/// R12-COVERAGE-5099, ADR 0397: an applied corporate action adjusted the
+/// lot and the event log and never reached the double-entry ledger, so the
+/// ledger of record held half the units after a split and none of a
+/// dividend's cash. Each is now queued as a `CorporateAction` operation
+/// against the venue, journalled first, and re-queued with the same id after
+/// a restart without being booked a second time by the re-fed tape.
+///
+/// Mutations that fired: dropping the split's `book_corporate_action` call
+/// (no unit operation is queued); dropping the dividend's (no cash
+/// operation); booking the post-split quantity instead of the change (the
+/// amount is twice what was added); crediting the trading account instead
+/// of debiting it in `LedgerOperationFields::postings` (the trading leg is
+/// a credit); skipping `requeue_corporate_actions` at resume (the restarted
+/// process queues nothing).
+#[test]
+fn an_applied_split_and_dividend_are_queued_for_the_ledger_once_and_survive_a_restart() -> Result<()>
+{
+    use qip_contracts::ledger::{Account, Direction};
+    use qip_contracts::ledger_operation::{LedgerOperation, OperationKind, Phase};
+
+    fn actions(platform: &Platform) -> Vec<LedgerOperation> {
+        platform
+            .pending_desk_operations()
+            .iter()
+            .filter(|operation| matches!(operation.kind, OperationKind::CorporateAction { .. }))
+            .cloned()
+            .collect()
+    }
+    let dividend_tape = || {
+        vec![
+            SensedRecord::CorporateAction(Box::new(CorporateAction {
+                object_id: ObjectId::from_string(INSTRUMENT),
+                ex_date: start().saturating_add(Duration::from_days(5)),
+                record_date: None,
+                payment_date: None,
+                kind: CorporateActionKind::CashDividend {
+                    amount: dec!("0.5"),
+                },
+                announced_at: start(),
+            })),
+            daily_bar("52", 5),
+        ]
+    };
+    let path = log_path("corporate-action-ledger");
+    let ex_day = start().saturating_add(Duration::from_days(3));
+    let pay_day = start().saturating_add(Duration::from_days(5));
+    let booked = {
+        let mut first = platform_over(&path, start())?;
+        trade(&mut first, Side::Buy, dec!("100"), dec!("100"), start())?;
+        let (bought, _) = *first
+            .positions_at_cost()
+            .get(INSTRUMENT)
+            .expect("premise: the desk holds the instrument before the split");
+        assert!(bought.is_positive(), "premise: the venue filled something");
+        assert!(
+            actions(&first).is_empty(),
+            "premise: no action is booked before one applies"
+        );
+
+        first.observe(tape_across_a_split());
+        first.run_cycle(ex_day);
+        let split = actions(&first);
+        assert_eq!(split.len(), 1, "the split is one operation: {split:?}");
+        let OperationKind::CorporateAction {
+            unit,
+            amount,
+            phase,
+            ..
+        } = &split[0].kind
+        else {
+            unreachable!("filtered to corporate actions");
+        };
+        // Two for one adds exactly what was held, in the instrument's unit.
+        assert_eq!((unit.as_str(), *amount), (INSTRUMENT, bought));
+        assert_eq!(*phase, Phase::Establish);
+        let event = split[0].to_event()?;
+        let trading: Vec<_> = event
+            .postings()
+            .iter()
+            .filter(|posting| matches!(posting.account, Account::Trading { .. }))
+            .collect();
+        assert_eq!(trading.len(), 1, "one trading leg: {:?}", event.postings());
+        assert_eq!(trading[0].direction, Direction::Debit);
+        assert!(
+            event
+                .postings()
+                .iter()
+                .any(|posting| matches!(posting.account, Account::Venue { .. })
+                    && posting.direction == Direction::Credit),
+            "the contra is not the venue: {:?}",
+            event.postings()
+        );
+
+        first.observe(dividend_tape());
+        first.run_cycle(pay_day);
+        let both = actions(&first);
+        assert_eq!(
+            both.len(),
+            2,
+            "the dividend is a second operation: {both:?}"
+        );
+        let OperationKind::CorporateAction { unit, amount, .. } = &both[1].kind else {
+            unreachable!("filtered to corporate actions");
+        };
+        // Half a dollar on each of the doubled shares.
+        assert_eq!(
+            (unit.as_str(), *amount),
+            ("USD", bought * dec!("2") * dec!("0.5"))
+        );
+        assert_ne!(both[0].operation_id, both[1].operation_id);
+        assert!(both[0].sequence < both[1].sequence);
+        both
+    };
+
+    let later = pay_day.saturating_add(Duration::from_hours(1));
+    let mut second = platform_over(&path, later)?;
+    assert_eq!(
+        actions(&second),
+        booked,
+        "the restarted process did not re-queue what the first journalled"
+    );
+    // The tape again, as a feed hands it to every new process.
+    let mut tape = tape_across_a_split();
+    tape.extend(dividend_tape());
+    second.observe(tape);
+    second.run_cycle(later);
+    assert_eq!(
+        actions(&second),
+        booked,
+        "the re-fed tape booked an action a second time"
+    );
+    drop(second);
+    let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
+    Ok(())
+}
+
 #[test]
 fn with_every_derived_store_gone_the_log_and_the_statements_alone_rebuild_and_verify_the_desks_cash_and_positions()
 -> Result<()> {
