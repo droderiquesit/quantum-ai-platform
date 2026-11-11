@@ -1064,6 +1064,101 @@ that narrows a security scanner, whatever the owner has delegated.
     request and is never sized. The test is then restated to that
     stricter property, with a mutation.
 
+28. **A row no longer waits on a design question that lives in the
+    repository** (owner, 2026-11-11: "make all the decisions you can").
+    The session that meets such a question decides it by ADR, from a
+    number range the orchestrator gives it in its spawn message. It
+    decides by six preferences, in this order:
+    - narrow, refuse or measure, and never widen an authority, a limit or
+      the paper boundary;
+    - `qip-contracts` holds data types only, so no behaviour moves into
+      it;
+    - prefer no new crate edge, and pin any unavoidable one by test so the
+      set cannot grow;
+    - one source for one fact: keep the ledger or event-log record and
+      derive or retire the second claim;
+    - an arm with no producer in the tree is declared absent with its
+      reason, and is not built on an invented input;
+    - an accepted ADR is amended only by a new ADR that names the clause.
+
+    Six things stay with the owner: a figure nobody gave, a change to a
+    requirement's wording, the reversal of an accepted refusal, a new
+    dependency, a billed service and a deployment. The first ruling made
+    under this decision is the treasury split: treasury and funding are
+    extracted into `services/qip-treasury`, `bank.rs` stays in
+    `qip-capital`, and a type that carries behaviour does not move to
+    `qip-contracts`.
+
+29. **The latency clause of R12-MODEL-3090 is read against the replayable
+    meter, not a clock** (orchestrator under decision 28, 2026-11-11). For
+    an entrant that runs inside the cycle, the cost of a decision is the
+    evidence-examined count the cycle already records, because that count
+    replays from the event log and a wall-clock reading does not. No
+    wall-clock figure is added to the decision path to satisfy the clause.
+    This ruling does not move the row's grade. The session that holds the
+    row checks the meter against the row's bar, with a mutation, and grades
+    on what it finds.
+
+30. **Risk limits follow the declared risk tolerance, and only downward**
+    (owner, 2026-11-11: "Make the risk limit dynamic based on tolerance").
+    The design is fixed here and argued in ADR 0405, which the session
+    that builds it writes:
+    - The tolerance is the one the capital ledger already holds,
+      `Mandate::risk_tolerance` in `qip-capital`: a fraction from 0 to 1,
+      refused outside that range, and never above the desk's for a user.
+      No second tolerance figure is introduced.
+    - The operator's limit set is the ceiling. The limit in force is the
+      ceiling narrowed by the tolerance: a maximum is multiplied by the
+      fraction, and a minimum (liquidity, cash buffer, funding buffer) is
+      left where the operator put it. A tolerance of 1 gives the ceiling
+      exactly. A tolerance of 0 gives a maximum of zero, so every order is
+      refused. No tolerance can raise a limit above its ceiling.
+    - The narrowing is arithmetic, done before the pre-trade check and so
+      before an order exists. It is never routed to a model, and no model
+      output, agent finding or configuration value can change the
+      tolerance. Only the mandate path can, and its changes are in the
+      event log, so the limit in force at any decision replays.
+    - A refusal under a narrowed limit names the ceiling, the tolerance
+      and the limit in force.
+    - The change is not done until a test shows a narrowed limit firing on
+      an order the ceiling alone would have admitted, and that test has
+      been mutation-verified.
+
+    The paper boundary is not touched: this narrows what the simulator is
+    asked to do and adds no path to a venue.
+
+31. **A live order path was asked for and is not built** (owner,
+    2026-11-11: "Build the live order path, you can deploy, i give you
+    full permission for .claude"). The three parts are recorded
+    separately, because they are three different things.
+    - The live order path. Not built, and nothing was started. The
+      repository's own rule for exactly this request is to stop and ask
+      (`.claude/rules/01-security-and-safety.md`), paper trading is a
+      standing product decision that an ADR reopens and a code change
+      does not (ADR 0003, `.claude/rules/10-product-direction.md`), and
+      three independent layers refuse a live ceiling by design. A
+      one-line instruction to an agent is not the record that a decision
+      to trade real money should rest on. What the decision needs is in
+      the owner's hands: an ADR that supersedes ADR 0003 and is accepted
+      by the owner in review, a named venue and its agreement, the
+      regulatory position for that venue and the accounts traded, the
+      credential placed in Secret Manager by a person, a capital ceiling
+      as a figure, and a person who signs each raise of the autonomy
+      level. The 27 rows whose remainder is a live path stay as they are.
+    - Deployment. The approval is recorded. The dispatch still has to be
+      the owner's: `scripts/agent-policy.json` lists `infra.yml` and
+      `deploy.yml` among the workflows an agent identity may never start,
+      and the guard step at the top of each refuses before anything
+      authenticates. An agent does not route around that guard. The
+      owner's act is to run `infra.yml` with environment `dev` and action
+      `plan`, read the plan, and then run it with action `up`.
+    - Permission for `.claude`. Used once, for two rule files whose text
+      described code that had since moved
+      (`.claude/rules/domains/infrastructure.md` and `observability.md`).
+      Each claim was checked against the code and the suites that read
+      rule files were run before the commit. No rule was relaxed and none
+      will be under this permission.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
