@@ -2468,6 +2468,7 @@
     "status": "COMPLETE",
     "current": "EffectAttribution::validate refuses missing chain, confounders, rivals, side effects, observations, out-of-range identifiability; qip-cli widening refuses such attributions on the journal.",
     "evidence": [
+      "backend/crates/apps/qip-cli/src/agency.rs:85 qip-cli records attributions through EffectAttribution",
       "backend/crates/libs/qip-contracts/src/expansion.rs:477 EffectAttribution::validate",
       "backend/crates/services/qip-agency/tests/agency.rs:484 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record"
@@ -2475,7 +2476,7 @@
     "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated per ADR 0145 decision 7 as 'at least one distinct horizon; two where a producer observes them'. One distinct horizon stays the minimum; a second is required only when a producer observes one and a record under ADR 0141 consumes it, and no second sweep is built to add a horizon to an unidentified effect. EffectAttribution::validate (qip-contracts expansion.rs:477) refuses empty observations, zero or non-finite horizons and a horizon named twice; raising the minimum to two would refuse every attribution from both producers (the simulator's one time_to_effect_secs and the door's first follow-up), which is what lane L12's probe showed when it broke 14 tests. Graded on validate and its two refusal tests. Earlier: validation admits one horizon by decision (raising it broke 14 tests for a property no producer supplies). The simulator evaluates at the plan's one time_to_effect_secs; the ambient door drops a draft at its first follow-up and a second horizon of an unidentified effect has no consumer (ADR 0145 decision 7). (dated 2026-10-24) 2026-11-11 (fw-c-01, regrade on the ruling's reading): met as the ruling reads it, quoted: 'Restate the requirement as \"at least one distinct horizon; two where a producer observes them\" per ADR 0145 d7. Regrade on validate and its two refusal tests.' validate refuses a missing chain, confounders, rivals, side effects, horizon observations and an out-of-range confidence (identifiability). Mutation: the competing_explanations check removed from EffectAttribution::validate; agency.rs an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused failed at :499 and qip-cli agency_record.rs an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record failed at :677; restored byte for byte (git diff empty): agency 64 passed, agency_record 8 passed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2490,6 +2491,7 @@
     "status": "COMPLETE",
     "current": "Activated attention events now reach qip-agency via AmbientOpportunity -> promote -> ActionGuard -> internal outbox draft, by default in deepbrain. No DesiredOutcome/ActionOpportunity types.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:965 AmbientAgency::open wired into the run loop",
       "backend/crates/services/qip-agency/src/ambient_intake.rs:729 the door's admission: ActionGuard::preflight_observed, then execution and authorise, before an OutboxDraft is written",
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (no agency target)",
       "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake",
@@ -2502,7 +2504,7 @@
     "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated to the guard path per ADR 0145 decisions 4 and 5: opportunity, promotion, ActionGuard, then the outbox draft. The ambient door runs the guard, not engine::run, and no per-opportunity structural model of what a notice changes is written (it would restate the declaration d4 refuses); running eleven stages over one draft tool would restate standing policy, and writing that model to pass the row is the invented closure the 2026-10-24 record rules out. DesiredOutcome and ActionOpportunity are not built, by decision. tested set from the deepbrain ambient_agency node tests. Earlier: the ambient path runs no engine::run by decision; the eight stages before ObserveEffect on a learning record are seated, not run, and the record says so (ADR 0145 decisions 4 and 5). (dated 2026-10-24) 2026-11-11 (fw-c-01, regrade on the ruling's reading): met as the ruling reads it, quoted: 'The row is graded on the guard path: opportunity, promotion, ActionGuard, then the outbox draft.' Mutation: ActionGuard::revoke made a no-op that leaves the tool registered; a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical failed at ambient_agency.rs:692 ('premise: the guard withheld', nothing withheld); restored byte for byte (git diff empty): deepbrain ambient_agency 10 passed, qip-acceptance ambient_effect_boundary 3 passed. DesiredOutcome and ActionOpportunity are not built, by decision.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
