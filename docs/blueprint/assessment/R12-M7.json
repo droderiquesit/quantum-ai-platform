@@ -596,18 +596,19 @@
   },
   {
     "id": "R12-AGENCY-7027",
-    "status": "PARTIAL",
-    "current": "Deepbrain (warm) routes drafts through typed DraftingAdapter after guard identity/policy checks, journaled to a hash-chained outbox file by default; CLI shadow journals passes.",
+    "status": "COMPLETE",
+    "current": "The deep brain's warm door is the orchestrator: qip-deepbrain main.rs opens AmbientAgency with the hash-chained outbox ('drafts only; external action stays refused'); AmbientIntake runs the ActionGuard over qip-contracts action.rs::ToolRegistry (registered, not revoked, on a permitted channel, under the one registered identity), and the act is qip-agency outbox.rs::DraftingAdapter, journaled to the outbox. Causal simulation is reached where a plan can use it, in the shadow binary (qip-cli agency.rs ScenarioSource, TwinScenarios); the door does not simulate a one-step internal draft (ADR 0145 decisions 4 and 5, ADR 0146 decision 11).",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/agency.rs:48 qip_agency::engine::run in shadow (qip-cli main.rs:71) — only composition root reaching qip-agency",
-      "backend/crates/services/qip-agency/tests/agency.rs:298,572,741,997,1093 no-action baseline, deceptive step infeasible, weakly identified plan never executed, adapter only after simulation+gate, default authority shadow",
-      "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:961 AmbientAgency opened with the hash-chained outbox ('drafts only; external action stays refused')",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:961 AmbientAgency opened with the hash-chained outbox",
+      "backend/crates/libs/qip-contracts/src/action.rs:679 ToolRegistry admission refuses a revoked tool",
       "backend/crates/services/qip-agency/src/outbox.rs::DraftingAdapter",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs:234 the_run_loop_routes_activated_ambient_signals_through_the_guard_into_the_outbox; :677 a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical; :721 every_draft_the_node_writes_is_executed_under_the_one_registered_identity",
-      "backend/crates/apps/qip-cli/src/agency.rs:94 ScenarioSource, :274 TwinScenarios (simulation in the shadow binary); qip-deepbrain Cargo.toml links qip-twin"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs:234 the_run_loop_routes_activated_ambient_signals_through_the_guard_into_the_outbox",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs:677 a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs:721 every_draft_the_node_writes_is_executed_under_the_one_registered_identity",
+      "backend/crates/apps/qip-cli/src/agency.rs:94 ScenarioSource, :274 TwinScenarios (simulation in the shadow binary)",
+      "docs/adr/0145 decisions 4 and 5; docs/adr/0146 decision 11"
     ],
-    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the row's integration check (an action passes through a typed adapter after policy and identity checks and is journaled durably) is met on the deep brain default path: qip-deepbrain main.rs opens AmbientAgency with the hash-chained outbox (main.rs:961), AmbientIntake runs the ActionGuard over qip-contracts action.rs::ToolRegistry, and the act is qip-agency outbox.rs::DraftingAdapter; integrated set from that path. Causal simulation is reached where a plan can use it, in the shadow binary against declared models and the twin's futures (qip-cli agency.rs ScenarioSource and TwinScenarios); the door does not simulate a one-step internal draft against a structural model nobody wrote (ADR 0145 decisions 4 and 5, recorded as decided in ADR 0146 decision 11). The earlier 'no simulate stage on the ambient path' is the decided design, not a missing part of the statement. Earlier: no engine::run simulate stage on the deepbrain ambient path, by decision (ADR 0145 decision 5); the shadow binary simulates against declared models and, via ScenarioSource, the twin's futures. (dated 2026-10-24)",
+    "gap": "2026-11-11 regraded COMPLETE (fw-b-01) on the row's integration check, under the owner's 2026-10-31 ruling (REGRADE_TEXT): 'The orchestrator is the deep brain's warm door, and it meets the row's check: a typed DraftingAdapter after the guard's identity and policy checks, journaled to the hash-chained outbox. Causal simulation is reached where a plan can use it, in the shadow binary against declared models and the twin's futures. The door does not simulate a one-step internal draft against a structural model nobody wrote (ADR 0145 decisions 4 and 5).' Run: cargo test -p qip-deepbrain --test ambient_agency on the three tests at :234, :677 and :721 passed (3 passed; 0 failed). Mutation: ToolRegistry's admission made to ignore revocation (action.rs:679, 'if false && s.revoked') failed a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical at ambient_agency.rs:692; restored (git diff empty). Deployability follows the deep brain's deploy.",
     "implemented": true,
     "tested": true,
     "integrated": true,
