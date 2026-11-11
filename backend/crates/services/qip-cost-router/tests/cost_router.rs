@@ -466,6 +466,60 @@ fn a_decision_routes_to_the_cheapest_rung_that_is_affordable_fast_enough_and_str
     Ok(())
 }
 
+/// ADR 0391. The routing's judgement is the only key a routing score may be
+/// filed under, so it must carry the routing's own conditions and the rung
+/// that ran. A judgement naming the placed rung would credit a reasoner that
+/// never answered, and one keyed without a build would hand the next build
+/// the record of the one it replaced.
+#[test]
+fn a_judged_routing_mints_a_judgement_for_the_rung_that_ran_under_its_own_conditions() -> Result<()>
+{
+    use qip_cost_router::ModelTier;
+    let router = Router::default();
+    let placed = router.select(&context(
+        dec!("100000"),
+        Duration::from_hours(1),
+        0.55,
+        Determinism::NotRequired,
+    ))?;
+    let Routing::Judged(judged) = placed else {
+        panic!("premise: a tolerated estimate is judged");
+    };
+    assert_eq!(
+        judged.tier(),
+        IntelligenceTier::StatisticalModel,
+        "premise: the decision was placed below the rung that will run"
+    );
+    let judgement = judged.judgement(ModelTier::MultiAgentReasoning, "build-7")?;
+    assert_eq!(judgement.model(), "multi_agent_reasoning@build-7");
+    assert_eq!(judgement.conditions(), &conditions(MarketRegime::Trending));
+
+    // It is the token the book takes, and it lands in the decision's cell.
+    let mut book = ReputationBook::new();
+    book.observe(&judgement, true);
+    let record = book
+        .reputation("multi_agent_reasoning@build-7")
+        .expect("the rung has a record")
+        .record(&conditions(MarketRegime::Trending));
+    assert_eq!((record.correct, record.observations), (1, 1));
+    assert_eq!(
+        book.reputation("multi_agent_reasoning@build-7")
+            .expect("the rung has a record")
+            .record(&conditions(MarketRegime::Crisis))
+            .observations,
+        0,
+        "a quiet-tape answer was credited in a crisis cell"
+    );
+
+    assert!(
+        judged
+            .judgement(ModelTier::MultiAgentReasoning, "")
+            .is_err(),
+        "a rung keyed without a build was minted"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_tolerated_estimate_that_settles_on_deterministic_code_is_still_judged_and_escalatable()
 -> Result<()> {

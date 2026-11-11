@@ -507,6 +507,26 @@ pub struct PlatformConfig {
     /// mentioned it.
     #[serde(default = "default_exploration_share")]
     pub exploration_share: Decimal,
+
+    /// The desk mandate's risk tolerance, as a fraction in `[0, 1]`
+    /// (ADR 0405).
+    ///
+    /// A term of the **desk's mandate**, stated here for the reason
+    /// [`Self::exploration_share`] is: the desk's mandate is assembled from
+    /// this record, and with no field for it the desk's tolerance was pinned
+    /// at one, so the narrowing ADR 0405 decides read a figure that could
+    /// never refuse an order. The kernel does not read this field when it
+    /// narrows the limits. It builds the desk's mandate from it —
+    /// `Mandate::new` refuses a value outside the range — and reads the
+    /// tolerance back from the mandate registry, which is the one place the
+    /// figure lives.
+    ///
+    /// One by default, and one means the operator's limit set is in force
+    /// exactly as written: nothing about a deployment that never mentions
+    /// this changes. It can only narrow. No value here raises a limit above
+    /// the bound in the operator's file.
+    #[serde(default = "default_desk_risk_tolerance")]
+    pub desk_risk_tolerance: Decimal,
 }
 
 /// The owner recorded against anything this deployment registers.
@@ -550,6 +570,14 @@ fn default_initial_equity() -> Decimal {
 /// every deployment that had never heard of it.
 fn default_exploration_share() -> Decimal {
     Decimal::ZERO
+}
+
+/// One: the operator's limits exactly as written. The value the desk's
+/// mandate always had before the term could be stated (ADR 0405), so a stored
+/// configuration that predates the field reads back as the platform it
+/// described.
+fn default_desk_risk_tolerance() -> Decimal {
+    Decimal::ONE
 }
 
 /// The resolving power `qip_cost_router::IntelligenceTier::MultiAgentReasoning`
@@ -624,6 +652,7 @@ impl Default for PlatformConfig {
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
             exploration_share: default_exploration_share(),
+            desk_risk_tolerance: default_desk_risk_tolerance(),
         }
     }
 }
@@ -687,6 +716,14 @@ impl PlatformConfig {
     /// here would hide it until assembly.
     pub fn with_exploration_share(mut self, share: Decimal) -> Self {
         self.exploration_share = share;
+        self
+    }
+
+    /// State the desk mandate's risk tolerance (ADR 0405). Not checked here:
+    /// `Mandate::new` refuses a value outside `[0, 1]` at assembly, and a
+    /// builder that clamped would hide the refusal.
+    pub fn with_desk_risk_tolerance(mut self, tolerance: Decimal) -> Self {
+        self.desk_risk_tolerance = tolerance;
         self
     }
 
