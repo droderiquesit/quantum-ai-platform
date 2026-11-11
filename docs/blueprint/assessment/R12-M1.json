@@ -4201,7 +4201,8 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs:113 Problem::solve; :34 MAX_ASSIGNMENTS",
       "backend/crates/services/qip-reasoning-engine/src/compiler.rs:127 CognitiveCompiler (run from qip-deepbrain research.rs:1187, :1418; main.rs:914)",
       "backend/crates/apps/qip-cli/src/replay.rs:434 symbolic",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:307, :846, :868, :886"
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:307, :846, :868, :886",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:599 a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable (SAT formulation at :670; 2026-11-11 mutation fired)"
     ],
     "gap": "2026-10-31 owner ruling (REGRADE_TEXT): PARTIAL per bar part 4 against the declined clauses only: no SMT/MILP crate (ADR 0150 decision 11, revival decision 12), no neural-to-symbolic compilation (decision 7), no planner beyond the hypothesis lifecycle (decision 9); and the 'graph solvers' item is met only by the causal graph's path enumeration, named here rather than dropped. Earlier: Complete the remaining scope items and integrate them.",
     "implemented": true,
@@ -4214,7 +4215,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (REGRADE_TEXT): The scope is what ADR 0150 fixed: the bounded in-tree solver and no SMT/MILP crate (decision 11), no neural-to-symbolic compilation (decision 7), and no planner beyond the hypothesis lifecycle (decision 9)."
+    "notes": "Owner ruling 2026-10-31 (REGRADE_TEXT): The scope is what ADR 0150 fixed: the bounded in-tree solver and no SMT/MILP crate (decision 11), no neural-to-symbolic compilation (decision 7), and no planner beyond the hypothesis lifecycle (decision 9). 2026-11-11 independent verification (wave1111 fw-a-01): a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable passes, and the symbolic_federation replay tests pass (see R12-REASON-1132/1134/1136 for their fired mutations). Mutation: Problem::solve's conflict minimisation disabled (`while false && index < core.len()`) -> the test fails at tests/reasoners.rs:655 '[\"c0\", ..., \"c5\"] is not minimal'; restored, passes. Held PARTIAL per the ruling on the declined clauses (ADR 0150 decisions 7, 9, 11)."
   },
   {
     "id": "R12-AMBIENT-1180",
