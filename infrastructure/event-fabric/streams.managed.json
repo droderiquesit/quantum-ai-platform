@@ -189,6 +189,13 @@
       "durability": "superseding"
     },
     {
+      "name": "HedgeFrame",
+      "topic": "risk.evaluated",
+      "direction": "down",
+      "signing": "envelope_signature",
+      "durability": "superseding"
+    },
+    {
       "name": "CellStateDelta",
       "topic": "position.updated",
       "direction": "up",

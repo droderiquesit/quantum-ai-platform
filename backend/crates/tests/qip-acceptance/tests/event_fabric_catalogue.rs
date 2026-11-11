@@ -42,7 +42,7 @@ use qip_events::event_fabric::catalogue::{
     Catalogue, FrameDirection, FrameDurability, FrameSigning, KeyScope, Permission,
 };
 use qip_events::event_fabric::policy::{Mirroring, OverloadPolicy, QosClass};
-use qip_mesh::spine::{CELL_DELTA_TOPIC, CapitalGrantFrame, HaltFrame, PolicyFrame};
+use qip_mesh::spine::{CELL_DELTA_TOPIC, CapitalGrantFrame, HaltFrame, HedgeFrame, PolicyFrame};
 
 const CATALOGUE: &str = "infrastructure/event-fabric/streams.local.json";
 const MANAGED_CATALOGUE: &str = "infrastructure/event-fabric/streams.managed.json";
@@ -241,9 +241,11 @@ fn every_qip_mesh_spine_frame_type_is_catalogued_beside_the_fabric_streams() {
         BTreeSet::from([
             "CapitalGrantFrame".to_string(),
             "HaltFrame".to_string(),
+            "HedgeFrame".to_string(),
             "PolicyFrame".to_string(),
         ]),
-        "premise: the spine's frame types are the three ADR 0128 names"
+        "premise: the spine's frame types are the three ADR 0128 names and ADR 0126's \
+         hedge narrowing"
     );
     // The upward delta is not a frame type: the cell's `CellStateDelta`
     // travels as an `AnyEvent` under `CELL_DELTA_TOPIC`.
@@ -253,6 +255,7 @@ fn every_qip_mesh_spine_frame_type_is_catalogued_beside_the_fabric_streams() {
         ("CapitalGrantFrame", <CapitalGrantFrame as EventBody>::TOPIC),
         ("PolicyFrame", <PolicyFrame as EventBody>::TOPIC),
         ("HaltFrame", <HaltFrame as EventBody>::TOPIC),
+        ("HedgeFrame", <HedgeFrame as EventBody>::TOPIC),
         ("CellStateDelta", CELL_DELTA_TOPIC),
     ]);
 
