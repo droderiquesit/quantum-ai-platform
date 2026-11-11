@@ -488,6 +488,11 @@ pub struct CellIngestion {
     pub advisory_disagreements: Vec<String>,
     /// What the incident response halted, `None` where the report reconciled.
     pub halted: Option<HaltScope>,
+    /// The breaks that halted the cell, the cell's and the settlement's
+    /// together, so the platform can journal each (R12-EXPAND-6066). Empty
+    /// exactly when `halted` is `None`.
+    #[doc(alias = "breaks")]
+    pub halt_breaks: Vec<ReconciliationBreak>,
     /// Buckets over their share of gross, on any axis.
     pub concentrations: Vec<ConcentrationFinding>,
     /// Names several cells hold at once — the question no cell can answer.
@@ -2697,7 +2702,9 @@ impl CentralPlane {
             feasibility_refusals_repeated,
         ) = self.attribute_refusals(&report, now);
 
+        let halt_breaks = if halted.is_some() { breaks } else { Vec::new() };
         Ok(CellIngestion {
+            halt_breaks,
             cell: report.cell,
             positions_absorbed: absorbed,
             halted,

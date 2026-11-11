@@ -7748,6 +7748,27 @@ impl Platform {
         // the fills it was sent is the thing a reconciler looks at next.
         self.capture_problems
             .extend(ingestion.advisory_disagreements.iter().cloned());
+        // R12-EXPAND-6066: each break that halted the cell, journaled so the
+        // deep brain's research can raise an execution gap naming it. A
+        // journal failure is a capture problem: the halt has already
+        // happened, and an unrecorded break must not undo it.
+        for record in crate::reconciliation_breaks::records_of(
+            &ingestion.cell,
+            &ingestion.halt_breaks,
+            reported_at,
+        ) {
+            if let Err(error) = self.journal_record(
+                record,
+                crate::reconciliation_breaks::RECONCILIATION_BREAK_ORIGIN,
+                now,
+            ) {
+                self.capture_problems.push(format!(
+                    "a reconciliation break at {} was not journaled: {}",
+                    ingestion.cell,
+                    error.message()
+                ));
+            }
+        }
         // One observation per report absorbed. `halted` is `None` exactly
         // where the report reconciled — the plane sets it from the union of
         // the cell's own breaks and the settlement's `UnsentFill` findings —
@@ -26115,6 +26136,30 @@ impl Platform {
     }
 
     /// What each priced refusal would have done, most recent last.
+    /// Every reconciliation-break record the log holds, oldest first
+    /// (R12-EXPAND-6066), read back as `knowledge_deltas` is.
+    pub fn reconciliation_break_records(
+        &self,
+    ) -> Result<Vec<crate::reconciliation_breaks::ReconciliationBreakRecord>> {
+        use crate::reconciliation_breaks::{
+            RECONCILIATION_BREAK_PREFIX, ReconciliationBreakRecord,
+        };
+        self.event_log()
+            .by_topic(<ReconciliationBreakRecord as EventBody>::TOPIC)
+            .into_iter()
+            .filter(|frame| {
+                frame
+                    .idempotency_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(RECONCILIATION_BREAK_PREFIX))
+            })
+            .map(|frame| {
+                let envelope = qip_streaming::envelope::StreamEnvelope::from_frame(frame)?;
+                Ok(envelope.decode::<ReconciliationBreakRecord>()?.body)
+            })
+            .collect()
+    }
+
     pub fn declined_scores(&self) -> &[DeclinedScore] {
         &self.declined_scores
     }
