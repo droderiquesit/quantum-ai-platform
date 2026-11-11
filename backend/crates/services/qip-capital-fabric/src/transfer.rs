@@ -240,7 +240,7 @@ impl FundingCurve {
 /// Exchange rates against one base currency.
 ///
 /// The fabric budgets in a single base currency because the limits it composes
-/// from [`qip_capital`] are stated in one. Every amount that touches a limit is
+/// from `qip_capital` are stated in one. Every amount that touches a limit is
 /// converted here, once, through a rate that is an input rather than a lookup —
 /// so a plan can be replayed against the rates it was actually built on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

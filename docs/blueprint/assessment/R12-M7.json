@@ -3719,17 +3719,21 @@
   {
     "id": "R12-COVERAGE-7157",
     "status": "PARTIAL",
-    "current": "Separate crates for capital, risk, ledger; settlement in edge; no asset brain.",
+    "current": "Separate crates for capital (qip-capital), treasury (qip-treasury, ADR 0385), risk, ledger and the asset brain's portfolio engine; settlement is two modules. brain_closure.rs and treasury_boundary.rs hold the boundaries between them. The kernel composes the treasury (ADR 0388), so every one of these crates is linked by a binary.",
     "evidence": [
       "backend/crates/services/qip-capital",
+      "backend/crates/services/qip-treasury",
       "backend/crates/services/qip-risk-engine",
       "backend/crates/apps/qip-ledgerd",
-      "backend/crates/edge/qip-edge/src/settlement.rs"
+      "backend/crates/edge/qip-edge/src/settlement.rs",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs",
+      "backend/crates/tests/qip-acceptance/tests/treasury_boundary.rs",
+      "backend/crates/runtime/qip-kernel/src/treasury.rs"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: extract services/qip-treasury from qip-capital::{treasury, bank, funding} with an arch test that capital and treasury meet only through qip-contracts. 2026-11-11 (batch l1-c1-01, not built): the extraction cannot be made as ADR 0127 decision 2 states it. treasury.rs names no other qip-capital module and funding.rs names only treasury, but bank.rs uses four capital-brain types directly (collateral::Pledge, dated_ladder::{DatedLadder, EntryKind, LadderEntry}, reservation::{ReservationLedger, MAXIMUM_RESERVATION_VALIDITY}, survival::SurvivalReport), and the decision says treasury depends on no capital-brain module except through qip-contracts. NEEDS-ADR (or an ADR 0127 amendment): whether those four move to qip-contracts (ReservationLedger and DatedLadder carry behaviour, not only data), or bank.rs stays in qip-capital and only treasury and funding are extracted.",
+    "gap": "2026-11-11 (batch l1-d2-01, ADR 0388): qip-treasury is composed in the kernel and reached from every binary that links it; runtime_reachability passes with no exemption. The composite stays PARTIAL because a constituent does: R12-CAPITAL-1098 (no reserve floor, leverage ceiling or financing permission is declared, which the owner gives; the grant path is not composed, because the ledger and not the kernel holds the central treasury's balance). The asset, capital, risk, ledger and settlement brains' closure is held by brain_closure.rs (see R12-CAPITAL-1095, 1096, 1097, 1099, 1100).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -3737,7 +3741,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Asset brain; treasury as separate domain."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Asset brain; treasury as separate domain. 2026-11-11 batch l1-d1-01: qip-treasury extracted under ADR 0385 with its boundary suite; stays PARTIAL on R12-CAPITAL-1098. 2026-11-11 batch l1-d2-01: treasury composed in the kernel under ADR 0388; stays PARTIAL on R12-CAPITAL-1098."
   },
   {
     "id": "R12-COVERAGE-7158",

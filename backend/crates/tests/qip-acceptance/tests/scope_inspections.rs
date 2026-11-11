@@ -41,7 +41,7 @@ fn phase_three_exits_with_a_registry_of_more_than_one_class_beside_treasury_corr
         "asset registry",
     );
     holds(
-        "crates/services/qip-capital/src/lib.rs",
+        "crates/services/qip-treasury/src/lib.rs",
         "pub mod treasury;",
         "treasury",
     );

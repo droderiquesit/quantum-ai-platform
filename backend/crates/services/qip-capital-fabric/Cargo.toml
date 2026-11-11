@@ -14,8 +14,15 @@ qip-core.workspace = true
 qip-events.workspace = true
 qip-contracts.workspace = true
 qip-financial.workspace = true
-qip-capital.workspace = true
 qip-numerics.workspace = true
+
+# Tests only. The planner is bounded by the allocator's limits and its live
+# plan, which reach it as `qip_contracts::allocation` records (ADR 0385); the
+# tests build those records with the real allocator so they exercise the plan
+# a deployment would see. Nothing that ships from this crate names
+# `qip-capital`, and `brain_closure` pins that.
+[dev-dependencies]
+qip-capital.workspace = true
 
 [lints]
 workspace = true

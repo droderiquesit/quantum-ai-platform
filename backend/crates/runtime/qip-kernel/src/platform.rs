@@ -73,6 +73,7 @@ use qip_ai::memory::{
 };
 use qip_ai::retrieval::SearchIndex;
 use qip_ai::serving::{ModelProvider, NoProvider};
+use qip_capital::AllocationLimits;
 use qip_capital::bank::{IdleCash, RoutingOutcome, RoutingTerms, Shelf, route_idle_cash};
 use qip_capital::dated_ladder::{
     DatedLadder, EntryKind, LadderEntry as DatedEntry, RedemptionNotice,
@@ -85,7 +86,6 @@ use qip_capital::ledger::{
 };
 use qip_capital::margin::MarginModel;
 use qip_capital::reservation::ReservationLedger;
-use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
 use qip_capital_fabric::corridor::{Corridor, CorridorId};
 use qip_capital_fabric::gate::{CorridorFunding, FundingStanding};
 use qip_capital_fabric::journal::{
@@ -944,6 +944,11 @@ pub struct Platform {
     /// table balances are converted at. Derived once at assembly beside
     /// `credit`, whose sovereign curves it reads.
     financing: crate::financing::FinancingRegister,
+    /// The treasury's books (ADR 0388). Undeclared at assembly: no reserve
+    /// floor, no leverage ceiling and no financing permission has been given,
+    /// so it names own capital as the source of a planned placement and
+    /// counts no financing source, saying why.
+    treasury: crate::treasury::Treasury,
     /// What the event log's first record says about the universe this
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
@@ -6406,10 +6411,7 @@ impl Platform {
         let counterfactuals =
             CounterfactualEngine::new(config.seed, menu, delay + CAPITAL_HORIZON)?;
         let pre_positioner = PrePositioningPlanner::new(
-            CapitalAllocator::new(
-                AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
-                DrawdownSchedule::default(),
-            ),
+            AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
             TransferCostModel::new(
                 TransactionCostModel::listed(1.0),
                 LiquidityProfile::listed(Decimal::from_int(5_000_000_000_000), 1.0),
@@ -6594,6 +6596,7 @@ impl Platform {
             private_forecasts,
             credit,
             financing,
+            treasury: crate::treasury::Treasury::undeclared(CENTRAL_TREASURY, HOME_REGION),
             universe_assembled,
             universe_history,
             inherited_through,
@@ -18723,6 +18726,13 @@ impl Platform {
         &self.financing
     }
 
+    /// The treasury's books as the platform was assembled with them
+    /// (ADR 0388): undeclared, until a person gives a reserve floor, a
+    /// leverage ceiling or a financing permission.
+    pub fn treasury(&self) -> &crate::treasury::Treasury {
+        &self.treasury
+    }
+
     /// The unfunded private commitments this book is on the hook for.
     pub fn commitments(&self) -> &qip_financial::cashflow::CommitmentBook {
         &self.commitments
@@ -29032,6 +29042,24 @@ impl Platform {
         };
         let mut sentence = format!("pre-positioning: {}", plan.describe());
         let mut problems = Vec::new();
+        // Name the source of every move (ADR 0388). A plan reported with no
+        // source named for its capital reads as funded when nothing has said
+        // so; a move the treasury refuses is a problem, not a quiet line.
+        match self.treasury.fund_plan(&plan, CENTRAL_TREASURY) {
+            Ok(funding) => {
+                sentence.push_str(&format!("; {}", funding.describe()));
+                for refusal in &funding.plan.refused {
+                    problems.push(format!(
+                        "the treasury names no source for a planned pre-positioning move: {}",
+                        refusal.reason
+                    ));
+                }
+            }
+            Err(error) => problems.push(format!(
+                "the treasury could not name the source of the pre-positioning plan's moves: {}",
+                error.message()
+            )),
+        }
         match &self.pending_pre_positioning {
             Some(pending) => sentence.push_str(&format!(
                 "; the plan of {} is retained for scoring when its window closes at {}",

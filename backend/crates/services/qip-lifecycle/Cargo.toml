@@ -19,11 +19,14 @@ qip-contracts.workspace = true
 # the arithmetic has exactly one home and a venue cannot be admitted on a
 # second copy of it that drifted.
 qip-financial.workspace = true
-qip-ai.workspace = true
-# The holdout gate re-runs the validation the simulation engine already
-# implements — deflated Sharpe, purged k-fold, overfitting assessment — rather
-# than trusting numbers a researcher submitted alongside the strategy.
-qip-simulation-engine.workspace = true
+# Deliberately NOT dependencies since ADR 0386: qip-ai and
+# qip-simulation-engine. This is an asset-brain crate (ADR 0127), and those
+# two put a model-holding crate, the strategy crate and the risk brain in its
+# closure. The holdout gate still re-runs the validation rather than trusting
+# numbers a researcher submitted; that arithmetic is `qip_numerics::validation`
+# and has one home. Model eligibility reaches the demotion monitor as
+# `qip_contracts::model_eligibility::ModelEligibility`, which the kernel takes
+# from the registry. `brain_closure` fails if either line comes back.
 # Deliberately NOT a dependency: qip-optimization-engine. A rung that holds
 # capital has to name which of the four §23.4 pools funds it, and the pool
 # arithmetic exists once, in that crate. This crate reaches it through
@@ -43,6 +46,10 @@ qip-observability.workspace = true
 # The trial book's tests stand in a store, and the store port speaks
 # `serde_json::Value`; the crate itself never names it.
 serde_json.workspace = true
+# The demotion tests build the eligibility record the way the kernel does,
+# from a real registry, so a registry refusal is shown to reach the trigger.
+# Tests only; cargo gives a library target no dev-dependency.
+qip-ai.workspace = true
 # Deliberately not here either, though the solver-boundary test in
 # qip-acceptance skips `dev` and `build` dependencies and would have permitted
 # it: the horizon gate's tests stand in a reconciler of their own, because what

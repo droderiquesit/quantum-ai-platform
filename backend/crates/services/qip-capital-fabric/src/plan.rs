@@ -78,9 +78,12 @@
 //! # Composing rather than duplicating the allocator
 //!
 //! The fabric does not have a budget. It spends the headroom left in
-//! [`qip_capital::AllocationPlan`] — the same drawdown-adjusted budget the
-//! [`qip_capital::CapitalAllocator`] distributed to strategies — and it checks
-//! every destination against that allocator's own per-venue limit. Two systems
+//! [`AllocationPlan`] — the same drawdown-adjusted budget the capital brain's
+//! `CapitalAllocator` distributed to strategies — and it checks every
+//! destination against that allocator's own per-venue limit. Both arrive as
+//! `qip-contracts` records (ADR 0385): this crate reads what the allocator
+//! was bounded by and what it decided, and holds nothing that could decide
+//! either. Two systems
 //! each holding a budget is two systems each believing they own the same dollar.
 //!
 //! A move that would breach a limit is **refused, not clipped**. That is a
@@ -94,7 +97,7 @@ use crate::forecast::{DemandForecast, DemandKind};
 use crate::location::CapitalLocation;
 use crate::settlement::{SettlementBook, SettlementQuote};
 use crate::transfer::{FxRates, ShortfallAsymmetry, TransferCost, TransferCostModel};
-use qip_capital::allocation::{AllocationPlan, CapitalAllocator};
+use qip_contracts::allocation::{AllocationLimits, AllocationPlan};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, Timestamp};
@@ -434,7 +437,10 @@ struct Candidate {
 /// Decides what to pre-position.
 #[derive(Clone, Debug)]
 pub struct PrePositioningPlanner {
-    allocator: CapitalAllocator,
+    /// The allocator's limits, as a record. This held the allocator itself
+    /// until ADR 0385; the planner only ever read its limits, and a fabric
+    /// holding an allocator could have produced the live plan it is bounded by.
+    limits: AllocationLimits,
     transfer: TransferCostModel,
     /// Calendars per jurisdiction and the venue-to-jurisdiction join. One
     /// calendar for every lane was the state until §34.1's settlement
@@ -460,19 +466,19 @@ impl PrePositioningPlanner {
     /// of a funding decision. Past this the bound is simply not reported.
     const RELAXATION_CANDIDATE_LIMIT: usize = 48;
 
-    /// Build a planner around a live allocator, a cost model and a book of
-    /// settlement calendars.
+    /// Build a planner around the live allocator's limits, a cost model and a
+    /// book of settlement calendars.
     ///
     /// A lane at a venue the book has no jurisdiction for is refused in the
     /// plan rather than quoted on a default calendar; see
     /// [`SettlementBook::calendar_for`].
     pub fn new(
-        allocator: CapitalAllocator,
+        limits: AllocationLimits,
         transfer: TransferCostModel,
         settlement: SettlementBook,
     ) -> Self {
         Self {
-            allocator,
+            limits,
             transfer,
             settlement,
             shortfall_buffer_cap: Self::DEFAULT_SHORTFALL_BUFFER_CAP,
@@ -491,9 +497,9 @@ impl PrePositioningPlanner {
         Ok(self)
     }
 
-    /// The allocator whose limits every plan is checked against.
-    pub fn allocator(&self) -> &CapitalAllocator {
-        &self.allocator
+    /// The allocator's limits every plan is checked against.
+    pub fn limits(&self) -> &AllocationLimits {
+        &self.limits
     }
 
     /// The settlement calendars in force, per jurisdiction, and the venues
@@ -745,7 +751,7 @@ impl PrePositioningPlanner {
                 continue;
             }
 
-            let limit = self.allocator.limits().venue_limit(&move_.to.venue);
+            let limit = self.limits.venue_limit(&move_.to.venue);
             let already = live.for_venue(&move_.to.venue)
                 + used_at_venue
                     .get(&move_.to.venue)
@@ -829,8 +835,7 @@ impl PrePositioningPlanner {
         for candidate in candidates {
             let venue = &candidate.proposed.to.venue;
             headroom.entry(venue.clone()).or_insert_with(|| {
-                (self.allocator.limits().venue_limit(venue) - live.for_venue(venue))
-                    .max(Decimal::ZERO)
+                (self.limits.venue_limit(venue) - live.for_venue(venue)).max(Decimal::ZERO)
             });
         }
         headroom

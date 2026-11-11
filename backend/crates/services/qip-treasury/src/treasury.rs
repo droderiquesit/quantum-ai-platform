@@ -1,4 +1,4 @@
-//! The Capital Brain's own books: where every unit of liquidity sits, how much
+//! The Treasury Bank's own books: where every unit of liquidity sits, how much
 //! must stay unspent, how much leverage a strategy may carry, which book owes
 //! which, and which financing function an entity may use at all.
 //!

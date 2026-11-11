@@ -14,6 +14,14 @@
 //!   [`ReleaseConfirmation`] arrives. Asking for it back frees nothing: a
 //!   recall is a request, and collateral counted as available on the strength
 //!   of a request is collateral pledged twice the moment it is used.
+//!   **Retired from composition by ADR 0387.** What is pledged has one
+//!   source, the ledger's collateral balance read through
+//!   `qip_contracts::ledger::LedgerObligations`. This book is a tested model
+//!   of the rule above and nothing that ships constructs one;
+//!   `qip-acceptance`'s `pledge_source` suite refuses a production source
+//!   that names it. It is not derived from the ledger either: the ledger's
+//!   `CollateralPledge` record has no producer until a venue statement states
+//!   a pledge (ADR 0153 decision 3).
 //! * [`CurrencyBook`] (CAPITAL-013). A conversion debits one currency and
 //!   credits the other in one step at a rate written into the record, so the
 //!   two balances can be rebuilt from the journal alone.

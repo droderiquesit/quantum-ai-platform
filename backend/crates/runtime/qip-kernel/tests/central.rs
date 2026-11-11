@@ -1055,6 +1055,90 @@ fn the_compliance_report_enumerates_all_six_controls_with_its_caveats_intact() -
     Ok(())
 }
 
+/// ADR 0386: the lifecycle no longer holds the model registry, so
+/// `StrategyFactory::review` asks it and hands the monitor a record. This is
+/// the composed path, and what it must not lose is the refusal: a registry
+/// that will not clear a baseline's model has to demote the strategy that
+/// model drives, in the registry's own words, exactly as it did when the
+/// monitor asked the registry itself.
+///
+/// Mutations, each fails this test: in `StrategyFactory::review`, record
+/// `record_eligible` in the `Err` arm; or build the record from an empty
+/// set of references (the monitor then reads "no verdict", and the reason
+/// asserted below is not the registry's).
+#[test]
+fn a_model_the_registry_refuses_demotes_the_strategy_it_drives_through_the_composed_review()
+-> Result<()> {
+    use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage};
+    const MODEL: &str = "microprice-distilled@3";
+    let later = start().saturating_add(Duration::from_hours(1));
+    let overdue = |report: &qip_kernel::central::LearningReport| -> Vec<String> {
+        report
+            .learnings
+            .iter()
+            .flat_map(|learning| learning.review.triggers.iter())
+            .filter_map(|trigger| match trigger {
+                qip_lifecycle::demotion::DemotionTrigger::ModelReviewOverdue { model, reason } => {
+                    Some(format!("{model}: {reason}"))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let healthy =
+        |id: &StrategyId| CellOutcome::new(id.clone(), CELL, later, good_returns(5, 30, 0.0018));
+
+    // Premise: with the model registered, in production and evaluated, the
+    // same healthy outcome raises no model trigger and the strategy stays.
+    let mut cleared = ModelRegistry::new();
+    let mut card = ModelCard::new(
+        qip_core::ModelId::from_string("mdl-microprice-distilled"),
+        "microprice-distilled",
+        "3",
+        "quant-research",
+        later,
+    );
+    card.stage = ModelStage::Production;
+    card.evaluations.push(EvaluationRecord {
+        evaluated_at: later,
+        dataset: "holdout".to_string(),
+        metrics: BTreeMap::new(),
+        passed: true,
+    });
+    cleared.register(card)?;
+    cleared.require_for_decision(MODEL, later)?;
+    let mut plane_a = plane()?;
+    let id = strategy();
+    register(&mut plane_a, &id, CELL)?;
+    walk_to(&mut plane_a, &id, GateStage::Pilot)?;
+    let report = plane_a.learn(&[healthy(&id)], Some(&cleared), later)?;
+    assert_eq!(
+        report.learnings.len(),
+        1,
+        "premise: the outcome was reviewed"
+    );
+    assert_eq!(overdue(&report), Vec::<String>::new());
+    assert_eq!(plane_a.factory().stage_of(&id), GateStage::Pilot);
+
+    // A registry that does not know the model refuses it, and the refusal
+    // reaches the trigger in the registry's words.
+    let unknown = ModelRegistry::new();
+    let mut plane_b = plane()?;
+    register(&mut plane_b, &id, CELL)?;
+    walk_to(&mut plane_b, &id, GateStage::Pilot)?;
+    let report = plane_b.learn(&[healthy(&id)], Some(&unknown), later)?;
+    assert_eq!(
+        overdue(&report),
+        vec![format!("{MODEL}: no model registered as {MODEL}")]
+    );
+    assert_ne!(
+        plane_b.factory().stage_of(&id),
+        GateStage::Pilot,
+        "a strategy driven by a model the registry refuses kept its capital stage"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_demotion_revokes_nothing_retroactively_but_the_next_issuance_refuses() -> Result<()> {
     let mut plane = plane()?;

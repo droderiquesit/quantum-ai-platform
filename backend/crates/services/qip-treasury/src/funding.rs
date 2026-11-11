@@ -1,6 +1,6 @@
 //! Which source funds which requirement (CAPITAL-001).
 //!
-//! [`crate::allocation`] decides how much each strategy and cell should get.
+//! `qip_capital::allocation` decides how much each strategy and cell should get.
 //! It never says where the money comes from, and a grant that does not name
 //! its source can be issued against capital that does not exist. This module
 //! is the second question: given what grants and placements require and what

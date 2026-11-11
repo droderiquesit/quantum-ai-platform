@@ -28,6 +28,8 @@ qip-observability.workspace = true
 qip-contracts.workspace = true
 qip-lifecycle.workspace = true
 qip-capital.workspace = true
+# ADR 0388: the kernel is where the treasury and the capital brain meet.
+qip-treasury.workspace = true
 qip-compliance.workspace = true
 # The confidential release gate, standing between the plane's per-cell state
 # and any aggregate that leaves it as insight. See central/insights.rs.

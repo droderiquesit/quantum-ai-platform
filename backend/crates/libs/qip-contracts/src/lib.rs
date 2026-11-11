@@ -29,6 +29,7 @@
 
 pub mod action;
 pub mod admission;
+pub mod allocation;
 pub mod ambient;
 pub mod capital;
 pub mod captured_event;
@@ -76,6 +77,7 @@ pub mod forecast;
 pub mod knowledge_delta;
 pub mod microstructure_delta;
 pub mod mirror_checkpoint;
+pub mod model_eligibility;
 pub mod opportunity_token;
 pub mod risk_envelope;
 pub mod strategy_pack;

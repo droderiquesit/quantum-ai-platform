@@ -8,7 +8,7 @@
 //! a judgement call:
 //!
 //! * **Performance decay** against the pilot baseline. Measured with
-//!   [`qip_simulation_engine::validation::assess_overfitting`], which is
+//!   [`qip_numerics::validation::assess_overfitting`], which is
 //!   already the comparison "how much of what we measured survived" — the
 //!   pilot is the in-sample side and live is the out-of-sample side.
 //! * **Regime drift**: realised volatility has moved far enough from the
@@ -17,7 +17,7 @@
 //! * **A breached kill condition**, stated at the pilot gate and evaluated
 //!   here.
 //! * **An overdue model review**, taken straight from
-//!   [`qip_ai::registry::ModelCard::decision_eligibility`] rather than
+//!   `qip_ai::registry::ModelCard::decision_eligibility` rather than
 //!   re-derived, so a model that may not drive a decision cannot drive one
 //!   through a strategy either.
 //! * **An expired capital envelope**. The cell will already have stopped —
@@ -54,14 +54,14 @@
 
 use crate::evidence::KillCondition;
 use crate::ledger::LifecycleLedger;
-use qip_ai::registry::ModelRegistry;
 use qip_contracts::CapitalEnvelope;
 use qip_contracts::gate::{GateStage, Promotion};
+use qip_contracts::model_eligibility::{ModelEligibility, ModelVerdict};
 use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_numerics::stats;
-use qip_simulation_engine::validation::assess_overfitting;
+use qip_numerics::validation::assess_overfitting;
 use serde::{Deserialize, Serialize};
 
 /// What the pilot established, and therefore what live performance is judged
@@ -385,7 +385,7 @@ impl DemotionMonitor {
         &self,
         baseline: &PilotBaseline,
         observation: &LiveObservation,
-        models: Option<&ModelRegistry>,
+        models: Option<&ModelEligibility>,
         now: Timestamp,
     ) -> Vec<DemotionTrigger> {
         let mut triggers = Vec::new();
@@ -426,13 +426,36 @@ impl DemotionMonitor {
             }
         }
 
-        if let (Some(reference), Some(registry)) = (baseline.model_reference.as_ref(), models)
-            && let Err(error) = registry.require_for_decision(reference, now)
-        {
-            triggers.push(DemotionTrigger::ModelReviewOverdue {
-                model: reference.clone(),
-                reason: error.message().to_string(),
-            });
+        // The registry's verdict arrives as a record (ADR 0386); this crate
+        // does not hold the registry. Every reading that is not a clearance
+        // taken at this instant is a trigger: a model nobody asked about and
+        // a verdict taken at another time are both "not shown eligible now",
+        // and reading either as eligible would let a stale or partial record
+        // keep a retired model on capital.
+        if let (Some(reference), Some(record)) = (baseline.model_reference.as_ref(), models) {
+            let reason = if record.instant() != now {
+                Some(format!(
+                    "the eligibility record was taken at {} and is being read at {}; take it \
+                     from the registry at the instant it is read",
+                    record.instant().to_rfc3339(),
+                    now.to_rfc3339()
+                ))
+            } else {
+                match record.verdict(reference) {
+                    ModelVerdict::Eligible => None,
+                    ModelVerdict::Refused(reason) => Some(reason.to_string()),
+                    ModelVerdict::Unrecorded => Some(format!(
+                        "the eligibility record holds no verdict on {reference}; ask the \
+                         registry about every model a baseline names"
+                    )),
+                }
+            };
+            if let Some(reason) = reason {
+                triggers.push(DemotionTrigger::ModelReviewOverdue {
+                    model: reference.clone(),
+                    reason,
+                });
+            }
         }
 
         if let Some(envelope) = observation.envelope.as_ref()
@@ -486,7 +509,7 @@ impl DemotionMonitor {
         ledger: &mut LifecycleLedger,
         baseline: &PilotBaseline,
         observation: &LiveObservation,
-        models: Option<&ModelRegistry>,
+        models: Option<&ModelEligibility>,
         now: Timestamp,
     ) -> Result<(Vec<DemotionTrigger>, Option<Promotion>)> {
         let mut triggers = self.triggers(baseline, observation, models, now);

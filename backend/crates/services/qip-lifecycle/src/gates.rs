@@ -10,7 +10,7 @@
 //! Gates recompute rather than trust. [`HoldoutGate`] takes the holdout return
 //! series and the cross-validation parameters and re-derives the deflated
 //! Sharpe and the fold structure itself, using
-//! [`qip_simulation_engine::validation`]. A gate that read a submitted Sharpe
+//! [`qip_numerics::validation`]. A gate that read a submitted Sharpe
 //! ratio would be checking a spreadsheet.
 //!
 //! The one number the holdout gate cannot recompute from the evidence is the
@@ -38,9 +38,7 @@ use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_numerics::stats;
-use qip_simulation_engine::validation::{
-    DeflatedSharpe, PurgedSplit, assess_overfitting, deflated_sharpe,
-};
+use qip_numerics::validation::{DeflatedSharpe, PurgedSplit, assess_overfitting, deflated_sharpe};
 
 /// A rung's admission test.
 ///
