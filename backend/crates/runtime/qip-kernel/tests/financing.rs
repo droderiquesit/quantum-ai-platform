@@ -660,3 +660,265 @@ fn an_index_and_a_basket_are_valued_from_their_stated_constituents_and_one_that_
     }
     Ok(())
 }
+
+fn reverse_repo(id: &str, collateral: &str, is_reverse: bool) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::Repo,
+        liquidity(),
+    )
+    .venue("OTC")
+    .price(dec!("100"))
+    .provenance(provenance())
+    .extension(Extension::Repo(RepoDetails {
+        collateral_object: collateral.to_string(),
+        maturity: start().saturating_add(Duration::from_days(30)),
+        repo_rate: 0.05,
+        haircut: 0.02,
+        is_reverse,
+        counterparty: "dealer-a".into(),
+    }))
+    .build(start())
+}
+
+fn repo_desk_over(path: &std::path::Path, at: Timestamp) -> Result<Platform> {
+    let mut universe = Universe::new();
+    let mut objects = flat_curve("UST", Currency::USD, 0.05)?;
+    objects.push(reverse_repo("obj-REVERSE", "obj-UST-10Y", true)?);
+    objects.push(reverse_repo("obj-BORROW", "obj-UST-10Y", false)?);
+    for object in objects {
+        universe.insert(object)?;
+    }
+    let config = PlatformConfig::default().with_event_log_file(path);
+    let (context, _clock) = Context::deterministic(at, config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )
+}
+
+fn repo_permissions(counterparty: &str) -> qip_capital::treasury::FinancingPermissions {
+    let mut permissions = qip_capital::treasury::FinancingPermissions::new();
+    permissions.permit(
+        qip_capital::treasury::FinancingFunction::Repo,
+        "desk-a",
+        counterparty,
+        "US",
+    );
+    permissions
+}
+
+fn maturities(platform: &Platform) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+    platform
+        .pending_desk_operations()
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.kind,
+                qip_contracts::ledger_operation::OperationKind::RepoMaturity { .. }
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+/// R12-COVERAGE-5100, ADR 0398. A repo filled like any priced object and
+/// then nothing: no permission was asked for, the cash lent never came back,
+/// and the ledger of record held the units for ever. The failures this
+/// prevents, in the order asserted: a repo order placed by a desk holding no
+/// `Repo` permission for that counterparty, by either route to the venue; a
+/// borrowing or a short sold through a venue that states no pledge; a
+/// matured repo left in the book; its repayment booked twice, or lost or
+/// repeated by a restart; and the book's cash disagreeing with the ledger's
+/// postings by a rounding.
+///
+/// Mutations that fired, each restored byte-for-byte: `financing_gate`
+/// dropped from `order_for` ("an undeclared desk got a repo order"); dropped
+/// from `submit_released` ("an order built around the gate was submitted");
+/// the permission `require` removed ("a permission for another counterparty
+/// admitted the order"); the `is_reverse` refusal removed ("a borrowing repo
+/// got an order"); the short refusal removed ("a short got an order");
+/// `settle_matured_repos` dropped from SENSE (no far leg at maturity);
+/// `repo_interest` answering zero (the interest assertion); the
+/// `Entry::Maturity` fold skipped on resume (the restarted book still holds
+/// the units); the re-queue on resume dropped (the restarted process queues
+/// no far leg); the maturity refusal removed ("a matured repo got an order").
+#[test]
+fn a_repo_is_lent_only_under_a_recorded_permission_and_is_repaid_once_at_maturity_across_a_restart()
+-> Result<()> {
+    use qip_contracts::ledger_operation::OperationKind;
+    use qip_execution_engine::order::Side;
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-financing-repo-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let maturity = start().saturating_add(Duration::from_days(30));
+    let order = |platform: &mut Platform, id: &str, side: Side, at: Timestamp| {
+        platform.order_for(
+            ObjectId::from_string(id),
+            side,
+            dec!("10"),
+            dec!("100"),
+            "prop-repo",
+            vec!["hyp-repo".to_string()],
+            at,
+        )
+    };
+
+    let (booked, cash_repaid) = {
+        let mut first = repo_desk_over(&path, start())?;
+        let refusal = order(&mut first, "obj-REVERSE", Side::Buy, start())
+            .expect_err("an undeclared desk got a repo order");
+        assert!(
+            refusal
+                .message()
+                .contains("no financing entity is declared"),
+            "{}",
+            refusal.message()
+        );
+        let around = first.order_from(
+            ObjectId::from_string("obj-REVERSE"),
+            Side::Buy,
+            dec!("10"),
+            dec!("100"),
+            "prop-repo",
+            vec!["hyp-repo".to_string()],
+            start(),
+        );
+        first
+            .submit_order(around, start())
+            .expect_err("an order built around the gate was submitted");
+        first.authorise_financing("desk-a", "US", repo_permissions("dealer-b"));
+        let refusal = order(&mut first, "obj-REVERSE", Side::Buy, start())
+            .expect_err("a permission for another counterparty admitted the order");
+        assert!(
+            refusal.message().contains("Repo is not permitted")
+                && refusal.message().contains("dealer-a"),
+            "{}",
+            refusal.message()
+        );
+        first.authorise_financing("desk-a", "US", repo_permissions("dealer-a"));
+        let refusal = order(&mut first, "obj-BORROW", Side::Buy, start())
+            .expect_err("a borrowing repo got an order");
+        assert!(
+            refusal.message().contains("the desk borrows"),
+            "{}",
+            refusal.message()
+        );
+        let refusal = order(&mut first, "obj-REVERSE", Side::Sell, start())
+            .expect_err("a short got an order");
+        assert!(refusal.message().contains("short"), "{}", refusal.message());
+        assert_eq!(first.orders().fills().len(), 0, "premise: nothing filled");
+
+        let lend = order(&mut first, "obj-REVERSE", Side::Buy, start())?;
+        first.submit_order(lend, start())?;
+        let (held, _) = *first
+            .positions_at_cost()
+            .get("obj-REVERSE")
+            .expect("premise: the venue filled the repo");
+        assert!(held.is_positive(), "premise: the desk holds the claim");
+        let lent: Decimal = first
+            .orders()
+            .fills()
+            .iter()
+            .map(|fill| fill.quantity * fill.price)
+            .fold(Decimal::ZERO, |sum, notional| sum + notional);
+        assert!(lent.is_positive(), "premise: the fill lent cash");
+
+        // A day short of maturity nothing is repaid.
+        first.run_cycle(maturity.saturating_sub(Duration::from_days(1)));
+        assert!(maturities(&first).is_empty(), "repaid before maturity");
+        assert!(first.positions_at_cost().contains_key("obj-REVERSE"));
+
+        let fills_before = first.orders().fills().len();
+        let cash_before = first.cash();
+        first.run_cycle(maturity);
+        assert_eq!(
+            first.orders().fills().len(),
+            fills_before,
+            "premise: the maturity cycle filled nothing, so the cash moved is the repayment"
+        );
+        let repaid = maturities(&first);
+        assert_eq!(repaid.len(), 1, "one far leg at maturity: {repaid:?}");
+        let OperationKind::RepoMaturity {
+            counterparty,
+            repo,
+            units,
+            cash_unit,
+            principal,
+            interest,
+            ..
+        } = &repaid[0].kind
+        else {
+            unreachable!("filtered to repo maturities");
+        };
+        assert_eq!((repo.as_str(), *units), ("obj-REVERSE", held));
+        assert_eq!(
+            (counterparty.as_str(), cash_unit.as_str()),
+            ("dealer-a", "USD")
+        );
+        // What was lent is what the fill paid, not a figure restated here.
+        assert_eq!(*principal, lent);
+        // 5% on the 365.25-day year over the whole days the cash was lent,
+        // counted from the fill's own instant and not from the order's.
+        let filled_at = first.orders().fills()[0].at;
+        let days = maturity.since(filled_at).as_millis() / 86_400_000;
+        assert!((29..=30).contains(&days), "premise: about a month, {days}");
+        let expected = lent * dec!("0.05") * Decimal::from_int(days) / dec!("365.25");
+        assert!(
+            (*interest - expected).abs() < dec!("0.0001") && interest.is_positive(),
+            "interest {interest} is not {days} days at 5% on {lent}: {expected}"
+        );
+        assert!(
+            !first.positions_at_cost().contains_key("obj-REVERSE"),
+            "the matured repo is still in the book"
+        );
+        // The book received exactly what the ledger's postings say.
+        assert_eq!(first.cash(), cash_before + *principal + *interest);
+
+        let after = maturity.saturating_add(Duration::from_hours(1));
+        first.run_cycle(after);
+        assert_eq!(maturities(&first), repaid, "the repayment was booked twice");
+        let refusal = order(&mut first, "obj-REVERSE", Side::Buy, after)
+            .expect_err("a matured repo got an order");
+        assert!(
+            refusal.message().contains("matured"),
+            "{}",
+            refusal.message()
+        );
+        (repaid, first.cash())
+    };
+
+    let later = maturity.saturating_add(Duration::from_hours(2));
+    let mut second = repo_desk_over(&path, later)?;
+    assert_eq!(
+        maturities(&second),
+        booked,
+        "the restarted process did not re-queue the far leg the first journalled"
+    );
+    assert!(
+        !second.positions_at_cost().contains_key("obj-REVERSE"),
+        "the restarted book still holds the repaid repo"
+    );
+    assert_eq!(
+        second.cash(),
+        cash_repaid,
+        "the restart moved the repaid cash"
+    );
+    second.run_cycle(later);
+    assert_eq!(
+        maturities(&second),
+        booked,
+        "the restart repaid the repo again"
+    );
+    drop(second);
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
