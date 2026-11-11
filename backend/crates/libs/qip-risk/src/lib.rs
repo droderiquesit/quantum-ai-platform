@@ -37,6 +37,7 @@ pub mod limits;
 pub mod market_factor;
 pub mod metrics;
 pub mod shared_cause;
+pub mod tolerance;
 
 pub use aggregate::{AggregateFigures, RiskAggregates};
 pub use factor::{FactorRisk, RiskDecomposition};
@@ -44,7 +45,9 @@ pub use hedge::{
     HedgeAxis, HedgeEngine, HedgeExposures, HedgeInstrument, HedgeOutcome, HedgePolicy,
     HedgeProposal, HedgeRefusal, HedgeSide, propose_hedge,
 };
-pub use limits::{Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, RiskState, Severity};
+pub use limits::{
+    Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, Narrowing, RiskState, Severity,
+};
 pub use metrics::{DrawdownProfile, RiskMetrics, TailRisk};
 pub use shared_cause::{
     CAUSAL_DRIVER_AXIS, FACTOR_AXIS, FAMILY_AXIS, SHARED_CAUSE_AXES, SharedCauseExposure,

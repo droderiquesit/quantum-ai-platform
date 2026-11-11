@@ -577,6 +577,27 @@ impl LimitKind {
     }
 }
 
+/// How a limit in force was derived from the operator's ceiling (ADR 0405).
+///
+/// Carried on a narrowed [`Limit`] and copied onto every [`LimitBreach`] it
+/// raises, so that a refusal can say which of two bounds refused the order:
+/// the one the operator wrote, or the tighter one the desk mandate's risk
+/// tolerance produced from it. Without the mark a breach at a bound of 5,000
+/// under a file that says 10,000 reads as a platform enforcing a number
+/// nobody wrote down.
+///
+/// Absent on a limit that was not narrowed — a minimum, or any limit at a
+/// tolerance of one — so that a set at tolerance one is the ceiling itself
+/// and serialises exactly as it always did.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Narrowing {
+    /// The operator's bound, in the limit's own units, as
+    /// [`LimitKind::bound`] reported it before the narrowing.
+    pub ceiling: f64,
+    /// The desk mandate's risk tolerance the ceiling was multiplied by.
+    pub tolerance: Decimal,
+}
+
 /// A configured limit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Limit {
@@ -591,6 +612,10 @@ pub struct Limit {
     pub forces_reduction: bool,
     /// Why the limit exists, so a breach report explains itself.
     pub rationale: String,
+    /// Set only by [`Limit::narrowed_by`]: this limit's bound is the
+    /// operator's ceiling narrowed by a risk tolerance below one (ADR 0405).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrowing: Option<Narrowing>,
 }
 
 impl Limit {
@@ -602,6 +627,7 @@ impl Limit {
             critical_multiple: 1.25,
             forces_reduction: false,
             rationale: String::new(),
+            narrowing: None,
         }
     }
 
@@ -726,6 +752,10 @@ pub struct LimitBreach {
     pub subject: Option<String>,
     pub detail: String,
     pub forces_reduction: bool,
+    /// Present when [`Self::bound`] is a limit in force below the operator's
+    /// ceiling (ADR 0405): the ceiling and the tolerance that narrowed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrowing: Option<Narrowing>,
 }
 
 impl LimitBreach {
@@ -1223,6 +1253,10 @@ impl From<LimitDocument> for Limit {
             critical_multiple: document.critical_multiple,
             forces_reduction: document.forces_reduction,
             rationale: document.rationale,
+            // A committed document states a ceiling. `LimitDocument` has no
+            // such key and refuses unknown ones, so a file cannot arrive
+            // claiming to be narrowed already.
+            narrowing: None,
         }
     }
 }
@@ -1592,6 +1626,19 @@ impl LimitSet {
                     ),
                 ),
             };
+            // A breach of a narrowed limit names all three figures (ADR 0405
+            // clause 5). The observation is compared against `bound`, the
+            // limit in force; a reader who knows only the operator's file
+            // would otherwise see an order refused inside the bound the file
+            // states and have no way to say why.
+            let detail = match &limit.narrowing {
+                Some(narrowing) => format!(
+                    "{detail}; the limit in force, {bound}, is the operator's ceiling of {} \
+                     narrowed by the desk mandate's risk tolerance of {} (ADR 0405)",
+                    narrowing.ceiling, narrowing.tolerance
+                ),
+                None => detail,
+            };
             out.push(LimitBreach {
                 limit_name: limit.name.clone(),
                 limit_kind: limit.kind.label().to_string(),
@@ -1606,6 +1653,7 @@ impl LimitSet {
                 subject,
                 detail,
                 forces_reduction: limit.forces_reduction,
+                narrowing: limit.narrowing,
             });
         };
 
