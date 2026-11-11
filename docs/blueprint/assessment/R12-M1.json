@@ -3164,7 +3164,7 @@
     "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's posterior comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-18 by an independent grader. Owner ruling 2026-10-31 (REGRADE_TEXT): Probabilistic logic is the journaled network posterior, recomputed on replay, and that is the scope; neural coupling is out under ADR 0150 decision 7."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's posterior comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-18 by an independent grader. Owner ruling 2026-10-31 (REGRADE_TEXT): Probabilistic logic is the journaled network posterior, recomputed on replay, and that is the scope; neural coupling is out under ADR 0150 decision 7. 2026-11-11 independent verification (wave1111 fw-a-01): a_journaled_posterior_that_the_recorded_network_does_not_yield_is_refused_on_replay passes. Mutation: verify's posterior comparison disabled (`if false && posterior_of(..) != derivation.posterior`) -> the test fails at tests/symbolic_federation.rs:843 'refused, but not for the posterior' (the uncertainty check caught it instead, and the test names the reason it expects); restored, passes. Held PARTIAL per the ruling: neural coupling is out by ADR 0150 decision 7."
   },
   {
     "id": "R12-REASON-1135",
