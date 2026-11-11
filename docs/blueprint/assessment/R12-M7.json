@@ -670,18 +670,18 @@
   },
   {
     "id": "R12-AGENCY-7030",
-    "status": "PARTIAL",
-    "current": "EffectAttribution contract with horizons, counterfactual method, identifiability; attribution refusal tests. A sweep-time join of drafts to their follow-up reading runs in qip-deepbrain (ambient_agency.rs::observe) and emits one EffectAttribution per follow-up through engine::learn, uncertainty stated as identifiability 0.",
+    "status": "COMPLETE",
+    "current": "EffectAttribution::validate refuses an attribution with empty observations, a zero or repeated horizon, a blank counterfactual_method, an empty causal chain, confounders, rivals or side effects, and identifiability above 0 on an unidentified effect. The ambient path assigns no treatment (ADR 0145 decision 3: no variants, no hold-out, no perturbation), revived only under decision 8; the assignment the platform supports is qip-agency estimate.rs::Experiment::design, split from a committed seed and unused on the ambient path. A sweep-time join of drafts to their follow-up reading in qip-deepbrain (ambient_agency.rs::observe) emits one EffectAttribution per follow-up through engine::learn at identifiability 0.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:477 EffectAttribution::validate (the earlier :183-226 now lands on GoalSpecDraft::build)",
-      "backend/crates/services/qip-agency/src/attribution.rs",
+      "backend/crates/libs/qip-contracts/src/expansion.rs:477 EffectAttribution::validate",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs:247 a_blank_or_empty_listed_field_is_refused_naming_the_field",
       "backend/crates/services/qip-agency/tests/agency.rs:484 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
-      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
+      "backend/crates/services/qip-agency/src/estimate.rs:200 Experiment::design (seeded hold-out), unused on the ambient path",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from (engine::learn on the default node path)",
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
-      "backend/crates/services/qip-agency/src/estimate.rs:200 Experiment::design (seeded hold-out; staged_experiment :370, matched_control :438), unused on the ambient path",
-      "backend/crates/libs/qip-contracts/tests/expansion.rs:203 a_blank_or_empty_listed_field_is_refused_naming_the_field"
+      "docs/adr/0145 decisions 3 and 8"
     ],
-    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): no assignment on the ambient path, by ADR 0145 decision 3 (no variants, no hold-out, no perturbation), revived only under decision 8 (an ADR amending 0114 that names who is held out and who consents); that settles 'where permissible'. The assignment the platform supports is qip-agency estimate.rs::Experiment::design, split from a committed seed, and it is used nowhere on the ambient path. The row's own check is met: qip-contracts expansion.rs::EffectAttribution::validate (:477) refuses a blank counterfactual_method, empty observations, a repeated horizon and identifiability above 0 on an unidentified effect, proven by qip-contracts tests/expansion.rs:203 and qip-agency tests/agency.rs:484. No code change; deployability follows the deep brain's deploy. Earlier: no experiment assignment, by decision (ADR 0145 decision 3). Two drafts per opportunity defeat AmbientIntake's dedup on signal id, and a hold-out is an experiment; revival needs an ADR amending 0114 plus a consumer. (dated 2026-10-24)",
+    "gap": "2026-11-11 regraded COMPLETE (fw-b-01) on the row's own check, under the owner's 2026-10-31 ruling (REGRADE_TEXT): 'ADR 0145 stands. The platform assigns no treatment on the ambient path: no variants, no hold-out and no perturbation, and that settles \"where permissible\". ... The row is graded on its own check, and the code meets that check.' Run: cargo test -p qip-contracts --test expansion a_blank_or_empty_listed_field_is_refused_naming_the_field (1 passed) and cargo test -p qip-agency --test agency an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused (1 passed); the evidence's earlier tests/expansion.rs:203 was stale, the test is at :247. Mutations, both restored (git diff empty): dropping the counterfactual_method text check in EffectAttribution::validate failed the contracts test at expansion.rs:286; dropping the causal_chain list check failed the agency test at agency.rs:499. Deployability follows the deep brain's deploy.",
     "implemented": true,
     "tested": true,
     "integrated": true,
