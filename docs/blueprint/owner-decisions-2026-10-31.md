@@ -1064,6 +1064,31 @@ that narrows a security scanner, whatever the owner has delegated.
     request and is never sized. The test is then restated to that
     stricter property, with a mutation.
 
+28. **A row no longer waits on a design question that lives in the
+    repository** (owner, 2026-11-11: "make all the decisions you can").
+    The session that meets such a question decides it by ADR, from a
+    number range the orchestrator gives it in its spawn message. It
+    decides by six preferences, in this order:
+    - narrow, refuse or measure, and never widen an authority, a limit or
+      the paper boundary;
+    - `qip-contracts` holds data types only, so no behaviour moves into
+      it;
+    - prefer no new crate edge, and pin any unavoidable one by test so the
+      set cannot grow;
+    - one source for one fact: keep the ledger or event-log record and
+      derive or retire the second claim;
+    - an arm with no producer in the tree is declared absent with its
+      reason, and is not built on an invented input;
+    - an accepted ADR is amended only by a new ADR that names the clause.
+
+    Six things stay with the owner: a figure nobody gave, a change to a
+    requirement's wording, the reversal of an accepted refusal, a new
+    dependency, a billed service and a deployment. The first ruling made
+    under this decision is the treasury split: treasury and funding are
+    extracted into `services/qip-treasury`, `bank.rs` stays in
+    `qip-capital`, and a type that carries behaviour does not move to
+    `qip-contracts`.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
