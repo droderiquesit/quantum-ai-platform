@@ -2273,9 +2273,10 @@
     "current": "Functionality lives in qip-portfolio-engine / qip-lifecycle; no single 'brain' boundary or autonomous loop is defined.",
     "evidence": [
       "backend/crates/services/qip-portfolio-engine/src",
-      "backend/crates/services/qip-lifecycle/src/gates.rs"
+      "backend/crates/services/qip-lifecycle/src/gates.rs",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_asset_brains_portfolio_engine_is_closed_and_the_lifecycle_crates_open_edges_are_exactly_the_known_ones"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the asset brain (qip-portfolio-engine, qip-lifecycle).",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18). 2026-11-11: a closure test exists and the asset brain is not closed. qip-portfolio-engine meets all three clauses of decision 5 (no alpha crate in its closure, no other brain's crate, nothing below the kernel depends on it). qip-lifecycle does not: it depends on qip-ai (demotion.rs reads qip_ai::registry::ModelRegistry), reaches qip-strategy and the risk brain's qip-risk through qip-simulation-engine, and the alpha service qip-evolution depends on it. The test pins those edges exactly so they cannot grow. NEEDS-ADR (or an ADR 0127 amendment): whether the validation gates and model-eligibility check stay in the asset brain with those edges moved behind qip-contracts types, or qip-lifecycle is not an asset-brain crate. No manifest edit closes it without that decision.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2283,10 +2284,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutation (qip-prediction added to qip-portfolio-engine's manifest under an inactive target table) fails it with alpha {qip-prediction}; restored with cp and cmp. brain_closure: 8 passed, 0 failed. Stays PARTIAL."
   },
   {
     "id": "R12-CAPITAL-1096",
@@ -2294,9 +2295,10 @@
     "current": "Functionality lives in qip-capital + qip-capital-fabric used by kernel; no single 'brain' boundary or autonomous loop is defined.",
     "evidence": [
       "backend/crates/services/qip-capital/tests/treasury.rs:58",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_capital_brain_reaches_no_alpha_and_no_other_brain_and_only_the_fabric_depends_on_it"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the capital brain (qip-capital less treasury).",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18). 2026-11-11: a closure test exists. qip-capital's closure reaches no alpha crate and no other brain's crate. The clause that no other brain's crate depends on it except through qip-contracts does not hold: qip-capital-fabric (the Settlement Brain's crate) depends on qip-capital directly for AllocationPlan, CapitalAllocator, AllocationLimits and DrawdownSchedule; the test pins that as the one direct dependent below the kernel. ADR 0127 expected the fabric's edge to move to qip-treasury, but the types it reads are the allocator's, not treasury's, and treasury is not yet extracted (R12-CAPITAL-1098). NEEDS-ADR (or an ADR 0127 amendment): whether the allocator's plan and limit types move to qip-contracts or the fabric's edge is admitted.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2304,10 +2306,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutations that fired, each restored with cp and cmp: qip-risk added to qip-capital's manifest under an inactive target table (the capital brain reaches another brain's {qip-risk}); qip-capital added to qip-twin's manifest the same way (direct dependents {qip-capital-fabric, qip-twin}). brain_closure: 8 passed, 0 failed. Stays PARTIAL."
   },
   {
     "id": "R12-CAPITAL-1097",
@@ -2342,7 +2344,7 @@
       "backend/crates/services/qip-capital-fabric/src/corridor.rs",
       "backend/crates/services/qip-capital-fabric/src/custody.rs"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: the qip-treasury extraction and its arch test (shared with COVERAGE-7157).",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: the qip-treasury extraction and its arch test (shared with COVERAGE-7157). 2026-11-11 (batch l1-c1-01, not built): the extraction cannot be made as ADR 0127 decision 2 states it. treasury.rs names no other qip-capital module and funding.rs names only treasury, but bank.rs uses four capital-brain types directly (collateral::Pledge, dated_ladder::{DatedLadder, EntryKind, LadderEntry}, reservation::{ReservationLedger, MAXIMUM_RESERVATION_VALIDITY}, survival::SurvivalReport), and the decision says treasury depends on no capital-brain module except through qip-contracts. NEEDS-ADR (or an ADR 0127 amendment): whether those four move to qip-contracts (ReservationLedger and DatedLadder carry behaviour, not only data), or bank.rs stays in qip-capital and only treasury and funding are extracted.",
     "implemented": true,
     "tested": true,
     "integrated": true,

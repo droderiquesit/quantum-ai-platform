@@ -10,6 +10,14 @@
 //! the Settlement Brain (`qip-capital-fabric`'s `settlement` module and
 //! `qip-edge`'s, R12-CAPITAL-1100).
 //!
+//! For the Capital Brain (`qip-capital`, R12-CAPITAL-1096) and the Asset
+//! Brain (`qip-portfolio-engine`, `qip-lifecycle`, R12-CAPITAL-1095) it
+//! holds the clauses that are true and pins, exactly, the edges that are
+//! not: the fabric's direct use of the allocator's types, and the lifecycle
+//! crate's reach into the model registry, the simulation engine's closure
+//! and the evolution service's dependence on it. Neither brain is closed by
+//! this suite; each test says which edges are open.
+//!
 //! **`qip-edge` is not a brain crate, and that is checked, not assumed.** It
 //! hosts the cell, which by ADR 0008 decides alone and so depends on the risk
 //! brain's pre-trade checks directly; listing it as a brain would make every
@@ -525,4 +533,133 @@ fn the_ledger_brain_reaches_no_alpha_and_no_other_brain_and_meets_them_through_c
             );
         }
     }
+}
+
+/// The inbound and outbound brain and alpha edges of one brain crate, as the
+/// manifests state them: alpha crates its closure reaches, other brains'
+/// crates its closure reaches, and non-composition crates that depend on it
+/// directly (the kernel and the apps compose, and are held by
+/// `only_the_kernel_and_the_apps_hold_two_brains`).
+fn edges(
+    root: &str,
+    own: &str,
+    graph: &BTreeMap<String, (String, BTreeSet<String>)>,
+) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
+    let brains = brains();
+    let reached = closure(root, graph);
+    assert!(reached.len() > 1, "premise: {root} reaches nothing");
+    let alpha = ALPHA
+        .iter()
+        .filter(|c| reached.contains(**c))
+        .map(|c| (*c).to_string())
+        .collect();
+    let other = brains
+        .iter()
+        .filter(|(brain, _)| **brain != own)
+        .flat_map(|(_, members)| members.iter())
+        .filter(|c| reached.contains(**c))
+        .map(|c| (*c).to_string())
+        .collect();
+    let dependents = graph
+        .iter()
+        .filter(|(name, (group, deps))| {
+            deps.contains(root)
+                && name.as_str() != "qip-kernel"
+                && group != "apps"
+                && !brains[own].contains(name.as_str())
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    (alpha, other, dependents)
+}
+
+fn set(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+/// R12-CAPITAL-1096, ADR 0127 decision 5 for the Capital Brain
+/// (`qip-capital`). Two of the three clauses hold and are held here: its
+/// closure reaches no alpha crate and no other brain's crate, so nothing
+/// that generates alpha and no other brain can construct or relax a capital
+/// decision through a dependency.
+///
+/// The second clause does **not** hold in full, and the exception is pinned
+/// rather than hidden: `qip-capital-fabric`, the Settlement Brain's crate,
+/// depends on `qip-capital` directly for the allocator's plan and limits
+/// (`AllocationPlan`, `CapitalAllocator`, `AllocationLimits`,
+/// `DrawdownSchedule`). ADR 0127 expected that edge to move to
+/// `qip-treasury`; the types it reads are the capital brain's own, not
+/// treasury's. Until that is decided the set of direct dependents is
+/// asserted exactly, so a second service taking the capital brain fails
+/// here, and removing the fabric's edge fails here too and is the cue to
+/// tighten this to the empty set.
+///
+/// Mutation: add `qip-risk.workspace = true` under a
+/// `[target.'cfg(any())'.dependencies]` table in qip-capital's manifest —
+/// the capital brain then reaches the risk brain.
+#[test]
+fn the_capital_brain_reaches_no_alpha_and_no_other_brain_and_only_the_fabric_depends_on_it() {
+    let graph = workspace();
+    let (alpha, other, dependents) = edges("qip-capital", "capital", &graph);
+    assert!(
+        alpha.is_empty(),
+        "qip-capital can reach alpha crates {alpha:?}"
+    );
+    assert!(
+        other.is_empty(),
+        "the capital brain reaches another brain's {other:?}; a brain may meet another only \
+         through qip-contracts"
+    );
+    assert_eq!(
+        dependents,
+        set(&["qip-capital-fabric"]),
+        "the crates below the kernel that depend on the capital brain directly changed; the \
+         one known edge is the fabric's use of the allocator's types (R12-CAPITAL-1096)"
+    );
+}
+
+/// R12-CAPITAL-1095, ADR 0127 decision 5 for the Asset Brain
+/// (`qip-portfolio-engine`, `qip-lifecycle`).
+///
+/// `qip-portfolio-engine` meets all three clauses: no alpha, no other
+/// brain, and nothing below the kernel depends on it.
+///
+/// `qip-lifecycle` does not, and what it reaches is pinned exactly so it
+/// cannot grow unnoticed: it names `qip-ai` (the model registry its
+/// demotion reads) and, through `qip-simulation-engine`, reaches
+/// `qip-strategy` and the risk brain's `qip-risk`; and `qip-evolution`, an
+/// alpha crate, depends on it. Each is a way a decision about an asset's
+/// lifecycle can be reached from, or reach, alpha, which is what the
+/// closure is meant to exclude. Closing them is a decision about where the
+/// validation gates live, not a manifest edit.
+///
+/// Mutation: add `qip-prediction.workspace = true` under a
+/// `[target.'cfg(any())'.dependencies]` table in qip-portfolio-engine's
+/// manifest — the asset brain's clean half then reaches alpha.
+#[test]
+fn the_asset_brains_portfolio_engine_is_closed_and_the_lifecycle_crates_open_edges_are_exactly_the_known_ones()
+ {
+    let graph = workspace();
+    let (alpha, other, dependents) = edges("qip-portfolio-engine", "asset", &graph);
+    assert!(
+        alpha.is_empty() && other.is_empty() && dependents.is_empty(),
+        "qip-portfolio-engine: alpha {alpha:?}, other brains {other:?}, dependents {dependents:?}"
+    );
+
+    let (alpha, other, dependents) = edges("qip-lifecycle", "asset", &graph);
+    assert_eq!(
+        alpha,
+        set(&["qip-ai", "qip-strategy"]),
+        "the alpha crates qip-lifecycle reaches changed (R12-CAPITAL-1095)"
+    );
+    assert_eq!(
+        other,
+        set(&["qip-risk"]),
+        "the other brains' crates qip-lifecycle reaches changed (R12-CAPITAL-1095)"
+    );
+    assert_eq!(
+        dependents,
+        set(&["qip-evolution"]),
+        "the crates below the kernel that depend on qip-lifecycle changed (R12-CAPITAL-1095)"
+    );
 }

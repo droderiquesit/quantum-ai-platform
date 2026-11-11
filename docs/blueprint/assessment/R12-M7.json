@@ -3722,7 +3722,7 @@
       "backend/crates/apps/qip-ledgerd",
       "backend/crates/edge/qip-edge/src/settlement.rs"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: extract services/qip-treasury from qip-capital::{treasury, bank, funding} with an arch test that capital and treasury meet only through qip-contracts.",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: extract services/qip-treasury from qip-capital::{treasury, bank, funding} with an arch test that capital and treasury meet only through qip-contracts. 2026-11-11 (batch l1-c1-01, not built): the extraction cannot be made as ADR 0127 decision 2 states it. treasury.rs names no other qip-capital module and funding.rs names only treasury, but bank.rs uses four capital-brain types directly (collateral::Pledge, dated_ladder::{DatedLadder, EntryKind, LadderEntry}, reservation::{ReservationLedger, MAXIMUM_RESERVATION_VALIDITY}, survival::SurvivalReport), and the decision says treasury depends on no capital-brain module except through qip-contracts. NEEDS-ADR (or an ADR 0127 amendment): whether those four move to qip-contracts (ReservationLedger and DatedLadder carry behaviour, not only data), or bank.rs stays in qip-capital and only treasury and funding are extracted.",
     "implemented": true,
     "tested": true,
     "integrated": false,
