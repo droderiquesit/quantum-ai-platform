@@ -19,9 +19,11 @@
 //!   (`analyst:<agent>`), at `½ + ½ × sign × effective conviction`, with the
 //!   run's metered cost and wall-clock latency.
 //!
-//! Detectors are not metered, so their forecasts carry zero cost and zero
-//! latency. That favours them on those two factors and is stated here so the
-//! factor is not read as measured for them.
+//! A detector's cost is the evidence items it examined, on the step meter
+//! (ADR 0149 decision 13), ranked only among step-metered entrants and never
+//! against an analyst's money. Its latency is unmetered: the hypothesis is
+//! formed at the pass instant, so it reads the neutral factor, neither best
+//! nor worst, and is not a measured latency.
 //!
 //! The forecasts are categorical rather than full §9.14 [`Forecast`]
 //! contracts on purpose: a panel finding states a direction and a
@@ -72,7 +74,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
 use qip_investment_agents::chief::OrganisationReport;
 use qip_learning_engine::tournament::{
-    ForecasterKind, ForecasterSpec, InfluenceWeight, LatticeHorizon, PromotionDecision,
+    CostMeter, ForecasterKind, ForecasterSpec, InfluenceWeight, LatticeHorizon, PromotionDecision,
     QuestionSpec, ResearchTask, Resolution, ResolvedQuestion, Scorecard, ScoredForecast,
     Tournament, TournamentForecast,
 };
@@ -936,10 +938,14 @@ impl TournamentStage {
             issued_at: now,
             probabilities_bp: Some(binary(up_bp(detector_up))),
             quantiles: move_quantiles(detector_up, observation.expected_move_bps, &rets),
-            // Unmetered, not free: the hypothesis is formed at the pass
-            // instant, so a measured latency is zero by construction and a
-            // wall-clock reading would not replay (ADR 0149 decision 13).
-            cost: None,
+            // Counted work, not money (ADR 0149 decision 13, R12-MODEL-3090):
+            // the evidence items the detector examined, a deterministic step
+            // count ranked only among step-metered entrants. Latency stays
+            // unmetered: the hypothesis is formed at the pass instant, so a
+            // measured latency is zero by construction and a wall-clock
+            // reading would not replay.
+            cost: Some(hypothesis.evidence.len() as f64),
+            cost_meter: CostMeter::Steps,
             latency: None,
         });
         for finding in &observation.report.findings {
@@ -974,6 +980,7 @@ impl TournamentStage {
                 probabilities_bp: Some(binary(up_bp(p_up))),
                 quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
                 cost: run.map(|run| run.spend.cost_micros as f64),
+                cost_meter: CostMeter::Spend,
                 latency: run.map(|run| run.duration()),
             });
         }
@@ -997,8 +1004,9 @@ impl TournamentStage {
                 issued_at: now,
                 probabilities_bp: Some(binary(up_bp(p_up))),
                 quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
-                // In-cycle arithmetic over counts, unmetered like a detector.
+                // In-cycle arithmetic over counts, unmetered.
                 cost: None,
+                cost_meter: CostMeter::Spend,
                 latency: None,
             });
         }
@@ -1008,7 +1016,14 @@ impl TournamentStage {
             // The vote contract carries a `Decimal` compute cost with no
             // absent form, so an unmetered entrant votes at zero there; the
             // tournament's own influence arithmetic reads the `None`.
-            let cost = entry.cost.unwrap_or(0.0);
+            //
+            // A step count is not an amount, so a step-metered entrant votes
+            // at zero there too: converting evidence items into compute money
+            // is the conversion ADR 0149 decision 13 rules out.
+            let cost = match entry.cost_meter {
+                CostMeter::Spend => entry.cost.unwrap_or(0.0),
+                CostMeter::Steps => 0.0,
+            };
             let up = entry
                 .probabilities_bp
                 .as_ref()
@@ -1709,6 +1724,19 @@ mod tests {
         );
         let mut unattacked = TournamentStage::new();
         observe(&mut unattacked, &quiet, false).expect("the question opens");
+        // R12-MODEL-3090 (ADR 0149 decision 13): the detector enters with a
+        // cost — the evidence items it examined — on the step meter, never
+        // as money and never as an unmetered blank. Mutation: put back
+        // `cost: None` for the detector, or meter it as `Spend`, and these
+        // fail.
+        assert_eq!(quiet.evidence.len(), 2, "premise: two evidence items");
+        let detector = unattacked
+            .tournament()
+            .question(&format!("q-{}", quiet.hypothesis_id.as_str()))
+            .and_then(|q| q.forecasts().get(&format!("detector:{}", quiet.class)))
+            .expect("the detector's forecast is on its question");
+        assert_eq!(detector.cost, Some(2.0));
+        assert_eq!(detector.cost_meter, CostMeter::Steps);
         assert!(unattacked.review.challenges.is_empty());
         assert!(unattacked.review.verifications.is_empty());
 

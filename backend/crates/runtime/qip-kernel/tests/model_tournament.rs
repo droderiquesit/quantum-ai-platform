@@ -580,14 +580,18 @@ fn a_hypothesis_opens_a_question_many_forecasters_answer_and_a_later_cycle_score
     Ok(())
 }
 
-/// R12-MODEL-3090 (ADR 0149 decision 13): the detector is formed at the pass
-/// instant, so nothing measured its cost or latency, and the journaled score
-/// says so rather than recording a free, instant entrant. Mutation: stamping
-/// the detector entrant `cost: Some(0.0)` in `TournamentStage::observe_hypothesis`
-/// journals `Some(0.0)` and the absent-cost assertion fails.
+/// R12-MODEL-3090 (ADR 0149 decision 13): the journaled score never records
+/// the detector as a free, instant entrant. Its cost is the counted work it
+/// did, the evidence items it examined, on the step meter rather than as
+/// money; its latency is unmetered, because the hypothesis is formed at the
+/// pass instant. Until 2026-11-07 the detector's cost was unmetered too, and
+/// this test asserted `None`; it now asserts the step count, which is the
+/// meter the same decision names. Mutations: stamping the detector entrant
+/// `cost: Some(0.0)`, or metering it `CostMeter::Spend`, in
+/// `TournamentStage::observe_reasoning` fails the assertions below.
 #[test]
-fn the_detectors_journaled_score_records_its_cost_and_latency_as_unmetered_not_zero() -> Result<()>
-{
+fn the_detectors_journaled_score_records_its_work_in_steps_and_its_latency_as_unmetered()
+-> Result<()> {
     let mut platform = platform()?;
     platform.observe(bars("AAA", 120));
     platform.run_cycle(start());
@@ -613,7 +617,16 @@ fn the_detectors_journaled_score_records_its_cost_and_latency_as_unmetered_not_z
         .iter()
         .find(|score| score.forecaster.starts_with("detector:"))
         .ok_or_else(|| Error::not_found("the detector's score was not journaled"))?;
-    assert_eq!(detector.cost, None, "an unmetered detector is not free");
+    assert!(
+        detector.cost.is_some_and(|steps| steps > 0.0),
+        "a detector is metered by the evidence it examined, not free: {:?}",
+        detector.cost
+    );
+    assert_eq!(
+        detector.cost_meter,
+        qip_learning_engine::tournament::CostMeter::Steps,
+        "a detector's work is steps, never money"
+    );
     assert_eq!(detector.latency_ms, None, "nor instant");
     // Premise: an analyst that ran under a metered run record keeps a
     // reading, so the absence above is the detector's and not a blanket one.
