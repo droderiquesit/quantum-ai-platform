@@ -201,6 +201,17 @@ fn every_kind() -> Vec<(OperationKind, BTreeSet<&'static str>)> {
             },
             set(&["mandate", "treasury"]),
         ),
+        (
+            OperationKind::CorporateAction {
+                book: book(),
+                venue: "simulated-venue".to_string(),
+                action: "split:obj-AAA:2026-01-02".to_string(),
+                unit: "obj-AAA".to_string(),
+                amount: dec!("100"),
+                phase: Phase::Establish,
+            },
+            set(&["trading", "venue"]),
+        ),
     ]
 }
 
@@ -228,7 +239,7 @@ fn net_per_unit(event: &LedgerEvent) -> BTreeMap<String, Decimal> {
 #[test]
 fn every_operation_kind_posts_to_its_own_subledgers_and_closes_in_every_unit() {
     let kinds = every_kind();
-    assert_eq!(kinds.len(), 13, "premise: one of every kind");
+    assert_eq!(kinds.len(), 14, "premise: one of every kind");
     for (i, (kind, expected)) in kinds.into_iter().enumerate() {
         let fields = operation(&format!("op-{i}"), kind);
         let admitted = Validated::new(fields.clone())

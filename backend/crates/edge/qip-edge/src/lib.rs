@@ -55,6 +55,7 @@ pub mod feasibility;
 pub mod fencing;
 /// Funding rates and borrow availability per instrument (REFLEX-021).
 pub mod funding;
+pub mod hedge;
 pub mod journal;
 pub mod mesh;
 /// FABRIC-028 Phase 2a: Message routing validation for order topics.
@@ -102,6 +103,7 @@ pub use envelope::{VerifiedEnvelope, sign_payload};
 pub use feasibility::{Granularity, Infeasible, VenueModel};
 pub use fencing::{Fence, FenceStatus, GATE_FENCED};
 pub use funding::{BorrowAvailability, FundingRate, FundingState};
+pub use hedge::{GATE_HEDGE_FRAME, GATE_HEDGE_TARGET, VerifiedHedge};
 pub use journal::{Decision, FileMirror, Journal, JournalEntry, MemoryMirror, Mirror, MirrorBatch};
 pub use mesh::{
     CapitalDownlink, CapitalGrantTopic, CellStateDelta, CellUplink, DeltaOrder, DeltaRefusal,

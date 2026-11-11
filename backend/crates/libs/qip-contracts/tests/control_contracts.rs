@@ -1002,3 +1002,86 @@ fn only_the_regime_and_the_impact_have_an_unmeasurable_arm() {
     value["regime_confidence_bp"] = serde_json::json!({"unmeasurable": "x", "extra": 1});
     assert!(serde_json::from_value::<Forecast>(value).is_err());
 }
+
+// ---- HedgeNarrowing (ADR 0126 decision 4) -------------------------------
+
+fn narrowing_targets() -> Vec<qip_contracts::policy::HedgeTarget> {
+    vec![qip_contracts::policy::HedgeTarget {
+        venue: VenueId::new("XLON"),
+        object_id: qip_core::ObjectId::from_string("OBJ-1".to_string()),
+        target_net: qip_core::Decimal::ZERO,
+    }]
+}
+
+/// A narrowing is signed under the envelope key. If its payload could be
+/// read as another narrowing's, a signature for one cell or one target
+/// would verify for another.
+#[test]
+fn a_hedge_narrowings_signature_covers_its_cell_plan_instants_and_every_target() -> Result<()> {
+    use qip_contracts::policy::HedgeNarrowing;
+    let at = qip_core::Timestamp::from_secs;
+    let base = HedgeNarrowing::new("london-1", "HP-1", at(10), at(60), narrowing_targets());
+    let key = b"a-test-envelope-key";
+    let signed = base.clone().signed(key)?;
+    assert!(signed.signing_payload().starts_with("hedge|"));
+
+    let mut other_target = narrowing_targets();
+    other_target[0].target_net = qip_core::Decimal::ONE;
+    let variants = [
+        HedgeNarrowing::new("tokyo-1", "HP-1", at(10), at(60), narrowing_targets()),
+        HedgeNarrowing::new("london-1", "HP-2", at(10), at(60), narrowing_targets()),
+        HedgeNarrowing::new("london-1", "HP-1", at(11), at(60), narrowing_targets()),
+        HedgeNarrowing::new("london-1", "HP-1", at(10), at(61), narrowing_targets()),
+        HedgeNarrowing::new("london-1", "HP-1", at(10), at(60), other_target),
+    ];
+    for variant in variants {
+        assert_ne!(
+            variant.signed(key)?.signature,
+            signed.signature,
+            "two different narrowings share a signature"
+        );
+    }
+    Ok(())
+}
+
+/// A narrowing nobody could apply is refused where it is signed, so the
+/// defect is named at the centre and not discovered as a cell's refusal.
+#[test]
+fn a_hedge_narrowing_with_no_target_a_spent_deadline_or_a_repeated_instrument_is_not_signed() {
+    use qip_contracts::policy::HedgeNarrowing;
+    let at = qip_core::Timestamp::from_secs;
+    let key = b"a-test-envelope-key";
+    let twice = [narrowing_targets(), narrowing_targets()].concat();
+    let cases = [
+        (
+            "no target",
+            HedgeNarrowing::new("london-1", "HP-1", at(10), at(60), Vec::new()),
+        ),
+        (
+            "deadline",
+            HedgeNarrowing::new("london-1", "HP-1", at(10), at(10), narrowing_targets()),
+        ),
+        (
+            "twice",
+            HedgeNarrowing::new("london-1", "HP-1", at(10), at(60), twice),
+        ),
+        (
+            "no cell",
+            HedgeNarrowing::new("", "HP-1", at(10), at(60), narrowing_targets()),
+        ),
+    ];
+    for (why, case) in cases {
+        let outcome = case.signed(key);
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|error| error.message().contains(why)),
+            "{why}: {outcome:?}"
+        );
+    }
+    assert!(
+        HedgeNarrowing::new("london-1", "HP-1", at(10), at(60), narrowing_targets())
+            .signed(b"")
+            .is_err()
+    );
+}

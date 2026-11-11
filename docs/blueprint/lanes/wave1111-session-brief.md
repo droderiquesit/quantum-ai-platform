@@ -46,13 +46,20 @@ was taken from the row's gap text and is unverified. The register row in
 - Never weaken, skip, ignore or delete a test, limit, guard or refusal.
 - Add no dependency. Invent no figure: a limit, threshold, cost or rate is a
   person's to give.
-- Do not edit `.github/**`, `.claude/**`, `CLAUDE.md`, `scripts/check-*`,
-  `scripts/agent-*`, `scripts/sast-*`, `scripts/dependency-allowlist.txt`,
-  `infrastructure/terraform/variables.tf`, `execution-nodes-enabled.tf`,
-  `build-pool.tf`, `infrastructure/environments/**` or an existing file under
-  `docs/adr/`. If a row needs such a change, write it as a patch file under
-  `docs/blueprint/lanes/` named for your batch and the row, and say so in
-  your report.
+- Do not edit a protected path. The list is `protected_paths` in
+  `scripts/agent-policy.json`: `.github/**`, `.claude/**`, every
+  `CLAUDE.md`, `scripts/check-*`, `scripts/agent-*`, `scripts/sast-*`,
+  `scripts/lanes/**`, `scripts/dependency-allowlist.txt`,
+  `scripts/secrets-reviewed.txt`, `infrastructure/terraform/variables.tf`,
+  `execution-nodes-enabled.tf`, `build-pool.tf`,
+  `infrastructure/environments/**`, an existing file under `docs/adr/`, and
+  four guard suites under `backend/crates/tests/qip-acceptance/tests/`:
+  `architecture.rs`, `paper_boundary.rs`, `lane_placement.rs` and
+  `arch_001_independent_reflex.rs`. A new cross-cutting test goes in another
+  suite file. If a row needs a protected change, or a refactor makes a
+  guard suite fail and the suite must follow the code, write the change as
+  a patch file under `docs/blueprint/lanes/` named for your batch and the
+  row, and say so in your report.
 - No rebase, amend or force-push. Do not render
   `docs/blueprint/traceability-matrix.md`: integration owns it.
 

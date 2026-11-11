@@ -4,13 +4,13 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_capital::funding::{
-    FundingRequirement, FundingSource, RequirementKind, SourceBalance, plan_funding,
-};
-use qip_capital::treasury::{FinancingFunction, FinancingPermissions};
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, dec};
+use qip_treasury::funding::{
+    FundingRequirement, FundingSource, RequirementKind, SourceBalance, plan_funding,
+};
+use qip_treasury::treasury::{FinancingFunction, FinancingPermissions};
 use std::collections::BTreeMap;
 
 const ENTITY: &str = "platform-ltd";

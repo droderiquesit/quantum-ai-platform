@@ -66,16 +66,20 @@
 //! * [`recall`] withdraws capital mid-flight, and is explicit that a recall is
 //!   a request. The reliable bound on a cell nobody can reach is the envelope
 //!   expiry, which the cell enforces locally against its own clock.
-//! * [`funding`] names the source of every unit a grant or placement
-//!   requires — the platform's own capital, or a financing function it holds
-//!   a recorded permission for — and refuses a requirement it cannot fund
-//!   whole rather than funding the part that fits.
+//! * Treasury and funding are not here. The reserve floor, leverage
+//!   decisions, internal funding, financing permissions and the funding plan
+//!   were extracted to `qip-treasury` by ADR 0385 (amending ADR 0127
+//!   decision 2). This crate does not depend on it and it does not depend on
+//!   this crate; the kernel is where the two would meet.
 //! * [`dated_ladder`] dates liquidity: every balance, inflow, outflow and
 //!   encumbrance in the rung at which it becomes available or falls due, read
 //!   only once the rung has closed.
 //! * [`bank`] is the Capital Bank's paper record of three things it would do
 //!   with real money and here does only as records: collateral posted and
-//!   recalled, currency converted, idle cash routed to yield.
+//!   recalled, currency converted, idle cash routed to yield. It stays here
+//!   rather than following treasury out (ADR 0385) because it drives
+//!   [`reservation::ReservationLedger`] and [`dated_ladder::DatedLadder`],
+//!   which carry behaviour and so cannot cross as `qip-contracts` types.
 //!
 //! Nothing here reads a wall clock or draws a random number: every entry point
 //! takes the [`qip_core::Timestamp`] it is reasoning about, so a replay
@@ -148,7 +152,6 @@ pub mod dated_ladder;
 pub mod envelope;
 pub mod exploration;
 pub mod exposure;
-pub mod funding;
 pub mod ledger;
 pub mod margin;
 pub mod recall;
@@ -156,7 +159,6 @@ pub mod reservation;
 pub mod shadow;
 pub mod society;
 pub mod survival;
-pub mod treasury;
 
 pub use allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,

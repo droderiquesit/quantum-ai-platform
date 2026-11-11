@@ -82,6 +82,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-fabricd | 1 | the in-tree fabric daemon; journal appends acknowledged locally |
 | qip-capital | 2 | capital placement and per-user ledger; limits checked before an order exists |
 | qip-capital-fabric | 2 | wallet against ledger reconciliation; a break is recorded, never absorbed |
+| qip-treasury | 2 | the Treasury Bank's books: reserve floor, leverage ceiling, internal funding and financing permission; a use past the floor or a function without a permission is refused before anything is promised |
 | qip-opportunity-engine | 2 | opportunity valuation over bounded inputs |
 | qip-optimization-engine | 2 | portfolio construction; the classical baseline is computed every time and wins ties |
 | qip-portfolio-engine | 2 | portfolio construction over the optimiser; refresh within a cycle budget |

@@ -11,7 +11,7 @@
 //! The band is an interval on the annualised Sharpe ratio, centred on the
 //! holdout's figure and `z` standard errors wide, with the standard error
 //! taken from the engine's own
-//! [`qip_simulation_engine::validation::sharpe_standard_error`] — the figure
+//! [`qip_numerics::validation::sharpe_standard_error`] — the figure
 //! `deflated_sharpe` divides by, so the band and the deflation that admitted
 //! it cannot disagree about the error — and negative skew and fat tails
 //! widen it. A live figure is judged with its
@@ -30,7 +30,7 @@ use crate::scoring;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_numerics::stats;
-use qip_simulation_engine::validation::{DeflatedSharpe, sharpe_standard_error};
+use qip_numerics::validation::{DeflatedSharpe, sharpe_standard_error};
 use serde::{Deserialize, Serialize};
 
 /// How a band's bounds were derived from the holdout.

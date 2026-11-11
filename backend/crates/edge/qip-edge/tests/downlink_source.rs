@@ -31,7 +31,7 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::capital::CapitalEnvelope;
-use qip_contracts::policy::{HaltCommand, PolicyPayload};
+use qip_contracts::policy::{HaltCommand, HedgeNarrowing, HedgeTarget, PolicyPayload};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
@@ -40,7 +40,7 @@ use qip_edge::cell::{Cell, CellConfig};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::mesh::{
     CapitalDownlink, CapitalGrantTopic, DEFAULT_GRANT_MEMORY, DownlinkBatch, DownlinkConfig,
-    HaltTopic, PolicyBatch, PolicyDownlink, PolicyPayloadTopic, ScriptedFrames,
+    HaltTopic, HedgeTopic, PolicyBatch, PolicyDownlink, PolicyPayloadTopic, ScriptedFrames,
 };
 use qip_events::{AnyEvent, Envelope, EventBody, Topic};
 use qip_feature_dag::engine::FeatureEngine;
@@ -778,5 +778,88 @@ fn a_halt_frame_from_a_scripted_source_engages_the_halt_the_mesh_would() -> Resu
             "{route}: the scripted halt was journalled differently from the mesh's"
         );
     }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+struct HedgeBody(HedgeNarrowing);
+
+impl EventBody for HedgeBody {
+    const TOPIC: Topic = HedgeTopic::TOPIC;
+    const SCHEMA_VERSION: u32 = HedgeTopic::SCHEMA_VERSION;
+}
+
+fn hedge(cell: &str, key: &[u8]) -> Result<HedgeNarrowing> {
+    HedgeNarrowing::new(
+        cell,
+        "HP-1",
+        t(20),
+        t(600),
+        vec![HedgeTarget {
+            venue: VenueId::new("XLON"),
+            object_id: qip_core::ObjectId::from_string("OBJ-HEDGED".to_string()),
+            target_net: Decimal::ZERO,
+        }],
+    )
+    .signed(key)
+}
+
+/// A hedge narrowing rides its own topic down the policy wire (ADR 0126
+/// decision 4). Until the downlink read that topic a narrowing the centre
+/// sent was counted as a frame nobody handles and no cell ever heard a
+/// hedge plan; and a downlink that delivered one without verifying it would
+/// let anyone who can inject a frame stop a cell adding to any position.
+#[test]
+fn a_hedge_narrowing_is_delivered_only_when_signed_for_this_cell_and_unedited() -> Result<()> {
+    let frames = vec![
+        frame(HedgeBody(hedge(CELL, KEY)?), "EVT-HEDGE", t(21))?,
+        tampered(
+            frame(HedgeBody(hedge(CELL, KEY)?), "EVT-HEDGE-TAMPERED", t(21))?,
+            "plan_id",
+            serde_json::Value::String("HP-2".to_string()),
+        ),
+        frame(
+            HedgeBody(hedge(CELL, OTHER_KEY)?),
+            "EVT-HEDGE-WRONG-KEY",
+            t(21),
+        )?,
+        frame(
+            HedgeBody(hedge("tokyo-1", KEY)?),
+            "EVT-HEDGE-ELSEWHERE",
+            t(21),
+        )?,
+        from_newer_schema(frame(
+            HedgeBody(hedge(CELL, KEY)?),
+            "EVT-HEDGE-NEWER",
+            t(21),
+        )?),
+    ];
+    let mut downlink = PolicyDownlink::from_source(CELL, KEY, Box::new(scripted(&frames)?))?;
+    let batch = downlink.poll(t(60))?;
+
+    assert_eq!(batch.hedges.len(), 1, "{batch:?}");
+    assert_eq!(batch.hedges[0].plan_id(), "HP-1");
+    assert!(
+        batch.verified.is_empty() && batch.halts.is_empty(),
+        "a narrowing was read as something else: {batch:?}"
+    );
+    let mut refused: Vec<&str> = batch
+        .refused
+        .iter()
+        .map(|refusal| refusal.event_id.as_str())
+        .collect();
+    refused.sort_unstable();
+    assert_eq!(
+        refused,
+        vec![
+            "EVT-HEDGE-ELSEWHERE",
+            "EVT-HEDGE-NEWER",
+            "EVT-HEDGE-TAMPERED",
+            "EVT-HEDGE-WRONG-KEY"
+        ],
+        "{:?}",
+        batch.refused
+    );
     Ok(())
 }

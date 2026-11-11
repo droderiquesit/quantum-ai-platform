@@ -2341,6 +2341,183 @@ mod tests {
         Ok(())
     }
 
+    /// The six factors of a weight, in the order the product multiplies them.
+    fn factors(w: &InfluenceWeight) -> [f64; 6] {
+        [
+            w.market_share,
+            w.calibration,
+            w.information,
+            w.cost,
+            w.latency,
+            w.regime_survival,
+        ]
+    }
+
+    /// Two forecasters stating one probability on every question, one of them
+    /// altered by `alter`, promoted and weighed in `quiet`.
+    fn weighed_pair(
+        alter: impl Fn(&mut TournamentForecast),
+    ) -> Result<(InfluenceWeight, InfluenceWeight)> {
+        let mut t = Tournament::new();
+        for name in ["plain", "altered"] {
+            t.admit(spec(name), at(0))?;
+        }
+        for i in 0..PROMOTION_SAMPLE as i64 {
+            let day = 2 * i;
+            let id = format!("s-{day}");
+            t.open(question(&id, "quiet", day), at(day))?;
+            t.submit(&id, forecast("plain", &id, 7_000, day), at(day))?;
+            let mut altered = forecast("altered", &id, 7_000, day);
+            alter(&mut altered);
+            t.submit(&id, altered, at(day))?;
+            t.resolve(&id, resolution("up", 30.0, day + 1), at(day + 1))?;
+        }
+        t.review_promotions(&BTreeMap::new());
+        let influence = t.influence("quiet");
+        assert_eq!(
+            influence.len(),
+            2,
+            "premise: both are weighed: {influence:?}"
+        );
+        Ok((influence["plain"].clone(), influence["altered"].clone()))
+    }
+
+    /// Assert that `index` is the only factor on which the pair differs, and
+    /// that the ratio of their weights is exactly the ratio of that factor.
+    fn assert_only_factor_moves_the_weight(
+        plain: &InfluenceWeight,
+        altered: &InfluenceWeight,
+        index: usize,
+    ) {
+        let (a, b) = (factors(plain), factors(altered));
+        for other in (0..6).filter(|other| *other != index) {
+            assert!(
+                (a[other] - b[other]).abs() < 1e-12,
+                "premise: factor {other} is the same for both: {} against {}",
+                a[other],
+                b[other]
+            );
+        }
+        assert!(
+            a[index] > b[index] + 0.1,
+            "premise: the factor under test differs: {} against {}",
+            a[index],
+            b[index]
+        );
+        assert!(altered.weight > 0.0, "premise: the altered one is weighed");
+        let weights = plain.weight / altered.weight;
+        let factor = a[index] / b[index];
+        assert!(
+            (weights - factor).abs() < 1e-9,
+            "the weights stand at {weights} and the one factor that differs at {factor}"
+        );
+    }
+
+    /// R12-MODEL-3090, the cost factor alone. `cost_and_latency_each_move_influence`
+    /// moves cost and latency together, so a product that dropped one of them
+    /// still ranked its pair the right way round. Here the two forecasters
+    /// are alike on every factor but cost, and the weight ratio must be the
+    /// cost ratio.
+    ///
+    /// Mutation: delete `* w.cost` from the product in `influence_among` —
+    /// the weights come out equal and the ratio assertion fails.
+    #[test]
+    fn a_dearer_forecaster_alike_on_every_other_factor_loses_weight_by_exactly_its_cost_factor()
+    -> Result<()> {
+        let (plain, dear) = weighed_pair(|forecast| forecast.cost = Some(50.0))?;
+        assert_only_factor_moves_the_weight(&plain, &dear, 3);
+        assert!(plain.weight > dear.weight);
+        Ok(())
+    }
+
+    /// R12-MODEL-3090, the latency factor alone, for the reason given on the
+    /// cost test above.
+    ///
+    /// Mutation: delete `* w.latency` from the product in `influence_among`.
+    #[test]
+    fn a_slower_forecaster_alike_on_every_other_factor_loses_weight_by_exactly_its_latency_factor()
+    -> Result<()> {
+        let (plain, slow) =
+            weighed_pair(|forecast| forecast.latency = Some(Duration::from_millis(5_000)))?;
+        assert_only_factor_moves_the_weight(&plain, &slow, 4);
+        assert!(plain.weight > slow.weight);
+        Ok(())
+    }
+
+    /// R12-MODEL-3090, the calibration factor. A forecaster's calibration
+    /// cannot be changed without changing what it forecast, and so its score
+    /// and its balance, so the two cannot be made alike on every other
+    /// factor. What is asserted instead is that calibration is *in* the
+    /// product: the weight ratio is the product of all six factor ratios, it
+    /// is not the product of the other five, and the poorly calibrated
+    /// forecaster's share of the weight is smaller than the other five
+    /// factors alone would give it. `a_forecaster_whose_synthetic_capital_falls_loses_weight_and_compute`
+    /// could not say this: its loser also loses market share, so a product
+    /// without calibration ranked the pair the same way.
+    ///
+    /// Mutation: delete `* w.calibration` from the product in
+    /// `influence_among` — the weight ratio becomes the five-factor product
+    /// and all three assertions fail.
+    #[test]
+    fn a_poorly_calibrated_forecaster_loses_weight_beyond_what_its_other_five_factors_account_for()
+    -> Result<()> {
+        let mut t = Tournament::new();
+        for name in ["calibrated", "overconfident"] {
+            t.admit(spec(name), at(0))?;
+        }
+        // Up seven times in ten. One says seventy per cent and is right about
+        // how often; the other says ninety and is not.
+        for i in 0..(2 * PROMOTION_SAMPLE as i64) {
+            let day = 2 * i;
+            let id = format!("k-{day}");
+            t.open(question(&id, "quiet", day), at(day))?;
+            t.submit(&id, forecast("calibrated", &id, 7_000, day), at(day))?;
+            t.submit(&id, forecast("overconfident", &id, 9_000, day), at(day))?;
+            let (outcome, moved) = if i % 10 < 7 {
+                ("up", 30.0)
+            } else {
+                ("not_up", -30.0)
+            };
+            t.resolve(&id, resolution(outcome, moved, day + 1), at(day + 1))?;
+        }
+        t.review_promotions(&BTreeMap::new());
+        let influence = t.influence("quiet");
+        assert_eq!(
+            influence.len(),
+            2,
+            "premise: both are weighed: {influence:?}"
+        );
+        let (good, poor) = (&influence["calibrated"], &influence["overconfident"]);
+        assert!(
+            good.calibration > poor.calibration + 0.05,
+            "premise: the calibration factors differ: {} against {}",
+            good.calibration,
+            poor.calibration
+        );
+        assert!(poor.weight > 0.0, "premise: the poor one is weighed");
+
+        let (a, b) = (factors(good), factors(poor));
+        let all_six: f64 = (0..6).map(|i| a[i] / b[i]).product();
+        let other_five = all_six / (good.calibration / poor.calibration);
+        let weights = good.weight / poor.weight;
+        assert!(
+            (weights - all_six).abs() < 1e-9 * all_six.max(1.0),
+            "the weights stand at {weights} and the six factors at {all_six}"
+        );
+        assert!(
+            (weights - other_five).abs() > 1e-3,
+            "the weights stand where the other five factors alone put them: {weights}"
+        );
+        // The poor one's share of the pair, with calibration and without.
+        let share = 1.0 / (1.0 + weights);
+        let without = 1.0 / (1.0 + other_five);
+        assert!(
+            share < without,
+            "poor calibration cost no weight: a share of {share} against {without} without it"
+        );
+        Ok(())
+    }
+
     /// R12-MODEL-3090's cost and latency factors. Mutation: dropping either
     /// factor from the product leaves the weights equal.
     #[test]

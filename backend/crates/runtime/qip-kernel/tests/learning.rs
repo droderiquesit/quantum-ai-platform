@@ -504,6 +504,132 @@ fn the_cycle_that_grades_a_thesis_journals_each_agents_hit_rate() -> Result<()> 
     Ok(())
 }
 
+/// R12-MODEL-10123, ADR 0391. Until this, a resolved thesis scored the
+/// forecast and the agents that argued it and never the routing that bought
+/// it: `qip_cost_router::ReputationBook` had no caller outside its own
+/// crate's tests. The routing's judgement is minted at REASON and resolved
+/// here, in the cell of the conditions the routing was made under.
+#[test]
+fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_decisions_conditions()
+-> Result<()> {
+    use qip_learning_engine::evaluation::{Outcome as ThesisOutcome, ThesisClaim};
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    assert!(
+        !platform.predictions().is_empty(),
+        "premise: a claim was written:\n{}",
+        first.summarise()
+    );
+    let prediction = platform.predictions()[0].clone();
+    let routing = platform
+        .reason_routing()
+        .expect("premise: REASON routed the decision")
+        .clone();
+    assert!(routing.dispatched, "premise: the panel convened");
+    let judgement = routing
+        .judgement
+        .clone()
+        .expect("a convened routing carries the judgement minted at the decision");
+    assert_eq!(
+        Some(judgement.conditions()),
+        routing.routing.as_ref().map(|placed| placed.conditions()),
+        "the judgement's conditions are not the routing's own"
+    );
+    let rung = judgement.model().to_string();
+    assert!(
+        rung.starts_with("multi_agent_reasoning@qip-kernel-"),
+        "the judgement names {rung}, not the rung that ran under this build"
+    );
+    assert!(
+        platform.routing_reputation().is_empty() && platform.routings_scored()?.is_empty(),
+        "premise: nothing is scored before anything resolved"
+    );
+
+    // A thesis graded with no routing behind it scores no routing.
+    let seeded_at = start().saturating_add(Duration::from_mins(1));
+    platform.learn_from(
+        &[ThesisClaim {
+            hypothesis_id: "hyp-seeded".to_string(),
+            class: "price_dislocation".to_string(),
+            subject: "obj-AAA".to_string(),
+            formed_at: start(),
+            resolves_at: seeded_at,
+            direction: 1.0,
+            expected_move_bps: 200.0,
+            confidence: 0.7,
+            falsifiers: vec!["it reverts".to_string()],
+            contributors: vec!["run-macro-analyst-1".to_string()],
+        }],
+        &[ThesisOutcome {
+            hypothesis_id: "hyp-seeded".to_string(),
+            observed_at: seeded_at,
+            realised_move_bps: -180.0,
+            realised_pnl: 0.0,
+            falsifiers_triggered: Vec::new(),
+            mechanism_confirmed: None,
+        }],
+        seeded_at,
+    )?;
+    assert!(platform.routing_reputation().is_empty());
+
+    let horizon = prediction.proposition.resolves_at;
+    let swings: Vec<SensedRecord> = (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
+            bar("AAA", at, open, close)
+        })
+        .collect();
+    platform.observe(swings);
+    let second = platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    let learn = second.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("graded"),
+        "premise: LEARN graded the cycle's own claim: {}",
+        learn.detail
+    );
+    let evaluation = platform
+        .evaluations()
+        .iter()
+        .find(|evaluation| evaluation.hypothesis_id == prediction.hypothesis)
+        .expect("premise: the routed thesis was graded")
+        .clone();
+    assert!(
+        evaluation.verdict.is_informative(),
+        "premise: the verdict is informative: {:?}",
+        evaluation.verdict
+    );
+
+    let scored = platform.routings_scored()?;
+    assert_eq!(scored.len(), 1, "{scored:?}");
+    assert_eq!(scored[0].hypothesis_id, prediction.hypothesis);
+    assert_eq!(scored[0].judgement, judgement);
+    assert_eq!(scored[0].correct, evaluation.verdict.counts_as_correct());
+    assert_eq!(scored[0].verdict, evaluation.verdict.as_str());
+    let record = platform
+        .routing_reputation()
+        .reputation(&rung)
+        .expect("the rung that ran has a record")
+        .record(judgement.conditions());
+    assert_eq!(record.observations, 1, "{record:?}");
+    assert_eq!(
+        record.correct,
+        u32::from(evaluation.verdict.counts_as_correct()),
+        "{record:?}"
+    );
+    assert!(
+        learn.detail.contains("1 routing choice(s) scored"),
+        "{}",
+        learn.detail
+    );
+    Ok(())
+}
+
 // --- counterfactual scoring of declined paths -------------------------------
 
 /// Offer an order the controls refuse — it traces to no hypothesis — and hand

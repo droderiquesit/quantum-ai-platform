@@ -767,7 +767,23 @@ impl EvolutionEngine {
         // A model that has drifted past its own threshold is retired and the
         // one it displaced comes back (MODEL-045): after the promotion, so a
         // candidate that already displaced the degraded model is not undone.
+        // A production model on this subject whose market crossed a regime
+        // boundary since it was last evaluated is evaluated again on rows
+        // after the crossing, re-verified, and rolled back where refuted
+        // (R12-MODEL-10096): after the promotion, so a candidate that already
+        // displaced it is not undone, and before the drift rollback, which
+        // then reads the registry as this left it.
+        round.reverified = self.learning.reverify_after_crossing(platform, now)?;
         round.rolled_back = self.learning.roll_back_degraded(platform, now)?;
+        // Last, so the cards offered are the ones standing after this
+        // round's promotion, renewal and rollbacks: each production card on
+        // the subject forecasts its own instrument's next bar from its own
+        // held-out error and enters the tournament on it (ADR 0390).
+        round.card_forecasts = Some(self.learning.offer_card_forecasts(
+            platform,
+            &window.bars,
+            now,
+        )?);
         // Every card the round registered, evaluated, drifted, promoted or
         // rolled back, on the log, so a restart rebuilds it (R12-MODEL-9003).
         platform.journal_model_registry(self.learning.registry(), now)?;

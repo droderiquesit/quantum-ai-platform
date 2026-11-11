@@ -113,10 +113,7 @@ fn planner_with(
     convention: SettlementConvention,
 ) -> Result<PrePositioningPlanner> {
     Ok(PrePositioningPlanner::new(
-        CapitalAllocator::new(
-            AllocationLimits::new(total, total, total, per_venue)?,
-            DrawdownSchedule::default(),
-        ),
+        AllocationLimits::new(total, total, total, per_venue)?,
         cost_model(wire_fee)?,
         settlement_book(convention)?,
     ))
@@ -131,9 +128,17 @@ fn planner() -> Result<PrePositioningPlanner> {
     )
 }
 
+/// The capital brain's allocator over the planner's own limits, on the
+/// shipped drawdown schedule. Since ADR 0385 the planner holds the limits
+/// and not the allocator, so the live plan a test bounds it by is produced
+/// here, the way the kernel produces it, and handed in.
+fn allocator(planner: &PrePositioningPlanner) -> CapitalAllocator {
+    CapitalAllocator::new(planner.limits().clone(), DrawdownSchedule::default())
+}
+
 /// A live allocation with nothing yet committed.
 fn idle_allocation(planner: &PrePositioningPlanner, at: Timestamp) -> Result<AllocationPlan> {
-    planner.allocator().allocate(&[], 0.0, at)
+    allocator(planner).allocate(&[], 0.0, at)
 }
 
 /// A real `qip-capital` proposal, so a live plan actually consumes venue
@@ -252,7 +257,7 @@ fn a_plan_never_commits_more_than_the_budget_it_was_given() -> Result<()> {
             plan.budget
         );
         assert!(
-            plan.committed() <= planner.allocator().limits().total_budget,
+            plan.committed() <= planner.limits().total_budget,
             "case {case}: committed above the allocator's total budget"
         );
         // Exact, not approximate. The sum of the moves plus what was left must
@@ -265,7 +270,7 @@ fn a_plan_never_commits_more_than_the_budget_it_was_given() -> Result<()> {
         for lane in 0..3 {
             let venue = VenueId::new(format!("VENUE-{lane}"));
             assert!(
-                plan.for_venue(&venue) <= planner.allocator().limits().venue_limit(&venue),
+                plan.for_venue(&venue) <= planner.limits().venue_limit(&venue),
                 "case {case}: venue {lane} exceeded its allocation limit"
             );
         }
@@ -373,15 +378,12 @@ fn the_benefit_is_taken_at_the_lower_bound_and_the_cost_at_the_upper() -> Result
     let mut net_values = Vec::new();
     for uncertainty in [0.0_f64, 0.5, 2.0] {
         let planner = PrePositioningPlanner::new(
-            CapitalAllocator::new(
-                AllocationLimits::new(
-                    dec!("100000000"),
-                    dec!("100000000"),
-                    dec!("100000000"),
-                    dec!("100000000"),
-                )?,
-                DrawdownSchedule::default(),
-            ),
+            AllocationLimits::new(
+                dec!("100000000"),
+                dec!("100000000"),
+                dec!("100000000"),
+                dec!("100000000"),
+            )?,
             cost_model(dec!("25"))?.with_cost_uncertainty(uncertainty)?,
             settlement_book(SettlementConvention::T1)?,
         );
@@ -555,15 +557,12 @@ fn each_lane_is_quoted_on_its_own_venues_jurisdiction_calendar_not_one_shared_ca
     book.assign_venue(VenueId::new("XFAST"), Region::new("same-day"))?;
     book.assign_venue(VenueId::new("XSLOW"), Region::new("two-day"))?;
     let planner = PrePositioningPlanner::new(
-        CapitalAllocator::new(
-            AllocationLimits::new(
-                dec!("100000000"),
-                dec!("100000000"),
-                dec!("100000000"),
-                dec!("100000000"),
-            )?,
-            DrawdownSchedule::default(),
-        ),
+        AllocationLimits::new(
+            dec!("100000000"),
+            dec!("100000000"),
+            dec!("100000000"),
+            dec!("100000000"),
+        )?,
         cost_model(dec!("25"))?,
         book,
     );
@@ -990,7 +989,7 @@ fn a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped() -> R
         SettlementConvention::T1,
     )?;
     let now = thursday();
-    let live = planner.allocator().allocate(
+    let live = allocator(&planner).allocate(
         &[proposal("momentum-v3", "XLON", 2.4, 4_000_000)?],
         0.0,
         now,
@@ -1002,11 +1001,7 @@ fn a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped() -> R
         "the live allocation did not commit anything at the venue, so the test is vacuous"
     );
 
-    let headroom = planner
-        .allocator()
-        .limits()
-        .venue_limit(&VenueId::new("XLON"))
-        - already;
+    let headroom = planner.limits().venue_limit(&VenueId::new("XLON")) - already;
     // Ask for more than the headroom, comfortably.
     let ask = headroom + dec!("5000000");
     let request =
@@ -1037,7 +1032,6 @@ fn a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped() -> R
     assert!(
         refusal.detail.contains(
             &planner
-                .allocator()
                 .limits()
                 .venue_limit(&VenueId::new("XLON"))
                 .to_string()
@@ -1070,12 +1064,12 @@ fn the_drawdown_response_shuts_the_fabric_down_with_the_rest_of_the_book() -> Re
 
     let calm = planner.plan(
         &request,
-        &planner.allocator().allocate(&[], 0.02, now)?,
+        &allocator(&planner).allocate(&[], 0.02, now)?,
         now,
     )?;
     assert_eq!(calm.moves.len(), 1);
 
-    let deep = planner.allocator().allocate(&[], 0.30, now)?;
+    let deep = allocator(&planner).allocate(&[], 0.30, now)?;
     assert!(deep.budget.is_zero(), "the fixture drawdown did not bite");
     let stopped = planner.plan(&request, &deep, now)?;
     assert!(stopped.moves.is_empty());

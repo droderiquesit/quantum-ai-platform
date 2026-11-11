@@ -1308,6 +1308,23 @@ impl HaltTopic {
     pub const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The topic a hedge narrowing travels on (ADR 0126 decision 4).
+///
+/// `Topic::RiskEvaluated` is where the centre already files the hedge plan
+/// it made (`qip_kernel::hedge::HedgePlanned`), it is in the Decide group
+/// and so retained permanently, and neither downlink read it before this:
+/// the capital downlink takes `RiskApproved` alone, so a narrowing can
+/// never be offered to the envelope decoder, and a cell on a build older
+/// than this one counts the frame as ignored and stays as bounded as its
+/// envelope leaves it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HedgeTopic;
+
+impl HedgeTopic {
+    pub const TOPIC: Topic = Topic::RiskEvaluated;
+    pub const SCHEMA_VERSION: u32 = 1;
+}
+
 /// A policy payload the downlink could not deliver, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefusedPolicy {
@@ -1328,6 +1345,10 @@ pub struct PolicyBatch {
     /// hand the caller both, and the caller applies halts first because a
     /// halt is never improved by waiting.
     pub halts: Vec<VerifiedHalt>,
+    /// Hedge narrowings this cell verified, in arrival order. Whether one
+    /// applies is the cell's decision at application, as a payload's
+    /// sequence is: the downlink proves signature and address only.
+    pub hedges: Vec<crate::hedge::VerifiedHedge>,
     pub refused: Vec<RefusedPolicy>,
     /// Set when the circuit to the peer is open, in which case no poll was
     /// made. Distinct from an empty batch, which means the peer had nothing.
@@ -1336,7 +1357,10 @@ pub struct PolicyBatch {
 
 impl PolicyBatch {
     pub fn is_empty(&self) -> bool {
-        self.verified.is_empty() && self.halts.is_empty() && self.refused.is_empty()
+        self.verified.is_empty()
+            && self.halts.is_empty()
+            && self.hedges.is_empty()
+            && self.refused.is_empty()
     }
 }
 
@@ -1537,6 +1561,10 @@ impl PolicyDownlink {
             self.absorb_halt(frame, now, batch);
             return;
         }
+        if frame.topic == HedgeTopic::TOPIC {
+            self.absorb_hedge(frame, now, batch);
+            return;
+        }
         if frame.topic != PolicyPayloadTopic::TOPIC {
             self.stats.ignored += 1;
             return;
@@ -1632,6 +1660,58 @@ impl PolicyDownlink {
             Ok(verified) => {
                 self.stats.verified += 1;
                 batch.halts.push(verified);
+            }
+            Err(error) => self.refuse(batch, event_id, error.message()),
+        }
+    }
+
+    /// A hedge narrowing, through the same checks a payload gets.
+    ///
+    /// The centre files its own `HedgePlanned` record on this topic too. One
+    /// of those that reached a cell's inbox does not decode as a narrowing
+    /// and is refused here by name, which is the right reading: it is not
+    /// addressed to a cell and binds none.
+    fn absorb_hedge(&mut self, frame: &AnyEvent, now: Timestamp, batch: &mut PolicyBatch) {
+        let event_id = frame.event_id.as_str().to_string();
+        if frame.schema_version > HedgeTopic::SCHEMA_VERSION {
+            self.refuse(
+                batch,
+                event_id,
+                &format!(
+                    "the hedge narrowing was written by schema version {} and this cell \
+                     understands {}",
+                    frame.schema_version,
+                    HedgeTopic::SCHEMA_VERSION
+                ),
+            );
+            return;
+        }
+        if qip_core::hash::sha256_hex(canonical_json(&frame.payload).as_bytes())
+            != frame.payload_hash
+        {
+            self.refuse(
+                batch,
+                event_id,
+                "the hedge narrowing no longer matches the hash the sender computed",
+            );
+            return;
+        }
+        let narrowing: qip_contracts::policy::HedgeNarrowing =
+            match serde_json::from_value(frame.payload.clone()) {
+                Ok(narrowing) => narrowing,
+                Err(error) => {
+                    self.refuse(
+                        batch,
+                        event_id,
+                        &format!("the frame does not carry a hedge narrowing: {error}"),
+                    );
+                    return;
+                }
+            };
+        match crate::hedge::VerifiedHedge::verify_with(narrowing, &self.trust, &self.cell, now) {
+            Ok(verified) => {
+                self.stats.verified += 1;
+                batch.hedges.push(verified);
             }
             Err(error) => self.refuse(batch, event_id, error.message()),
         }

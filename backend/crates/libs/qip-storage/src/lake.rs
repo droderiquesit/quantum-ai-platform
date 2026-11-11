@@ -428,6 +428,16 @@ impl<'a> Lake<'a> {
         self.store.put(&key, serde_json::to_vec(manifest)?)
     }
 
+    /// The sealed manifest named `name`, as it was written.
+    ///
+    /// A consumer that records which source snapshots it was built from
+    /// (`qip_training::store`) needs each segment's key and checksum, not only
+    /// the bytes [`Lake::materialize`] hands back; without this a dataset
+    /// manifest could name its source manifest and nothing that source held.
+    pub fn manifest(&self, name: &str) -> Result<Manifest> {
+        self.read_manifest(name)
+    }
+
     fn read_manifest(&self, name: &str) -> Result<Manifest> {
         let key = format!("lake/_manifests/{name}.json");
         let bytes = self

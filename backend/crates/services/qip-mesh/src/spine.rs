@@ -51,7 +51,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use qip_contracts::capital::CapitalEnvelope;
-use qip_contracts::policy::{HaltCommand, PolicyPayload};
+use qip_contracts::policy::{HaltCommand, HedgeNarrowing, PolicyPayload};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, CorrelationId, Id, Lineage, Timestamp};
 use qip_events::envelope::canonical_json;
@@ -564,6 +564,33 @@ impl EventBody for HaltFrame {
     }
 }
 
+/// A hedge narrowing framed for the wire (ADR 0126 decision 4).
+///
+/// The one way a hedge plan travels down. Transparent, like the other
+/// frames, so the payload on the wire is the signed
+/// [`HedgeNarrowing`] and a cell decodes it with the vocabulary alone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HedgeFrame(pub HedgeNarrowing);
+
+impl EventBody for HedgeFrame {
+    /// `RiskEvaluated` is where the centre files the plan itself, and no
+    /// cell downlink read it before the narrowing; mirrors
+    /// `qip_edge::mesh::HedgeTopic`, kept in step by the round-trip test.
+    const TOPIC: Topic = Topic::RiskEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+
+    /// Cell, plan and signature: a redelivered narrowing is the same
+    /// narrowing, and the cell's own issue-instant discipline refuses an
+    /// old one.
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!(
+            "hedge|{}|{}|{}",
+            self.0.cell, self.0.plan_id, self.0.signature
+        ))
+    }
+}
+
 /// The centre's sender for policy payloads and halts, one per cell.
 ///
 /// **Deliberately unspooled**, where [`CapitalDispatcher`] spools. A grant is
@@ -650,6 +677,31 @@ impl PolicyCourier {
         self.send(frame, at)
     }
 
+    /// Send one signed hedge narrowing.
+    ///
+    /// Unspooled for the reason a payload is: a narrowing is state with a
+    /// deadline, the newest wins at the cell, and one spooled through an
+    /// outage would arrive to be refused as past its deadline or behind a
+    /// newer plan. Refuses an unsigned one, one for another cell, and one
+    /// [`HedgeNarrowing::check`] refuses, at the seam that owns the defect.
+    pub fn send_hedge(&mut self, narrowing: HedgeNarrowing, at: Timestamp) -> Result<PolicySend> {
+        if narrowing.signature.is_empty() {
+            return Err(Error::denied(
+                "an unsigned hedge narrowing cannot be dispatched; sign it under the envelope \
+                 key",
+            ));
+        }
+        if narrowing.cell != self.cell {
+            return Err(Error::denied(format!(
+                "a hedge narrowing for cell {} was handed to the courier for {}",
+                narrowing.cell, self.cell
+            )));
+        }
+        narrowing.check()?;
+        let frame = frame_for_hedge(&narrowing, at)?;
+        self.send(frame, at)
+    }
+
     fn send(&mut self, frame: AnyEvent, at: Timestamp) -> Result<PolicySend> {
         let permit = match self.breaker.admit(&self.peer) {
             BreakerDecision::Refused(_) => return Ok(PolicySend::CircuitOpen),
@@ -685,6 +737,30 @@ fn frame_for_policy(payload: &PolicyPayload, at: Timestamp) -> Result<AnyEvent> 
             "qip-mesh",
         ),
         PolicyFrame(payload.clone()),
+    )
+    .erase()
+}
+
+fn frame_for_hedge(narrowing: &HedgeNarrowing, at: Timestamp) -> Result<AnyEvent> {
+    let key = format!(
+        "hedge|{}|{}|{}",
+        narrowing.cell, narrowing.plan_id, narrowing.signature
+    );
+    Envelope::new(
+        Id::from_string(format!(
+            "EVTHEDGE{}",
+            qip_core::hash::sha256_hex(key.as_bytes())
+        )),
+        at,
+        at,
+        Lineage::root(
+            CorrelationId::from_string(format!(
+                "CORHEDGE{}",
+                qip_core::hash::sha256_hex(key.as_bytes())
+            )),
+            "qip-mesh",
+        ),
+        HedgeFrame(narrowing.clone()),
     )
     .erase()
 }

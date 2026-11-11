@@ -120,9 +120,11 @@
 //! for the next only because the regime key is the platform's, not the
 //! instrument's, and that is the whole of what this module claims.
 
-use crate::features::{FEATURES, FeatureLineage, LOOKBACK, feature_columns, next_bar_returns};
+use crate::features::{
+    FEATURES, FeatureLineage, LOOKBACK, feature_columns, live_feature_row, next_bar_returns,
+};
 use qip_ai::evaluation::DriftReport;
-use qip_ai::registry::{ModelCard, ModelRegistry, ModelStage, PublishedArtifact};
+use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage, PublishedArtifact};
 use qip_ai::serving::ModelArtifact;
 use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
@@ -132,6 +134,7 @@ use qip_kernel::central::models::{
     ModelRegistration, record_subject, register_fit, require_calibrated_baseline,
 };
 use qip_kernel::model_serving::{MIN_SHADOW_ROUNDS, ModelProducer};
+use qip_kernel::model_tournament::CardForecast;
 use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
@@ -471,6 +474,107 @@ pub struct LearningRound {
     /// threshold, each with the displaced model reactivated in its place
     /// (`LearningDesk::roll_back_degraded`).
     pub rolled_back: Vec<RollBack>,
+    /// What the round did with each production model on this subject whose
+    /// evaluation predates the subject's latest regime crossing
+    /// (`LearningDesk::reverify_after_crossing`). Empty on a round whose
+    /// subject did not cross, or whose models were evaluated since.
+    pub reverified: Vec<Reverification>,
+    /// The production cards on this subject offered to the tournament as
+    /// entrants this round, and each offer that was refused or could not be
+    /// made (`LearningDesk::offer_card_forecasts`, ADR 0390). `None` on a
+    /// round a test drove without a platform.
+    pub card_forecasts: Option<CardOffers>,
+}
+
+/// What one round offered the tournament from its fitted cards (ADR 0390,
+/// R12-MODEL-3089).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CardOffers {
+    /// The forecasts standing after the offer.
+    pub entered: Vec<CardForecast>,
+    /// One sentence per production card on the subject that was not
+    /// entered, each naming why.
+    pub withheld: Vec<String>,
+}
+
+/// What became of one production model whose market crossed a regime boundary
+/// after it was last evaluated (R12-MODEL-10096).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reverification {
+    /// Too few rows after the crossing to say anything. Nothing was recorded
+    /// and nothing moved; the next round asks again.
+    Waiting {
+        reference: String,
+        fresh_rows: usize,
+        required: usize,
+    },
+    /// The desk holds no artifact it can rescore, or the provider would not
+    /// serve or score it. Nothing was recorded and nothing moved.
+    Unscorable { reference: String, reason: String },
+    /// Evaluated again on rows after the crossing and left standing by the
+    /// verifier society.
+    Survived {
+        reference: String,
+        holdout_r2: f64,
+        rows: usize,
+    },
+    /// Refuted after its renewed evaluation, retired, and the model it
+    /// displaced reactivated.
+    RolledBack {
+        retired: String,
+        reactivated: String,
+        reason: String,
+    },
+    /// Refuted after its renewed evaluation and not rolled back, with the
+    /// kernel's reason — ordinarily that there is no known-good predecessor
+    /// to return to. It stays in the promoted set; its failed evaluation is
+    /// on its card and on the log.
+    Refuted {
+        reference: String,
+        reason: String,
+        not_rolled_back: String,
+    },
+}
+
+impl Reverification {
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Waiting {
+                reference,
+                fresh_rows,
+                required,
+            } => format!(
+                "{reference} awaits re-evaluation after a regime crossing: {fresh_rows} row(s) \
+                 since, {required} needed"
+            ),
+            Self::Unscorable { reference, reason } => {
+                format!("{reference} could not be re-evaluated after a regime crossing: {reason}")
+            }
+            Self::Survived {
+                reference,
+                holdout_r2,
+                rows,
+            } => format!(
+                "{reference} re-evaluated after a regime crossing at R² {holdout_r2:.4} on \
+                 {rows} row(s) and re-verified"
+            ),
+            Self::RolledBack {
+                retired,
+                reactivated,
+                reason,
+            } => format!(
+                "{retired} refuted after a regime crossing ({reason}), {reactivated} reactivated"
+            ),
+            Self::Refuted {
+                reference,
+                reason,
+                not_rolled_back,
+            } => format!(
+                "{reference} refuted after a regime crossing ({reason}) and not rolled back: \
+                 {not_rolled_back}"
+            ),
+        }
+    }
 }
 
 /// One automatic retirement and the known-good model that replaced it.
@@ -621,6 +725,8 @@ impl LearningRound {
             refused_by_door: Some(reason.into()),
             promotion: None,
             rolled_back: Vec::new(),
+            reverified: Vec::new(),
+            card_forecasts: None,
             class_choice: None,
         }
     }
@@ -704,6 +810,19 @@ impl LearningRound {
                 rolled.retired, rolled.reactivated
             )
         });
+        let promotion = self.reverified.iter().fold(promotion, |line, outcome| {
+            format!("{line}; {}", outcome.describe())
+        });
+        let promotion = match &self.card_forecasts {
+            Some(offers) if !(offers.entered.is_empty() && offers.withheld.is_empty()) => {
+                format!(
+                    "{promotion}; {} card(s) entered the tournament, {} withheld",
+                    offers.entered.len(),
+                    offers.withheld.len()
+                )
+            }
+            _ => promotion,
+        };
         format!(
             "learning: {registered}{class}; {} model(s) measured for drift, {} \
              ineligible{unattributed}{degraded}{distilled}{promotion}{campaign}",
@@ -788,6 +907,12 @@ pub struct LearningDesk {
     /// This round's candidate for the promote stage; see
     /// [`PromotionCandidate`].
     candidate: Option<PromotionCandidate>,
+    /// The newest round's subject and its held-out tail, kept past the
+    /// promote stage (which takes `candidate`) so a production model whose
+    /// subject crossed a regime boundary can be evaluated again on rows after
+    /// the crossing (R12-MODEL-10096). Replaced by every round that fits and
+    /// cleared by every round that does not, exactly as `candidate` is.
+    renewal_rows: Option<(String, TrainingDataset)>,
     /// Per subject, the model in shadow, if any. One at a time: a subject
     /// with a model in shadow scores that model on each new window and
     /// fits nothing new into production until it is decided.
@@ -912,6 +1037,7 @@ impl LearningDesk {
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
             candidate: None,
+            renewal_rows: None,
             shadowing: BTreeMap::new(),
             promoted_artifacts: BTreeMap::new(),
             displaced_artifacts: BTreeMap::new(),
@@ -1779,6 +1905,270 @@ impl LearningDesk {
         Ok(rolled_back)
     }
 
+    /// Evaluate again, re-verify, and where refuted roll back every production
+    /// model on this round's subject whose latest evaluation predates that
+    /// subject's latest regime crossing (R12-MODEL-10096).
+    ///
+    /// The failure this closes: a regime crossing was read only at promotion.
+    /// A model already in production when its market changed kept the
+    /// evaluation it was promoted on, from a market that no longer existed,
+    /// and nothing looked at it again unless its features happened to drift.
+    ///
+    /// The order is the point, and a version of this without it was built
+    /// and reverted on 2026-10-30. Evaluations were written once, at
+    /// registration, so re-verifying against a crossing refuted every
+    /// production model on every round after its subject crossed and would
+    /// have rolled healthy models back. So the evaluation is renewed first,
+    /// on held-out rows *after* the crossing and nothing else, and only a
+    /// model with a renewed evaluation is put in front of the society. A
+    /// model the new regime has too few rows for waits, unjudged: there is no
+    /// evidence against it yet, and `decision_eligibility` already withholds
+    /// a card fitted in another regime from decisions.
+    ///
+    /// The bar is the one the model was registered against, the desk's
+    /// [`SkillPolicy`]: held-out R² over the mean predictor, on at least the
+    /// policy's minimum of observations. A model that still clears it in the
+    /// new regime is recorded as passing and survives the structural-break
+    /// critic because its evaluation is now newer than the crossing; one that
+    /// does not is recorded as failing, refuted, and rolled back through
+    /// [`Platform::rollback_model`].
+    ///
+    /// Only this round's subject is examined, because only its rows are in
+    /// hand. A model on another subject is reached on the round that subject
+    /// is fitted.
+    pub fn reverify_after_crossing(
+        &mut self,
+        platform: &mut Platform,
+        now: Timestamp,
+    ) -> Result<Vec<Reverification>> {
+        self.reverify_against(platform, Platform::reevaluation_due, now)
+    }
+
+    /// Offer the tournament a forecast from each production card on this
+    /// round's subject (ADR 0390, R12-MODEL-3089), replacing the subject's
+    /// previous offers.
+    ///
+    /// Each card is scored through the platform's provider on the round's
+    /// held-out tail — rows no fit this round saw — and on the newest bar's
+    /// feature row. The held-out rows whose realised error, added to the
+    /// newest prediction, leaves the next return above zero are counted, and
+    /// the count and the row total are what is offered: the kernel derives
+    /// the probability, so this desk asserts none. Nothing new is spent: the
+    /// serve is the one promotion and renewal already use.
+    ///
+    /// A production card this desk holds no artifact for, or whose serve
+    /// refuses, is withheld with the reason; the platform withholds a card
+    /// no decision may use. No card is entered to reach a count.
+    ///
+    /// Only this round's subject is offered, because only its rows are in
+    /// hand; another subject's cards stand until their own bar ends.
+    pub fn offer_card_forecasts(
+        &mut self,
+        platform: &mut Platform,
+        bars: &[Bar],
+        now: Timestamp,
+    ) -> Result<CardOffers> {
+        let Some((subject, holdout)) = self.renewal_rows.clone() else {
+            return Ok(CardOffers::default());
+        };
+        let mut offers = CardOffers::default();
+        let (Some(newest), Some(live)) = (bars.last(), live_feature_row(bars)) else {
+            platform.stage_card_forecasts(&self.registry, &subject, Vec::new(), now);
+            return Ok(offers);
+        };
+        let spacing = bars
+            .len()
+            .checked_sub(2)
+            .and_then(|previous| bars.get(previous))
+            .map(|previous| newest.close_time().since(previous.close_time()));
+        let Some(bar) = spacing else {
+            platform.stage_card_forecasts(&self.registry, &subject, Vec::new(), now);
+            return Ok(offers);
+        };
+        let references: Vec<String> = self
+            .registry
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .filter(|card| card_subject(card) == Some(subject.as_str()))
+            .map(ModelCard::reference)
+            .collect();
+        let mut offered = Vec::new();
+        for reference in references {
+            let Some(held) = self.promoted_artifacts.get(&reference) else {
+                offers.withheld.push(format!(
+                    "{reference}: this desk holds no artifact for it to score"
+                ));
+                continue;
+            };
+            let scored: Result<(Vec<f64>, f64)> = platform.serve_model(held).and_then(|served| {
+                let scores: Result<Vec<f64>> =
+                    holdout.rows().iter().map(|row| served.score(row)).collect();
+                Ok((scores?, served.score(&live)?))
+            });
+            let (scores, prediction) = match scored {
+                Ok(scored) => scored,
+                Err(error) => {
+                    offers
+                        .withheld
+                        .push(format!("{reference}: {}", error.message()));
+                    continue;
+                }
+            };
+            // The realised error on each held-out row, added to the newest
+            // prediction: the next return had the card erred as it did there.
+            let ups = scores
+                .iter()
+                .zip(holdout.targets())
+                .filter(|(score, target)| prediction + (**target - **score) > 0.0)
+                .count();
+            let (Ok(holdout_ups), Ok(holdout_rows)) =
+                (u32::try_from(ups), u32::try_from(scores.len()))
+            else {
+                offers.withheld.push(format!(
+                    "{reference}: {} held-out rows is more than a forecast can count",
+                    scores.len()
+                ));
+                continue;
+            };
+            offered.push(CardForecast {
+                reference,
+                subject: subject.clone(),
+                holdout_ups,
+                holdout_rows,
+                // The crossing from money to statistics: the close is a
+                // price, and the question measures a direction from it.
+                from_close: newest.close.to_f64(),
+                from_close_time: newest.close_time(),
+                bar,
+            });
+        }
+        offers.withheld.extend(platform.stage_card_forecasts(
+            &self.registry,
+            &subject,
+            offered,
+            now,
+        ));
+        offers.entered = platform.standing_card_forecasts(&subject);
+        Ok(offers)
+    }
+
+    /// [`Self::reverify_after_crossing`] with the reader of "which crossing
+    /// has this card not been evaluated since" named, so the renewal and the
+    /// rollback can be driven in a test without first staging a market that
+    /// crosses a regime boundary.
+    fn reverify_against(
+        &mut self,
+        platform: &mut Platform,
+        due: impl Fn(&Platform, &ModelCard) -> Option<Timestamp>,
+        now: Timestamp,
+    ) -> Result<Vec<Reverification>> {
+        let Some((subject, holdout)) = self.renewal_rows.clone() else {
+            return Ok(Vec::new());
+        };
+        let pending: Vec<(String, Timestamp)> = self
+            .registry
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .filter(|card| card_subject(card) == Some(subject.as_str()))
+            .filter_map(|card| due(platform, card).map(|crossing| (card.reference(), crossing)))
+            .collect();
+        let mut outcomes = Vec::new();
+        for (reference, crossing) in pending {
+            // Strictly after the crossing: a row at or before it describes
+            // the regime the model was already evaluated in.
+            let fresh: Vec<usize> = holdout
+                .times()
+                .iter()
+                .enumerate()
+                .filter(|(_, at)| **at > crossing)
+                .map(|(index, _)| index)
+                .collect();
+            let required = self.policy.minimum_holdout_observations;
+            if fresh.len() < required {
+                outcomes.push(Reverification::Waiting {
+                    reference,
+                    fresh_rows: fresh.len(),
+                    required,
+                });
+                continue;
+            }
+            let Some(held) = self.promoted_artifacts.get(&reference) else {
+                outcomes.push(Reverification::Unscorable {
+                    reference,
+                    reason: "this desk holds no artifact for it to rescore".to_string(),
+                });
+                continue;
+            };
+            let scored = holdout.select(&fresh)?;
+            let scores: Result<Vec<f64>> = platform
+                .serve_model(held)
+                .and_then(|served| scored.rows().iter().map(|row| served.score(row)).collect());
+            let scores = match scores {
+                Ok(scores) => scores,
+                Err(error) => {
+                    outcomes.push(Reverification::Unscorable {
+                        reference,
+                        reason: error.message().to_string(),
+                    });
+                    continue;
+                }
+            };
+            let targets = scored.targets();
+            let holdout_r2 = r_squared(&scores, targets);
+            // A comparison, so a NaN R² is a failed evaluation and never a
+            // passed one.
+            let passed = holdout_r2 >= self.policy.minimum_holdout_r2;
+            let mut metrics = BTreeMap::new();
+            metrics.insert("holdout_r2".to_string(), holdout_r2);
+            metrics.insert("holdout_rmse".to_string(), rmse(&scores, targets));
+            metrics.insert("holdout_observations".to_string(), fresh.len() as f64);
+            self.registry.record_evaluation(
+                &reference,
+                EvaluationRecord {
+                    evaluated_at: now,
+                    dataset: scored.name().to_string(),
+                    metrics,
+                    passed,
+                },
+            )?;
+            let Some(reason) = platform.reverify_model(&self.registry, &reference, now)? else {
+                outcomes.push(Reverification::Survived {
+                    reference,
+                    holdout_r2,
+                    rows: fresh.len(),
+                });
+                continue;
+            };
+            // MODEL-057: a rollback moves the alias, and names this desk.
+            platform.name_model_desk(MODEL_DESK)?;
+            match platform.rollback_model(&mut self.registry, &reference, now) {
+                Ok(reactivated) => {
+                    if let Some(artifact) = self.promoted_artifacts.remove(&reference) {
+                        self.displaced_artifacts.insert(reference.clone(), artifact);
+                    }
+                    if let Some(artifact) = self.displaced_artifacts.remove(&reactivated) {
+                        self.promoted_artifacts
+                            .insert(reactivated.clone(), artifact);
+                    }
+                    outcomes.push(Reverification::RolledBack {
+                        retired: reference,
+                        reactivated,
+                        reason,
+                    });
+                }
+                // The refusal is kept on the outcome: "nothing to roll back
+                // to" and "the log could not be written" are different
+                // problems, and a swallowed one reads as the first.
+                Err(error) => outcomes.push(Reverification::Refuted {
+                    reference,
+                    reason,
+                    not_rolled_back: error.message().to_string(),
+                }),
+            }
+        }
+        Ok(outcomes)
+    }
+
     /// Whether the cadence says a round runs this cycle. Split from
     /// [`Self::maybe_learn`] so the engine can assemble the window through a
     /// campaign only on the cycles a fit will actually use it.
@@ -2011,6 +2401,7 @@ impl LearningDesk {
                     // engine's promote step cannot promote the previous
                     // window's fit against this one.
                     self.candidate = None;
+                    self.renewal_rows = None;
                     return Ok(LearningRound {
                         subject: subject.as_str().to_string(),
                         registration: None,
@@ -2026,6 +2417,8 @@ impl LearningDesk {
                         class_choice: None,
                         promotion: None,
                         rolled_back: Vec::new(),
+                        reverified: Vec::new(),
+                        card_forecasts: None,
                     });
                 }
             };
@@ -2060,6 +2453,8 @@ impl LearningDesk {
             class_choice,
             promotion: None,
             rolled_back: Vec::new(),
+            reverified: Vec::new(),
+            card_forecasts: None,
         })
     }
 
@@ -2386,6 +2781,10 @@ impl LearningDesk {
         // candidate: there are no rows to rescore an incumbent on, and a
         // promotion decided on nothing is the thing this stage exists to
         // refuse.
+        self.renewal_rows = probe
+            .as_ref()
+            .ok()
+            .map(|holdout| (subject.as_str().to_string(), holdout.clone()));
         self.candidate = probe.ok().map(|holdout| PromotionCandidate {
             subject: subject.as_str().to_string(),
             passed_skill_bar: registration.passed,
@@ -2411,6 +2810,29 @@ fn rmse(scores: &[f64], targets: &[f64]) -> f64 {
         .map(|(score, target)| (score - target).powi(2))
         .sum();
     (sum / n as f64).sqrt()
+}
+
+/// R² of scores against targets over the mean predictor, as
+/// `qip_training::local` scores a holdout: one minus the residual sum of
+/// squares over the total about the targets' own mean, and zero where the
+/// targets have no variance to be a share of. A statistic, `f64` throughout.
+fn r_squared(scores: &[f64], targets: &[f64]) -> f64 {
+    let n = scores.len().min(targets.len());
+    if n == 0 {
+        return f64::NAN;
+    }
+    let mean = targets.iter().take(n).sum::<f64>() / n as f64;
+    let mut residual = 0.0;
+    let mut total = 0.0;
+    for (score, target) in scores.iter().zip(targets) {
+        residual += (target - score).powi(2);
+        total += (target - mean).powi(2);
+    }
+    if total > 1e-18 {
+        1.0 - residual / total
+    } else {
+        0.0
+    }
 }
 
 /// The largest population stability index across the features two samples
@@ -2574,6 +2996,19 @@ mod tests {
         from_cycle: u64,
         start: Timestamp,
     ) -> Result<Option<PromotionOutcome>> {
+        through_shadow_for(desk, platform, &subject(), window, from_cycle, start)
+    }
+
+    /// [`through_shadow_on`] for a named subject, for a test whose platform
+    /// must know the instrument the desk fits.
+    fn through_shadow_for(
+        desk: &mut LearningDesk,
+        platform: &mut Platform,
+        subject: &ObjectId,
+        window: impl Fn(usize) -> Vec<Bar>,
+        from_cycle: u64,
+        start: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
         let Some(entered) = desk.promote_candidate(platform, start)? else {
             return Ok(None);
         };
@@ -2584,7 +3019,7 @@ mod tests {
         for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
             let at = start.saturating_add(qip_core::Duration::from_mins(round as i64));
             let moved = window(SHADOW_STEP * round as usize);
-            desk.maybe_learn(&subject(), &moved, REGIME, from_cycle + round, at)?;
+            desk.maybe_learn(subject, &moved, REGIME, from_cycle + round, at)?;
             last = desk
                 .promote_candidate(platform, at)?
                 .ok_or_else(|| Error::not_found("a shadow round's candidate"))?;
@@ -2913,6 +3348,541 @@ mod tests {
         assert!(
             desk.promoted_artifacts.contains_key(&first_reference),
             "the reactivated model cannot be rescored by the next candidate"
+        );
+        Ok(())
+    }
+
+    /// A serving platform that watches `obj-BBB` under a tight quoted spread,
+    /// as `qip-kernel/tests/regime_boundary.rs` stages one, so a later spread
+    /// blow-out moves the subject's regime key and the platform marks a
+    /// crossing.
+    fn regime_platform() -> Result<Platform> {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+        use qip_market::bar::Interval;
+        use qip_market_ingestion::adapter::SensedRecord;
+
+        let mut universe = qip_financial::universe::Universe::new();
+        for symbol in ["AAA", "BBB"] {
+            universe.insert(
+                FinancialObject::builder(
+                    ObjectId::from_string(format!("obj-{symbol}")),
+                    symbol,
+                    InstrumentType::CommonStock,
+                    qip_financial::costs::LiquidityProfile::listed(
+                        qip_core::Decimal::from_int(5_000_000),
+                        3.0,
+                    ),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(qip_core::dec!("100"))
+                .provenance(Provenance::synthetic("test", at()))
+                .build(at())?,
+            )?;
+        }
+        let config =
+            qip_kernel::PlatformConfig::default().with_exploration_share(qip_core::dec!("0.05"));
+        let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+        let mut platform = Platform::new_serving(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            universe,
+            qip_risk::limits::LimitSet::conservative_default(),
+            Box::new(InTreeProvider),
+        )?;
+        let count = 120_usize;
+        for (symbol, seed) in [("AAA", 11_u64), ("BBB", 22_u64)] {
+            let mut state = seed;
+            let mut price = 100.0_f64;
+            let bars: Vec<SensedRecord> = (0..count)
+                .map(|i| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    let step = ((state % 1_000_000) as f64 / 1_000_000.0 - 0.5) * 0.02;
+                    let open = price;
+                    price *= step.exp();
+                    SensedRecord::Bar(Box::new(Bar {
+                        object_id: ObjectId::from_string(format!("obj-{symbol}")),
+                        venue: "XNYS".to_string(),
+                        interval: Interval::Day,
+                        open_time: at()
+                            .saturating_sub(qip_core::Duration::from_days((count - i) as i64)),
+                        open: qip_core::Decimal::from_f64(open).unwrap_or(qip_core::Decimal::ONE),
+                        high: qip_core::Decimal::from_f64(open.max(price) * 1.002)
+                            .unwrap_or(qip_core::Decimal::ONE),
+                        low: qip_core::Decimal::from_f64(open.min(price) * 0.998)
+                            .unwrap_or(qip_core::Decimal::ONE),
+                        close: qip_core::Decimal::from_f64(price).unwrap_or(qip_core::Decimal::ONE),
+                        volume: qip_core::dec!("1000000"),
+                        trade_count: 5_000,
+                        vwap: qip_core::Decimal::from_f64((open + price) / 2.0),
+                        quality: qip_financial::quality::DataQuality::default(),
+                    }))
+                })
+                .collect();
+            platform.observe(bars);
+        }
+        for day in 0..3 {
+            platform.observe(vec![spread_quote(
+                at().saturating_sub(qip_core::Duration::from_days(3 - day)),
+                10.0,
+            )]);
+        }
+        platform.run_cycle(at());
+        Ok(platform)
+    }
+
+    /// A quote on `obj-BBB` whose half-spread is `bps` basis points of a
+    /// hundred-dollar mid.
+    fn spread_quote(at: Timestamp, bps: f64) -> qip_market_ingestion::adapter::SensedRecord {
+        let half = 100.0 * bps / 20_000.0;
+        qip_market_ingestion::adapter::SensedRecord::Quote(qip_market::quote::Quote {
+            object_id: ObjectId::from_string("obj-BBB"),
+            venue: "XNYS".to_string(),
+            at,
+            capture_time: at,
+            sequence: None,
+            bid: qip_core::Decimal::from_f64(100.0 - half).unwrap_or(qip_core::Decimal::ONE),
+            ask: qip_core::Decimal::from_f64(100.0 + half).unwrap_or(qip_core::Decimal::ONE),
+            bid_size: qip_core::dec!("1000"),
+            ask_size: qip_core::dec!("1000"),
+            quality: qip_financial::quality::DataQuality::default(),
+        })
+    }
+
+    /// The reader `reverify_after_crossing` takes from the platform, for a
+    /// test that names the crossing instead of staging a market that makes
+    /// one: due while the card's latest evaluation is older than `crossing`.
+    fn due_since(crossing: Timestamp) -> impl Fn(&Platform, &ModelCard) -> Option<Timestamp> {
+        move |_, card| {
+            card.latest_evaluation()
+                .is_none_or(|evaluation| evaluation.evaluated_at < crossing)
+                .then_some(crossing)
+        }
+    }
+
+    /// R12-MODEL-10096, the half that was missing and the half that was
+    /// reverted. The subject's quoted spread blows out after its model was
+    /// promoted, the platform marks the crossing, and the next round
+    /// evaluates the model again on rows after it. The series did not change
+    /// character, so the model still clears the bar: it is recorded as
+    /// passing, re-verified, left in production, and not asked again.
+    ///
+    /// A version of this built on 2026-10-30 re-verified without renewing the
+    /// evaluation, and so refuted every production model on every round after
+    /// its subject crossed. The last two assertions are that failure.
+    ///
+    /// Mutations: hand `|_, _| None` to `reverify_against` in
+    /// `reverify_after_crossing` — nothing is reverified and the first
+    /// assertion fails; skip `record_evaluation` — the evaluation instant
+    /// assertion fails and the second call reverifies again.
+    /// R12-MODEL-3089, ADR 0390. Until this the desk's production models
+    /// never forecast anything the tournament scored. The count is recounted
+    /// here from the served model and the round's own held-out rows, so a
+    /// desk that offered a figure it did not count is caught.
+    #[test]
+    fn a_production_card_is_offered_to_the_tournament_with_the_count_of_held_out_errors_that_leave_the_next_bar_up()
+    -> Result<()> {
+        let bbb = ObjectId::from_string("obj-BBB");
+        let mut desk = learning_desk();
+        let mut platform = regime_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&bbb, &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        // Premise: before it is promoted the card is not an entrant.
+        let before = desk.offer_card_forecasts(&mut platform, &bars, at())?;
+        assert!(before.entered.is_empty(), "{before:?}");
+        let promoted = through_shadow_for(
+            &mut desk,
+            &mut platform,
+            &bbb,
+            |step| super::tests_support::learnable(400 + step)[step..].to_vec(),
+            1,
+            at(),
+        )?;
+        assert!(
+            matches!(promoted, Some(PromotionOutcome::Promoted { .. })),
+            "premise: the model reached production: {promoted:?}"
+        );
+        let window = super::tests_support::learnable(460)[60..].to_vec();
+        desk.maybe_learn(&bbb, &window, REGIME, 9, at())?;
+
+        let offers = desk.offer_card_forecasts(&mut platform, &window, at())?;
+        let entered = offers
+            .entered
+            .iter()
+            .find(|forecast| forecast.reference == reference)
+            .ok_or_else(|| Error::not_found(format!("the production card's offer: {offers:?}")))?;
+
+        let (_, holdout) = desk
+            .renewal_rows
+            .clone()
+            .ok_or_else(|| Error::not_found("the round's held-out rows"))?;
+        let held = desk
+            .promoted_artifacts
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the promoted artifact"))?;
+        let served = platform.serve_model(held)?;
+        let live = crate::features::live_feature_row(&window)
+            .ok_or_else(|| Error::not_found("the newest feature row"))?;
+        let prediction = served.score(&live)?;
+        let mut ups = 0_u32;
+        for (row, target) in holdout.rows().iter().zip(holdout.targets()) {
+            if prediction + (target - served.score(row)?) > 0.0 {
+                ups += 1;
+            }
+        }
+        let rows = u32::try_from(holdout.rows().len()).map_err(|_| Error::invalid("rows"))?;
+        assert!(rows > 0, "premise: the round held rows out");
+        assert!(
+            ups > 0 && ups < rows,
+            "premise: the held-out errors disagree about the next bar ({ups} of {rows}), so a \
+             count that ignored them would not match"
+        );
+        assert_eq!((entered.holdout_ups, entered.holdout_rows), (ups, rows));
+        let newest = &window[window.len() - 1];
+        let previous = &window[window.len() - 2];
+        assert_eq!(
+            entered.from_close.to_bits(),
+            newest.close.to_f64().to_bits()
+        );
+        assert_eq!(entered.from_close_time, newest.close_time());
+        assert_eq!(
+            entered.bar,
+            newest.close_time().since(previous.close_time()),
+            "the span is the bars' own spacing"
+        );
+        assert_eq!(entered.subject, "obj-BBB");
+        assert_eq!(
+            platform.standing_card_forecasts("obj-BBB"),
+            offers.entered,
+            "what the desk reports entered is what the tournament holds"
+        );
+
+        // The platform, not the desk, is the door: a card no decision may
+        // use, another subject's card and an unregistered one are refused.
+        let development = desk
+            .registry
+            .iter()
+            .find(|card| card.stage != ModelStage::Production)
+            .map(ModelCard::reference)
+            .ok_or_else(|| Error::not_found("premise: a card that is not in production"))?;
+        let offer = |reference: &str, subject: &str| CardForecast {
+            reference: reference.to_string(),
+            subject: subject.to_string(),
+            ..entered.clone()
+        };
+        let refused = platform.stage_card_forecasts(
+            &desk.registry,
+            "obj-BBB",
+            vec![
+                offer(&development, "obj-BBB"),
+                offer("nobody@1", "obj-BBB"),
+                offer(&reference, "obj-BBB"),
+            ],
+            at(),
+        );
+        assert_eq!(refused.len(), 2, "{refused:?}");
+        let standing = platform.standing_card_forecasts("obj-BBB");
+        assert_eq!(standing.len(), 1, "{standing:?}");
+        assert_eq!(standing[0].reference, reference);
+        let refused = platform.stage_card_forecasts(
+            &desk.registry,
+            "obj-AAA",
+            vec![offer(&reference, "obj-AAA")],
+            at(),
+        );
+        assert_eq!(
+            refused.len(),
+            1,
+            "a card entered another instrument's question"
+        );
+        assert!(platform.standing_card_forecasts("obj-AAA").is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_healthy_production_model_is_evaluated_again_after_its_subject_crosses_and_left_standing()
+    -> Result<()> {
+        let bbb = ObjectId::from_string("obj-BBB");
+        let mut desk = learning_desk();
+        let mut platform = regime_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&bbb, &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        let promoted = through_shadow_for(
+            &mut desk,
+            &mut platform,
+            &bbb,
+            |step| super::tests_support::learnable(400 + step)[step..].to_vec(),
+            1,
+            at(),
+        )?;
+        assert!(
+            matches!(promoted, Some(PromotionOutcome::Promoted { .. })),
+            "premise: the model reached production: {promoted:?}"
+        );
+        // Premise: nothing has crossed, so nothing is due and nothing is done.
+        assert!(
+            desk.reverify_after_crossing(&mut platform, at())?
+                .is_empty()
+        );
+
+        let settled = platform.regime_context("obj-BBB");
+        let crossing = at().saturating_add(qip_core::Duration::from_mins(10));
+        platform.observe(vec![spread_quote(crossing, 300.0)]);
+        platform.run_cycle(crossing);
+        assert_ne!(
+            settled,
+            platform.regime_context("obj-BBB"),
+            "premise: the subject's regime key changed, so a crossing was marked"
+        );
+        let card = desk
+            .registry
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        assert_eq!(platform.reevaluation_due(card), Some(crossing), "premise");
+
+        // The next round's window, whose held-out tail lies after the crossing.
+        let now = at().saturating_add(qip_core::Duration::from_days(2));
+        let later = super::tests_support::learnable(1_000)[600..].to_vec();
+        desk.maybe_learn(&bbb, &later, REGIME, 9, now)?;
+
+        let outcomes = desk.reverify_after_crossing(&mut platform, now)?;
+        assert!(
+            matches!(
+                outcomes.as_slice(),
+                [Reverification::Survived { reference: survived, holdout_r2, .. }]
+                    if *survived == reference && *holdout_r2 >= 0.05
+            ),
+            "{outcomes:?}"
+        );
+        let card = desk
+            .registry
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        assert_eq!(card.stage, ModelStage::Production);
+        assert_eq!(
+            card.latest_evaluation()
+                .map(|evaluation| (evaluation.evaluated_at, evaluation.passed)),
+            Some((now, true))
+        );
+        assert!(platform.model_promotions().contains_key(&reference));
+        // Evaluated since the crossing: not asked again.
+        assert!(
+            desk.reverify_after_crossing(&mut platform, now)?.is_empty(),
+            "a model evaluated after the crossing was reverified again"
+        );
+        Ok(())
+    }
+
+    /// A model the new regime holds too few rows for is not judged: no
+    /// evaluation is recorded and nothing moves. Rolling it back on no
+    /// evidence would retire a model because its market changed, not because
+    /// it stopped working.
+    ///
+    /// Mutation: drop the `fresh.len() < required` check, or select every
+    /// held-out row instead of those after the crossing — the model is
+    /// evaluated on rows from the regime it was already evaluated in.
+    #[test]
+    fn a_production_model_with_too_few_rows_since_the_crossing_waits_unjudged() -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        through_shadow(&mut desk, &mut platform, &bars, 1, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        let now = at().saturating_add(qip_core::Duration::from_days(2));
+        let later = super::tests_support::learnable(1_000)[600..].to_vec();
+        desk.maybe_learn(&subject(), &later, REGIME, 9, now)?;
+        let held: Vec<Timestamp> = desk
+            .renewal_rows
+            .as_ref()
+            .map(|(_, holdout)| holdout.times().to_vec())
+            .ok_or_else(|| Error::not_found("the held-out tail"))?;
+        assert!(held.len() >= 40, "premise: {} held-out row(s)", held.len());
+        // Ten rows lie strictly after the crossing.
+        let crossing = held[held.len() - 11];
+        let evaluations = |desk: &LearningDesk| {
+            desk.registry
+                .get(&reference)
+                .map_or(0, |card| card.evaluations.len())
+        };
+        let before = evaluations(&desk);
+
+        let outcomes = desk.reverify_against(&mut platform, due_since(crossing), now)?;
+
+        assert_eq!(
+            outcomes,
+            vec![Reverification::Waiting {
+                reference: reference.clone(),
+                fresh_rows: 10,
+                required: SkillPolicy::default().minimum_holdout_observations,
+            }]
+        );
+        assert_eq!(evaluations(&desk), before);
+        assert_eq!(
+            desk.registry.get(&reference).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        Ok(())
+    }
+
+    /// The series changes character at bar 1000: what predicted the next
+    /// return now predicts its opposite. The production model, fitted before,
+    /// is evaluated on rows after the change, fails the bar it was registered
+    /// against, is refuted by the verifier society and rolled back to the
+    /// model it displaced. That model is then judged the same way on the next
+    /// round, fails too, and has nothing behind it — the one it could return
+    /// to has a failed evaluation — so it is reported refuted in place rather
+    /// than swapped back and forth.
+    ///
+    /// Mutations: record every renewed evaluation as passed — nothing is
+    /// rolled back; treat a refutation as survival — the same; drop the
+    /// artifact bookkeeping after the rollback — the reactivated model is
+    /// reported unscorable on the second call instead of refuted.
+    #[test]
+    fn a_production_model_refuted_after_its_subject_crosses_is_rolled_back_and_its_predecessor_judged_next()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let first_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let first = first_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        through_shadow(&mut desk, &mut platform, &bars, 1, at())?
+            .ok_or_else(|| Error::not_found("a first candidate"))?;
+        // A successor promoted over it by hand, as the drift rollback test
+        // stages one.
+        let second_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 5, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        let second = second_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a second registration"))?
+            .reference
+            .clone();
+        let second_artifact = InTreeProvider::pack(
+            &desk
+                .candidate
+                .as_ref()
+                .ok_or_else(|| Error::not_found("the second candidate"))?
+                .teacher,
+        )?;
+        let promoted_at = at().saturating_add(qip_core::Duration::from_mins(10));
+        completed_shadow(&mut desk.registry, &second)?;
+        platform.promote_model(
+            &mut desk.registry,
+            &second_artifact,
+            None,
+            std::slice::from_ref(&first),
+            promoted_at,
+        )?;
+        if let Some(artifact) = desk.promoted_artifacts.remove(&first) {
+            desk.displaced_artifacts.insert(first.clone(), artifact);
+        }
+        desk.promoted_artifacts
+            .insert(second.clone(), second_artifact);
+
+        // The crossing is where the series changes; the next round's window
+        // and its held-out tail lie wholly after it.
+        let crossing = at().saturating_add(qip_core::Duration::from_mins(1_000));
+        let now = at().saturating_add(qip_core::Duration::from_days(3));
+        let after = super::tests_support::learnable_regimes(2_300)[1_100..].to_vec();
+        desk.maybe_learn(&subject(), &after, REGIME, 9, now)?;
+        assert!(
+            desk.renewal_rows
+                .as_ref()
+                .is_some_and(|(_, holdout)| holdout.times().iter().all(|at| *at > crossing)),
+            "premise: every held-out row is after the crossing"
+        );
+
+        // The round above measured the displaced model's features against the
+        // new regime's bars and found them drifted, as a real change of
+        // regime usually would; the registry refuses to reactivate a drifted
+        // card. This test is about the refutation path, so the predecessor is
+        // staged as within its threshold. `roll_back_degraded`'s own test
+        // covers a drifted one.
+        desk.registry.record_drift(&first, 0.0)?;
+
+        let outcomes = desk.reverify_against(&mut platform, due_since(crossing), now)?;
+        assert!(
+            matches!(
+                outcomes.as_slice(),
+                [Reverification::RolledBack { retired, reactivated, reason }]
+                    if *retired == second && *reactivated == first
+                        && reason.contains("did not pass")
+            ),
+            "{outcomes:?}"
+        );
+        assert_eq!(
+            desk.registry.get(&second).map(|card| card.stage),
+            Some(ModelStage::Retired)
+        );
+        assert_eq!(
+            desk.registry.get(&first).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        assert!(platform.model_promotions().contains_key(&first));
+        assert!(!platform.model_promotions().contains_key(&second));
+
+        // The reactivated model was evaluated before the crossing too.
+        let next = now.saturating_add(qip_core::Duration::from_mins(1));
+        let outcomes = desk.reverify_against(&mut platform, due_since(crossing), next)?;
+        assert!(
+            matches!(
+                outcomes.as_slice(),
+                [Reverification::Refuted { reference, reason, not_rolled_back }]
+                    if *reference == first
+                        && reason.contains("did not pass")
+                        && not_rolled_back.contains("no known-good predecessor")
+            ),
+            "{outcomes:?}"
+        );
+        assert_eq!(
+            desk.registry
+                .get(&first)
+                .and_then(|card| card.latest_evaluation())
+                .map(|evaluation| evaluation.passed),
+            Some(false)
+        );
+        assert_eq!(
+            desk.registry.get(&second).map(|card| card.stage),
+            Some(ModelStage::Retired),
+            "the refuted successor was swapped back in"
         );
         Ok(())
     }

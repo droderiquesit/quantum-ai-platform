@@ -1,7 +1,7 @@
 //! R12-GOV-4077: regulated financing functions run only through a recorded
 //! (entity, counterparty, jurisdiction) permission.
 //!
-//! No regulated function runs today. `qip_capital::funding::plan_funding` is
+//! No regulated function runs today. `qip_treasury::funding::plan_funding` is
 //! the one place a financing source is drawn on, and it asks
 //! `FinancingPermissions::require` before it counts a single unit of one. The
 //! risk this suite guards is the next seam: a second place that draws on a
@@ -14,12 +14,12 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_capital::funding::{
-    FundingRequirement, FundingSource, RequirementKind, SourceBalance, plan_funding,
-};
-use qip_capital::treasury::{FinancingFunction, FinancingPermissions};
 use qip_core::Decimal;
 use qip_core::error::Result;
+use qip_treasury::funding::{
+    FundingRequirement, FundingSource, RequirementKind, SourceBalance, plan_funding,
+};
+use qip_treasury::treasury::{FinancingFunction, FinancingPermissions};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -31,8 +31,8 @@ const FINANCING_PATHS: [&str; 2] = ["FundingSource::Financing", "FinancingFuncti
 /// The two files that own the gate: the enum and registry, and the planner
 /// that consults them.
 const GATE_FILES: [&str; 2] = [
-    "crates/services/qip-capital/src/treasury.rs",
-    "crates/services/qip-capital/src/funding.rs",
+    "crates/services/qip-treasury/src/treasury.rs",
+    "crates/services/qip-treasury/src/funding.rs",
 ];
 
 fn backend() -> PathBuf {
@@ -119,7 +119,7 @@ fn no_production_source_outside_the_gate_names_a_financing_source_or_function() 
     }
     assert!(
         seams.is_empty(),
-        "a financing seam outside qip_capital::funding::plan_funding: {seams:?}. Route it \
+        "a financing seam outside qip_treasury::funding::plan_funding: {seams:?}. Route it \
          through plan_funding, which asks FinancingPermissions::require before drawing on a \
          financing source (R12-GOV-4077)"
     );

@@ -10,6 +10,17 @@
 //! the Settlement Brain (`qip-capital-fabric`'s `settlement` module and
 //! `qip-edge`'s, R12-CAPITAL-1100).
 //!
+//! The Capital Brain (`qip-capital`, R12-CAPITAL-1096) is closed since ADR
+//! 0385 moved the allocator's limits and plan to `qip_contracts::allocation`
+//! and the fabric's direct edge went with them.
+//!
+//! For the Asset Brain (`qip-portfolio-engine`, `qip-lifecycle`,
+//! R12-CAPITAL-1095) it holds the clauses that are true and pins, exactly,
+//! the edges that are not: the lifecycle crate's reach into the model
+//! registry, the simulation engine's closure and the evolution service's
+//! dependence on it. That brain is not closed by this suite; its test says
+//! which edges are open.
+//!
 //! **`qip-edge` is not a brain crate, and that is checked, not assumed.** It
 //! hosts the cell, which by ADR 0008 decides alone and so depends on the risk
 //! brain's pre-trade checks directly; listing it as a brain would make every
@@ -52,6 +63,10 @@ fn brains() -> BTreeMap<&'static str, BTreeSet<&'static str>> {
     BTreeMap::from([
         ("risk", BTreeSet::from(RISK_BRAIN)),
         ("capital", BTreeSet::from(["qip-capital"])),
+        // ADR 0385: the Treasury Bank's crate, extracted from `qip-capital`.
+        // Listed so the two-brains test refuses a service holding it beside
+        // another brain; `treasury_boundary.rs` holds its own closure.
+        ("treasury", BTreeSet::from(["qip-treasury"])),
         (
             "asset",
             BTreeSet::from(["qip-portfolio-engine", "qip-lifecycle"]),
@@ -525,4 +540,152 @@ fn the_ledger_brain_reaches_no_alpha_and_no_other_brain_and_meets_them_through_c
             );
         }
     }
+}
+
+/// The inbound and outbound brain and alpha edges of one brain crate, as the
+/// manifests state them: alpha crates its closure reaches, other brains'
+/// crates its closure reaches, and non-composition crates that depend on it
+/// directly (the kernel and the apps compose, and are held by
+/// `only_the_kernel_and_the_apps_hold_two_brains`).
+fn edges(
+    root: &str,
+    own: &str,
+    graph: &BTreeMap<String, (String, BTreeSet<String>)>,
+) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
+    let brains = brains();
+    let reached = closure(root, graph);
+    assert!(reached.len() > 1, "premise: {root} reaches nothing");
+    let alpha = ALPHA
+        .iter()
+        .filter(|c| reached.contains(**c))
+        .map(|c| (*c).to_string())
+        .collect();
+    let other = brains
+        .iter()
+        .filter(|(brain, _)| **brain != own)
+        .flat_map(|(_, members)| members.iter())
+        .filter(|c| reached.contains(**c))
+        .map(|c| (*c).to_string())
+        .collect();
+    let dependents = graph
+        .iter()
+        .filter(|(name, (group, deps))| {
+            deps.contains(root)
+                && name.as_str() != "qip-kernel"
+                && group != "apps"
+                && !brains[own].contains(name.as_str())
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    (alpha, other, dependents)
+}
+
+fn set(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+/// R12-CAPITAL-1096, ADR 0127 decision 5 for the Capital Brain
+/// (`qip-capital`), all three clauses. Its closure reaches no alpha crate
+/// and no other brain's crate, so nothing that generates alpha and no other
+/// brain can construct or relax a capital decision through a dependency.
+/// And no crate below the kernel depends on it.
+///
+/// The last clause was false until ADR 0385: `qip-capital-fabric`, the
+/// Settlement Brain's crate, depended on `qip-capital` directly, holding a
+/// `CapitalAllocator` to read its limits and taking its `AllocationPlan`.
+/// This test pinned that one edge and said its removal was the cue to
+/// tighten to the empty set. The limits and the plan are data and are now
+/// `qip_contracts::allocation`; the allocator and the drawdown schedule
+/// carry the decision and stayed. So the set is empty, and it is asserted
+/// empty: a fabric that took the allocator back could produce the live plan
+/// it is supposed to be bounded by.
+///
+/// The fabric's tests still build plans with the real allocator, through a
+/// dev-dependency this graph does not read. That is not a gap: cargo does
+/// not hand a dev-dependency to a crate's library target, so fabric code
+/// that named `qip_capital` would not compile.
+///
+/// Mutations, each fails this test: add `qip-risk.workspace = true` under a
+/// `[target.'cfg(any())'.dependencies]` table in qip-capital's manifest (the
+/// capital brain then reaches the risk brain); move the fabric's
+/// `qip-capital.workspace = true` from `[dev-dependencies]` back to
+/// `[dependencies]` (a dependent below the kernel).
+#[test]
+fn the_capital_brain_reaches_no_alpha_and_no_other_brain_and_nothing_below_the_kernel_depends_on_it()
+ {
+    let graph = workspace();
+    let (alpha, other, dependents) = edges("qip-capital", "capital", &graph);
+    assert!(
+        alpha.is_empty(),
+        "qip-capital can reach alpha crates {alpha:?}"
+    );
+    assert!(
+        other.is_empty(),
+        "the capital brain reaches another brain's {other:?}; a brain may meet another only \
+         through qip-contracts"
+    );
+    assert_eq!(
+        dependents,
+        BTreeSet::new(),
+        "a crate below the kernel depends on the capital brain directly. What it needs of the \
+         allocator's limits and plan is in qip_contracts::allocation (ADR 0385)"
+    );
+}
+
+/// R12-CAPITAL-1095, ADR 0127 decision 5 for the Asset Brain
+/// (`qip-portfolio-engine`, `qip-lifecycle`).
+///
+/// `qip-portfolio-engine` meets all three clauses: no alpha, no other
+/// brain, and nothing below the kernel depends on it.
+///
+/// `qip-lifecycle` meets the first two since ADR 0386. Until then it named
+/// `qip-ai` (the model registry its demotion read) and, through
+/// `qip-simulation-engine`, reached `qip-strategy` and the risk brain's
+/// `qip-risk`. The validation statistics it recomputes are now
+/// `qip_numerics::validation`, and model eligibility reaches it as a
+/// `qip_contracts` record, so both sets are asserted empty.
+///
+/// One dependent below the kernel remains and ADR 0386 admits it:
+/// `qip-evolution`, an alpha service, asks the lifecycle for a promotion
+/// through `attempt_promotion`. That is alpha depending on the gate, not
+/// the gate depending on alpha: the lifecycle's closure cannot see the
+/// caller, and `AuthorisedPromotion` has no constructor that skips a gate.
+/// The set is pinned exactly, so a second service taking the lifecycle
+/// fails here.
+///
+/// Mutations, each fails this test: add `qip-prediction.workspace = true`
+/// under a `[target.'cfg(any())'.dependencies]` table in
+/// qip-portfolio-engine's manifest; move `qip-ai.workspace = true` in
+/// qip-lifecycle's manifest from `[dev-dependencies]` to `[dependencies]`;
+/// add `qip-simulation-engine.workspace = true` to its `[dependencies]`;
+/// add `qip-lifecycle.workspace = true` to qip-twin's `[dependencies]`.
+#[test]
+fn the_asset_brain_reaches_no_alpha_and_no_other_brain_and_its_one_dependent_is_the_evolution_service()
+ {
+    let graph = workspace();
+    let (alpha, other, dependents) = edges("qip-portfolio-engine", "asset", &graph);
+    assert!(
+        alpha.is_empty() && other.is_empty() && dependents.is_empty(),
+        "qip-portfolio-engine: alpha {alpha:?}, other brains {other:?}, dependents {dependents:?}"
+    );
+
+    let (alpha, other, dependents) = edges("qip-lifecycle", "asset", &graph);
+    assert_eq!(
+        alpha,
+        BTreeSet::new(),
+        "qip-lifecycle reaches an alpha crate. Validation statistics are in qip-numerics and \
+         model eligibility is a qip-contracts record (ADR 0386)"
+    );
+    assert_eq!(
+        other,
+        BTreeSet::new(),
+        "qip-lifecycle reaches another brain's crate; a brain meets another only through \
+         qip-contracts"
+    );
+    assert_eq!(
+        dependents,
+        set(&["qip-evolution"]),
+        "the crates below the kernel that depend on qip-lifecycle changed; ADR 0386 admits \
+         the evolution service's call to attempt_promotion and no other"
+    );
 }

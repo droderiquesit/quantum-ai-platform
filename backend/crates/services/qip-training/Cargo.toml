@@ -26,6 +26,12 @@ qip-quant.workspace = true
 # put a TLS-terminating egress proxy in front of it, and why that requirement
 # is stated on the adapter rather than assumed away.
 qip-transport.workspace = true
+# The Tick Lake reader and its sealed manifests: `store` assembles a dataset
+# from a pinned history and records the segment checksums it read, so the
+# dataset can be rebuilt from the same bytes or refused (R12-MODEL-10083).
+qip-storage.workspace = true
+# `MessageBody::Trade`, the one lake record `store` reads a price from.
+qip-contracts.workspace = true
 
 # Deliberately absent, and each absence is a boundary rather than an oversight.
 #

@@ -2361,7 +2361,7 @@
   {
     "id": "R12-COVERAGE-5098",
     "status": "PARTIAL",
-    "current": "AssetClassRegistry::shipped now registers ForeignExchange, Cash and DigitalAsset on ValuationEngine::TermStructure with settlement and families (asset_class_registry.rs:47-62, :395, :690-740), and Platform::new refuses a universe holding an unregistered class (platform.rs:4406-4409), so every binary's platform enforces it. An FX spot and a cash instrument assemble and an FX order fills on the simulated broker (tests/asset_classes.rs:165-225). covered_interest_forward prices an FX forward (asset_class_registry.rs:899-937) but has no production caller (only re-exported at lib.rs:91). Funding and currency conversion are not wired: the kernel builds its pre-positioning FxRates with USD only (platform.rs:20042) and qip_capital::bank::convert (bank.rs:330) has no kernel or app caller.",
+    "current": "AssetClassRegistry::shipped registers ForeignExchange, Cash and DigitalAsset on ValuationEngine::TermStructure, and Platform::new refuses a universe holding an unregistered class. An FX spot and a cash instrument assemble and an FX order fills on the simulated broker. Since 2026-11-11 covered_interest_forward has a production caller: qip_kernel::financing::FinancingRegister, derived in Platform::new beside the credit register, values every FxForward in the universe from the universe's own records (spot = the FxSpot instrument on the same pair; tenor = the forward's FxDetails.settlement_date; each currency's rate = that currency's sovereign curve in CreditRegister at the tenor, restated from continuous to simple) and the UNDERSTAND stage reports the register and raises every forward it could not value as a problem naming the missing record. The pre-positioning plan converts through FinancingRegister::fx_rates (the universe's spot pairs quoted directly against USD) where it used a USD-only table; an unquoted currency is still refused.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:395",
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:899",
@@ -2369,32 +2369,46 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:20042",
       "qip-kernel/tests/asset_classes.rs::fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper",
       "qip-kernel/src/asset_class_registry.rs::tests::an_fx_forward_is_spot_carried_along_both_curves",
-      "qip-kernel/src/asset_class_registry.rs::tests::withdrawing_a_class_makes_its_instruments_refused_by_the_same_admission"
+      "qip-kernel/src/asset_class_registry.rs::tests::withdrawing_a_class_makes_its_instruments_refused_by_the_same_admission",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::FinancingRegister::from_universe",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::FinancingRegister::fx_rates",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::financing_register",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::pre_position",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::an_fx_forward_is_carried_from_the_universes_spot_along_the_two_sovereign_curves",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::a_forward_whose_currency_has_no_curve_is_refused_and_the_cycle_says_so",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::a_balance_is_converted_at_the_universes_spot_pair_and_an_unquoted_currency_is_still_refused"
     ],
-    "gap": "Not reached in this session. covered_interest_forward is read nowhere in production per the grader (asset_class_registry.rs defines it), the kernel builds FxRates with USD only, and qip_capital::bank::convert has no kernel or app caller; pricing a tenor-bearing ForeignExchange instrument also needs a tenor and the two currencies' rates from somewhere the universe record has not been shown to carry.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "Three things remain. (1) qip_capital::bank::convert, the conversion that debits one balance, credits the other and journals it, still has no kernel or app caller: the kernel now converts for planning and scoring and books no conversion. (2) An FxSwap is not valued: FxDetails carries one settlement date and a swap needs a near and a far one. (3) The forward outright is reported, not acted on: no position is marked to it and no size reads it, and a cross with no pair quoted directly against the base is left unpriced rather than triangulated.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test financing --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-11-11 batch l6-c1-01: financing register built and wired; kept PARTIAL. cargo test -p qip-kernel --test financing: 'test result: ok. 4 passed; 0 failed'. Mutations that fired, each restored byte-for-byte: the base currency's rate passed as the domestic one -> 'the higher-yielding quote currency did not put the forward above spot'; the curve's zero rate passed through unconverted -> 'outright 1.105381167 is not the parity figure 1.1054343240917859'; a zero rate answered for a currency with no curve -> 'a forward was priced with no euro rate'; FxRates::new(Currency::USD) restored in Platform::pre_position -> 'no rate for EUR against the USD base'. No rate, basis or spot is a constant of the module: the 365.25-day year is the one valuation.rs already builds the curves on."
   },
   {
     "id": "R12-COVERAGE-5099",
-    "status": "PARTIAL",
-    "current": "Equity is registered with corporate actions (asset_class_registry.rs; qip-market corporate_action.rs). A basket and an index are instruments already: InstrumentType::Index (Equity) with Extension::Index(IndexDetails { methodology, constituent_count, rebalance_frequency, divisor, is_total_return }) and InstrumentType::SyntheticBasket (StructuredProduct) with Extension::Structured naming its underlying_object_ids. Each assembles, an order in it passes the desk control path and fills at the simulated venue, and each is refused when its class record is withdrawn or that withdrawal is itself refused. Platform::apply_corporate_action adjusts the retained history and the open lot and journals the action in the event log.",
+    "status": "COMPLETE",
+    "current": "Equity is registered with corporate actions (asset_class_registry.rs; qip-market corporate_action.rs). A basket and an index are instruments: InstrumentType::Index (Equity) with Extension::Index(IndexDetails) and InstrumentType::SyntheticBasket (StructuredProduct) with Extension::Structured. Each assembles, an order in it passes the desk control path and fills at the simulated venue, and each is refused when its class record is withdrawn. Since 2026-11-11 (ADR 0397) each states its constituents and their units in its own record (qip_financial::extensions::Constituent), and qip_kernel::financing::FinancingRegister values an index as sum(units x price) / divisor and a basket as sum(units x price), holds the per-constituent contribution as the look-through exposure of one unit, and the UNDERSTAND stage reports the count and raises as a problem every composite that states no constituents or names a member the universe lacks. Platform::apply_corporate_action adjusts the retained history and the open lot, journals the action, and since 2026-11-11 queues a ledger operation for it: OperationKind::CorporateAction (Dr trading, Cr venue), the units a split adds in the instrument's unit or a dividend's cash in the quote unit, journalled as CorporateActionBooked before it is queued and re-queued with the same id after a restart without being booked again by the re-fed tape.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/extensions.rs::IndexDetails",
       "backend/crates/libs/qip-financial/src/asset_class.rs (Index, SyntheticBasket)",
       "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::apply_corporate_action"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::apply_corporate_action",
+      "docs/adr/0397-a-basket-or-index-states-its-constituents-in-its-own-record-and-an-applied-corporate-action-is-booked-to-the-ledger-as-its-own-operation-kind.md",
+      "backend/crates/libs/qip-financial/src/extensions.rs::Constituent",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::value_composite",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::OperationKind::CorporateAction",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::book_corporate_action",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::an_index_and_a_basket_are_valued_from_their_stated_constituents_and_one_that_states_none_is_refused",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs::an_applied_split_and_dividend_are_queued_for_the_ledger_once_and_survive_a_restart"
     ],
-    "gap": "Two things remain. (1) A basket or index is a record with no constituent weights: IndexDetails holds a count and a divisor and StructuredProductDetails holds underlying ids without weights, so nothing values either from its constituents or assembles an exposure through them. (2) An applied corporate action is journaled in the event log and adjusts the lot, but no LedgerEvent is posted for it, so the double-entry ledger of record never sees a split's unit change or a dividend. The triage closure's premise that no basket or index kind exists is wrong.",
+    "gap": "None inside the repository. By decision (ADR 0397) the composite valuation is reported beside the quote and nothing sizes or hedges on it, because no rebalance feed keeps stated units current; and a dividend is booked in the desk's quote unit, as the kernel credits it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2402,22 +2416,25 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test financing --test ledger --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A basket or an index carries its constituents and their weights. It is valued only from those constituents' prices. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A basket or an index is valued and risked through its weighted constituents, and an applied corporate action books one LedgerOperation that the book's LotAdjusted record carries, under ADR 0153 decision 1.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A basket or an index carries its constituents and their weights. It is valued only from those constituents' prices. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A basket or an index is valued and risked through its weighted constituents, and an applied corporate action books one LedgerOperation that the book's LotAdjusted record carries, under ADR 0153 decision 1.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-11 batch l6-d2-01, ADR 0397 under decision 28: constituents and the corporate-action ledger kind built. cargo test -p qip-kernel --test financing --test ledger an_: 'test result: ok. 3 passed' and 'test result: ok. 16 passed'. Nine mutations fired and were restored byte-for-byte: the index divisor ignored (320, not 160); a constituent's price dropped (1.5); a record with no constituents valued; a missing member skipped; the split's ledger call dropped; the dividend's dropped; the post-split quantity booked instead of the change (120, not 60); the re-queue at resume skipped; the trading leg posted as a credit."
   },
   {
     "id": "R12-COVERAGE-5100",
     "status": "PARTIAL",
-    "current": "FixedIncome, Credit and Rates are registered (asset_class_registry.rs). A repo is an instrument already: InstrumentType::Repo classed Rates, carrying Extension::Repo(RepoDetails { collateral_object, maturity, repo_rate, haircut, is_reverse, counterparty }), and the object model demands its maturity. A repo of that shape assembles into the platform, an order in it passes the desk control path and fills at the simulated venue (paper, stamped simulated), and the registry refuses it when its class record is withdrawn. qip-capital models FinancingFunction::Repo as a permission with a counterparty and jurisdiction.",
+    "current": "FixedIncome, Credit and Rates are registered. A repo is an instrument: InstrumentType::Repo classed Rates, carrying Extension::Repo(RepoDetails { collateral_object, maturity, repo_rate, haircut, is_reverse, counterparty }). It assembles, an order in it passes the desk control path and fills at the simulated venue, and the registry refuses it when its class record is withdrawn. Since 2026-11-11 a repo is valued: qip_kernel::financing::FinancingRegister, derived in Platform::new, values every repo per unit of collateral from its own RepoDetails (cash = the collateral instrument's price less the haircut; interest at repo_rate to maturity; repurchase = cash + interest), refuses a haircut outside [0, 1), a maturity not after the valuation instant and collateral that is absent or unpriced, and the UNDERSTAND stage raises each unvalued repo as a problem. qip-capital models FinancingFunction::Repo as a permission with a counterparty and jurisdiction.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/extensions.rs::RepoDetails",
       "backend/crates/libs/qip-financial/src/asset_class.rs (InstrumentType::Repo -> Rates)",
       "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class",
-      "backend/crates/services/qip-capital/src/treasury.rs::FinancingFunction::Repo"
+      "backend/crates/services/qip-capital/src/treasury.rs::FinancingFunction::Repo",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::value_repo",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::RepoValuation",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::a_repo_is_valued_from_its_own_terms_and_one_that_lends_nothing_is_refused"
     ],
-    "gap": "No repo economics and no funding interface: nothing values a repo (cash lent against collateral value less haircut, accrued interest at repo_rate to maturity), nothing settles its two legs against the ledger accounts that exist for it (Account::Collateral, Account::Obligation, Account::Accrual) and nothing consumes FinancingFunction::Repo outside qip-capital's own tests. The triage closure's premise that no repo instrument exists in the workspace is wrong; its repo.rs would duplicate RepoDetails.",
+    "gap": "Valuation is built; two parts remain. (1) Two-leg ledger settlement needs a decision this batch may not take (NEEDS-ADR): no LedgerOperation kind books cash received against an obligation to a counterparty, and the one kind that moves collateral, OperationKind::CollateralPledge, is declined to every producer outside the contract by ADR 0153 decisions 3 and 7 (qip-acceptance ledger_declined_kinds). The decision: which operation kind books a repo's near and far legs (collateral, obligation, accrual) and whether a repo's own stated haircut lifts ADR 0153's decline for that kind. (2) Nothing outside qip-capital consumes FinancingFunction::Repo: a repo order is not yet refused for want of the Repo permission for its counterparty and jurisdiction. Not built here: qip-capital's treasury.rs is being extracted to qip-treasury by batch l1-c1-01 (R12-COVERAGE-7157), and which entity and jurisdiction the desk trades a repo as is not stated anywhere in the tree. RepoDetails states no day count, so interest accrues on the platform's 365.25-day tenor convention.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2425,10 +2442,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test financing --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Test added: a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class; mutation that fired: AssetClassRegistry::admit returning Ok -> the test fails (an unregistered class was admitted) alongside two older assembly tests. Withdrawing the Rates record is itself refused by AssetClassRegistry::without because FixedIncome is hedged with Rates, which the test records."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Test added: a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class; mutation that fired: AssetClassRegistry::admit returning Ok -> the test fails (an unregistered class was admitted) alongside two older assembly tests. Withdrawing the Rates record is itself refused by AssetClassRegistry::without because FixedIncome is hedged with Rates, which the test records. 2026-11-11 batch l6-c1-01: repo valuation built and reported by the cycle; kept PARTIAL. cargo test -p qip-kernel --test financing: 'test result: ok. 4 passed; 0 failed'. Mutations that fired, each restored byte-for-byte: the haircut dropped from value_repo -> cash assertion fails (left 100, right 98) at tests/financing.rs:270; a haircut of one admitted -> the full-haircut repo is valued and its is_none assertion fails at :292."
   },
   {
     "id": "R12-COVERAGE-5101",
@@ -2452,14 +2469,19 @@
   },
   {
     "id": "R12-COVERAGE-5102",
-    "status": "PARTIAL",
-    "current": "Derivative registered (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:513); derivative orders refused until the desk is granted the type (backend/crates/runtime/qip-kernel/tests/asset_classes.rs:257); margin model in qip-capital margin.rs; greeks in qip-financial extensions.",
+    "status": "COMPLETE",
+    "current": "Derivative is registered (VolatilitySurface engine, exchange T0 settlement, portfolio margin) and a derivative order is refused before it exists until the desk is granted that instrument type. Options carry greeks (qip-financial extensions) and futures and perpetuals carry their initial and maintenance margin in their own record; the margin model is qip-capital margin.rs. Since 2026-11-11 (ADR 0395) a perpetual is its own instrument type, InstrumentType::PerpetualFuture with Extension::Perpetual(PerpetualDetails), with no expiry. Its settlement model is funding: qip_kernel::financing::FinancingRegister funds every perpetual at assembly as the premium of its price over its underlying's price, per the funding interval its own record states, and the UNDERSTAND stage reports the count and raises each perpetual it could not fund as a problem. A perpetual assembles, is refused an order until the desk holds the PerpetualFuture permission (a Future grant does not admit it) and then fills on the simulated venue, stamped simulated.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:513",
       "backend/crates/runtime/qip-kernel/tests/asset_classes.rs:257",
-      "backend/crates/services/qip-capital/src/margin.rs:34"
+      "backend/crates/services/qip-capital/src/margin.rs:34",
+      "docs/adr/0395-a-perpetual-is-a-future-with-no-expiry-and-its-funding-is-the-premium-over-its-underlying-per-interval-its-own-record-states.md",
+      "backend/crates/libs/qip-financial/src/asset_class.rs::InstrumentType::PerpetualFuture",
+      "backend/crates/libs/qip-financial/src/extensions.rs::PerpetualDetails",
+      "backend/crates/runtime/qip-kernel/src/financing.rs::fund_perpetual",
+      "backend/crates/runtime/qip-kernel/tests/financing.rs::a_perpetual_assembles_is_funded_from_its_premium_and_trades_on_paper_only_once_granted"
     ],
-    "gap": "Perpetual funding and full settlement models wired into the cycle.",
+    "gap": "None inside the repository. By decision (ADR 0395) the derived funding is reported and not booked to the ledger, and no venue-published funding rate is read: no source supplies one. Booking funding waits on such a source and its own ADR.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2467,22 +2489,30 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test financing --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-11-11 batch l6-d2-01, ADR 0395 under decision 28: perpetual representation and funding built. cargo test -p qip-kernel --test financing a_perpetual: 'test result: ok. 1 passed; 0 failed'. Five mutations fired and were restored byte-for-byte: premium taken over the perpetual's own price (rate 0.00990099, not 0.01); zero funding interval admitted; perpetual count dropped from the summary; derivative_gate skipping the per-type permission ('a futures grant admitted a perpetual'); the Derivative record dropped from AssetClassRegistry::shipped (assembly refuses: 'equity is hedged with derivative, which this registry does not hold')."
   },
   {
     "id": "R12-COVERAGE-5103",
-    "status": "PARTIAL",
-    "current": "DigitalAsset is now registered (term structure, T0 exchange settlement, satoshi grid); a crypto spot assembles and an order fills on the simulated broker. qip-chain has a bridge model and qip-brokers a DEX simulator.",
+    "status": "COMPLETE",
+    "current": "DigitalAsset is registered (term structure, T0 exchange settlement, satoshi grid); a crypto spot assembles and an order fills on the simulated broker. A tokenized representation (InstrumentType::TokenizedSecurity, classed DigitalAsset) and a crypto derivative (a Future whose underlying is a Cryptocurrency, classed Derivative) each assemble, are ordered and fill on the same simulated gateway, stamped simulated; the crypto future is refused before an order exists until the desk holds the Future permission. qip-chain has a bridge model and qip-brokers a DEX simulator; by ADR 0155 section 17 DexVenue stays a feasibility and cost model and every class uses the one simulated gateway. Since 2026-11-11 (ADR 0396) digital-asset proceeds settle on paper through a simulated chain: an operator declares a venue's terms with Platform::declare_chain_settlement (finality depth, block interval, optional bridge delay and fee; a zero depth, a non-positive interval and a negative delay are refused), and a DigitalAsset sale there is withheld from survival sizing until fill + depth x block interval + bridge delay, with the bridge fee withheld for good (Platform::chain_bridge_fees). An equity at the same venue still settles on the calendar; a venue with no declared terms settles a coin on its calendar as before. The module is arithmetic only: nothing is signed or broadcast and no order path is added. No shipped binary declares terms; the figures are an operator's to give.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:762",
       "backend/crates/services/qip-chain/src/lib.rs",
       "backend/crates/services/qip-brokers/src/dex.rs",
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped"
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::AssetClassRegistry::shipped",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_tokenized_security_and_a_crypto_future_trade_on_the_simulated_gateway_and_the_future_waits_for_its_grant",
+      "docs/adr/0396-digital-asset-proceeds-settle-on-paper-through-a-simulated-chain-at-an-operator-declared-finality-depth-and-a-bridge-is-a-declared-delay-and-fee.md",
+      "backend/crates/runtime/qip-kernel/src/chain_settlement.rs::ChainSettlementTerms",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::declare_chain_settlement",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::register_settlement",
+      "backend/crates/runtime/qip-kernel/tests/chain_settlement.rs::a_coins_proceeds_wait_on_the_declared_finality_and_bridge_and_the_fee_is_never_released",
+      "backend/crates/runtime/qip-kernel/tests/chain_settlement.rs::a_venue_with_no_declared_chain_terms_settles_a_coin_on_its_calendar_as_before",
+      "backend/crates/runtime/qip-kernel/tests/chain_settlement.rs::chain_terms_that_would_release_proceeds_at_once_are_refused_not_defaulted"
     ],
-    "gap": "By decision (ADR 0155 section 17, 2026-10-24) DexVenue stays a feasibility and cost model: DexVenue::feasibility_model feeds the cell feasibility seam (VenueClass::DecentralisedExchange with a mandatory gas floor), a digital-asset order uses the same simulated gateway as every class, and qip-kernel takes no qip-brokers dependency. No on-chain order path, bridge or settlement simulator is built, and none will be without a new ADR; any simulated chain finality depth is an operator declaration. No tokenized-representation or crypto derivative trades in a test.",
+    "gap": "None inside the repository. By decision (ADR 0155 section 17, ADR 0396) no on-chain order path exists, the bridge fee is withheld from sizing and not booked to the ledger (no ledger kind books one), and a chain reorganisation of a paper fill is not simulated. The finality depth, block interval and bridge terms for a real deployment are an operator's figures and none is shipped.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2490,10 +2520,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test asset_classes",
+    "verification": "cargo test -p qip-kernel --test chain_settlement --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Crypto trades on paper through the same simulated gateway as every class, and its settlement is simulated there too. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Digital assets settle on paper through a simulated chain: proceeds wait on an operator-declared finality depth, a bridge is a declared delay and fee, and nothing signs or broadcasts a transaction."
+    "notes": "2026-10-24 ADR 0155 section 17: gap restated, PARTIAL kept; no code. DigitalAsset is registered with exchange T+0 settlement and a crypto spot fills on the simulated broker. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Crypto trades on paper through the same simulated gateway as every class, and its settlement is simulated there too. Handed to lane L6 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Digital assets settle on paper through a simulated chain: proceeds wait on an operator-declared finality depth, a bridge is a declared delay and fee, and nothing signs or broadcasts a transaction. 2026-11-11 batch l6-c1-01: the missing trade test added, no production code changed. cargo test -p qip-kernel --test asset_classes: 'test result: ok. 8 passed; 0 failed'. Mutations that fired: the DigitalAsset record dropped from AssetClassRegistry::shipped -> assembly refuses naming obj-AAA-TOKEN ('is a digital_asset and no record registers that class'); Platform::derivative_gate returning Ok for every derivative -> 'an ungranted crypto future got an order'. Both restored byte-for-byte. Kept PARTIAL: the simulated chain settlement needs a new ADR. 2026-11-11 batch l6-d2-01, ADR 0396 under decision 28: simulated chain settlement built. cargo test -p qip-kernel --test chain_settlement: 'test result: ok. 3 passed; 0 failed'. Nine mutations fired and were restored byte-for-byte: finality depth dropped from available_at (released 132s early); bridge delay dropped (released 600s early); chain terms read for every class (the equity released on the chain's clock); the fee never added to the withheld total; declared terms ignored (coin stays on the calendar); a default given to an undeclared venue (coin released within the hour); a zero depth, a zero block interval and a negative bridge delay each admitted."
   },
   {
     "id": "R12-COVERAGE-5104",

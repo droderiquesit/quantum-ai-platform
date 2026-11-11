@@ -885,6 +885,67 @@ impl Platform {
         self.journaled_cards.values()
     }
 
+    /// Offer the tournament the forecasts of the fitted cards on `subject`
+    /// (ADR 0390, R12-MODEL-3089), replacing whatever stood there. Returns
+    /// one sentence per offer refused; the rest stand until the desk's next
+    /// offer on the subject or the end of their own bar.
+    ///
+    /// The cards are judged against `registry`, the desk's, and not this
+    /// process's journal mirror: the mirror skips a drift-only change by
+    /// design, so a card that drifted past its threshold since it was last
+    /// journaled would read as eligible there. A card enters only where it
+    /// is registered, records this subject as the one it was fitted on, and
+    /// is one a decision may use now ([`ModelCard::decision_eligibility`]):
+    /// a development-stage, retired, failed, stale or drifted card is not an
+    /// entrant. Nothing here pads the population: an empty `offered` leaves
+    /// the subject with no card.
+    ///
+    /// [`ModelCard::decision_eligibility`]: qip_ai::registry::ModelCard::decision_eligibility
+    pub fn stage_card_forecasts(
+        &mut self,
+        registry: &ModelRegistry,
+        subject: &str,
+        offered: Vec<crate::model_tournament::CardForecast>,
+        now: Timestamp,
+    ) -> Vec<String> {
+        let mut refused = Vec::new();
+        let mut admitted = Vec::new();
+        for forecast in offered {
+            let reference = forecast.reference.clone();
+            let Some(card) = registry.get(&reference) else {
+                refused.push(format!(
+                    "{reference}: no such card is registered; register the fit before \
+                     offering its forecast"
+                ));
+                continue;
+            };
+            if crate::central::models::subject_of(card) != Some(subject) {
+                refused.push(format!(
+                    "{reference}: its card does not record {subject} as the subject it was \
+                     fitted on; a card answers only its own instrument's question"
+                ));
+                continue;
+            }
+            if let Err(reason) = card.decision_eligibility(now) {
+                refused.push(format!(
+                    "{reference}: not an entrant while no decision may use it: {reason}"
+                ));
+                continue;
+            }
+            admitted.push(forecast);
+        }
+        refused.extend(self.tournament.stage_cards(subject, admitted));
+        refused
+    }
+
+    /// The card forecasts standing on `subject` (ADR 0390).
+    pub fn standing_card_forecasts(
+        &self,
+        subject: &str,
+    ) -> Vec<crate::model_tournament::CardForecast> {
+        self.tournament.standing_cards(subject).cloned().collect()
+    }
+
     /// The provider the composition root handed in.
     pub fn model_provider(&self) -> &dyn ModelProvider {
         self.model_provider.as_ref()
@@ -1364,6 +1425,69 @@ impl Platform {
                 refusals.join("; ")
             }
         )))
+    }
+
+    /// The regime crossing `card` has not been evaluated since, if there is
+    /// one (R12-MODEL-10096): its own subject's latest crossing where that is
+    /// later than the card's latest evaluation, or than no evaluation at all.
+    ///
+    /// `None` is the answer for a card evaluated at or after the crossing, so
+    /// a desk that renews an evaluation once is not asked again until the
+    /// subject crosses again. Before this existed the only reader of a
+    /// crossing was the promotion gate, and a model already in production
+    /// when its market changed was never looked at a second time.
+    pub fn reevaluation_due(&self, card: &qip_ai::registry::ModelCard) -> Option<Timestamp> {
+        let crossing = self.regime_crossing_for(card)?;
+        match card.latest_evaluation() {
+            Some(evaluation) if evaluation.evaluated_at >= crossing => None,
+            _ => Some(crossing),
+        }
+    }
+
+    /// Put a production model back in front of the verifier society and
+    /// journal the verdict (R12-MODEL-10096). Returns the refutation, in the
+    /// society's words, or `None` where the model survived.
+    ///
+    /// The same attack, on the same dossier, as the one a promotion faces,
+    /// and journaled under the same origin whichever way it goes: a model the
+    /// society let stand is as visible on the log as one it refuted. This
+    /// moves nothing. A refuted model leaves production through
+    /// [`Self::rollback_model`], which the caller decides to call.
+    ///
+    /// Refuses a reference that is not in the promoted set: re-verifying a
+    /// model that is not in production would journal a verdict about a model
+    /// no decision reads.
+    pub fn reverify_model(
+        &mut self,
+        registry: &ModelRegistry,
+        reference: &str,
+        now: Timestamp,
+    ) -> Result<Option<String>> {
+        if !self.model_promotions.contains_key(reference) {
+            return Err(Error::not_found(format!(
+                "{reference} is not in the promoted set, so there is no production model to \
+                 re-verify"
+            )));
+        }
+        let card = registry
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        let verification = self.tournament.verify_model(
+            card,
+            self.quarantined_datasets(),
+            self.regime_crossing_for(card),
+            now,
+        );
+        let refuted = verification
+            .verdict
+            .is_refuted()
+            .then(|| verification.verdict.summary());
+        self.journal_record(
+            crate::model_tournament::ModelVerified { verification },
+            crate::model_tournament::VERIFIER_ORIGIN,
+            now,
+        )?;
+        Ok(refuted)
     }
 
     /// The `trained_models` slot: every promoted distillate by the digest a

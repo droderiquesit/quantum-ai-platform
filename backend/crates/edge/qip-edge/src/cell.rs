@@ -17,6 +17,7 @@ use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, ReleaseS
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
 use crate::feasibility::{self, VenueModel};
+use crate::hedge::{self, GATE_HEDGE_FRAME, GATE_HEDGE_TARGET, VerifiedHedge};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::mirror::MirrorArrangement;
@@ -1663,6 +1664,11 @@ pub struct Cell {
     /// halt only if it was issued *after* this, so a pre-halt payload still in
     /// flight cannot un-halt the cell it was racing.
     policy_halt_barrier: Option<Timestamp>,
+    /// The hedge narrowing the cell last applied (ADR 0126 decision 4).
+    /// Kept past its deadline so a replay of it, or of an older one, is
+    /// still recognised; whether it binds is asked of its deadline at every
+    /// use.
+    hedge: Option<VerifiedHedge>,
     /// The second halt wire (§46.2): the reason the polled flag gave, while
     /// it is engaged. Independent of the two above in both directions — it
     /// is set only by [`Self::apply_polled_halt`], which reads a flag the
@@ -2004,6 +2010,7 @@ impl Cell {
             highest_policy_sequence: None,
             policy_halted: false,
             policy_halt_barrier: None,
+            hedge: None,
             polled_halt: None,
             journal_pressure,
             custody: None,
@@ -3419,6 +3426,142 @@ impl Cell {
         }
         self.policy_halted = true;
         self.record_halt();
+    }
+
+    /// Apply a verified hedge narrowing, or refuse it whole (ADR 0126
+    /// decision 4).
+    ///
+    /// Refused and journaled under [`GATE_HEDGE_FRAME`], changing nothing:
+    /// a narrowing past its deadline; one issued at or before the one
+    /// already applied (a replay must not put back a target a newer plan
+    /// replaced); one naming a venue no live envelope here grants; and one
+    /// whose target for an instrument is not between what the cell holds
+    /// there and zero. Never partly applied: a plan with one target the
+    /// cell cannot honour is a plan the centre wrote against a book this
+    /// cell does not have.
+    ///
+    /// Applying one authorises nothing. The cell's only use of it is
+    /// [`Self::hedge_refusal`], which refuses.
+    pub fn apply_hedge(&mut self, verified: VerifiedHedge, now: Timestamp) -> Result<()> {
+        let refusal = self.hedge_frame_refusal(&verified, now);
+        if let Some(reason) = refusal {
+            self.metrics.refusal(GATE_HEDGE_FRAME);
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_HEDGE_FRAME.to_string(),
+                    reason: reason.clone(),
+                },
+                now,
+            );
+            return Err(Error::denied(reason));
+        }
+        self.journal.record(
+            Decision::HedgeApplied {
+                plan_id: verified.plan_id().to_string(),
+                deadline: verified.deadline(),
+                targets: verified
+                    .targets()
+                    .iter()
+                    .map(|target| {
+                        format!(
+                            "{}/{}={}",
+                            target.venue.as_str(),
+                            target.object_id.as_str(),
+                            target.target_net
+                        )
+                    })
+                    .collect(),
+            },
+            now,
+        );
+        self.hedge = Some(verified);
+        Ok(())
+    }
+
+    /// Why a verified narrowing may not be applied, if it may not.
+    fn hedge_frame_refusal(&self, verified: &VerifiedHedge, now: Timestamp) -> Option<String> {
+        let plan = verified.plan_id();
+        if !verified.is_live(now) {
+            return Some(format!(
+                "hedge narrowing {plan} is past its deadline of {} and binds nothing",
+                verified.deadline()
+            ));
+        }
+        if let Some(applied) = &self.hedge
+            && verified.issued_at() <= applied.issued_at()
+        {
+            return Some(format!(
+                "hedge narrowing {plan} was issued at {}, at or behind the one already applied \
+                 ({} at {}), and does not replace it",
+                verified.issued_at(),
+                applied.plan_id(),
+                applied.issued_at()
+            ));
+        }
+        for target in verified.targets() {
+            let granted = self.deployed.values().any(|deployed| {
+                deployed.envelope.is_live(now) && deployed.envelope.permits_venue(&target.venue)
+            }) || self.desk.as_ref().is_some_and(|installed| {
+                let envelope = installed.desk.envelope();
+                envelope.is_live(now) && envelope.permits_venue(&target.venue)
+            });
+            if !granted {
+                return Some(format!(
+                    "hedge narrowing {plan} names venue {}, which no live envelope at this cell \
+                     grants",
+                    target.venue.as_str()
+                ));
+            }
+            let held = self.position(&target.venue, &target.object_id);
+            if !hedge::is_toward_zero(held, target.target_net) {
+                return Some(format!(
+                    "hedge narrowing {plan} targets {} of {} at {} while the cell holds {held}; \
+                     a target is between the holding and zero, and adding exposure needs an \
+                     envelope",
+                    target.target_net,
+                    target.object_id.as_str(),
+                    target.venue.as_str()
+                ));
+            }
+        }
+        None
+    }
+
+    /// The hedge narrowing the cell holds, while its deadline has not
+    /// passed.
+    pub fn live_hedge(&self, now: Timestamp) -> Option<&VerifiedHedge> {
+        self.hedge.as_ref().filter(|hedge| hedge.is_live(now))
+    }
+
+    /// Why an order of `signed_size` is refused by the live hedge target on
+    /// its instrument, if it is: it would leave the cell's confirmed net
+    /// there further from the target, or past it.
+    ///
+    /// Measured on the confirmed position, as the drawdown bound is measured
+    /// on realised P&L: orders resting unfilled are not netted in, so two
+    /// reducing orders sent before either fills can together pass the
+    /// target. Each is still inside its envelope, and the next pass refuses
+    /// from the position the fills left.
+    fn hedge_refusal(
+        &self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        signed_size: Decimal,
+        now: Timestamp,
+    ) -> Option<String> {
+        let hedge = self.live_hedge(now)?;
+        let target = hedge.target(venue, object_id)?;
+        let held = self.position(venue, object_id);
+        hedge::moves_away(held, target, signed_size).then(|| {
+            format!(
+                "an order of {signed_size} on {} at {} moves the net of {held} away from the \
+                 target of {target} set by hedge narrowing {} until {}",
+                object_id.as_str(),
+                venue.as_str(),
+                hedge.plan_id(),
+                hedge.deadline()
+            )
+        })
     }
 
     /// Apply a verified policy payload by atomic swap.
@@ -6236,6 +6379,18 @@ impl Cell {
                 unpriced,
             );
             self.refuse(report, "capital", &reason, now);
+            return Ok(None);
+        }
+
+        // The hedge narrowing, before capital is asked: an order that moves
+        // the instrument's net away from a live target is refused whatever
+        // the envelope would have granted it (ADR 0126 decision 4).
+        let signed = match side {
+            BookSide::Ask => desired,
+            BookSide::Bid => -desired,
+        };
+        if let Some(reason) = self.hedge_refusal(&venue, &signal.object_id, signed, now) {
+            self.refuse(report, GATE_HEDGE_TARGET, &reason, now);
             return Ok(None);
         }
 
@@ -9800,6 +9955,14 @@ impl Cell {
             );
             return None;
         };
+
+        // A cycle leg meets the hedge narrowing a directional order does.
+        if let Some(reason) =
+            self.hedge_refusal(&intent.venue, &intent.object_id, intent.signed_size, now)
+        {
+            self.refuse(report, GATE_HEDGE_TARGET, &reason, now);
+            return None;
+        }
 
         // The desk is stopped on a fill it could not price exactly as a
         // strategy is, and for the same reason: its envelope reads only the

@@ -370,6 +370,93 @@ fn a_derivative_order_is_refused_before_it_exists_until_the_desk_is_granted_that
     Ok(())
 }
 
+/// R12-COVERAGE-5103: a tokenized representation and a crypto derivative trade
+/// on the same simulated gateway as every other class.
+///
+/// The failure this prevents: the digital-asset record was proven with one
+/// spot coin, so "DigitalAsset is registered" read as coverage of the token
+/// that stands for an off-chain security and of the future written on a
+/// coin, neither of which had ever been ordered. A tokenized security is a
+/// `DigitalAsset`; a future on a coin is a `Derivative`, gated by the desk's
+/// derivative permission like any other future. Both fill at the simulated
+/// venue and are stamped simulated; nothing here signs or broadcasts a
+/// transaction, and no on-chain path exists to take (ADR 0155 section 17).
+///
+/// Mutations: delete the `DigitalAsset` record from
+/// `AssetClassRegistry::shipped` and assembly refuses the universe, so the
+/// test fails at its first `?`; make `Platform::order_for` skip the
+/// derivative permission and the ungranted future gets an order, so the
+/// `expect_err` below fails.
+#[test]
+fn a_tokenized_security_and_a_crypto_future_trade_on_the_simulated_gateway_and_the_future_waits_for_its_grant()
+-> Result<()> {
+    use qip_execution_engine::order::Side;
+    use qip_financial::constraints::Jurisdiction;
+    use qip_financial::derivative_permissions::DerivativePermissions;
+
+    let token = object("obj-AAA-TOKEN", InstrumentType::TokenizedSecurity, None)?;
+    let coin_future = future("obj-BTC-FUT", "obj-BTC")?;
+    // Premise: the two instruments are the classes the row names, so what
+    // fills below is a tokenized representation and a derivative on a coin
+    // and not two more spot coins.
+    assert_eq!(token.asset_class, AssetClass::DigitalAsset);
+    assert_eq!(coin_future.asset_class, AssetClass::Derivative);
+    let mut platform = assemble(universe_of(vec![
+        object("obj-AAA", InstrumentType::CommonStock, None)?,
+        object("obj-BTC", InstrumentType::Cryptocurrency, None)?,
+        token,
+        coin_future,
+    ])?)?;
+    let order = |platform: &mut Platform, id: &str| {
+        platform.order_for(
+            ObjectId::from_string(id),
+            Side::Buy,
+            dec!("10"),
+            dec!("100"),
+            "prop-digital",
+            vec!["hyp-digital".to_string()],
+            start(),
+        )
+    };
+
+    // The crypto future is a derivative first: ungranted, no order exists.
+    let error =
+        order(&mut platform, "obj-BTC-FUT").expect_err("an ungranted crypto future got an order");
+    assert!(
+        error.message().contains("obj-BTC-FUT"),
+        "{}",
+        error.message()
+    );
+    let mut permissions = DerivativePermissions::none();
+    permissions.grant("desk-a", Jurisdiction::UnitedStates, InstrumentType::Future)?;
+    platform.authorise_derivatives("desk-a", Jurisdiction::UnitedStates, permissions);
+
+    // Premise: nothing had filled, so the fills counted are these two.
+    assert_eq!(platform.orders().fills().len(), 0);
+    for id in ["obj-AAA-TOKEN", "obj-BTC-FUT"] {
+        let order = order(&mut platform, id)?;
+        platform.submit_order(order, start())?;
+    }
+    let fills = platform.orders().fills();
+    let filled: Vec<&str> = fills
+        .iter()
+        .filter_map(|fill| {
+            platform
+                .orders()
+                .orders()
+                .find(|order| order.order_id == fill.order_id)
+                .map(|order| order.object_id.as_str())
+        })
+        .collect();
+    assert!(filled.contains(&"obj-AAA-TOKEN"), "{filled:?}");
+    assert!(filled.contains(&"obj-BTC-FUT"), "{filled:?}");
+    assert!(
+        fills.iter().all(|fill| fill.simulated),
+        "a digital-asset fill was not stamped simulated"
+    );
+    Ok(())
+}
+
 /// A repo, an index and a synthetic basket, each with the extension the object
 /// model demands of its type.
 fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
@@ -411,6 +498,7 @@ fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
         rebalance_frequency: "quarterly".to_string(),
         divisor: dec!("2"),
         is_total_return: false,
+        constituents: Vec::new(),
     }))
     .provenance(Provenance::synthetic("asset-class-test", start()))
     .build(start())?;
@@ -430,6 +518,7 @@ fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
         participation_rate: 1.0,
         barrier_level: None,
         underlying_object_ids: vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        constituents: Vec::new(),
         issuer: "paper".to_string(),
         greeks: None,
     }))

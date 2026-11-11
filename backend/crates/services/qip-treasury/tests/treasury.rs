@@ -3,12 +3,12 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_capital::treasury::{
-    CapitalBook, FinancingFunction, FinancingPermissions, InternalFunding, LeverageBook, Use,
-};
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, Timestamp, dec};
+use qip_treasury::treasury::{
+    CapitalBook, FinancingFunction, FinancingPermissions, InternalFunding, LeverageBook, Use,
+};
 
 const USES: [Use; 4] = [Use::Grant, Use::Placement, Use::Collateral, Use::Yield];
 

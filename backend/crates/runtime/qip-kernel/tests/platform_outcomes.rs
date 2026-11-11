@@ -1032,6 +1032,56 @@ fn platform_with_a_funding_lane() -> Result<(Platform, CapitalLocation)> {
 }
 
 #[test]
+fn decide_names_the_source_of_every_planned_move_and_says_why_no_financing_is_counted() -> Result<()>
+{
+    // ADR 0388. Until the kernel held the treasury, a plan said how much to
+    // move and where and nothing said which source the capital came from; and
+    // `qip-treasury` ran in no binary.
+    let (mut platform, _) = platform_with_a_funding_lane()?;
+    let at = start().saturating_add(Duration::from_days(2));
+    let report = platform.run_cycle(at);
+    let decide = report
+        .stage(Stage::Decide)
+        .expect("DECIDE ran")
+        .detail
+        .clone();
+    let retained = plans_retained(&platform);
+    assert_eq!(retained.len(), 1, "premise: one plan on the log");
+    // This fixture's plan proposes no move (every lane is declined), and the
+    // sentence must still carry the treasury's standing: a cycle that planned
+    // nothing to fund is not a cycle the treasury was silent on. A plan with a
+    // move is funded in `tests/treasury.rs`.
+    let plan = &retained[0].plan;
+    assert!(
+        decide.contains(&format!(
+            "; treasury: {} placement(s) sourced, 0 refused; no financing counted (no reserve \
+             floor is declared",
+            plan.moves.len()
+        )),
+        "DECIDE names the treasury's funding and its standing on financing: {decide}"
+    );
+    assert!(
+        decide.contains("no leverage ceiling is decided for any strategy and region"),
+        "{decide}"
+    );
+    assert!(
+        decide.contains("no reserve floor applied to own capital, none being declared"),
+        "an absent floor is stated, not read as zero: {decide}"
+    );
+
+    // The funding is derived from the journalled plan, so the log alone
+    // reproduces what the sentence said.
+    let funding = platform
+        .treasury()
+        .fund_plan(plan, qip_kernel::platform::CENTRAL_TREASURY)?;
+    assert!(
+        decide.contains(&funding.describe()),
+        "the sentence is the funding of the journalled plan: {decide}"
+    );
+    Ok(())
+}
+
+#[test]
 fn decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window() -> Result<()>
 {
     // Until this was on the loop, `pre_position` had no caller outside tests:

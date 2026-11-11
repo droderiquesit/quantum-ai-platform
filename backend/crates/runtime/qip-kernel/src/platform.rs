@@ -73,6 +73,7 @@ use qip_ai::memory::{
 };
 use qip_ai::retrieval::SearchIndex;
 use qip_ai::serving::{ModelProvider, NoProvider};
+use qip_capital::AllocationLimits;
 use qip_capital::bank::{IdleCash, RoutingOutcome, RoutingTerms, Shelf, route_idle_cash};
 use qip_capital::dated_ladder::{
     DatedLadder, EntryKind, LadderEntry as DatedEntry, RedemptionNotice,
@@ -85,7 +86,6 @@ use qip_capital::ledger::{
 };
 use qip_capital::margin::MarginModel;
 use qip_capital::reservation::ReservationLedger;
-use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
 use qip_capital_fabric::corridor::{Corridor, CorridorId};
 use qip_capital_fabric::gate::{CorridorFunding, FundingStanding};
 use qip_capital_fabric::journal::{
@@ -102,9 +102,9 @@ use qip_capital_fabric::wallet::{
 };
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
-    FxRates, LocationBalance, PlanScore, PrePositioningPlan, PrePositioningPlanner,
-    PrePositioningRequest, RealisedDemand, Region as CapitalRegion, SettlementBook,
-    SettlementCalendar, SettlementConvention, TransferCostModel,
+    LocationBalance, PlanScore, PrePositioningPlan, PrePositioningPlanner, PrePositioningRequest,
+    RealisedDemand, Region as CapitalRegion, SettlementBook, SettlementCalendar,
+    SettlementConvention, TransferCostModel,
 };
 use qip_chain::{
     BridgeFailure, BridgeLedger, BridgeTransfer, ChainState, ChainUpdate, Confirmations,
@@ -871,6 +871,15 @@ pub struct Platform {
     /// is one answer to "what did this cycle cost" instead of a ledger and a
     /// separate assertion that can disagree with it.
     reason_routing: Option<ReasonRouting>,
+    /// The judgement of each convened REASON routing whose thesis is still
+    /// open, by hypothesis id (ADR 0391). Written where the hypothesis
+    /// forms, released where LEARN grades it. Bounded by the open
+    /// predictions: LEARN drops an entry whose hypothesis has none.
+    routing_judgements: BTreeMap<String, qip_cost_router::Judgement>,
+    /// Each rung's record under the conditions it was routed to, written
+    /// only by LEARN from a judgement minted at the decision (ADR 0391). A
+    /// score: nothing reads it back into a routing.
+    routing_reputation: qip_cost_router::ReputationBook,
     /// Instruments in the assembled universe that may not drive a capital
     /// decision, with the reason, in object-id order. Empty is the only
     /// state a production universe should show.
@@ -930,6 +939,16 @@ pub struct Platform {
     /// each pass would be a second reading of the universe that could disagree
     /// with the one the log recorded.
     credit: crate::valuation::CreditRegister,
+    /// The financing half of the valuation plane: every FX forward and repo
+    /// in the universe valued from the universe's own records, and the spot
+    /// table balances are converted at. Derived once at assembly beside
+    /// `credit`, whose sovereign curves it reads.
+    financing: crate::financing::FinancingRegister,
+    /// The treasury's books (ADR 0388). Undeclared at assembly: no reserve
+    /// floor, no leverage ceiling and no financing permission has been given,
+    /// so it names own capital as the source of a planned placement and
+    /// counts no financing source, saying why.
+    treasury: crate::treasury::Treasury,
     /// What the event log's first record says about the universe this
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
@@ -1085,6 +1104,10 @@ pub struct Platform {
     /// Physical-inventory operations queued from the commerce plane, for the
     /// sequence each carries (R12-COMMERCE-5096).
     commerce_inventory_operations: u64,
+    /// The highest sequence a corporate action's ledger operation has
+    /// taken (ADR 0397). Resumed from the log by
+    /// [`Self::requeue_corporate_actions`].
+    corporate_action_operations: u64,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -1371,6 +1394,13 @@ pub struct Platform {
     /// Desk sale proceeds the venue's settlement calendar has not yet made
     /// usable (R12-CAPITAL-4087). See [`UnsettledSale`].
     unsettled_sales: Vec<UnsettledSale>,
+    /// Venue to the chain terms an operator declared for its digital-asset
+    /// proceeds (ADR 0396). Empty until [`Self::declare_chain_settlement`]:
+    /// no venue is given terms nobody declared.
+    chain_settlement: BTreeMap<String, crate::chain_settlement::ChainSettlementTerms>,
+    /// What declared bridges have kept of digital-asset proceeds. Withheld
+    /// from survival sizing for good; see [`Self::chain_bridge_fees`].
+    chain_bridge_fees: Decimal,
     /// Each desk position's life, discover to attribute (R12-ASSET-4071).
     /// Advanced by [`Self::book_desk_fill`], scheduled by
     /// [`Self::register_settlement`], settled and attributed only in LEARN.
@@ -3397,6 +3427,13 @@ pub struct ReasonRouting {
     /// rung.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub convened: Option<IntelligenceTier>,
+    /// The token that scores this routing when the thesis it bought is
+    /// graded (ADR 0391): the rung that ran, under the conditions it was
+    /// chosen under, minted here at the decision by the router's own type.
+    /// `None` where nothing was convened, where the routing was answered in
+    /// deterministic code, and on a record written before the field existed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub judgement: Option<qip_cost_router::Judgement>,
 }
 
 impl ReasonRouting {
@@ -3431,6 +3468,16 @@ impl ReasonRouting {
         rationale: String,
         convened: Option<IntelligenceTier>,
     ) -> Self {
+        // Minted at the decision or not at all (ADR 0391). The mint can
+        // refuse only a blank build, and the build is this crate's own
+        // version, so an absent judgement here means nothing ran or what ran
+        // was deterministic code, which is not something that can be wrong.
+        let judgement = match (&routing, convened.and_then(|tier| tier.model_tier())) {
+            (Some(Routing::Judged(judged)), Some(ran)) => judged
+                .judgement(ran, &crate::routing_score::rung_build())
+                .ok(),
+            _ => None,
+        };
         Self {
             cycle,
             opportunity_id: opportunity.opportunity_id.as_str().to_string(),
@@ -3439,6 +3486,7 @@ impl ReasonRouting {
             rationale,
             dispatched: convened.is_some(),
             convened,
+            judgement,
         }
     }
 }
@@ -5251,6 +5299,25 @@ impl EventBody for CommerceInventoryQueued {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// A corporate action applied to the desk's holding, as the
+/// [`qip_contracts::ledger_operation::LedgerOperation`] the ledger books
+/// (ADR 0397, R12-COVERAGE-5099). Journalled before it is queued and
+/// re-queued on resume, as [`CommerceInventoryQueued`] is: the ledger books
+/// each id once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CorporateActionBooked {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+impl EventBody for CorporateActionBooked {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer of [`CorporateActionBooked`], its own origin so a reader of
+/// the shared topic never meets this body under another producer's name.
+const CORPORATE_ACTION_LEDGER_ORIGIN: &str = "kernel/corporate-action-ledger";
+
 /// The producer of [`CommerceInventoryQueued`], its own origin so a reader of
 /// the other `LedgerOperationRecorded` producers never meets this body.
 const COMMERCE_INVENTORY_ORIGIN: &str = "kernel/commerce-inventory";
@@ -6060,6 +6127,7 @@ impl Platform {
         // — a change to what the platform trades, which belongs in a change
         // that says so rather than arriving inside a valuation engine.
         let credit = crate::valuation::CreditRegister::from_universe(&universe, now);
+        let financing = crate::financing::FinancingRegister::from_universe(&universe, &credit, now);
         // What the log's first record will say. Taken here, before the
         // universe moves into the desk, and appended below once the log and
         // the journal both exist — but before this function returns, so no
@@ -6343,10 +6411,7 @@ impl Platform {
         let counterfactuals =
             CounterfactualEngine::new(config.seed, menu, delay + CAPITAL_HORIZON)?;
         let pre_positioner = PrePositioningPlanner::new(
-            CapitalAllocator::new(
-                AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
-                DrawdownSchedule::default(),
-            ),
+            AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
             TransferCostModel::new(
                 TransactionCostModel::listed(1.0),
                 LiquidityProfile::listed(Decimal::from_int(5_000_000_000_000), 1.0),
@@ -6363,11 +6428,33 @@ impl Platform {
         // stops assembly with the term named: a platform that opened a book
         // under a mandate the registry refused would be promising capital
         // the desk does not have.
-        let mut user_ledger = UserLedger::with_desk_exploring(
+        //
+        // The desk's risk tolerance is a term of that mandate (ADR 0405) and
+        // enters here, through `Mandate::new`, which refuses it outside
+        // `[0, 1]`. Epoch-registered, as `UserLedger::with_desk_exploring`
+        // registers the desk: it is the holder that exists before any
+        // registration has a time.
+        let mut user_ledger = UserLedger::opened_by(
             UserId::new(DESK_USER)?,
-            initial_equity,
-            Currency::USD,
-            config.exploration_share,
+            qip_capital::ledger::Mandate::desk_tolerating(
+                initial_equity,
+                Currency::USD,
+                config.exploration_share,
+                config.desk_risk_tolerance,
+            )?,
+            Timestamp::from_secs(0),
+        )?;
+        // The limit in force (ADR 0405): the operator's set is the ceiling,
+        // and the pre-trade checker is built from it narrowed by the desk
+        // mandate's tolerance. Read from the registry and not from
+        // `config`, so the only way to move the figure is to move the
+        // mandate. Done here, at assembly, by arithmetic: before any order
+        // exists and with no model on the path. A tolerance of one gives the
+        // ceiling exactly. The monitor, rule review and the policy payload
+        // keep the ceiling — see the ADR's D7 for why each does.
+        let pretrade_checker = PreTradeChecker::under_tolerance(
+            &limits,
+            user_ledger.registry().desk_mandate().risk_tolerance(),
         )?;
         for enrolment in &config.user_mandates {
             user_ledger.enrol(
@@ -6500,12 +6587,16 @@ impl Platform {
             pretrade_routing: None,
             monitor_routing: None,
             reason_routing: None,
+            routing_judgements: BTreeMap::new(),
+            routing_reputation: qip_cost_router::ReputationBook::new(),
             universe_not_decision_grade: not_decision_grade,
             commitments,
             illiquid_marks,
             illiquid_unmarkable,
             private_forecasts,
             credit,
+            financing,
+            treasury: crate::treasury::Treasury::undeclared(CENTRAL_TREASURY, HOME_REGION),
             universe_assembled,
             universe_history,
             inherited_through,
@@ -6534,6 +6625,7 @@ impl Platform {
             capital_grant_operations: 0,
             subscribed_mandates: BTreeSet::new(),
             commerce_inventory_operations: 0,
+            corporate_action_operations: 0,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -6552,6 +6644,8 @@ impl Platform {
             apply_joint_tail_reserve: false,
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
+            chain_settlement: BTreeMap::new(),
+            chain_bridge_fees: Decimal::ZERO,
             position_lives: crate::position_life::PositionLives::default(),
             episodes: EpisodicMemory::default(),
             pending_episodes: Vec::new(),
@@ -6567,7 +6661,7 @@ impl Platform {
             orders: instrument_grids
                 .into_iter()
                 .fold(
-                    OrderManager::new(PreTradeChecker::new(limits.clone())),
+                    OrderManager::new(pretrade_checker),
                     |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
                 )
                 .with_known_instruments(known_instruments),
@@ -6714,6 +6808,7 @@ impl Platform {
         // disjointly rather than a method, so the log is read while the
         // ledger is written.
         Self::resume_ledger(&platform.event_log, &mut platform.user_ledger)?;
+        platform.journal_limit_narrowing(now)?;
         // The capital-call notices the log holds, replayed into the
         // commitment book `private_holdings_of` built above through the
         // same gates a live notice passes. Before this seam a filed notice
@@ -6740,6 +6835,7 @@ impl Platform {
         // Every commerce inventory movement this log recorded, re-queued as
         // written (R12-COMMERCE-5096).
         platform.requeue_commerce_inventory()?;
+        platform.requeue_corporate_actions()?;
         // Every capital grant this log funded or recalled, re-queued as
         // written and in the order written: the plane's envelopes do not
         // survive a restart but the ledger's debt to the books they funded
@@ -8255,6 +8351,96 @@ impl Platform {
             self.desk_operations.push(operation);
         }
         Ok(())
+    }
+
+    /// Re-queue every corporate-action operation the log holds, as written
+    /// and in the order written, and resume the sequence after the highest
+    /// one journalled. The ledger answers a resend of a booked operation
+    /// with a duplicate, so re-sending each books it exactly once.
+    fn requeue_corporate_actions(&mut self) -> Result<()> {
+        let mut recorded = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == CORPORATE_ACTION_LEDGER_ORIGIN
+                && record.event.topic == CorporateActionBooked::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                recorded.push(frame.decode::<CorporateActionBooked>()?.body.operation);
+            }
+        }
+        for operation in recorded {
+            self.corporate_action_operations =
+                self.corporate_action_operations.max(operation.sequence);
+            self.desk_operations.push(operation);
+        }
+        Ok(())
+    }
+
+    /// Queue, for the ledger of record, what one applied corporate action
+    /// did to the desk's book (ADR 0397): `signed` of `unit` into the
+    /// trading account against the venue when positive, out of it when
+    /// negative, nothing when zero.
+    ///
+    /// The book has already moved and the action is already journalled, so
+    /// nothing here can refuse the action. An operation the contract or the
+    /// log will not take is reported as a problem on the cycle and not
+    /// queued: a ledger that silently missed a split would disagree with
+    /// the book by exactly the units nobody could then explain.
+    fn book_corporate_action(&mut self, key: &str, unit: &str, signed: Decimal, now: Timestamp) {
+        use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind, Phase};
+        if signed.is_zero() {
+            return;
+        }
+        let (amount, phase) = if signed.is_positive() {
+            (Some(signed), Phase::Establish)
+        } else {
+            (Decimal::ZERO.checked_sub(signed), Phase::Unwind)
+        };
+        let chain = self.desk_ledger.chain().to_string();
+        let sequence = self.corporate_action_operations + 1;
+        let built = amount
+            .ok_or_else(|| Error::numeric("the corporate action's amount overflowed"))
+            .and_then(|amount| {
+                qip_contracts::validated::Validated::new(LedgerOperationFields {
+                    schema_version: 1,
+                    operation_id: format!("{chain}:corporate-action:{key}"),
+                    origin: chain.clone(),
+                    sequence,
+                    recorded_at: now,
+                    settlement: qip_contracts::ledger::Settlement::Simulated,
+                    kind: OperationKind::CorporateAction {
+                        book: Book {
+                            cell: chain.clone(),
+                            strategy: DESK_STRATEGY.to_string(),
+                        },
+                        venue: self.broker.name().to_string(),
+                        action: key.to_string(),
+                        unit: unit.to_string(),
+                        amount,
+                        phase,
+                    },
+                })
+            })
+            .and_then(|operation| {
+                self.journal_record(
+                    CorporateActionBooked {
+                        operation: operation.clone(),
+                    },
+                    CORPORATE_ACTION_LEDGER_ORIGIN,
+                    now,
+                )
+                .map(|_| operation)
+            });
+        match built {
+            Ok(operation) => {
+                self.corporate_action_operations = sequence;
+                self.desk_operations.push(operation);
+            }
+            Err(error) => self.capture_problems.push(format!(
+                "corporate action {key} moved the desk's book by {signed} {unit} and was not \
+                 queued for the ledger: {}",
+                error.message()
+            )),
+        }
     }
 
     /// Re-queue every mandate subscription the log holds, as written and in
@@ -12467,12 +12653,25 @@ impl Platform {
         costs: Decimal,
         at: Timestamp,
     ) {
-        let quoted = self
-            .pre_positioner
-            .settlement()
-            .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
-            .and_then(|calendar| calendar.quote(at))
-            .map(|quote| quote.available_at);
+        // A digital asset at a venue with declared chain terms settles on
+        // the simulated chain's clock (ADR 0396). Every other class, and a
+        // digital asset at a venue nobody declared terms for, settles on
+        // the venue's calendar as before.
+        let chain_terms = self
+            .asset_classes
+            .get(object_id)
+            .filter(|class| **class == AssetClass::DigitalAsset)
+            .and_then(|_| self.chain_settlement.get(venue))
+            .copied();
+        let quoted = match chain_terms {
+            Some(terms) => terms.available_at(at),
+            None => self
+                .pre_positioner
+                .settlement()
+                .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
+                .and_then(|calendar| calendar.quote(at))
+                .map(|quote| quote.available_at),
+        };
         if let Some(problem) = self
             .position_lives
             .schedule_settlement(object_id, quoted.as_ref().ok().copied())
@@ -12500,13 +12699,39 @@ impl Platform {
                 None
             }
         };
+        // A declared bridge keeps its fee. The simulated broker has already
+        // credited the whole sale, and no ledger kind books a bridge's cut,
+        // so the fee is withheld from survival sizing for good and only the
+        // rest waits to be released. A fee that cannot be computed or
+        // summed is reported and the whole sale stays in flight: never
+        // dropped in silence, never released by an overflow.
+        let mut arriving = proceeds;
+        if let Some(terms) = chain_terms {
+            let withheld = terms.bridge_fee(proceeds).and_then(|fee| {
+                let total = self.chain_bridge_fees.checked_add(fee);
+                let net = proceeds.checked_sub(fee);
+                total
+                    .zip(net)
+                    .ok_or_else(|| Error::numeric("the bridge fee arithmetic overflowed"))
+            });
+            match withheld {
+                Ok((total, net)) => {
+                    self.chain_bridge_fees = total;
+                    arriving = net;
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "the bridge fee on a digital-asset sale at {venue} was not withheld ({})",
+                    error.message()
+                )),
+            }
+        }
         // Settled entries are dropped on the way in, so the register holds
         // only what is in flight: a few days of sales at T+n.
         self.unsettled_sales
             .retain(|sale| sale.available_at.is_none_or(|due| due > at));
         let sale = UnsettledSale {
             available_at,
-            proceeds,
+            proceeds: arriving,
         };
         if self.unsettled_sales.len() >= MAX_UNSETTLED_SALES {
             // Bounded, and folded the restrictive way: the new proceeds join
@@ -12531,13 +12756,45 @@ impl Platform {
         self.unsettled_sales.push(sale);
     }
 
-    /// Desk sale proceeds still in settlement at `now`: what the survival
-    /// waterfall's settlement tier withholds beside the ledger's accruals.
+    /// Declare the chain terms `venue`'s digital-asset proceeds settle on
+    /// (ADR 0396): a finality depth, a block interval and, if the proceeds
+    /// cross one, a bridge's delay and fee.
+    ///
+    /// This can only delay a release and withhold a fee. It signs nothing,
+    /// broadcasts nothing and opens no order path; sales already in flight
+    /// keep the instant they were quoted.
+    pub fn declare_chain_settlement(
+        &mut self,
+        venue: &str,
+        terms: crate::chain_settlement::ChainSettlementTerms,
+    ) {
+        self.chain_settlement.insert(venue.to_string(), terms);
+    }
+
+    /// The chain terms declared for `venue`, if any.
+    pub fn chain_settlement_terms(
+        &self,
+        venue: &str,
+    ) -> Option<&crate::chain_settlement::ChainSettlementTerms> {
+        self.chain_settlement.get(venue)
+    }
+
+    /// What declared bridges have kept of digital-asset sale proceeds. It
+    /// is part of [`Self::unsettled_sale_proceeds`] at every instant: the
+    /// broker credited the whole sale, and this is the part that never
+    /// arrived.
+    pub fn chain_bridge_fees(&self) -> Decimal {
+        self.chain_bridge_fees
+    }
+
+    /// Desk sale proceeds still in settlement at `now`, plus every bridge
+    /// fee withheld under ADR 0396: what the survival waterfall's settlement
+    /// tier withholds beside the ledger's accruals.
     pub fn unsettled_sale_proceeds(&self, now: Timestamp) -> Result<Decimal> {
         self.unsettled_sales
             .iter()
             .filter(|sale| sale.available_at.is_none_or(|due| due > now))
-            .try_fold(Decimal::ZERO, |total, sale| {
+            .try_fold(self.chain_bridge_fees, |total, sale| {
                 total
                     .checked_add(sale.proceeds)
                     .ok_or_else(|| Error::numeric("unsettled sale proceeds overflow"))
@@ -14537,6 +14794,12 @@ impl Platform {
                 BOOK_ORIGIN,
                 now,
             )?;
+            self.book_corporate_action(
+                key,
+                crate::desk_ledger::DESK_QUOTE_UNIT,
+                dividend_total,
+                now,
+            );
             return Ok(());
         }
 
@@ -14555,6 +14818,15 @@ impl Platform {
         // resume seam here keeps: the log has the record before the book
         // moves, and never a record of an adjustment the book could not take.
         self.capital.lot_after(object, quantity_factor)?;
+        // The units the action adds to the holding, taken before the lot
+        // moves: `quantity × factor − quantity`. None when nothing is held
+        // or the figure cannot be represented; the adjustment below then
+        // refuses or does nothing, and nothing is booked for it.
+        let unit_change = self.capital.positions.get(object).and_then(|lot| {
+            lot.quantity
+                .checked_mul(quantity_factor)
+                .and_then(|after| after.checked_sub(lot.quantity))
+        });
         self.journal_record(
             LotAdjusted {
                 action: key.to_string(),
@@ -14564,7 +14836,11 @@ impl Platform {
             BOOK_ORIGIN,
             now,
         )?;
-        self.adjust_desk_lot(key, object, quantity_factor)
+        self.adjust_desk_lot(key, object, quantity_factor)?;
+        if let Some(change) = unit_change {
+            self.book_corporate_action(key, object, change, now);
+        }
+        Ok(())
     }
 
     /// Take one corporate action's share-count change on [`TrackedCapital`]
@@ -14789,6 +15065,10 @@ impl Platform {
         // example of.
         let credit = self.credit.summary();
         let credit_problems = self.credit.problems();
+        // The financing half, on the same terms: a forward or a repo the
+        // register could not value is a problem, not an omission.
+        let financing = self.financing.summary();
+        let financing_problems = self.financing.problems();
         // §9.2's own honest framing — the method the blueprint calls "weak
         // alone, useful as a filter" — means most passes clear no pair at
         // all, and this says so rather than staying silent about a pass
@@ -14955,7 +15235,7 @@ impl Platform {
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                  {contradiction_detail}{contest_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
+                  {contradiction_detail}{contest_detail}{liquidity}{events}{chain}{credit}{financing}{precedence_detail}{crossing_detail}{review_detail}\
                  {second_order_detail}{statistics_detail}{routing_detail}{federation_detail}\
                  {now_detail}",
                 state.object_count,
@@ -14967,6 +15247,9 @@ impl Platform {
             ),
         );
         for problem in credit_problems {
+            outcome = outcome.with_problem(problem);
+        }
+        for problem in financing_problems {
             outcome = outcome.with_problem(problem);
         }
         if let Some(problem) = second_order_problem {
@@ -17113,6 +17396,19 @@ impl Platform {
                 // against something a source published, rather than against
                 // whether it felt right.
                 let predicted = self.record_prediction(&opportunity, &reasoned, now);
+                // The routing that bought this hypothesis is scored when its
+                // thesis is graded (ADR 0391). Held under the hypothesis id,
+                // because that is the key the grade arrives under.
+                if let Some(judgement) = self
+                    .reason_routing
+                    .as_ref()
+                    .and_then(|routing| routing.judgement.clone())
+                {
+                    self.routing_judgements.insert(
+                        reasoned.hypothesis.hypothesis_id.as_str().to_string(),
+                        judgement,
+                    );
+                }
                 let mut outcome = StageOutcome::ran(
                     Stage::Reason,
                     report.findings.len(),
@@ -18420,6 +18716,21 @@ impl Platform {
     /// claim whose terms would not support one.
     pub fn credit_register(&self) -> &crate::valuation::CreditRegister {
         &self.credit
+    }
+
+    /// The financing register derived from the universe at assembly: every FX
+    /// forward carried from its spot pair along the two sovereign curves,
+    /// every repo valued from its own terms, and the reason for each one
+    /// that could not be.
+    pub fn financing_register(&self) -> &crate::financing::FinancingRegister {
+        &self.financing
+    }
+
+    /// The treasury's books as the platform was assembled with them
+    /// (ADR 0388): undeclared, until a person gives a reserve floor, a
+    /// leverage ceiling or a financing permission.
+    pub fn treasury(&self) -> &crate::treasury::Treasury {
+        &self.treasury
     }
 
     /// The unfunded private commitments this book is on the hook for.
@@ -22598,6 +22909,7 @@ impl Platform {
         // credited is a contradiction between the theory and the evidence,
         // and it leaves a theory delta on the log here, at the instant the
         // grade is known. A proposal only: see `crate::theory_revision`.
+        let routings_scored = self.score_routings(&learned.evaluations, now)?;
         let revision = self.revise_theory(&learned.evaluations, self.cycle, now);
         self.capture_problems
             .extend(revision.problems.iter().cloned());
@@ -22611,6 +22923,9 @@ impl Platform {
                 ", {} theory delta(s) proposed, {} veto(es) upheld",
                 revision.produced, revision.upheld
             ));
+        }
+        if routings_scored > 0 {
+            summary.push_str(&format!(", {routings_scored} routing choice(s) scored"));
         }
         if ungradeable > 0 {
             summary.push_str(&format!(", {ungradeable} ungradeable"));
@@ -22649,6 +22964,85 @@ impl Platform {
             ));
         }
         Ok(Some(summary))
+    }
+
+    /// Resolve the routing judgement behind each graded thesis (ADR 0391,
+    /// R12-MODEL-10123): the rung REASON ran on is credited or charged in
+    /// the cell of the conditions it was routed under, and the resolution is
+    /// journaled. Returns how many were scored.
+    ///
+    /// An inconclusive verdict scores nothing and releases the judgement:
+    /// nothing happened either way, and counting it as a miss would charge
+    /// the rung for a quiet tape. A graded thesis with no judgement held —
+    /// one seeded through `learn_from`, or one routed before a restart — is
+    /// not scored, because there is no decision-time key to score it under
+    /// and one rebuilt now would be the wrong one.
+    fn score_routings(&mut self, evaluations: &[Evaluation], now: Timestamp) -> Result<usize> {
+        let mut scored = 0usize;
+        for evaluation in evaluations {
+            let Some(judgement) = self.routing_judgements.remove(&evaluation.hypothesis_id) else {
+                continue;
+            };
+            if !evaluation.verdict.is_informative() {
+                continue;
+            }
+            let correct = evaluation.verdict.counts_as_correct();
+            // Journaled before the book moves, so a refused write leaves no
+            // score the log cannot reproduce.
+            self.journal_record(
+                crate::routing_score::RoutingScored {
+                    cycle: self.cycle,
+                    hypothesis_id: evaluation.hypothesis_id.clone(),
+                    judgement: judgement.clone(),
+                    verdict: evaluation.verdict.as_str().to_string(),
+                    correct,
+                    at: now,
+                },
+                crate::routing_score::ROUTING_SCORE_ORIGIN,
+                now,
+            )?;
+            self.routing_reputation.observe(&judgement, correct);
+            scored += 1;
+        }
+        // Bounded by the open predictions: a judgement whose thesis can no
+        // longer be graded is not kept for the life of the process.
+        let open: BTreeSet<&str> = self
+            .predictions
+            .iter()
+            .filter(|prediction| prediction.is_open())
+            .map(|prediction| prediction.hypothesis.as_str())
+            .collect();
+        self.routing_judgements
+            .retain(|hypothesis, _| open.contains(hypothesis.as_str()));
+        Ok(scored)
+    }
+
+    /// Where the last REASON stage's question was placed, and what was
+    /// convened on it.
+    pub fn reason_routing(&self) -> Option<&ReasonRouting> {
+        self.reason_routing.as_ref()
+    }
+
+    /// Each rung's record under the conditions it was routed to (ADR 0391).
+    pub fn routing_reputation(&self) -> &qip_cost_router::ReputationBook {
+        &self.routing_reputation
+    }
+
+    /// Every routing choice the log records as scored, in log order.
+    pub fn routings_scored(&self) -> Result<Vec<crate::routing_score::RoutingScored>> {
+        let mut scored = Vec::new();
+        for record in self.event_log().records() {
+            if record.event.topic == Topic::ModelEvaluated
+                && record.event.lineage.producer == crate::routing_score::ROUTING_SCORE_ORIGIN
+            {
+                scored.push(
+                    StreamEnvelope::from_frame(&record.event)?
+                        .decode::<crate::routing_score::RoutingScored>()?
+                        .body,
+                );
+            }
+        }
+        Ok(scored)
     }
 
     /// Record which class of claim held, in which regime.
@@ -28121,8 +28515,39 @@ impl Platform {
         (Some(summary), problems)
     }
 
-    /// The limit set this platform booted with and runs under — the one
-    /// the pre-trade checker and the monitor hold. Read-only, and there is
+    /// The limit set orders are checked against before they exist: the
+    /// operator's ceiling ([`Self::limits`]) narrowed by the desk mandate's
+    /// risk tolerance (ADR 0405). Equal to the ceiling at a tolerance of one.
+    /// Read-only, with no setter: it moves only when the ceiling's file or
+    /// the desk's mandate does, and both are read at assembly.
+    pub fn limits_in_force(&self) -> &LimitSet {
+        self.orders.limits_in_force()
+    }
+
+    /// Journal the limit in force when it is narrower than the ceiling
+    /// (ADR 0405 D8), so a decision can be reproduced from the log without
+    /// the limits file or the configuration beside it.
+    ///
+    /// Nothing is written at a tolerance of one: the limit in force is the
+    /// ceiling, and a record on every start of every platform that never
+    /// stated a tolerance would be a record of nothing.
+    fn journal_limit_narrowing(&mut self, now: Timestamp) -> Result<()> {
+        let tolerance = self.user_ledger.registry().desk_mandate().risk_tolerance();
+        if tolerance == Decimal::ONE {
+            return Ok(());
+        }
+        let record = crate::limit_narrowing::LimitsNarrowed::between(
+            self.monitor.limits(),
+            self.orders.limits_in_force(),
+            tolerance,
+            now,
+        )?;
+        self.journal_record(record, crate::limit_narrowing::LIMIT_NARROWING_ORIGIN, now)
+    }
+
+    /// The limit set this platform booted with and runs under — the
+    /// operator's ceiling, which the monitor holds and which the pre-trade
+    /// checker narrows by the desk's tolerance ([`Self::limits_in_force`]). Read-only, and there is
     /// no setter anywhere on this type: a bound moves only through the file
     /// the composition root reads at boot (ADR 0061).
     pub fn limits(&self) -> &LimitSet {
@@ -28523,7 +28948,11 @@ impl Platform {
                 .initial_equity
                 .checked_div(Decimal::from_int(2))
                 .unwrap_or(self.config.initial_equity),
-            FxRates::new(Currency::USD),
+            // The universe's own spot pairs against the dollar, not the
+            // dollar alone: a forecast in a currency the universe quotes is
+            // converted at that quote, and one it does not quote is still
+            // refused by `FxRates::to_base` rather than assumed at parity.
+            self.financing.fx_rates(Currency::USD)?,
         )?;
         for forecast in self.forecast_capital_demand(now, horizon) {
             // Wire the wallet's reconciled on-hand balance for this location
@@ -28613,6 +29042,24 @@ impl Platform {
         };
         let mut sentence = format!("pre-positioning: {}", plan.describe());
         let mut problems = Vec::new();
+        // Name the source of every move (ADR 0388). A plan reported with no
+        // source named for its capital reads as funded when nothing has said
+        // so; a move the treasury refuses is a problem, not a quiet line.
+        match self.treasury.fund_plan(&plan, CENTRAL_TREASURY) {
+            Ok(funding) => {
+                sentence.push_str(&format!("; {}", funding.describe()));
+                for refusal in &funding.plan.refused {
+                    problems.push(format!(
+                        "the treasury names no source for a planned pre-positioning move: {}",
+                        refusal.reason
+                    ));
+                }
+            }
+            Err(error) => problems.push(format!(
+                "the treasury could not name the source of the pre-positioning plan's moves: {}",
+                error.message()
+            )),
+        }
         match &self.pending_pre_positioning {
             Some(pending) => sentence.push_str(&format!(
                 "; the plan of {} is retained for scoring when its window closes at {}",

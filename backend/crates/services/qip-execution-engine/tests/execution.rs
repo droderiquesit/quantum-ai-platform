@@ -1543,6 +1543,7 @@ fn a_pre_trade_refusal_names_the_limits_that_refused_it_and_not_a_word_of_the_se
             subject: None,
             detail: "cash is below the buffer".to_string(),
             forces_reduction: false,
+            narrowing: None,
         }],
     };
     assert_eq!(

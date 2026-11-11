@@ -18,10 +18,17 @@
 //!
 //! None of this makes an overfitted strategy work. It makes an overfitted
 //! strategy look like one.
+//!
+//! This module lived in `qip-simulation-engine` until ADR 0386. It names
+//! nothing but this crate and `qip-core`, and the lifecycle's gates, which
+//! recompute these figures rather than trust submitted ones, took the whole
+//! simulation engine's closure (the strategy and risk crates) to reach it.
+//! `qip_simulation_engine::validation` re-exports it, so there is still one
+//! implementation.
 
+use crate::distributions;
+use crate::stats;
 use qip_core::error::{Error, Result};
-use qip_numerics::distributions;
-use qip_numerics::stats;
 use serde::{Deserialize, Serialize};
 
 /// The correction for having tried many strategies.

@@ -68,7 +68,12 @@ pub mod market;
 pub mod montecarlo;
 pub mod scenario;
 pub mod tick_replay;
-pub mod validation;
+/// The overfitting corrections. Their code is `qip_numerics::validation`
+/// since ADR 0386; the path here is kept so the engine's callers have one
+/// name for them and nobody writes a second copy.
+pub mod validation {
+    pub use qip_numerics::validation::*;
+}
 pub mod venue;
 
 pub use agents::{

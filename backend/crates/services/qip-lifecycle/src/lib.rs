@@ -15,7 +15,7 @@
 //! * **Gates recompute, they do not trust.** The holdout gate takes the return
 //!   series and the cross-validation parameters and re-derives the deflated
 //!   Sharpe and the fold structure using
-//!   [`qip_simulation_engine::validation`]. A submitted Sharpe ratio is an
+//!   [`qip_numerics::validation`]. A submitted Sharpe ratio is an
 //!   assertion; a submitted return series is auditable.
 //! * **Promotion to capital is unrepresentable without two people.**
 //!   [`ledger::AuthorisedPromotion`] computes its target rung from

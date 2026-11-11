@@ -142,6 +142,12 @@ impl VerifiedEnvelope {
         self.inner.cell()
     }
 
+    /// Whether this grant names `venue`; see
+    /// [`CapitalEnvelope::permits_venue`].
+    pub fn permits_venue(&self, venue: &VenueId) -> bool {
+        self.inner.permits_venue(venue)
+    }
+
     pub fn expires_at(&self) -> Timestamp {
         self.inner.expires_at()
     }

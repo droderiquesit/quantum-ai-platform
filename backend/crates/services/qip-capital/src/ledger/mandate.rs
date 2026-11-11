@@ -157,10 +157,33 @@ impl Mandate {
         currency: Currency,
         exploration_share: Decimal,
     ) -> Result<Self> {
+        Self::desk_tolerating(capital, currency, exploration_share, Decimal::ONE)
+    }
+
+    /// The desk's mandate with a stated risk tolerance (ADR 0405).
+    ///
+    /// The desk's tolerance is the ceiling every user mandate is admitted
+    /// under, and since ADR 0405 it is also the fraction the operator's limit
+    /// set is narrowed by before an order is checked. This constructor has to
+    /// exist for the reason [`Self::desk_exploring`] does: with the desk
+    /// pinned at one, the narrowing read a figure that could never be
+    /// anything else, so it could never refuse an order — a control that
+    /// reads as protection and cannot fire.
+    ///
+    /// One remains the default ([`Self::desk`], [`Self::desk_exploring`]): a
+    /// deployment that states no tolerance runs at the operator's limits
+    /// exactly as it did. A tolerance outside `[0, 1]` is refused by
+    /// [`Self::new`] like any other mandate's.
+    pub fn desk_tolerating(
+        capital: Decimal,
+        currency: Currency,
+        exploration_share: Decimal,
+        risk_tolerance: Decimal,
+    ) -> Result<Self> {
         Self::new(MandateTerms {
             capital,
             currency,
-            risk_tolerance: Decimal::ONE,
+            risk_tolerance,
             permitted_families: PermittedFamilies::Any,
             liquidity_floor: Decimal::ZERO,
             exploration_share,

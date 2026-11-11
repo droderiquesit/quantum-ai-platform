@@ -2269,13 +2269,21 @@
   },
   {
     "id": "R12-CAPITAL-1095",
-    "status": "PARTIAL",
-    "current": "Functionality lives in qip-portfolio-engine / qip-lifecycle; no single 'brain' boundary or autonomous loop is defined.",
+    "status": "COMPLETE",
+    "current": "qip-portfolio-engine and qip-lifecycle own the Asset Brain with typed public contracts (holding and lifecycle), are composed by the kernel, have contract tests, and are closed under ADR 0127 decision 5: neither crate's closure reaches an alpha crate or another brain's crate. The one dependent below the kernel, qip-evolution calling attempt_promotion, is admitted by ADR 0386 and pinned.",
     "evidence": [
       "backend/crates/services/qip-portfolio-engine/src",
-      "backend/crates/services/qip-lifecycle/src/gates.rs"
+      "backend/crates/services/qip-lifecycle/src/gates.rs (recomputes qip_numerics::validation)",
+      "backend/crates/services/qip-lifecycle/src/demotion.rs DemotionMonitor::triggers reads qip_contracts::model_eligibility::ModelEligibility",
+      "backend/crates/libs/qip-numerics/src/validation.rs (moved from qip-simulation-engine by ADR 0386)",
+      "backend/crates/libs/qip-contracts/src/model_eligibility.rs; tests/model_eligibility.rs",
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs StrategyFactory::review builds the record from the registry",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_asset_brain_reaches_no_alpha_and_no_other_brain_and_its_one_dependent_is_the_evolution_service",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs a_record_silent_about_the_model_or_taken_at_another_instant_is_not_a_clearance, an_overdue_model_review_demotes_the_strategy_it_drives",
+      "backend/crates/runtime/qip-kernel/tests/central.rs a_model_the_registry_refuses_demotes_the_strategy_it_drives_through_the_composed_review",
+      "docs/adr/0386-the-lifecycle-gates-read-validation-statistics-from-the-numerics-library-and-model-eligibility-as-a-contracts-record-and-the-evolution-services-edge-is-admitted.md"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the asset brain (qip-portfolio-engine, qip-lifecycle).",
+    "gap": "None against the inspection text. 2026-11-11 (batch l1-d1-01, ADR 0386): qip-lifecycle stays an asset-brain crate and its open edges are closed. The validation statistics are qip_numerics::validation, so the gate still recomputes them and no longer reaches qip-strategy or qip-risk through the simulation engine; they were not replaced by a record of results, because that would be the submitted number the gate exists to distrust. Model eligibility is a qip-contracts record the kernel takes from the registry, and a record silent about the model or taken at another instant demotes. qip-evolution's dependence is admitted as the one dependent. Outside this row: the protected architecture.rs still lists the removed lifecycle edge in SERVICE_TO_SERVICE_EDGES and fails until integration applies docs/blueprint/lanes/l1-d1-01-R12-CAPITAL-1098-architecture.patch (cumulative with ADR 0385's changes).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2283,20 +2291,25 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure (\"test result: ok. 8 passed; 0 failed\"); cargo test -p qip-lifecycle (83 passed); cargo test -p qip-kernel --test central (104 passed)",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutation (qip-prediction added to qip-portfolio-engine's manifest under an inactive target table) fails it with alpha {qip-prediction}; restored with cp and cmp. brain_closure: 8 passed, 0 failed. Stays PARTIAL. 2026-11-11 batch l1-d1-01: promoted under ADR 0386. Mutations that fired, each restored with cp: qip-ai and qip-simulation-engine back in qip-lifecycle's [dependencies]; qip-lifecycle under qip-twin; Unrecorded read as eligible in the contract and in the monitor; the instant check dropped; a refusal read as clearance; the duplicate, blank-reason and blank-reference refusals removed; the kernel builder recording a refusal as eligible, and asking about no model."
   },
   {
     "id": "R12-CAPITAL-1096",
-    "status": "PARTIAL",
-    "current": "Functionality lives in qip-capital + qip-capital-fabric used by kernel; no single 'brain' boundary or autonomous loop is defined.",
+    "status": "COMPLETE",
+    "current": "qip-capital owns the Capital Brain with typed public contracts, is composed by the kernel and reached from the qip-api and qip-cli composition roots, has contract tests, and is closed under ADR 0127 decision 5: its closure reaches no alpha crate and no other brain's crate, and no crate below the kernel depends on it.",
     "evidence": [
-      "backend/crates/services/qip-capital/tests/treasury.rs:58",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital"
+      "backend/crates/services/qip-capital/src/allocation.rs CapitalAllocator, DrawdownSchedule",
+      "backend/crates/libs/qip-contracts/src/allocation.rs AllocationLimits, Allocation, AllocationPlan (moved by ADR 0385)",
+      "backend/crates/services/qip-capital-fabric/src/plan.rs PrePositioningPlanner holds AllocationLimits, not the allocator",
+      "backend/crates/runtime/qip-kernel/src/platform.rs deployable_capital; qip-api and qip-cli depend on qip-capital",
+      "backend/crates/services/qip-capital/tests/ (contract tests)",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_capital_brain_reaches_no_alpha_and_no_other_brain_and_nothing_below_the_kernel_depends_on_it, only_the_kernel_and_the_apps_hold_two_brains",
+      "docs/adr/0385-treasury-and-funding-are-extracted-to-qip-treasury-the-bank-stays-in-the-capital-brain-and-the-allocators-plan-and-limit-types-cross-as-contracts.md decisions 3 and 4"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the capital brain (qip-capital less treasury).",
+    "gap": "None against the inspection text. 2026-11-11 (batch l1-d1-01, ADR 0385): the one open edge is closed by removing it, not admitting it. The allocator's limits and plan are data and moved to qip_contracts::allocation; CapitalAllocator and DrawdownSchedule carry the decision and stayed. The fabric's planner holds the limits and its manifest names qip-capital only as a dev-dependency, which cargo does not give a library target. Outside this row: one assertion in the protected architecture.rs (SERVICE_TO_SERVICE_EDGES) still lists the removed edge and fails until integration applies docs/blueprint/lanes/l1-d1-01-R12-CAPITAL-1098-architecture.patch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2304,10 +2317,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure (\"test result: ok. 8 passed; 0 failed\"); cargo test -p qip-capital -p qip-capital-fabric -p qip-contracts",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutations that fired, each restored with cp and cmp: qip-risk added to qip-capital's manifest under an inactive target table (the capital brain reaches another brain's {qip-risk}); qip-capital added to qip-twin's manifest the same way (direct dependents {qip-capital-fabric, qip-twin}). brain_closure: 8 passed, 0 failed. Stays PARTIAL. 2026-11-11 batch l1-d1-01: promoted under ADR 0385. Mutations that fired on the closure test, each restored with cp: qip-capital moved back into the fabric's [dependencies] (dependents {qip-capital-fabric}); qip-risk under an inactive target table in qip-capital's manifest; qip-treasury under qip-execution-engine's manifest fails only_the_kernel_and_the_apps_hold_two_brains."
   },
   {
     "id": "R12-CAPITAL-1097",
@@ -2337,12 +2350,21 @@
   {
     "id": "R12-CAPITAL-1098",
     "status": "PARTIAL",
-    "current": "Functionality lives in qip-capital treasury and capital-fabric corridors/custody; no single 'brain' boundary or autonomous loop is defined.",
+    "current": "A crate owns the Treasury Bank: services/qip-treasury holds the reserve floor (CapitalBook), leverage decisions, internal funding, financing permissions and the funding plan, with typed public contracts and contract tests, and a boundary suite holds that it and the capital brain never name each other. The kernel composes it (ADR 0388): Platform holds a qip_kernel::treasury::Treasury and each DECIDE asks it to name the source of every move the pre-positioning plan proposes, from the plan's own budget as the central treasury's own capital. The treasury is assembled undeclared: it counts no financing source and says why, and states that no reserve floor was applied.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/corridor.rs",
-      "backend/crates/services/qip-capital-fabric/src/custody.rs"
+      "backend/crates/services/qip-treasury/src/treasury.rs CapitalBook, LeverageBook, InternalFunding, FinancingPermissions",
+      "backend/crates/services/qip-treasury/src/funding.rs plan_funding",
+      "backend/crates/services/qip-treasury/tests/treasury.rs, tests/funding.rs (contract tests)",
+      "backend/crates/tests/qip-acceptance/tests/treasury_boundary.rs the_treasury_crate_depends_on_qip_core_alone_and_reaches_no_capital_brain_crate, the_capital_brain_cannot_reach_the_treasury_and_nothing_below_the_kernel_depends_on_it, neither_crates_source_names_the_other_and_the_bank_stays_in_the_capital_brain",
+      "docs/adr/0385-treasury-and-funding-are-extracted-to-qip-treasury-the-bank-stays-in-the-capital-brain-and-the-allocators-plan-and-limit-types-cross-as-contracts.md",
+      "backend/crates/runtime/qip-kernel/src/treasury.rs Treasury::undeclared, Treasury::declared, Treasury::fund, Treasury::fund_plan",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::plan_pre_positioning (self.treasury.fund_plan), Platform::treasury",
+      "backend/crates/runtime/qip-kernel/tests/treasury.rs a_treasury_with_no_reserve_floor_counts_no_financing_source_however_permitted_and_says_why, a_financed_requirement_past_its_leverage_decision_is_refused_whole_and_its_own_capital_funds_the_next, a_declared_reserve_floor_refuses_the_own_capital_placement_that_would_breach_it_and_an_undeclared_one_applies_none, a_negative_reserve_floor_is_refused_rather_than_read_as_no_floor, every_move_of_a_pre_positioning_plan_is_sourced_whole_from_the_plans_own_budget_and_from_nothing_else",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs decide_names_the_source_of_every_planned_move_and_says_why_no_financing_is_counted",
+      "backend/crates/tests/qip-acceptance/tests/treasury_boundary.rs the_funding_planner_names_no_type_that_writes_the_treasurys_books_and_nothing_of_the_event_log",
+      "docs/adr/0388-the-kernel-holds-the-treasury-and-names-the-source-of-every-planned-placement-and-an-undeclared-treasury-permits-no-financing.md"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: the qip-treasury extraction and its arch test (shared with COVERAGE-7157).",
+    "gap": "2026-11-11 (batch l1-d2-01, ADR 0388): the crate is reached from a composition root. qip-kernel depends on qip-treasury, Platform holds the treasury and DECIDE calls Treasury::fund_plan on every plan, so runtime_reachability passes with no exemption. What remains, and why the row is not COMPLETE: (1) no reserve floor, leverage ceiling or financing permission is declared, so every deployed treasury refuses all financing and the leverage, floor and permission refusals run in tests only; those are figures and permissions the owner gives (DECISION-NEEDED). (2) The grant path is not composed: naming the source of a capital grant needs the central treasury's balance, which the ledger holds and the kernel does not (ADR 0123). (3) InternalFunding has no production caller. (4) Three assertions in the protected architecture.rs must follow the extraction: docs/blueprint/lanes/l1-d1-01-R12-CAPITAL-1098-architecture.patch, which applies cleanly on this tree; architecture.rs fails on those three until integration applies it, and passes 58 of 58 with it. The property the patch drops from architecture.rs (the funding planner names no state writer) is held at the new address by treasury_boundary.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2350,10 +2372,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cd backend && cargo test -p qip-treasury && cargo test -p qip-kernel --test treasury && cargo test -p qip-kernel --test platform_outcomes decide_names && cargo test -p qip-acceptance --test treasury_boundary --test runtime_reachability --test financing_permissions",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-d1-01: extraction built under ADR 0385. Mutations that fired on treasury_boundary, each restored with cp: qip-capital under qip-treasury's [dependencies], [dev-dependencies] and an inactive target table; qip-treasury under qip-capital's and the fabric's [dependencies]; pub mod funding restored to qip-capital; qip_treasury named in bank.rs; qip_capital named in qip-treasury/src/funding.rs; bank.rs copied into qip-treasury. treasury_boundary: 4 passed, 0 failed. Stays PARTIAL on the composition root. 2026-11-11 batch l1-d2-01: composed in the kernel under ADR 0388. Mutations that fired, each restored and compared with cmp: the financing filter admitting every source; the leverage check skipped; the floor commit skipped; the negative-floor refusal removed; the source balance doubled away from the plan's budget; the DECIDE sentence dropped; CapitalBook named in qip-treasury/src/funding.rs (treasury_boundary fails naming it). qip-kernel treasury 5 passed, platform_outcomes 24 passed, treasury_boundary 5 passed, runtime_reachability 8 passed, 0 failed. Stays PARTIAL on the absent declaration and the grant path."
   },
   {
     "id": "R12-CAPITAL-1099",

@@ -26,6 +26,7 @@ pub enum Extension {
     Fx(FxDetails),
     Commodity(CommodityDetails),
     Future(FutureDetails),
+    Perpetual(PerpetualDetails),
     Option(OptionDetails),
     Volatility(VolatilityDetails),
     Digital(DigitalAssetDetails),
@@ -54,6 +55,7 @@ impl Extension {
             Self::Fx(_) => "fx",
             Self::Commodity(_) => "commodity",
             Self::Future(_) => "future",
+            Self::Perpetual(_) => "perpetual",
             Self::Option(_) => "option",
             Self::Volatility(_) => "volatility",
             Self::Digital(_) => "digital",
@@ -439,6 +441,25 @@ pub struct FutureDetails {
     pub settlement: SettlementStyle,
     /// Position in the expiry cycle: 1 is the front month.
     pub contract_month_index: u32,
+}
+
+/// The terms of a perpetual future (ADR 0395).
+///
+/// There is no expiry field, on purpose: [`Extension::maturity`] answers
+/// `None` for it, so no rule that reads an expiry can roll or settle one.
+/// The funding interval is the contract's own term, as a repo's rate is its
+/// own; it is stated here by whoever lists the instrument and is never a
+/// constant of the code that values it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PerpetualDetails {
+    pub underlying_object_id: String,
+    pub contract_size: Decimal,
+    pub tick_size: Decimal,
+    pub initial_margin: Decimal,
+    pub maintenance_margin: Decimal,
+    /// Hours between funding exchanges. Zero is refused where funding is
+    /// valued: a contract that never funds is not a perpetual.
+    pub funding_interval_hours: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -855,6 +876,18 @@ pub struct RealAssetDetails {
     pub square_metres: f64,
 }
 
+/// One constituent of an index or basket: the instrument and how many units
+/// of it one unit of the composite holds (ADR 0397).
+///
+/// Units, not a percentage weight: a percentage needs a price to become a
+/// holding, and the price it was struck at is not in the record. Units times
+/// today's price is a value anyone can recompute.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Constituent {
+    pub object_id: String,
+    pub units: Decimal,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct IndexDetails {
     pub methodology: String,
@@ -862,6 +895,11 @@ pub struct IndexDetails {
     pub rebalance_frequency: String,
     pub divisor: Decimal,
     pub is_total_return: bool,
+    /// The index's members. Its level is the sum of units times price over
+    /// these, divided by `divisor`. Empty when the record does not state
+    /// them; the index is then not valued, never valued from a guess.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constituents: Vec<Constituent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -884,6 +922,10 @@ pub struct StructuredProductDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub barrier_level: Option<f64>,
     pub underlying_object_ids: Vec<String>,
+    /// For a basket: the units of each underlying one basket unit holds.
+    /// Empty when the record does not state them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constituents: Vec<Constituent>,
     pub issuer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub greeks: Option<Greeks>,

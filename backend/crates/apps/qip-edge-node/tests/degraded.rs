@@ -508,3 +508,262 @@ fn permitting_to_seed(
     }
     gateway.with_listing_permissions(permissions, "paper")
 }
+
+// ---- the hedge narrowing (ADR 0126 decision 4, R12-CAPITAL-10098) -------
+
+use qip_contracts::policy::{HedgeNarrowing, HedgeTarget};
+use qip_edge::hedge::{GATE_HEDGE_FRAME, GATE_HEDGE_TARGET, VerifiedHedge};
+
+fn narrowing(
+    cell: &str,
+    plan: &str,
+    issued: Timestamp,
+    deadline: Timestamp,
+    at: VenueId,
+    target_net: Decimal,
+) -> Result<HedgeNarrowing> {
+    HedgeNarrowing::new(
+        cell,
+        plan,
+        issued,
+        deadline,
+        vec![HedgeTarget {
+            venue: at,
+            object_id: object(),
+            target_net,
+        }],
+    )
+    .signed(KEY)
+}
+
+/// A cut-off cell that has bought once, and what it then holds.
+fn cut_off_and_long() -> Result<(
+    NodeAssembly,
+    SimulatedGateway,
+    SimulatedFeed,
+    MeshLink,
+    PassStats,
+    Decimal,
+)> {
+    let envelope = grant(t(3600))?;
+    let grant_name = envelope.signature().to_string();
+    let (mut node, mut gateway, mut feed, mut link) =
+        cut_off(envelope, last_payload(&grant_name, t(3600), t(3600))?)?;
+    let mut stats = PassStats::default();
+    let first = pass_cut_off(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut link,
+        &mut stats,
+        t(10),
+    )?;
+    assert_eq!(first.orders.len(), 1, "{:?}", first.refusals);
+    let held = node.cell.position(&venue(), &object());
+    assert!(
+        held.is_positive(),
+        "the premise is a cell holding a long position a hedge can reduce; it holds {held}"
+    );
+    Ok((node, gateway, feed, link, stats, held))
+}
+
+/// The row's bar. Without the gate a hedge plan made at the centre changes
+/// nothing a cell does: the strategy keeps adding to the position the plan
+/// exists to reduce, inside an envelope that has no reason to refuse it.
+#[test]
+fn a_cut_off_cell_applies_a_hedge_target_and_refuses_an_order_moving_away_from_it_until_the_deadline()
+-> Result<()> {
+    let (mut node, mut gateway, mut feed, mut link, mut stats, held) = cut_off_and_long()?;
+    let sent_before = gateway.submitted_count();
+
+    // Flat by t(25): every further buy moves the net away from the target.
+    let hedge = VerifiedHedge::verify(
+        narrowing(CELL, "HP-1", t(11), t(25), venue(), Decimal::ZERO)?,
+        KEY,
+        CELL,
+        t(12),
+    )?;
+    node.cell.apply_hedge(hedge, t(12))?;
+    let applied = sealed(&node, "hedge_applied");
+    assert_eq!(applied.len(), 1, "{applied:?}");
+    let Decision::HedgeApplied {
+        plan_id,
+        deadline,
+        targets,
+    } = &applied[0]
+    else {
+        panic!("not a hedge application: {:?}", applied[0]);
+    };
+    assert_eq!(plan_id, "HP-1");
+    assert_eq!(*deadline, t(25));
+    assert_eq!(targets, &vec![format!("{VENUE}/{}=0", object().as_str())]);
+
+    let narrowed = pass_cut_off(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut link,
+        &mut stats,
+        t(20),
+    )?;
+    assert!(
+        narrowed.orders.is_empty(),
+        "the cell bought away from its hedge target: {:?}",
+        narrowed.orders
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        sent_before,
+        "an order reached the gateway past the hedge target"
+    );
+    let refusals: Vec<&(String, String)> = narrowed
+        .refusals
+        .iter()
+        .filter(|(gate, _)| gate == GATE_HEDGE_TARGET)
+        .collect();
+    assert_eq!(refusals.len(), 1, "{:?}", narrowed.refusals);
+    assert!(
+        refusals[0].1.contains("HP-1") && refusals[0].1.contains(&format!("net of {held} away")),
+        "the refusal does not name the plan and the holding: {}",
+        refusals[0].1
+    );
+    assert_eq!(node.cell.position(&venue(), &object()), held);
+
+    // Past the deadline the narrowing binds nothing and the cell is as
+    // bounded as its envelope leaves it.
+    let lapsed = pass_cut_off(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut link,
+        &mut stats,
+        t(26),
+    )?;
+    assert_eq!(
+        lapsed.orders.len(),
+        1,
+        "the narrowing outlived its deadline: {:?}",
+        lapsed.refusals
+    );
+    Ok(())
+}
+
+/// The acceptance rule. Each of these frames is correctly signed by the key
+/// the cell trusts, which is the point: a signature says who sent a
+/// narrowing, not that this cell can honour it.
+#[test]
+fn a_cell_refuses_a_hedge_frame_for_another_cell_past_its_deadline_for_a_venue_it_is_not_granted_or_adding_exposure()
+-> Result<()> {
+    let (mut node, mut gateway, mut feed, mut link, mut stats, held) = cut_off_and_long()?;
+
+    let elsewhere = VerifiedHedge::verify(
+        narrowing("another-cell", "HP-X", t(11), t(40), venue(), Decimal::ZERO)?,
+        KEY,
+        CELL,
+        t(12),
+    );
+    assert!(
+        elsewhere
+            .as_ref()
+            .is_err_and(|error| error.message().contains("another-cell")),
+        "{elsewhere:?}"
+    );
+    let forged = VerifiedHedge::verify(
+        narrowing(CELL, "HP-F", t(11), t(40), venue(), Decimal::ZERO)?,
+        b"a-key-this-cell-never-held",
+        CELL,
+        t(12),
+    );
+    assert!(forged.is_err(), "{forged:?}");
+
+    let refused = [
+        (
+            "past its deadline",
+            narrowing(CELL, "HP-LATE", t(1), t(12), venue(), Decimal::ZERO)?,
+        ),
+        (
+            "no live envelope",
+            narrowing(
+                CELL,
+                "HP-VENUE",
+                t(11),
+                t(40),
+                VenueId::new("XNYS"),
+                Decimal::ZERO,
+            )?,
+        ),
+        (
+            "between the holding and zero",
+            narrowing(CELL, "HP-ADD", t(11), t(40), venue(), held + dec!("1"))?,
+        ),
+        (
+            "between the holding and zero",
+            narrowing(CELL, "HP-FLIP", t(11), t(40), venue(), dec!("-1"))?,
+        ),
+    ];
+    for (index, (why, frame)) in refused.into_iter().enumerate() {
+        let plan = frame.plan_id.clone();
+        let verified = VerifiedHedge::verify(frame, KEY, CELL, t(12))?;
+        let outcome = node.cell.apply_hedge(verified, t(12));
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|error| error.message().contains(why)),
+            "{plan}: {outcome:?}"
+        );
+        let journaled: Vec<Decision> = sealed(&node, "refused")
+            .into_iter()
+            .filter(|decision| {
+                matches!(decision, Decision::Refused { gate, reason }
+                    if gate == GATE_HEDGE_FRAME && reason.contains(&plan))
+            })
+            .collect();
+        assert_eq!(
+            journaled.len(),
+            1,
+            "{plan} (frame {index}) is not journaled"
+        );
+    }
+    assert!(sealed(&node, "hedge_applied").is_empty());
+    assert!(node.cell.live_hedge(t(12)).is_none());
+
+    // Nothing was applied, so the cell still decides alone: it buys.
+    let free = pass_cut_off(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut link,
+        &mut stats,
+        t(20),
+    )?;
+    assert_eq!(free.orders.len(), 1, "{:?}", free.refusals);
+
+    // A newer plan applies; the older one replayed after it does not put
+    // its target back.
+    let held = node.cell.position(&venue(), &object());
+    let newer = VerifiedHedge::verify(
+        narrowing(CELL, "HP-2", t(22), t(60), venue(), held)?,
+        KEY,
+        CELL,
+        t(23),
+    )?;
+    node.cell.apply_hedge(newer, t(23))?;
+    let replay = VerifiedHedge::verify(
+        narrowing(CELL, "HP-1", t(21), t(60), venue(), Decimal::ZERO)?,
+        KEY,
+        CELL,
+        t(24),
+    )?;
+    let outcome = node.cell.apply_hedge(replay, t(24));
+    assert!(
+        outcome
+            .as_ref()
+            .is_err_and(|error| error.message().contains("at or behind")),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        node.cell.live_hedge(t(24)).map(VerifiedHedge::plan_id),
+        Some("HP-2")
+    );
+    Ok(())
+}
