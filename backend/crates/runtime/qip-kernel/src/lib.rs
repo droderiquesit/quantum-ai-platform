@@ -67,6 +67,7 @@ pub mod fusion;
 pub mod hedge;
 pub mod hedge_review;
 pub mod lattice_stage;
+pub mod limit_narrowing;
 pub mod market_factory_stage;
 pub mod model_serving;
 pub mod model_tournament;
