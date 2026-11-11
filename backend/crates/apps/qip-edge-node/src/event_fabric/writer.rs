@@ -254,6 +254,7 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::HaltChanged { .. }
         | Decision::PolicyApplied { .. }
         | Decision::CapitalRenewed { .. }
+        | Decision::HedgeApplied { .. }
         | Decision::CyclePathAssigned { .. }
         | Decision::PathExtensionChecked { .. }
         | Decision::CycleCommitted { .. }

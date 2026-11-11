@@ -283,6 +283,17 @@ pub enum Decision {
         halted: bool,
         narrowed: Vec<String>,
     },
+    /// A verified hedge narrowing was applied (ADR 0126 decision 4).
+    ///
+    /// The moment what the cell will refuse changed, recorded for the reason
+    /// [`Self::CapitalRenewed`] is: "why did this cell stop adding to that
+    /// position" has to be answerable from the journal alone. `targets` are
+    /// `venue/instrument=net`, in the order the narrowing stated them.
+    HedgeApplied {
+        plan_id: String,
+        deadline: Timestamp,
+        targets: Vec<String>,
+    },
     /// A capital envelope the centre issued was verified and installed.
     ///
     /// Recorded like a decision because it is one: it is the moment the cell's
@@ -749,6 +760,7 @@ impl Decision {
             Self::HaltChanged { .. } => "halt_changed",
             Self::PolicyApplied { .. } => "policy_applied",
             Self::CapitalRenewed { .. } => "capital_renewed",
+            Self::HedgeApplied { .. } => "hedge_applied",
             Self::CrossedInternally { .. } => "crossed_internally",
             Self::CyclePathAssigned { .. } => "cycle_path_assigned",
             Self::PathExtensionChecked { .. } => "path_extension_checked",

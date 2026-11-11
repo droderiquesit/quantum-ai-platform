@@ -174,6 +174,9 @@ pub struct MeshTick {
     pub policies: Vec<u64>,
     /// Halt commands applied this tick.
     pub halts: usize,
+    /// Hedge narrowings applied this tick, by plan id. One the cell
+    /// refused is in `refused` with its reason.
+    pub hedges: Vec<String>,
     /// Set when the policy poll itself failed.
     pub policy_poll_error: Option<String>,
     /// What the arbitrage installer did this tick, when the node has one.
@@ -198,6 +201,7 @@ impl Default for MeshTick {
             poll_error: None,
             policies: Vec::new(),
             halts: 0,
+            hedges: Vec::new(),
             policy_poll_error: None,
             desk: None,
             plan: None,
@@ -577,6 +581,19 @@ pub fn apply_inbound(
                     Err(error) => tick
                         .refused
                         .push(format!("policy {sequence}: {}", error.message())),
+                }
+            }
+            // Narrowings after capital and policy: a target is judged
+            // against the envelopes and the book the cell holds once this
+            // poll's grants are in, and a narrowing can only refuse, so
+            // applying it last costs nothing it could have prevented.
+            for hedge in batch.hedges {
+                let plan = hedge.plan_id().to_string();
+                match cell.apply_hedge(hedge, now) {
+                    Ok(()) => tick.hedges.push(plan),
+                    Err(error) => tick
+                        .refused
+                        .push(format!("hedge {plan}: {}", error.message())),
                 }
             }
             for refusal in batch.refused {

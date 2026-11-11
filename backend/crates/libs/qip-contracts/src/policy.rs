@@ -1508,6 +1508,171 @@ impl HaltCommand {
     }
 }
 
+/// One instrument's target in a [`HedgeNarrowing`]: the signed net quantity
+/// the centre's hedge plan wants the cell to move toward at one venue.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HedgeTarget {
+    pub venue: crate::venue::VenueId,
+    pub object_id: qip_core::ObjectId,
+    /// Signed, in the instrument's own units: bought positive, sold
+    /// negative, zero for flat. The cell refuses a target that is not
+    /// between zero and what it holds, because that is the only direction
+    /// this frame may move a cell (ADR 0126 decision 4).
+    pub target_net: Decimal,
+}
+
+/// A hedge plan as it reaches one cell: a narrowing, never an order
+/// (ADR 0126 decision 4, R12-CAPITAL-10098).
+///
+/// `qip_contracts::control::HedgePlan` stays the centre's plan. This is the
+/// part of it that binds a cell: which plan, which instruments, what net
+/// each should fall to, and until when. It carries no limit, no venue grant
+/// and no quantity to trade, so there is nothing in it a cell could read as
+/// authority to send an order its envelope would refuse; the cell applies
+/// it by refusing what moves away from a target and may refuse the frame
+/// whole.
+///
+/// Signed under the `envelope` class because it is capital authority, with
+/// a payload that begins `hedge|` so that it can never verify as an
+/// envelope under the same key: an envelope's payload begins with a
+/// strategy id and carries no length prefix.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HedgeNarrowing {
+    /// The one cell this narrowing is for.
+    pub cell: String,
+    /// The `HedgePlan::plan_id` this states for the cell.
+    pub plan_id: String,
+    /// When the centre decided. A cell holds the latest by this instant and
+    /// refuses one at or behind it, so a replayed older frame cannot put
+    /// back a target a newer one replaced.
+    pub issued_at: Timestamp,
+    /// The instant the targets stop binding. After it the cell is exactly
+    /// as bounded as its envelope leaves it.
+    pub deadline: Timestamp,
+    /// At least one, and at most one per venue and instrument.
+    pub targets: Vec<HedgeTarget>,
+    /// Hex MAC or asymmetric signature over [`Self::signing_payload`].
+    /// Empty until signed.
+    pub signature: String,
+}
+
+impl HedgeNarrowing {
+    pub fn new(
+        cell: impl Into<String>,
+        plan_id: impl Into<String>,
+        issued_at: Timestamp,
+        deadline: Timestamp,
+        targets: Vec<HedgeTarget>,
+    ) -> Self {
+        Self {
+            cell: cell.into(),
+            plan_id: plan_id.into(),
+            issued_at,
+            deadline,
+            targets,
+            signature: String::new(),
+        }
+    }
+
+    /// Refuses a narrowing nobody could apply: no cell, no plan, no target,
+    /// a deadline not after its issue, or two targets for one instrument at
+    /// one venue (which of the two binds would then depend on the order a
+    /// reader happened to take them in).
+    pub fn check(&self) -> Result<()> {
+        if self.cell.is_empty() {
+            return Err(Error::invalid(
+                "a hedge narrowing names no cell; address it to exactly one",
+            ));
+        }
+        if self.plan_id.is_empty() {
+            return Err(Error::invalid(
+                "a hedge narrowing names no plan; carry the HedgePlan's plan_id",
+            ));
+        }
+        if self.deadline <= self.issued_at {
+            return Err(Error::invalid(format!(
+                "hedge narrowing {} has a deadline at or before its issue; state when the \
+                 targets stop binding",
+                self.plan_id
+            )));
+        }
+        if self.targets.is_empty() {
+            return Err(Error::invalid(format!(
+                "hedge narrowing {} names no target; a narrowing of nothing is not sent",
+                self.plan_id
+            )));
+        }
+        let mut seen = BTreeSet::new();
+        for target in &self.targets {
+            if target.venue.as_str().is_empty() || target.object_id.as_str().is_empty() {
+                return Err(Error::invalid(format!(
+                    "hedge narrowing {} has a target with no venue or no instrument",
+                    self.plan_id
+                )));
+            }
+            if !seen.insert((target.venue.as_str(), target.object_id.as_str())) {
+                return Err(Error::invalid(format!(
+                    "hedge narrowing {} names {} at {} twice; state one target per instrument \
+                     and venue",
+                    self.plan_id,
+                    target.object_id.as_str(),
+                    target.venue.as_str()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The bytes the signature is taken over: every field, the free-text
+    /// ones length-prefixed and the target count stated, so no two different
+    /// narrowings share a payload.
+    pub fn signing_payload(&self) -> String {
+        let mut out = format!(
+            "hedge|{}|{}|{}|{}|{}",
+            length_prefixed(&self.cell),
+            length_prefixed(&self.plan_id),
+            self.issued_at.as_secs(),
+            self.deadline.as_secs(),
+            self.targets.len()
+        );
+        for target in &self.targets {
+            out.push_str(&format!(
+                "|{}|{}|{}",
+                length_prefixed(target.venue.as_str()),
+                length_prefixed(target.object_id.as_str()),
+                target.target_net
+            ));
+        }
+        out
+    }
+
+    /// Sign with the shared trust root, refusing an empty key and a
+    /// narrowing [`Self::check`] refuses.
+    pub fn signed(mut self, key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a hedge narrowing cannot be signed with an empty key; the trust root is missing",
+            ));
+        }
+        self.check()?;
+        self.signature = to_hex(&hmac_sha256(key, self.signing_payload().as_bytes()));
+        Ok(self)
+    }
+
+    /// Sign under the `envelope` key (ADR 0110, ADR 0126 decision 4).
+    pub fn signed_by(mut self, signer: &dyn crate::trust::ArtefactSigner) -> Result<Self> {
+        self.check()?;
+        self.signature = crate::trust::sign_artefact(
+            signer,
+            crate::trust::ArtefactClass::Envelope,
+            self.signing_payload().as_bytes(),
+        )?;
+        Ok(self)
+    }
+}
+
 /// A policy frame for deterministic enforcement. One of seventeen packets in the
 /// policy broadcast carrying a specific gate's decision logic and veto conditions.
 ///

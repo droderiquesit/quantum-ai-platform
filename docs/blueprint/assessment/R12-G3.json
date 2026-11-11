@@ -2213,14 +2213,21 @@
   {
     "id": "R12-CAPITAL-10098",
     "status": "PARTIAL",
-    "current": "Signed CapitalEnvelopes reach cells; kernel hedge.rs produces a HedgePlan centrally.",
+    "current": "Signed CapitalEnvelopes reach cells; kernel hedge.rs produces a HedgePlan centrally. A hedge plan can now travel down as a narrowing: qip_contracts::policy::HedgeNarrowing (cell, plan id, issue instant, deadline, one signed target net per venue and instrument), framed as qip_mesh::spine::HedgeFrame and sent by PolicyCourier::send_hedge, verified at the cell under the envelope class (qip_edge::hedge::VerifiedHedge, routed by the policy downlink on its own topic) and applied by Cell::apply_hedge, which refuses and journals a frame past its deadline, at or behind the one applied, naming a venue no live envelope grants, or with a target not between the holding and zero. While a target is live the cell refuses, under gate hedge_target, an order that leaves the instrument's confirmed net further from the target or past it; it authorises nothing and raises no limit.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/spine.rs:95 CapitalGrantFrame",
-      "backend/crates/edge/qip-edge/src/reservation.rs:1-25 RegionAllocation",
-      "backend/crates/libs/qip-contracts/src/policy.rs:550 RiskEnvelopeSnapshot",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
+      "backend/crates/libs/qip-contracts/src/policy.rs HedgeNarrowing, HedgeTarget",
+      "backend/crates/services/qip-mesh/src/spine.rs HedgeFrame, PolicyCourier::send_hedge",
+      "backend/crates/edge/qip-edge/src/hedge.rs VerifiedHedge, moves_away, is_toward_zero, GATE_HEDGE_TARGET, GATE_HEDGE_FRAME",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::apply_hedge, hedge_refusal",
+      "backend/crates/edge/qip-edge/src/mesh.rs HedgeTopic, PolicyBatch::hedges, absorb_hedge",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs apply_inbound (MeshTick::hedges)",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs a_cut_off_cell_applies_a_hedge_target_and_refuses_an_order_moving_away_from_it_until_the_deadline",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs a_cell_refuses_a_hedge_frame_for_another_cell_past_its_deadline_for_a_venue_it_is_not_granted_or_adding_exposure",
+      "backend/crates/edge/qip-edge/tests/downlink_source.rs a_hedge_narrowing_is_delivered_only_when_signed_for_this_cell_and_unedited",
+      "backend/crates/services/qip-mesh/tests/control_frame_schemas.rs a_hedge_frame_carries_the_signed_narrowing_bare_on_a_topic_no_grant_travels_on",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs a_hedge_narrowings_signature_covers_its_cell_plan_instants_and_every_target"
     ],
-    "gap": "Decided by ADR 0126 (accepted 2026-10-18): The downward capital authority is the signed CapitalEnvelope alone; it gains a drawdown bound, the CapitalGrant is stated from it rather than sent beside it, and a hedge plan reaches a cell only as a narrowing frame it may refuse. Code left: a signed HedgeFrame on the qip-mesh spine and the cell's narrowing acceptance rule, with a qip-edge-node/tests/degraded.rs test that a cell refuses an order moving away from the hedge target.",
+    "gap": "Decided by ADR 0126 (accepted 2026-10-18). 2026-11-11: the three parts the ADR lane named are built and tested (the signed frame on the spine, the cell's acceptance rule, the degraded.rs refusal). What remains, and why the row is not COMPLETE: nothing at the centre produces a narrowing. No code derives per-cell targets from a HedgePlan (the plan states hedge instruments and quantities, not a cell's target net, and the centre would have to read each cell's reported position to state one), and PolicyCourier::send_hedge has no caller in qip-api or any binary, so no running cell is ever sent one. Also untested: the same gate on an arbitrage cycle leg (Cell::admit_leg) and the node's apply_inbound arm. The gate measures confirmed position only; resting orders are not netted in, which the code states.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2228,10 +2235,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded",
+    "verification": "cd backend && cargo test -p qip-edge-node --test degraded hedge; cargo test -p qip-edge --test downlink_source hedge; cargo test -p qip-mesh --test control_frame_schemas; cargo test -p qip-contracts --test control_contracts hedge_narrowing",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: HedgePlan not distributed to regions; not over Fabric."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: HedgePlan not distributed to regions; not over Fabric. 2026-11-11 batch l1-c1-01: built the contract, frame, downlink arm, cell rule and tests; stays PARTIAL because no centre producer or caller exists. Mutations that fired, each restored with cp and cmp: the directional gate disabled (degraded test fails: the cell bought away from its hedge target); is_toward_zero always true (HP-ADD applied); is_live always true (HP-LATE applied, and the narrowing outlived its deadline); the venue-grant check dropped (HP-VENUE applied); the replay check dropped; the cell address unchecked (a narrowing for another-cell verified, and the downlink test fails); the downlink not routing the hedge topic (no hedge delivered); the signing payload omitting targets (two narrowings share a signature). Touched crates qip-contracts, qip-edge, qip-edge-node, qip-mesh: 1382 passed, 0 failed."
   },
   {
     "id": "R12-REASON-10099",

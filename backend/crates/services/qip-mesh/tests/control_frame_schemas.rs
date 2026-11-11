@@ -187,3 +187,44 @@ fn the_three_p0_control_frames_each_register_under_their_own_topic() -> qip_core
     }
     Ok(())
 }
+
+/// ADR 0126 decision 4: a hedge plan travels down as one frame, and the
+/// payload on the wire is the signed narrowing itself. If the frame wrapped
+/// it, or framed it on a topic a capital downlink reads, a cell would decode
+/// it as nothing or offer it to the envelope decoder.
+#[test]
+fn a_hedge_frame_carries_the_signed_narrowing_bare_on_a_topic_no_grant_travels_on()
+-> qip_core::error::Result<()> {
+    use qip_contracts::policy::{HedgeNarrowing, HedgeTarget};
+    use qip_events::EventBody;
+    use qip_mesh::spine::HedgeFrame;
+
+    let narrowing = HedgeNarrowing::new(
+        "london-1",
+        "HP-1",
+        qip_core::Timestamp::from_secs(10),
+        qip_core::Timestamp::from_secs(600),
+        vec![HedgeTarget {
+            venue: qip_contracts::venue::VenueId::new("XLON"),
+            object_id: qip_core::ObjectId::from_string("OBJ-HEDGED".to_string()),
+            target_net: qip_core::Decimal::ZERO,
+        }],
+    )
+    .signed(b"a-test-envelope-key")?;
+    let wire = serde_json::to_value(HedgeFrame(narrowing.clone()))
+        .map_err(|error| qip_core::error::Error::invalid(error.to_string()))?;
+    let decoded: HedgeNarrowing = serde_json::from_value(wire)
+        .map_err(|error| qip_core::error::Error::invalid(error.to_string()))?;
+    assert_eq!(decoded, narrowing);
+    assert_eq!(decoded.signing_payload(), narrowing.signing_payload());
+    assert_ne!(HedgeFrame::TOPIC, CapitalGrantFrame::TOPIC);
+    assert_ne!(HedgeFrame::TOPIC, PolicyFrame::TOPIC);
+    assert_ne!(HedgeFrame::TOPIC, HaltFrame::TOPIC);
+    assert!(
+        HedgeFrame(narrowing.clone())
+            .idempotency_key()
+            .is_some_and(|key| key.contains(&narrowing.signature)),
+        "a redelivered narrowing must be one message"
+    );
+    Ok(())
+}
