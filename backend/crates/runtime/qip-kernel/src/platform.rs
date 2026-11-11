@@ -102,9 +102,9 @@ use qip_capital_fabric::wallet::{
 };
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
-    FxRates, LocationBalance, PlanScore, PrePositioningPlan, PrePositioningPlanner,
-    PrePositioningRequest, RealisedDemand, Region as CapitalRegion, SettlementBook,
-    SettlementCalendar, SettlementConvention, TransferCostModel,
+    LocationBalance, PlanScore, PrePositioningPlan, PrePositioningPlanner, PrePositioningRequest,
+    RealisedDemand, Region as CapitalRegion, SettlementBook, SettlementCalendar,
+    SettlementConvention, TransferCostModel,
 };
 use qip_chain::{
     BridgeFailure, BridgeLedger, BridgeTransfer, ChainState, ChainUpdate, Confirmations,
@@ -930,6 +930,11 @@ pub struct Platform {
     /// each pass would be a second reading of the universe that could disagree
     /// with the one the log recorded.
     credit: crate::valuation::CreditRegister,
+    /// The financing half of the valuation plane: every FX forward and repo
+    /// in the universe valued from the universe's own records, and the spot
+    /// table balances are converted at. Derived once at assembly beside
+    /// `credit`, whose sovereign curves it reads.
+    financing: crate::financing::FinancingRegister,
     /// What the event log's first record says about the universe this
     /// platform was assembled from. Kept so the overview can say it without
     /// decoding the log; the log is the record.
@@ -6060,6 +6065,7 @@ impl Platform {
         // — a change to what the platform trades, which belongs in a change
         // that says so rather than arriving inside a valuation engine.
         let credit = crate::valuation::CreditRegister::from_universe(&universe, now);
+        let financing = crate::financing::FinancingRegister::from_universe(&universe, &credit, now);
         // What the log's first record will say. Taken here, before the
         // universe moves into the desk, and appended below once the log and
         // the journal both exist — but before this function returns, so no
@@ -6506,6 +6512,7 @@ impl Platform {
             illiquid_unmarkable,
             private_forecasts,
             credit,
+            financing,
             universe_assembled,
             universe_history,
             inherited_through,
@@ -14789,6 +14796,10 @@ impl Platform {
         // example of.
         let credit = self.credit.summary();
         let credit_problems = self.credit.problems();
+        // The financing half, on the same terms: a forward or a repo the
+        // register could not value is a problem, not an omission.
+        let financing = self.financing.summary();
+        let financing_problems = self.financing.problems();
         // §9.2's own honest framing — the method the blueprint calls "weak
         // alone, useful as a filter" — means most passes clear no pair at
         // all, and this says so rather than staying silent about a pass
@@ -14955,7 +14966,7 @@ impl Platform {
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                  {contradiction_detail}{contest_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
+                  {contradiction_detail}{contest_detail}{liquidity}{events}{chain}{credit}{financing}{precedence_detail}{crossing_detail}{review_detail}\
                  {second_order_detail}{statistics_detail}{routing_detail}{federation_detail}\
                  {now_detail}",
                 state.object_count,
@@ -14967,6 +14978,9 @@ impl Platform {
             ),
         );
         for problem in credit_problems {
+            outcome = outcome.with_problem(problem);
+        }
+        for problem in financing_problems {
             outcome = outcome.with_problem(problem);
         }
         if let Some(problem) = second_order_problem {
@@ -18420,6 +18434,14 @@ impl Platform {
     /// claim whose terms would not support one.
     pub fn credit_register(&self) -> &crate::valuation::CreditRegister {
         &self.credit
+    }
+
+    /// The financing register derived from the universe at assembly: every FX
+    /// forward carried from its spot pair along the two sovereign curves,
+    /// every repo valued from its own terms, and the reason for each one
+    /// that could not be.
+    pub fn financing_register(&self) -> &crate::financing::FinancingRegister {
+        &self.financing
     }
 
     /// The unfunded private commitments this book is on the hook for.
@@ -28523,7 +28545,11 @@ impl Platform {
                 .initial_equity
                 .checked_div(Decimal::from_int(2))
                 .unwrap_or(self.config.initial_equity),
-            FxRates::new(Currency::USD),
+            // The universe's own spot pairs against the dollar, not the
+            // dollar alone: a forecast in a currency the universe quotes is
+            // converted at that quote, and one it does not quote is still
+            // refused by `FxRates::to_base` rather than assumed at parity.
+            self.financing.fx_rates(Currency::USD)?,
         )?;
         for forecast in self.forecast_capital_demand(now, horizon) {
             // Wire the wallet's reconciled on-hand balance for this location

@@ -1,0 +1,411 @@
+//! The valuation plane's financing half: FX forwards, repos and the spot
+//! rates a balance is converted at.
+//!
+//! # What this closes
+//!
+//! [`covered_interest_forward`] priced an FX forward and had no production
+//! caller: nothing supplied it a tenor or the two currencies' rates, so the
+//! `ForeignExchange` record's claim that a forward is "spot carried along the
+//! two curves" was true of a function and of no instrument. A repo was an
+//! instrument nothing valued. And the kernel converted balances through an
+//! [`FxRates`] table that priced the dollar and nothing else, so a balance in
+//! any other currency was refused however many spot pairs the universe held.
+//!
+//! This register is the caller. It is derived at assembly from the universe
+//! and the [`CreditRegister`]'s sovereign curves, and the UNDERSTAND stage
+//! reports it — including, as stage problems, every forward and repo it could
+//! not value and why. A register that valued what it could and stayed silent
+//! about the rest would read as coverage of the whole class.
+//!
+//! # Where every figure comes from
+//!
+//! Nothing here is a constant of this module. The spot is the price of the
+//! `FxSpot` instrument on the same pair; the tenor is the forward's own
+//! `settlement_date`; each currency's rate is read off that currency's
+//! sovereign curve at that tenor; a repo's rate, haircut, maturity and
+//! collateral are its own [`RepoDetails`], and the collateral's value is the
+//! collateral instrument's price. A figure the universe does not carry is a
+//! refusal naming the missing record, never a default.
+//!
+//! # Money and statistics
+//!
+//! A curve's zero rate is a statistic and is `f64`. A forward outright, a
+//! repo's cash and its interest are money and are [`Decimal`]. The crossing
+//! points are [`simple_rate`] and [`fraction`], commented at each.
+
+use std::collections::BTreeMap;
+
+use qip_capital_fabric::FxRates;
+use qip_core::error::{Error, Result};
+use qip_core::{Currency, Decimal, ObjectId, Timestamp};
+use qip_financial::asset_class::InstrumentType;
+use qip_financial::extensions::{Extension, FxDetails, RepoDetails};
+use qip_financial::object::FinancialObject;
+use qip_financial::universe::Universe;
+
+use crate::asset_class_registry::covered_interest_forward;
+use crate::valuation::CreditRegister;
+
+/// Quarter-days in a year on the 365.25-day convention the platform's tenors
+/// use (`valuation.rs` builds every sovereign curve on it).
+///
+/// A rate read off a curve built on 365.25 days must accrue over a year of
+/// 365.25 days, or the forward disagrees with the curve it was priced from.
+/// Held in quarter-days because [`covered_interest_forward`] takes its day
+/// count and basis as whole numbers and 365.25 is not one.
+const QUARTER_DAYS_PER_YEAR: u32 = 1461;
+
+const MILLIS_PER_DAY: i64 = 86_400_000;
+
+/// One FX forward, valued by covered interest parity from the universe's own
+/// records.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FxForwardValuation {
+    pub base: Currency,
+    pub quote: Currency,
+    /// The `FxSpot` instrument the spot was read from.
+    pub spot_object: String,
+    pub spot: Decimal,
+    /// Whole days from the assembly instant to the forward's settlement.
+    pub days: u32,
+    /// Simple rate of the quote (domestic) currency over the tenor.
+    pub domestic_rate: Decimal,
+    /// Simple rate of the base (foreign) currency over the tenor.
+    pub foreign_rate: Decimal,
+    /// Units of quote per unit of base for settlement at the tenor.
+    pub outright: Decimal,
+}
+
+/// One repo, valued per unit of its collateral.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoValuation {
+    pub collateral_object: String,
+    pub counterparty: String,
+    /// True when the platform lends cash and takes the collateral.
+    pub is_reverse: bool,
+    /// The collateral instrument's price, in `currency`.
+    pub collateral_value: Decimal,
+    pub currency: Currency,
+    /// Cash exchanged on the near leg: collateral value less the haircut.
+    pub cash: Decimal,
+    /// Whole days from the assembly instant to the repo's maturity.
+    pub days: u32,
+    /// Interest on `cash` at the repo rate to maturity.
+    pub interest: Decimal,
+    /// Cash exchanged back on the far leg: `cash + interest`.
+    pub repurchase: Decimal,
+}
+
+/// The financing valuations of one universe, as it stood at assembly.
+///
+/// `BTreeMap` throughout: the summary and the problems are decided by
+/// iterating these, and a register that reordered would tell a replay a
+/// different sentence from the same facts.
+#[derive(Clone, Debug, Default)]
+pub struct FinancingRegister {
+    /// `(base, quote)` to the spot instrument's id and price.
+    spots: BTreeMap<(Currency, Currency), (String, Decimal)>,
+    forwards: BTreeMap<String, FxForwardValuation>,
+    repos: BTreeMap<String, RepoValuation>,
+    /// Object id to why it could not be valued. Held rather than dropped: an
+    /// unvalued forward that vanished would read as a universe with none.
+    refusals: BTreeMap<String, String>,
+}
+
+impl FinancingRegister {
+    /// Derive the register from the universe as it stood at `as_of`, reading
+    /// currency rates off `credit`'s sovereign curves.
+    ///
+    /// Takes no clock, for the reason [`CreditRegister::from_universe`] gives:
+    /// a replay builds the same register from the same universe.
+    pub fn from_universe(universe: &Universe, credit: &CreditRegister, as_of: Timestamp) -> Self {
+        let mut register = Self::default();
+        for object in universe.iter() {
+            if object.instrument_type != InstrumentType::FxSpot {
+                continue;
+            }
+            // A spot pair names its two currencies in its own record. One
+            // that does not is not guessed from its symbol.
+            if let Extension::Fx(fx) = &object.extension
+                && object.price.is_positive()
+            {
+                register
+                    .spots
+                    .entry((fx.base_currency, fx.quote_currency))
+                    .or_insert_with(|| (object.object_id.as_str().to_string(), object.price));
+            }
+        }
+        for object in universe.iter() {
+            let id = object.object_id.as_str().to_string();
+            match (&object.instrument_type, &object.extension) {
+                (InstrumentType::FxForward, Extension::Fx(fx)) => {
+                    match register.value_forward(fx, credit, as_of) {
+                        Ok(valuation) => {
+                            register.forwards.insert(id, valuation);
+                        }
+                        Err(error) => {
+                            register.refusals.insert(id, error.to_string());
+                        }
+                    }
+                }
+                (InstrumentType::Repo, Extension::Repo(repo)) => {
+                    match value_repo(repo, universe, as_of) {
+                        Ok(valuation) => {
+                            register.repos.insert(id, valuation);
+                        }
+                        Err(error) => {
+                            register.refusals.insert(id, error.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        register
+    }
+
+    fn value_forward(
+        &self,
+        fx: &FxDetails,
+        credit: &CreditRegister,
+        as_of: Timestamp,
+    ) -> Result<FxForwardValuation> {
+        let settlement = fx.settlement_date.ok_or_else(|| {
+            Error::invalid(
+                "the forward states no settlement date, so it has no tenor to carry spot over; \
+                 state `settlement_date` on its FX details",
+            )
+        })?;
+        let days = whole_days(as_of, settlement).ok_or_else(|| {
+            Error::invalid(
+                "the forward settles less than a whole day after the valuation instant, which is \
+                 a spot and not a forward; value it from the spot pair",
+            )
+        })?;
+        let (spot_object, spot) = self
+            .spots
+            .get(&(fx.base_currency, fx.quote_currency))
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "no FxSpot instrument on {}/{} is in the universe, so there is no spot to \
+                     carry; add the spot pair, a forward is not priced from an assumed spot",
+                    fx.base_currency, fx.quote_currency
+                ))
+            })?;
+        let domestic_rate = simple_rate(credit, fx.quote_currency, days)?;
+        let foreign_rate = simple_rate(credit, fx.base_currency, days)?;
+        let outright = covered_interest_forward(
+            *spot,
+            domestic_rate,
+            foreign_rate,
+            quarter_days(days)?,
+            QUARTER_DAYS_PER_YEAR,
+        )?;
+        Ok(FxForwardValuation {
+            base: fx.base_currency,
+            quote: fx.quote_currency,
+            spot_object: spot_object.clone(),
+            spot: *spot,
+            days,
+            domestic_rate,
+            foreign_rate,
+            outright,
+        })
+    }
+
+    /// The forward valued under `object_id`, if it could be.
+    pub fn forward(&self, object_id: &str) -> Option<&FxForwardValuation> {
+        self.forwards.get(object_id)
+    }
+
+    /// The repo valued under `object_id`, if it could be.
+    pub fn repo(&self, object_id: &str) -> Option<&RepoValuation> {
+        self.repos.get(object_id)
+    }
+
+    pub fn forwards(&self) -> impl Iterator<Item = (&String, &FxForwardValuation)> {
+        self.forwards.iter()
+    }
+
+    pub fn repos(&self) -> impl Iterator<Item = (&String, &RepoValuation)> {
+        self.repos.iter()
+    }
+
+    /// Object id to why it could not be valued.
+    pub fn refusals(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.refusals.iter()
+    }
+
+    /// The universe's spot pairs as a conversion table against `base`.
+    ///
+    /// Only pairs quoted directly against `base` are priced: a pair with
+    /// `base` as its quote currency prices its base currency at the spot, and
+    /// a pair with `base` as its base currency prices its quote currency at
+    /// the reciprocal. A cross is not triangulated here, because a rate built
+    /// through a third currency is a figure no instrument in the universe
+    /// quotes; a currency with no direct pair stays unpriced and
+    /// [`FxRates::to_base`] refuses it, as it did before this existed.
+    pub fn fx_rates(&self, base: Currency) -> Result<FxRates> {
+        let mut rates = FxRates::new(base);
+        for ((pair_base, pair_quote), (object, spot)) in &self.spots {
+            if *pair_quote == base && *pair_base != base {
+                rates = rates.with_rate(*pair_base, *spot)?;
+            } else if *pair_base == base && *pair_quote != base {
+                let reciprocal = Decimal::ONE.checked_div(*spot).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the reciprocal of spot {spot} on {object} overflowed"
+                    ))
+                })?;
+                rates = rates.with_rate(*pair_quote, reciprocal)?;
+            }
+        }
+        Ok(rates)
+    }
+
+    /// One clause for the UNDERSTAND stage's detail; empty when the universe
+    /// holds no forward and no repo.
+    pub fn summary(&self) -> String {
+        if self.forwards.is_empty() && self.repos.is_empty() && self.refusals.is_empty() {
+            return String::new();
+        }
+        format!(
+            "; financing register values {} FX forward(s) by covered interest parity and {} \
+             repo(s), {} unvalued",
+            self.forwards.len(),
+            self.repos.len(),
+            self.refusals.len()
+        )
+    }
+
+    /// Every forward and repo that could not be valued, as a stage problem.
+    pub fn problems(&self) -> Vec<String> {
+        self.refusals
+            .iter()
+            .map(|(id, reason)| format!("financing instrument {id} is unvalued: {reason}"))
+            .collect()
+    }
+}
+
+/// Whole days from `from` to `to`; `None` when there is not one.
+fn whole_days(from: Timestamp, to: Timestamp) -> Option<u32> {
+    if to <= from {
+        return None;
+    }
+    let days = to.since(from).as_millis() / MILLIS_PER_DAY;
+    u32::try_from(days).ok().filter(|days| *days > 0)
+}
+
+fn quarter_days(days: u32) -> Result<u32> {
+    days.checked_mul(4)
+        .ok_or_else(|| Error::numeric(format!("a tenor of {days} days overflowed")))
+}
+
+/// A statistic entering money arithmetic, refused when it is not a number.
+///
+/// The crossing point for a haircut, a repo rate and a curve rate: each is an
+/// `f64` in its record and is applied to a [`Decimal`] amount here.
+fn fraction(value: f64, what: &str) -> Result<Decimal> {
+    if !value.is_finite() {
+        return Err(Error::invalid(format!(
+            "the {what} is {value}, which is not a number; state it as a fraction"
+        )));
+    }
+    Decimal::from_f64(value)
+        .ok_or_else(|| Error::numeric(format!("the {what} of {value} does not fit a decimal")))
+}
+
+/// The simple rate equal to `currency`'s sovereign zero rate over `days`.
+///
+/// The curve's rate is continuously compounded
+/// ([`qip_market::curve::TermStructure::discount_factor`]) and
+/// [`covered_interest_forward`] takes simple money-market rates, so the rate
+/// is restated as the simple rate that grows a deposit by the same factor:
+/// `(1 / discount_factor − 1) / t`. Passing the zero rate through unchanged
+/// would misprice every forward by the difference between the two
+/// compoundings. This is the `f64`-to-`Decimal` crossing for a curve rate.
+fn simple_rate(credit: &CreditRegister, currency: Currency, days: u32) -> Result<Decimal> {
+    let curve = credit.curve(currency).ok_or_else(|| {
+        Error::not_found(format!(
+            "no {currency} sovereign curve is in the universe, so there is no {currency} rate at \
+             the forward's tenor; add {currency} sovereign benchmarks, a rate is not assumed"
+        ))
+    })?;
+    let years = f64::from(days) * 4.0 / f64::from(QUARTER_DAYS_PER_YEAR);
+    let discount = curve.discount_factor(years);
+    if !(discount.is_finite() && discount > 0.0) {
+        return Err(Error::numeric(format!(
+            "the {currency} curve's discount factor at {days} days is {discount}"
+        )));
+    }
+    fraction((1.0 / discount - 1.0) / years, "simple rate off the curve")
+}
+
+/// Value one repo per unit of its collateral, from its own terms.
+///
+/// `cash = collateral price × (1 − haircut)`, and
+/// `interest = cash × repo_rate × days / 365.25` on the platform's tenor
+/// convention — [`RepoDetails`] states no day count of its own, and the
+/// convention used is the one named beside [`QUARTER_DAYS_PER_YEAR`] rather
+/// than a market convention this record was never shown.
+///
+/// Refused rather than clamped: a haircut outside `[0, 1)` (at one the repo
+/// lends nothing), a rate that is not a number, a maturity not after the
+/// valuation instant, and collateral that is not in the universe or has no
+/// positive price.
+fn value_repo(repo: &RepoDetails, universe: &Universe, as_of: Timestamp) -> Result<RepoValuation> {
+    if !(repo.haircut.is_finite() && (0.0..1.0).contains(&repo.haircut)) {
+        return Err(Error::invalid(format!(
+            "a haircut of {} is outside [0, 1); state it as the fraction of collateral value \
+             withheld",
+            repo.haircut
+        )));
+    }
+    let days = whole_days(as_of, repo.maturity).ok_or_else(|| {
+        Error::invalid(
+            "the repo matures less than a whole day after the valuation instant, so there is no \
+             term to accrue over; a matured repo is settled, not valued",
+        )
+    })?;
+    let collateral: &FinancialObject = universe
+        .get(&ObjectId::from_string(repo.collateral_object.as_str()))
+        .ok_or_else(|| {
+            Error::not_found(format!(
+                "collateral {} is not in the universe, so its value is unknown; add the \
+                 collateral instrument, a repo is not valued against an assumed price",
+                repo.collateral_object
+            ))
+        })?;
+    if !collateral.price.is_positive() {
+        return Err(Error::invalid(format!(
+            "collateral {} is priced at {}, which secures nothing",
+            repo.collateral_object, collateral.price
+        )));
+    }
+    let overflow = || Error::numeric("the repo's cash arithmetic overflowed");
+    let lent_fraction = Decimal::ONE
+        .checked_sub(fraction(repo.haircut, "haircut")?)
+        .ok_or_else(overflow)?;
+    let cash = collateral
+        .price
+        .checked_mul(lent_fraction)
+        .ok_or_else(overflow)?;
+    let year_fraction = Decimal::from_int(i64::from(quarter_days(days)?))
+        .checked_div(Decimal::from_int(i64::from(QUARTER_DAYS_PER_YEAR)))
+        .ok_or_else(overflow)?;
+    let interest = cash
+        .checked_mul(fraction(repo.repo_rate, "repo rate")?)
+        .and_then(|annual| annual.checked_mul(year_fraction))
+        .ok_or_else(overflow)?;
+    let repurchase = cash.checked_add(interest).ok_or_else(overflow)?;
+    Ok(RepoValuation {
+        collateral_object: repo.collateral_object.clone(),
+        counterparty: repo.counterparty.clone(),
+        is_reverse: repo.is_reverse,
+        collateral_value: collateral.price,
+        currency: collateral.currency,
+        cash,
+        days,
+        interest,
+        repurchase,
+    })
+}
