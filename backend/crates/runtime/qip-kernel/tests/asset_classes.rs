@@ -498,6 +498,7 @@ fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
         rebalance_frequency: "quarterly".to_string(),
         divisor: dec!("2"),
         is_total_return: false,
+        constituents: Vec::new(),
     }))
     .provenance(Provenance::synthetic("asset-class-test", start()))
     .build(start())?;
@@ -517,6 +518,7 @@ fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
         participation_rate: 1.0,
         barrier_level: None,
         underlying_object_ids: vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        constituents: Vec::new(),
         issuer: "paper".to_string(),
         greeks: None,
     }))

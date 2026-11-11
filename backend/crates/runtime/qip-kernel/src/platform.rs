@@ -1099,6 +1099,10 @@ pub struct Platform {
     /// Physical-inventory operations queued from the commerce plane, for the
     /// sequence each carries (R12-COMMERCE-5096).
     commerce_inventory_operations: u64,
+    /// The highest sequence a corporate action's ledger operation has
+    /// taken (ADR 0397). Resumed from the log by
+    /// [`Self::requeue_corporate_actions`].
+    corporate_action_operations: u64,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -5290,6 +5294,25 @@ impl EventBody for CommerceInventoryQueued {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// A corporate action applied to the desk's holding, as the
+/// [`qip_contracts::ledger_operation::LedgerOperation`] the ledger books
+/// (ADR 0397, R12-COVERAGE-5099). Journalled before it is queued and
+/// re-queued on resume, as [`CommerceInventoryQueued`] is: the ledger books
+/// each id once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CorporateActionBooked {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+impl EventBody for CorporateActionBooked {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer of [`CorporateActionBooked`], its own origin so a reader of
+/// the shared topic never meets this body under another producer's name.
+const CORPORATE_ACTION_LEDGER_ORIGIN: &str = "kernel/corporate-action-ledger";
+
 /// The producer of [`CommerceInventoryQueued`], its own origin so a reader of
 /// the other `LedgerOperationRecorded` producers never meets this body.
 const COMMERCE_INVENTORY_ORIGIN: &str = "kernel/commerce-inventory";
@@ -6599,6 +6622,7 @@ impl Platform {
             capital_grant_operations: 0,
             subscribed_mandates: BTreeSet::new(),
             commerce_inventory_operations: 0,
+            corporate_action_operations: 0,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -6808,6 +6832,7 @@ impl Platform {
         // Every commerce inventory movement this log recorded, re-queued as
         // written (R12-COMMERCE-5096).
         platform.requeue_commerce_inventory()?;
+        platform.requeue_corporate_actions()?;
         // Every capital grant this log funded or recalled, re-queued as
         // written and in the order written: the plane's envelopes do not
         // survive a restart but the ledger's debt to the books they funded
@@ -8323,6 +8348,96 @@ impl Platform {
             self.desk_operations.push(operation);
         }
         Ok(())
+    }
+
+    /// Re-queue every corporate-action operation the log holds, as written
+    /// and in the order written, and resume the sequence after the highest
+    /// one journalled. The ledger answers a resend of a booked operation
+    /// with a duplicate, so re-sending each books it exactly once.
+    fn requeue_corporate_actions(&mut self) -> Result<()> {
+        let mut recorded = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == CORPORATE_ACTION_LEDGER_ORIGIN
+                && record.event.topic == CorporateActionBooked::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                recorded.push(frame.decode::<CorporateActionBooked>()?.body.operation);
+            }
+        }
+        for operation in recorded {
+            self.corporate_action_operations =
+                self.corporate_action_operations.max(operation.sequence);
+            self.desk_operations.push(operation);
+        }
+        Ok(())
+    }
+
+    /// Queue, for the ledger of record, what one applied corporate action
+    /// did to the desk's book (ADR 0397): `signed` of `unit` into the
+    /// trading account against the venue when positive, out of it when
+    /// negative, nothing when zero.
+    ///
+    /// The book has already moved and the action is already journalled, so
+    /// nothing here can refuse the action. An operation the contract or the
+    /// log will not take is reported as a problem on the cycle and not
+    /// queued: a ledger that silently missed a split would disagree with
+    /// the book by exactly the units nobody could then explain.
+    fn book_corporate_action(&mut self, key: &str, unit: &str, signed: Decimal, now: Timestamp) {
+        use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind, Phase};
+        if signed.is_zero() {
+            return;
+        }
+        let (amount, phase) = if signed.is_positive() {
+            (Some(signed), Phase::Establish)
+        } else {
+            (Decimal::ZERO.checked_sub(signed), Phase::Unwind)
+        };
+        let chain = self.desk_ledger.chain().to_string();
+        let sequence = self.corporate_action_operations + 1;
+        let built = amount
+            .ok_or_else(|| Error::numeric("the corporate action's amount overflowed"))
+            .and_then(|amount| {
+                qip_contracts::validated::Validated::new(LedgerOperationFields {
+                    schema_version: 1,
+                    operation_id: format!("{chain}:corporate-action:{key}"),
+                    origin: chain.clone(),
+                    sequence,
+                    recorded_at: now,
+                    settlement: qip_contracts::ledger::Settlement::Simulated,
+                    kind: OperationKind::CorporateAction {
+                        book: Book {
+                            cell: chain.clone(),
+                            strategy: DESK_STRATEGY.to_string(),
+                        },
+                        venue: self.broker.name().to_string(),
+                        action: key.to_string(),
+                        unit: unit.to_string(),
+                        amount,
+                        phase,
+                    },
+                })
+            })
+            .and_then(|operation| {
+                self.journal_record(
+                    CorporateActionBooked {
+                        operation: operation.clone(),
+                    },
+                    CORPORATE_ACTION_LEDGER_ORIGIN,
+                    now,
+                )
+                .map(|_| operation)
+            });
+        match built {
+            Ok(operation) => {
+                self.corporate_action_operations = sequence;
+                self.desk_operations.push(operation);
+            }
+            Err(error) => self.capture_problems.push(format!(
+                "corporate action {key} moved the desk's book by {signed} {unit} and was not \
+                 queued for the ledger: {}",
+                error.message()
+            )),
+        }
     }
 
     /// Re-queue every mandate subscription the log holds, as written and in
@@ -14676,6 +14791,12 @@ impl Platform {
                 BOOK_ORIGIN,
                 now,
             )?;
+            self.book_corporate_action(
+                key,
+                crate::desk_ledger::DESK_QUOTE_UNIT,
+                dividend_total,
+                now,
+            );
             return Ok(());
         }
 
@@ -14694,6 +14815,15 @@ impl Platform {
         // resume seam here keeps: the log has the record before the book
         // moves, and never a record of an adjustment the book could not take.
         self.capital.lot_after(object, quantity_factor)?;
+        // The units the action adds to the holding, taken before the lot
+        // moves: `quantity × factor − quantity`. None when nothing is held
+        // or the figure cannot be represented; the adjustment below then
+        // refuses or does nothing, and nothing is booked for it.
+        let unit_change = self.capital.positions.get(object).and_then(|lot| {
+            lot.quantity
+                .checked_mul(quantity_factor)
+                .and_then(|after| after.checked_sub(lot.quantity))
+        });
         self.journal_record(
             LotAdjusted {
                 action: key.to_string(),
@@ -14703,7 +14833,11 @@ impl Platform {
             BOOK_ORIGIN,
             now,
         )?;
-        self.adjust_desk_lot(key, object, quantity_factor)
+        self.adjust_desk_lot(key, object, quantity_factor)?;
+        if let Some(change) = unit_change {
+            self.book_corporate_action(key, object, change, now);
+        }
+        Ok(())
     }
 
     /// Take one corporate action's share-count change on [`TrackedCapital`]

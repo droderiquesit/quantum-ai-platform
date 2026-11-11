@@ -876,6 +876,18 @@ pub struct RealAssetDetails {
     pub square_metres: f64,
 }
 
+/// One constituent of an index or basket: the instrument and how many units
+/// of it one unit of the composite holds (ADR 0397).
+///
+/// Units, not a percentage weight: a percentage needs a price to become a
+/// holding, and the price it was struck at is not in the record. Units times
+/// today's price is a value anyone can recompute.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Constituent {
+    pub object_id: String,
+    pub units: Decimal,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct IndexDetails {
     pub methodology: String,
@@ -883,6 +895,11 @@ pub struct IndexDetails {
     pub rebalance_frequency: String,
     pub divisor: Decimal,
     pub is_total_return: bool,
+    /// The index's members. Its level is the sum of units times price over
+    /// these, divided by `divisor`. Empty when the record does not state
+    /// them; the index is then not valued, never valued from a guess.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constituents: Vec<Constituent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -905,6 +922,10 @@ pub struct StructuredProductDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub barrier_level: Option<f64>,
     pub underlying_object_ids: Vec<String>,
+    /// For a basket: the units of each underlying one basket unit holds.
+    /// Empty when the record does not state them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constituents: Vec<Constituent>,
     pub issuer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub greeks: Option<Greeks>,
