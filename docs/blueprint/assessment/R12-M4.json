@@ -300,19 +300,19 @@
   },
   {
     "id": "R12-MODEL-4014",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:401) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:560). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
     "evidence": [
       "backend/crates/services/qip-agency/src/engine.rs:401 execute",
       "backend/crates/services/qip-agency/src/engine.rs:560 counterfactually_supported; :1115 run_governed_with",
-      "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps",
+      "backend/crates/services/qip-agency/tests/agency.rs:3462 authority_is_used_only_over_a_plan_every_competing_model_agrees_helps (2026-11-11: passes; mutation fired)",
       "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is read on the operator CLI (ADR 0146 decision 2: no deployed binary acts under authority), where engine::execute refuses a plan that no simulated branch supports, reached only through engine::run_governed_with from qip-cli agency.rs; integration beyond the CLI is out of scope by decision and is not a gap, and amending ADR 0146 d2 to let a deployed binary act would widen authority. Graded on authority_is_used_only_over_a_plan_every_competing_model_agrees_helps and its recorded mutation. Earlier: Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
+    "gap": "2026-11-11 (wave1111 fw-a-01): graded COMPLETE on the operator CLI under the owner's ruling of 2026-10-31: 'No deployed binary acts under authority, and the requirement is read on the operator CLI. There, engine::execute refuses a plan that no simulated branch supports (ADR 0146 decision 2). Integration beyond the CLI is out of scope by decision and is not a gap.' integrated is set because qip-cli, a composition root, reaches engine::execute through engine::run_governed_with; deployable stays false because qip-cli is not a deployed image. Earlier: 2026-10-31 owner ruling (REGRADE_TEXT): the requirement is read on the operator CLI (ADR 0146 decision 2: no deployed binary acts under authority), where engine::execute refuses a plan that no simulated branch supports, reached only through engine::run_governed_with from qip-cli agency.rs; integration beyond the CLI is out of scope by decision and is not a gap, and amending ADR 0146 d2 to let a deployed binary act would widen authority. Graded on authority_is_used_only_over_a_plan_every_competing_model_agrees_helps and its recorded mutation. Earlier: Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -320,7 +320,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute. Owner ruling 2026-10-31 (REGRADE_TEXT): No deployed binary acts under authority, and the requirement is read on the operator CLI."
+    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute. Owner ruling 2026-10-31 (REGRADE_TEXT): No deployed binary acts under authority, and the requirement is read on the operator CLI. 2026-11-11 independent verification (wave1111 fw-a-01): authority_is_used_only_over_a_plan_every_competing_model_agrees_helps passes, and qip-cli --test agency every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations passes. Mutation (the requirement's own: removing the evaluation): counterfactually_supported's refusal of a plan with no simulated branch disabled (`if false && results.is_empty()`) -> the test fails at tests/agency.rs:3478 'expected withheld, got Executed([Step { tool: \"quoter\" ..}])'; restored, passes. Graded COMPLETE."
   },
   {
     "id": "R12-MODEL-4015",
