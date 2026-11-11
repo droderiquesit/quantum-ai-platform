@@ -1033,6 +1033,21 @@ that narrows a security scanner, whatever the owner has delegated.
     one local, unpushed revert commit, so no pushed history was
     rewritten.
 
+26. **R12-LEDGER-5014 waits for a fabric versioning ADR** (lane L1,
+    2026-11-08). The row stays PARTIAL. The lane's chain-opened slice adds
+    the `ChainOpened` sequence to `SourceEvent` and `Decision::Filled`.
+    That changes the recorded shape of `reflex.journal_recorded` and
+    `reflex.outcome_recorded`, and `event_fabric_schema_lock` refuses a
+    shape change at v1. The slice is kept, unapplied, in
+    `docs/blueprint/lanes/l1-ledger-5014-chain-opened-wip.patch`. The
+    first move of a fabric topic from v1 to v2 needs one ADR on fabric
+    versioning. That ADR covers the lock rows, the bindings, the broker
+    registries and the versions each consumer admits. A single-row
+    argument does not move a topic. A separate P1 record that widens ADR
+    0100 section 5 is declined. R12-CAPITAL-5067 also stays PARTIAL: its
+    P2 task record needs a new fabric topic, which is its own change and
+    is not made under this ruling.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
