@@ -885,6 +885,67 @@ impl Platform {
         self.journaled_cards.values()
     }
 
+    /// Offer the tournament the forecasts of the fitted cards on `subject`
+    /// (ADR 0390, R12-MODEL-3089), replacing whatever stood there. Returns
+    /// one sentence per offer refused; the rest stand until the desk's next
+    /// offer on the subject or the end of their own bar.
+    ///
+    /// The cards are judged against `registry`, the desk's, and not this
+    /// process's journal mirror: the mirror skips a drift-only change by
+    /// design, so a card that drifted past its threshold since it was last
+    /// journaled would read as eligible there. A card enters only where it
+    /// is registered, records this subject as the one it was fitted on, and
+    /// is one a decision may use now ([`ModelCard::decision_eligibility`]):
+    /// a development-stage, retired, failed, stale or drifted card is not an
+    /// entrant. Nothing here pads the population: an empty `offered` leaves
+    /// the subject with no card.
+    ///
+    /// [`ModelCard::decision_eligibility`]: qip_ai::registry::ModelCard::decision_eligibility
+    pub fn stage_card_forecasts(
+        &mut self,
+        registry: &ModelRegistry,
+        subject: &str,
+        offered: Vec<crate::model_tournament::CardForecast>,
+        now: Timestamp,
+    ) -> Vec<String> {
+        let mut refused = Vec::new();
+        let mut admitted = Vec::new();
+        for forecast in offered {
+            let reference = forecast.reference.clone();
+            let Some(card) = registry.get(&reference) else {
+                refused.push(format!(
+                    "{reference}: no such card is registered; register the fit before \
+                     offering its forecast"
+                ));
+                continue;
+            };
+            if crate::central::models::subject_of(card) != Some(subject) {
+                refused.push(format!(
+                    "{reference}: its card does not record {subject} as the subject it was \
+                     fitted on; a card answers only its own instrument's question"
+                ));
+                continue;
+            }
+            if let Err(reason) = card.decision_eligibility(now) {
+                refused.push(format!(
+                    "{reference}: not an entrant while no decision may use it: {reason}"
+                ));
+                continue;
+            }
+            admitted.push(forecast);
+        }
+        refused.extend(self.tournament.stage_cards(subject, admitted));
+        refused
+    }
+
+    /// The card forecasts standing on `subject` (ADR 0390).
+    pub fn standing_card_forecasts(
+        &self,
+        subject: &str,
+    ) -> Vec<crate::model_tournament::CardForecast> {
+        self.tournament.standing_cards(subject).cloned().collect()
+    }
+
     /// The provider the composition root handed in.
     pub fn model_provider(&self) -> &dyn ModelProvider {
         self.model_provider.as_ref()

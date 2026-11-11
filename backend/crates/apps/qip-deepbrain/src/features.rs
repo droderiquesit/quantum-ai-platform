@@ -63,49 +63,66 @@ pub fn feature_columns(bars: &[Bar]) -> BTreeMap<String, Vec<f64>> {
     let closes: Vec<f64> = bars.iter().map(|bar| bar.close.to_f64()).collect();
     let volumes: Vec<f64> = bars.iter().map(|bar| bar.volume.to_f64()).collect();
 
-    let mut push = |name: &str, value: f64| {
-        if let Some(column) = columns.get_mut(name) {
-            column.push(if value.is_finite() { value } else { 0.0 });
-        }
-    };
-
     for at in LOOKBACK..bars.len() - 1 {
-        let close = closes[at];
-        push("return_1", ratio(close, closes[at - 1]));
-        push("momentum_5", ratio(close, closes[at - 5]));
-
-        let window: Vec<f64> = (at - 9..=at)
-            .map(|i| ratio(closes[i], closes[i - 1]))
-            .collect();
-        push("volatility_10", qip_numerics::stats::stddev(&window));
-
-        let bar = &bars[at];
-        let high = bar.high.to_f64();
-        let low = bar.low.to_f64();
-        push(
-            "range_frac",
-            if close.abs() > f64::EPSILON {
-                (high - low) / close
-            } else {
-                0.0
-            },
-        );
-
-        // Volume relative to its own trailing mean, not raw volume. A raw
-        // level is an instrument-specific magnitude, and a model fitted on one
-        // instrument's volume learns that instrument's size rather than
-        // anything about markets.
-        let trailing: f64 = volumes[at - LOOKBACK..at].iter().sum::<f64>() / LOOKBACK as f64;
-        push(
-            "volume_share",
-            if trailing > f64::EPSILON {
-                volumes[at] / trailing
-            } else {
-                0.0
-            },
-        );
+        let row = features_at(bars, &closes, &volumes, at);
+        for (name, value) in FEATURES.iter().zip(row) {
+            if let Some(column) = columns.get_mut(*name) {
+                column.push(value);
+            }
+        }
     }
     columns
+}
+
+/// The feature row at `bars[at]`, in the order of [`FEATURES`], reading bars
+/// up to and including it. The one arithmetic both the training rows and
+/// the live row are computed by, so a model is asked about the newest bar in
+/// exactly the terms it was fitted in. A non-finite value is recorded as
+/// zero, as it always was. The caller guarantees `at >= LOOKBACK`.
+fn features_at(bars: &[Bar], closes: &[f64], volumes: &[f64], at: usize) -> [f64; 5] {
+    let close = closes[at];
+    let window: Vec<f64> = (at - 9..=at)
+        .map(|i| ratio(closes[i], closes[i - 1]))
+        .collect();
+    let bar = &bars[at];
+    let high = bar.high.to_f64();
+    let low = bar.low.to_f64();
+    // Volume relative to its own trailing mean, not raw volume. A raw
+    // level is an instrument-specific magnitude, and a model fitted on one
+    // instrument's volume learns that instrument's size rather than
+    // anything about markets.
+    let trailing: f64 = volumes[at - LOOKBACK..at].iter().sum::<f64>() / LOOKBACK as f64;
+    [
+        ratio(close, closes[at - 1]),
+        ratio(close, closes[at - 5]),
+        qip_numerics::stats::stddev(&window),
+        if close.abs() > f64::EPSILON {
+            (high - low) / close
+        } else {
+            0.0
+        },
+        if trailing > f64::EPSILON {
+            volumes[at] / trailing
+        } else {
+            0.0
+        },
+    ]
+    .map(|value| if value.is_finite() { value } else { 0.0 })
+}
+
+/// The feature row at the newest bar, in the order of [`FEATURES`]: the row
+/// whose target, the return into a bar that has not closed, does not exist
+/// yet (ADR 0390). `None` without a full lookback behind the newest bar.
+///
+/// [`feature_columns`] stops one bar short on purpose, because a training
+/// row needs its label. This is the row a fitted model is asked about now.
+pub fn live_feature_row(bars: &[Bar]) -> Option<Vec<f64>> {
+    if bars.len() <= LOOKBACK {
+        return None;
+    }
+    let closes: Vec<f64> = bars.iter().map(|bar| bar.close.to_f64()).collect();
+    let volumes: Vec<f64> = bars.iter().map(|bar| bar.volume.to_f64()).collect();
+    Some(features_at(bars, &closes, &volumes, bars.len() - 1).to_vec())
 }
 
 /// The return from each feature row's bar to the next.

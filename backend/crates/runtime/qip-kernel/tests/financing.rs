@@ -18,8 +18,8 @@ use qip_core::{Context, Currency, Decimal, ObjectId, Timestamp, dec};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::extensions::{
-    BondDetails, CouponFrequency, CreditRating, DayCount, Extension, FxDetails, RepoDetails,
-    Seniority,
+    BondDetails, CouponFrequency, CreditRating, DayCount, Extension, FxDetails, PerpetualDetails,
+    RepoDetails, Seniority,
 };
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
@@ -369,5 +369,169 @@ fn a_balance_is_converted_at_the_universes_spot_pair_and_an_unquoted_currency_is
     // 1,000 euros needed and nothing positioned there: the whole need is the
     // shortfall, in dollars at 1.10.
     assert_eq!(score.shortfall, dec!("1100"), "{}", score.describe());
+    Ok(())
+}
+
+/// A perpetual on `underlying`, priced at `price`, funding every
+/// `interval_hours`.
+fn perpetual(
+    id: &str,
+    underlying: &str,
+    price: Decimal,
+    interval_hours: u32,
+) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::PerpetualFuture,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .price(price)
+    .underlying(ObjectId::from_string(underlying))
+    .provenance(provenance())
+    .extension(Extension::Perpetual(PerpetualDetails {
+        underlying_object_id: underlying.to_string(),
+        contract_size: dec!("2"),
+        tick_size: dec!("0.01"),
+        initial_margin: dec!("10"),
+        maintenance_margin: dec!("8"),
+        funding_interval_hours: interval_hours,
+    }))
+    .build(start())
+}
+
+fn coin(id: &str, price: Decimal) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::Cryptocurrency,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .price(price)
+    .provenance(provenance())
+    .build(start())
+}
+
+/// R12-COVERAGE-5102, ADR 0395: a perpetual had no representation, and no
+/// funding reached the centre. It is now its own instrument type with no
+/// expiry; its funding is the premium of its own price over its
+/// underlying's, per the interval its own record states; the cycle reports
+/// it; and it is a derivative first, so no order exists until the desk holds
+/// the `PerpetualFuture` permission.
+///
+/// Mutations that fired: taking the premium over the perpetual's own price
+/// instead of the underlying's in `fund_perpetual` moves the rate off 0.01;
+/// admitting a zero funding interval values the perpetual that never funds;
+/// dropping the perpetual count from `FinancingRegister::summary` loses the
+/// stage's report; making `Platform::derivative_gate` skip the per-type
+/// permission lets a futures grant admit the perpetual; dropping the
+/// `Derivative` record from `AssetClassRegistry::shipped` refuses assembly
+/// ("equity is hedged with derivative, which this registry does not hold").
+#[test]
+fn a_perpetual_assembles_is_funded_from_its_premium_and_trades_on_paper_only_once_granted()
+-> Result<()> {
+    use qip_execution_engine::order::Side;
+    use qip_financial::asset_class::AssetClass;
+    use qip_financial::constraints::Jurisdiction;
+    use qip_financial::derivative_permissions::DerivativePermissions;
+
+    let perp = perpetual("obj-BTC-PERP", "obj-BTC", dec!("101"), 8)?;
+    // Premise: the instrument is a derivative with no maturity, so what is
+    // funded and filled below is a perpetual and not a dated future.
+    assert_eq!(perp.asset_class, AssetClass::Derivative);
+    assert_eq!(perp.extension.maturity(), None);
+    let mut platform = assemble(vec![
+        coin("obj-BTC", dec!("100"))?,
+        perp,
+        perpetual("obj-BTC-PERP-DISCOUNT", "obj-BTC", dec!("99"), 8)?,
+        perpetual("obj-BTC-PERP-NEVER", "obj-BTC", dec!("101"), 0)?,
+        perpetual("obj-GONE-PERP", "obj-ABSENT", dec!("101"), 8)?,
+    ])?;
+
+    let register = platform.financing_register();
+    let funding = register
+        .perpetual("obj-BTC-PERP")
+        .unwrap_or_else(|| panic!("the perpetual was not funded: {:?}", register.problems()));
+    assert_eq!(funding.underlying_object, "obj-BTC");
+    assert_eq!((funding.mark, funding.index), (dec!("101"), dec!("100")));
+    assert_eq!(funding.interval_hours, 8);
+    // (101 − 100) / 100, and one long contract of two units pays 2.
+    assert_eq!(funding.rate, dec!("0.01"));
+    assert_eq!(funding.payment_per_contract, dec!("2"));
+    // Below its underlying the sign turns: the long receives.
+    let discount = register
+        .perpetual("obj-BTC-PERP-DISCOUNT")
+        .expect("the discounted perpetual was not funded");
+    assert_eq!(discount.rate, dec!("-0.01"));
+    assert_eq!(discount.payment_per_contract, dec!("-2"));
+    // Neither refused perpetual is funded at an assumed interval or price.
+    assert!(register.perpetual("obj-BTC-PERP-NEVER").is_none());
+    assert!(register.perpetual("obj-GONE-PERP").is_none());
+
+    let (detail, problems) = understand_problems(&mut platform);
+    assert!(
+        detail.contains("funds 2 perpetual(s) from the premium over the underlying, 2 unvalued"),
+        "the UNDERSTAND stage does not report the funding: {detail}"
+    );
+    for (id, reason) in [
+        ("obj-BTC-PERP-NEVER", "funding interval is zero hours"),
+        (
+            "obj-GONE-PERP",
+            "underlying obj-ABSENT is not in the universe",
+        ),
+    ] {
+        assert!(
+            problems.iter().any(|problem| problem
+                .starts_with(&format!("financing instrument {id} is unvalued:"))
+                && problem.contains(reason)),
+            "{id} did not reach the cycle report: {problems:?}"
+        );
+    }
+
+    let order = |platform: &mut Platform| {
+        platform.order_for(
+            ObjectId::from_string("obj-BTC-PERP"),
+            Side::Buy,
+            dec!("10"),
+            dec!("101"),
+            "prop-perp",
+            vec!["hyp-perp".to_string()],
+            start(),
+        )
+    };
+    let error = order(&mut platform).expect_err("an ungranted perpetual got an order");
+    assert!(
+        error.message().contains("obj-BTC-PERP"),
+        "{}",
+        error.message()
+    );
+    // A grant for dated futures is not a grant for perpetuals.
+    let mut permissions = DerivativePermissions::none();
+    permissions.grant("desk-a", Jurisdiction::UnitedStates, InstrumentType::Future)?;
+    platform.authorise_derivatives("desk-a", Jurisdiction::UnitedStates, permissions.clone());
+    order(&mut platform).expect_err("a futures grant admitted a perpetual");
+    permissions.grant(
+        "desk-a",
+        Jurisdiction::UnitedStates,
+        InstrumentType::PerpetualFuture,
+    )?;
+    platform.authorise_derivatives("desk-a", Jurisdiction::UnitedStates, permissions);
+
+    // Premise: nothing had filled, so the fill counted is the perpetual's.
+    assert_eq!(platform.orders().fills().len(), 0);
+    let order = order(&mut platform)?;
+    let order_id = order.order_id.clone();
+    platform.submit_order(order, start())?;
+    let fills = platform.orders().fills();
+    assert!(
+        fills.iter().any(|fill| fill.order_id == order_id),
+        "the perpetual did not fill"
+    );
+    assert!(
+        fills.iter().all(|fill| fill.simulated),
+        "a perpetual fill was not stamped simulated"
+    );
     Ok(())
 }

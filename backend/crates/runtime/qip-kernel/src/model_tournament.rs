@@ -148,6 +148,119 @@ pub const TEMPORARY_PREFIX: &str = "temporary:";
 /// as its parent: the standing population whose residual triggered it.
 pub const STANDING_POPULATION: &str = "tournament/standing";
 
+/// The forecaster-id prefix a fitted model card enters under (ADR 0390), the
+/// same id [`TournamentStage::verify_model`] reads a card's record by.
+pub const CARD_PREFIX: &str = "model:";
+
+/// One fitted card's forecast of its own instrument's next bar, as the
+/// learning desk offers it (ADR 0390, R12-MODEL-3089).
+///
+/// The probability is a measurement and carries no constant anybody chose.
+/// The desk scores the card on the held-out rows the fit never saw and keeps
+/// each row's realised error; it scores the newest bar's features for a
+/// point prediction; and it counts the held-out errors which, added to that
+/// prediction, leave the next return above zero. Had the card erred on the
+/// next bar the way it erred on any one held-out row, that many of them
+/// would have closed up. `P(up) = (ups + 1) / (rows + 2)`: the rank of zero
+/// among prediction-plus-error, with the same Laplace smoothing the
+/// temporary specialist uses, so a card with few rows cannot say 0 or 1.
+/// No error distribution is assumed; exchangeability of the held-out rows
+/// with the next one is, and the tournament's score is what tests it.
+///
+/// Counts and not a probability, so the figure the tournament holds is
+/// derived here, once, from what was counted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CardForecast {
+    /// The card, as `ModelCard::reference`.
+    pub reference: String,
+    /// The one subject the card was fitted on.
+    pub subject: String,
+    /// Held-out rows whose realised error, added to the prediction for the
+    /// newest bar, leaves the next bar's return above zero.
+    pub holdout_ups: u32,
+    /// Held-out rows the card was scored on.
+    pub holdout_rows: u32,
+    /// The close the prediction is a return from.
+    pub from_close: f64,
+    /// When that bar closed.
+    pub from_close_time: Timestamp,
+    /// The spacing of the bars the card was fitted on: the span its fitted
+    /// quantity, the next bar's return, covers.
+    pub bar: Duration,
+}
+
+impl CardForecast {
+    /// `(ups + 1) / (rows + 2)`.
+    pub fn p_up(&self) -> f64 {
+        (f64::from(self.holdout_ups) + 1.0) / (f64::from(self.holdout_rows) + 2.0)
+    }
+
+    /// The forecaster id the card competes under.
+    pub fn forecaster(&self) -> String {
+        format!("{CARD_PREFIX}{}", self.reference)
+    }
+
+    /// Why this offer cannot be a forecast, if it cannot. A refusal, never a
+    /// repair: an offer with more ups than rows is a counting bug upstream,
+    /// and clamping it would enter a probability nobody measured.
+    pub fn shape_refusal(&self) -> Option<String> {
+        if self.holdout_rows == 0 {
+            return Some(
+                "it was scored on no held-out row, so there is no error to forecast from; \
+                 offer it once its holdout tail holds a row"
+                    .to_string(),
+            );
+        }
+        if self.holdout_ups > self.holdout_rows {
+            return Some(format!(
+                "it counts {} up row(s) among {} held-out row(s); recount the holdout",
+                self.holdout_ups, self.holdout_rows
+            ));
+        }
+        if !(self.from_close.is_finite() && self.from_close > 0.0) {
+            return Some(format!(
+                "the close it forecasts from is {}, not a price",
+                self.from_close
+            ));
+        }
+        if self.bar.as_nanos() == 0 {
+            return Some(
+                "its bars have no spacing, so the span its forecast covers is unknown; \
+                 offer it from a series with two distinct close instants"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    /// Why this forecast does not answer a question opened at `now` from
+    /// `reference` over `horizon`, if it does not (ADR 0390 decision 3). A
+    /// card answers the question its fit is about and no other: the same
+    /// close, while that close is still the newest, over exactly one bar.
+    fn mismatch(&self, reference: f64, horizon: Duration, now: Timestamp) -> Option<String> {
+        if horizon != self.bar {
+            return Some(format!(
+                "the question spans {horizon:?} and the card was fitted on the next {:?} bar",
+                self.bar
+            ));
+        }
+        if now < self.from_close_time || now >= self.from_close_time.saturating_add(self.bar) {
+            return Some(
+                "its forecast is not from the newest bar: a later bar has closed, or the bar \
+                 it names has not"
+                    .to_string(),
+            );
+        }
+        if self.from_close.to_bits() != reference.to_bits() {
+            return Some(format!(
+                "it forecasts from a close of {} and the question measures from {reference}",
+                self.from_close
+            ));
+        }
+        None
+    }
+}
+
 /// A temporary specialist on one subject (R12-MODEL-7198).
 ///
 /// Its model is the subject's own outcome frequency since the shock that
@@ -513,6 +626,11 @@ pub struct TournamentStage {
     temporaries: BTreeMap<String, TemporarySpecialist>,
     /// The aggregate's out-of-sample record against the equal-weight mean.
     aggregate_tally: AggregateTally,
+    /// The learning desk's standing offers, by subject and then by card
+    /// reference (ADR 0390). Replaced whole per subject at each offer, so a
+    /// card the desk no longer offers leaves; an offer older than its own
+    /// bar is dropped where it is read. Bounded by the registry's cards.
+    cards: BTreeMap<String, BTreeMap<String, CardForecast>>,
 }
 
 /// How many past scores a forecaster's vote carries. Bounded, because the
@@ -864,6 +982,49 @@ impl TournamentStage {
         &self.refuted
     }
 
+    /// Replace the card forecasts standing on `subject` with `offered`
+    /// (ADR 0390), returning one sentence per offer refused. The caller has
+    /// already judged each card against the registry
+    /// ([`crate::platform::Platform::stage_card_forecasts`]); this checks
+    /// what the stage can: the offer names this subject, and is a forecast.
+    ///
+    /// The whole set is replaced and not merged, so the population on a
+    /// subject is exactly the cards the desk offered last: one it stopped
+    /// offering — drifted, retired, rolled back — has left.
+    pub fn stage_cards(&mut self, subject: &str, offered: Vec<CardForecast>) -> Vec<String> {
+        let mut refused = Vec::new();
+        let mut standing = BTreeMap::new();
+        for forecast in offered {
+            if forecast.subject != subject {
+                refused.push(format!(
+                    "{}: it forecasts {} and was offered on {subject}; a card answers only \
+                     its own instrument's question",
+                    forecast.reference, forecast.subject
+                ));
+                continue;
+            }
+            if let Some(reason) = forecast.shape_refusal() {
+                refused.push(format!("{}: {reason}", forecast.reference));
+                continue;
+            }
+            standing.insert(forecast.reference.clone(), forecast);
+        }
+        if standing.is_empty() {
+            self.cards.remove(subject);
+        } else {
+            self.cards.insert(subject.to_string(), standing);
+        }
+        refused
+    }
+
+    /// The card forecasts standing on `subject`, in reference order.
+    pub fn standing_cards(&self, subject: &str) -> impl Iterator<Item = &CardForecast> {
+        self.cards
+            .get(subject)
+            .into_iter()
+            .flat_map(BTreeMap::values)
+    }
+
     /// Open a question on one hypothesis, enter every forecast on it,
     /// review the disagreement, and — where the prediction is important —
     /// put it to the verifier society. Returns a clause for REASON's detail
@@ -1005,6 +1166,39 @@ impl TournamentStage {
                 probabilities_bp: Some(binary(up_bp(p_up))),
                 quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
                 // In-cycle arithmetic over counts, unmetered.
+                cost: None,
+                cost_meter: CostMeter::Spend,
+                latency: None,
+            });
+        }
+        // Each fitted card the desk offered on this subject answers its own
+        // instrument's question (ADR 0390, R12-MODEL-3089), from its own
+        // held-out error. One whose forecast is about a different close, a
+        // different span or an older bar is not entered, and the review says
+        // which and why; no card is entered to make up a number.
+        if let Some(cards) = self.cards.get_mut(&subject) {
+            cards.retain(|_, card| now < card.from_close_time.saturating_add(card.bar));
+        }
+        let cards: Vec<CardForecast> = self.standing_cards(&subject).cloned().collect();
+        for card in cards {
+            let id = card.forecaster();
+            if let Some(reason) = card.mismatch(reference, hypothesis.horizon, now) {
+                self.review
+                    .refused
+                    .push(format!("{question}/{id}: not entered: {reason}"));
+                continue;
+            }
+            let p_up = card.p_up();
+            versions.insert(id.clone(), card.reference.clone());
+            entries.push(TournamentForecast {
+                forecast_id: format!("{question}/{id}"),
+                forecaster: id,
+                target: target.clone(),
+                issued_at: now,
+                probabilities_bp: Some(binary(up_bp(p_up))),
+                quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
+                // Scored on the deep brain's existing capacity, off the
+                // cycle: nothing metered it, so nothing is claimed.
                 cost: None,
                 cost_meter: CostMeter::Spend,
                 latency: None,
@@ -2452,5 +2646,286 @@ mod tests {
             "{:?}",
             stage.review.opened[0].forecasts
         );
+    }
+
+    /// A one-bar hypothesis on `obj-AAA` and the pieces a question needs,
+    /// for the card-entrant tests (ADR 0390).
+    fn card_fixture(
+        id: &str,
+        formed: Timestamp,
+        horizon: Duration,
+    ) -> (Hypothesis, OrganisationReport, Vec<f64>) {
+        use qip_core::ids::{EvidenceId, HypothesisId, ObjectId};
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet};
+        use qip_reasoning_engine::hypothesis::{
+            CausalChain, CausalStep, Claim, HypothesisDraft, UncertaintyType,
+        };
+        use qip_world_model::causal::Mechanism;
+
+        let hypothesis = Hypothesis::form(HypothesisDraft {
+            hypothesis_id: HypothesisId::from_string(id),
+            opportunity_id: None,
+            formed_at: formed,
+            as_of: formed,
+            class: "mean-reversion".to_string(),
+            claim: Claim::Undervalued,
+            statement: "AAA fell further than its history explains".to_string(),
+            subjects: vec![ObjectId::from_string("obj-AAA")],
+            chain: CausalChain::new(vec![CausalStep::new(
+                "order-flow",
+                "obj-AAA",
+                Mechanism::CreditConditions,
+                "the dislocation closes as liquidity returns",
+                Duration::from_days(2),
+                0.8,
+            )]),
+            evidence: EvidenceSet::from_items(vec![
+                Evidence::new(
+                    EvidenceId::from_string("e1"),
+                    EvidenceKind::MarketObservation,
+                    Stance::Supports,
+                    "a nine percent drop on the last bar".to_string(),
+                    "rec-e1".to_string(),
+                    "exchange",
+                    formed,
+                    formed,
+                )
+                .with_reliability(0.9)
+                .with_diagnosticity(0.6),
+            ]),
+            prior: 0.4,
+            uncertainty_type: UncertaintyType::Epistemic,
+            falsifiers: vec!["the price keeps falling for a week".to_string()],
+            leading_alternative: "the drop is news the tape has not finished pricing".to_string(),
+            horizon,
+            contributors: Vec::new(),
+            models: Vec::new(),
+        })
+        .expect("a well-formed draft forms");
+        let report = OrganisationReport {
+            as_of: formed,
+            question: "is AAA undervalued".to_string(),
+            runs: Vec::new(),
+            findings: Vec::new(),
+            deferred: Vec::new(),
+            failed: Vec::new(),
+            missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
+        };
+        let closes: Vec<f64> = (0..30).map(|i| 100.0 + f64::from(i % 3)).collect();
+        (hypothesis, report, closes)
+    }
+
+    fn observe_card_question(
+        stage: &mut TournamentStage,
+        id: &str,
+        horizon: Duration,
+        now: Timestamp,
+    ) -> f64 {
+        let (hypothesis, report, closes) = card_fixture(id, now, horizon);
+        let roster: Vec<String> = Vec::new();
+        stage
+            .observe_reasoning(
+                ReasonObservation {
+                    hypothesis: &hypothesis,
+                    report: &report,
+                    roster: &roster,
+                    regime: "trend/calm".to_string(),
+                    closes: &closes,
+                    spread_ratio: Some(1.0),
+                    crossed_recently: Some(false),
+                    expected_move_bps: 100.0,
+                    approved: false,
+                    explaining: BTreeSet::new(),
+                },
+                now,
+            )
+            .expect("a directional claim on a subject is observed");
+        closes[closes.len() - 1]
+    }
+
+    fn card(reference: &str, ups: u32, rows: u32, close: f64, at: Timestamp) -> CardForecast {
+        CardForecast {
+            reference: reference.to_string(),
+            subject: "obj-AAA".to_string(),
+            holdout_ups: ups,
+            holdout_rows: rows,
+            from_close: close,
+            from_close_time: at,
+            bar: Duration::from_days(1),
+        }
+    }
+
+    /// R12-MODEL-3089, ADR 0390. Until this, the stage admitted a detector,
+    /// an analyst and a temporary specialist and no fitted card, so the
+    /// learning desk's models never competed and `verify_model` read a
+    /// `model:<reference>` record nothing could have written.
+    #[test]
+    fn a_fitted_card_answers_its_own_instruments_one_bar_question_from_its_held_out_error_and_is_scored()
+     {
+        use qip_core::ids::ObjectId;
+        use qip_market::bar::Interval;
+
+        let at = Timestamp::from_secs(1_760_000_000);
+        let day = Duration::from_days(1);
+        let reference = 100.0 + f64::from(29 % 3);
+        let mut stage = TournamentStage::new();
+        // Seven of eight held-out errors leave the next return above zero.
+        let refused = stage.stage_cards("obj-AAA", vec![card("ridge@3", 7, 8, reference, at)]);
+        assert!(refused.is_empty(), "{refused:?}");
+        let measured_from = observe_card_question(&mut stage, "hyp-1-obj-AAA", day, at);
+        assert_eq!(
+            measured_from.to_bits(),
+            reference.to_bits(),
+            "premise: the card forecasts from the close the question measures from"
+        );
+        let opened = &stage.review.opened[0];
+        assert!(
+            opened.forecasts.contains_key("detector:mean-reversion"),
+            "premise: the detector is on the question too: {:?}",
+            opened.forecasts
+        );
+        // (7 + 1) / (8 + 2) = 0.8, in basis points.
+        assert_eq!(
+            opened.forecasts.get("model:ridge@3").copied(),
+            Some(8_000),
+            "{:?} {:?}",
+            opened.forecasts,
+            stage.review.refused
+        );
+        assert!(
+            stage.tournament.is_admitted("model:ridge@3"),
+            "the card was not admitted as a forecaster"
+        );
+
+        // The next bar closes down: the card said 0.8 up and is scored on it.
+        let px = |v: f64| Decimal::from_f64(v).expect("a price");
+        let resolved_at = at.saturating_add(day);
+        let bars = BTreeMap::from([(
+            "obj-AAA".to_string(),
+            vec![Bar {
+                object_id: ObjectId::from_string("obj-AAA"),
+                venue: "XNYS".to_string(),
+                interval: Interval::Day,
+                open_time: at,
+                open: px(reference),
+                high: px(reference),
+                low: px(reference - 2.0),
+                close: px(reference - 2.0),
+                volume: Decimal::from_int(1_000),
+                trade_count: 10,
+                vwap: None,
+                quality: qip_financial::quality::DataQuality::default(),
+            }],
+        )]);
+        let review = stage
+            .learn(&bars, None, 2, resolved_at)
+            .expect("learns")
+            .expect("a resolution is a record");
+        let score = review.resolved[0]
+            .scores
+            .iter()
+            .find(|score| score.forecaster == "model:ridge@3")
+            .expect("the card is scored on the question it answered");
+        // Brier over two outcomes: 2 * (0.8 - 0)^2.
+        assert!(
+            (score
+                .brier
+                .expect("a probabilistic forecast has a Brier score")
+                - 1.28)
+                .abs()
+                < 1e-9,
+            "{score:?}"
+        );
+        assert!(
+            stage.model_record("model:ridge@3", None).is_some(),
+            "verify_model reads this record and found none"
+        );
+    }
+
+    /// ADR 0390 decisions 3 and 5: a card answers the question its fit is
+    /// about and no other, and leaves when the desk stops offering it. A
+    /// card entered on a five-day question, from a stale bar or from another
+    /// close would be scored on something it never forecast, and its record
+    /// would then weigh on its own promotion review.
+    #[test]
+    fn a_card_is_not_entered_on_a_question_its_fit_does_not_describe_and_leaves_when_no_longer_offered()
+     {
+        let at = Timestamp::from_secs(1_760_000_000);
+        let day = Duration::from_days(1);
+        let reference = 100.0 + f64::from(29 % 3);
+        let entered = |stage: &TournamentStage| {
+            stage.review.opened[0]
+                .forecasts
+                .contains_key("model:ridge@3")
+        };
+
+        // Premise: the same card on a one-bar question from its own close
+        // is entered, so each refusal below is the mismatch and not a card
+        // that never enters.
+        let mut stage = TournamentStage::new();
+        stage.stage_cards("obj-AAA", vec![card("ridge@3", 7, 8, reference, at)]);
+        observe_card_question(&mut stage, "hyp-0-obj-AAA", day, at);
+        assert!(entered(&stage), "premise: {:?}", stage.review.refused);
+
+        // A five-day question is not the next bar's.
+        let mut stage = TournamentStage::new();
+        stage.stage_cards("obj-AAA", vec![card("ridge@3", 7, 8, reference, at)]);
+        observe_card_question(&mut stage, "hyp-1-obj-AAA", Duration::from_days(5), at);
+        assert!(!entered(&stage), "entered on a five-day question");
+        assert!(
+            stage
+                .review
+                .refused
+                .iter()
+                .any(|line| line.contains("model:ridge@3") && line.contains("not entered")),
+            "the review does not say the card was withheld: {:?}",
+            stage.review.refused
+        );
+
+        // Another close is another question.
+        let mut stage = TournamentStage::new();
+        stage.stage_cards("obj-AAA", vec![card("ridge@3", 7, 8, reference + 1.0, at)]);
+        observe_card_question(&mut stage, "hyp-2-obj-AAA", day, at);
+        assert!(
+            !entered(&stage),
+            "entered from a close the question does not measure from"
+        );
+
+        // A forecast older than its own bar has left, and is not kept.
+        let mut stage = TournamentStage::new();
+        stage.stage_cards("obj-AAA", vec![card("ridge@3", 7, 8, reference, at)]);
+        observe_card_question(&mut stage, "hyp-3-obj-AAA", day, at.saturating_add(day));
+        assert!(
+            !entered(&stage),
+            "entered from a bar that is no longer the newest"
+        );
+        assert_eq!(stage.standing_cards("obj-AAA").count(), 0);
+
+        // The desk's next offer replaces the set: a card it leaves out is gone.
+        let mut stage = TournamentStage::new();
+        stage.stage_cards("obj-AAA", vec![card("ridge@3", 7, 8, reference, at)]);
+        stage.stage_cards("obj-AAA", Vec::new());
+        observe_card_question(&mut stage, "hyp-4-obj-AAA", day, at);
+        assert!(
+            !entered(&stage),
+            "a card the desk stopped offering still competes"
+        );
+
+        // An offer that is not a forecast is refused, never repaired.
+        let mut stage = TournamentStage::new();
+        let mut other = card("ridge@3", 7, 8, reference, at);
+        other.subject = "obj-BBB".to_string();
+        let refused = stage.stage_cards(
+            "obj-AAA",
+            vec![
+                card("none@1", 0, 0, reference, at),
+                card("over@1", 9, 8, reference, at),
+                other,
+            ],
+        );
+        assert_eq!(refused.len(), 3, "{refused:?}");
+        assert_eq!(stage.standing_cards("obj-AAA").count(), 0);
     }
 }

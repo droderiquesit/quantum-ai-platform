@@ -124,7 +124,9 @@ impl Judgement {
     /// The one constructor, shared by [`Rated::judgement`] and deserialisation.
     ///
     /// `model` must be a [`qip_ai::ModelCard::reference`] — `name@version`,
-    /// both halves non-empty, no surrounding whitespace. Not a style rule: the
+    /// both halves non-empty, no surrounding whitespace — or, since ADR 0391,
+    /// a rung reference of the same shape, `<rung>@<build>`, which only
+    /// [`crate::router::JudgedRouting::judgement`] mints. Not a style rule: the
     /// book is keyed on this string and every read goes through
     /// [`ReputationBook::competence`] with a `card.reference()`, so a judgement
     /// naming anything else books observations into a cell that is never
@@ -132,7 +134,7 @@ impl Judgement {
     /// than two that could drift, because a token the decision path can write
     /// and the replay path refuses is a decision that cannot be scored twice
     /// the same way.
-    fn minted(model: String, conditions: Conditions) -> Result<Self> {
+    pub(crate) fn minted(model: String, conditions: Conditions) -> Result<Self> {
         if model.trim().is_empty() {
             return Err(Error::invalid(
                 "a judgement names no model, so there is nothing to credit or blame; carry the \
