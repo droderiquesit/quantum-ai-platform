@@ -6369,11 +6369,33 @@ impl Platform {
         // stops assembly with the term named: a platform that opened a book
         // under a mandate the registry refused would be promising capital
         // the desk does not have.
-        let mut user_ledger = UserLedger::with_desk_exploring(
+        //
+        // The desk's risk tolerance is a term of that mandate (ADR 0405) and
+        // enters here, through `Mandate::new`, which refuses it outside
+        // `[0, 1]`. Epoch-registered, as `UserLedger::with_desk_exploring`
+        // registers the desk: it is the holder that exists before any
+        // registration has a time.
+        let mut user_ledger = UserLedger::opened_by(
             UserId::new(DESK_USER)?,
-            initial_equity,
-            Currency::USD,
-            config.exploration_share,
+            qip_capital::ledger::Mandate::desk_tolerating(
+                initial_equity,
+                Currency::USD,
+                config.exploration_share,
+                config.desk_risk_tolerance,
+            )?,
+            Timestamp::from_secs(0),
+        )?;
+        // The limit in force (ADR 0405): the operator's set is the ceiling,
+        // and the pre-trade checker is built from it narrowed by the desk
+        // mandate's tolerance. Read from the registry and not from
+        // `config`, so the only way to move the figure is to move the
+        // mandate. Done here, at assembly, by arithmetic: before any order
+        // exists and with no model on the path. A tolerance of one gives the
+        // ceiling exactly. The monitor, rule review and the policy payload
+        // keep the ceiling — see the ADR's D7 for why each does.
+        let pretrade_checker = PreTradeChecker::under_tolerance(
+            &limits,
+            user_ledger.registry().desk_mandate().risk_tolerance(),
         )?;
         for enrolment in &config.user_mandates {
             user_ledger.enrol(
@@ -6574,7 +6596,7 @@ impl Platform {
             orders: instrument_grids
                 .into_iter()
                 .fold(
-                    OrderManager::new(PreTradeChecker::new(limits.clone())),
+                    OrderManager::new(pretrade_checker),
                     |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
                 )
                 .with_known_instruments(known_instruments),
@@ -6721,6 +6743,7 @@ impl Platform {
         // disjointly rather than a method, so the log is read while the
         // ledger is written.
         Self::resume_ledger(&platform.event_log, &mut platform.user_ledger)?;
+        platform.journal_limit_narrowing(now)?;
         // The capital-call notices the log holds, replayed into the
         // commitment book `private_holdings_of` built above through the
         // same gates a live notice passes. Before this seam a filed notice
@@ -28143,8 +28166,39 @@ impl Platform {
         (Some(summary), problems)
     }
 
-    /// The limit set this platform booted with and runs under — the one
-    /// the pre-trade checker and the monitor hold. Read-only, and there is
+    /// The limit set orders are checked against before they exist: the
+    /// operator's ceiling ([`Self::limits`]) narrowed by the desk mandate's
+    /// risk tolerance (ADR 0405). Equal to the ceiling at a tolerance of one.
+    /// Read-only, with no setter: it moves only when the ceiling's file or
+    /// the desk's mandate does, and both are read at assembly.
+    pub fn limits_in_force(&self) -> &LimitSet {
+        self.orders.limits_in_force()
+    }
+
+    /// Journal the limit in force when it is narrower than the ceiling
+    /// (ADR 0405 D8), so a decision can be reproduced from the log without
+    /// the limits file or the configuration beside it.
+    ///
+    /// Nothing is written at a tolerance of one: the limit in force is the
+    /// ceiling, and a record on every start of every platform that never
+    /// stated a tolerance would be a record of nothing.
+    fn journal_limit_narrowing(&mut self, now: Timestamp) -> Result<()> {
+        let tolerance = self.user_ledger.registry().desk_mandate().risk_tolerance();
+        if tolerance == Decimal::ONE {
+            return Ok(());
+        }
+        let record = crate::limit_narrowing::LimitsNarrowed::between(
+            self.monitor.limits(),
+            self.orders.limits_in_force(),
+            tolerance,
+            now,
+        )?;
+        self.journal_record(record, crate::limit_narrowing::LIMIT_NARROWING_ORIGIN, now)
+    }
+
+    /// The limit set this platform booted with and runs under — the
+    /// operator's ceiling, which the monitor holds and which the pre-trade
+    /// checker narrows by the desk's tolerance ([`Self::limits_in_force`]). Read-only, and there is
     /// no setter anywhere on this type: a bound moves only through the file
     /// the composition root reads at boot (ADR 0061).
     pub fn limits(&self) -> &LimitSet {

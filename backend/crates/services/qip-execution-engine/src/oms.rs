@@ -445,6 +445,15 @@ pub struct OrderManager {
 }
 
 impl OrderManager {
+    /// The limit set every order submitted here is checked against.
+    ///
+    /// Read-only. Since ADR 0405 this can be tighter than the operator's
+    /// ceiling, and a surface that reported the ceiling as what refused an
+    /// order would name a bound the order was inside.
+    pub fn limits_in_force(&self) -> &qip_risk::limits::LimitSet {
+        self.checker.limits()
+    }
+
     pub fn new(checker: PreTradeChecker) -> Self {
         Self {
             orders: BTreeMap::new(),

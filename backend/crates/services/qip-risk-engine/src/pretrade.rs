@@ -157,6 +157,24 @@ impl PreTradeChecker {
         }
     }
 
+    /// A checker whose limits are the operator's `ceiling` narrowed by the
+    /// desk mandate's risk `tolerance` (ADR 0405).
+    ///
+    /// The narrowing happens here, once, when the checker is built: before
+    /// any order exists, by arithmetic alone, with no model on the path. Every
+    /// maximum is the ceiling multiplied by the tolerance and every minimum is
+    /// where the operator put it, so this checker can refuse an order
+    /// [`Self::new`] over the same set admits and can never admit one it
+    /// refuses. At a tolerance of one the two are the same checker.
+    ///
+    /// Fails, building nothing, on a tolerance outside `[0, 1]`. A checker
+    /// that fell back to the ceiling there would run a desk whose mandate
+    /// nobody could read at the loosest bound available.
+    pub fn under_tolerance(ceiling: &LimitSet, tolerance: Decimal) -> Result<Self> {
+        let in_force = ceiling.narrowed_by(tolerance)?;
+        Ok(Self::new(in_force))
+    }
+
     /// Permit reduction instead of outright refusal.
     pub fn allowing_reduction(mut self) -> Self {
         self.allow_reduction = true;
