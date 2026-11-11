@@ -162,7 +162,7 @@ fn run() -> Result<()> {
     // the platform `POST /cycle` drives sizes through the same router shape.
     // Unset is the classical router; an unknown value stops the process.
     let compute = ComputeSettings::from_lookup(&|name| std::env::var(name).ok())?;
-    let mut config = compute.apply(
+    let config = compute.apply(
         PlatformConfig::default()
             .with_live_ceiling(ceiling)
             .with_venue_registrations(venue_registrations)
@@ -178,6 +178,12 @@ fn run() -> Result<()> {
                 qip_kernel::counterfactual_alternatives::CounterfactualAlternatives::committed()?,
             ),
     );
+    // The desk mandate's risk tolerance (ADR 0405): unset is the operator's
+    // limits exactly, and an unreadable value stops the process here, before
+    // a platform is assembled on it.
+    let (mut config, tolerance_banner) =
+        with_desk_risk_tolerance_from(config, &|name| std::env::var(name))?;
+    println!("  risk tolerance:   {tolerance_banner}");
     config.central.arbitrage = arbitrage;
     if let Some(shelf) = load_yield_shelf()? {
         config = config.with_yield_shelf(shelf);
@@ -1342,6 +1348,46 @@ fn apply_survival_policy_from(
     Ok(policy.describe())
 }
 
+/// Read the desk mandate's risk tolerance into the platform's configuration
+/// (ADR 0405), returning the start-up line that says which limits are in
+/// force.
+///
+/// Unset is one: the operator's limit set exactly as written, which is what
+/// this binary ran before the setting existed. A value that is present and is
+/// not a fraction in `[0, 1]` stops the process with the variable named —
+/// see `qip_kernel::limit_narrowing::desk_risk_tolerance_from_setting`. It is
+/// never clamped, and never read as unset: a desk that believed it had
+/// narrowed its limits would otherwise be running the full ceiling.
+///
+/// Over any lookup, so the refusals are testable without touching the
+/// process environment. The kernel does not read this variable; it reads the
+/// tolerance back from the mandate registry this configuration builds.
+fn with_desk_risk_tolerance_from(
+    config: PlatformConfig,
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<(PlatformConfig, String)> {
+    use qip_kernel::limit_narrowing::{
+        DESK_RISK_TOLERANCE_VARIABLE, describe_desk_risk_tolerance,
+        desk_risk_tolerance_from_setting,
+    };
+    let setting = match lookup(DESK_RISK_TOLERANCE_VARIABLE) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(Error::invalid(format!(
+                "configuration: {DESK_RISK_TOLERANCE_VARIABLE} is not valid UTF-8; write a \
+                 fraction in [0, 1] such as 0.5, or unset it to run the operator's limits \
+                 exactly as written — an unreadable tolerance is not a tolerance of one"
+            )));
+        }
+    };
+    let tolerance = desk_risk_tolerance_from_setting(setting.as_deref())?;
+    Ok((
+        config.with_desk_risk_tolerance(tolerance),
+        describe_desk_risk_tolerance(tolerance, setting.is_some()),
+    ))
+}
+
 /// The reading half of [`apply_survival_policy`], over any lookup, so the
 /// refusals are testable without touching the process environment.
 fn survival_policy_from(
@@ -1831,5 +1877,80 @@ mod tests {
         super::apply_survival_policy_from(&mut platform, &|_| Err(std::env::VarError::NotPresent))
             .expect("the root installs the shipped policy");
         assert_eq!(platform.survival_policy(), &unset);
+    }
+    /// The root's own reading of `QIP_DESK_RISK_TOLERANCE` (ADR 0405), driven
+    /// through the function `main` calls rather than the kernel's parser
+    /// beside it: a test of the parser alone passes with the root's call
+    /// deleted. Mutations, each of which fired: return the configuration
+    /// without the tolerance installed; read a non-UTF-8 variable as unset;
+    /// swallow the parser's refusal to a tolerance of one.
+    fn only_desk_tolerance(
+        value: &'static str,
+    ) -> impl Fn(&str) -> std::result::Result<String, std::env::VarError> {
+        move |name: &str| {
+            if name == qip_kernel::limit_narrowing::DESK_RISK_TOLERANCE_VARIABLE {
+                Ok(value.to_string())
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        }
+    }
+
+    #[test]
+    fn an_unset_desk_tolerance_runs_the_operators_limits_a_stated_one_narrows_and_an_unreadable_one_stops_the_process()
+     {
+        // Absent: one, and the line says nothing was narrowed.
+        let (config, line) =
+            super::with_desk_risk_tolerance_from(qip_kernel::PlatformConfig::default(), &|_| {
+                Err(std::env::VarError::NotPresent)
+            })
+            .expect("an unset tolerance is the operator's limits");
+        assert_eq!(config.desk_risk_tolerance, qip_core::Decimal::ONE);
+        assert_eq!(config, qip_kernel::PlatformConfig::default());
+        assert!(
+            line.contains("unset") && line.contains("exactly as written"),
+            "{line}"
+        );
+
+        // Stated: it reaches the configuration the platform is assembled from.
+        let (config, line) = super::with_desk_risk_tolerance_from(
+            qip_kernel::PlatformConfig::default(),
+            &only_desk_tolerance("0.5"),
+        )
+        .expect("a fraction is a tolerance");
+        assert_eq!(config.desk_risk_tolerance, qip_core::dec!("0.5"));
+        assert!(line.contains("at 0.5 of its ceiling"), "{line}");
+
+        // Unreadable: the process does not start. Never one, never clamped.
+        for value in ["half", "", "50", "1.5", "-0.1"] {
+            let Err(error) = super::with_desk_risk_tolerance_from(
+                qip_kernel::PlatformConfig::default(),
+                &only_desk_tolerance(value),
+            ) else {
+                panic!("a desk tolerance of {value:?} was admitted");
+            };
+            assert!(
+                error
+                    .message()
+                    .contains(qip_kernel::limit_narrowing::DESK_RISK_TOLERANCE_VARIABLE)
+                    && error.message().contains("write a fraction"),
+                "{value:?}: {}",
+                error.message()
+            );
+        }
+        let Err(error) =
+            super::with_desk_risk_tolerance_from(qip_kernel::PlatformConfig::default(), &|_| {
+                Err(std::env::VarError::NotUnicode(std::ffi::OsString::from(
+                    "x",
+                )))
+            })
+        else {
+            panic!("an unreadable desk tolerance was read as unset");
+        };
+        assert!(
+            error.message().contains("not valid UTF-8"),
+            "{}",
+            error.message()
+        );
     }
 }
