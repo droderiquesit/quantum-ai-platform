@@ -73,7 +73,7 @@ use qip_expansion::detectors::{
     causal_driver_universe, contested_evidence, contradictions, coverage, cross_domain_links,
     incompetent_specialists, low_confidence, missing_causal_links, model_drift, model_error_rate,
     refusal_clusters, repeated_vetoes_priced, split_by_wanting, theory_contradictions,
-    unexplained_residuals_priced, world_state_expired,
+    unexplained_anomalies, unexplained_residuals_priced, world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -898,6 +898,9 @@ pub struct ResearchRound {
     /// causal graph holds no live claim into.
     pub contested_claims: usize,
     pub unexplained_subjects: usize,
+    /// Subjects the sweep's anomaly detectors flagged that no live causal
+    /// claim explains, each raised as a causal-link gap (R12-EXPAND-6011).
+    pub unexplained_anomalies: usize,
     /// Theory deltas the kernel journaled on a thesis the rule pack refused
     /// and the grader credited (R12-EXPAND-6044), read off the log this
     /// sweep; each is raised as a contradiction gap, which is the revision
@@ -2475,6 +2478,14 @@ impl ResearchLoop {
         let missing = missing_causal_links(&contested, &explained);
         round.unexplained_subjects = missing.len();
         observations.extend(missing);
+        // R12-EXPAND-6011: the same question over the platform's own anomaly
+        // detectors, which run on the default path; the contested form above
+        // waits on a fabric a connector feeds.
+        let anomalous_explained =
+            platform.causally_explained(flagged.iter().map(String::as_str), now);
+        let unexplained = unexplained_anomalies(&flagged, &anomalous_explained);
+        round.unexplained_anomalies = unexplained.len();
+        observations.extend(unexplained);
         // R12-EXPAND-6044: a thesis the symbolic rule pack refused that LEARN
         // then credited is a contradiction between the platform's theory and
         // its evidence. The kernel journals it as a theory delta and this is
