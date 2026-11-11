@@ -1822,9 +1822,11 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs::survival_figures",
       "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::a_filled_book_with_no_statement_is_charged_its_maintenance_in_the_ceiling",
       "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases",
-      "backend/crates/tests/qip-acceptance/tests/cross_margin.rs"
+      "backend/crates/tests/qip-acceptance/tests/cross_margin.rs",
+      "backend/crates/apps/qip-api/src/routes.rs Platform::observe_ledger_obligations called in the cycle (grep -n 'observe_ledger_obligations' backend/crates/apps/qip-api/src/routes.rs)",
+      "backend/crates/apps/qip-api/tests/ledger_obligations.rs::qip_apis_cycle_reads_qip_ledgerds_obligations_at_the_cycle_instant_and_a_ledger_pledge_lowers_the_ceiling_the_next_order_is_vetoed_against"
     ],
-    "gap": "qip_capital::bank::PostingBook (collateral encumbered from the instant of posting, CAPITAL-011) has no feed into the kernel: nothing constructs one outside qip-capital's tests, and the kernel's encumbrance comes from the ledger instead. Platform::observe_ledger_obligations, which carries the ledger's collateral and margin into the waterfall, has no caller in any binary (only tests and a comment in qip-ledgerd's store), so the ledger half of the encumbrance acts on sizing in tests and not in a running process. The review itself reports zero collateral_encumbered by design, since every pledge it can attest is into a margin domain.",
+    "gap": "2026-11-11: the ledger half is met in a binary. qip-api's cycle reads qip-ledgerd's obligations at the cycle instant and hands them to Platform::observe_ledger_obligations, so pledged collateral and margin on the ledger of record lower the survival ceiling in a running process (tested; an unreachable ledger installs no reading and the cycle still runs). qip-fastbrain and qip-deepbrain have no such call. What remains: qip_capital::bank::PostingBook (collateral encumbered from the instant of posting, CAPITAL-011) has no feed into the kernel; nothing constructs one outside qip-capital's tests. Not built by this batch for the reason lane L07 gave: PostingBook has no kernel-side producer, and making one would be a second claim about what is pledged beside the ledger. Needs a decision: either the PostingBook is fed from the ledger's own posting records (one claim), or CAPITAL-011's instant-of-posting encumbrance is stated as met by the ledger reading and PostingBook is retired. The review itself reports zero collateral_encumbered by design.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1832,10 +1834,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test survival_gate",
+    "verification": "cd backend && cargo test -p qip-kernel --test survival_gate; cargo test -p qip-api --test ledger_obligations",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Test added: a_filled_book_with_no_statement_is_charged_its_maintenance_in_the_ceiling; mutation that fired: CapitalObligations::margin_required for CrossMarginReview returning zero -> the ceiling is 10700245.9658 against the expected 10400270. The triage closure (fold PostingBook into cross_margin::review) was not taken: PostingBook has no kernel-side producer and inventing one would be a second claim about what is pledged beside the ledger."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Test added: a_filled_book_with_no_statement_is_charged_its_maintenance_in_the_ceiling; mutation that fired: CapitalObligations::margin_required for CrossMarginReview returning zero -> the ceiling is 10700245.9658 against the expected 10400270. The triage closure (fold PostingBook into cross_margin::review) was not taken: PostingBook has no kernel-side producer and inventing one would be a second claim about what is pledged beside the ledger. 2026-11-11 batch l1-c1-01: re-read against the code; the production-caller half of the old gap was stale (qip-api gained the call on 2026-11-07). qip-api ledger_obligations: 2 passed, 0 failed. Mutation that fired, restored with cp and cmp: the observe_ledger_obligations call in routes.rs replaced by a drop (the test fails: the reading was not installed, left None). Stays PARTIAL on the PostingBook half."
   },
   {
     "id": "R12-CAPITAL-4081",
