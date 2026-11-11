@@ -122,6 +122,19 @@ which is the question `qip_treasury::funding::plan_funding` answers
   not. R12-CAPITAL-1098 stays PARTIAL on that and on the absent
   declaration.
 
+## What it costs
+
+- One more edge out of the kernel, and `qip-treasury` in the closure of
+  every binary that links it.
+- One more clause in DECIDE's sentence on every cycle that forecasts a lane,
+  saying each time that no financing is counted and no floor is applied. It
+  is true each time, and it is long.
+- A treasury in every deployed process that refuses all financing. Until the
+  owner declares a floor, the leverage and permission paths run in tests
+  only.
+- The funding is recomputed from the plan by whoever wants it, not read from
+  the log as a record of its own.
+
 ## Evidence
 
 - `backend/crates/runtime/qip-kernel/src/treasury.rs`

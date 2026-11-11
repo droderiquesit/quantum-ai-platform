@@ -356,3 +356,67 @@ fn neither_crates_source_names_the_other_and_the_bank_stays_in_the_capital_brain
         "premise: the reason the bank stays is still true of its code"
     );
 }
+
+/// Whether `code` holds `name` as a whole identifier: not as part of a longer
+/// one. `CapitalBook` is not named by `CapitalBookkeeping`, and `EventLog` is
+/// not named by `EventLogger`; a substring match would say both were.
+fn names_identifier(code: &str, name: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    code.match_indices(name).any(|(start, _)| {
+        let before = code[..start].chars().next_back();
+        let after = code[start + name.len()..].chars().next();
+        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+    })
+}
+
+/// CAPITAL-022 at its new address. `architecture.rs` held that the capital
+/// brain's deciding modules, `funding.rs` among them, name no type that
+/// writes authoritative capital state and nothing of the event log. ADR 0385
+/// moved `funding.rs` out of `qip-capital` together with two of those
+/// writers, `CapitalBook` and `InternalFunding`, so the planner and both
+/// writers now share a crate and the dependency graph cannot see the line
+/// between them. This holds it by the planner's own text: the planner
+/// returns a plan, and whoever holds the books applies it.
+#[test]
+fn the_funding_planner_names_no_type_that_writes_the_treasurys_books_and_nothing_of_the_event_log()
+{
+    let treasury = production_sources(TREASURY);
+    let books = &treasury[&format!("{TREASURY}/src/treasury.rs")];
+    let planner = &treasury[&format!("{TREASURY}/src/funding.rs")];
+
+    // Premises. Both writers are declared where this test says they are, or
+    // it would be guarding names that have moved again; and the scan finds an
+    // identifier the planner does name, or a scan that saw nothing would
+    // pass.
+    const WRITERS: [&str; 2] = ["CapitalBook", "InternalFunding"];
+    for writer in WRITERS {
+        assert!(
+            books.contains(&format!("pub struct {writer} {{")),
+            "premise: {writer} is declared in qip-treasury/src/treasury.rs"
+        );
+    }
+    assert!(
+        names_identifier(planner, "FinancingPermissions")
+            && names_identifier(planner, "plan_funding"),
+        "premise: the scan reads the funding planner's code"
+    );
+    assert!(
+        names_identifier("let book = CapitalBook::new();", "CapitalBook")
+            && !names_identifier("let book = CapitalBookkeeping::new();", "CapitalBook")
+            && !names_identifier("let log = MyEventLog;", "EventLog"),
+        "premise: the match is on a whole identifier"
+    );
+
+    const EVENT_LOG: [&str; 3] = ["qip_events", "EventLog", "EventBody"];
+    let named: Vec<&str> = WRITERS
+        .into_iter()
+        .chain(EVENT_LOG)
+        .filter(|name| names_identifier(planner, name))
+        .collect();
+    assert!(
+        named.is_empty(),
+        "qip-treasury/src/funding.rs names {named:?}. The planner decides which source funds \
+         which requirement and returns a plan; it does not write the treasury's books or the \
+         event log. Return the value and let the kernel apply and journal it"
+    );
+}
