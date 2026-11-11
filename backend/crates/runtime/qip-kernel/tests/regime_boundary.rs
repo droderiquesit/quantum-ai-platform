@@ -479,3 +479,158 @@ fn a_model_is_judged_against_its_own_subjects_regime_crossing_and_not_another_su
     );
     Ok(())
 }
+
+/// R12-MODEL-10096: a production card is due a renewed evaluation exactly
+/// when its own subject crossed a regime boundary after it was last
+/// evaluated, and stops being due once it is evaluated again. Without the
+/// second half a desk that renewed an evaluation would be asked again every
+/// round, which is how a re-verification built on 2026-10-30 came to refute
+/// every production model for ever.
+///
+/// Mutations: return `None` unconditionally from `Platform::reevaluation_due`
+/// — the first assertion fails; drop the `evaluated_at >= crossing` arm so a
+/// crossing is always due — the last assertion fails.
+#[test]
+fn a_card_is_due_a_renewed_evaluation_only_until_it_is_evaluated_after_its_subjects_crossing()
+-> Result<()> {
+    use qip_ai::registry::{EvaluationRecord, ModelRegistry};
+    use qip_kernel::central::models::{record_subject, register_fit};
+    use qip_training::local::SkillPolicy;
+
+    let platform = serving_platform_after(true)?;
+    let crossing = start().saturating_add(Duration::from_secs(60));
+    let teacher = teacher("regime-due-linear")?;
+    let card_on = |subject: &str| -> Result<(ModelRegistry, String)> {
+        let mut registry = ModelRegistry::new();
+        let registration = register_fit(
+            &mut registry,
+            &teacher,
+            &SkillPolicy::default(),
+            "regime-tests",
+            start(),
+        )?;
+        let card = registry
+            .get_mut(&registration.reference)
+            .unwrap_or_else(|| panic!("premise: the card is registered"));
+        record_subject(card, subject)?;
+        Ok((registry, registration.reference))
+    };
+
+    let (mut crossed, reference) = card_on("obj-BBB")?;
+    let card = crossed.get(&reference).expect("the card");
+    assert_eq!(platform.reevaluation_due(card), Some(crossing));
+
+    let (untouched, other) = card_on("obj-AAA")?;
+    assert_eq!(
+        platform.reevaluation_due(untouched.get(&other).expect("the card")),
+        None,
+        "a card on a subject that did not cross is due nothing"
+    );
+
+    crossed.record_evaluation(
+        &reference,
+        EvaluationRecord {
+            evaluated_at: crossing.saturating_add(Duration::from_secs(1)),
+            dataset: "after-the-crossing".to_string(),
+            metrics: std::collections::BTreeMap::new(),
+            passed: true,
+        },
+    )?;
+    assert_eq!(
+        platform.reevaluation_due(crossed.get(&reference).expect("the card")),
+        None,
+        "a card evaluated after the crossing is still due"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-10096: re-verifying a production model puts it in front of the
+/// same society a promotion faces and journals the verdict whichever way it
+/// goes. A model that stands returns no refutation; the same model with a
+/// failed evaluation recorded since is refuted in the society's words; a
+/// reference that is not in production is refused rather than judged.
+///
+/// Mutations: skip `journal_record` in `Platform::reverify_model` — the
+/// journal count assertions fail; return `Ok(None)` whatever the verdict —
+/// the refutation assertion fails; drop the promoted-set check — the
+/// unpromoted reference is judged and the last assertion fails.
+#[test]
+fn re_verifying_a_production_model_journals_the_verdict_and_reports_a_refutation() -> Result<()> {
+    use qip_ai::registry::{EvaluationRecord, ModelRegistry};
+    use qip_events::EventBody;
+    use qip_kernel::central::models::{record_subject, register_fit};
+    use qip_kernel::model_tournament::{ModelVerified, VERIFIER_ORIGIN};
+    use qip_training::local::SkillPolicy;
+    use qip_training::serve::InTreeProvider;
+
+    let verdicts = |platform: &Platform| -> usize {
+        platform
+            .event_log()
+            .records()
+            .iter()
+            .filter(|record| {
+                record.event.topic == ModelVerified::TOPIC
+                    && record.event.lineage.producer == VERIFIER_ORIGIN
+            })
+            .count()
+    };
+
+    let mut platform = serving_platform_after(true)?;
+    let teacher = teacher("regime-reverify-linear")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let mut registry = ModelRegistry::new();
+    // Registered after the crossing, so the promotion itself is not refused.
+    let registered_at = start().saturating_add(Duration::from_secs(3_600));
+    let registration = register_fit(
+        &mut registry,
+        &teacher,
+        &SkillPolicy::default(),
+        "regime-tests",
+        registered_at,
+    )?;
+    let reference = registration.reference.clone();
+    record_subject(registry.get_mut(&reference).expect("the card"), "obj-BBB")?;
+
+    let unpromoted = platform
+        .reverify_model(&registry, &reference, registered_at)
+        .expect_err("a model that is not in production was re-verified");
+    assert!(
+        unpromoted.message().contains("not in the promoted set"),
+        "refused for another reason: {}",
+        unpromoted.message()
+    );
+
+    platform.promote_model(
+        &mut registry,
+        &artifact,
+        None,
+        &[],
+        registered_at.saturating_add(Duration::from_secs(60)),
+    )?;
+    let after_promotion = verdicts(&platform);
+    assert!(after_promotion >= 1, "premise: the promotion was verified");
+
+    let later = registered_at.saturating_add(Duration::from_secs(120));
+    assert_eq!(platform.reverify_model(&registry, &reference, later)?, None);
+    assert_eq!(verdicts(&platform), after_promotion + 1);
+
+    registry.record_evaluation(
+        &reference,
+        EvaluationRecord {
+            evaluated_at: later,
+            dataset: "rows-after-the-crossing".to_string(),
+            metrics: std::collections::BTreeMap::new(),
+            passed: false,
+        },
+    )?;
+    let refuted = platform
+        .reverify_model(
+            &registry,
+            &reference,
+            later.saturating_add(Duration::from_secs(1)),
+        )?
+        .expect("a model whose renewed evaluation failed was left standing");
+    assert!(refuted.contains("did not pass"), "{refuted}");
+    assert_eq!(verdicts(&platform), after_promotion + 2);
+    Ok(())
+}
