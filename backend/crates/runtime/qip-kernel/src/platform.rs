@@ -3567,6 +3567,11 @@ pub struct CycleJournalEntry {
 /// under its own correlation id and is counted in `sensed_unlisted`.
 pub const MAX_SENSED_REFS_PER_CYCLE: usize = 4096;
 
+/// The source the knowledge graph names for a fact read off the platform's
+/// own universe record (R12-EXPAND-6031), so a relationship from a catalogue
+/// is never mistaken for one a connector or an analyst asserted.
+pub const UNIVERSE_SOURCE: &str = "kernel/universe";
+
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
@@ -7760,6 +7765,27 @@ impl Platform {
         // the fills it was sent is the thing a reconciler looks at next.
         self.capture_problems
             .extend(ingestion.advisory_disagreements.iter().cloned());
+        // R12-EXPAND-6066: each break that halted the cell, journaled so the
+        // deep brain's research can raise an execution gap naming it. A
+        // journal failure is a capture problem: the halt has already
+        // happened, and an unrecorded break must not undo it.
+        for record in crate::reconciliation_breaks::records_of(
+            &ingestion.cell,
+            &ingestion.halt_breaks,
+            reported_at,
+        ) {
+            if let Err(error) = self.journal_record(
+                record,
+                crate::reconciliation_breaks::RECONCILIATION_BREAK_ORIGIN,
+                now,
+            ) {
+                self.capture_problems.push(format!(
+                    "a reconciliation break at {} was not journaled: {}",
+                    ingestion.cell,
+                    error.message()
+                ));
+            }
+        }
         // One observation per report absorbed. `halted` is `None` exactly
         // where the report reconciled — the plane sets it from the union of
         // the cell's own breaks and the settlement's `UnsentFill` findings —
@@ -13182,20 +13208,109 @@ impl Platform {
     /// (WORLD-057). No instrument id is, so a refusal here is an upstream
     /// bug, and it is reported at LEARN rather than swallowed.
     fn ensure_world_object(&mut self, object_id: &str, recorded_at: Timestamp) {
-        let written = self.world.update(|world| {
+        let written: Result<bool> = self.world.update(|world| {
             if world.graph().node(object_id).is_some() {
-                return Ok(());
+                return Ok(false);
             }
             world.graph_mut().add_node(Node::new(
                 object_id,
                 NodeKind::FinancialObject,
                 object_id,
                 recorded_at,
-            ))
+            ))?;
+            Ok(true)
         });
-        if let Err(error) = written {
-            self.capture_problems.push(format!(
+        match written {
+            Ok(true) => self.absorb_universe_record(object_id, recorded_at),
+            Ok(false) => {}
+            Err(error) => self.capture_problems.push(format!(
                 "an instrument was not recorded in the world model: {}",
+                error.message()
+            )),
+        }
+    }
+
+    /// The economic facts the universe record already states about an
+    /// instrument, written to the knowledge graph the first time the kernel
+    /// records it (R12-EXPAND-6031): its issuer, sector, country of primary
+    /// risk and quote currency, each an entity, joined to the instrument by
+    /// `issues`, `in_industry`, `domiciled_in` and `quoted_in`, with the
+    /// universe as source. Without these the graph held a bare node per
+    /// instrument and no edge, so the cross-domain synthesis had nothing to
+    /// walk on a default cycle. An instrument the universe does not hold
+    /// adds nothing, and an issuer is written only where the record names
+    /// one.
+    fn absorb_universe_record(&mut self, object_id: &str, recorded_at: Timestamp) {
+        use qip_world_model::graph::EntityKind;
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let Some(record) = self
+            .market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object_id))
+            .cloned()
+        else {
+            return;
+        };
+        let mut nodes = Vec::new();
+        let mut relations = Vec::new();
+        let mut link = |from: String, to: String, kind: RelationshipKind| {
+            relations.push(crate::evidence_intake::KnowledgeRelation {
+                relationship: Relationship::new(from, to, kind, 1.0, UNIVERSE_SOURCE),
+                valid_from: recorded_at,
+                confidence: 1.0,
+            });
+        };
+        if let Some(issuer) = record
+            .issuer
+            .as_deref()
+            .map(str::trim)
+            .filter(|i| !i.is_empty())
+        {
+            let id = format!("company:{issuer}");
+            nodes.push(Node::entity(&id, EntityKind::Company, issuer, recorded_at));
+            link(id, object_id.to_string(), RelationshipKind::Issues);
+        }
+        let sector = record.sector.to_string();
+        let sector_id = format!("sector:{sector}");
+        nodes.push(Node::entity(
+            &sector_id,
+            EntityKind::Sector,
+            &sector,
+            recorded_at,
+        ));
+        link(
+            object_id.to_string(),
+            sector_id,
+            RelationshipKind::InIndustry,
+        );
+        let geography = record.geography.trim();
+        if !geography.is_empty() {
+            let id = format!("country:{geography}");
+            nodes.push(Node::entity(
+                &id,
+                EntityKind::Country,
+                geography,
+                recorded_at,
+            ));
+            link(object_id.to_string(), id, RelationshipKind::DomiciledIn);
+        }
+        let currency = record.currency.to_string();
+        let currency_id = format!("currency:{currency}");
+        nodes.push(Node::entity(
+            &currency_id,
+            EntityKind::Currency,
+            &currency,
+            recorded_at,
+        ));
+        link(
+            object_id.to_string(),
+            currency_id,
+            RelationshipKind::QuotedIn,
+        );
+        if let Err(error) = self.absorb_knowledge(nodes, relations, recorded_at) {
+            self.capture_problems.push(format!(
+                "the universe record of {object_id} was not written to the knowledge graph: {}",
                 error.message()
             ));
         }
@@ -26091,6 +26206,30 @@ impl Platform {
     }
 
     /// What each priced refusal would have done, most recent last.
+    /// Every reconciliation-break record the log holds, oldest first
+    /// (R12-EXPAND-6066), read back as `knowledge_deltas` is.
+    pub fn reconciliation_break_records(
+        &self,
+    ) -> Result<Vec<crate::reconciliation_breaks::ReconciliationBreakRecord>> {
+        use crate::reconciliation_breaks::{
+            RECONCILIATION_BREAK_PREFIX, ReconciliationBreakRecord,
+        };
+        self.event_log()
+            .by_topic(<ReconciliationBreakRecord as EventBody>::TOPIC)
+            .into_iter()
+            .filter(|frame| {
+                frame
+                    .idempotency_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(RECONCILIATION_BREAK_PREFIX))
+            })
+            .map(|frame| {
+                let envelope = qip_streaming::envelope::StreamEnvelope::from_frame(frame)?;
+                Ok(envelope.decode::<ReconciliationBreakRecord>()?.body)
+            })
+            .collect()
+    }
+
     pub fn declined_scores(&self) -> &[DeclinedScore] {
         &self.declined_scores
     }

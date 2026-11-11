@@ -450,3 +450,78 @@ fn a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming
         raised[0].signal.observation
     );
 }
+
+/// R12-EXPAND-6066: a cell halted by two reconciliation breaks in one sweep
+/// yields exactly one queued Execution item naming
+/// `detector:reconciliation_break` and both break record ids. The platform
+/// journals each break that halted the cell, and the deep brain reads them
+/// back off the log; before this the halt was a metric count, and the
+/// research had nothing to raise. A second sweep raises nothing new: each
+/// record is read once.
+///
+/// Mutations: remove the journal write in `ingest_cell_report` (zero
+/// items), or the sweep call (zero items).
+#[test]
+fn a_cell_halted_by_two_reconciliation_breaks_yields_one_execution_item_naming_both_records() {
+    use qip_contracts::expansion::GapClass;
+    use qip_core::Decimal;
+    use qip_kernel::central::{BreakOrigin, CellReport, ReconciliationBreak};
+    let mut platform = platform();
+    let broken = |instrument: &str| ReconciliationBreak {
+        instrument: instrument.to_string(),
+        cell_quantity: Decimal::from_int(100),
+        external_quantity: Decimal::from_int(90),
+        detail: format!("{instrument}: the drop copy holds ten fewer"),
+        origin: BreakOrigin::default(),
+    };
+    let report = CellReport::new("cell-ny", at(10))
+        .with_break(broken("obj-A"))
+        .with_break(broken("obj-B"));
+    let ingestion = platform.ingest_cell_report(report, at(10)).unwrap();
+    assert!(
+        ingestion.halted.is_some(),
+        "premise: the breaks halted the cell"
+    );
+    let records = platform.reconciliation_break_records().unwrap();
+    assert_eq!(records.len(), 2, "{records:?}");
+
+    let mut loop_ = deployed();
+    let (sources, jurisdictions) = deployed_bounds();
+    let round = loop_
+        .sweep(&platform, at(60), &sources, &jurisdictions)
+        .unwrap();
+    assert_eq!(round.reconciliation_breaks, 2, "{round:?}");
+    // The item itself, not the tool builds it is blocked on: those carry
+    // the same origin and ask for a tool, not for the execution research.
+    let execution: Vec<RaisedGap> = loop_
+        .desk()
+        .queue()
+        .ranked()
+        .iter()
+        .filter(|entry| entry.item().research_question.starts_with("Execution gap:"))
+        .filter_map(|entry| entry.origin().cloned())
+        .filter(|g| g.signal.gap_class == GapClass::Execution)
+        .filter(|g| {
+            g.signal
+                .evidence
+                .iter()
+                .any(|e| e == "detector:reconciliation_break")
+        })
+        .collect();
+    assert_eq!(execution.len(), 1, "{execution:#?}");
+    for record in &records {
+        assert!(
+            execution[0]
+                .signal
+                .evidence
+                .contains(&format!("reconciliation_break:{}", record.record_id)),
+            "the gap does not cite {}: {:?}",
+            record.record_id,
+            execution[0].signal.evidence
+        );
+    }
+    let again = loop_
+        .sweep(&platform, at(120), &sources, &jurisdictions)
+        .unwrap();
+    assert_eq!(again.reconciliation_breaks, 0, "a record was read twice");
+}
