@@ -488,9 +488,13 @@
   },
   {
     "id": "R12-MODEL-6021",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Real marked P&L is joined to the forecaster (Model) keys stamped at order acceptance and split pro rata (qip-learning-engine keyed_attribution; Platform::attribute in LEARN). attribution::by_forecaster returns each forecaster's share and feeds the tournament's cumulative attributed P&L each LEARN. In a cycle: a hypothesis REASON formed, an order citing it filling and LEARN marking the position up credits the detector that raised it a positive share, and the shares sum to the position's marked P&L. Since 2026-10-30 the downstream capital impact is attributed too. AttributionPass.deployed holds each order's gross notional, and attribution::capital_by_forecaster splits it across the order's Model keys in the equal shares by_forecaster splits its P&L in. The split is refused if it does not sum to the notional deployed. AttributionRecorded, journaled in LEARN, carries it as capital_by_forecaster (SCHEMA_VERSION 2, additive; version-1 records decode with the map empty; body_schema_lock updated).",
     "evidence": [
+      "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs:249 KeyedAttribution::by (per-forecaster sum over positions, refused unless it closes on the book)",
+      "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs:333 tests::a_forecasters_attributed_pnl_is_the_exact_sum_over_the_positions_it_informed",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs:390 each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs:441 each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional",
       "backend/crates/runtime/qip-kernel/src/attribution.rs::by_forecaster",
       "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs",
       "runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
@@ -499,7 +503,7 @@
       "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional",
       "backend/crates/runtime/qip-kernel/src/attribution.rs attribution::tests::capital_is_split_once_per_order_across_its_forecasters_however_many_fills_it_had"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): P&L and deployed capital are attributed per forecaster on the default LEARN path and journaled. The in-lane skeptic REFUTED the first test on bar part 1: it checked the deployed notional against itself. The test now also asserts the order's notional equals quantity times price from the outcome capture, an independent record, and the arithmetic mutation fires. It has not been re-reviewed (no third round). The per-order split across several fills and models is now tested (a unit test; dropping the per-order guard fails it). Capital is read as deployed notional, not a grant or risk-usage figure.",
+    "gap": "2026-10-30 (lane L2-INTEL): P&L and deployed capital are attributed per forecaster on the default LEARN path and journaled. The in-lane skeptic REFUTED the first test on bar part 1: it checked the deployed notional against itself. The test now also asserts the order's notional equals quantity times price from the outcome capture, an independent record, and the arithmetic mutation fires. It has not been re-reviewed (no third round). The per-order split across several fills and models is now tested (a unit test; dropping the per-order guard fails it). Capital is read as deployed notional, not a grant or risk-usage figure. 2026-11-11 (fw-c-01, independent third review round, no owner ruling needed): the refuted test now holds against an independent record and the row's own bar is met. Mutations, each restored byte for byte (git diff empty): summing fill quantity alone into AttributionPass::deployed fails each_forecaster_is_attributed_the_capital_its_orders_deployed... at model_tournament.rs:475 ('the order's deployed notional is not its fills' quantity times price'); overwriting rather than summing a forecaster's share across positions in KeyedAttribution::by fails 2 of 4 keyed_attribution unit tests. Restored: model_tournament 13 passed, keyed_attribution 4 passed. Capital impact is read as deployed notional, as the row states.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -509,7 +513,7 @@
       "R12-MODEL-6003"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
+    "verification": "cd backend && cargo test -p qip-kernel --test model_tournament && cargo test -p qip-learning-engine --lib keyed_attribution (13 and 4 passed, 0 failed, 2026-11-11)",
     "work_item": "",
     "size": "M",
     "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause. AUDIT-4 2026-10-24: regraded, the requirement attributes economic contribution and downstream capital impact to each forecaster; by_forecaster attributes marked P&L only, and the row's own notes say capital impact 'is not attributed separately and remains a later clause'. The P&L half is real: reading Dimension::Belief instead of Model fails model_tournament.rs:408. 2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: split keyed by Dimension::Belief; empty map journaled in AttributionRecorded::from_pass. Each fails each_forecaster_is_attributed_the_capital_its_orders_deployed_and_the_shares_sum_to_the_book_notional. 2026-10-30 L2-INTEL: added mutation: deployed summed as quantity alone fails the test at the independent notional assertion; restored by copy + cmp."
