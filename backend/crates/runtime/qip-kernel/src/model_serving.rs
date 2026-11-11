@@ -1366,6 +1366,69 @@ impl Platform {
         )))
     }
 
+    /// The regime crossing `card` has not been evaluated since, if there is
+    /// one (R12-MODEL-10096): its own subject's latest crossing where that is
+    /// later than the card's latest evaluation, or than no evaluation at all.
+    ///
+    /// `None` is the answer for a card evaluated at or after the crossing, so
+    /// a desk that renews an evaluation once is not asked again until the
+    /// subject crosses again. Before this existed the only reader of a
+    /// crossing was the promotion gate, and a model already in production
+    /// when its market changed was never looked at a second time.
+    pub fn reevaluation_due(&self, card: &qip_ai::registry::ModelCard) -> Option<Timestamp> {
+        let crossing = self.regime_crossing_for(card)?;
+        match card.latest_evaluation() {
+            Some(evaluation) if evaluation.evaluated_at >= crossing => None,
+            _ => Some(crossing),
+        }
+    }
+
+    /// Put a production model back in front of the verifier society and
+    /// journal the verdict (R12-MODEL-10096). Returns the refutation, in the
+    /// society's words, or `None` where the model survived.
+    ///
+    /// The same attack, on the same dossier, as the one a promotion faces,
+    /// and journaled under the same origin whichever way it goes: a model the
+    /// society let stand is as visible on the log as one it refuted. This
+    /// moves nothing. A refuted model leaves production through
+    /// [`Self::rollback_model`], which the caller decides to call.
+    ///
+    /// Refuses a reference that is not in the promoted set: re-verifying a
+    /// model that is not in production would journal a verdict about a model
+    /// no decision reads.
+    pub fn reverify_model(
+        &mut self,
+        registry: &ModelRegistry,
+        reference: &str,
+        now: Timestamp,
+    ) -> Result<Option<String>> {
+        if !self.model_promotions.contains_key(reference) {
+            return Err(Error::not_found(format!(
+                "{reference} is not in the promoted set, so there is no production model to \
+                 re-verify"
+            )));
+        }
+        let card = registry
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        let verification = self.tournament.verify_model(
+            card,
+            self.quarantined_datasets(),
+            self.regime_crossing_for(card),
+            now,
+        );
+        let refuted = verification
+            .verdict
+            .is_refuted()
+            .then(|| verification.verdict.summary());
+        self.journal_record(
+            crate::model_tournament::ModelVerified { verification },
+            crate::model_tournament::VERIFIER_ORIGIN,
+            now,
+        )?;
+        Ok(refuted)
+    }
+
     /// The `trained_models` slot: every promoted distillate by the digest a
     /// cell checks, or the reason the slot ships unproduced.
     ///
