@@ -2518,9 +2518,11 @@
   },
   {
     "id": "R12-AGENCY-6106",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "StageLog enforces the eleven-stage order, with Act holding a third state, shadowed, that execute records when it calls nothing. On the default path (qip agency shadow with a structural model) a pass runs Observe through Gate, shadows Act, then ObserveEffect, Attribute and Update through engine::learn_shadowed; the journal lists the ten passed stages. On the deepbrain path, after the drafted act, ObserveEffect, Attribute and Update pass through engine::learn and the DraftLearning record lists all eleven stages; the eight before ObserveEffect are seated by the module to place the learn stages, not run by engine::run, which the record and module documentation say.",
     "evidence": [
+      "backend/crates/services/qip-agency/src/engine.rs StageLog::expect (refuses out of order and after a failure)",
+      "backend/crates/services/qip-agency/tests/agency.rs:884 a_stage_is_admitted_only_in_the_declared_order_and_never_after_a_failure",
       "backend/crates/services/qip-agency/src/engine.rs Stage, ORDER, StageLog::shadow_act, learn_shadowed",
       "backend/crates/services/qip-agency/tests/agency.rs::learning_after_a_shadowed_act_admits_only_an_outcome_that_says_it_is_simulated",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
@@ -2528,7 +2530,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
       "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs::a_boundary_suite_pins_that_no_production_code_feeds_an_unidentified_effect_to_the_federation_the_graph_or_the_engine"
     ],
-    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated per ADR 0145 decision 5 as an eleven-stage pass on the qip agency shadow path, which runs Observe through Gate, shadows Act and learns through learn_shadowed (engine.rs ORDER :76, StageLog :99, learn_shadowed :801, called from qip-cli agency.rs:607), with seated stages on the deep brain door, which seats eight and runs three and says so in the DraftLearning record. That CLI reading is accepted as the requirement; amending ADR 0145 d5 would need the structural model d4 refuses. Graded on the cited CLI and acceptance tests. Earlier: no production pass runs all eleven stages on the ambient door by decision; the CLI shadow binary runs engine::run and shadows Act (ADR 0145 decision 5). (dated 2026-10-24)",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated per ADR 0145 decision 5 as an eleven-stage pass on the qip agency shadow path, which runs Observe through Gate, shadows Act and learns through learn_shadowed (engine.rs ORDER :76, StageLog :99, learn_shadowed :801, called from qip-cli agency.rs:607), with seated stages on the deep brain door, which seats eight and runs three and says so in the DraftLearning record. That CLI reading is accepted as the requirement; amending ADR 0145 d5 would need the structural model d4 refuses. Graded on the cited CLI and acceptance tests. Earlier: no production pass runs all eleven stages on the ambient door by decision; the CLI shadow binary runs engine::run and shadows Act (ADR 0145 decision 5). (dated 2026-10-24) 2026-11-11 (fw-c-01, regrade on the ruling's reading): met as the ruling reads it, quoted: 'That CLI reading is accepted as the requirement.' Mutation: the after-a-failure refusal in StageLog::expect disabled (self.failed.filter(|_| false)); a_stage_is_admitted_only_in_the_declared_order_and_never_after_a_failure failed at agency.rs:909 (63 passed, 1 failed); restored byte for byte (git diff empty): agency 64 passed, qip-cli agency_record a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update 1 passed, ambient_effect_boundary 3 passed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2536,7 +2538,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary",
+    "verification": "cargo test -p qip-agency --test agency; cargo test -p qip-cli --test agency_record a_shadowed_pass; cargo test -p qip-acceptance --test ambient_effect_boundary (64, 1 and 3 passed, 0 failed, 2026-11-11)",
     "work_item": "",
     "size": "M",
     "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity). Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): The deep brain door runs the guard rather than the engine; the first eight stages of a learning record stay documented as seated. Owner ruling 2026-10-31 (REGRADE_TEXT): The eleven-stage pass belongs to the shadow binary. qip agency shadow runs Observe through Gate, shadows Act and learns through learn_shadowed."
