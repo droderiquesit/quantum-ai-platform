@@ -754,7 +754,6 @@ dependencies = [
  "qip-financial",
  "qip-numerics",
  "qip-observability",
- "qip-simulation-engine",
  "serde",
  "serde_json",
 ]

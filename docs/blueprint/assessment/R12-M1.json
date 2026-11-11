@@ -2269,14 +2269,21 @@
   },
   {
     "id": "R12-CAPITAL-1095",
-    "status": "PARTIAL",
-    "current": "Functionality lives in qip-portfolio-engine / qip-lifecycle; no single 'brain' boundary or autonomous loop is defined.",
+    "status": "COMPLETE",
+    "current": "qip-portfolio-engine and qip-lifecycle own the Asset Brain with typed public contracts (holding and lifecycle), are composed by the kernel, have contract tests, and are closed under ADR 0127 decision 5: neither crate's closure reaches an alpha crate or another brain's crate. The one dependent below the kernel, qip-evolution calling attempt_promotion, is admitted by ADR 0386 and pinned.",
     "evidence": [
       "backend/crates/services/qip-portfolio-engine/src",
-      "backend/crates/services/qip-lifecycle/src/gates.rs",
-      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_asset_brains_portfolio_engine_is_closed_and_the_lifecycle_crates_open_edges_are_exactly_the_known_ones"
+      "backend/crates/services/qip-lifecycle/src/gates.rs (recomputes qip_numerics::validation)",
+      "backend/crates/services/qip-lifecycle/src/demotion.rs DemotionMonitor::triggers reads qip_contracts::model_eligibility::ModelEligibility",
+      "backend/crates/libs/qip-numerics/src/validation.rs (moved from qip-simulation-engine by ADR 0386)",
+      "backend/crates/libs/qip-contracts/src/model_eligibility.rs; tests/model_eligibility.rs",
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs StrategyFactory::review builds the record from the registry",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_asset_brain_reaches_no_alpha_and_no_other_brain_and_its_one_dependent_is_the_evolution_service",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs a_record_silent_about_the_model_or_taken_at_another_instant_is_not_a_clearance, an_overdue_model_review_demotes_the_strategy_it_drives",
+      "backend/crates/runtime/qip-kernel/tests/central.rs a_model_the_registry_refuses_demotes_the_strategy_it_drives_through_the_composed_review",
+      "docs/adr/0386-the-lifecycle-gates-read-validation-statistics-from-the-numerics-library-and-model-eligibility-as-a-contracts-record-and-the-evolution-services-edge-is-admitted.md"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18). 2026-11-11: a closure test exists and the asset brain is not closed. qip-portfolio-engine meets all three clauses of decision 5 (no alpha crate in its closure, no other brain's crate, nothing below the kernel depends on it). qip-lifecycle does not: it depends on qip-ai (demotion.rs reads qip_ai::registry::ModelRegistry), reaches qip-strategy and the risk brain's qip-risk through qip-simulation-engine, and the alpha service qip-evolution depends on it. The test pins those edges exactly so they cannot grow. NEEDS-ADR (or an ADR 0127 amendment): whether the validation gates and model-eligibility check stay in the asset brain with those edges moved behind qip-contracts types, or qip-lifecycle is not an asset-brain crate. No manifest edit closes it without that decision.",
+    "gap": "None against the inspection text. 2026-11-11 (batch l1-d1-01, ADR 0386): qip-lifecycle stays an asset-brain crate and its open edges are closed. The validation statistics are qip_numerics::validation, so the gate still recomputes them and no longer reaches qip-strategy or qip-risk through the simulation engine; they were not replaced by a record of results, because that would be the submitted number the gate exists to distrust. Model eligibility is a qip-contracts record the kernel takes from the registry, and a record silent about the model or taken at another instant demotes. qip-evolution's dependence is admitted as the one dependent. Outside this row: the protected architecture.rs still lists the removed lifecycle edge in SERVICE_TO_SERVICE_EDGES and fails until integration applies docs/blueprint/lanes/l1-d1-01-R12-CAPITAL-1098-architecture.patch (cumulative with ADR 0385's changes).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2284,10 +2291,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure (\"test result: ok. 8 passed; 0 failed\"); cargo test -p qip-lifecycle (83 passed); cargo test -p qip-kernel --test central (104 passed)",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutation (qip-prediction added to qip-portfolio-engine's manifest under an inactive target table) fails it with alpha {qip-prediction}; restored with cp and cmp. brain_closure: 8 passed, 0 failed. Stays PARTIAL."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutation (qip-prediction added to qip-portfolio-engine's manifest under an inactive target table) fails it with alpha {qip-prediction}; restored with cp and cmp. brain_closure: 8 passed, 0 failed. Stays PARTIAL. 2026-11-11 batch l1-d1-01: promoted under ADR 0386. Mutations that fired, each restored with cp: qip-ai and qip-simulation-engine back in qip-lifecycle's [dependencies]; qip-lifecycle under qip-twin; Unrecorded read as eligible in the contract and in the monitor; the instant check dropped; a refusal read as clearance; the duplicate, blank-reason and blank-reference refusals removed; the kernel builder recording a refusal as eligible, and asking about no model."
   },
   {
     "id": "R12-CAPITAL-1096",

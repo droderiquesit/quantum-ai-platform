@@ -1,5 +1,5 @@
 diff --git a/backend/crates/tests/qip-acceptance/tests/architecture.rs b/backend/crates/tests/qip-acceptance/tests/architecture.rs
-index 4f8d0d6e..a82f3a34 100644
+index 4f8d0d6e..adbee391 100644
 --- a/backend/crates/tests/qip-acceptance/tests/architecture.rs
 +++ b/backend/crates/tests/qip-acceptance/tests/architecture.rs
 @@ -1342,6 +1342,10 @@ const NO_SOLVER_AUTHORITY: &[&str] = &[
@@ -51,20 +51,28 @@ index 4f8d0d6e..a82f3a34 100644
      "PostingBook",
      "CurrencyBook",
  ];
-@@ -3904,13 +3913,13 @@ fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
+@@ -3904,19 +3913,20 @@ fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
  }
  
  /// Every direct dependency one service crate declares on another, as Cargo
 -/// resolved it on 2026-10-18. Thirteen edges, each a domain engine reading a
 +/// resolved it on 2026-10-18, less the fabric's edge to `qip-capital`, which
-+/// ADR 0385 removed on 2026-11-11. Twelve edges, each a domain engine reading a
++/// ADR 0385 removed on 2026-11-11, and the lifecycle's edge to
++/// `qip-simulation-engine`, which ADR 0386 removed the same day by moving the
++/// validation statistics to `qip-numerics`. Eleven edges, each a domain engine reading a
  /// *type* another engine publishes; none of them is a service reaching into
  /// another's mutable state. A new edge is a decision, so it is added here in
  /// the same change that adds it, with a reviewer reading why.
 -const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 13] = [
-+const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 12] = [
++const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 11] = [
      ("qip-brokers", "qip-execution-engine"),
 -    ("qip-capital-fabric", "qip-capital"),
      ("qip-data-finder", "qip-market-ingestion"),
      ("qip-data-finder", "qip-mesh"),
      ("qip-evolution", "qip-lifecycle"),
+     ("qip-evolution", "qip-simulation-engine"),
+     ("qip-execution-engine", "qip-risk-engine"),
+-    ("qip-lifecycle", "qip-simulation-engine"),
+     ("qip-portfolio-engine", "qip-optimization-engine"),
+     ("qip-reasoning-engine", "qip-world-model"),
+     ("qip-twin", "qip-learning-engine"),

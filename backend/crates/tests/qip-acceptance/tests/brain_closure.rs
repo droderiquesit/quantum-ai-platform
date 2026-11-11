@@ -638,20 +638,29 @@ fn the_capital_brain_reaches_no_alpha_and_no_other_brain_and_nothing_below_the_k
 /// `qip-portfolio-engine` meets all three clauses: no alpha, no other
 /// brain, and nothing below the kernel depends on it.
 ///
-/// `qip-lifecycle` does not, and what it reaches is pinned exactly so it
-/// cannot grow unnoticed: it names `qip-ai` (the model registry its
-/// demotion reads) and, through `qip-simulation-engine`, reaches
-/// `qip-strategy` and the risk brain's `qip-risk`; and `qip-evolution`, an
-/// alpha crate, depends on it. Each is a way a decision about an asset's
-/// lifecycle can be reached from, or reach, alpha, which is what the
-/// closure is meant to exclude. Closing them is a decision about where the
-/// validation gates live, not a manifest edit.
+/// `qip-lifecycle` meets the first two since ADR 0386. Until then it named
+/// `qip-ai` (the model registry its demotion read) and, through
+/// `qip-simulation-engine`, reached `qip-strategy` and the risk brain's
+/// `qip-risk`. The validation statistics it recomputes are now
+/// `qip_numerics::validation`, and model eligibility reaches it as a
+/// `qip_contracts` record, so both sets are asserted empty.
 ///
-/// Mutation: add `qip-prediction.workspace = true` under a
-/// `[target.'cfg(any())'.dependencies]` table in qip-portfolio-engine's
-/// manifest — the asset brain's clean half then reaches alpha.
+/// One dependent below the kernel remains and ADR 0386 admits it:
+/// `qip-evolution`, an alpha service, asks the lifecycle for a promotion
+/// through `attempt_promotion`. That is alpha depending on the gate, not
+/// the gate depending on alpha: the lifecycle's closure cannot see the
+/// caller, and `AuthorisedPromotion` has no constructor that skips a gate.
+/// The set is pinned exactly, so a second service taking the lifecycle
+/// fails here.
+///
+/// Mutations, each fails this test: add `qip-prediction.workspace = true`
+/// under a `[target.'cfg(any())'.dependencies]` table in
+/// qip-portfolio-engine's manifest; move `qip-ai.workspace = true` in
+/// qip-lifecycle's manifest from `[dev-dependencies]` to `[dependencies]`;
+/// add `qip-simulation-engine.workspace = true` to its `[dependencies]`;
+/// add `qip-lifecycle.workspace = true` to qip-twin's `[dependencies]`.
 #[test]
-fn the_asset_brains_portfolio_engine_is_closed_and_the_lifecycle_crates_open_edges_are_exactly_the_known_ones()
+fn the_asset_brain_reaches_no_alpha_and_no_other_brain_and_its_one_dependent_is_the_evolution_service()
  {
     let graph = workspace();
     let (alpha, other, dependents) = edges("qip-portfolio-engine", "asset", &graph);
@@ -663,17 +672,20 @@ fn the_asset_brains_portfolio_engine_is_closed_and_the_lifecycle_crates_open_edg
     let (alpha, other, dependents) = edges("qip-lifecycle", "asset", &graph);
     assert_eq!(
         alpha,
-        set(&["qip-ai", "qip-strategy"]),
-        "the alpha crates qip-lifecycle reaches changed (R12-CAPITAL-1095)"
+        BTreeSet::new(),
+        "qip-lifecycle reaches an alpha crate. Validation statistics are in qip-numerics and \
+         model eligibility is a qip-contracts record (ADR 0386)"
     );
     assert_eq!(
         other,
-        set(&["qip-risk"]),
-        "the other brains' crates qip-lifecycle reaches changed (R12-CAPITAL-1095)"
+        BTreeSet::new(),
+        "qip-lifecycle reaches another brain's crate; a brain meets another only through \
+         qip-contracts"
     );
     assert_eq!(
         dependents,
         set(&["qip-evolution"]),
-        "the crates below the kernel that depend on qip-lifecycle changed (R12-CAPITAL-1095)"
+        "the crates below the kernel that depend on qip-lifecycle changed; ADR 0386 admits \
+         the evolution service's call to attempt_promotion and no other"
     );
 }

@@ -22,6 +22,7 @@ use qip_ai::registry::ModelRegistry;
 use qip_compliance::eligibility::EligibilityRegister;
 use qip_contracts::gate::{GateStage, Promotion};
 use qip_contracts::governance::Approval;
+use qip_contracts::model_eligibility::ModelEligibility;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::Timestamp;
@@ -39,7 +40,7 @@ pub use qip_optimization_engine::universe::AlphaFamily;
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::Program;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// A strategy the centre is considering, with everything a gate will ask for.
@@ -653,6 +654,31 @@ impl StrategyFactory {
         // Copied out so the ledger can be borrowed mutably below; the monitor
         // is a pair of thresholds, not state.
         let monitor = self.monitor;
+        // The lifecycle does not hold the registry (ADR 0386): it is an
+        // asset-brain crate and the registry lives with the models. So the
+        // registry is asked here, once per model an observed strategy's
+        // baseline names, and its verdicts travel as a record taken at
+        // `now`. The refusal is recorded in the registry's own words, so the
+        // trigger an operator reads is the one it always was.
+        let eligibility = match models {
+            None => None,
+            Some(registry) => {
+                let mut record = ModelEligibility::taken_at(now);
+                let references: BTreeSet<&str> = observations
+                    .iter()
+                    .filter_map(|observation| self.baselines.get(&observation.strategy))
+                    .filter_map(|baseline| baseline.model_reference.as_deref())
+                    .collect();
+                for reference in references {
+                    match registry.require_for_decision(reference, now) {
+                        Ok(_) => record.record_eligible(reference)?,
+                        Err(error) => record.record_refused(reference, error.message())?,
+                    }
+                }
+                Some(record)
+            }
+        };
+        let models = eligibility.as_ref();
         let mut reviews = Vec::new();
         for observation in observations {
             let Some(baseline) = self.baselines.get(&observation.strategy) else {

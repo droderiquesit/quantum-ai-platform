@@ -14,6 +14,7 @@
 use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage};
 use qip_contracts::gate::{GateOutcome, GateStage};
 use qip_contracts::governance::Approval;
+use qip_contracts::model_eligibility::ModelEligibility;
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_contracts::{CapitalEnvelope, Utilisation};
@@ -45,10 +46,10 @@ use qip_lifecycle::trials::{
     COUNTERFACTUAL_FAMILY, COUNTERFACTUAL_SUBJECT_PREFIX, DEFAULT_QUARTERLY_BUDGET, JOURNAL_PREFIX,
     Quarter, StrategyFamily, TrialBook,
 };
-use qip_observability::metrics::{Metrics, labels, names};
-use qip_simulation_engine::validation::{
+use qip_numerics::validation::{
     DeflatedSharpe, PurgedSplit, assess_overfitting, deflated_sharpe, sharpe_standard_error,
 };
+use qip_observability::metrics::{Metrics, labels, names};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -917,11 +918,69 @@ fn a_healthy_strategy_trips_no_automatic_trigger() -> Result<()> {
     let triggers = DemotionMonitor::default().triggers(
         &baseline,
         &healthy_observation(now),
-        Some(&healthy_registry(now)),
+        Some(&eligibility(&healthy_registry(now), now)),
         now,
     );
     assert!(triggers.is_empty(), "{triggers:?}");
     assert_eq!(ledger.stage_of(&strategy()), GateStage::Pilot);
+    Ok(())
+}
+
+/// ADR 0386: the monitor reads the registry's verdict from a record, and a
+/// record can be wrong in two ways the registry itself could not be. It can
+/// be silent about the model, and it can be old. Neither is a clearance.
+/// Read as one, a composition that forgot to ask about a model, or reused
+/// yesterday's answers, would keep a retired model on capital with no
+/// trigger anywhere.
+///
+/// Mutations, each fails this test: map `ModelVerdict::Unrecorded` to
+/// `None` in `DemotionMonitor::triggers`; drop the `record.instant() != now`
+/// arm.
+#[test]
+fn a_record_silent_about_the_model_or_taken_at_another_instant_is_not_a_clearance() -> Result<()> {
+    let (_, baseline) = pilot_fixture()?;
+    let now = start().saturating_add(Duration::from_days(30));
+    let overdue = |triggers: &[DemotionTrigger]| -> Vec<String> {
+        triggers
+            .iter()
+            .filter_map(|trigger| match trigger {
+                DemotionTrigger::ModelReviewOverdue { reason, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let monitor = DemotionMonitor::default();
+
+    // Premise: the same healthy registry, asked properly at `now`, clears it.
+    let cleared = eligibility(&healthy_registry(now), now);
+    assert!(
+        monitor
+            .triggers(&baseline, &healthy_observation(now), Some(&cleared), now)
+            .is_empty(),
+        "premise: a clearance taken now trips nothing"
+    );
+
+    // Silent: a record taken now that holds a verdict on a different model.
+    let mut silent = ModelEligibility::taken_at(now);
+    silent.record_eligible("some-other-model@1.0")?;
+    let reasons =
+        overdue(&monitor.triggers(&baseline, &healthy_observation(now), Some(&silent), now));
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(
+        reasons[0].contains("no verdict on momentum-ranker@2.1"),
+        "{reasons:?}"
+    );
+
+    // Old: the clearance itself, read a day later.
+    let later = now.saturating_add(Duration::from_days(1));
+    let reasons = overdue(&monitor.triggers(
+        &baseline,
+        &healthy_observation(later),
+        Some(&cleared),
+        later,
+    ));
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(reasons[0].contains("was taken at"), "{reasons:?}");
     Ok(())
 }
 
@@ -937,7 +996,7 @@ fn performance_decay_against_the_pilot_baseline_demotes_without_a_human() -> Res
         &mut ledger,
         &baseline,
         &observation,
-        Some(&healthy_registry(now)),
+        Some(&eligibility(&healthy_registry(now), now)),
         now,
     )?;
     assert!(
@@ -1030,7 +1089,7 @@ fn an_automatic_demotion_for_decayed_performance_is_counted() -> Result<()> {
         &mut ledger,
         &baseline,
         &observation,
-        Some(&healthy_registry(now)),
+        Some(&eligibility(&healthy_registry(now), now)),
         now,
     )?;
     assert!(
@@ -1073,7 +1132,7 @@ fn regime_drift_demotes_a_strategy_out_of_capital() -> Result<()> {
         &mut ledger,
         &baseline,
         &observation,
-        Some(&healthy_registry(now)),
+        Some(&eligibility(&healthy_registry(now), now)),
         now,
     )?;
     assert!(
@@ -1116,7 +1175,12 @@ fn each_stated_kill_condition_fires_on_its_own_breach() -> Result<()> {
     for (label, breach) in breaches {
         let mut observation = healthy_observation(now);
         breach(&mut observation);
-        let triggers = monitor.triggers(&baseline, &observation, Some(&healthy_registry(now)), now);
+        let triggers = monitor.triggers(
+            &baseline,
+            &observation,
+            Some(&eligibility(&healthy_registry(now), now)),
+            now,
+        );
         assert!(
             triggers
                 .iter()
@@ -1125,6 +1189,22 @@ fn each_stated_kill_condition_fires_on_its_own_breach() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The registry's verdict on the one model the fixture baseline names, taken
+/// at `now`, as the record the monitor reads since ADR 0386. Built the way
+/// `qip-kernel`'s `StrategyFactory::review` builds it: ask
+/// `require_for_decision`, record the clearance or the refusal's own words.
+#[allow(clippy::expect_used)]
+fn eligibility(registry: &ModelRegistry, now: Timestamp) -> ModelEligibility {
+    let reference = "momentum-ranker@2.1";
+    let mut record = ModelEligibility::taken_at(now);
+    match registry.require_for_decision(reference, now) {
+        Ok(_) => record.record_eligible(reference),
+        Err(error) => record.record_refused(reference, error.message()),
+    }
+    .expect("one verdict on one named model is a valid record");
+    record
 }
 
 #[test]
@@ -1140,7 +1220,7 @@ fn an_overdue_model_review_demotes_the_strategy_it_drives() -> Result<()> {
         &mut ledger,
         &baseline,
         &healthy_observation(now),
-        Some(&registry),
+        Some(&eligibility(&registry, now)),
         now,
     )?;
     assert!(
@@ -1172,7 +1252,7 @@ fn an_expired_capital_envelope_demotes_the_strategy_trading_under_it() -> Result
         &mut ledger,
         &baseline,
         &observation,
-        Some(&healthy_registry(now)),
+        Some(&eligibility(&healthy_registry(now), now)),
         now,
     )?;
     assert!(
@@ -1957,7 +2037,7 @@ fn a_family_opens_once_and_a_member_cannot_take_its_trials_elsewhere() -> Result
 
 /// Blueprint rule 27: backtest and live share the production crates, so they
 /// cannot diverge. This crate's own scoring helpers delegate to
-/// `qip_simulation_engine::validation` rather than restating `mean / stddev`,
+/// `qip_numerics::validation` rather than restating `mean / stddev`,
 /// and the scaled gate — the one place that had written it out by hand —
 /// now reports the engine's number. Held to the last bit, on series with
 /// drift, without, and with no variance at all.
@@ -2191,7 +2271,7 @@ fn live_performance_inside_the_holdout_band_is_not_demoted() -> Result<()> {
         &mut ledger,
         &baseline,
         &observation,
-        Some(&healthy_registry(now)),
+        Some(&eligibility(&healthy_registry(now), now)),
         now,
     )?;
     assert!(
@@ -2226,7 +2306,7 @@ fn live_performance_outside_the_holdout_band_is_demoted_and_counted() -> Result<
         &mut ledger,
         &baseline,
         &observation,
-        Some(&healthy_registry(now)),
+        Some(&eligibility(&healthy_registry(now), now)),
         now,
     )?;
     assert_eq!(triggers.len(), 1, "only the band tripped: {triggers:?}");
