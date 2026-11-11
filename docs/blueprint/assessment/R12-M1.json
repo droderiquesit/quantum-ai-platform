@@ -3208,7 +3208,7 @@
     "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's acting comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-17 by an independent grader. Owner ruling 2026-10-31 (REGRADE_TEXT): The bounded in-tree constraint solver is the platform's constraint solver. No SAT, SMT or MILP crate is admitted (ADR 0150 decision 11), and neural coupling is out (decision 7)."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's acting comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-17 by an independent grader. Owner ruling 2026-10-31 (REGRADE_TEXT): The bounded in-tree constraint solver is the platform's constraint solver. No SAT, SMT or MILP crate is admitted (ADR 0150 decision 11), and neural coupling is out (decision 7). 2026-11-11 independent verification (wave1111 fw-a-01): a_journaled_acting_answer_the_recorded_verdict_does_not_solve_to_is_refused_on_replay passes. Mutation: verify's acting re-solve disabled (`if false && Step::of(acting(eligible, halted)) != derivation.acting`) -> the test fails at tests/symbolic_federation.rs:843 'refused, but not for the constraint derivation' (the violated-assumptions check caught it instead); restored, passes. Held PARTIAL per the ruling: neural coupling out (ADR 0150 decision 7), no SMT/MILP crate (decision 11)."
   },
   {
     "id": "R12-REASON-1137",
