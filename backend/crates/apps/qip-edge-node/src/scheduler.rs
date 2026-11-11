@@ -547,8 +547,15 @@ impl DecisionLoop {
                 }
                 Ok(PassOutcome::Halted { .. }) => self.last_report = WorkReport::default(),
                 // The journal holds the refusal; the loop keeps turning so
-                // the wires and the flush keep running.
-                Err(_) => {}
+                // the wires and the flush keep running. ADR 0209: what the
+                // failed pass sent is shipped on this turn's delta, marked
+                // by the cell with its gate and pass number, and then
+                // cleared so no later delta carries it again. A failed pass
+                // that sent nothing leaves the previous report's place to
+                // the default: nothing it reported still stands.
+                Err(_) => {
+                    self.last_report = self.cell.take_failed_report().unwrap_or_default();
+                }
             }
             let applied = feed.take_captured();
             captured = applied.len();
@@ -606,6 +613,11 @@ impl DecisionLoop {
 
         if let Some(mesh) = &self.mesh {
             mesh.offer_delta(self.cell.state_delta(&self.last_report, now));
+            // Shipped once (ADR 0209): a failed pass's report is not offered
+            // again on the next turn, whatever that turn does.
+            if self.last_report.failed_pass.is_some() {
+                self.last_report = WorkReport::default();
+            }
             if let Some(health) = mesh.health() {
                 self.mesh_health = Some(health);
             }

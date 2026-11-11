@@ -61,6 +61,8 @@ pub enum Origin {
     /// A chain of recorded relationships crossing three or more domains
     /// that the causal graph does not yet claim end to end.
     CrossDomainSynthesis,
+    /// A cell halted on reconciliation breaks (R12-EXPAND-6066).
+    ReconciliationBreak,
 }
 
 impl Origin {
@@ -81,6 +83,7 @@ impl Origin {
             Self::MissingCausalLink => "detector:missing_causal_link",
             Self::TheoryContradiction => "detector:theory_contradiction",
             Self::CrossDomainSynthesis => "detector:cross_domain_synthesis",
+            Self::ReconciliationBreak => "detector:reconciliation_break",
         }
     }
 }
@@ -727,6 +730,39 @@ pub fn unexplained_anomalies(
                 "market",
                 vec![format!("anomalous:{subject}")],
                 1.0 / total as f64,
+            )
+        })
+        .collect()
+}
+
+/// One execution gap per cell that halted on reconciliation breaks
+/// (R12-EXPAND-6066): `breaks` is `(cell, record id)` for every break
+/// record read this sweep. A cell halted on several breaks is one question
+/// about that cell's bookkeeping, not one per record, and the gap cites
+/// every record so the research can be read back to them.
+pub fn reconciliation_breaks(breaks: &[(String, String)]) -> Vec<Observation> {
+    let mut by_cell: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (cell, record) in breaks {
+        by_cell.entry(cell).or_default().push(record);
+    }
+    by_cell
+        .into_iter()
+        .map(|(cell, records)| {
+            observe(
+                Origin::ReconciliationBreak,
+                GapTrigger::UnexplainedPnl,
+                Wanting::Execution,
+                format!(
+                    "cell `{cell}` halted on {} reconciliation break(s): its book and the \
+                     venue's disagree",
+                    records.len()
+                ),
+                "execution",
+                records
+                    .iter()
+                    .map(|record| format!("reconciliation_break:{record}"))
+                    .collect(),
+                1.0,
             )
         })
         .collect()

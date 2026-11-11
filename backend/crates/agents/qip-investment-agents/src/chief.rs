@@ -446,8 +446,8 @@ pub fn standard_agents(
     quantum_backend_available: bool,
 ) -> Vec<Arc<dyn Agent>> {
     use crate::{
-        adversary, analysts, construction, control, execution, fast, learning, poisoning,
-        portfolio_brain, reasoning, review,
+        adversary, analysts, construction, control, crypto_brain, execution, fast, learning,
+        poisoning, portfolio_brain, reasoning, review,
     };
 
     vec![
@@ -550,6 +550,10 @@ pub fn standard_agents(
         )),
         Arc::new(portfolio_brain::PortfolioAssetAnalyst::new(
             manifests::portfolio_asset_brain(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(crypto_brain::CryptoOnChainAnalyst::new(
+            manifests::crypto_onchain_brain(reviewed_at),
             desk,
         )),
     ]

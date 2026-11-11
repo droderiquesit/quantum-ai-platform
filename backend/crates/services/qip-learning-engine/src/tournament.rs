@@ -253,6 +253,21 @@ pub struct Scorecard {
     pub mean_latency_ms: Option<f64>,
 }
 
+/// What a forecast's [`TournamentForecast::cost`] counts (ADR 0149 decision
+/// 13, R12-MODEL-3090). Two meters, because a detector's cost is a step
+/// count the detector function increments — evidence items examined — and
+/// an analyst's is money spent; a step is never converted to money, so the
+/// cost factor ranks each forecaster only among those on its own meter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostMeter {
+    /// Money spent producing the forecast, in its run record's units.
+    #[default]
+    Spend,
+    /// Deterministic work steps counted by the forecaster itself.
+    Steps,
+}
+
 /// A forecast as the tournament scores it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TournamentForecast {
@@ -271,6 +286,10 @@ pub struct TournamentForecast {
     /// influence arithmetic would pay it for a cost nobody computed (ADR 0149
     /// decision 13).
     pub cost: Option<f64>,
+    /// What [`Self::cost`] counts. An older record carries none and was
+    /// money.
+    #[serde(default)]
+    pub cost_meter: CostMeter,
     /// As [`Self::cost`]: `None` where no replayable reading exists.
     pub latency: Option<Duration>,
 }
@@ -311,6 +330,7 @@ impl TournamentForecast {
             probabilities_bp,
             quantiles,
             cost,
+            cost_meter: CostMeter::Spend,
             latency,
         }
     }
@@ -394,6 +414,9 @@ pub struct ScoredForecast {
     /// number reads as `Some`.
     #[serde(default)]
     pub cost: Option<f64>,
+    /// What [`Self::cost`] counts; an older record was money.
+    #[serde(default)]
+    pub cost_meter: CostMeter,
     #[serde(default)]
     pub latency_ms: Option<f64>,
 }
@@ -1191,6 +1214,7 @@ impl Tournament {
                 information_value,
                 calibration_points,
                 cost: forecast.cost,
+                cost_meter: forecast.cost_meter,
                 latency_ms: forecast.latency.map(|l| l.as_millis() as f64),
             });
         }
@@ -1404,7 +1428,8 @@ impl Tournament {
     ///   already say reads one half, one that adds information approaches
     ///   one, one that subtracts it approaches zero;
     /// * **cost** and **latency** — `m / (m + x)` where `x` is its mean and
-    ///   `m` the median across those weighed *that were metered*, so the
+    ///   `m` the median across those weighed *that were metered on the same
+    ///   [`CostMeter`]* (steps are never ranked against money), so the
     ///   median forecaster reads one half and the cheapest approach one. A
     ///   forecaster with no metered forecast reads one half — the neutral
     ///   factor, not the best — and does not enter the median (ADR 0149
@@ -1445,12 +1470,45 @@ impl Tournament {
             values.sort_by(f64::total_cmp);
             values.get(values.len() / 2).copied().unwrap_or(0.0)
         };
-        let mut costs: Vec<f64> = active.iter().filter_map(|f| mean(f, |s| s.cost)).collect();
+        // The meter a forecaster's cost is counted on: that of its latest
+        // metered score. A cost is ranked only among forecasters on the same
+        // meter (ADR 0149 decision 13), so the step-metered detectors and the
+        // money-metered analysts each have their own median.
+        let meter = |f: &Forecaster| -> CostMeter {
+            f.all_scores()
+                .filter(|s| s.cost.is_some())
+                .last()
+                .map_or(CostMeter::Spend, |s| s.cost_meter)
+        };
+        // The mean cost over only the scores on the forecaster's own meter:
+        // a forecaster whose older scores were money and newer ones steps
+        // must not have micros and steps averaged into one number.
+        let cost_mean = |f: &Forecaster| -> Option<f64> {
+            if f.all_scores().next().is_none() {
+                return Some(0.0);
+            }
+            let on = meter(f);
+            let values: Vec<f64> = f
+                .all_scores()
+                .filter(|s| s.cost_meter == on)
+                .filter_map(|s| s.cost)
+                .collect();
+            Measure::mean(&values, "").value()
+        };
+        let mut costs_by_meter: BTreeMap<CostMeter, Vec<f64>> = BTreeMap::new();
+        for f in &active {
+            if let Some(cost) = cost_mean(f) {
+                costs_by_meter.entry(meter(f)).or_default().push(cost);
+            }
+        }
         let mut latencies: Vec<f64> = active
             .iter()
             .filter_map(|f| mean(f, |s| s.latency_ms))
             .collect();
-        let cost_median = median(&mut costs);
+        let cost_medians: BTreeMap<CostMeter, f64> = costs_by_meter
+            .into_iter()
+            .map(|(m, mut values)| (m, median(&mut values)))
+            .collect();
         let latency_median = median(&mut latencies);
         let relative = |x: Option<f64>, m: f64| -> f64 {
             let Some(x) = x else {
@@ -1496,7 +1554,10 @@ impl Tournament {
                     market_share,
                     calibration,
                     information,
-                    cost: relative(mean(f, |s| s.cost), cost_median),
+                    cost: relative(
+                        cost_mean(f),
+                        cost_medians.get(&meter(f)).copied().unwrap_or(0.0),
+                    ),
                     latency: relative(mean(f, |s| s.latency_ms), latency_median),
                     regime_survival: 1.0 - self.meta.predict(&f.spec.id, regime),
                     weight: 0.0,
@@ -1684,6 +1745,7 @@ mod tests {
             ])),
             quantiles: None,
             cost: Some(1.0),
+            cost_meter: CostMeter::Spend,
             latency: Some(Duration::from_millis(10)),
         }
     }
@@ -2353,6 +2415,120 @@ mod tests {
         // the cheap one still reads above neutral.
         assert!(influence["cheap"].cost > detector.cost);
         assert!(influence["cheap"].latency > detector.latency);
+        Ok(())
+    }
+
+    /// R12-MODEL-3090 (ADR 0149 decision 13): a detector's cost is a step
+    /// count, ranked only among step-metered forecasters and never against
+    /// money. Two detectors answering the same questions, one having examined
+    /// twice the evidence, earn different cost factors and the costlier one
+    /// loses influence; and the money-metered analysts' cost factors are
+    /// exactly what they are with no detector in the field. The failure this
+    /// prevents: pooled into one median, ten evidence items would read as far
+    /// cheaper than fifty micros, a unit nobody converted.
+    ///
+    /// Mutation: rank every metered cost against one pooled median, and the
+    /// analysts' factors move when the detectors join.
+    #[test]
+    fn a_detectors_step_count_is_ranked_only_against_other_detectors_and_never_against_money()
+    -> Result<()> {
+        let run = |with_detectors: bool| -> Result<BTreeMap<String, InfluenceWeight>> {
+            let mut t = Tournament::new();
+            let mut names = vec!["cheap", "dear"];
+            if with_detectors {
+                names.extend(["thorough", "glance"]);
+            }
+            for name in &names {
+                t.admit(spec(name), at(0))?;
+            }
+            for i in 0..PROMOTION_SAMPLE as i64 {
+                let day = 2 * i;
+                let id = format!("m-{day}");
+                t.open(question(&id, "quiet", day), at(day))?;
+                t.submit(&id, forecast("cheap", &id, 7_000, day), at(day))?;
+                let mut dear = forecast("dear", &id, 7_000, day);
+                dear.cost = Some(50.0);
+                t.submit(&id, dear, at(day))?;
+                if with_detectors {
+                    for (name, steps) in [("thorough", 20.0), ("glance", 10.0)] {
+                        let mut detector = forecast(name, &id, 7_000, day);
+                        detector.cost = Some(steps);
+                        detector.cost_meter = CostMeter::Steps;
+                        detector.latency = None;
+                        t.submit(&id, detector, at(day))?;
+                    }
+                }
+                t.resolve(&id, resolution("up", 30.0, day + 1), at(day + 1))?;
+            }
+            t.review_promotions(&BTreeMap::new());
+            Ok(t.influence("quiet"))
+        };
+        let alone = run(false)?;
+        let mixed = run(true)?;
+        // Premise: every entrant was weighed.
+        assert_eq!(alone.len(), 2, "{alone:?}");
+        assert_eq!(mixed.len(), 4, "{mixed:?}");
+        assert!(
+            mixed["glance"].cost > mixed["thorough"].cost,
+            "the detector that examined twice the evidence was not the costlier: {mixed:?}"
+        );
+        assert!(mixed["glance"].weight > mixed["thorough"].weight);
+        for analyst in ["cheap", "dear"] {
+            assert!(
+                (mixed[analyst].cost - alone[analyst].cost).abs() < 1e-12,
+                "{analyst}'s cost factor moved when step-metered detectors joined: {} vs {}",
+                mixed[analyst].cost,
+                alone[analyst].cost
+            );
+        }
+        Ok(())
+    }
+
+    /// R12-MODEL-3090: a forecaster whose meter changed is ranked on its own
+    /// meter's scores alone. "switched" spent a thousand micros a forecast
+    /// before it was re-metered and ten steps after; "peer" was ten steps
+    /// throughout. On steps they did the same work, so they earn the same cost
+    /// factor. The failure this prevents: averaging the old micros with the
+    /// new steps reads switched as fifty times dearer than its peer, in a unit
+    /// nobody converted.
+    ///
+    /// Mutation: take the cost mean over every metered score whatever its
+    /// meter, and the two factors differ.
+    #[test]
+    fn a_forecaster_whose_meter_changed_is_ranked_on_its_current_meter_alone() -> Result<()> {
+        let mut t = Tournament::new();
+        for name in ["switched", "peer"] {
+            t.admit(spec(name), at(0))?;
+        }
+        let rounds = PROMOTION_SAMPLE as i64;
+        for i in 0..rounds {
+            let day = 2 * i;
+            let id = format!("s-{day}");
+            t.open(question(&id, "quiet", day), at(day))?;
+            let mut switched = forecast("switched", &id, 7_000, day);
+            if i < rounds / 2 {
+                switched.cost = Some(1_000.0);
+                switched.cost_meter = CostMeter::Spend;
+            } else {
+                switched.cost = Some(10.0);
+                switched.cost_meter = CostMeter::Steps;
+            }
+            t.submit(&id, switched, at(day))?;
+            let mut peer = forecast("peer", &id, 7_000, day);
+            peer.cost = Some(10.0);
+            peer.cost_meter = CostMeter::Steps;
+            t.submit(&id, peer, at(day))?;
+            t.resolve(&id, resolution("up", 30.0, day + 1), at(day + 1))?;
+        }
+        t.review_promotions(&BTreeMap::new());
+        let influence = t.influence("quiet");
+        assert_eq!(influence.len(), 2, "premise: both weighed: {influence:?}");
+        assert!(
+            (influence["switched"].cost - influence["peer"].cost).abs() < 1e-12,
+            "the old meter's scores leaked into the new one's mean: {} vs {}",
+            influence["switched"].cost,
+            influence["peer"].cost
+        );
         Ok(())
     }
 

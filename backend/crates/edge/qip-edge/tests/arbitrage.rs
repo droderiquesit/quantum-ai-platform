@@ -908,6 +908,70 @@ fn a_cycle_that_breaks_between_legs_halts_the_cell_and_records_the_break() -> Re
     Ok(())
 }
 
+/// ADR 0209, R12-MESH-7143. A cycle that breaks after its first leg fails
+/// the pass, and the pass's `Err` carried no report, so the leg the venue
+/// had accepted never reached the centre: it was later met as a fill on an
+/// order the centre never saw sent. The cell now keeps that report, marked
+/// with the break's gate and the pass number, and hands it over once; the
+/// delta built from it carries the sent order and the break.
+///
+/// Mutation: drop the `failed_report` store in `Cell::work`'s error arm, and
+/// nothing is taken; or leave the mark unset, and the gate assertion fails.
+#[test]
+fn a_pass_that_breaks_after_sending_a_leg_keeps_its_report_marked_and_hands_it_over_once()
+-> Result<()> {
+    let (mut cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    // Premise: a pass that finishes leaves nothing to take.
+    let (mut clean, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let finished = clean.work(t(10), &mut RecordingGateway::default())?;
+    assert_eq!(finished.orders.len(), 3, "the premise failed: {finished:?}");
+    assert!(clean.take_failed_report().is_none());
+
+    let mut gateway = RecordingGateway {
+        refuse_at: Some(2),
+        ..RecordingGateway::default()
+    };
+    assert!(
+        cell.work(t(10), &mut gateway).is_err(),
+        "premise: the cycle broke"
+    );
+    assert_eq!(
+        gateway.placed.len(),
+        1,
+        "premise: one leg reached the venue"
+    );
+
+    let report = cell
+        .take_failed_report()
+        .ok_or_else(|| Error::not_found("the failed pass's report was not kept"))?;
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the sent leg is not on the report: {report:?}"
+    );
+    let mark = report
+        .failed_pass
+        .clone()
+        .ok_or_else(|| Error::not_found("the kept report is unmarked"))?;
+    assert_eq!(mark.gate, "arbitrage_cycle_broken");
+    assert_eq!(mark.pass, 1, "the mark names the wrong pass");
+    assert!(
+        cell.take_failed_report().is_none(),
+        "the failed report was handed over twice"
+    );
+
+    let delta = cell.state_delta(&report, t(10));
+    assert!(
+        delta
+            .refusals
+            .iter()
+            .any(|refusal| refusal.gate == "arbitrage_cycle_broken"),
+        "the delta does not carry the break: {:?}",
+        delta.refusals
+    );
+    Ok(())
+}
+
 #[test]
 fn an_arbitrage_cycle_break_saga_is_replayable_from_the_journal() -> Result<()> {
     // The saga coordinator documents multi-leg compensation: the cell detects

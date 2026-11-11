@@ -72,8 +72,9 @@ use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
     causal_driver_universe, contested_evidence, contradictions, coverage, cross_domain_links,
     incompetent_specialists, low_confidence, missing_causal_links, model_drift, model_error_rate,
-    refusal_clusters, repeated_vetoes_priced, split_by_wanting, theory_contradictions,
-    unexplained_anomalies, unexplained_residuals_priced, world_state_expired,
+    reconciliation_breaks, refusal_clusters, repeated_vetoes_priced, split_by_wanting,
+    theory_contradictions, unexplained_anomalies, unexplained_residuals_priced,
+    world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -893,6 +894,10 @@ pub struct ResearchRound {
     /// Why the deltas could not be read, where they could not: the sweep
     /// then ran over none of them, and says so rather than failing.
     pub knowledge_deltas_refused: Option<String>,
+    /// Reconciliation-break records read this sweep (R12-EXPAND-6066), and
+    /// why the log could not be read, where it could not.
+    pub reconciliation_breaks: usize,
+    pub reconciliation_breaks_refused: Option<String>,
     /// Claim keys the world fabric held an unresolved contest on when the
     /// sweep read it (R12-EXPAND-6011), and of their subjects, how many the
     /// causal graph holds no live claim into.
@@ -1569,6 +1574,9 @@ pub struct ResearchLoop {
     pending_capital: BTreeMap<String, CapitalAdvice>,
     /// The kernel NOW queue's sequence number this loop has read through.
     surprises_seen: u64,
+    /// Reconciliation-break records already read off the log, in log order
+    /// (R12-EXPAND-6066), so each halt is raised once.
+    breaks_seen: usize,
     issued: u64,
     fills_read: usize,
     slippage_read: usize,
@@ -1823,6 +1831,7 @@ impl ResearchLoop {
             pending_wakes: BTreeMap::new(),
             pending_capital: BTreeMap::new(),
             surprises_seen: 0,
+            breaks_seen: 0,
             issued: 0,
             fills_read: 0,
             slippage_read: 0,
@@ -2452,6 +2461,21 @@ impl ResearchLoop {
         // fabric over such a frame, but a sweep that stopped on it would
         // disable every other detector for as long as the log retained one
         // bad frame, which is a louder failure than the one it reports.
+        // R12-EXPAND-6066: the breaks that halted a cell, read off the log
+        // past the ones already raised; one execution gap per cell.
+        match platform.reconciliation_break_records() {
+            Ok(records) => {
+                let fresh: Vec<(String, String)> = records
+                    .iter()
+                    .skip(self.breaks_seen)
+                    .map(|r| (r.cell.clone(), r.record_id.clone()))
+                    .collect();
+                self.breaks_seen = records.len();
+                round.reconciliation_breaks = fresh.len();
+                observations.extend(reconciliation_breaks(&fresh));
+            }
+            Err(error) => round.reconciliation_breaks_refused = Some(error.message().to_string()),
+        }
         let deltas = match platform.knowledge_deltas() {
             Ok(deltas) => deltas,
             Err(error) => {

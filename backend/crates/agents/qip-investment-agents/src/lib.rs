@@ -21,6 +21,7 @@ pub mod chief;
 pub mod construction;
 pub mod control;
 pub mod coverage;
+pub mod crypto_brain;
 pub mod desk;
 pub mod execution;
 pub mod fast;
