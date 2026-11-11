@@ -871,6 +871,15 @@ pub struct Platform {
     /// is one answer to "what did this cycle cost" instead of a ledger and a
     /// separate assertion that can disagree with it.
     reason_routing: Option<ReasonRouting>,
+    /// The judgement of each convened REASON routing whose thesis is still
+    /// open, by hypothesis id (ADR 0391). Written where the hypothesis
+    /// forms, released where LEARN grades it. Bounded by the open
+    /// predictions: LEARN drops an entry whose hypothesis has none.
+    routing_judgements: BTreeMap<String, qip_cost_router::Judgement>,
+    /// Each rung's record under the conditions it was routed to, written
+    /// only by LEARN from a judgement minted at the decision (ADR 0391). A
+    /// score: nothing reads it back into a routing.
+    routing_reputation: qip_cost_router::ReputationBook,
     /// Instruments in the assembled universe that may not drive a capital
     /// decision, with the reason, in object-id order. Empty is the only
     /// state a production universe should show.
@@ -3402,6 +3411,13 @@ pub struct ReasonRouting {
     /// rung.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub convened: Option<IntelligenceTier>,
+    /// The token that scores this routing when the thesis it bought is
+    /// graded (ADR 0391): the rung that ran, under the conditions it was
+    /// chosen under, minted here at the decision by the router's own type.
+    /// `None` where nothing was convened, where the routing was answered in
+    /// deterministic code, and on a record written before the field existed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub judgement: Option<qip_cost_router::Judgement>,
 }
 
 impl ReasonRouting {
@@ -3436,6 +3452,16 @@ impl ReasonRouting {
         rationale: String,
         convened: Option<IntelligenceTier>,
     ) -> Self {
+        // Minted at the decision or not at all (ADR 0391). The mint can
+        // refuse only a blank build, and the build is this crate's own
+        // version, so an absent judgement here means nothing ran or what ran
+        // was deterministic code, which is not something that can be wrong.
+        let judgement = match (&routing, convened.and_then(|tier| tier.model_tier())) {
+            (Some(Routing::Judged(judged)), Some(ran)) => judged
+                .judgement(ran, &crate::routing_score::rung_build())
+                .ok(),
+            _ => None,
+        };
         Self {
             cycle,
             opportunity_id: opportunity.opportunity_id.as_str().to_string(),
@@ -3444,6 +3470,7 @@ impl ReasonRouting {
             rationale,
             dispatched: convened.is_some(),
             convened,
+            judgement,
         }
     }
 }
@@ -6506,6 +6533,8 @@ impl Platform {
             pretrade_routing: None,
             monitor_routing: None,
             reason_routing: None,
+            routing_judgements: BTreeMap::new(),
+            routing_reputation: qip_cost_router::ReputationBook::new(),
             universe_not_decision_grade: not_decision_grade,
             commitments,
             illiquid_marks,
@@ -17127,6 +17156,19 @@ impl Platform {
                 // against something a source published, rather than against
                 // whether it felt right.
                 let predicted = self.record_prediction(&opportunity, &reasoned, now);
+                // The routing that bought this hypothesis is scored when its
+                // thesis is graded (ADR 0391). Held under the hypothesis id,
+                // because that is the key the grade arrives under.
+                if let Some(judgement) = self
+                    .reason_routing
+                    .as_ref()
+                    .and_then(|routing| routing.judgement.clone())
+                {
+                    self.routing_judgements.insert(
+                        reasoned.hypothesis.hypothesis_id.as_str().to_string(),
+                        judgement,
+                    );
+                }
                 let mut outcome = StageOutcome::ran(
                     Stage::Reason,
                     report.findings.len(),
@@ -22620,6 +22662,7 @@ impl Platform {
         // credited is a contradiction between the theory and the evidence,
         // and it leaves a theory delta on the log here, at the instant the
         // grade is known. A proposal only: see `crate::theory_revision`.
+        let routings_scored = self.score_routings(&learned.evaluations, now)?;
         let revision = self.revise_theory(&learned.evaluations, self.cycle, now);
         self.capture_problems
             .extend(revision.problems.iter().cloned());
@@ -22633,6 +22676,9 @@ impl Platform {
                 ", {} theory delta(s) proposed, {} veto(es) upheld",
                 revision.produced, revision.upheld
             ));
+        }
+        if routings_scored > 0 {
+            summary.push_str(&format!(", {routings_scored} routing choice(s) scored"));
         }
         if ungradeable > 0 {
             summary.push_str(&format!(", {ungradeable} ungradeable"));
@@ -22671,6 +22717,85 @@ impl Platform {
             ));
         }
         Ok(Some(summary))
+    }
+
+    /// Resolve the routing judgement behind each graded thesis (ADR 0391,
+    /// R12-MODEL-10123): the rung REASON ran on is credited or charged in
+    /// the cell of the conditions it was routed under, and the resolution is
+    /// journaled. Returns how many were scored.
+    ///
+    /// An inconclusive verdict scores nothing and releases the judgement:
+    /// nothing happened either way, and counting it as a miss would charge
+    /// the rung for a quiet tape. A graded thesis with no judgement held —
+    /// one seeded through `learn_from`, or one routed before a restart — is
+    /// not scored, because there is no decision-time key to score it under
+    /// and one rebuilt now would be the wrong one.
+    fn score_routings(&mut self, evaluations: &[Evaluation], now: Timestamp) -> Result<usize> {
+        let mut scored = 0usize;
+        for evaluation in evaluations {
+            let Some(judgement) = self.routing_judgements.remove(&evaluation.hypothesis_id) else {
+                continue;
+            };
+            if !evaluation.verdict.is_informative() {
+                continue;
+            }
+            let correct = evaluation.verdict.counts_as_correct();
+            // Journaled before the book moves, so a refused write leaves no
+            // score the log cannot reproduce.
+            self.journal_record(
+                crate::routing_score::RoutingScored {
+                    cycle: self.cycle,
+                    hypothesis_id: evaluation.hypothesis_id.clone(),
+                    judgement: judgement.clone(),
+                    verdict: evaluation.verdict.as_str().to_string(),
+                    correct,
+                    at: now,
+                },
+                crate::routing_score::ROUTING_SCORE_ORIGIN,
+                now,
+            )?;
+            self.routing_reputation.observe(&judgement, correct);
+            scored += 1;
+        }
+        // Bounded by the open predictions: a judgement whose thesis can no
+        // longer be graded is not kept for the life of the process.
+        let open: BTreeSet<&str> = self
+            .predictions
+            .iter()
+            .filter(|prediction| prediction.is_open())
+            .map(|prediction| prediction.hypothesis.as_str())
+            .collect();
+        self.routing_judgements
+            .retain(|hypothesis, _| open.contains(hypothesis.as_str()));
+        Ok(scored)
+    }
+
+    /// Where the last REASON stage's question was placed, and what was
+    /// convened on it.
+    pub fn reason_routing(&self) -> Option<&ReasonRouting> {
+        self.reason_routing.as_ref()
+    }
+
+    /// Each rung's record under the conditions it was routed to (ADR 0391).
+    pub fn routing_reputation(&self) -> &qip_cost_router::ReputationBook {
+        &self.routing_reputation
+    }
+
+    /// Every routing choice the log records as scored, in log order.
+    pub fn routings_scored(&self) -> Result<Vec<crate::routing_score::RoutingScored>> {
+        let mut scored = Vec::new();
+        for record in self.event_log().records() {
+            if record.event.topic == Topic::ModelEvaluated
+                && record.event.lineage.producer == crate::routing_score::ROUTING_SCORE_ORIGIN
+            {
+                scored.push(
+                    StreamEnvelope::from_frame(&record.event)?
+                        .decode::<crate::routing_score::RoutingScored>()?
+                        .body,
+                );
+            }
+        }
+        Ok(scored)
     }
 
     /// Record which class of claim held, in which regime.

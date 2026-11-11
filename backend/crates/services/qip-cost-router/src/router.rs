@@ -31,6 +31,7 @@
 
 use crate::context::{Conditions, DecisionContext, Determinism};
 use crate::ledger::TierCharge;
+use crate::reputation::Judgement;
 use crate::tier::{IntelligenceTier, ModelTier};
 use qip_contracts::signal::Conviction;
 use qip_core::Decimal;
@@ -221,6 +222,26 @@ impl JudgedRouting {
     /// turned out to be the cheapest rung that could answer.
     pub fn model_tier(&self) -> Option<ModelTier> {
         self.tier.model_tier()
+    }
+
+    /// The token that scores this routing when the answer it bought resolves
+    /// (ADR 0391, R12-MODEL-10123).
+    ///
+    /// Minted here, at the decision, under the conditions the routing was
+    /// made under — never rebuilt at the outcome from the market then in
+    /// view, which is the one error [`Judgement`] exists to prevent. It names
+    /// `ran`, the rung the caller actually ran on, as `<rung>@<build>`: a
+    /// platform that implements one reasoner runs it whatever rung the
+    /// decision was placed on, and a score filed under the placed rung would
+    /// credit something that never answered.
+    ///
+    /// `ran` is a [`ModelTier`], so deterministic code cannot be named, and
+    /// the method is on this type, so a determinism-required routing has no
+    /// value to call it on: a pre-trade check is not something a reputation
+    /// is kept for. Refuses a blank `build`, because a rung keyed without one
+    /// hands the next build's reasoner the record of the one it replaced.
+    pub fn judgement(&self, ran: ModelTier, build: &str) -> Result<Judgement> {
+        Judgement::minted(format!("{}@{build}", ran.as_str()), self.conditions.clone())
     }
 
     pub fn rationale(&self) -> &str {
