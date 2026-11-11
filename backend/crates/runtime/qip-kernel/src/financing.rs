@@ -39,7 +39,7 @@ use qip_capital_fabric::FxRates;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, ObjectId, Timestamp};
 use qip_financial::asset_class::InstrumentType;
-use qip_financial::extensions::{Extension, FxDetails, RepoDetails};
+use qip_financial::extensions::{Extension, FxDetails, PerpetualDetails, RepoDetails};
 use qip_financial::object::FinancialObject;
 use qip_financial::universe::Universe;
 
@@ -96,6 +96,31 @@ pub struct RepoValuation {
     pub repurchase: Decimal,
 }
 
+/// One perpetual's funding, per contract and per funding interval (ADR 0395).
+///
+/// The rate is the premium of the perpetual's own price over its
+/// underlying's price, both read from the universe. No venue-published
+/// funding rate is read because no source in the tree supplies one, and one
+/// is not assumed. This is a model's figure: it is reported by the cycle and
+/// is not booked to the ledger, for the reason ADR 0153 declines a modelled
+/// margin there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PerpetualFunding {
+    pub underlying_object: String,
+    /// The perpetual's price, in `currency`.
+    pub mark: Decimal,
+    /// The underlying's price, in `currency`.
+    pub index: Decimal,
+    pub currency: Currency,
+    /// Hours between funding exchanges, from the perpetual's own record.
+    pub interval_hours: u32,
+    /// `(mark − index) / index` for one interval. Positive: the long pays.
+    pub rate: Decimal,
+    /// `rate × index × contract_size`: what one long contract pays one short
+    /// contract at the next exchange. Negative: the long receives.
+    pub payment_per_contract: Decimal,
+}
+
 /// The financing valuations of one universe, as it stood at assembly.
 ///
 /// `BTreeMap` throughout: the summary and the problems are decided by
@@ -107,6 +132,7 @@ pub struct FinancingRegister {
     spots: BTreeMap<(Currency, Currency), (String, Decimal)>,
     forwards: BTreeMap<String, FxForwardValuation>,
     repos: BTreeMap<String, RepoValuation>,
+    perpetuals: BTreeMap<String, PerpetualFunding>,
     /// Object id to why it could not be valued. Held rather than dropped: an
     /// unvalued forward that vanished would read as a universe with none.
     refusals: BTreeMap<String, String>,
@@ -157,6 +183,29 @@ impl FinancingRegister {
                             register.refusals.insert(id, error.to_string());
                         }
                     }
+                }
+                (InstrumentType::PerpetualFuture, Extension::Perpetual(perpetual)) => {
+                    match fund_perpetual(object, perpetual, universe) {
+                        Ok(funding) => {
+                            register.perpetuals.insert(id, funding);
+                        }
+                        Err(error) => {
+                            register.refusals.insert(id, error.to_string());
+                        }
+                    }
+                }
+                // A perpetual whose record carries no perpetual terms has no
+                // funding interval to read. Held as a refusal: dropped, it
+                // would read as a universe with no perpetual in it.
+                (InstrumentType::PerpetualFuture, other) => {
+                    register.refusals.insert(
+                        id,
+                        format!(
+                            "a perpetual future carries a {} extension and no perpetual terms; \
+                             state its PerpetualDetails, a funding interval is not assumed",
+                            other.label()
+                        ),
+                    );
                 }
                 _ => {}
             }
@@ -223,6 +272,15 @@ impl FinancingRegister {
         self.repos.get(object_id)
     }
 
+    /// The funding valued for the perpetual under `object_id`, if it could be.
+    pub fn perpetual(&self, object_id: &str) -> Option<&PerpetualFunding> {
+        self.perpetuals.get(object_id)
+    }
+
+    pub fn perpetuals(&self) -> impl Iterator<Item = (&String, &PerpetualFunding)> {
+        self.perpetuals.iter()
+    }
+
     pub fn forwards(&self) -> impl Iterator<Item = (&String, &FxForwardValuation)> {
         self.forwards.iter()
     }
@@ -265,14 +323,19 @@ impl FinancingRegister {
     /// One clause for the UNDERSTAND stage's detail; empty when the universe
     /// holds no forward and no repo.
     pub fn summary(&self) -> String {
-        if self.forwards.is_empty() && self.repos.is_empty() && self.refusals.is_empty() {
+        if self.forwards.is_empty()
+            && self.repos.is_empty()
+            && self.perpetuals.is_empty()
+            && self.refusals.is_empty()
+        {
             return String::new();
         }
         format!(
             "; financing register values {} FX forward(s) by covered interest parity and {} \
-             repo(s), {} unvalued",
+             repo(s) and funds {} perpetual(s) from the premium over the underlying, {} unvalued",
             self.forwards.len(),
             self.repos.len(),
+            self.perpetuals.len(),
             self.refusals.len()
         )
     }
@@ -284,6 +347,80 @@ impl FinancingRegister {
             .map(|(id, reason)| format!("financing instrument {id} is unvalued: {reason}"))
             .collect()
     }
+}
+
+/// Fund one perpetual from its own terms and the universe's two prices.
+///
+/// Refused rather than defaulted: a funding interval of zero, a contract
+/// size that is not positive, an underlying that is absent, either price
+/// not positive, and an underlying priced in another currency (a premium
+/// across two currencies is an FX move, not a funding rate).
+fn fund_perpetual(
+    object: &FinancialObject,
+    perpetual: &PerpetualDetails,
+    universe: &Universe,
+) -> Result<PerpetualFunding> {
+    if perpetual.funding_interval_hours == 0 {
+        return Err(Error::invalid(
+            "the funding interval is zero hours, so funding is never exchanged; state the \
+             contract's interval, a contract that never funds is not a perpetual",
+        ));
+    }
+    if !perpetual.contract_size.is_positive() {
+        return Err(Error::invalid(format!(
+            "a contract size of {} funds nothing; state the units of underlying per contract",
+            perpetual.contract_size
+        )));
+    }
+    let underlying = universe
+        .get(&ObjectId::from_string(
+            perpetual.underlying_object_id.as_str(),
+        ))
+        .ok_or_else(|| {
+            Error::not_found(format!(
+                "underlying {} is not in the universe, so there is no price to take a premium \
+                 over; add the underlying, funding is not valued against an assumed price",
+                perpetual.underlying_object_id
+            ))
+        })?;
+    if !underlying.price.is_positive() {
+        return Err(Error::invalid(format!(
+            "underlying {} is priced at {}, and a premium over that is not a rate",
+            perpetual.underlying_object_id, underlying.price
+        )));
+    }
+    if !object.price.is_positive() {
+        return Err(Error::invalid(format!(
+            "the perpetual is priced at {}, so it has no mark to take a premium from",
+            object.price
+        )));
+    }
+    if underlying.currency != object.currency {
+        return Err(Error::invalid(format!(
+            "the perpetual is priced in {} and underlying {} in {}; a premium across two \
+             currencies is an FX move and is not read as funding",
+            object.currency, perpetual.underlying_object_id, underlying.currency
+        )));
+    }
+    let overflow = || Error::numeric("the perpetual's funding arithmetic overflowed");
+    let rate = object
+        .price
+        .checked_sub(underlying.price)
+        .and_then(|premium| premium.checked_div(underlying.price))
+        .ok_or_else(overflow)?;
+    let payment_per_contract = rate
+        .checked_mul(underlying.price)
+        .and_then(|per_unit| per_unit.checked_mul(perpetual.contract_size))
+        .ok_or_else(overflow)?;
+    Ok(PerpetualFunding {
+        underlying_object: perpetual.underlying_object_id.clone(),
+        mark: object.price,
+        index: underlying.price,
+        currency: object.currency,
+        interval_hours: perpetual.funding_interval_hours,
+        rate,
+        payment_per_contract,
+    })
 }
 
 /// Whole days from `from` to `to`; `None` when there is not one.

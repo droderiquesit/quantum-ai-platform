@@ -142,6 +142,11 @@ pub enum InstrumentType {
     CommoditySwap,
     // Listed derivatives
     Future,
+    /// A future with no expiry (ADR 0395). Its own type rather than a
+    /// [`Self::Future`] with a far-off date: an expiry nobody agreed would be
+    /// read by the contract-roll rule as a real one. What ties its price to
+    /// its underlying is funding, not convergence at a date.
+    PerpetualFuture,
     Forward,
     Option,
     VarianceSwap,
@@ -202,6 +207,7 @@ impl InstrumentType {
             }
 
             Self::Future
+            | Self::PerpetualFuture
             | Self::Forward
             | Self::Option
             | Self::VarianceSwap
@@ -254,6 +260,7 @@ impl InstrumentType {
             Self::CommodityFuture => "commodity_future",
             Self::CommoditySwap => "commodity_swap",
             Self::Future => "future",
+            Self::PerpetualFuture => "perpetual_future",
             Self::Forward => "forward",
             Self::Option => "option",
             Self::VarianceSwap => "variance_swap",
@@ -281,6 +288,7 @@ impl InstrumentType {
             self,
             Self::Option
                 | Self::Future
+                | Self::PerpetualFuture
                 | Self::Forward
                 | Self::CommodityFuture
                 | Self::VarianceSwap

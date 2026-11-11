@@ -1385,6 +1385,13 @@ pub struct Platform {
     /// Desk sale proceeds the venue's settlement calendar has not yet made
     /// usable (R12-CAPITAL-4087). See [`UnsettledSale`].
     unsettled_sales: Vec<UnsettledSale>,
+    /// Venue to the chain terms an operator declared for its digital-asset
+    /// proceeds (ADR 0396). Empty until [`Self::declare_chain_settlement`]:
+    /// no venue is given terms nobody declared.
+    chain_settlement: BTreeMap<String, crate::chain_settlement::ChainSettlementTerms>,
+    /// What declared bridges have kept of digital-asset proceeds. Withheld
+    /// from survival sizing for good; see [`Self::chain_bridge_fees`].
+    chain_bridge_fees: Decimal,
     /// Each desk position's life, discover to attribute (R12-ASSET-4071).
     /// Advanced by [`Self::book_desk_fill`], scheduled by
     /// [`Self::register_settlement`], settled and attributed only in LEARN.
@@ -6610,6 +6617,8 @@ impl Platform {
             apply_joint_tail_reserve: false,
             ledger_obligations: None,
             unsettled_sales: Vec::new(),
+            chain_settlement: BTreeMap::new(),
+            chain_bridge_fees: Decimal::ZERO,
             position_lives: crate::position_life::PositionLives::default(),
             episodes: EpisodicMemory::default(),
             pending_episodes: Vec::new(),
@@ -12526,12 +12535,25 @@ impl Platform {
         costs: Decimal,
         at: Timestamp,
     ) {
-        let quoted = self
-            .pre_positioner
-            .settlement()
-            .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
-            .and_then(|calendar| calendar.quote(at))
-            .map(|quote| quote.available_at);
+        // A digital asset at a venue with declared chain terms settles on
+        // the simulated chain's clock (ADR 0396). Every other class, and a
+        // digital asset at a venue nobody declared terms for, settles on
+        // the venue's calendar as before.
+        let chain_terms = self
+            .asset_classes
+            .get(object_id)
+            .filter(|class| **class == AssetClass::DigitalAsset)
+            .and_then(|_| self.chain_settlement.get(venue))
+            .copied();
+        let quoted = match chain_terms {
+            Some(terms) => terms.available_at(at),
+            None => self
+                .pre_positioner
+                .settlement()
+                .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
+                .and_then(|calendar| calendar.quote(at))
+                .map(|quote| quote.available_at),
+        };
         if let Some(problem) = self
             .position_lives
             .schedule_settlement(object_id, quoted.as_ref().ok().copied())
@@ -12559,13 +12581,39 @@ impl Platform {
                 None
             }
         };
+        // A declared bridge keeps its fee. The simulated broker has already
+        // credited the whole sale, and no ledger kind books a bridge's cut,
+        // so the fee is withheld from survival sizing for good and only the
+        // rest waits to be released. A fee that cannot be computed or
+        // summed is reported and the whole sale stays in flight: never
+        // dropped in silence, never released by an overflow.
+        let mut arriving = proceeds;
+        if let Some(terms) = chain_terms {
+            let withheld = terms.bridge_fee(proceeds).and_then(|fee| {
+                let total = self.chain_bridge_fees.checked_add(fee);
+                let net = proceeds.checked_sub(fee);
+                total
+                    .zip(net)
+                    .ok_or_else(|| Error::numeric("the bridge fee arithmetic overflowed"))
+            });
+            match withheld {
+                Ok((total, net)) => {
+                    self.chain_bridge_fees = total;
+                    arriving = net;
+                }
+                Err(error) => self.capture_problems.push(format!(
+                    "the bridge fee on a digital-asset sale at {venue} was not withheld ({})",
+                    error.message()
+                )),
+            }
+        }
         // Settled entries are dropped on the way in, so the register holds
         // only what is in flight: a few days of sales at T+n.
         self.unsettled_sales
             .retain(|sale| sale.available_at.is_none_or(|due| due > at));
         let sale = UnsettledSale {
             available_at,
-            proceeds,
+            proceeds: arriving,
         };
         if self.unsettled_sales.len() >= MAX_UNSETTLED_SALES {
             // Bounded, and folded the restrictive way: the new proceeds join
@@ -12590,13 +12638,45 @@ impl Platform {
         self.unsettled_sales.push(sale);
     }
 
-    /// Desk sale proceeds still in settlement at `now`: what the survival
-    /// waterfall's settlement tier withholds beside the ledger's accruals.
+    /// Declare the chain terms `venue`'s digital-asset proceeds settle on
+    /// (ADR 0396): a finality depth, a block interval and, if the proceeds
+    /// cross one, a bridge's delay and fee.
+    ///
+    /// This can only delay a release and withhold a fee. It signs nothing,
+    /// broadcasts nothing and opens no order path; sales already in flight
+    /// keep the instant they were quoted.
+    pub fn declare_chain_settlement(
+        &mut self,
+        venue: &str,
+        terms: crate::chain_settlement::ChainSettlementTerms,
+    ) {
+        self.chain_settlement.insert(venue.to_string(), terms);
+    }
+
+    /// The chain terms declared for `venue`, if any.
+    pub fn chain_settlement_terms(
+        &self,
+        venue: &str,
+    ) -> Option<&crate::chain_settlement::ChainSettlementTerms> {
+        self.chain_settlement.get(venue)
+    }
+
+    /// What declared bridges have kept of digital-asset sale proceeds. It
+    /// is part of [`Self::unsettled_sale_proceeds`] at every instant: the
+    /// broker credited the whole sale, and this is the part that never
+    /// arrived.
+    pub fn chain_bridge_fees(&self) -> Decimal {
+        self.chain_bridge_fees
+    }
+
+    /// Desk sale proceeds still in settlement at `now`, plus every bridge
+    /// fee withheld under ADR 0396: what the survival waterfall's settlement
+    /// tier withholds beside the ledger's accruals.
     pub fn unsettled_sale_proceeds(&self, now: Timestamp) -> Result<Decimal> {
         self.unsettled_sales
             .iter()
             .filter(|sale| sale.available_at.is_none_or(|due| due > now))
-            .try_fold(Decimal::ZERO, |total, sale| {
+            .try_fold(self.chain_bridge_fees, |total, sale| {
                 total
                     .checked_add(sale.proceeds)
                     .ok_or_else(|| Error::numeric("unsettled sale proceeds overflow"))

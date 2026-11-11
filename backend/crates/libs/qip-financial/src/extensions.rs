@@ -26,6 +26,7 @@ pub enum Extension {
     Fx(FxDetails),
     Commodity(CommodityDetails),
     Future(FutureDetails),
+    Perpetual(PerpetualDetails),
     Option(OptionDetails),
     Volatility(VolatilityDetails),
     Digital(DigitalAssetDetails),
@@ -54,6 +55,7 @@ impl Extension {
             Self::Fx(_) => "fx",
             Self::Commodity(_) => "commodity",
             Self::Future(_) => "future",
+            Self::Perpetual(_) => "perpetual",
             Self::Option(_) => "option",
             Self::Volatility(_) => "volatility",
             Self::Digital(_) => "digital",
@@ -439,6 +441,25 @@ pub struct FutureDetails {
     pub settlement: SettlementStyle,
     /// Position in the expiry cycle: 1 is the front month.
     pub contract_month_index: u32,
+}
+
+/// The terms of a perpetual future (ADR 0395).
+///
+/// There is no expiry field, on purpose: [`Extension::maturity`] answers
+/// `None` for it, so no rule that reads an expiry can roll or settle one.
+/// The funding interval is the contract's own term, as a repo's rate is its
+/// own; it is stated here by whoever lists the instrument and is never a
+/// constant of the code that values it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PerpetualDetails {
+    pub underlying_object_id: String,
+    pub contract_size: Decimal,
+    pub tick_size: Decimal,
+    pub initial_margin: Decimal,
+    pub maintenance_margin: Decimal,
+    /// Hours between funding exchanges. Zero is refused where funding is
+    /// valued: a contract that never funds is not a perpetual.
+    pub funding_interval_hours: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
