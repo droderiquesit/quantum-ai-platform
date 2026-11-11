@@ -3706,9 +3706,10 @@
       "backend/crates/runtime/qip-kernel/src/exploration.rs::ExplorationDesk",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentReview",
       "backend/crates/libs/qip-ai/src/registry.rs ModelClass (Foundation, Policy, Specialist*)",
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65"
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:65",
+      "backend/crates/libs/qip-numerics/tests/statistics.rs:742 the_hmm_fit_re_estimates_its_volatilities_rather_than_keeping_its_starting_guess (2026-11-11; mutation fired)"
     ],
-    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): PARTIAL on three scope items. Foundation models wait on a vendor (owner decision 6 of 2026-10-25) or a signed pack from the ADR 0122 research lane. Specialist models are trained only from a licensed source and close under R12-MODEL-4003 (ADR_THEN_IMPLEMENT, 2026-10-31). Valuation is licence-gated under ADR 0157 via R12-MODEL-4003. A state-to-action RL policy that moves capital is not built, because nobody has argued for one; the UCB1 bandit is recorded as a bandit, not as that policy, so the restated text does not widen 'RL'. Earlier: Complete the remaining scope items and integrate them.",
+    "gap": "2026-11-11 (wave1111 fw-a-01): held PARTIAL, as the ruling says ('The row stays PARTIAL on that one item', foundation models, with specialist models and valuation open as the skeptic's correction reads it). Independently verified the unsupervised item: the_hmm_recovers_two_regimes_it_was_generated_from passed with Baum-Welch's variance re-estimation removed, because its bands admit the median-split starting guess, so a tight test was added that fails on it. 2026-10-31 owner ruling (REGRADE_TEXT): PARTIAL on three scope items. Foundation models wait on a vendor (owner decision 6 of 2026-10-25) or a signed pack from the ADR 0122 research lane. Specialist models are trained only from a licensed source and close under R12-MODEL-4003 (ADR_THEN_IMPLEMENT, 2026-10-31). Valuation is licence-gated under ADR 0157 via R12-MODEL-4003. A state-to-action RL policy that moves capital is not built, because nobody has argued for one; the UCB1 bandit is recorded as a bandit, not as that policy, so the restated text does not widen 'RL'. Earlier: Complete the remaining scope items and integrate them.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3719,7 +3720,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (REGRADE_TEXT): Unsupervised learning is already on the default path: the regime detector's Baum-Welch fit learns its hidden states from unlabelled returns."
+    "notes": "Owner ruling 2026-10-31 (REGRADE_TEXT): Unsupervised learning is already on the default path: the regime detector's Baum-Welch fit learns its hidden states from unlabelled returns. 2026-11-11 verification (wave1111 fw-a-01): mutation hmm.rs:249 variance update dropped (`let _ = variance;`) -> the_hmm_recovers_two_regimes_it_was_generated_from and the_regime_detector_fires_on_a_transition_and_not_on_a_stable_series both still passed (survived); means update dropped (:245) also survived. Added tests/statistics.rs:742 the_hmm_fit_re_estimates_its_volatilities_rather_than_keeping_its_starting_guess (calm sd within 0.001 of 0.006, stress within 0.002 of 0.025; fit lands at 0.0058/0.0244): under the variance mutation it fails 'calm sd 0.0038333771926929707 is not the generating 0.006'; restored, passes. qip-numerics --no-fail-fast: 140 passed, 0 failed."
   },
   {
     "id": "R12-QUANT-1158",
