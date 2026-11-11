@@ -1342,6 +1342,10 @@ const NO_SOLVER_AUTHORITY: &[&str] = &[
     "qip-capital",
     "qip-capital-fabric",
     "qip-lifecycle",
+    // The Treasury Bank's books (ADR 0385, extracted from `qip-capital`): the
+    // reserve floor, leverage decisions and the permission a financing
+    // source needs. It says no to money, so no solver may reach it.
+    "qip-treasury",
 ];
 
 /// The service crates that hold none of those four authorities.
@@ -2968,25 +2972,30 @@ fn nothing_that_moves_capital_can_reach_a_language_model() {
 
 /// CAPITAL-022: the modules in which the Capital Brain *decides*.
 ///
-/// Sizing, grants, compounding, recall and funding. Each returns a value —
-/// an allocation, an envelope, a plan, an order — and the kernel journals it.
-const CAPITAL_BRAIN_MODULES: [&str; 6] = [
+/// Sizing, grants, compounding and recall. Each returns a value — an
+/// allocation, an envelope, a plan, an order — and the kernel journals it.
+/// `funding.rs` was the sixth until ADR 0385 extracted it, with
+/// `treasury.rs`, to `qip-treasury`; `treasury_boundary.rs` holds that
+/// neither crate names the other.
+const CAPITAL_BRAIN_MODULES: [&str; 5] = [
     "allocation.rs",
     "capacity.rs",
     "compounding.rs",
     "envelope.rs",
-    "funding.rs",
     "recall.rs",
 ];
 
 /// The types in `qip-capital` that hold authoritative capital state and
 /// change it: balances, holds, obligations, postings.
-const CAPITAL_STATE_WRITERS: [&str; 7] = [
+///
+/// `CapitalBook` and `InternalFunding` were on this list until ADR 0385
+/// moved them to `qip-treasury`. A brain module cannot name either now:
+/// `qip-capital` does not depend on that crate, and
+/// `treasury_boundary.rs` pins that it never does.
+const CAPITAL_STATE_WRITERS: [&str; 5] = [
     "UserLedger",
     "CashBalance",
     "ReservationLedger",
-    "CapitalBook",
-    "InternalFunding",
     "PostingBook",
     "CurrencyBook",
 ];
@@ -3904,19 +3913,20 @@ fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
 }
 
 /// Every direct dependency one service crate declares on another, as Cargo
-/// resolved it on 2026-10-18. Thirteen edges, each a domain engine reading a
+/// resolved it on 2026-10-18, less the fabric's edge to `qip-capital`, which
+/// ADR 0385 removed on 2026-11-11, and the lifecycle's edge to
+/// `qip-simulation-engine`, which ADR 0386 removed the same day by moving the
+/// validation statistics to `qip-numerics`. Eleven edges, each a domain engine reading a
 /// *type* another engine publishes; none of them is a service reaching into
 /// another's mutable state. A new edge is a decision, so it is added here in
 /// the same change that adds it, with a reviewer reading why.
-const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 13] = [
+const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 11] = [
     ("qip-brokers", "qip-execution-engine"),
-    ("qip-capital-fabric", "qip-capital"),
     ("qip-data-finder", "qip-market-ingestion"),
     ("qip-data-finder", "qip-mesh"),
     ("qip-evolution", "qip-lifecycle"),
     ("qip-evolution", "qip-simulation-engine"),
     ("qip-execution-engine", "qip-risk-engine"),
-    ("qip-lifecycle", "qip-simulation-engine"),
     ("qip-portfolio-engine", "qip-optimization-engine"),
     ("qip-reasoning-engine", "qip-world-model"),
     ("qip-twin", "qip-learning-engine"),
