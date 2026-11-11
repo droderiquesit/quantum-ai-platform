@@ -313,7 +313,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. qip-ledgerd now starts, consumes and serves; dedup reached from main. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Still holds after 5ff50da9's consumer change. AUDIT-3 2026-10-24: regraded, the exactly-once and integrity-break behaviour is real and mutation-checked in qip-ledgerd's store, but qip-ledgerd is instantiated in no committed environment (ledgerd null everywhere), so no global journal applies any event"
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. qip-ledgerd now starts, consumes and serves; dedup reached from main. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Still holds after 5ff50da9's consumer change. AUDIT-3 2026-10-24: regraded, the exactly-once and integrity-break behaviour is real and mutation-checked in qip-ledgerd's store, but qip-ledgerd is instantiated in no committed environment (ledgerd null everywhere), so no global journal applies any event 2026-10-31 lane L1-MONEY (decision 14 regrade to COMPLETE attempted): one skeptic REFUTED. Bar 1 holds (tests/store.rs property and same-digest tests), but bar 2 fails: qip-ledgerd is built and attested by no workflow (deploy.yml builds api, fastbrain, deepbrain, edge-node, portal), ADR 0010 lists it deployed: no, and ledgerd is null in every environment. Kept PARTIAL; closes when qip-ledgerd has a built artefact and a committed environment, or the owner narrows the row to the library property."
   },
   {
     "id": "R12-LEDGER-5014",
@@ -790,13 +790,16 @@
   {
     "id": "R12-REFLEX-5034",
     "status": "PARTIAL",
-    "current": "Outcomes and the journal drain asynchronously to the fabric; a policy the cell applied is acknowledged on the fabric spool after the turn (Recorded::PolicyApplied), tested with a mutation. Telemetry leaves only by scrape.",
+    "current": "Outcomes and the journal drain asynchronously to the fabric; a policy the cell applied is acknowledged on the fabric spool after the turn (Recorded::PolicyApplied), tested with a mutation. Telemetry leaves the node only by the scrape and is not a fabric record kind (ADR 0133 decision 4), pinned by a test that drives the decision loop and reads the spool: every spooled record is one of the writer's eight declared kinds on the P1 or P2 stream the drain delivers, none is P4 telemetry, and the turns' metrics are in the registry the scrape serves. Learning reads a fill from the cell report and not the fabric, pinned in qip-kernel.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:66-72",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs (OUTCOMES_STREAM, JOURNAL_STREAM)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs::RecordKind",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn"
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::telemetry_leaves_the_node_only_by_the_scrape_and_no_spool_record_carries_a_metric",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::learning_reads_a_fill_from_the_cell_report_and_the_central_plane_names_no_fabric_fill_type"
     ],
-    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: no new path: a test pinning that telemetry is scrape-only and the register reading the single-source rule as the design.",
+    "gap": "2026-10-31 (lane L5-EDGE, owner ruling decision 14): the single-source rule is the design (ADR 0133 decision 4: telemetry on the scrape, learning on the report) and both halves are now pinned by tests. The row stays PARTIAL because the requirement text still names telemetry as a fabric flow (bar part 4), and because the fabric leg is not deployed until R12-REFLEX-5031 is.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -806,10 +809,10 @@
       "R12-REFLEX-5031"
     ],
     "blocked_by": "",
-    "verification": "node test with in-process qip-streaming broker double",
+    "verification": "cargo test -p qip-edge-node --test decision_loop telemetry_leaves_the_node_only_by_the_scrape a_policy_the_cell_applied; cargo test -p qip-kernel --test central learning_reads_a_fill_from_the_cell_report",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0133 decision 4 already answers this, and it stands: telemetry leaves the node only by the scrape and is not a fabric record kind. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0133 decision 4 already answers this, and it stands: telemetry leaves the node only by the scrape and is not a fabric record kind. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L5-EDGE: pin test added. It lives in tests/decision_loop.rs rather than telemetry_wiring.rs, because the decision-loop rig with a spool and writer thread is defined there and a second copy would be a second rig to keep in step. Mutations, each restored byte-for-byte (cmp): a ninth RecordKind writing a metric snapshot to the spool every pass (fails: a record on a topic none of the eight declare); the same snapshot written under a declared kind's topic (fails: a spooled record carries a metric). decision_loop.rs's doc now reads 'telemetry is not a fabric record (ADR 0133 d4)'. No skeptic run beyond the ruling's; not promoted."
   },
   {
     "id": "R12-MESH-5035",
@@ -887,7 +890,7 @@
   {
     "id": "R12-REFLEX-5038",
     "status": "PARTIAL",
-    "current": "Books: qip-orderbook VenueState (L2/L3); funding/borrow: backend/crates/edge/qip-edge/src/funding.rs, held on the Cell (Cell::set_funding_rate, Cell::set_borrow_availability) and read by nothing; venue health: qip_routing::health::HealthTracker armed in qip-edge-node; reservations: RegionAllocation; inventory measured from confirmed fills: Cell::confirm writes the venue-facing positions map and each contributor's strategy_positions from every venue-reported fill, and Cell::position reads it.",
+    "current": "Books: qip-orderbook VenueState (L2/L3); funding/borrow: backend/crates/edge/qip-edge/src/funding.rs, held on the Cell (Cell::set_funding_rate, Cell::set_borrow_availability) and read by nothing; venue health: qip_routing::health::HealthTracker armed in qip-edge-node; reservations: RegionAllocation; inventory measured from confirmed fills: Cell::confirm writes the venue-facing positions map and each contributor's strategy_positions from every venue-reported fill, and Cell::position reads it. 2026-11-06 (lane L5-EDGE): Cell::borrow_admit now judges a sale against everything the cell has outstanding at that venue and instrument, not the sale alone: the short its confirmed sales already borrowed, plus the unfilled remainder of its resting sells (Cell::resting_sells), plus this sale, less the long covering them. Two sales each within the statement no longer go out together on twice the borrow the venue stated.",
     "evidence": [
       "backend/crates/edge/qip-orderbook/src/venue.rs",
       "backend/crates/edge/qip-edge/src/funding.rs",
@@ -899,9 +902,11 @@
       "backend/crates/edge/qip-edge/src/cell.rs::Cell::borrow_admit at Cell::send (GATE_BORROW), armed by CellConfig::with_borrow_required",
       "backend/crates/apps/qip-edge-node/src/lib.rs::assemble arms with_borrow_required",
       "cell.rs crossing_tests::a_short_sale_is_refused_when_the_venue_states_no_borrow",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs::an_assembled_node_arms_the_borrow_gate_and_its_simulated_feed_invents_no_lender"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::an_assembled_node_arms_the_borrow_gate_and_its_simulated_feed_invents_no_lender",
+      "backend/crates/edge/qip-edge/src/cell.rs::Cell::borrow_admit and Cell::resting_sells",
+      "backend/crates/edge/qip-edge/src/cell.rs::crossing_tests::a_second_short_sale_that_would_exceed_the_stated_borrow_once_the_first_resting_sell_is_counted_is_refused_under_gate_borrow"
     ],
-    "gap": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED). Built: a fail-closed borrow gate at Cell::send (GATE_BORROW), armed by qip-edge-node, that refuses a sale beyond the confirmed long position on unstated, unavailable or insufficient borrow, or with no stated funding rate. Remaining: (1) nothing produces borrow or funding facts. The simulated exchange models neither, so the node's feed states none, rather than inventing an unlimited lender at zero carry; that needs a simulator lending/funding model or the owner's decision; (2) the pass checks only that a funding rate is present, never reads its value (carry, sizing); (3) borrow is not used up as it is used, and resting sells are not counted against it; (4) trade prints (VenueState::last_trade) have no reader in the pass; (5) passes run only with QIP_VENUE_FEED=simulated, and no committed environment enables an execution node.",
+    "gap": "2026-11-06 (lane L5-EDGE): borrow is now debited by confirmed shorts and resting sells. Still open in the repository: the funding rate's value is not yet read into the short's carry on the pass report, and VenueState::last_trade has no reader in the pass. Outside it: a borrow and funding producer (EXTERNAL; the R12-TICK-2045 ruling chose no vendor, ADR 0157 licence) and a deployed execution node (decision 19: edge pass-time rows stay PARTIAL until a deployed node runs passes).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -912,7 +917,7 @@
     "verification": "cargo test -p qip-edge --test reservation; cargo test -p qip-edge-node --test feed_recovery; cargo +1.94.1 test -p qip-edge --lib a_short_sale; cargo +1.94.1 test -p qip-edge-node --test pass an_assembled_node_arms",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here. 2026-10-24 lane L5-EDGE: not closed. A producer on the default simulated feed would have to state what the in-process venue lends, and the simulator (qip-brokers exchange.rs, qip-edge-node gateway.rs) has no inventory, borrow or funding concept: stating 'unavailable' refuses every short sale on the node, stating an amount invents one. That is a modelling decision (what the simulated venue lends and charges) to make before the feed print and a borrow gate beside authority_verdict in Cell's signal path; recorded rather than guessed. 2026-10-25 lane L5-EDGE: funding and borrow now have a producer and a consumer. The simulated feed states, per quoted instrument, the facts its venue has (no borrow limit, zero funding); Cell::send refuses under GATE_BORROW a sale beyond the confirmed long position when borrow is unstated, stated unavailable or short of the need, or when no funding rate is stated; qip-edge-node's assemble arms it. Mutations fired: FundingState not read; gate not called at send; simulator states nothing; node does not arm. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED. The simulator statement first written (Decimal::MAX borrow, zero funding) was removed on its finding that it invents a lender the exchange does not model. The clause's named mutation was run: health.record_reject removed at Cell::send fails 4 qip-edge tests (telemetry.rs a_venue_quarantined_for_rejecting_orders_moves_the_venue_session_row; venue_failure.rs a_venue_that_rejects_its_orders_is_quarantined..., with_nowhere_else_to_go..., a_cell_reads_its_venue_session_row...); restored, cmp identical."
+    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here. 2026-10-24 lane L5-EDGE: not closed. A producer on the default simulated feed would have to state what the in-process venue lends, and the simulator (qip-brokers exchange.rs, qip-edge-node gateway.rs) has no inventory, borrow or funding concept: stating 'unavailable' refuses every short sale on the node, stating an amount invents one. That is a modelling decision (what the simulated venue lends and charges) to make before the feed print and a borrow gate beside authority_verdict in Cell's signal path; recorded rather than guessed. 2026-10-25 lane L5-EDGE: funding and borrow now have a producer and a consumer. The simulated feed states, per quoted instrument, the facts its venue has (no borrow limit, zero funding); Cell::send refuses under GATE_BORROW a sale beyond the confirmed long position when borrow is unstated, stated unavailable or short of the need, or when no funding rate is stated; qip-edge-node's assemble arms it. Mutations fired: FundingState not read; gate not called at send; simulator states nothing; node does not arm. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED. The simulator statement first written (Decimal::MAX borrow, zero funding) was removed on its finding that it invents a lender the exchange does not model. The clause's named mutation was run: health.record_reject removed at Cell::send fails 4 qip-edge tests (telemetry.rs a_venue_quarantined_for_rejecting_orders_moves_the_venue_session_row; venue_failure.rs a_venue_that_rejects_its_orders_is_quarantined..., with_nowhere_else_to_go..., a_cell_reads_its_venue_session_row...); restored, cmp identical. 2026-11-06 lane L5-EDGE (wave1101 queue, CODE_NOW, file unverified): borrow_admit re-read; it compared each sale's own need with the statement. Test: borrow of 3 stated, two nets each selling 2, the first resting unfilled; the second is refused under GATE_BORROW naming 'needs 4 borrowed'. Mutation: stop counting resting sells, after which the second sale is admitted and the test fails at cell.rs:14136; restored byte-for-byte (cmp). The existing no-borrow test still passes. Funding carry and last-trade marking are not done and remain in the gap."
   },
   {
     "id": "R12-REFLEX-5039",
@@ -1131,25 +1136,25 @@
   },
   {
     "id": "R12-MESH-5048",
-    "status": "PARTIAL",
-    "current": "Peer frames refuse downward-only kinds (backend/crates/services/qip-mesh/src/peer.rs:63 DOWNWARD_ONLY; test backend/crates/services/qip-mesh/tests/peer.rs:493); MeshFunction lane registry (backend/crates/services/qip-mesh/src/peer.rs:108). Fabric codec separate (qip-events event_fabric). Neither peer transport nor node fabric drain is live.",
+    "status": "COMPLETE",
+    "current": "A peer frame of a downward-only kind (packs, policy, capital grants) is refused inside qip_peer::decode, the only way a peer frame becomes a PeerMessage (PeerEndpoint::receive_checked, which qip-peer-link reaches only through receive and receive_from). The reverse direction is held by the crate graph: the mesh crates and the durable fabric crates reach none of each other.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:63 DOWNWARD_ONLY",
-      "backend/crates/services/qip-mesh/tests/peer.rs:493",
-      "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs"
+      "backend/crates/libs/qip-peer/src/lib.rs::DOWNWARD_ONLY (checked in decode)",
+      "backend/crates/services/qip-mesh/tests/peer.rs::a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::reflex_mesh_traffic_and_durable_fabric_traffic_share_no_crate_in_either_direction"
     ],
-    "gap": "Both live paths.",
+    "gap": "None against the requirement's text. It is a separation constraint, so bar part 3 applies: the guard sits on the only path a peer frame decodes by, whether or not the mesh is enabled.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer; qip-acceptance mesh_lane",
+    "verification": "cargo test -p qip-mesh --test peer a_well_formed_pack_policy_or_grant; qip-acceptance architecture reflex_mesh_traffic_and_durable_fabric_traffic",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-31 lane L5-EDGE (taken over from L5b; wave1031 triage ALREADY_COMPLETE, skeptic recorded in wave1031-triage-2026-10-31.json): PARTIAL -> COMPLETE. The evidence cited the deleted qip-mesh/src/peer.rs:63 and is re-cited by symbol. Mutation: the DOWNWARD_ONLY check in decode short-circuited to false fails a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing at peer.rs:512 (the frame is then refused only as an unknown variant, without the 'never from a peer' reason); restored byte-for-byte (cmp)."
   },
   {
     "id": "R12-MESH-5049",
@@ -1442,28 +1447,26 @@
   },
   {
     "id": "R12-MESH-5061",
-    "status": "PARTIAL",
-    "current": "EpochDraft::build refuses each missing field by name; saga.rs now originates epochs in production code, but only when the env-gated peer mesh is configured.",
+    "status": "COMPLETE",
+    "current": "Every epoch reaches an endpoint through PeerEndpoint::install, which calls OpportunityEpoch::validate. A peer's Token frame and a locally opened epoch (open_epoch, which saga origination also goes through) both reach it, so no hollow epoch is held on any path. EpochDraft::build refuses each missing field by name as well.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/peer.rs:231",
-      "backend/crates/libs/qip-contracts/src/peer.rs:311",
-      "services/qip-mesh/tests/peer.rs::an_epoch_missing_any_one_of_its_seven_fields_is_refused_naming_that_field",
-      "services/qip-mesh/tests/peer.rs::an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted"
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::install (OpportunityEpoch::validate)",
+      "backend/crates/services/qip-mesh/tests/peer.rs::a_hollow_epoch_is_refused_naming_its_field_whether_a_peer_sends_it_or_a_node_opens_it",
+      "backend/crates/services/qip-mesh/tests/peer.rs::an_epoch_missing_any_one_of_its_seven_fields_is_refused_naming_that_field",
+      "backend/crates/services/qip-mesh/tests/peer.rs::an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted"
     ],
-    "gap": "Peer mesh on by default or in committed deployment.",
+    "gap": "None against the requirement's text. It is a refusal, so bar part 3 applies: the guard sits on the only path an epoch is installed by, whether or not the mesh is enabled.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "R12-MESH-5046"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer",
+    "verification": "cargo test -p qip-mesh --test peer a_hollow_epoch an_epoch_missing",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The rule is sound and unit-proven. It is still unused by any node or the centre. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: The rule is sound and unit-proven. It is still unused by any node or the centre. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L5-EDGE (taken over from L5b; wave1031 triage CODE_NOW, skeptic recorded there): PARTIAL -> COMPLETE. New test sends each of the seven fields hollowed, built by hand rather than through the builder, as a Token frame through receive and through open_epoch, and asserts each is refused naming the field (empty legs on open_epoch is refused earlier as holding no own leg), with nothing installed. Mutation: drop the validate call in PeerEndpoint::install, and the test fails at peer.rs:637 (a hollow epoch from a peer was installed); restored byte-for-byte (cmp)."
   },
   {
     "id": "R12-MESH-5062",
@@ -1490,35 +1493,30 @@
   },
   {
     "id": "R12-MESH-5063",
-    "status": "PARTIAL",
-    "current": "declare_fire refuses unless all legs fully reserved and loss bound established; saga.rs coordinator calls it. Env-gated peer mesh. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
+    "status": "COMPLETE",
+    "current": "FIRE is encoded in one place, qip_peer::PeerEndpoint::try_declare_fire. It refuses under fire_condition (reservation_shortfall), expired and fire_loss_bound before it encodes. A participant applies a FIRE only when every leg is reserved, and try_send_leg refuses under before_fire unless the epoch fired. No path declares FIRE or sends a peer leg without passing these guards, whether or not the env-gated peer mesh is configured; the execution-node module's peer_mesh switch is null in every environment.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/peer.rs:1175",
-      "backend/crates/libs/qip-contracts/src/peer.rs:1241",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_declare_fire (reservation_shortfall, fire_loss_bound)",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_send_leg (before_fire)",
+      "backend/crates/libs/qip-peer/src/lib.rs PeerMessage::Fire arm (every_leg_reserved, loss bound)",
       "services/qip-mesh/tests/peer.rs::fire_is_declared_exactly_when_every_leg_is_reserved_and_no_leg_precedes_it",
       "services/qip-mesh/tests/peer.rs::a_leg_reserved_for_less_than_its_requirement_does_not_meet_the_fire_condition",
       "services/qip-mesh/tests/peer_guarantees.rs::a_cycle_whose_reservation_condition_is_not_met_within_its_ttl_is_rejected_by_name_and_sends_no_leg",
-      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
-      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
-      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
+      "edge/qip-peer-link/tests/saga.rs::a_leg_whose_unwind_bound_does_not_cover_the_cells_exit_is_declined_and_no_leg_is_sent",
+      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl"
     ],
-    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
+    "gap": "None against the requirement's text. It is a prohibition (FIRE never precedes reservation, no leg before FIRE), so bar part 3 applies: the guards sit on the only paths by which FIRE is encoded or applied and a leg is sent. A deployed peered node is not required for that (owner decision 5 keeps it unbought).",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "R12-MESH-5062"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
+    "verification": "cargo test -p qip-mesh --test peer fire_is_declared_exactly_when; cargo test -p qip-mesh --test peer_guarantees; cargo test -p qip-peer-link --test saga",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap text 'no node constructs PeerEndpoint' is now false: the node constructs one. It just never fires. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). ADR 0116 adds that a reflex decision needing a peer's answer inside the pass is out of bounds for the port, so FIRE handling must arrive as state the cell reads on a later pass. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated. 2026-11-06 lane L5-EDGE (wave1101 queue, ALREADY_COMPLETE, file unverified): code re-read. The only PeerMessage::Fire construction outside tests is try_declare_fire (lib.rs:1739); the other three matches are patterns. PARTIAL -> COMPLETE under bar part 3. Mutations, each restored byte-for-byte (cmp): delete the reservation_shortfall block in try_declare_fire, which fails fire_is_declared_exactly_when_every_leg_is_reserved_and_no_leg_precedes_it at peer.rs:322; delete the `if !st.fired` check in try_send_leg, which fails the same test at peer.rs:326. The dependency on R12-MESH-5062 is dropped: atomic in-region reservation cannot make FIRE precede reservation. Stale qip-contracts/src/peer.rs citations are replaced by qip-peer symbols."
   },
   {
     "id": "R12-MESH-5064",
@@ -1625,16 +1623,17 @@
   {
     "id": "R12-MESH-5068",
     "status": "PARTIAL",
-    "current": "Kernel score_declined scores declined central proposals (backend/crates/runtime/qip-kernel/src/platform.rs:17244), not cell/mesh cycles; refused cycles are journaled at the cell (refusals with gate) but nothing scores them.",
+    "current": "Kernel score_declined scores declined central proposals (backend/crates/runtime/qip-kernel/src/platform.rs:17244), not cell/mesh cycles; refused cycles are journaled at the cell (refusals with gate) but nothing scores them. 2026-11-07 (lane L5-EDGE): a cycle refused at the cap (arbitrage_cap) now carries its proposed legs, bounded by MAX_REFUSED_LEGS, to the centre beside the whole-cycle refusal.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)",
       "backend/crates/libs/qip-contracts/src/wire.rs::RefusedLeg",
       "backend/crates/edge/qip-edge/src/cell.rs::admit_cycle (legs attached to the whole-cycle refusal)",
       "backend/crates/runtime/qip-kernel/src/platform.rs::score_cell_declined",
       "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_cycle_refused_whole_carries_its_legs_to_the_centre_and_a_leg_refusal_carries_none",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_cycle_refused_at_the_cap_carries_its_legs_to_the_centre"
     ],
-    "gap": "2026-10-31 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): a cycle refused whole in admit_cycle is carried to the centre with its legs and priced in LEARN, but the centre ingests deltas only under QIP_MESH_CELLS and the node sends them only under QIP_MESH_PEER, both unset in every committed environment; failed and partial cycles (arbitrage_cycle_broken, partial fills) and refusals before admission (arbitrage_cap, arbitrage_legs, autonomy) carry no legs; a delta superseded in the node's slot, or re-offered after a failed pass under a new instant, loses or re-queues its refusals; and regret is judged per leg, not per cycle.",
+    "gap": "2026-11-07 (lane L5-EDGE): refusals at the cap and refusals of the whole cycle carry their legs. Still open, by slice. (1) arbitrage_cycle_broken carries none: Cell::work returns Err on a break, so that pass's WorkReport never reaches state_delta. That is R12-MESH-7143's scope (ship the failed pass's report on the next delta), and the legs-sent marker needs it. (2) arbitrage_legs has no legs to carry, because cycle_legs failed. (3) A partial-fill decomposition stop carries none. (4) The centre still scores each leg alone under CELL_CYCLE_GATE, not one score per cycle with the summed regret. The mesh gating (QIP_MESH_CELLS/QIP_MESH_PEER) remains a part-2 blocker.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1645,21 +1644,24 @@
     "verification": "cargo test -p qip-kernel --test learning -- a_cells_refused_cycle; cargo test -p qip-edge --test arbitrage -- a_cycle_refused_whole",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined. 2026-10-31 lane L5-EDGE: RefusedLeg on both DeltaRefusal types (absent on the wire when empty); the cell attaches the cycle's legs to the last refusal admit_cycle recorded; the centre queues them apart from the desk's declined paths (which feed its sizing), keyed for replay, only for instruments it holds bars for, bounded by DECLINED_HISTORY, and prices them after score_filled under what the cap leaves, counted under gate=cell_cycle with the cell's gate kept on the score. The wire's Ask-is-buy side is crossed to the twin's Bid-is-long at evaluate_cell_refusal. Mutations fired (8): drop the queue call; skip the scoring pass; no replay guard; drop the refused_legs push; attach legs to the first refusal; pass the wire side through unchanged; label with the wire gate; queue unobserved instruments. Found by the skeptic and not changed here: the desk's own declined-path pricing passes book_side(Buy)=Ask to the twin, which reads Bid as long, so the desk's declined scores may carry the inverted sign; that path feeds desk sizing and is left for its owner."
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined. 2026-10-31 lane L5-EDGE: RefusedLeg on both DeltaRefusal types (absent on the wire when empty); the cell attaches the cycle's legs to the last refusal admit_cycle recorded; the centre queues them apart from the desk's declined paths (which feed its sizing), keyed for replay, only for instruments it holds bars for, bounded by DECLINED_HISTORY, and prices them after score_filled under what the cap leaves, counted under gate=cell_cycle with the cell's gate kept on the score. The wire's Ask-is-buy side is crossed to the twin's Bid-is-long at evaluate_cell_refusal. Mutations fired (8): drop the queue call; skip the scoring pass; no replay guard; drop the refused_legs push; attach legs to the first refusal; pass the wire side through unchanged; label with the wire gate; queue unobserved instruments. Found by the skeptic and not changed here: the desk's own declined-path pricing passes book_side(Buy)=Ask to the twin, which reads Bid as long, so the desk's declined scores may carry the inverted sign; that path feeds desk sizing and is left for its owner. 2026-11-07 lane L5-EDGE (wave1101 queue, CODE_NOW, file unverified): cell.rs re-read. Slice: the cap arm computes the cycle's legs through Opportunity::cycle_legs and attaches them to the refusal it just recorded. Test: with the cap at one of two triangles, the cap's refusal carries exactly the three legs the roomy pass sent and the capped pass did not. Mutation: drop that push, which fails the test at arbitrage.rs:811; restored byte-for-byte (cmp). The broken-cycle half was not attempted: the report it would ride is discarded with the pass's Err."
   },
   {
     "id": "R12-MESH-5069",
     "status": "PARTIAL",
-    "current": "Latency deduction (netedge.rs latency_deduction, now public) is priced over the venue round trip plus EdgeAssumptions::coordination_latency; residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (qip-mesh peer.rs). Since 2026-10-25 the peer saga's origination (qip-peer-link saga.rs clears) prices every crossing with the desk's own exposure formula (qip_core::exposure, shared with netedge's latency deduction) over the round trip the wire measured to that peer (ClockSample::round_trip_nanos), so a crossing clears MIN_EDGE_BPS plus the expected adverse move over the measured trip. The edge-node desk's own-cell cycles still price zero coordination, which is correct for them.",
+    "current": "Latency deduction (netedge.rs latency_deduction, now public) is priced over the venue round trip plus EdgeAssumptions::coordination_latency; residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (qip-mesh peer.rs). Since 2026-10-25 the peer saga's origination (qip-peer-link saga.rs clears) prices every crossing with the desk's own exposure formula (qip_core::exposure, shared with netedge's latency deduction) over the round trip the wire measured to that peer (ClockSample::round_trip_nanos), so a crossing clears MIN_EDGE_BPS plus the expected adverse move over the measured trip. The edge-node desk's own-cell cycles still price zero coordination, which is correct for them. 2026-11-07 (lane L5-EDGE): unwind cost is now priced. qip_contracts::edge::DeductionKind::Unwind is the tenth kind, and require_complete demands it of every net edge. NetEdgeCalculator::calculate deducts it for a non-atomic plan as (1 - fill_probability) x the size held after the first conversion x that conversion's own spread fraction, the cost of crossing its book back out at the touch. An atomic plan deducts zero, stated. The two prediction-market producers state it as zero with their reason, as they do latency.",
     "evidence": [
       "backend/crates/libs/qip-core/src/exposure.rs expected_absolute_move_fraction, called by netedge.rs latency_deduction and saga.rs clears",
       "backend/crates/edge/qip-peer-link/src/saga.rs clears(buy, sell, coordination) called from Saga::originate with clock.round_trip_nanos",
       "backend/crates/edge/qip-peer-link/src/saga.rs::tests::a_peer_crossing_clearing_at_zero_latency_is_declined_once_the_measured_round_trip_is_priced",
       "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle_is_refused",
       "backend/crates/edge/qip-peer-link/tests/saga.rs two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its_unwind (still clears at 100 bps over loopback)",
-      "backend/crates/apps/qip-edge-node/tests/peer_pricing.rs::the_peer_sagas_coordination_volatility_is_the_desks_default_volatility"
+      "backend/crates/apps/qip-edge-node/tests/peer_pricing.rs::the_peer_sagas_coordination_volatility_is_the_desks_default_volatility",
+      "backend/crates/libs/qip-contracts/src/edge.rs::DeductionKind::Unwind",
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs::NetEdgeCalculator::unwind_deduction",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs::raising_the_unwind_cost_of_a_non_atomic_cycle_lowers_its_net_edge_until_the_scanner_refuses_it_and_an_atomic_cycles_unwind_does_not_move"
     ],
-    "gap": "2026-10-25 (lane L5b): the pricing has a production caller, but Saga::originate runs only when qip-edge-node is given QIP_PEER_MESH_LISTEN and QIP_PEER_MESH_PEERS, which no committed deployment sets (rows R12-MESH-1073/10112); a second peered node is new billed infrastructure declined by owner decision 5 of 2026-10-25, so bar part 2 fails until a peer is deployed.",
+    "gap": "2026-11-07 (lane L5-EDGE): latency and unwind are both priced on the own-cell desk. The row stays PARTIAL because the cross-region default path is off: Saga::originate runs only with QIP_PEER_MESH_*, and a second peer is billed (decision 5 of 2026-10-25, R12-MESH-10112 FUNDING).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1670,25 +1672,21 @@
     "verification": "cargo test -p qip-peer-link --lib saga; cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": " Lane L24 2026-10-18: coordination latency added to the net-edge calculator (serde default zero for records written before it). Mutation: pricing the latency deduction over the round trip alone fails the test at the first step (50 ms did not lower the net edge). Kept PARTIAL: no running path supplies a non-zero value. Lane L5b 2026-10-25: origination now prices the measured peer round trip. Mutation: clears() hands the calculator Duration::from_nanos(0) in place of the measured trip; a_peer_crossing_clearing_at_zero_latency_is_declined_once_the_measured_round_trip_is_priced fails at the 900 ms assertion; restored byte for byte (sha256 f7c824021bf71679 before and after). Reworked the same day: qip-peer-link may not depend on qip-arbitrage (architecture.rs: the mesh and the durable fabric share no crate), so the formula moved to qip_core::exposure and both pricers call it; a qip-edge-node test pins the saga's volatility to EdgeAssumptions::default (mutation: desk volatility 0.45 fails it). Kept PARTIAL: the path is behind the peer-mesh switch (decision 5)."
+    "notes": " Lane L24 2026-10-18: coordination latency added to the net-edge calculator (serde default zero for records written before it). Mutation: pricing the latency deduction over the round trip alone fails the test at the first step (50 ms did not lower the net edge). Kept PARTIAL: no running path supplies a non-zero value. Lane L5b 2026-10-25: origination now prices the measured peer round trip. Mutation: clears() hands the calculator Duration::from_nanos(0) in place of the measured trip; a_peer_crossing_clearing_at_zero_latency_is_declined_once_the_measured_round_trip_is_priced fails at the 900 ms assertion; restored byte for byte (sha256 f7c824021bf71679 before and after). Reworked the same day: qip-peer-link may not depend on qip-arbitrage (architecture.rs: the mesh and the durable fabric share no crate), so the formula moved to qip_core::exposure and both pricers call it; a qip-edge-node test pins the saga's volatility to EdgeAssumptions::default (mutation: desk volatility 0.45 fails it). Kept PARTIAL: the path is behind the peer-mesh switch (decision 5). 2026-11-07 lane L5-EDGE (wave1101 queue, CODE_NOW, file unverified): netedge.rs re-read; there was no unwind kind. The closure's residual_after(1) is a reference-price notional in mixed units, so the deduction uses the size in the starting instrument as every other line here does. The test raises the unwind by widening the book the first leg would be stranded in, at a fill of 0.9: the non-atomic net falls below the atomic one at every width and goes non-positive while the atomic one still clears. The atomic cycle's unwind line is zero throughout (its net moves with the spread, which both pay). The search's own rate also carries the fill, so the test takes its candidate before the fill is stated. Mutation: price the unwind at Decimal::ZERO, which fails the test at edge_costs.rs:568; restored byte-for-byte (cmp). Five hand-built complete-edge fixtures (qip-contracts, qip-cost-router, qip-evolution) gained an explicit zero Unwind line or a count re-derived for ten kinds; no assertion was loosened."
   },
   {
     "id": "R12-MESH-5070",
-    "status": "PARTIAL",
-    "current": "declare_fire refuses unestablished/exceeded loss bound by name; saga.rs calls it when env-gated peer mesh is configured. Since 2026-10-25 the execution-node module carries the switch: variable `peer_mesh` (modules/execution-node/variables.tf) renders QIP_PEER_MESH_LISTEN, QIP_PEER_MESH_PEERS and, when stated, QIP_PEER_MESH_CLOCK_BOUND_MS into node.env (templates/startup.sh.tftpl), opens the firewall both ways for exactly the peer /32s named (main.tf peer_mesh_ingress/peer_mesh_egress, count-gated on a declared mesh), and refuses at plan every value the binary refuses at start plus a public peer address and an administration port (tests/peer-mesh.tftest.hcl, 10 runs). It is null in every environment: the root's execution_nodes type gains the field only through docs/blueprint/lanes/l5b-peer-mesh-root.patch (variables.tf, main.tf and the dev tfvars are protected), and a peer's stable address is billed.",
+    "status": "COMPLETE",
+    "current": "Both places that set an epoch fired refuse past the loss bound under fire_loss_bound. try_declare_fire refuses before the coordinator encodes FIRE. Since 2026-11-06 the participant's PeerMessage::Fire arm also refuses, so a coordinator that skipped its check, or a hand-written FIRE frame, cannot put a participant's legs on the wire. A leg is sent only by try_send_leg, which requires fired. The env-gated peer mesh's switch is null in every environment.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/peer.rs:1208",
-      "backend/crates/libs/qip-contracts/src/peer.rs:656",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_declare_fire (fire_loss_bound)",
+      "backend/crates/libs/qip-peer/src/lib.rs PeerMessage::Fire arm (fire_loss_bound on receipt)",
+      "backend/crates/libs/qip-peer/src/lib.rs::PeerEndpoint::try_send_leg",
       "services/qip-mesh/tests/peer_guarantees.rs::a_cycle_whose_loss_bound_cannot_be_established_is_rejected_by_name_and_sends_no_leg",
-      "services/qip-mesh/tests/peer.rs::fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it",
-      "infrastructure/terraform/modules/execution-node/variables.tf variable peer_mesh",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_PEER_MESH_* block",
-      "infrastructure/terraform/modules/execution-node/main.tf peer_mesh_ingress, peer_mesh_egress",
-      "infrastructure/terraform/modules/execution-node/tests/peer-mesh.tftest.hcl",
-      "infrastructure/terraform/variables.tf execution_nodes.peer_mesh (l5b-peer-mesh-root.patch applied 2026-10-31); infrastructure/terraform/main.tf peer_mesh = each.value.peer_mesh",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (QIP_PEER_MESH_* left READ_BUT_NOT_SET: the node sets them)"
+      "services/qip-mesh/tests/peer_guarantees.rs::a_participant_that_receives_fire_for_an_epoch_whose_worst_recovery_loss_exceeds_its_declared_bound_refuses_it_by_name_and_sends_no_leg",
+      "services/qip-mesh/tests/peer.rs::fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it"
     ],
-    "gap": "2026-10-31 (lane L5b): PARTIAL under owner decision 5 of 2026-10-25. The whole switch is now in the tree: the execution-node module's `peer_mesh` variable, its node.env rendering, both firewall rules and tests/peer-mesh.tftest.hcl, and since the parent applied l5b-peer-mesh-root.patch on 2026-10-31 (owner decision 3 of 2026-10-31) the root's execution_nodes type carries `peer_mesh`, main.tf passes it and dev's newyork-1 states `peer_mesh = null`. What remains is not code: a second execution node to peer with and a stable internal address fronting each peer (a managed instance group's machine has none), both billed and declined for now, and no node is deployed. Bar part 2 fails until a peered node is declared and deployed.",
+    "gap": "None against the requirement's text. It is a prohibition, so bar part 3 applies: the loss-bound guard sits in both places fired is set, the only gate before a leg is sent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1696,10 +1694,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer_guarantees; terraform test (modules/execution-node, tests/peer-mesh.tftest.hcl)",
+    "verification": "cargo test -p qip-mesh --test peer_guarantees",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated."
+    "notes": "Round-2 independent audit, 2026-10-11: forget_expired does run in production every turn (apps/qip-edge-node/src/peer.rs:553), but with no epoch ever installed there it rejects nothing. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L5b 2026-10-25: module switch landed (modules/execution-node peer_mesh; mutations: the template dropping the QIP_PEER_MESH_PEERS line fails two runs; the ingress rule admitting 0.0.0.0/0 fails the firewall assertion; both restored byte for byte). Root patch: docs/blueprint/lanes/l5b-peer-mesh-root.patch. Kept PARTIAL naming decision 5. 2026-10-31: root plumbing applied by the parent; gap restated. 2026-11-06 lane L5-EDGE (wave1101 queue, CODE_NOW, file unverified): code re-read. The participant's PeerMessage::Fire arm set fired after checking only every_leg_reserved, so one path reached a sent leg without the bound. It now applies the coordinator's worst_recovery_loss check. New test a_participant_that_receives_fire_..._refuses_it_by_name_and_sends_no_leg; its premise is that the same FIRE under a covering bound is applied and the leg goes. Mutation: delete the receive-side bound check, which fails it at peer_guarantees.rs:601 (the FIRE is applied); restored byte-for-byte (cmp). PARTIAL -> COMPLETE under bar part 3."
   },
   {
     "id": "R12-EXEC-5071",
@@ -2029,9 +2027,11 @@
       "backend/crates/services/qip-prediction/tests/belief.rs:109",
       "backend/crates/services/qip-prediction/tests/belief.rs:181",
       "backend/crates/runtime/qip-kernel/src/event_markets.rs::EventMarketPlane::price",
-      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md"
+      "docs/adr/0182-a-simulation-lesson-is-a-promoted-claim-an-embedding-is-a-fifth-model-form-and-event-arrival-and-the-warehouse-write-path-stay-as-decided.md",
+      "backend/crates/runtime/qip-kernel/src/event_markets.rs EventMarketPlane::price refuses a book stamped after now as leakage; discover's book intake drops one with a named problem",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs::a_market_whose_outcome_book_is_stamped_after_the_pass_is_refused_as_leakage_and_the_same_books_at_the_pass_price_to_one"
     ],
-    "gap": "Decided 2026-10-25 by ADR 0182 d3 (see notes for the decision and the code it leaves). belief.rs Arrival has no producer by decision (ADR 0151 d10): the plane prices from venue books and labels the distribution venue-implied; an evidence-estimated belief and a leakage refusal on this path are not built.",
+    "gap": "2026-11-07 lane L6-platform: the leakage half is closed: a book stamped after the pass is dropped at intake and refused by price. Remaining, EXTERNAL by decision: the evidence-estimated belief (ADR 0151 decision 10, ADR 0182 decision 3 keep arrival venue-implied until a licensed evidence source exists). Not separately tested: the intake drop's problem line; price's refusal is the tested guard and covers any book that reaches it. Previous gap: Decided 2026-10-25 by ADR 0182 d3 (see notes for the decision and the code it leaves). belief.rs Arrival has no producer by decision (ADR 0151 d10): the plane prices from venue books and labels the distribution venue-implied; an evidence-estimated belief and a leakage refusal on this path are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2042,7 +2042,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "M",
-    "notes": "Restated 2026-10-24 by lane M1-KERNEL-EDGE per ADR 0151 d10: no-code-restate, no code change; EventMarketPlane::price (event_markets.rs) is the venue-implied path by decision. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 3: event arrival stays venue-implied; ADR 0151 decision 10 stands for want of a licensed evidence source. The row stays PARTIAL by decision. Status unchanged."
+    "notes": "Restated 2026-10-24 by lane M1-KERNEL-EDGE per ADR 0151 d10: no-code-restate, no code change; EventMarketPlane::price (event_markets.rs) is the venue-implied path by decision. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0182 decision 3: event arrival stays venue-implied; ADR 0151 decision 10 stands for want of a licensed evidence source. The row stays PARTIAL by decision. Status unchanged. 2026-11-07 lane L6-platform: mutation: price's `book.at > now` check disabled fails the new test at breadth.rs:1400 'books stamped after the pass were priced into a distribution' (24 passed, 1 failed); restored with cmp, 25 passed. Status PARTIAL."
   },
   {
     "id": "R12-EVENT-5085",
@@ -2160,9 +2160,14 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs unit_attributes (ledger-derived), refresh_attributes, condition_name, state_name",
       "backend/crates/runtime/qip-kernel/tests/breadth.rs a_units_tracked_state_follows_the_ledger_after_it_is_sold",
-      "backend/crates/runtime/qip-kernel/tests/breadth.rs commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle"
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle",
+      "docs/adr/0246-a-commerce-plan-declares-a-paper-chargeback-rate-a-units-chargeback-risk-is-read-from-it-and-reserved-against-its-resale-and-no-chargeback-is-booked.md",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs CommercePlan::chargeback_rate (required, [0,1) at open), unit_attributes payment_chargeback_risk, AssessedCandidate::chargeback_reserve",
+      "backend/crates/libs/qip-financial/src/commerce.rs FeasibilityInput::chargeback_rate (need), Assessment::chargeback_reserve subtracted from expected_resale",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_units_chargeback_risk_is_the_plans_declared_rate_on_its_sale_value_and_lowers_its_expected_resale, a_commerce_plan_without_a_chargeback_rate_is_refused_at_load",
+      "data/breadth/dev-commerce-paper.json chargeback_rate 0.01"
     ],
-    "gap": "Chargeback risk is Absent by decision (ADR 0153 d8) until a settlement term supplies a rate; no payment-network or merchant settlement term exists in the plan terms, so a number would be invented. The plane needs QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets.",
+    "gap": "Chargeback risk is Absent by decision (ADR 0153 d8) until a settlement term supplies a rate; no payment-network or merchant settlement term exists in the plan terms, so a number would be invented. The plane needs QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets.\n2026-10-31 (lane L1-MONEY, ADR 0246): a plan declares a required paper chargeback_rate in [0,1); a received unit's payment_chargeback_risk is that rate on its expected sale value; feasibility reserves it against expected resale (gross basis), lowering margins only; nothing is booked. Remaining: on no default path until the dev commerce mount (ADR 0245; protected patch docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch) is applied.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2173,7 +2178,7 @@
     "verification": "cargo test -p qip-kernel --test breadth",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one. 2026-10-24 N2-FABRIC-DATA: gap restated to the ADR 0153 decision; no code changed, status unchanged. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0153 decision 8 is amended in its chargeback clause only; its ledger clause stands. A commerce plan must declare a paper chargeback rate beside its fees, and a plan without one is refused at load. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A commerce plan declares a paper chargeback rate, a unit's chargeback risk is read from it and reserved against its resale, and no chargeback is booked.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one. 2026-10-24 N2-FABRIC-DATA: gap restated to the ADR 0153 decision; no code changed, status unchanged. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0153 decision 8 is amended in its chargeback clause only; its ledger clause stands. A commerce plan must declare a paper chargeback rate beside its fees, and a plan without one is refused at load. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A commerce plan declares a paper chargeback rate, a unit's chargeback risk is read from it and reserved against its resale, and no chargeback is booked.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: mutations fired (attribute back to Absent; reserve added instead of subtracted; serde default on chargeback_rate), each restored with cp+cmp. Stays PARTIAL per the ruling until the mount patch is applied."
   },
   {
     "id": "R12-COMMERCE-5091",
@@ -2182,7 +2187,8 @@
     "evidence": [
       "backend/crates/libs/qip-financial/tests/commerce.rs:45",
       "backend/crates/libs/qip-financial/tests/commerce.rs:668",
-      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::a_commerce_plan_file_discovers_buys_receives_lists_and_sells_on_paper_into_the_inventory_ledger"
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::a_commerce_plan_file_discovers_buys_receives_lists_and_sells_on_paper_into_the_inventory_ledger",
+      "docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch"
     ],
     "gap": "2026-10-24: scout() is a real, mutation-checked function but DISCOVER runs it only under a breadth plan no committed environment supplies. Closing: a committed environment (or default plan) sets QIP_DEEPBRAIN_BREADTH_PLAN to a committed commerce plan, or the row is narrowed to the library function.",
     "implemented": true,
@@ -2195,7 +2201,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, DISCOVER runs scout() only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets, so the Product Scout runs on no default or deployed path. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): R12-ASSET-4073's commerce-only dev plan stands, but per the skeptic and decision 13 the mount cannot land as a patch first: an ADR for a per-file config mount comes first, then one protected patch carrying every part, with gitops.rs's hash-named-path guard extended to derive each file's path and never weakened, no compiled-in default and no loosened _PATH validation. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, DISCOVER runs scout() only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets, so the Product Scout runs on no default or deployed path. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): R12-ASSET-4073's commerce-only dev plan stands, but per the skeptic and decision 13 the mount cannot land as a patch first: an ADR for a per-file config mount comes first, then one protected patch carrying every part, with gitops.rs's hash-named-path guard extended to derive each file's path and never weakened, no compiled-in default and no loosened _PATH validation. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: the dev commerce mount is one protected patch, docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch (ADR 0245 per-file layout; 16 files incl. variables.tf, dev tfvars, infra.yml seed list, catalogue.tf, main.tf secret + grant, modules/secrets optional_secret_names, dev deepbrain.yaml env + volume at /etc/qip/614c52034dfaf3db, QIP_DEEPBRAIN_BREADTH_PLAN_PATH rename, manifest_wiring/gitops/infrastructure suites). Verified applied in the main checkout and reversed: qip-acceptance + qip-deepbrain 260 binaries, 2022 passed, 1 failed (the stale traceability matrix only); clippy clean; a stale prefix in deepbrain.yaml is refused by every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under. Not run: terraform fmt/validate/test (no binary). It adds one billed Secret Manager container in dev, for the applying person to accept. Stays PARTIAL until a person applies the patch and dev runs with the mount. Test the_committed_dev_plan_installs_a_commerce_plane_whose_scout_emits_candidates (c35c5984)."
   },
   {
     "id": "R12-COMMERCE-5092",
@@ -2206,7 +2212,8 @@
       "backend/crates/libs/qip-financial/tests/commerce.rs:135",
       "backend/crates/libs/qip-financial/tests/commerce.rs:628",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs::CommerceResearch",
-      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install"
+      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install",
+      "docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch"
     ],
     "gap": "Off by default: unset QIP_DEEPBRAIN_BREADTH_PLAN means no commerce plane, and no committed deployment sets it.",
     "implemented": true,
@@ -2219,7 +2226,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The committed dev plan carries an equivalent pair across two merchants, one counterfeit by GTIN and one by seller, with the named test and mutation; per the skeptic it is sequenced after decision 13's per-file mount ADR and lands inside that ADR's protected patch. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The committed dev plan carries an equivalent pair across two merchants, one counterfeit by GTIN and one by seller, with the named test and mutation; per the skeptic it is sequenced after decision 13's per-file mount ADR and lands inside that ADR's protected patch. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: the dev commerce mount is one protected patch, docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch (ADR 0245 per-file layout; 16 files incl. variables.tf, dev tfvars, infra.yml seed list, catalogue.tf, main.tf secret + grant, modules/secrets optional_secret_names, dev deepbrain.yaml env + volume at /etc/qip/614c52034dfaf3db, QIP_DEEPBRAIN_BREADTH_PLAN_PATH rename, manifest_wiring/gitops/infrastructure suites). Verified applied in the main checkout and reversed: qip-acceptance + qip-deepbrain 260 binaries, 2022 passed, 1 failed (the stale traceability matrix only); clippy clean; a stale prefix in deepbrain.yaml is refused by every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under. Not run: terraform fmt/validate/test (no binary). It adds one billed Secret Manager container in dev, for the applying person to accept. Stays PARTIAL until a person applies the patch and dev runs with the mount. Test the_committed_dev_plan_maps_its_equivalent_listings_to_one_identity_and_refuses_both_counterfeits (c35c5984); the plan names one counterfeit GTIN the feed emits."
   },
   {
     "id": "R12-COMMERCE-5093",
@@ -2229,7 +2236,8 @@
       "backend/crates/libs/qip-financial/tests/commerce.rs:241",
       "backend/crates/libs/qip-financial/tests/commerce.rs:256",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs::CommerceResearch",
-      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install"
+      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install",
+      "docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch"
     ],
     "gap": "Off by default: unset QIP_DEEPBRAIN_BREADTH_PLAN means no commerce plane, and no committed deployment sets it.",
     "implemented": true,
@@ -2242,7 +2250,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A cycle under the committed dev plan journals a CommerceSimulated assessment carrying all six figures, and a candidate missing any input stays refused, at plan load or at the candidate stage; per the skeptic it is sequenced after decision 13's per-file mount ADR and lands inside that ADR's protected patch. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A cycle under the committed dev plan journals a CommerceSimulated assessment carrying all six figures, and a candidate missing any input stays refused, at plan load or at the candidate stage; per the skeptic it is sequenced after decision 13's per-file mount ADR and lands inside that ADR's protected patch. The skeptic overturned the decider (who ruled WRITE_PATCH); the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md (decision 13's per-file mount ADR), title as the skeptic proposed it: A workload's committed configuration files mount one per file under their own content-hash path, so a second file never moves the universe's path. Its protected part is written as docs/blueprint/lanes/l6-commerce-breadth-plan-dev-protected.patch after the ADR, and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: the dev commerce mount is one protected patch, docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch (ADR 0245 per-file layout; 16 files incl. variables.tf, dev tfvars, infra.yml seed list, catalogue.tf, main.tf secret + grant, modules/secrets optional_secret_names, dev deepbrain.yaml env + volume at /etc/qip/614c52034dfaf3db, QIP_DEEPBRAIN_BREADTH_PLAN_PATH rename, manifest_wiring/gitops/infrastructure suites). Verified applied in the main checkout and reversed: qip-acceptance + qip-deepbrain 260 binaries, 2022 passed, 1 failed (the stale traceability matrix only); clippy clean; a stale prefix in deepbrain.yaml is refused by every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under. Not run: terraform fmt/validate/test (no binary). It adds one billed Secret Manager container in dev, for the applying person to accept. Stays PARTIAL until a person applies the patch and dev runs with the mount. Test a_cycle_under_the_committed_dev_plan_journals_a_commerce_simulated_assessment_with_all_six_figures (c35c5984); need() is unreachable from a plan, so the missing-input case is mutation-verified on the load guard."
   },
   {
     "id": "R12-COMMERCE-5094",
@@ -2278,7 +2286,8 @@
       "backend/crates/libs/qip-financial/tests/commerce.rs:405",
       "backend/crates/libs/qip-financial/tests/commerce_resale.rs:407",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs::CommerceResearch",
-      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install"
+      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install",
+      "docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch"
     ],
     "gap": "Off by default: unset QIP_DEEPBRAIN_BREADTH_PLAN means no commerce plane, and no committed deployment sets it.",
     "implemented": true,
@@ -2291,7 +2300,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (WRITE_PATCH): The commerce-only dev plan is synthetic, buys only from SimulatedMerchant and fails closed on an incomplete logistics plan; per the skeptic one patch carries every part (variables.tf, dev's tfvars, the infra.yml seed, a catalogue.tf conditional, the main.tf slot and accessor, deepbrain.yaml, the manifest_wiring move and the plan file) and nothing lands first, after decision 13's per-file mount ADR. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Decision 13 sends this mount to a per-file mount ADR first; the patch follows that ADR. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (WRITE_PATCH): The commerce-only dev plan is synthetic, buys only from SimulatedMerchant and fails closed on an incomplete logistics plan; per the skeptic one patch carries every part (variables.tf, dev's tfvars, the infra.yml seed, a catalogue.tf conditional, the main.tf slot and accessor, deepbrain.yaml, the manifest_wiring move and the plan file) and nothing lands first, after decision 13's per-file mount ADR. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Decision 13 sends this mount to a per-file mount ADR first; the patch follows that ADR. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: the dev commerce mount is one protected patch, docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch (ADR 0245 per-file layout; 16 files incl. variables.tf, dev tfvars, infra.yml seed list, catalogue.tf, main.tf secret + grant, modules/secrets optional_secret_names, dev deepbrain.yaml env + volume at /etc/qip/614c52034dfaf3db, QIP_DEEPBRAIN_BREADTH_PLAN_PATH rename, manifest_wiring/gitops/infrastructure suites). Verified applied in the main checkout and reversed: qip-acceptance + qip-deepbrain 260 binaries, 2022 passed, 1 failed (the stale traceability matrix only); clippy clean; a stale prefix in deepbrain.yaml is refused by every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under. Not run: terraform fmt/validate/test (no binary). It adds one billed Secret Manager container in dev, for the applying person to accept. Stays PARTIAL until a person applies the patch and dev runs with the mount. The plan journals its logistics parts as unit attributes (shipping, insurance, customs_duties), not on PaperPurchase."
   },
   {
     "id": "R12-COMMERCE-5096",
@@ -2303,9 +2312,11 @@
       "backend/crates/libs/qip-financial/tests/commerce.rs:645",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs::record_move",
       "backend/crates/runtime/qip-kernel/src/platform.rs::queue_inventory_moves",
-      "backend/crates/runtime/qip-kernel/tests/breadth.rs::a_commerce_receipt_books_one_physical_inventory_operation_the_ledger_replays_to_the_same_units"
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs::a_commerce_receipt_books_one_physical_inventory_operation_the_ledger_replays_to_the_same_units",
+      "backend/crates/runtime/qip-kernel/src/platform.rs CommerceInventoryQueued journalled in queue_inventory_moves; requeue_commerce_inventory at assembly",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_commerce_receipt_queued_and_not_yet_drained_before_a_restart_is_requeued_from_the_journal_and_books_exactly_one_physical_inventory_operation_after_resume"
     ],
-    "gap": "2026-10-31 (lane L5-EDGE): the commerce ledger now joins the desk ledger — its receipts, sales and returns replay at the desk ledger's inventory accounts to the units it holds — but the commerce plane runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, and the queued operations are not journaled, so a restart loses the ones the desk has not yet shipped (a mandate subscription is journaled and re-queued; these are not).",
+    "gap": "2026-10-31 (lane L5-EDGE): the commerce ledger now joins the desk ledger — its receipts, sales and returns replay at the desk ledger's inventory accounts to the units it holds — but the commerce plane runs only when QIP_DEEPBRAIN_BREADTH_PLAN names a plan, which no committed environment sets, and the queued operations are not journaled, so a restart loses the ones the desk has not yet shipped (a mandate subscription is journaled and re-queued; these are not).\n2026-11-07 (lane L1-MONEY): each queued PhysicalInventory movement is journalled (kernel/commerce-inventory) before it is queued and re-queued as written on resume, with the sequence resumed past the highest journalled; the ledger books each id once. Remaining: the default path waits on the dev commerce mount patch (docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch); and a restarted commerce plane starts its own ledger fresh, so a unit id it re-issues would collide with a journalled movement's operation id (the plane's ledger is not itself resumed from the log).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2316,7 +2327,7 @@
     "verification": "cargo test -p qip-kernel --test breadth -- a_commerce_receipt",
     "work_item": "",
     "size": "M",
-    "notes": " 2026-10-31 lane L5-EDGE: correction - the 'current' text said no kernel or app called the commerce ledger; commerce_research.rs runs it. Built the join: InventoryMove recorded at each receipt (venue -> warehouse), sale (warehouse -> paper-buyer) and return (paper-buyer -> warehouse), bounded at twice MAX_LISTED_UNITS and refused past it, drained after each SIMULATE pass into PhysicalInventory operations, one unit each, on the desk ledger's chain. Mutations fired (3): drop the drain; drop the receipt move; book the sale as leaving no warehouse. No skeptic was run; the row is not promoted."
+    "notes": " 2026-10-31 lane L5-EDGE: correction - the 'current' text said no kernel or app called the commerce ledger; commerce_research.rs runs it. Built the join: InventoryMove recorded at each receipt (venue -> warehouse), sale (warehouse -> paper-buyer) and return (paper-buyer -> warehouse), bounded at twice MAX_LISTED_UNITS and refused past it, drained after each SIMULATE pass into PhysicalInventory operations, one unit each, on the desk ledger's chain. Mutations fired (3): drop the drain; drop the receipt move; book the sale as leaving no warehouse. No skeptic was run; the row is not promoted. 2026-11-07 lane L1-MONEY: mutations fired (skip the re-queue at assembly; drop the journal write), each restored with cp+cmp. qip-kernel 70 binaries, 1187 passed, 0 failed. Stays PARTIAL until the mount patch is applied."
   },
   {
     "id": "R12-COMMERCE-5097",
@@ -2327,7 +2338,8 @@
       "backend/crates/libs/qip-financial/tests/commerce_resale.rs:215",
       "backend/crates/libs/qip-financial/tests/commerce_resale.rs:249",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs::CommerceResearch",
-      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install"
+      "backend/crates/apps/qip-deepbrain/src/breadth.rs::install",
+      "docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch"
     ],
     "gap": "Off by default: unset QIP_DEEPBRAIN_BREADTH_PLAN means no commerce plane, and no committed deployment sets it.",
     "implemented": true,
@@ -2340,7 +2352,7 @@
     "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (WRITE_PATCH): The resale router runs only on the simulated commerce plane, inside R12-COMMERCE-5095's one-patch mount; per the skeptic the committed plan names no venues (ResaleEntry refuses unknown fields), the three simulated venues come from CommerceResearch::resale_quotes, and the test pins that the first quote is not the highest-net venue. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Decision 13 sends this mount to a per-file mount ADR first; the patch follows that ADR. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Owner ruling 2026-10-31, second pass (WRITE_PATCH): The resale router runs only on the simulated commerce plane, inside R12-COMMERCE-5095's one-patch mount; per the skeptic the committed plan names no venues (ResaleEntry refuses unknown fields), the three simulated venues come from CommerceResearch::resale_quotes, and the test pins that the first quote is not the highest-net venue. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Decision 13 sends this mount to a per-file mount ADR first; the patch follows that ADR. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: the dev commerce mount is one protected patch, docs/blueprint/lanes/l1-commerce-breadth-plan-dev.patch (ADR 0245 per-file layout; 16 files incl. variables.tf, dev tfvars, infra.yml seed list, catalogue.tf, main.tf secret + grant, modules/secrets optional_secret_names, dev deepbrain.yaml env + volume at /etc/qip/614c52034dfaf3db, QIP_DEEPBRAIN_BREADTH_PLAN_PATH rename, manifest_wiring/gitops/infrastructure suites). Verified applied in the main checkout and reversed: qip-acceptance + qip-deepbrain 260 binaries, 2022 passed, 1 failed (the stale traceability matrix only); clippy clean; a stale prefix in deepbrain.yaml is refused by every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under. Not run: terraform fmt/validate/test (no binary). It adds one billed Secret Manager container in dev, for the applying person to accept. Stays PARTIAL until a person applies the patch and dev runs with the mount. Not done: two resale venues with distinct fees cannot be stated in the plan (ResaleEntry has no venue field; deny_unknown_fields), so the routing test the closure names is not built."
   },
   {
     "id": "R12-COVERAGE-5098",

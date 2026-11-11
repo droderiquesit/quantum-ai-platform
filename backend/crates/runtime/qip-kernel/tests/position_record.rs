@@ -825,3 +825,178 @@ fn selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held() -> Re
     );
     Ok(())
 }
+
+/// R12-ASSET-1160, divestment on the default path: a cycle whose tape makes
+/// construction target a zero weight on a long held at a gain moves the
+/// position to `Unwinding`, although the sell it sizes is below the long.
+///
+/// The failure prevented: an exit leg is sized from narrowed free capital
+/// times the held weight and floored to whole lots, so a full exit at or
+/// above cost always sells less than the long. Judged by quantity alone, the
+/// desk's decision to divest booked as a trim and the position stayed `Held`
+/// (the gap an independent review found in the first version of this seam).
+///
+/// And the sell is sized to the long, so the decision to divest is not
+/// executed as a trim that leaves part of the position held under it (the
+/// second review's finding).
+///
+/// Mutations: pass `false` for `to_flat` to `submit_released` in
+/// `Platform::stage_act_orders` — the position stays `Held`; size the order
+/// from `leg.quantity` whatever `to_flat` says — less than the leg's quantity
+/// leaves the book and the last assertion fails.
+#[test]
+fn a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_a_gain_moves_the_position_to_unwinding_although_the_sized_sell_is_below_the_long()
+-> Result<()> {
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("zero-target"), start())?;
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let (held, cost) = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: the first cycle opened a long in obj-AAA");
+    assert!(held.is_positive(), "premise: a long: {held}");
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Held)
+    );
+
+    // A rally past the entry, so the long is held at a gain when the next
+    // construction decides on it.
+    let mut price = 92.0_f64;
+    let mut bars = Vec::new();
+    for i in 0..10 {
+        let open = price;
+        price *= if i == 9 { 1.15 } else { 1.002 };
+        bars.push(bar(
+            "AAA",
+            start().saturating_add(Duration::from_days(i + 1)),
+            open,
+            price,
+        ));
+    }
+    assert!(
+        Decimal::from_f64(price).expect("a price") > cost,
+        "premise: the position is at a gain ({price} against a cost of {cost})"
+    );
+    platform.observe(bars);
+    let later = start().saturating_add(Duration::from_days(11));
+    let report = platform.run_cycle(later);
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+
+    let exit = platform
+        .proposals()
+        .iter()
+        .flat_map(|proposal| proposal.legs.iter())
+        .find(|leg| {
+            leg.object_id == aaa
+                && leg.target_weight == 0.0
+                && matches!(leg.side, qip_portfolio_engine::proposal::Side::Sell)
+        })
+        .expect("premise: the second construction targeted obj-AAA at zero weight");
+    assert!(
+        exit.quantity < held,
+        "premise: the sized exit ({}) is below the long ({held}), so the quantity rule alone \
+         would read it as a trim",
+        exit.quantity
+    );
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Unwinding),
+        "a sell the construction targeted at zero weight was not recorded as a divestment"
+    );
+    // The divestment sold the long, not the floored leg: what left the book
+    // is more than the leg's whole quantity could have taken out of it.
+    let remaining = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .map_or(Decimal::ZERO, |(quantity, _)| *quantity);
+    assert!(
+        held - remaining > exit.quantity,
+        "the exit was sized to the floored leg ({}) rather than the long ({held}): {} left \
+         the book and {remaining} is still held",
+        exit.quantity,
+        held - remaining
+    );
+    Ok(())
+}
+
+/// R12-ASSET-1015, the private-stages half: a capital call on a private
+/// fund's commitment moves its lifecycle from committed to funding, and the
+/// stage is read through the class's own lifecycle engine.
+///
+/// The failure prevented: the registry named a private-stages engine for
+/// the class and nothing in the kernel ever moved a private stage, so a
+/// commitment that had been called read exactly like one never drawn.
+///
+/// Mutation: stop `private_stage` adding the capital-call event — the stage
+/// stays committed and the last assertion fails.
+#[test]
+fn a_capital_call_on_a_private_funds_commitment_moves_its_lifecycle_from_committed_to_funding()
+-> Result<()> {
+    use qip_financial::cashflow::CallConsequence;
+    use qip_financial::private_stage::PrivateStage;
+    use qip_kernel::platform::CapitalCallNotice;
+    use qip_risk_engine::autonomy::OperatorIdentity;
+
+    // Undrawn, so the stage the call moves it to is visible.
+    let fund = FinancialObject::builder(
+        object("FUND"),
+        "FUND",
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: dec!("400000"),
+        called_capital: Decimal::ZERO,
+        distributed_capital: Decimal::ZERO,
+        residual_value: dec!("160000"),
+        stage: "buyout".to_string(),
+        lockup_years: 1.0,
+        capital_call_notice_days: 10,
+        call_schedule: None,
+    }))
+    .provenance(Provenance::synthetic("administrator", start()))
+    .build(start())?;
+    let fund_id = object("FUND");
+    let mut universe = Universe::new();
+    universe.insert(fund)?;
+    let mut platform = in_memory(universe, config())?;
+    assert_eq!(
+        platform.private_stage(fund_id.as_str()),
+        Some(PrivateStage::Committed),
+        "premise: the fund's commitment is recorded and nothing is drawn"
+    );
+    assert_eq!(
+        platform.private_stage("obj-NOT-A-COMMITMENT"),
+        None,
+        "an instrument with no commitment has no private stage"
+    );
+
+    let now = start().saturating_add(Duration::from_mins(5));
+    platform.record_capital_call(
+        fund_id.as_str(),
+        CapitalCallNotice {
+            reference: "call-1".to_string(),
+            amount: dec!("50000"),
+            due: now.saturating_add(Duration::from_days(10)),
+            consequence: CallConsequence::Interest {
+                annual_rate_bps: 3_650,
+            },
+        },
+        &OperatorIdentity::verified("ops-carol", "oidc", now),
+        now,
+    )?;
+    assert_eq!(
+        platform.private_stage(fund_id.as_str()),
+        Some(PrivateStage::Funding),
+        "a capital call did not move the commitment's lifecycle"
+    );
+    Ok(())
+}

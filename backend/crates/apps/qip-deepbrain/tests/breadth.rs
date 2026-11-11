@@ -363,7 +363,7 @@ fn simulated_through_the_variable(name: &str, plan: &str) -> Result<EventMarkets
 }
 
 /// R12-EVENT-5084, -5085, -5086, -5088 and -5089 on the deep brain's own
-/// path: a plan read from `QIP_DEEPBRAIN_BREADTH_PLAN` makes the running
+/// path: a plan read from `QIP_DEEPBRAIN_BREADTH_PLAN_PATH` makes the running
 /// platform estimate an outcome distribution summing to one, price every
 /// outcome from it, and rest paper quotes for an admitted entity — while a
 /// venue recorded as regulated wagering, or an entity out of the venue's

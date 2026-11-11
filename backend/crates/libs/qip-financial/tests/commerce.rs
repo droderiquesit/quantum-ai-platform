@@ -234,6 +234,7 @@ fn input() -> FeasibilityInput {
         days_on_market: Some(20),
         daily_capital_cost: Some(dec!("0.001")),
         purchase_tax_rate: Some(dec!("0.05")),
+        chargeback_rate: Some(Decimal::ZERO),
     }
 }
 

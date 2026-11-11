@@ -19,7 +19,7 @@ use crate::curriculum::{
 use crate::gap::{GapTrigger, RaisedGap};
 use crate::plan::{AcquisitionAction, Derivation, Environment, ResearchPlan};
 use crate::promotion::{EvaluationRecord, ResearchCampaign, promote};
-use qip_agents::research::{ResearchRegistry, Verdict};
+use qip_agents::research::{BenchmarkRef, ResearchRegistry, Verdict, campaign_id};
 use qip_agents::tools::{ToolName, ToolPermission, ToolRegistry};
 use qip_contracts::expansion::{CapabilityEntry, CurriculumItem, GapClass};
 use qip_core::Decimal;
@@ -349,6 +349,8 @@ impl ExpansionDesk {
         let plan = ResearchPlan::synthesise_with(&question, class, |t| {
             ToolName::parse(t).is_ok_and(|name| self.tools.get(&name).is_some())
         });
+        let contradiction =
+            (raised.trigger == GapTrigger::Contradiction).then(|| raised.signal.evidence.clone());
         let candidate = Candidate {
             kind,
             item: CurriculumItem {
@@ -384,6 +386,21 @@ impl ExpansionDesk {
         };
         match self.queue.admit(candidate, &bounds) {
             Ok(state) => {
+                // ADR 0348 decision 3: a contradiction the detectors raised is
+                // kept under the question's campaign id until a campaign on
+                // that question concludes. The item is already queued, so a
+                // refusal here is reported rather than unqueueing it.
+                if let Some(evidence) = contradiction
+                    && let Err(error) = campaign_id(&question)
+                        .and_then(|id| self.research.record_contradiction(&id, &evidence))
+                {
+                    return Admission::Refused {
+                        reason: format!(
+                            "queued, but its contradiction was not recorded: {}",
+                            error.message()
+                        ),
+                    };
+                }
                 self.lineage.insert(
                     question,
                     Lineage {
@@ -527,6 +544,10 @@ impl ExpansionDesk {
                 "`{question}` was never started; only research that ran can be concluded"
             )));
         }
+        // ADR 0348 decision 2: the verdict cites its class's ADR 0192 row.
+        // The desk can name one only for a campaign gated by the fill-bias
+        // criterion, and refuses before anything closes otherwise.
+        let benchmark = fill_bias_benchmark(evaluation)?;
         match promote(class, campaign, evaluation) {
             Ok(capability) => {
                 self.queue.close(&question)?;
@@ -537,6 +558,7 @@ impl ExpansionDesk {
                         evidence: format!("promoted as {:?}", capability.verb),
                     },
                     &campaign.experiment_refs()?,
+                    Some(&benchmark),
                 )?;
                 self.remember(Closed {
                     question,
@@ -561,6 +583,7 @@ impl ExpansionDesk {
                             evidence: format!("failed {failed:?}"),
                         },
                         &campaign.experiment_refs()?,
+                        Some(&benchmark),
                     )?;
                     self.remember(Closed {
                         question,
@@ -625,4 +648,26 @@ impl ExpansionDesk {
         }
         self.closed.push_back(closed);
     }
+}
+
+/// ADR 0192's fill-bias row as a typed benchmark (ADR 0348 decision 2): the
+/// uncorrected twin is the incumbent, and `Criterion::IncrementalValue` the
+/// gate. An evaluation that does not carry that criterion is not a fill-bias
+/// campaign, and the desk names no benchmark for it rather than guess one.
+fn fill_bias_benchmark(evaluation: &EvaluationRecord) -> Result<BenchmarkRef> {
+    if !evaluation
+        .findings()
+        .contains_key(&crate::promotion::Criterion::IncrementalValue)
+    {
+        return Err(Error::invalid(format!(
+            "`{}` carries no IncrementalValue finding, so no ADR 0192 benchmark names it; \
+             add its class's row to the table before concluding it",
+            evaluation.question()
+        )));
+    }
+    BenchmarkRef::new(
+        "fill-bias capability",
+        "the uncorrected twin",
+        "IncrementalValue",
+    )
 }

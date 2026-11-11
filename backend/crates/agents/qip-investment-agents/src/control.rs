@@ -217,6 +217,51 @@ impl Agent for RiskControl {
             &["risk_state", "limit_set"],
         ));
 
+        // Capital position (R12-CAPITAL-3020, ADR 0147 decision 8): the
+        // capital facts the risk state already holds, read and never
+        // recomputed, and each reported only where the state holds a value,
+        // so a funding buffer nobody measured is not reported as zero. No
+        // veto, limit or figure here reads them: they are what the desk sees,
+        // not something it acts on through this finding.
+        builder = builder.fact(computed(
+            ctx,
+            "cash",
+            risk.state.cash.to_f64(),
+            "currency",
+            &["risk_state"],
+        ));
+        if let Some(buffer) = risk.state.funding_buffer.filter(|value| value.is_finite()) {
+            builder = builder.fact(computed(
+                ctx,
+                "funding_buffer",
+                buffer,
+                "ratio",
+                &["risk_state"],
+            ));
+        }
+        if let Some(utilisation) = risk
+            .state
+            .margin_utilisation
+            .filter(|value| value.is_finite())
+        {
+            builder = builder.fact(computed(
+                ctx,
+                "margin_utilisation",
+                utilisation,
+                "ratio",
+                &["risk_state"],
+            ));
+        }
+        if let Some(ceiling) = risk.state.survival_gross_ceiling {
+            builder = builder.fact(computed(
+                ctx,
+                "survival_gross_ceiling",
+                ceiling.to_f64(),
+                "currency",
+                &["risk_state"],
+            ));
+        }
+
         if direction == Direction::Negative {
             builder = builder.falsifiers(vec![
                 "the risk state changes so the breached limit is no longer breached".to_string(),

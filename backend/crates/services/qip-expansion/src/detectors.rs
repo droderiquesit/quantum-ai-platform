@@ -703,6 +703,35 @@ pub fn missing_causal_links(
         .collect()
 }
 
+/// Anomalous subjects the causal graph cannot explain (R12-EXPAND-6011):
+/// one causal-link gap per subject the sweep's own detectors flagged that
+/// has no live claim into it at the sweep's instant. The contested-claim
+/// form above waits on a world fabric a connector feeds; this one reads the
+/// platform's own anomaly detectors, so it runs on the default path. A
+/// subject the graph explains raises nothing: its move has a candidate cause
+/// already, and the anomaly is the detectors' business, not the graph's.
+pub fn unexplained_anomalies(
+    flagged: &BTreeSet<String>,
+    explained: &BTreeSet<String>,
+) -> Vec<Observation> {
+    let total = flagged.len();
+    flagged
+        .iter()
+        .filter(|subject| !explained.contains(*subject))
+        .map(|subject| {
+            observe(
+                Origin::MissingCausalLink,
+                GapTrigger::Surprise,
+                Wanting::CausalLink,
+                format!("`{subject}` moved anomalously and no live causal claim explains it"),
+                "market",
+                vec![format!("anomalous:{subject}")],
+                1.0 / total as f64,
+            )
+        })
+        .collect()
+}
+
 /// How many theory deltas against one rule make the finding fully severe.
 /// One contradiction is a finding; three against the same rule is a theory
 /// in question. A ratio, so the severity is the share of that bar reached
@@ -795,24 +824,34 @@ pub fn cross_domain_links(hypotheses: &[CrossDomainHypothesis]) -> Vec<Observati
 ///
 /// Asset classes alone hid a venue the platform has no history at, and a
 /// geography it has never priced, behind a class that looked covered on
-/// average. Languages and causal drivers are absent on purpose: nothing
-/// measures either yet, and a dimension with no measured source would raise
-/// a gap on a number nobody computed.
+/// average. A causal driver is measured on the graph the platform already
+/// keeps (ADR 0345): its instruments are the effects its live claims reach,
+/// so a driver the platform reasons through and cannot price the effects of
+/// is a gap like an unpriced asset class. Language is absent on purpose:
+/// no source record states the language of what it admits, and a dimension
+/// with no measured source would raise a gap on a number nobody computed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CoverageDimension {
     AssetClass,
     Venue,
     Geography,
+    CausalDriver,
 }
 
 impl CoverageDimension {
-    pub const ALL: [Self; 3] = [Self::AssetClass, Self::Venue, Self::Geography];
+    pub const ALL: [Self; 4] = [
+        Self::AssetClass,
+        Self::Venue,
+        Self::Geography,
+        Self::CausalDriver,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AssetClass => "asset_class",
             Self::Venue => "venue",
             Self::Geography => "geography",
+            Self::CausalDriver => "causal_driver",
         }
     }
 
@@ -821,6 +860,7 @@ impl CoverageDimension {
             Self::AssetClass => "asset class",
             Self::Venue => "venue",
             Self::Geography => "geography",
+            Self::CausalDriver => "causal driver",
         }
     }
 
@@ -843,7 +883,7 @@ impl CoverageDimension {
             .map(|d| (d, value))
             .ok_or_else(|| {
                 Error::invalid(format!(
-                    "coverage key `{key}` names no dimension the detector measures; use one of asset_class, venue, geography"
+                    "coverage key `{key}` names no dimension the detector measures; use one of asset_class, venue, geography, causal_driver"
                 ))
             })
     }
@@ -871,6 +911,30 @@ pub fn coverage_universe(
                     .insert(id.clone());
             }
         }
+    }
+    map
+}
+
+/// Each causal driver of `edges` keyed under [`CoverageDimension::CausalDriver`],
+/// mapped to the instruments its claims reach (ADR 0345). `edges` is the
+/// live `(cause, effect)` claims; only an effect `instruments` holds is an
+/// instrument, because an effect the platform does not trade (a rate, a
+/// factor) has no history to lack, and reading it as uncovered would raise
+/// a gap no source could close. A driver reaching no instrument is left
+/// out rather than raised as a driver of nothing.
+pub fn causal_driver_universe<'a>(
+    edges: impl IntoIterator<Item = (&'a str, &'a str)>,
+    instruments: &BTreeSet<String>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (cause, effect) in edges {
+        let cause = cause.trim();
+        if cause.is_empty() || !instruments.contains(effect) {
+            continue;
+        }
+        map.entry(CoverageDimension::CausalDriver.key(cause))
+            .or_default()
+            .insert(effect.to_string());
     }
     map
 }

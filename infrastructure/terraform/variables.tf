@@ -794,6 +794,43 @@ variable "source_candidates_file" {
   }
 }
 
+variable "deepbrain_breadth_plan_file" {
+  description = <<-EOT
+    A committed breadth plan (`qip_kernel::breadth::BreadthPlan`) the deep
+    brain mounts and reads as `QIP_DEEPBRAIN_BREADTH_PLAN_PATH`, or null for
+    a deployment that runs no Market Factory, event market or commerce
+    research at all.
+
+    Same convention as the venue registrations above: a path in this
+    repository, read with `file()` at plan time, so the plan a revision
+    carries is the plan a reviewer read and the plan names it by hash. Null
+    renders no configuration file and therefore no variable, and an unset
+    variable is the deep brain's documented fail-closed default: no breadth
+    hook runs. Set, the file is mounted under its own content-hash directory
+    (ADR 0245), so it never moves the universe's path, and a plan the
+    platform refuses stops the process with exit 78 rather than running less
+    than it says.
+
+    Narrower than the other optional files: only a file directly under
+    `data/breadth/`, because that is the one directory whose files are
+    breadth plans, and a plan's sections commit the platform to paper
+    markets, positions and purchases. A path with no `/` after the directory
+    also cannot hop out of it, which is why no separate `..` check is
+    needed. Mounting a plan also needs its own secret container
+    (`qip-deepbrain-breadth-plan`, created in `main.tf` only when this is
+    set), the seed step's committed list in `infra.yml`, and the
+    environment's `deepbrain.yaml` naming the per-file path.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.deepbrain_breadth_plan_file == null ? true : can(regex("^data/breadth/[a-z0-9][a-z0-9._-]*\\.json$", var.deepbrain_breadth_plan_file))
+    error_message = "The deep brain's breadth plan is a repository-relative path directly under data/breadth/ ending in .json, its file name starting with a lower-case letter or digit — read with file() from the commit, and used as the mounted file's name, which modules/cloudrun requires to match ^[a-z0-9][a-z0-9._-]*$. An absolute path, a subdirectory, a parent-directory hop or a file elsewhere in the tree would let a plan mount bytes that are not a reviewed breadth plan."
+  }
+}
+
 variable "deepbrain_discover_every" {
   description = <<-EOT
     How many deep-brain research cycles run between source-discovery passes,

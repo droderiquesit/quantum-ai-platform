@@ -73,8 +73,8 @@ use qip_events::{EventBody, Topic};
 use qip_investment_agents::chief::OrganisationReport;
 use qip_learning_engine::tournament::{
     ForecasterKind, ForecasterSpec, InfluenceWeight, LatticeHorizon, PromotionDecision,
-    QuestionSpec, ResearchTask, Resolution, ResolvedQuestion, Scorecard, Tournament,
-    TournamentForecast,
+    QuestionSpec, ResearchTask, Resolution, ResolvedQuestion, Scorecard, ScoredForecast,
+    Tournament, TournamentForecast,
 };
 use qip_learning_engine::verifier::{
     EvidenceItem, ModelDossier, ModelRecord, PanelView, PredictionDossier, Verification,
@@ -168,6 +168,48 @@ struct TemporarySpecialist {
     expires_at: Timestamp,
     ups: u32,
     observed: u32,
+    /// The world-model branch it was spawned under, and its record against
+    /// that branch's parent (ADR 0347): kept here so it leaves with the
+    /// specialist and is bounded by the live temporaries.
+    branch: String,
+    /// The resolution instant that spawned it. A respawn on the subject
+    /// reuses the forecaster id, and a predecessor's forecasts on questions
+    /// still open are scored under that id, so only questions opened after
+    /// this instant are the branch's own.
+    spawned_at: Timestamp,
+    measured: BranchTally,
+}
+
+/// Summed Brier scores of a branch's specialist and of its parent, on the
+/// questions both forecast after the spawn.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct BranchTally {
+    questions: u32,
+    branch: f64,
+    parent: f64,
+}
+
+/// A spawned branch's out-of-sample record against its parent (ADR 0347,
+/// R12-EXPAND-6043, R12-MODEL-6022): the mean Brier score of its temporary
+/// specialist and of the standing population's aggregate, on every question
+/// on its subject that opened after the spawn and has resolved. Both are
+/// taken at the question's opening, before its outcome exists.
+///
+/// A record, and nothing reads it back: it gates no promotion, no weight and
+/// no size. Without it a branch was spawned, competed and expired, and
+/// nothing said whether it had forecast better than the population it
+/// branched from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BranchMeasurement {
+    /// The branch, as `WorldModelBranch::id`.
+    pub branch: String,
+    /// Its temporary specialist's forecaster id.
+    pub forecaster: String,
+    /// The branch's parent, [`STANDING_POPULATION`].
+    pub parent: String,
+    pub questions: u32,
+    pub branch_brier: f64,
+    pub parent_brier: f64,
 }
 
 impl TemporarySpecialist {
@@ -181,6 +223,11 @@ struct PendingQuestion {
     subject: String,
     reference: f64,
     resolves_at: Timestamp,
+    /// When the question opened, so a branch counts only questions opened
+    /// after its spawn (ADR 0347). Absent on a question opened before this
+    /// field existed, which no branch counts.
+    #[serde(default)]
+    opened_at: Option<Timestamp>,
     /// The aggregate's probability of `up` when the question opened, the
     /// figure a resolution's residual is measured against.
     aggregate_up: Option<f64>,
@@ -312,6 +359,10 @@ pub struct TournamentReview {
     /// residual that triggered it and the threshold it exceeded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spawned: Vec<WorldModelBranch>,
+    /// Every live branch scored against its parent this cycle (ADR 0347),
+    /// cumulative since its spawn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branch_measurements: Vec<BranchMeasurement>,
     /// The aggregate's measurement against the equal-weight mean, on every
     /// cycle that scored a question for it (R12-MODEL-6022).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,6 +393,7 @@ impl TournamentReview {
             && self.promotions.is_empty()
             && self.retired.is_empty()
             && self.spawned.is_empty()
+            && self.branch_measurements.is_empty()
             && self.aggregate_measurement.is_none()
     }
 
@@ -733,9 +785,71 @@ impl TournamentStage {
                     expires_at,
                     ups: u32::from(up),
                     observed: 1,
+                    branch: branch.id.clone(),
+                    spawned_at: now,
+                    measured: BranchTally::default(),
                 },
             );
             self.review.spawned.push(branch);
+        }
+    }
+
+    /// Score the live branch on `pending`'s subject against its parent, on
+    /// a question its specialist forecast: the specialist's own Brier score
+    /// from `scores`, and the aggregate's at opening, in the same two-outcome
+    /// form [`Self::measure_aggregate`] uses. Only a question that opened
+    /// strictly after the spawn counts: one opened at the spawn's instant
+    /// opened earlier in that cycle, and a respawn's reused id would
+    /// otherwise carry its predecessor's forecasts on questions still open.
+    fn measure_branch(
+        &mut self,
+        pending: &PendingQuestion,
+        up: bool,
+        scores: &[ScoredForecast],
+        now: Timestamp,
+    ) {
+        let Some(live) = self
+            .temporaries
+            .get_mut(&pending.subject)
+            .filter(|t| t.expires_at > now)
+            .filter(|t| {
+                pending
+                    .opened_at
+                    .is_some_and(|opened| opened > t.spawned_at)
+            })
+        else {
+            return;
+        };
+        let (Some(own), Some(parent)) = (
+            scores
+                .iter()
+                .find(|score| score.forecaster == live.id)
+                .and_then(|score| score.brier)
+                .filter(|b| b.is_finite()),
+            pending.aggregate_up.filter(|p| p.is_finite()),
+        ) else {
+            return;
+        };
+        let y = if up { 1.0 } else { 0.0 };
+        live.measured.questions += 1;
+        live.measured.branch += own;
+        live.measured.parent += 2.0 * (parent - y).powi(2);
+        let n = f64::from(live.measured.questions);
+        let measurement = BranchMeasurement {
+            branch: live.branch.clone(),
+            forecaster: live.id.clone(),
+            parent: STANDING_POPULATION.to_string(),
+            questions: live.measured.questions,
+            branch_brier: live.measured.branch / n,
+            parent_brier: live.measured.parent / n,
+        };
+        let measurements = &mut self.review.branch_measurements;
+        match measurements
+            .iter_mut()
+            .find(|m| m.branch == measurement.branch)
+        {
+            Some(existing) => *existing = measurement,
+            None => measurements.push(measurement),
         }
     }
 
@@ -1034,6 +1148,7 @@ impl TournamentStage {
                 subject,
                 reference,
                 resolves_at,
+                opened_at: Some(now),
                 aggregate_up,
                 equal_up,
                 weights_earned,
@@ -1254,6 +1369,7 @@ impl TournamentStage {
                             for score in &resolved.scores {
                                 self.record_score(&score.forecaster, score.brier, now);
                             }
+                            self.measure_branch(&pending, outcome == UP, &resolved.scores, now);
                             self.observe_outcome(&pending, outcome == UP, cycle, now);
                             measured |= self.measure_aggregate(&pending, outcome == UP);
                             scored.extend(resolved.scores.iter().map(|s| s.forecaster.clone()));
@@ -1537,7 +1653,17 @@ mod tests {
                 models: Vec::new(),
             })
             .expect("a well-formed draft forms");
-            formed.status = status;
+            formed
+                .apply_review(&qip_reasoning_engine::redteam::ReviewOutcome {
+                    hypothesis_id: formed.hypothesis_id.as_str().to_string(),
+                    reviewed_at: at,
+                    challenges: Vec::new(),
+                    confidence_before: 0.0,
+                    confidence_after: 0.0,
+                    verdict: status,
+                    rationale: "a test's review".to_string(),
+                })
+                .expect("the test's review applies");
             formed
         };
         let report = OrganisationReport {
@@ -2219,9 +2345,13 @@ mod tests {
 
         // It competes on the subject's next question, at its own model's
         // forecast: one outcome observed, Laplace-smoothed.
-        let next = resolved_at;
+        // A minute after the spawn: in a cycle REASON opens before LEARN
+        // spawns, so a question opened at the spawn's own instant opened
+        // before it and is not the branch's (ADR 0347).
+        let next = resolved_at.saturating_add(Duration::from_mins(1));
         observe(&mut stage, &hypothesis("hyp-3-obj-AAA", next), next);
         let opened = &stage.review.opened[0];
+        let opened_aggregate = opened.aggregate_up;
         let expected = if missed_up { 6_667 } else { 3_333 };
         assert_eq!(
             opened.forecasts.get(&temporary),
@@ -2245,6 +2375,35 @@ mod tests {
         assert!(
             stage.scores.contains_key(&temporary),
             "premise: the temporary was scored"
+        );
+        // ADR 0347 (R12-EXPAND-6043): a spawned branch's Brier is journaled
+        // beside its parent's on later resolutions, and moves nothing. The
+        // branch forecast 6,667 or 3,333 bp; the parent's aggregate on the
+        // same question is what it opened with. Mutation: score the branch
+        // with the parent's forecast — the two figures agree and the last
+        // assertion fails.
+        let own = review.resolved[0]
+            .scores
+            .iter()
+            .find(|s| s.forecaster == temporary)
+            .and_then(|s| s.brier)
+            .expect("premise: the temporary's forecast was scored");
+        let parent_up = opened_aggregate.expect("premise: the question had an aggregate");
+        let y = if missed_up { 0.0 } else { 1.0 };
+        assert_eq!(review.branch_measurements.len(), 1, "{review:?}");
+        let measured = &review.branch_measurements[0];
+        assert_eq!(measured.branch, format!("{temporary}@2"));
+        assert_eq!(measured.forecaster, temporary);
+        assert_eq!(measured.parent, STANDING_POPULATION);
+        assert_eq!(measured.questions, 1);
+        assert!((measured.branch_brier - own).abs() < 1e-12, "{measured:?}");
+        assert!(
+            (measured.parent_brier - 2.0 * (parent_up - y).powi(2)).abs() < 1e-12,
+            "{measured:?}"
+        );
+        assert!(
+            (measured.branch_brier - measured.parent_brier).abs() > 1e-6,
+            "the branch was scored with its parent's forecast: {measured:?}"
         );
 
         // And leaves at its expiry: retired, and absent from the next

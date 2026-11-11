@@ -451,9 +451,13 @@
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/chief.rs:370 standard_agents: no capital specialist",
       "backend/crates/runtime/qip-kernel/src/platform.rs:21671 forecast_capital_demand, kernel-side",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::CapitalPosition",
+      "backend/crates/agents/qip-investment-agents/src/control.rs RiskControl::analyse capital facts",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_risk_control_drops_capital_position_from_coverage",
+      "backend/crates/runtime/qip-kernel/src/platform.rs brief_the_desk_on_risk, brief_the_desk_on_book"
     ],
-    "gap": "No capital specialist, and the kernel half is not done: Desk::new is given a BookView and RiskView at assembly (empty book, initial equity) that nothing updates, while only world, market and research memory are Upstreams. Feeding them is a kernel change with a behavioural consequence that needs a decision: RiskView with the live risk_state and limits makes the Risk agent veto against the real book instead of the assembly-time empty one, and BookView needs a qip_portfolio::Portfolio rebuilt from the desk's fills. Then an agent in qip-investment-agents can cover cash, gross, leverage, funding and grants.",
+    "gap": "No capital specialist, by ADR 0147 decision 8 (a second control over the same RiskState would be a correlated second finding from one origin). The views are fed: Platform::brief_the_desk_on_risk writes the live risk_state and limits into the desk's RiskView, and brief_the_desk_on_book writes the position register and marks into BookView, before each panel (qip-kernel platform.rs). 2026-10-31 (lane L1-MONEY): RiskControl::analyse reports cash, funding_buffer, margin_utilisation and survival_gross_ceiling as computed facts, each only where the state holds it, and Scope::CapitalPosition is covered by them, so removing the risk control drops the scope. No veto, limit or figure reads them. Remaining: the requirement names a Capital Brain covering grants, placement and compounding, and none of those is reported; and until the first construction derives a survival ceiling the desk's RiskView carries the assembly seed (the empty book's whole equity), so survival_gross_ceiling reports that seed until then.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -464,7 +468,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0147 decision 8 stands: no capital specialist agent is added, because a second control over the same RiskState would be a correlated second finding from one origin. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0147 decision 8 stands: no capital specialist agent is added, because a second control over the same RiskState would be a correlated second finding from one origin. Handed to lane L1 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L1-MONEY: mutation (drop the capital facts from RiskControl::analyse) fails the test at the cash fact; restored with cp+cmp, passes. qip-investment-agents organisation 60 passed 0 failed. Stays PARTIAL per the ruling."
   },
   {
     "id": "R12-RISK-3021",

@@ -113,9 +113,15 @@ fn run() -> Result<()> {
     // registration gate reads the registry this configuration stands for. The
     // order also refuses a live ceiling before any socket opens, which is the
     // right way round for the two to fail.
-    let platform_config = PlatformConfig::default().with_live_ceiling(AutonomyLevel::deployable(
-        std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
-    )?);
+    let platform_config = PlatformConfig::default()
+        .with_live_ceiling(AutonomyLevel::deployable(
+            std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
+        )?)
+        // The committed counterfactual arms (R12-CAPITAL-4091, decision 17);
+        // a declaration that does not load stops the process.
+        .with_counterfactual_alternatives(
+            qip_kernel::counterfactual_alternatives::CounterfactualAlternatives::committed()?,
+        );
     // The registry the connector is admitted against is the one the platform
     // will hold: `registration_registry` is the same function `Platform::new`
     // applies at assembly, so the feed cannot open a source on a record the

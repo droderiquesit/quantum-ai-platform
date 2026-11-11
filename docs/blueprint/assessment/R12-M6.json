@@ -246,9 +246,10 @@
       "backend/crates/services/qip-expansion/tests/loop.rs::a_contested_claim_raises_a_contradiction_gap_distinct_from_a_missing_causal_link",
       "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs::a_contest_in_the_world_fabric_raises_a_data_gap_and_an_unexplained_subject_a_causal_gap_beside_it",
       "backend/crates/services/qip-expansion/tests/loop.rs:78 unexplained residual; :49 low confidence; :69 no competent specialist; unsupported asset class (an_asset_class_with_no_history_is_raised_as_unsupported_and_a_covered_one_is_not)",
-      "docs/adr/0151 amendment 2026-10-25 (decision 12 re-read: incoming(subject) is keyed by the subject id, no map is guessed)"
+      "docs/adr/0151 amendment 2026-10-25 (decision 12 re-read: incoming(subject) is keyed by the subject id, no map is guessed)",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs an_anomalous_subject_no_causal_claim_explains_becomes_a_causal_link_gap (mutation: drop the unexplained_anomalies call in sweep_over), an_anomalous_subject_the_causal_graph_explains_raises_no_causal_link_gap (mutation: drop the explained filter)"
     ],
-    "gap": "Refuted by the in-lane skeptic 2026-10-25: the two new detectors run on the default sweep but their only input, the world fabric, is fed solely by ConnectorArm::poll behind QIP_CONNECTOR_SOURCE (config.rs connector_feed returns None when unset; deepbrain_connector is null in dev, test, stage and prod), so on every committed default path `contested` is empty and neither detector can fire. Closing needs a committed environment with a connector on, or the owner's call on the requirement.",
+    "gap": "Refuted by the in-lane skeptic 2026-10-25: the two new detectors run on the default sweep but their only input, the world fabric, is fed solely by ConnectorArm::poll behind QIP_CONNECTOR_SOURCE (config.rs connector_feed returns None when unset; deepbrain_connector is null in dev, test, stage and prod), so on every committed default path `contested` is empty and neither detector can fire. Closing needs a committed environment with a connector on, or the owner's call on the requirement.  2026-11-07: missing causal links now run on the default path. qip-expansion detectors::unexplained_anomalies raises one Origin::MissingCausalLink / Wanting::CausalLink gap per subject the sweep's own anomaly detectors flag that Platform::causally_explained cannot explain; ResearchLoop::sweep_over calls it beside the contested block and records round.unexplained_anomalies. The contested form (contested_evidence and missing_causal_links over the world fabric) still waits on a fabric a connector feeds.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -259,7 +260,7 @@
     "verification": "cargo test -p qip-expansion --test loop; cargo test -p qip-deepbrain --test evidence_gaps",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: gap corrected after reading evidence_intake.rs and the world model's causal edges; no detector added, because one with no honest input would read as coverage. 2026-10-25 lane L4b (wave580): contested_evidence and missing_causal_links added and wired into sweep_over on the default path; ADR 0151 d12 amended (the causal graph is keyed by subject id, so no variable-to-subject map is guessed). Mutations fired on qip-deepbrain --test evidence_gaps: deleting the contested_evidence call failed both tests (data.len() 0, expected 2); deleting the missing_causal_links call failed the contest test at unexplained_subjects (0, expected 1); each restored byte-for-byte (sha256 checked) and both passed again. The kernel keeps no second copy of contested keys: Platform::contested_claims reads EvidenceFabric::contests, bounded by the fabric's capacity. Skeptic REFUTED COMPLETE on bar part 2 (input env-gated); kept PARTIAL, code retained."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: gap corrected after reading evidence_intake.rs and the world model's causal edges; no detector added, because one with no honest input would read as coverage. 2026-10-25 lane L4b (wave580): contested_evidence and missing_causal_links added and wired into sweep_over on the default path; ADR 0151 d12 amended (the causal graph is keyed by subject id, so no variable-to-subject map is guessed). Mutations fired on qip-deepbrain --test evidence_gaps: deleting the contested_evidence call failed both tests (data.len() 0, expected 2); deleting the missing_causal_links call failed the contest test at unexplained_subjects (0, expected 1); each restored byte-for-byte (sha256 checked) and both passed again. The kernel keeps no second copy of contested keys: Platform::contested_claims reads EvidenceFabric::contests, bounded by the fabric's capacity. Skeptic REFUTED COMPLETE on bar part 2 (input env-gated); kept PARTIAL, code retained. L4 2026-11-07: built to the wave1101 closure; status unchanged pending a skeptic."
   },
   {
     "id": "R12-REFLEX-6012",
@@ -798,24 +799,27 @@
   {
     "id": "R12-EXPAND-6034",
     "status": "PARTIAL",
-    "current": "Champion/challenger and distillation (qip-training distil with fidelity and step-cost budget) run in the deep brain; ModelPack types exist in contracts and kernel; larger slow-lane model families absent.",
+    "current": "Champion/challenger and distillation run in the deep brain. Each promotion LearningDesk::shadow_round makes through Platform::promote_model_from advances the kernel's lineage record (qip-kernel model_serving.rs ModelPack, which ADR 0149 d2 renames ModelSetVersion; not yet renamed): the new record names its predecessor, the displaced models as removed and the challenger as added. learning.rs a_challenger_the_learning_desk_promotes_over_the_champion_advances_the_platforms_model_pack asserts this from the desk's own promotion and rebuilds the record with pack_membership from model_pack_lineage. The shipped deep brain reaches this path (main.rs node::run_with -> node.rs maybe_learn -> evolution.rs promote_candidate). No promotion drafts the contract qip_contracts::policy::ModelPack, the record a cell verifies.",
     "evidence": [
       "backend/crates/services/qip-training/src/distill.rs:217 latency budget refusal",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:139 distil"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:139 distil",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_challenger_the_learning_desk_promotes_over_the_champion_advances_the_platforms_model_pack (mutations: promote_model_from in shadow_round replaced by an Err; succeed_model_pack skipped in the kernel's promotion path)"
     ],
-    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
+    "gap": "Waits on R12-CONTRACT-7064 (lane L2), which takes ADR 0149 d2 and d3 as one isolated change announced to every lane: d2 renames the kernel ModelPack to ModelSetVersion (set_membership, model_set_lineage); d3 writes, after each successful promote_model_from in LearningDesk::shadow_round, one unsigned contract ModelPack draft whose rollback_parent is the previous signed pack's artifact digest, carrying the ModelSetVersion id, refusing to write when expiry, universes or budget are absent; the deep brain never signs it (R12-REASON-7203). Larger slow-lane models and new architectures stay declined under decision 5 (R12-MODEL-7007).",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": [],
+    "depends_on": [
+      "R12-CONTRACT-7064"
+    ],
     "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
-    "verification": "cargo test (crate producing ModelPack lineage)",
+    "verification": "cargo test -p qip-deepbrain --lib a_challenger_the_learning_desk",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end. Owner ruling 2026-10-31, second pass (IMPLEMENT): Per the skeptic the row is not met through the kernel's lineage record, which ADR 0149 decision 2 renames ModelSetVersion: the lane renames it and, after each successful promotion in LearningDesk::shadow_round, writes an unsigned qip-contracts ModelPack draft naming the set version and its rollback parent, while larger slow-lane models stay declined under decision 5. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-10-31: the decider's closure (test of the kernel lineage from the desk) is done; one skeptic returned PARTIAL because the governing skeptic closure (ADR 0149 d2 rename, d3 draft pack) is not built, and both stay in the gap. Parent 2026-10-31: L4 does not take ADR 0149 d2/d3; they stay with R12-CONTRACT-7064's owner, lane L2."
   },
   {
     "id": "R12-EXPAND-6035",
@@ -853,7 +857,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:178 research family not built",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 baseline always computed"
     ],
-    "gap": "Declined by decision: ADR 0150 A2 and ADR 0190, confirmed by ADR 0199 (2026-10-31). No FeatureEnsembleSelection family, no new QuantumExperiment producer, and L4-quant's parked research-families patch stays parked until a committed note shows a posed problem size above the exact limit (22) and at or below MAX_QUBITS (24). The one family (portfolio allocation) keeps its classical-baseline benchmark. The row stays PARTIAL citing the records.",
+    "gap": "Declined by decision: ADR 0150 A2 and ADR 0190, confirmed by ADR 0199 (2026-10-31). No FeatureEnsembleSelection family, no new QuantumExperiment producer, and L4-quant's parked research-families patch stays parked until a committed note shows a posed problem size above the exact limit (22) and at or below MAX_QUBITS (24). The one family (portfolio allocation) keeps its classical-baseline benchmark. The row stays PARTIAL citing the records.  2026-11-07 (decision 24, DEPENDS): the wave1101 closure (a sizing note, then land the parked families if a posed size lies in (22, 24]) is a measurement, not a code change, and was not built. Three facts read from the code: no single constant bounds the posed sizes of the parked families FeatureEnsembleSelection (the deep brain's candidate feature count) and GraphSearch (graph sizes); the active QAOA portfolio QUBO's size is theses.len() in Platform::construct_from, with no per-cycle cap on approved theses; and the closure's wording conflates that active family with the parked ones. A run over the committed six-name synthetic universe would not establish production sizes, so the note needs measured sizes over a real universe. Open question for a person, not a defect: whether approved theses per cycle should be capped, and at what figure.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -864,7 +868,7 @@
     "verification": "cargo test (crate producing QuantumExperiment / Benchmark)",
     "work_item": "",
     "size": "XL",
-    "notes": "ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact. 2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. 2026-10-24 (L4, wave580): decision recorded in docs/adr/0190-the-quantum-benefit-gates-of-adr-0150-stand-under-the-2026-10-24-delegation-and-the-parked-research-families-stay-parked.md; no status change. 2026-10-31 L4b-expand: ADR 0199 confirms ADR 0150 A2 and ADR 0190; no code changed."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact. 2026-10-24 (L4): no status change; the code is parked, not landed, because ADR 0150 A2 forbids landing it. 2026-10-24 (L4, wave580): decision recorded in docs/adr/0190-the-quantum-benefit-gates-of-adr-0150-stand-under-the-2026-10-24-delegation-and-the-parked-research-families-stay-parked.md; no status change. 2026-10-31 L4b-expand: ADR 0199 confirms ADR 0150 A2 and ADR 0190; no code changed. Parent decision 24 (2026-11-07): not CODE_NOW; regraded DEPENDS; no parked-family patch and no invented cap."
   },
   {
     "id": "R12-EXPAND-6037",
@@ -1011,12 +1015,14 @@
   {
     "id": "R12-EXPAND-6043",
     "status": "PARTIAL",
-    "current": "WorldModelSpec and residual-triggered WorldModelBranch proposals exist in qip-world-model; benchmarking of incremental value not found.",
+    "current": "ADR 0347 (accepted, amends ADR 0149 d12's residual clause) ratifies the tournament aggregate's residual (the probability it left on the outcome that did not happen, taken at opening) as the only world-model spawn trigger; qip-kernel model_tournament.rs observe_outcome calls WorldModelSpawner::propose_branch with the standing population as parent above SPAWN_RESIDUAL, from the LEARN stage both brains run. No second spawn caller is added. Each spawned branch's temporary specialist is now scored against its parent: TournamentReview.branch_measurements journals, per live branch, the mean Brier of the specialist and of the aggregate on questions it forecast after the spawn, and nothing reads it back.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/federation.rs:91 WorldModelSpec",
-      "backend/crates/services/qip-world-model/src/spawning.rs:15 WorldModelBranch"
+      "backend/crates/services/qip-world-model/src/spawning.rs:15 WorldModelBranch",
+      "docs/adr/0347-a-world-model-branch-is-spawned-only-from-a-measured-forecast-residual-enters-as-a-temporary-entrant-is-scored-against-its-parent-and-gates-nothing.md",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs a_subject_the_population_missed_spawns_a_temporary_specialist_that_competes_until_it_expires, branch-measurement assertions (mutation: score the branch with the parent's forecast)"
     ],
-    "gap": "BranchSpawner (WorldModelSpawner) still has no caller. Spawning needs a residual the lattice can state per instrument, a branch lifecycle in lattice_stage scorecards that scores a branch against its parent, and a bound on live branches; federation_stage now opens competing branches of its own (R12-WORLD-3041) but those are federation members, not spawned WorldModelBranch values.",
+    "gap": "The parent figure is the aggregate including the specialist's own forecast, so branch and parent are pulled toward each other; a leave-one-out aggregate recorded at opening is the correction, unmade (ADR 0347's costs). No test asserts that the measurement moves nothing; it holds because nothing reads it. The respawn guard (only questions opened strictly after the spawn count) has no test of its own. ADR 0149 d12's entrant triple is not met and not amended: the specialist keeps the id temporary:<subject> and an outcome-frequency model. The synthetic-venue exclusion is declined, not met: Bar names its venue but carries no typed synthetic mark (ADR 0347 decision 5). SPAWN_RESIDUAL (0.6) is a constant no measurement chose.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1024,10 +1030,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing WorldModelSpec / WorldModelBranch)",
+    "verification": "cargo test -p qip-kernel --lib a_subject_the_population_missed",
     "work_item": "",
     "size": "L",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): No branch is spawned from an unmeasured residual; per the skeptic a spawn caller already exists in model_tournament.rs's observe_outcome (R12-MODEL-7198), so the ADR amends ADR 0149 decision 12 to ratify or remove that one caller, no second caller is added, and each spawned branch's out-of-sample Brier is journaled beside its parent's, gating nothing. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A world-model branch is spawned only from the federation's measured forecast residual on a licensed subject, enters as ADR 0149's temporary entrant triple, is scored against its parent and gates nothing (amends ADR 0149 decision 12's residual clause).. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): No branch is spawned from an unmeasured residual; per the skeptic a spawn caller already exists in model_tournament.rs's observe_outcome (R12-MODEL-7198), so the ADR amends ADR 0149 decision 12 to ratify or remove that one caller, no second caller is added, and each spawned branch's out-of-sample Brier is journaled beside its parent's, gating nothing. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A world-model branch is spawned only from the federation's measured forecast residual on a licensed subject, enters as ADR 0149's temporary entrant triple, is scored against its parent and gates nothing (amends ADR 0149 decision 12's residual clause).. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-11-06: built to the governing skeptic's closure (ratify the built caller, no second caller, branch-versus-parent record); the ruling's federation-residual caller is not built. Skeptic 2026-11-06: PARTIAL; the respawn defect (a predecessor's pre-spawn forecast counted under the reused id) is fixed by an opened-after-spawn guard; the parent-contamination defect and the rest are in the gap."
   },
   {
     "id": "R12-EXPAND-6044",
@@ -1230,11 +1236,13 @@
   {
     "id": "R12-EXPAND-6052",
     "status": "PARTIAL",
-    "current": "Distillation to a step-cost-bounded student exists; no lane-promotion record or path to a reflex cell.",
+    "current": "ResearchLoop::distil records a PromotionLane for every promoted question on ResearchRound.lanes, derived from the compiled form (ADR 0149 d6): Reflex { package_id } when compile accepts the discovery inside MAX_RULES, MAX_CONDITIONS and MAX_ADJUSTMENT_BPS, Research { refusal } otherwise, with no package. A promoted question left without a lane fails the sweep. No latency-budget field is added. The shipped deep brain runs this (main.rs ResearchLoop::new_for_node, node.rs maybe_sweep). Test: research_market.rs a_promoted_correction_inside_the_reflex_bounds_is_recorded_reflex_and_one_past_them_research.",
     "evidence": [
-      "backend/crates/services/qip-training/src/distill.rs:217"
+      "backend/crates/apps/qip-deepbrain/src/research.rs PromotionLane, ResearchRound.lanes, ResearchLoop::distil",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_promoted_correction_inside_the_reflex_bounds_is_recorded_reflex_and_one_past_them_research (mutations: Reflex on the refused arm; no lane on the refused arm)",
+      "docs/adr/0149 decision 6"
     ],
-    "gap": "No campaign, lineage or promotion record carries a latency budget, so a lane cannot be chosen from one: ResearchLoop::distil compiles a reflex package from every promoted fill-bias correction whatever its budget. Choosing Research / WarmService / Reflex needs a latency-budget field on the campaign or its desk item (a contract change in qip-contracts expansion and qip-expansion promotion.rs), and Reflex publication needs the ADR 0110 package signer, which no deployment installs (packages are held_unsigned).",
+    "gap": "WarmService is not built (ADR 0149 d6): no artefact form would occupy it. Reflex-lane packages are held_unsigned on the shipped deep brain because no deployment installs the package signer (R12-REASON-7203). The lane record is neither printed by ResearchRound::describe nor journaled, so it is readable only from the in-memory round. Only Reflex reaches the package deque by an early return in distil, not by type.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1242,10 +1250,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-deepbrain --test research_market",
     "work_item": "",
     "size": "L",
-    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0149 decision 6 already decided this, and I keep it. A promoted result's lane is read from its compiled form, and no latency-budget field is added. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0149 decision 6 already decided this, and I keep it. A promoted result's lane is read from its compiled form, and no latency-budget field is added. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-10-31: built to the closure; one skeptic CONFIRMED the closure and named the limits now in the gap; the refusal assertion matches the bound's sentence rather than a bare 500."
   },
   {
     "id": "R12-EXPAND-6053",
@@ -1275,9 +1283,10 @@
     "current": "LEARN updates episodic memory, self-model and research prompts from resolved theses; no update of source scores or curriculum, and cell episodes do not arrive.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8958"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8958",
+      "backend/crates/apps/qip-deepbrain/tests/declined_curriculum.rs three_regretted_refusals_at_one_gate_raise_the_repeated_veto_curriculum_gap (mutation: drop veto_observations in sweep_over)"
     ],
-    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open. Decided 2026-10-31 under the delegation (no ADR; nothing is built): the triage's 'Now' clause, routing resolved declined theses into a belief, is declined as specified, because a pre-trade veto is deterministic and carries no probability a calibration could score, so a belief moved by it would be a number nobody computed; the regret a veto's DeclinedScore records already narrows sizing through counterfactual_sizing_multiplier and proposes rule recalibration through review_rules, which are the two beliefs the platform honestly holds about a gate. Source scores now exist (R12-EXPAND-6027, journaled); cell episodes (R12-EXPAND-6038) stay open and are not this lane's.",
+    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open. Decided 2026-10-31 under the delegation (no ADR; nothing is built): the triage's 'Now' clause, routing resolved declined theses into a belief, is declined as specified, because a pre-trade veto is deterministic and carries no probability a calibration could score, so a belief moved by it would be a number nobody computed; the regret a veto's DeclinedScore records already narrows sizing through counterfactual_sizing_multiplier and proposes rule recalibration through review_rules, which are the two beliefs the platform honestly holds about a gate. Source scores now exist (R12-EXPAND-6027, journaled); cell episodes (R12-EXPAND-6038) stay open and are not this lane's.  2026-11-07: qip-deepbrain tests/declined_curriculum.rs three_regretted_refusals_at_one_gate_raise_the_repeated_veto_curriculum_gap drives the production cycle: three refusals at one gate become regrets on a rising tape, LEARN prices them into declined_scores, and the next ResearchLoop sweep queues the repeated-veto gap for that gate once (mutation: drop the veto_observations call in sweep_over). The closure's clause that the third resolution moves counterfactual_sizing_multiplier cannot hold and is not built: that multiplier narrows only on declines that were right, and a regret is §12.4's case where nothing loosens automatically, so it stays at one by design. The precedent-join clause was not asserted. Source-score updates (R12-EXPAND-6027) and reflex episodes (R12-EXPAND-6038, R12-REFLEX-6012) stay open beside it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1290,7 +1299,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural. 2026-10-31 L4b-expand: 'Now' clause declined with the reason in the gap; row unchanged otherwise."
+    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural. 2026-10-31 L4b-expand: 'Now' clause declined with the reason in the gap; row unchanged otherwise. L4 2026-11-07: built the achievable part of the wave1101 closure; the sizing-multiplier clause contradicts the §12.4 guardrail and is reported, not built."
   },
   {
     "id": "R12-EXPAND-6055",
@@ -1301,9 +1310,10 @@
       "backend/crates/apps/qip-api/src/registration_views.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs::SourceRegistryView, assess_sources (the entry consult before the catalogue)",
       "backend/crates/apps/qip-deepbrain/src/discovery.rs maybe_run (merged.entries)",
-      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::every_registration_carries_its_source_registry_entry_on_the_assessment"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs::every_registration_carries_its_source_registry_entry_on_the_assessment",
+      "backend/crates/apps/qip-cli/tests/adapter_proposals.rs an_operators_propose_pass_prints_the_registry_entry_and_withholds_an_uncatalogued_registration (mutation: delete the entries.push in Platform::assess_sources)"
     ],
-    "gap": "The switch is still off: DiscoveryConfig::default is every_cycles 0, QIP_DEEPBRAIN_DISCOVER_EVERY and QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH are unset in every committed environment (deepbrain_discover_every tfvar and infrastructure/gitops/envs/dev/deepbrain.yaml), and a discovery pass probes the network, which needs the egress proxy that is not applied; turning the cadence on with no candidate catalogue would run over nothing, so the default stays off until a candidate catalogue is committed to an environment (owner decision, billed egress). The refusal of an entry with no declared licence is defensive: the finder admits no source with an unknown legality, so it fires only if the registry and its own decision disagree. No skeptic round ran on this slice; the row stays PARTIAL.",
+    "gap": "The switch is still off: DiscoveryConfig::default is every_cycles 0, QIP_DEEPBRAIN_DISCOVER_EVERY and QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH are unset in every committed environment (deepbrain_discover_every tfvar and infrastructure/gitops/envs/dev/deepbrain.yaml), and a discovery pass probes the network, which needs the egress proxy that is not applied; turning the cadence on with no candidate catalogue would run over nothing, so the default stays off until a candidate catalogue is committed to an environment (owner decision, billed egress). The refusal of an entry with no declared licence is defensive: the finder admits no source with an unknown legality, so it fires only if the registry and its own decision disagree. No skeptic round ran on this slice; the row stays PARTIAL.  2026-11-07: the operator path now reads the registry entry. qip-cli adapter_proposals::propose carries each registration's SourceRegistryView on Proposal::Adapter and prints its provenance, monthly fee, licence, update frequency and routing; a registration the assessment's catalogue_problems name is withheld as Proposal::None with those problems, and one registered with no registry entry is withheld too. Still open, as the ruling said: shipped connector manifests are not registered as sources, so 'every feed' is unmet, and discovery on a cadence waits on a committed candidate catalogue and the egress proxy.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1314,7 +1324,7 @@
     "verification": "cargo test -p qip-kernel --test source_lifecycle; cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L22 after reading source.rs:146 (SourceCandidate::validate), source.rs:315 (SourceLineage) and decision.rs (entry, SourceRegistryEntry); no code changed. Closing needs a production reader of the entry (for example the qip-api registration view rendering provenance, cost, licence, freshness and utility from RegisteredSource::entry) and discovery on by default or committed in an environment. 2026-10-31 L4b-expand: the production reader of RegisteredSource::entry landed in assess_sources. Mutation fired: dropping the entries push failed every_registration_carries_its_source_registry_entry_on_the_assessment at entries.len() (0, expected 4); restored byte-for-byte (sha256 checked). Default wiring not changed: discovery stays off by default because no environment commits a candidate catalogue or an egress path. Kept PARTIAL; no skeptic."
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading source.rs:146 (SourceCandidate::validate), source.rs:315 (SourceLineage) and decision.rs (entry, SourceRegistryEntry); no code changed. Closing needs a production reader of the entry (for example the qip-api registration view rendering provenance, cost, licence, freshness and utility from RegisteredSource::entry) and discovery on by default or committed in an environment. 2026-10-31 L4b-expand: the production reader of RegisteredSource::entry landed in assess_sources. Mutation fired: dropping the entries push failed every_registration_carries_its_source_registry_entry_on_the_assessment at entries.len() (0, expected 4); restored byte-for-byte (sha256 checked). Default wiring not changed: discovery stays off by default because no environment commits a candidate catalogue or an egress path. Kept PARTIAL; no skeptic. L4 2026-11-07: built to the wave1101 closure; status unchanged."
   },
   {
     "id": "R12-EXPAND-6056",
@@ -1442,16 +1452,19 @@
   {
     "id": "R12-EXPAND-6061",
     "status": "PARTIAL",
-    "current": "A research campaign is identified by qip_agents::research::campaign_id, the SHA-256 of its normalised question (ResearchCampaign::id), and each stage that ran is an experiment reference `<campaign id>/<stage>` (ResearchCampaign::experiment_refs). ResearchRegistry::record_concluded refuses a Null or Supported verdict that cites no experiment or one belonging to another question, and stores the sorted unique references on ResearchVersion.experiments; ExpansionDesk::conclude records through it on both the promotion and the null arm. No free-text benchmark_suite is added (ADR 0152 d11).",
+    "current": "ADR 0348 (accepted, amends ADR 0152 d11): qip-agents ResearchRegistry holds all six record kinds. Hypotheses, verdicts and experiments as before; open_questions() lists the entries whose latest verdict is Open; record_concluded refuses a Supported or Null verdict without a typed BenchmarkRef (class, incumbent, criterion, ADR 0192's row) and keeps it on the version; record_contradiction keys a contradiction by campaign id, refusing empty evidence and a non-digest id, and only record_concluded on the same campaign resolves it; unresolved_contradictions() lists the open ones, capped at MAX_CONTRADICTIONS. qip-expansion's desk records a contradiction when it admits a GapTrigger::Contradiction item and passes ADR 0192's fill-bias benchmark on conclude, refusing a campaign whose evaluation carries no IncrementalValue finding before anything closes. The deep brain's sweep reaches both through its desk.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/research.rs::campaign_id",
       "backend/crates/libs/qip-agents/src/research.rs::ResearchRegistry::record_concluded",
       "backend/crates/services/qip-expansion/src/promotion.rs::ResearchCampaign::experiment_refs",
       "backend/crates/services/qip-expansion/src/desk.rs::ExpansionDesk::conclude",
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs::campaign_identity::a_campaign_has_a_stable_id_and_a_verdict_cites_its_experiment_references",
-      "backend/crates/services/qip-expansion/tests/executor.rs::a_concluded_null_cites_the_campaigns_own_experiment_references"
+      "backend/crates/services/qip-expansion/tests/executor.rs::a_concluded_null_cites_the_campaigns_own_experiment_references",
+      "docs/adr/0348-the-research-registry-declares-six-record-kinds-open-questions-a-concluded-verdicts-benchmark-and-unresolved-contradictions-keyed-by-campaign-id.md",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs an_entry_missing_a_declared_field_is_refused (mutation: accept a Supported verdict with no benchmark), a_contradiction_stays_unresolved_until_a_campaign_on_the_same_id_concludes (mutation: record_concluded skips the resolution)",
+      "backend/crates/services/qip-expansion/tests/executor.rs a_contradiction_observation_on_a_sweep_opens_one_registry_contradiction (mutation: drop the contradiction record in offer_by_deadline)"
     ],
-    "gap": "2026-10-24: requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent",
+    "gap": "The desk can name a benchmark only for fill-bias campaigns; a second capability class reaching conclude needs its ADR 0192 row named in the desk first. A contradiction whose campaign never concludes is bounded only by the cap (ADR 0348's costs). The registry is in memory and is not journaled, so contradictions and open questions do not survive a restart.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1459,10 +1472,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries; cargo test -p qip-expansion --test executor",
+    "verification": "cargo test -p qip-agents --test expansion_registries && cargo test -p qip-expansion --test executor",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The requirement stands, and the three missing kinds are recorded, not dropped. Open questions are the registry's Open entries. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The research registry declares six record kinds: open questions are its Open entries, a concluded verdict cites its class's ADR 0192 benchmark, and an unresolved contradiction is a record keyed by campaign id that only a concluded campaign closes, with no variable-to-subject map (amends ADR 0152 decision 11).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "2026-10-24 M2-DATA-AGENTS: closed per ADR 0152 d11. Mutations fired: skipping normalise in campaign_id makes the same question two ids (left eb21c939.., right ef8b9a5e..); recording &[] in the null arm leaves nothing recorded (held.len left 0, right 1). Not added, per the ADR: a list of open questions and an unresolved-contradictions list (needs a variable-to-subject map ADR 0151 declines to invent). ResearchRegistry::record still exists for Open verdicts. AUDIT-2 2026-10-24: regraded, requirement is a registry of hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions; the row states open questions, an unresolved-contradictions list and a benchmark_suite are not recorded (ADR 0152 d11 declines them), so three of the six named record kinds are absent Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The requirement stands, and the three missing kinds are recorded, not dropped. Open questions are the registry's Open entries. Handed to lane L4b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The research registry declares six record kinds: open questions are its Open entries, a concluded verdict cites its class's ADR 0192 benchmark, and an unresolved contradiction is a record keyed by campaign id that only a concluded campaign closes, with no variable-to-subject map (amends ADR 0152 decision 11).. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). L4 2026-11-06: built to the closure; skeptic not yet run."
   },
   {
     "id": "R12-EXPAND-6062",
@@ -1535,13 +1548,15 @@
   {
     "id": "R12-EXPAND-6065",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/detectors.rs:503 coverage measures three CoverageDimensions (asset class, venue, geography) over the map coverage_universe (detectors.rs:474) builds from the universe; the deployed deep brain builds that map at backend/crates/apps/qip-deepbrain/src/main.rs:232 and the sweep raises one Observation per weak dimension value.",
+    "current": "ADR 0345 (accepted, amends ADR 0151 d12) makes the causal driver a coverage dimension: CoverageDimension::CausalDriver, and qip-expansion causal_driver_universe maps each live (cause, effect) claim in the platform's causal graph to the effect when the catalogue holds it as an instrument. ResearchLoop::sweep_over adds these rows each sweep from the graph as it stands and hands them to the coverage detector beside asset class, venue and geography, so a driver whose effects lack history raises one coverage gap naming its dimension. The shipped deep brain runs this sweep, but its only causal-edge writer (the temporal-precedence discovery) claims edges only between subjects that already have price history, so no shipped edge can yet raise a driver gap; the test seeds its claims through Platform::claim_causal, which no app calls.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/tests/research.rs:103 an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router",
       "backend/crates/services/qip-expansion/tests/loop.rs:153 a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension",
-      "backend/crates/services/qip-expansion/tests/loop.rs:206 a_coverage_key_naming_an_unmeasured_dimension_is_refused"
+      "backend/crates/services/qip-expansion/tests/loop.rs:206 a_coverage_key_naming_an_unmeasured_dimension_is_refused",
+      "docs/adr/0345-causal-driver-coverage-is-measured-on-the-graphs-own-drivers-against-the-history-of-the-instruments-they-reach-and-language-waits-for-a-source-record-that-states-one.md",
+      "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming_its_dimension (mutations: coverage handed the static map; the instruments-only filter dropped)"
     ],
-    "gap": "Languages and causal drivers are not measured: nothing in the tree records a document language per source or a causal-driver inventory to measure coverage against, so CoverageDimension deliberately has no arm for either.",
+    "gap": "No production writer claims an edge whose effect lacks history, so the dimension has not fired outside tests. Language is not a coverage dimension: no source record states the language of what it admits, and ADR 0345 decision 5 keeps it out until one does. The causal graph has no edge cap, so the sweep's pass over it grows with the graph (ADR 0345's costs). The ontology seeding reads the static catalogue map, so no causal-driver ontology type is registered.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1549,10 +1564,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion --test loop a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension",
+    "verification": "cargo test -p qip-deepbrain --test evidence_gaps",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: venue and geography added on the deployed path (three of five dimensions); mutations dropping the Venue row from coverage_universe and reading an unknown key prefix as an asset class each fail their test. Status unchanged until languages and causal drivers have a measured source. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): This row needs no capital. Decision 8 filed it with the live-capital rows from the triage's bucket, and I take it out. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Causal-driver coverage is measured on the graph's own drivers against the history of the instruments they reach, and language waits for a source record that states one (amends ADR 0151 decision 12)."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: venue and geography added on the deployed path (three of five dimensions); mutations dropping the Venue row from coverage_universe and reading an unknown key prefix as an asset class each fail their test. Status unchanged until languages and causal drivers have a measured source. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): This row needs no capital. Decision 8 filed it with the live-capital rows from the triage's bucket, and I take it out. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Causal-driver coverage is measured on the graph's own drivers against the history of the instruments they reach, and language waits for a source record that states one (amends ADR 0151 decision 12). L4 2026-10-31: ADR 0345 and the dimension built; skeptic pending. Skeptic 2026-10-31: PARTIAL; closure met, the dimension cannot fire on a shipped binary today, and ADR 0345's 'graph bounded by its own capacity' was wrong and is corrected."
   },
   {
     "id": "R12-EXPAND-6066",
@@ -1578,11 +1593,14 @@
   {
     "id": "R12-EXPAND-6067",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/detectors.rs:481 PersistenceTracker raises MissedOpportunity when a flagged subject persists for PERSIST_SWEEPS, called at backend/crates/apps/qip-deepbrain/src/research.rs:450",
+    "current": "ADR 0346 (accepted, amends ADR 0151 d12): no belief price level is built. qip-deepbrain research.rs BeliefWatch is a second PersistenceTracker reading federation_stage::replay each sweep. A subject (the proposition without its @cycle) is flagged in a sweep when its latest fresh resolution, by cycle, went against the arbitrated probability (above one half and false, or below and true); flags on PERSIST_SWEEPS consecutive sweeps raise one specialist observation tagged belief-discrepancy and citing up to sixteen resolved propositions. The watch counts reviews read rather than cycle numbers, so a restart that renumbers cycles over the same journal does not blind it. It covers non-price propositions too, and moves nothing.",
     "evidence": [
-      "backend/crates/services/qip-expansion/tests/loop.rs:194 a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence"
+      "backend/crates/services/qip-expansion/tests/loop.rs:194 a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence",
+      "docs/adr/0346-a-price-belief-discrepancy-is-a-federation-forecast-the-market-keeps-resolving-against-measured-in-probability-and-no-belief-price-level-is-built.md",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_persistent_belief_discrepancy_queues_exactly_one_item_naming_its_origin (mutation: every resolved subject counted as against)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_the_watch (mutation: drop the sort by cycle)"
     ],
-    "gap": "Persistence is over price-anomaly flags, not price-vs-belief discrepancies, and no per-subject belief level exists to compare a price against: Platform::calibration() is a CalibrationReport of hit rates by class and agent, and the belief priors (qip-contracts policy.rs BeliefPriors, issued through &mut Platform::issue_belief_priors) are probabilities per key, not price levels. Closing it needs the kernel to expose a read-only belief price per subject first; the queued item also triggers no specialist, simulator, feed or model family (6049's executor work).",
+    "gap": "Persistence is counted in sweeps, not in the resolutions the ruling names: several resolutions in one sweep count once, and a subject resolved less often than the sweep never persists. One untrusted review anywhere in the log disables the detector, reported only on the round. The sweep_over wiring and the desk queueing are untested: the tests drive BeliefWatch::feed and raise() directly, and the closure's mutation (feed the anomaly flags) was not run. Testing a raised discrepancy with a specialist or a simulator is R12-EXPAND-6049's executor work.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1590,10 +1608,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-deepbrain --test research a_persistent_belief",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Beliefs are probabilities, so no belief price level is built. A price/belief discrepancy is the federation's arbitrated probability landing on the wrong side of what the price then did, for the same subject, on PERSIST_SWEEPS consecutive resolutions. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A price/belief discrepancy is a federation forecast the market keeps resolving against, measured in probability, and no belief price level is built (amends ADR 0151 decision 12)."
+    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Beliefs are probabilities, so no belief price level is built. A price/belief discrepancy is the federation's arbitrated probability landing on the wrong side of what the price then did, for the same subject, on PERSIST_SWEEPS consecutive resolutions. Handed to lane L4b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: A price/belief discrepancy is a federation forecast the market keeps resolving against, measured in probability, and no belief price level is built (amends ADR 0151 decision 12). L4 2026-10-31: ADR 0346 and BeliefWatch built; skeptic pending. Skeptic 2026-10-31: PARTIAL; fixed the lexicographic 'latest' (@10 before @9) and the cycle cursor a restart would blind, corrected ADR 0346's sweeps-versus-resolutions wording and its 'price' scope; the rest is in the gap."
   },
   {
     "id": "R12-EXPAND-6068",

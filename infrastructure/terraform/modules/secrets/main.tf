@@ -120,7 +120,7 @@ resource "google_pubsub_topic_iam_member" "rotation_publisher" {
 }
 
 resource "google_secret_manager_secret" "platform" {
-  for_each = toset(var.secret_names)
+  for_each = toset(concat(var.secret_names, var.optional_secret_names))
 
   project   = var.project_id
   secret_id = "${each.value}-${var.environment}"

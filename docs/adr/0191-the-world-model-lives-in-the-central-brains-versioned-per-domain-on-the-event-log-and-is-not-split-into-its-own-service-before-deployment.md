@@ -27,6 +27,18 @@ The first half is not:
 - The `world_model.snapshot` topic is declared in `qip-events` and has no
   producer.
 
+**Correction, 2026-10-31 (lane L4-quant, on a skeptic's reading of the
+code).** The first bullet above and decision 1 below say the world model is
+rebuilt from the log after a restart. It is not. `Platform::new` starts
+from `WorldModel::new()` and rebuilds only the evidence fabric, so a
+restarted central brain begins with an empty knowledge graph and causal
+graph and relearns them from what arrives. Decision 1 stands as a placement
+decision: the world model lives in the central brains. The rebuild it
+assumed does not exist, and this record's "What would make this wrong"
+names that case. Decision 3's snapshots make it visible: the first snapshot
+after a restart carries the next version over the relearned content, and
+its digest differs from the one before.
+
 ## Decision
 
 1. **The long-running world-model services are the central brains.** A

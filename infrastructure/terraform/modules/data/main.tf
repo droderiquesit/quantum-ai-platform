@@ -327,6 +327,21 @@ resource "google_storage_bucket" "segments" {
       type = "Delete"
     }
   }
+
+  # Warehouse load batches (ADR 0240): newline-delimited JSON the deep brain
+  # stages here, in the dataset's region, for one BigQuery load job each. A
+  # transport copy, not a record — the table and the event log are — so it
+  # expires at the bucket's own seven-day retention floor rather than at the
+  # thirty days a segment awaits compaction.
+  lifecycle_rule {
+    condition {
+      age            = 7
+      matches_prefix = ["warehouse-staging/"]
+    }
+    action {
+      type = "Delete"
+    }
+  }
 }
 
 # Simulation outputs and reproducible campaign datasets, one bucket with a
@@ -699,6 +714,63 @@ resource "google_storage_bucket_iam_member" "archive_writers" {
   bucket = google_storage_bucket.archive[0].name
   role   = "roles/storage.objectCreator"
   member = "serviceAccount:${each.value}"
+}
+
+# The warehouse's load path (ADR 0240): a writer stages batches under
+# `warehouse-staging/` in the segment bucket and asks BigQuery to load them,
+# so it needs to create a load job (`bigquery.jobs.create`, held by
+# `jobUser` and nothing narrower), to create the staged object, and, because
+# a load reads its source with the caller's credential, to read it. The two
+# object grants are conditioned to that prefix, so a writer can neither read
+# nor add a segment. Only when both stores exist, which no environment has
+# yet; `insertAll` needed `dataEditor` alone, and these replace it as the way
+# rows arrive.
+locals {
+  warehouse_loads = var.enable_bigquery && var.enable_cloud_storage
+}
+
+resource "google_project_iam_member" "warehouse_load_jobs" {
+  for_each = local.warehouse_loads ? toset(var.writer_service_accounts) : toset([])
+
+  project = var.project_id
+  role    = "roles/bigquery.jobUser"
+  member  = "serviceAccount:${each.value}"
+
+  # A project-wide role, so it goes only to a workload's own service account:
+  # a person or group named here would be able to run billed jobs anywhere in
+  # the project on the warehouse's account.
+  lifecycle {
+    precondition {
+      condition     = endswith(each.value, ".iam.gserviceaccount.com")
+      error_message = "the warehouse's load-job grant goes only to a workload service account, and ${each.value} is not one."
+    }
+  }
+}
+
+resource "google_storage_bucket_iam_member" "warehouse_staging_writers" {
+  for_each = local.warehouse_loads ? toset(var.writer_service_accounts) : toset([])
+
+  bucket = google_storage_bucket.segments[0].name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${each.value}"
+
+  condition {
+    title      = "warehouse-staging-only"
+    expression = "resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.segments[0].name}/objects/warehouse-staging/\")"
+  }
+}
+
+resource "google_storage_bucket_iam_member" "warehouse_staging_readers" {
+  for_each = local.warehouse_loads ? toset(var.writer_service_accounts) : toset([])
+
+  bucket = google_storage_bucket.segments[0].name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${each.value}"
+
+  condition {
+    title      = "warehouse-staging-only"
+    expression = "resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.segments[0].name}/objects/warehouse-staging/\")"
+  }
 }
 
 resource "google_storage_bucket_iam_member" "archive_readers" {

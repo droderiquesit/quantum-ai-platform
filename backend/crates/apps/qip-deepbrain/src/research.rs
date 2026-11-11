@@ -70,10 +70,10 @@ use qip_expansion::desk::{
 };
 use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contested_evidence, contradictions, coverage, cross_domain_links, incompetent_specialists,
-    low_confidence, missing_causal_links, model_drift, model_error_rate, refusal_clusters,
-    repeated_vetoes_priced, split_by_wanting, theory_contradictions, unexplained_residuals_priced,
-    world_state_expired,
+    causal_driver_universe, contested_evidence, contradictions, coverage, cross_domain_links,
+    incompetent_specialists, low_confidence, missing_causal_links, model_drift, model_error_rate,
+    refusal_clusters, repeated_vetoes_priced, split_by_wanting, theory_contradictions,
+    unexplained_anomalies, unexplained_residuals_priced, world_state_expired,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -87,6 +87,7 @@ use qip_expansion::meta::{
 use qip_expansion::plan::AcquisitionAction;
 use qip_kernel::Platform;
 use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThresholds};
+use qip_kernel::federation_stage::{self, Resolution};
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
 use qip_reasoning_engine::compiler::{
@@ -124,6 +125,156 @@ pub const RESIDUAL_BPS: f64 = 25.0;
 pub const CLUSTER_SUBJECTS: usize = 3;
 /// Consecutive sweeps a subject's discrepancy must persist.
 pub const PERSIST_SWEEPS: u32 = 3;
+/// Resolved propositions a belief-discrepancy run keeps to cite: the newest,
+/// because a run that lasts is one question and its evidence is bounded.
+const BELIEF_RUN_CITATIONS: usize = 16;
+
+/// The subject a federation proposition is about: the proposition without
+/// its trailing `@<cycle>`, so the question asked afresh each cycle is one
+/// subject and not one per cycle (ADR 0346).
+pub fn proposition_subject(proposition: &str) -> &str {
+    match proposition.rsplit_once('@') {
+        Some((head, cycle)) if !cycle.is_empty() && cycle.bytes().all(|b| b.is_ascii_digit()) => {
+            head
+        }
+        _ => proposition,
+    }
+}
+
+/// The subjects whose latest resolution among `resolutions` went against the
+/// federation's arbitrated probability, each with the propositions that
+/// did, in order (ADR 0346). Against means the federation put the
+/// proposition above one half and it resolved false, or below one half and
+/// it resolved true. A resolution with no arbitrated number, or one at
+/// exactly one half, took no side and says nothing; a later resolution on
+/// the federation's side clears the subject.
+///
+/// "Latest" is by the proposition's `@<cycle>`, not by the order given: a
+/// review lists its resolutions in proposition order, so `x@10` comes
+/// before `x@9`, and reading that order would let the older question decide.
+pub fn belief_discrepancies<'a>(
+    resolutions: impl IntoIterator<Item = &'a Resolution>,
+) -> BTreeMap<String, Vec<String>> {
+    let cycle_of = |proposition: &str| {
+        proposition
+            .rsplit_once('@')
+            .and_then(|(_, cycle)| cycle.parse::<u64>().ok())
+    };
+    let mut ordered: Vec<&Resolution> = resolutions.into_iter().collect();
+    // Stable, so resolutions of one cycle keep the order they were given.
+    ordered.sort_by_key(|resolution| cycle_of(&resolution.proposition));
+    let mut latest: BTreeMap<String, (bool, Vec<String>)> = BTreeMap::new();
+    for resolution in ordered {
+        let Some(p) = resolution
+            .ensemble
+            .filter(|p| p.is_finite() && p.total_cmp(&0.5).is_ne())
+        else {
+            continue;
+        };
+        let against = (p > 0.5) != resolution.outcome;
+        let entry = latest
+            .entry(proposition_subject(&resolution.proposition).to_string())
+            .or_default();
+        if against {
+            if !entry.0 {
+                entry.1.clear();
+            }
+            entry.1.push(resolution.proposition.clone());
+        } else {
+            entry.1.clear();
+        }
+        entry.0 = against;
+    }
+    latest
+        .into_iter()
+        .filter(|(_, (against, _))| *against)
+        .map(|(subject, (_, propositions))| (subject, propositions))
+        .collect()
+}
+
+/// The price/belief discrepancy detector (ADR 0346, R12-EXPAND-6067): the
+/// second [`PersistenceTracker`], fed from the federation's resolutions
+/// rather than from the price detectors. A subject is flagged in a sweep
+/// when a resolution new since the last sweep went against the federation
+/// and none after it went its way; flagged on [`PERSIST_SWEEPS`]
+/// consecutive sweeps, it raises one research item citing the resolved
+/// propositions. It moves nothing: the item asks a specialist whether the
+/// federation is wrong about that subject.
+#[derive(Debug, Clone)]
+pub struct BeliefWatch {
+    tracker: PersistenceTracker,
+    /// How many reviews, in log order, have already been read. A count and
+    /// not a cycle number, because a restarted platform numbers its cycles
+    /// from zero again over the same journal, and a cycle cursor would then
+    /// skip every new review until the old maximum was passed.
+    seen: usize,
+    /// The propositions resolved against the federation during each
+    /// flagged subject's current run, newest kept.
+    runs: BTreeMap<String, Vec<String>>,
+}
+
+impl BeliefWatch {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            tracker: PersistenceTracker::new(PERSIST_SWEEPS)?,
+            seen: 0,
+            runs: BTreeMap::new(),
+        })
+    }
+
+    /// One sweep over every review the log holds, oldest first, as each
+    /// review's resolutions: those past the count already read are new.
+    pub fn feed(&mut self, reviews: &[&[Resolution]]) -> Vec<Observation> {
+        let fresh = reviews
+            .get(self.seen..)
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|resolved| resolved.iter());
+        let against = belief_discrepancies(fresh);
+        self.seen = reviews.len();
+        self.runs.retain(|subject, _| against.contains_key(subject));
+        for (subject, propositions) in &against {
+            let run = self.runs.entry(subject.clone()).or_default();
+            run.extend(propositions.iter().cloned());
+            let excess = run.len().saturating_sub(BELIEF_RUN_CITATIONS);
+            run.drain(..excess);
+        }
+        let flagged: BTreeSet<String> = against.into_keys().collect();
+        self.tracker
+            .observe(&flagged)
+            .into_iter()
+            .map(|mut observation| {
+                let subject = observation
+                    .evidence
+                    .iter()
+                    .find_map(|e| e.strip_prefix("persistent:"))
+                    .unwrap_or_default()
+                    .to_string();
+                observation.observation = format!(
+                    "the federation's forecast on `{subject}` was resolved against on \
+                     {PERSIST_SWEEPS} consecutive sweeps"
+                );
+                observation.evidence = ["belief-discrepancy".to_string()]
+                    .into_iter()
+                    .chain(observation.evidence)
+                    .chain(
+                        self.runs
+                            .get(&subject)
+                            .into_iter()
+                            .flatten()
+                            .map(|proposition| format!("resolved:{proposition}")),
+                    )
+                    .collect();
+                observation
+            })
+            .collect()
+    }
+
+    /// Subjects being tracked; bounded by those flagged in the last sweep.
+    pub fn tracked(&self) -> usize {
+        self.tracker.tracked()
+    }
+}
 /// Hosted-model replies counted before their error rate is judged, and the
 /// share refused or malformed past which one surprise is raised. One in five
 /// is far above a provider's ordinary failure rate and below the point where
@@ -234,6 +385,26 @@ pub struct SlippageObservation {
     pub venue: String,
     pub object_id: String,
     pub slippage_bps: f64,
+}
+
+/// The lane a promoted research result was given (ADR 0149 decision 6,
+/// R12-EXPAND-6052), read from its compiled form and from nothing else: no
+/// latency-budget field decides it. Until this the round counted a refused
+/// compile as `packages["refused"]` and kept no record of which promoted
+/// question had gone where, so "this result is reflex-eligible" was a fact
+/// nobody could read back for a question.
+///
+/// Only [`PromotionLane::Reflex`] names a package. A research-lane record
+/// has nowhere to carry one, so a result the compiler refused cannot be
+/// recorded as having produced a package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromotionLane {
+    /// The discovery compiled inside `MAX_RULES`, `MAX_CONDITIONS` and
+    /// `MAX_ADJUSTMENT_BPS`. The package stays unsigned until the
+    /// two-person publish signs it (R12-REASON-7203).
+    Reflex { package_id: String },
+    /// The compiler refused it; it stays research, with the refusal.
+    Research { refusal: String },
 }
 
 /// A compiled reflex package and, if a signer was installed, its signed form.
@@ -727,6 +898,9 @@ pub struct ResearchRound {
     /// causal graph holds no live claim into.
     pub contested_claims: usize,
     pub unexplained_subjects: usize,
+    /// Subjects the sweep's anomaly detectors flagged that no live causal
+    /// claim explains, each raised as a causal-link gap (R12-EXPAND-6011).
+    pub unexplained_anomalies: usize,
     /// Theory deltas the kernel journaled on a thesis the rule pack refused
     /// and the grader credited (R12-EXPAND-6044), read off the log this
     /// sweep; each is raised as a contradiction gap, which is the revision
@@ -776,6 +950,15 @@ pub struct ResearchRound {
     pub constructed: Vec<ConstructedSimulation>,
     /// Reflex packages, by outcome.
     pub packages: BTreeMap<&'static str, usize>,
+    /// The lane each question promoted this sweep was given, by question
+    /// (ADR 0149 d6, R12-EXPAND-6052). Every promoted question has one: a
+    /// promotion that reaches the end of its arm without one fails the
+    /// sweep.
+    pub lanes: BTreeMap<String, PromotionLane>,
+    /// Belief discrepancies raised this sweep (ADR 0346), and why the
+    /// federation's reviews could not be read, where they could not.
+    pub belief_discrepancies: usize,
+    pub belief_reviews_refused: Option<String>,
     /// Every ambient signal this sweep routed, in routing order, for the
     /// ambient journal (`ambient_journal.rs`): a count on a cycle line is
     /// not a record anybody can replay.
@@ -805,6 +988,10 @@ pub struct ResearchRound {
     /// (R12-AMBIENT-1005/3064): the measured move that raised the signal,
     /// stated as a shock to stress against, generated with nobody asking.
     pub scenarios: Vec<ConditionalScenario>,
+    /// What changed in the held scenario branches this sweep
+    /// (R12-AMBIENT-1142): each added, re-shocked or retired branch, in
+    /// branch order.
+    pub branch_updates: Vec<ScenarioBranchUpdate>,
     /// Every assumption the loop holds and how it stands after this sweep
     /// (R12-AMBIENT-1143), in key order: written every sweep, so an
     /// assumption last challenged three sweeps ago reads as holding for
@@ -1133,6 +1320,122 @@ fn construct_simulation(
     ))
 }
 
+/// The most conditional scenario branches one loop holds (R12-AMBIENT-1142).
+/// A working-set bound, not a judgement about how many hypotheses matter: a
+/// signal arriving with the table full gets no branch, and says so by
+/// recording no `Added` update.
+pub const MAX_SCENARIO_BRANCHES: usize = 256;
+
+/// The branch id a signal's conditional scenario is held under.
+pub fn scenario_branch_id(signal_id: &str) -> String {
+    format!("branch:{signal_id}")
+}
+
+/// A conditional scenario held across sweeps (R12-AMBIENT-1142).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenarioBranch {
+    pub signal_id: String,
+    /// The subjects the signal named, re-read on every sweep's tape.
+    pub subjects: Vec<String>,
+    pub description: String,
+    /// The signal's expiry: the branch is retired at the first sweep at or
+    /// after it.
+    pub expires_at: Timestamp,
+    /// The digest of the inputs the branch was last shocked from.
+    pub input_digest: String,
+}
+
+/// What happened to a held scenario branch in one sweep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchChange {
+    Added,
+    Reshocked,
+    Retired,
+}
+
+/// One change to a held scenario branch, as the journal records it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenarioBranchUpdate {
+    pub branch_id: String,
+    pub signal_id: String,
+    pub change: BranchChange,
+    /// The inputs the branch stands on after the change; for a retired
+    /// branch, the inputs it was last shocked from.
+    pub input_digest: String,
+}
+
+/// A conditional shock built from a signal's subjects on the latest tape.
+struct BuiltShock {
+    shocks: Vec<FactorShock>,
+    inputs: String,
+    digest: String,
+}
+
+impl BuiltShock {
+    fn scenario(&self, signal_id: &str, description: String) -> Result<ConditionalScenario> {
+        let scenario = Scenario {
+            name: format!("conditional:{signal_id}"),
+            description,
+            shocks: self.shocks.clone(),
+            stressed_correlation: None,
+            liquidity_multiplier: 1.0,
+            historical: false,
+        };
+        scenario.validate()?;
+        let episode = SyntheticEpisode::new(
+            scenario.name.clone(),
+            SyntheticGenerator::Conditional,
+            qip_core::hash::sha256_hex(self.inputs.as_bytes()),
+            None,
+        )?;
+        Ok(ConditionalScenario {
+            signal_id: signal_id.to_string(),
+            scenario,
+            episode,
+        })
+    }
+}
+
+/// The latest measured move of each subject the platform holds a tape for,
+/// as a one-day shock, and the digest of the inputs: the signal id and the
+/// last two prices' bits, because a rounded price would let two tapes share
+/// a digest. `None` where no subject moved.
+fn conditional_shock(
+    signal_id: &str,
+    subjects: &[String],
+    history: &BTreeMap<String, Vec<f64>>,
+) -> Option<BuiltShock> {
+    let mut inputs = signal_id.to_string();
+    let shocks: Vec<FactorShock> = subjects
+        .iter()
+        .filter_map(|subject| {
+            let prices = history.get(subject)?;
+            let [.., previous, last] = prices.as_slice() else {
+                return None;
+            };
+            let moved = last / previous - 1.0;
+            (moved.is_finite() && moved != 0.0).then(|| {
+                inputs.push_str(&format!(
+                    "|{subject}|{}|{}",
+                    previous.to_bits(),
+                    last.to_bits()
+                ));
+                FactorShock::new(format!("price:{subject}"), moved, 1.0)
+            })
+        })
+        .collect();
+    if shocks.is_empty() {
+        return None;
+    }
+    let digest = qip_core::hash::sha256_hex(inputs.as_bytes());
+    Some(BuiltShock {
+        shocks,
+        inputs,
+        digest,
+    })
+}
+
 /// A stress scenario conditioned on one signal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConditionalScenario {
@@ -1247,6 +1550,9 @@ pub struct ResearchLoop {
     router: AttentionRouter,
     detectors: DetectorRegistry,
     persistence: PersistenceTracker,
+    /// The second persistence detector, over the federation's resolutions
+    /// (ADR 0346).
+    beliefs: BeliefWatch,
     ticks: TickCampaignDetector,
     now_estimate: NowEstimator,
     coverage: BTreeMap<String, BTreeSet<String>>,
@@ -1330,6 +1636,11 @@ pub struct ResearchLoop {
     /// review once. A sequence, not a cycle: a restarted platform numbers
     /// its cycles from zero again over the log it inherited.
     world_state_cursor: Option<u64>,
+    /// The conditional scenario branches held across sweeps, by branch id
+    /// (R12-AMBIENT-1142): added from a risk or assumption signal, re-shocked
+    /// on each later tape, retired at the signal's expiry. Bounded by
+    /// [`MAX_SCENARIO_BRANCHES`].
+    scenario_branches: BTreeMap<String, ScenarioBranch>,
     /// The hosted model's reply tally, where one is installed (6040).
     replies: Option<(String, crate::language::ReplyTally)>,
     /// Assumption health by assumption, bounded by [`RETAINED`]: the entry
@@ -1504,6 +1815,7 @@ impl ResearchLoop {
             router: AttentionRouter::new(policy),
             detectors: DetectorRegistry::standard(),
             persistence: PersistenceTracker::new(PERSIST_SWEEPS)?,
+            beliefs: BeliefWatch::new()?,
             ticks: TickCampaignDetector::new()?,
             now_estimate: NowEstimator::new(0.001, 0.01)?,
             coverage,
@@ -1540,6 +1852,7 @@ impl ResearchLoop {
             drifted_models: Vec::new(),
             world_states: BTreeMap::new(),
             world_state_cursor: None,
+            scenario_branches: BTreeMap::new(),
             replies: None,
             assumptions: BTreeMap::new(),
             ontology,
@@ -1941,6 +2254,21 @@ impl ResearchLoop {
         observations.extend(members.into_iter().map(|(_, o)| o));
         observations.extend(contradictions(&readings));
         observations.extend(self.persistence.observe(&flagged));
+        // The price/belief discrepancy (ADR 0346): the federation's
+        // resolutions, off the log. A review the replay refuses is reported
+        // and the watch is not fed, so a refused read does not reset a run.
+        match federation_stage::replay(platform) {
+            Ok(reviews) => {
+                let read: Vec<&[Resolution]> = reviews
+                    .iter()
+                    .map(|review| review.resolved.as_slice())
+                    .collect();
+                let raised = self.beliefs.feed(&read);
+                round.belief_discrepancies = raised.len();
+                observations.extend(raised);
+            }
+            Err(error) => round.belief_reviews_refused = Some(error.message().to_string()),
+        }
 
         // --- calibration, declines, refusals, fills, coverage -------------
         if let Some(calibration) = platform.calibration() {
@@ -2084,7 +2412,24 @@ impl ResearchLoop {
         // raised, not a dozen duplicates the desk would refuse.
         observations.extend(campaigns::observations(&opened_campaigns)?);
         let covered: BTreeSet<String> = platform.price_history().keys().cloned().collect();
-        observations.extend(coverage(&self.coverage, &covered, COVERAGE_FLOOR)?);
+        // The causal drivers the graph holds now, beside the catalogue's
+        // static dimensions (ADR 0345): read each sweep because the graph
+        // grows between sweeps and the catalogue does not.
+        let instruments: BTreeSet<String> = self.coverage.values().flatten().cloned().collect();
+        let mut measured = self.coverage.clone();
+        {
+            let world = platform.world();
+            measured.extend(causal_driver_universe(
+                world
+                    .causal()
+                    .edges()
+                    .iter()
+                    .filter(|edge| edge.recorded_at <= now && !edge.retired_by(now))
+                    .map(|edge| (edge.cause.as_str(), edge.effect.as_str())),
+                &instruments,
+            ));
+        }
+        observations.extend(coverage(&measured, &covered, COVERAGE_FLOOR)?);
 
         // --- evidence: the world fabric the connectors feed ---------------
         round.evidence_held = platform.evidence_held();
@@ -2133,6 +2478,14 @@ impl ResearchLoop {
         let missing = missing_causal_links(&contested, &explained);
         round.unexplained_subjects = missing.len();
         observations.extend(missing);
+        // R12-EXPAND-6011: the same question over the platform's own anomaly
+        // detectors, which run on the default path; the contested form above
+        // waits on a fabric a connector feeds.
+        let anomalous_explained =
+            platform.causally_explained(flagged.iter().map(String::as_str), now);
+        let unexplained = unexplained_anomalies(&flagged, &anomalous_explained);
+        round.unexplained_anomalies = unexplained.len();
+        observations.extend(unexplained);
         // R12-EXPAND-6044: a thesis the symbolic rule pack refused that LEARN
         // then credited is a contradiction between the platform's theory and
         // its evidence. The kernel journals it as a theory delta and this is
@@ -2503,7 +2856,7 @@ impl ResearchLoop {
         }
 
         // --- conditional scenarios: what the signal's move would do again --
-        self.conditional_scenarios(platform, &metrics, &mut round)?;
+        self.conditional_scenarios(platform, &metrics, &mut round, now)?;
 
         // --- curiosity: rank every candidate, then launch ------------------
         // The federation's own questions join the gaps' before the ranking, so
@@ -3118,68 +3471,113 @@ impl ResearchLoop {
         platform: &Platform,
         metrics: &Metrics,
         round: &mut ResearchRound,
+        now: Timestamp,
     ) -> Result<()> {
         let history = platform.price_history();
         let mut generated = Vec::new();
+        let mut updates = Vec::new();
+
+        // Retire first: a branch past its signal's expiry is no longer a
+        // hypothesis anything holds, and re-shocking it would keep stressing
+        // the book against a signal nobody is still raising.
+        let expired: Vec<String> = self
+            .scenario_branches
+            .iter()
+            .filter(|(_, branch)| branch.expires_at <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            if let Some(branch) = self.scenario_branches.remove(&id) {
+                updates.push(ScenarioBranchUpdate {
+                    branch_id: id,
+                    signal_id: branch.signal_id,
+                    change: BranchChange::Retired,
+                    input_digest: branch.input_digest,
+                });
+            }
+        }
+
+        // Add a branch for each new risk or assumption signal with a tape.
+        let mut added = BTreeSet::new();
         for signal in &round.signals {
             if !matches!(signal.class(), SignalClass::Risk | SignalClass::Assumption) {
                 continue;
             }
-            // The canonical inputs, as their bits: a rounded price would let
-            // two different tapes share a digest.
-            let mut inputs = signal.id().to_string();
-            let shocks: Vec<FactorShock> = signal
-                .affected_entities()
-                .iter()
-                .filter_map(|subject| {
-                    let prices = history.get(subject)?;
-                    let [.., previous, last] = prices.as_slice() else {
-                        return None;
-                    };
-                    let moved = last / previous - 1.0;
-                    (moved.is_finite() && moved != 0.0).then(|| {
-                        inputs.push_str(&format!(
-                            "|{subject}|{}|{}",
-                            previous.to_bits(),
-                            last.to_bits()
-                        ));
-                        FactorShock::new(format!("price:{subject}"), moved, 1.0)
-                    })
-                })
-                .collect();
-            if shocks.is_empty() {
+            let branch_id = scenario_branch_id(signal.id());
+            if self.scenario_branches.contains_key(&branch_id) || signal.expiry() <= now {
                 continue;
             }
-            let scenario = Scenario {
-                name: format!("conditional:{}", signal.id()),
-                description: format!(
-                    "hypothetical, conditioned on ambient signal {} ({:?}, {} bp): the latest \
-                     measured move of each affected subject, repeated over one day",
-                    signal.id(),
-                    signal.class(),
-                    signal.severity_bp()
-                ),
-                shocks,
-                stressed_correlation: None,
-                liquidity_multiplier: 1.0,
-                historical: false,
+            if self.scenario_branches.len() >= MAX_SCENARIO_BRANCHES {
+                // Refused rather than evicting a held branch: the bound is
+                // a working-set cap, and dropping an older hypothesis to make
+                // room would retire it without its signal expiring.
+                continue;
+            }
+            let subjects = signal.affected_entities().to_vec();
+            let Some(built) = conditional_shock(signal.id(), &subjects, history) else {
+                continue;
             };
-            scenario.validate()?;
-            let episode = SyntheticEpisode::new(
-                scenario.name.clone(),
-                SyntheticGenerator::Conditional,
-                qip_core::hash::sha256_hex(inputs.as_bytes()),
-                None,
-            )?;
-            generated.push(ConditionalScenario {
+            let description = format!(
+                "hypothetical, conditioned on ambient signal {} ({:?}, {} bp): the latest \
+                 measured move of each affected subject, repeated over one day",
+                signal.id(),
+                signal.class(),
+                signal.severity_bp()
+            );
+            generated.push(built.scenario(signal.id(), description.clone())?);
+            updates.push(ScenarioBranchUpdate {
+                branch_id: branch_id.clone(),
                 signal_id: signal.id().to_string(),
-                scenario,
-                episode,
+                change: BranchChange::Added,
+                input_digest: built.digest.clone(),
+            });
+            self.scenario_branches.insert(
+                branch_id.clone(),
+                ScenarioBranch {
+                    signal_id: signal.id().to_string(),
+                    subjects,
+                    description,
+                    expires_at: signal.expiry(),
+                    input_digest: built.digest,
+                },
+            );
+            added.insert(branch_id);
+        }
+
+        // Re-shock every other held branch on its subjects' latest tape. A
+        // branch whose tape has not moved since it was last shocked keeps
+        // its scenario and records nothing: the same inputs are the same
+        // hypothesis.
+        for (id, branch) in &mut self.scenario_branches {
+            if added.contains(id) {
+                continue;
+            }
+            let Some(built) = conditional_shock(&branch.signal_id, &branch.subjects, history)
+            else {
+                continue;
+            };
+            if built.digest == branch.input_digest {
+                continue;
+            }
+            generated.push(built.scenario(&branch.signal_id, branch.description.clone())?);
+            branch.input_digest = built.digest.clone();
+            updates.push(ScenarioBranchUpdate {
+                branch_id: id.clone(),
+                signal_id: branch.signal_id.clone(),
+                change: BranchChange::Reshocked,
+                input_digest: built.digest,
             });
         }
+        updates.sort_by(|a, b| a.branch_id.cmp(&b.branch_id));
         metrics.increment(AMBIENT_SCENARIOS, labels([]), generated.len() as u64);
         round.scenarios = generated;
+        round.branch_updates = updates;
         Ok(())
+    }
+
+    /// The scenario branches this loop holds, by branch id (R12-AMBIENT-1142).
+    pub fn scenario_branches(&self) -> &BTreeMap<String, ScenarioBranch> {
+        &self.scenario_branches
     }
 
     /// Conclude each retained fill-prediction campaign whose venue has
@@ -3887,6 +4285,12 @@ impl ResearchLoop {
                     }
                     self.capabilities.push_back(capability);
                     self.distil(&question, &result, now, metrics, round)?;
+                    if !round.lanes.contains_key(&question) {
+                        return Err(Error::invalid(format!(
+                            "{question} was promoted and given no lane; every promoted \
+                             result is recorded reflex or research (ADR 0149 d6)"
+                        )));
+                    }
                     "promoted"
                 }
                 // `conclude` closes a complete campaign that failed a
@@ -3980,8 +4384,22 @@ impl ResearchLoop {
             }],
         };
         let compiled = match self.compiler.compile(&discovery, now) {
-            Ok(compiled) => compiled,
-            Err(_) => {
+            Ok(compiled) => {
+                round.lanes.insert(
+                    question.to_string(),
+                    PromotionLane::Reflex {
+                        package_id: compiled.package.package_id.clone(),
+                    },
+                );
+                compiled
+            }
+            Err(error) => {
+                round.lanes.insert(
+                    question.to_string(),
+                    PromotionLane::Research {
+                        refusal: error.message().to_string(),
+                    },
+                );
                 *round.packages.entry("refused").or_default() += 1;
                 metrics.count(REFLEX_PACKAGES, labels([("outcome", "refused")]));
                 return Ok(());

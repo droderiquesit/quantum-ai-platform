@@ -275,6 +275,11 @@ pub struct CommercePlan {
     pub days_on_market: u32,
     pub daily_capital_cost: Decimal,
     pub purchase_tax_rate: Decimal,
+    /// The paper chargeback rate the desk declares, a fraction of a unit's
+    /// expected sale value in `[0, 1)` (ADR 0246). Required: a plan without
+    /// one is refused at load, because a default rate is the number ADR 0153
+    /// declined to invent. Reserved against expected resale and never booked.
+    pub chargeback_rate: Decimal,
     pub account: AccountEntry,
     pub total_ceiling: Decimal,
     #[serde(default)]
@@ -325,6 +330,11 @@ pub struct AssessedCandidate {
     pub duty: Decimal,
     #[serde(default)]
     pub purchase_tax: Decimal,
+    /// The chargeback reserve already taken out of `expected_resale` (ADR
+    /// 0246). Defaulted so a record journaled before the reserve existed
+    /// still decodes, as zero, which is what it reserved.
+    #[serde(default)]
+    pub chargeback_reserve: Decimal,
     /// Expected resale exceeds the all-in cost plus carry.
     pub viable: bool,
 }
@@ -466,6 +476,13 @@ impl CommerceResearch {
         // The terms deserialised past `Spoilage::new`'s checks; ask them
         // again rather than trust a rate nobody validated.
         Spoilage::new(plan.terms.spoilage.per_day(), plan.terms.spoilage.source())?;
+        if plan.chargeback_rate.is_negative() || plan.chargeback_rate >= Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "configuration: the commerce plan's chargeback_rate {} is outside [0, 1); state \
+                 the paper rate the desk holds, as a fraction of a unit's expected sale value",
+                plan.chargeback_rate
+            )));
+        }
         if !plan.quantity.is_positive() || plan.owner.trim().is_empty() {
             return Err(Error::invalid(
                 "a commerce plan needs a positive purchase quantity and a named owner",
@@ -685,6 +702,7 @@ impl CommerceResearch {
             days_on_market: Some(self.plan.days_on_market),
             daily_capital_cost: Some(self.plan.daily_capital_cost),
             purchase_tax_rate: Some(self.plan.purchase_tax_rate),
+            chargeback_rate: Some(self.plan.chargeback_rate),
         }
         .assess()?;
         let viable =
@@ -700,6 +718,7 @@ impl CommerceResearch {
             return_risk: assessment.return_risk,
             duty: assessment.landed.duty,
             purchase_tax: assessment.purchase_tax,
+            chargeback_reserve: assessment.chargeback_reserve,
             viable,
         });
         if !viable {
@@ -1118,13 +1137,19 @@ impl CommerceResearch {
                     terms.fees.ad_valorem, terms.fees.per_unit
                 )),
             ),
+            // ADR 0246: the plan's declared paper rate on the unit's
+            // expected sale value. Attributes are set at receipt, before any
+            // sale, so the base is the reference price the unit is expected
+            // to sell at, not a realised one. A reserve, not a booking: the
+            // simulated merchant takes no payment network.
             (
                 "payment_chargeback_risk",
-                Attr::Absent {
-                    reason: "a simulated merchant takes no payment network, so no chargeback \
-                             can be raised"
-                        .to_string(),
-                },
+                value(format!(
+                    "chargeback rate {} on expected sale value {}: {}",
+                    self.plan.chargeback_rate,
+                    candidate.reference_price,
+                    (self.plan.chargeback_rate * candidate.reference_price).round_dp(2)
+                )),
             ),
             (
                 "storage",

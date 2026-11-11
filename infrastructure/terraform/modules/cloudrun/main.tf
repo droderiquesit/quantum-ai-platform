@@ -79,28 +79,35 @@ locals {
   }
 
   # Configuration files, when this workload reads any: the committed bytes,
-  # as one read-only directory. Every file's path is written here once and
-  # reaches the process in its `_PATH` variable, so nothing has to know the
-  # mount point.
+  # each in a read-only directory of its own (ADR 0245). Every file's path is
+  # written here once and reaches the process in its `_PATH` variable, so
+  # nothing has to know the mount point.
   has_config_files = length(var.config_files) > 0
   config_root      = "/etc/qip"
   config_files = {
     for key, file in var.config_files :
-    key => "${local.config_root}/${local.config_prefix}/${file.file_name}"
+    key => "${local.config_root}/${local.config_prefixes[key]}/${file.file_name}"
   }
   config_file_hashes = {
     for key, file in var.config_files :
     key => sha256(file.content)
   }
 
-  # The files' directory is the hash of all of them, in key order, for the
-  # reason the collector's document is named by its hash: a changed file is a
-  # new directory beside the old one, never an overwrite, so publishing needs
-  # no `storage.objects.delete` and every catalogue a revision ever read
-  # stays readable under the name that revision mounted. One directory for
-  # all of them because Cloud Run mounts a volume at a path and the process
-  # reads them from one.
-  config_prefix = substr(sha256(join("\n", [for key in sort(keys(var.config_files)) : local.config_file_hashes[key]])), 0, 16)
+  # Each file's directory is named by that file's own bytes (ADR 0245), for
+  # the reason the collector's document is named by its hash: a changed file
+  # is a new directory beside the old one, never an overwrite, so publishing
+  # needs no `storage.objects.delete` and every catalogue a revision ever
+  # read stays readable under the name that revision mounted. One directory
+  # per file, not one for all of them, because a directory named by every
+  # file moved the universe's path whenever a second file was added or
+  # changed, and the universe is mounted from its own single-item secret at
+  # exactly that directory. The name is the hash of the file's hex digest:
+  # for one file that is the string the old joined form hashed, so the
+  # universe's path did not move when this changed.
+  config_prefixes = {
+    for key, digest in local.config_file_hashes :
+    key => substr(sha256(digest), 0, 16)
+  }
 
   # The environment the manifest must give the container: the caller's
   # non-secret settings, plus one path per mounted secret and per
@@ -502,7 +509,7 @@ resource "google_storage_bucket_object" "config_files" {
   for_each = local.has_config_files ? var.config_files : {}
 
   bucket       = google_storage_bucket.config_files[0].name
-  name         = "${local.config_prefix}/${each.value.file_name}"
+  name         = "${local.config_prefixes[each.key]}/${each.value.file_name}"
   content      = each.value.content
   content_type = each.value.content_type
 }

@@ -935,6 +935,7 @@ fn commerce_plan() -> Result<CommercePlan> {
         days_on_market: 2,
         daily_capital_cost: dec!("0.0001"),
         purchase_tax_rate: Decimal::ZERO,
+        chargeback_rate: Decimal::ZERO,
         account: AccountEntry {
             id: "paper-account".to_string(),
             identity_class: "desk".to_string(),
@@ -1330,6 +1331,82 @@ fn an_overround_book_set_is_normalised_into_a_distribution_proportional_to_its_m
     Ok(())
 }
 
+/// The three-outcome books of the test above, each stamped `at`.
+fn three_outcome_books(
+    at: Timestamp,
+) -> Vec<(qip_prediction::OutcomeId, qip_market::book::OrderBook)> {
+    [
+        ("cut", "0.45", "0.55"),
+        ("hold", "0.35", "0.45"),
+        ("hike", "0.25", "0.35"),
+    ]
+    .iter()
+    .map(|(id, bid, ask)| {
+        let price = |text: &str| Decimal::parse(text).expect("a literal price");
+        (
+            qip_prediction::OutcomeId::new(*id),
+            qip_market::book::OrderBook::from_levels(
+                qip_core::ObjectId::from_string(format!("SYNTH-PREDICT-{}", id.to_uppercase())),
+                EVENT_VENUE,
+                at,
+                vec![qip_market::book::BookLevel::new(price(bid), dec!("10"))],
+                vec![qip_market::book::BookLevel::new(price(ask), dec!("10"))],
+            ),
+        )
+    })
+    .collect()
+}
+
+/// R12-EVENT-5084, the leakage half: a belief priced from a book published
+/// after the pass is readable before it was knowable, which is the
+/// point-in-time leak a backtest cannot see. `take_observations` already
+/// refused a future-stamped observation; nothing refused a future-stamped
+/// book, and the distribution is built from books. Mutation: delete the
+/// `book.at > now` check in `EventMarketPlane::price` and the leaked books
+/// price to a distribution.
+#[test]
+fn a_market_whose_outcome_book_is_stamped_after_the_pass_is_refused_as_leakage_and_the_same_books_at_the_pass_price_to_one()
+-> Result<()> {
+    let market = qip_prediction::demo_market(
+        VenueId::new(EVENT_VENUE),
+        start().saturating_add(Duration::from_days(30)),
+        qip_prediction::FeeSchedule::new(0, 0, 0)?,
+    )?;
+
+    // Premise: stamped at the pass, the same books price to a distribution
+    // summing to one, so a refusal below is the stamp and nothing else.
+    let knowable = three_outcome_books(start());
+    let borrowed: Vec<_> = knowable
+        .iter()
+        .map(|(id, book)| (id.clone(), book))
+        .collect();
+    let (belief, valuation) = EventMarketPlane::price(&market, &borrowed, start())?;
+    let total: Decimal = valuation.fair_values.values().copied().sum();
+    assert_eq!(
+        total,
+        Decimal::ONE,
+        "premise: the knowable books price to one"
+    );
+    assert_eq!(
+        belief.outcomes().count(),
+        3,
+        "premise: every outcome is priced"
+    );
+
+    let leaked = three_outcome_books(start().saturating_add(Duration::from_secs(1)));
+    let borrowed: Vec<_> = leaked.iter().map(|(id, book)| (id.clone(), book)).collect();
+    let refused = EventMarketPlane::price(&market, &borrowed, start());
+    let message = match refused {
+        Ok(_) => panic!("books stamped after the pass were priced into a distribution"),
+        Err(error) => error.message().to_string(),
+    };
+    assert!(
+        message.contains("leakage"),
+        "the refusal does not name leakage: {message}"
+    );
+    Ok(())
+}
+
 /// The event plane's quotes and listings after one installed cycle, under
 /// the full register less every `(authority, action, product)` in `revoked`.
 fn event_cycle_without(
@@ -1707,5 +1784,244 @@ fn the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_jou
             .all(|assessed| assessed.duty.is_positive() && assessed.purchase_tax.is_positive()),
         "a viable assessment journaled no duty or tax: {viable:?}"
     );
+    Ok(())
+}
+
+fn first_simulated_run(plan: CommercePlan) -> Result<(Platform, CommerceSimulated)> {
+    let mut platform = platform()?;
+    platform.install_breadth(
+        &BreadthPlan {
+            commerce: Some(plan),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let mut runs = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+        if let Ok(decoded) = StreamEnvelope::from_frame(event)?.decode::<CommerceSimulated>() {
+            runs.push(decoded.body);
+        }
+    }
+    let first = runs
+        .into_iter()
+        .find(|run| !run.assessed.is_empty())
+        .expect("premise: a SIMULATE pass assessed a candidate");
+    Ok((platform, first))
+}
+
+/// R12-COMMERCE-5090 (ADR 0246). The plan's declared paper chargeback rate
+/// is reserved against expected resale, on the expected gross sale value,
+/// and only lowers it; and a received unit's chargeback-risk attribute is
+/// that rate on its expected sale value rather than "absent". Two runs of
+/// one seed differ only in the rate, so the first assessment is the same
+/// candidate in both.
+///
+/// Mutations: return `Attr::Absent` for the attribute again and the unit
+/// check fails; add the reserve instead of subtracting it in
+/// `FeasibilityInput::assess` and the resale check fails.
+#[test]
+fn a_units_chargeback_risk_is_the_plans_declared_rate_on_its_sale_value_and_lowers_its_expected_resale()
+-> Result<()> {
+    use qip_financial::commerce_resale::Attr;
+    let rate = dec!("0.1");
+    let (_, without) = first_simulated_run(commerce_plan()?)?;
+    let mut declared = commerce_plan()?;
+    declared.chargeback_rate = rate;
+    let (platform, with) = first_simulated_run(declared)?;
+
+    let (a, b) = (&without.assessed[0], &with.assessed[0]);
+    assert_eq!(
+        (&a.product, &a.venue),
+        (&b.product, &b.venue),
+        "premise: both runs assessed the same first candidate"
+    );
+    assert_eq!(
+        a.chargeback_reserve,
+        Decimal::ZERO,
+        "a zero rate reserves nothing"
+    );
+    assert!(
+        b.chargeback_reserve.is_positive(),
+        "a declared rate reserved nothing: {b:?}"
+    );
+    assert_eq!(
+        b.expected_resale,
+        a.expected_resale - b.chargeback_reserve,
+        "the reserve is not taken out of expected resale exactly once"
+    );
+    assert!(
+        b.expected_resale < a.expected_resale,
+        "the reserve did not lower resale"
+    );
+    assert_eq!(
+        (b.all_in_cost, b.inventory_carry, b.capital_lockup),
+        (a.all_in_cost, a.inventory_carry, a.capital_lockup),
+        "the rate moved a figure other than expected resale"
+    );
+
+    let research = platform.commerce_research().expect("installed");
+    let unit = research
+        .ledger()
+        .units()
+        .keys()
+        .next()
+        .cloned()
+        .expect("premise: a unit was received under the declared rate");
+    let attribute = research
+        .attributes(&unit)
+        .and_then(|attributes| attributes.get("payment_chargeback_risk"))
+        .cloned()
+        .expect("the unit carries a chargeback-risk attribute");
+    let Attr::Value(text) = attribute else {
+        panic!("the unit's chargeback risk is not a value: {attribute:?}");
+    };
+    let prefix = format!("chargeback rate {rate} on expected sale value ");
+    let rest = text
+        .strip_prefix(&prefix)
+        .unwrap_or_else(|| panic!("the attribute does not name the declared rate: {text}"));
+    let (base, risk) = rest
+        .split_once(": ")
+        .unwrap_or_else(|| panic!("the attribute does not state its figure: {text}"));
+    let base = Decimal::parse(base).expect("the base is a decimal");
+    let risk = Decimal::parse(risk).expect("the risk is a decimal");
+    assert!(
+        base.is_positive(),
+        "premise: the unit has an expected sale value"
+    );
+    assert_eq!(risk, (rate * base).round_dp(2), "{text}");
+    Ok(())
+}
+
+/// R12-COMMERCE-5090 (ADR 0246). A plan that states no chargeback rate is
+/// refused at load, and one stating a rate outside `[0, 1)` is refused when
+/// the plane opens: a default rate is the number ADR 0153 declined to
+/// invent.
+///
+/// Mutation: give `CommercePlan::chargeback_rate` a serde default and the
+/// plan without one loads.
+#[test]
+fn a_commerce_plan_without_a_chargeback_rate_is_refused_at_load() -> Result<()> {
+    let mut value = serde_json::to_value(BreadthPlan {
+        commerce: Some(commerce_plan()?),
+        ..BreadthPlan::default()
+    })
+    .expect("a plan serialises");
+    let removed = value["commerce"]
+        .as_object_mut()
+        .expect("a commerce section")
+        .remove("chargeback_rate");
+    assert!(
+        removed.is_some(),
+        "premise: the fixture states a chargeback rate"
+    );
+    let refusal = BreadthPlan::from_json(&value.to_string())
+        .expect_err("a plan with no chargeback rate loaded");
+    assert!(
+        refusal.message().contains("chargeback_rate"),
+        "refused for another reason: {}",
+        refusal.message()
+    );
+
+    for out_of_range in [Decimal::ONE, dec!("-0.01")] {
+        let mut plan = commerce_plan()?;
+        plan.chargeback_rate = out_of_range;
+        let mut platform = platform()?;
+        let refusal = platform
+            .install_breadth(
+                &BreadthPlan {
+                    commerce: Some(plan),
+                    ..BreadthPlan::default()
+                },
+                start(),
+            )
+            .expect_err("an out-of-range chargeback rate installed");
+        assert!(
+            refusal.message().contains("chargeback_rate"),
+            "refused for another reason: {}",
+            refusal.message()
+        );
+    }
+    Ok(())
+}
+
+/// R12-COMMERCE-5096. A commerce receipt queued for the desk ledger and not
+/// yet shipped used to live only in memory, so a restart lost it and the
+/// desk ledger's warehouse account stopped replaying to the units the
+/// commerce ledger held. Each movement is now journalled before it is
+/// queued and re-queued from the log on resume, exactly once each.
+///
+/// Mutations: skip `requeue_commerce_inventory` at assembly, or drop the
+/// journal write in `queue_inventory_moves`; either way the restarted
+/// process queues no movement and the test fails.
+#[test]
+fn a_commerce_receipt_queued_and_not_yet_drained_before_a_restart_is_requeued_from_the_journal_and_books_exactly_one_physical_inventory_operation_after_resume()
+-> Result<()> {
+    use qip_contracts::ledger_operation::{LedgerOperation, OperationKind};
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-commerce-inventory-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let make = || -> Result<Platform> {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+    };
+    let inventory = |platform: &Platform| -> Vec<LedgerOperation> {
+        platform
+            .pending_desk_operations()
+            .iter()
+            .filter(|operation| matches!(operation.kind, OperationKind::PhysicalInventory { .. }))
+            .cloned()
+            .collect()
+    };
+
+    let queued = {
+        let mut platform = make()?;
+        platform.install_breadth(
+            &BreadthPlan {
+                commerce: Some(commerce_plan()?),
+                ..BreadthPlan::default()
+            },
+            start(),
+        )?;
+        let mut at = start();
+        for _ in 0..6 {
+            platform.run_cycle(at);
+            at = at.saturating_add(Duration::from_hours(1));
+        }
+        inventory(&platform)
+    };
+    assert!(
+        !queued.is_empty(),
+        "premise: the first process queued a commerce movement for the desk ledger"
+    );
+
+    // The restart installs no breadth plan, so every movement it holds came
+    // from the log.
+    let restarted = make()?;
+    let requeued = inventory(&restarted);
+    assert_eq!(
+        requeued, queued,
+        "the restart did not re-queue the journalled movements as written, once each"
+    );
+    let ids: std::collections::BTreeSet<&str> = requeued
+        .iter()
+        .map(|operation| operation.operation_id.as_str())
+        .collect();
+    assert_eq!(ids.len(), requeued.len(), "a movement was queued twice");
     Ok(())
 }

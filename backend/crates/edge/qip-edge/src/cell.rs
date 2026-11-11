@@ -7139,11 +7139,22 @@ impl Cell {
         if !self.config.borrow_required || side != BookSide::Bid {
             return Ok(());
         }
-        let held = self.position(venue, object_id).max(Decimal::ZERO);
-        let needed = quantity - held;
+        // What the stated availability must cover is every sale the cell
+        // has outstanding here, not this one alone (R12-REFLEX-5038): the
+        // short it already holds, borrowed by its confirmed sales, plus what
+        // its resting sells will need once they fill, plus this sale, less
+        // the long that covers them. Judged one sale at a time, two sales
+        // each within the statement went out together and borrowed twice
+        // what the venue said it would lend.
+        let position = self.position(venue, object_id);
+        let held = position.max(Decimal::ZERO);
+        let shorted = (-position).max(Decimal::ZERO);
+        let resting = self.resting_sells(venue, object_id);
+        let needed = quantity + resting - held;
         if !needed.is_positive() {
             return Ok(());
         }
+        let needed = needed + shorted;
         let instrument = object_id.as_str();
         let reason = match (
             self.funding.borrow_availability(instrument),
@@ -7183,6 +7194,24 @@ impl Cell {
             now,
         );
         Err(Error::denied(reason))
+    }
+
+    /// The unfilled remainder of the cell's open sells of `object_id` at
+    /// `venue`: borrow those sells will need when they fill, which a further
+    /// sale's borrow check must count (R12-REFLEX-5038).
+    fn resting_sells(&self, venue: &VenueId, object_id: &ObjectId) -> Decimal {
+        self.working
+            .values()
+            .map(|working| &working.order)
+            .filter(|order| {
+                order.closed.is_none()
+                    && order.side == BookSide::Bid
+                    && &order.venue == venue
+                    && &order.object_id == object_id
+            })
+            .fold(Decimal::ZERO, |sum, order| {
+                sum + (order.quantity - order.filled).max(Decimal::ZERO)
+            })
     }
 
     /// Why `justification` cannot be sent at `now`, or `None` when it can
@@ -8122,6 +8151,9 @@ impl Cell {
             at: execution.at,
             shares,
         };
+        // ADR 0285: a fill at any venue is the other side of a layering
+        // pattern on this instrument.
+        self.conduct.filled(&fill.object_id, fill.side, fill.at);
         let overfill_detail = overfilled.then(|| {
             format!(
                 "order {} was sent for {} and the order-entry channel has now reported {} filled",
@@ -9136,6 +9168,24 @@ impl Cell {
                     ),
                     now,
                 );
+                // R12-MESH-5068: a cycle refused at the cap is as declined as
+                // one refused whole, and what declining it cost is priced the
+                // same way, so it carries its proposed legs. A cycle whose
+                // legs cannot be formed has none to carry; `arbitrage_legs`
+                // below is that case, and it carries none either.
+                if let Ok(legs) =
+                    opportunity.cycle_legs(&strategy, now, now.saturating_add(validity))
+                {
+                    let refused: Vec<RefusedLeg> = legs
+                        .into_iter()
+                        .map(Into::into)
+                        .map(|intent: Intent| refused_leg(&intent))
+                        .collect();
+                    if refused.len() <= qip_contracts::wire::MAX_REFUSED_LEGS {
+                        let index = report.refusals.len() - 1;
+                        report.refused_legs.push((index, refused));
+                    }
+                }
                 continue;
             }
             if self.autonomy.level() == AutonomyLevel::Observation {
@@ -12152,6 +12202,34 @@ impl Cell {
         );
     }
 
+    /// Whether a requote from `from` to `to` moved an order on `side` away
+    /// from the touch, judged against the cell's own book (ADR 0285
+    /// decision 4). A buy (an order on the ask, in this cell's convention)
+    /// rests against the best bid and a sell against the best ask; a
+    /// requote is away when it made the order less aggressive and left it
+    /// strictly behind that touch. One that stayed or moved closer, or that
+    /// the cell has no usable book to judge, is not.
+    fn requote_moved_away(
+        &self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        side: BookSide,
+        from: Decimal,
+        to: Decimal,
+    ) -> bool {
+        let Some(book) = self.liquidity.get(venue, object_id) else {
+            return false;
+        };
+        match side {
+            BookSide::Ask => book
+                .best_bid()
+                .is_some_and(|touch| to < from && to < touch.price),
+            BookSide::Bid => book
+                .best_ask()
+                .is_some_and(|touch| to > from && to > touch.price),
+        }
+    }
+
     /// Seal a requote's second half, and move the open order to where it
     /// now rests.
     ///
@@ -12182,6 +12260,11 @@ impl Cell {
             if order.filled.is_zero() {
                 self.conduct
                     .cancelled_unfilled(venue, &object_id, side, now);
+                // ADR 0285: the requote also counts toward the layering arm,
+                // as away from the touch only when it moved the order further
+                // behind the touch it rests against.
+                let away = self.requote_moved_away(venue, &object_id, side, order.price, price);
+                self.conduct.requoted(venue, &object_id, side, away, now);
             }
             self.conduct.placed(venue, &object_id, side, now);
         }
@@ -13770,6 +13853,151 @@ mod crossing_tests {
         Ok(())
     }
 
+    /// A gateway that accepts every order and reports, when told, a fill.
+    #[derive(Debug, Default)]
+    struct ReportingGateway {
+        placed: Vec<(String, BookSide)>,
+        reports: Vec<ExecutionReport>,
+    }
+
+    impl Placer for ReportingGateway {
+        fn is_simulated(&self) -> bool {
+            true
+        }
+
+        fn place(
+            &mut self,
+            order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            self.placed.push((order_id.to_string(), side));
+            Ok(())
+        }
+
+        fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+            std::mem::take(&mut self.reports)
+        }
+    }
+
+    /// Four bids placed, the first requoted four times, each time further
+    /// below the best bid of 99; the requote after that is put to
+    /// `admit_replacement`. With `asks_fill`, a sell the cell sent first was
+    /// filled by the venue, through the cell's own fill confirmation.
+    fn layer_bids(asks_fill: bool) -> Result<(Cell, Result<()>)> {
+        let mut cell = cell_with_book()?;
+        deploy_marketable(&mut cell, "alpha")?;
+        deploy_marketable(&mut cell, "beta")?;
+        raise_signal(&mut cell, "alpha");
+        raise_signal(&mut cell, "beta");
+        let mut gateway = ReportingGateway::default();
+        let mut report = WorkReport::default();
+        let reference = Decimal::from_int(100);
+        if asks_fill {
+            let sell = netted(&[("alpha", "-100"), ("beta", "-40")], reference);
+            cell.place_net(&sell, at(10), &mut gateway, &mut report)?;
+            let (sold, side) = gateway.placed.last().cloned().expect("the sell went out");
+            assert_eq!(
+                side,
+                BookSide::Bid,
+                "premise: a sell is an order on the bid"
+            );
+            gateway.reports.push(ExecutionReport {
+                order_id: sold,
+                venue: venue(),
+                quantity: Decimal::from_int(140),
+                price: Decimal::from_int(99),
+                at: at(10),
+            });
+            let fills = cell.confirm_execution_reports(&mut gateway, at(10));
+            assert_eq!(fills.len(), 1, "premise: the sell filled");
+        }
+        let first = gateway.placed.len();
+        for second in 11..15 {
+            cell.place_net(
+                &one_sided_net(reference),
+                at(second),
+                &mut gateway,
+                &mut report,
+            )?;
+        }
+        assert_eq!(
+            gateway.placed.len() - first,
+            4,
+            "premise: four bids went out"
+        );
+        let (bid, side) = gateway.placed[first].clone();
+        assert_eq!(side, BookSide::Ask, "premise: a buy is an order on the ask");
+        let quantity = Decimal::from_int(140);
+        for (second, price) in [(20, "98"), (21, "97"), (22, "96"), (23, "95")] {
+            let price = Decimal::parse(price).expect("a decimal literal");
+            cell.admit_replacement(&bid, &object(), &venue(), side, quantity, price, at(second))?;
+            cell.record_replacement(&bid, &venue(), "r", quantity, price, at(second));
+        }
+        let fifth = cell.admit_replacement(
+            &bid,
+            &object(),
+            &venue(),
+            side,
+            quantity,
+            Decimal::from_int(94),
+            at(24),
+        );
+        Ok((cell, fifth))
+    }
+
+    /// ADR 0285, R12-EXEC-1068. Four requotes of a bid, each moving it
+    /// further behind the touch and none filled, are four withdrawals against
+    /// eight placements on that side: a half, under the cancel-before-fill
+    /// bound of three in four, so that gate admits the next one and always
+    /// would. What marks the layering is the other side: the cell's sell
+    /// filled meanwhile. With that fill the next bid requote is refused under
+    /// the conduct gate, journaled; without it the same requotes are a
+    /// market maker repricing and are admitted.
+    ///
+    /// Mutation: ignore the opposite-side fill in `layering_refusal` (treat
+    /// the fills as always present, or never), and one of the two halves
+    /// fails.
+    #[test]
+    fn a_cell_that_layers_its_bids_by_requoting_them_away_from_the_touch_while_its_asks_fill_is_refused_a_further_bid()
+    -> Result<()> {
+        // Premise: with no fill on the other side the same pattern is
+        // admitted, so the cancel-before-fill gate does not refuse it and
+        // the refusal below is the layering arm's alone.
+        let (_, admitted) = layer_bids(false)?;
+        assert!(
+            admitted.is_ok(),
+            "the cancel-before-fill gate refused a pattern under its bound: {admitted:?}"
+        );
+
+        let (cell, refused) = layer_bids(true)?;
+        let error = match refused {
+            Ok(()) => panic!("a bid layered while the asks filled was requoted again"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "denied", "{error}");
+        assert!(
+            error.message().contains("layering")
+                && error
+                    .message()
+                    .contains("requoted 4 of its last 4 buy order(s)"),
+            "{error}"
+        );
+        assert!(
+            cell.journal().entries().iter().any(|entry| matches!(
+                &entry.decision,
+                Decision::Refused { gate, reason }
+                    if gate == GATE_CONDUCT_SPOOFING && reason.contains("layering")
+            )),
+            "the layering refusal was not journaled under {GATE_CONDUCT_SPOOFING}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn repeated_unfilled_requotes_on_one_side_of_a_book_refuse_the_next_replacement_before_risk()
     -> Result<()> {
@@ -13868,6 +14096,78 @@ mod crossing_tests {
             price,
             at(15),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_short_sale_that_would_exceed_the_stated_borrow_once_the_first_resting_sell_is_counted_is_refused_under_gate_borrow()
+    -> Result<()> {
+        // R12-REFLEX-5038. The borrow check judged each sale alone against
+        // the venue's statement, so two sales each within it went out
+        // together and borrowed twice what the venue said it would lend. The
+        // venue states three; each net below sells two, and the first rests
+        // unfilled.
+        use crate::funding::{BorrowAvailability, FundingRate};
+        use qip_core::dec;
+        let instrument = object().as_str().to_string();
+        let armed = || -> Result<Cell> {
+            let config = CellConfig::new(CELL, "europe-west2")
+                .with_venue(venue())
+                .with_borrow_required();
+            let features =
+                FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
+            let mut cell = Cell::new(config, features)?;
+            cell.track(book());
+            deploy_marketable(&mut cell, "alpha")?;
+            deploy_marketable(&mut cell, "beta")?;
+            raise_signal(&mut cell, "alpha");
+            raise_signal(&mut cell, "beta");
+            cell.set_borrow_availability(
+                instrument.clone(),
+                BorrowAvailability::available(dec!("3")),
+            );
+            cell.set_funding_rate(instrument.clone(), FundingRate::new(Decimal::ZERO));
+            Ok(cell)
+        };
+        let sale = || netted(&[("alpha", "-1"), ("beta", "-1")], Decimal::from_int(100));
+        let mut gateway = ClassedGateway {
+            simulated: true,
+            placed: Vec::new(),
+        };
+
+        // Premise: one sale of two, within the three stated, goes, and rests
+        // as an open sell the cell holds.
+        let mut cell = armed()?;
+        let mut report = WorkReport::default();
+        cell.place_net(&sale(), at(10), &mut gateway, &mut report)?;
+        assert_eq!(gateway.placed.len(), 1, "premise: {:?}", report.refusals);
+        assert_eq!(
+            cell.resting_sells(&venue(), &object()),
+            Decimal::from_int(2),
+            "premise: the first sale rests unfilled"
+        );
+
+        // The second sale is within the statement alone and past it with the
+        // first counted: four borrowed against three.
+        let before = cell.journal().entries().len();
+        let second = cell.place_net(&sale(), at(11), &mut gateway, &mut report);
+        assert_eq!(
+            gateway.placed.len(),
+            1,
+            "a second sale past the stated borrow reached the venue: {second:?}"
+        );
+        let gates: Vec<String> = cell
+            .journal()
+            .entries()
+            .iter()
+            .skip(before)
+            .filter_map(|entry| match &entry.decision {
+                Decision::Refused { gate, reason } if gate == GATE_BORROW => Some(reason.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(gates.len(), 1, "not refused under {GATE_BORROW}: {gates:?}");
+        assert!(gates[0].contains("needs 4 borrowed"), "{}", gates[0]);
         Ok(())
     }
 

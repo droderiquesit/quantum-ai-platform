@@ -113,7 +113,8 @@ Locate them with
     years".** The microsecond row is `PromotionTarget::LocalReflexOnly` by
     design (ADR 0133); the central cycle issues every other horizon.
 12. **Detector inputs that need an undeclared map or an unmeasured source are
-    not built.** The kernel retains a bounded list of contested `ClaimKey`s
+    not built.** *(Coverage clause amended by ADR 0345; belief-price clause
+    amended by ADR 0346, 2026-10-31.)* The kernel retains a bounded list of contested `ClaimKey`s
     (bounded by the evidence fabric's capacity); the missing-link detector
     waits for an operator-declared variable-to-subject map and is not built
     on a guessed one (R12-EXPAND-6011). Coverage dimensions stay asset class,

@@ -156,7 +156,8 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     // platform now declares for the universe's single asset class
     // (MODEL-4009): the composition names the classes itself, so a deployed
     // cycle carries the member too.
-    assert_eq!(first.population.len(), 16, "{:?}", first.population);
+    // ADR 0257 adds the capital-floor and settlement members.
+    assert_eq!(first.population.len(), 18, "{:?}", first.population);
     // The platform hands the capital member its paper book every cycle
     // (ADR 0194): a funded book with positive equity is never silent.
     // Mutation: build `FederationInputs` with `capital: None`.
@@ -174,6 +175,23 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
             .silent
             .contains(&federation_stage::COUNTERPARTY.to_string())),
         "the counterparty member was fed nothing on the platform's own cycle"
+    );
+    // ADR 0257: the platform hands the settlement member what is settling,
+    // and the floor member the room above the survival floor, on every
+    // cycle. Mutation: build the capital view with `floor_headroom: None`,
+    // or with an `unsettled` that never converts.
+    assert!(
+        reviews
+            .iter()
+            .all(|r| !r.silent.contains(&federation_stage::SETTLEMENT.to_string())),
+        "the settlement member was fed nothing on the platform's own cycle"
+    );
+    assert!(
+        reviews.iter().all(|r| !r
+            .silent
+            .contains(&federation_stage::CAPITAL_FLOOR.to_string())),
+        "the floor member was fed nothing on the platform's own cycle: {:?}",
+        reviews.iter().map(|r| &r.silent).collect::<Vec<_>>()
     );
     assert!(
         first

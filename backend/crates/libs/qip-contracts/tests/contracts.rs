@@ -153,7 +153,8 @@ fn an_edge_that_skipped_a_cost_refuses_to_call_itself_complete() -> Result<()> {
         "touch",
     )?);
     let missing = partial.unconsidered();
-    assert_eq!(missing.len(), 8, "{missing:?}");
+    // Nine of the ten kinds are unconsidered: every kind but the spread.
+    assert_eq!(missing.len(), 9, "{missing:?}");
     assert!(partial.require_complete().is_err());
 
     // The two the platform charges itself are as mandatory as the seven the
@@ -173,7 +174,8 @@ fn an_edge_that_skipped_a_cost_refuses_to_call_itself_complete() -> Result<()> {
         },
     )?;
     complete.require_complete()?;
-    assert_eq!(complete.net(), dec!("55"));
+    // Ten kinds at five each off a gross of one hundred.
+    assert_eq!(complete.net(), dec!("50"));
     Ok(())
 }
 
@@ -213,6 +215,11 @@ fn an_edge_that_clears_its_market_costs_but_not_its_compute_cost_is_negative() -
             DeductionKind::DataCost,
             dec!("2"),
             "amortised licence cost of the sources read",
+        )?)
+        .deduct(Deduction::new(
+            DeductionKind::Unwind,
+            dec!("0"),
+            "none: a single decision strands no leg",
         )?);
 
     edge.require_complete()?;

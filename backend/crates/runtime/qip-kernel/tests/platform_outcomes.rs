@@ -475,6 +475,92 @@ fn a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge
     Ok(())
 }
 
+/// R12-CAPITAL-4091, decision 17: the committed alternatives fail closed to
+/// "no arm", never to "all sets refused". A declared hedge on an instrument
+/// the platform holds no bars for drops that one arm, and the fill is still
+/// scored with every other arm, the declared venue included. Before the
+/// fallback the twin refused the whole set for the one hedge it could not
+/// size, and every fill went unscored the moment a hedge was declared on an
+/// instrument without history.
+///
+/// Mutation: remove the unpriceable-hedge fallback in
+/// `Platform::evaluate_alternatives` and the fill goes unscored.
+#[test]
+fn a_declared_hedge_with_no_bars_drops_that_arm_and_the_fill_is_still_scored() -> Result<()> {
+    use qip_kernel::counterfactual_alternatives::{CounterfactualAlternatives, HedgeArm, VenueArm};
+    let declared = CounterfactualAlternatives {
+        hedge: Some(HedgeArm {
+            instrument: object("BBB"),
+            ratio: dec!("1"),
+        }),
+        hedge_absent_reason: None,
+        venue: Some(VenueArm {
+            name: "XALT".to_string(),
+            taker_cost: dec!("0.0005"),
+        }),
+        venue_absent_reason: None,
+    };
+    let mut platform =
+        platform(PlatformConfig::default().with_counterfactual_alternatives(declared))?;
+    let menu = platform.counterfactuals().menu();
+    assert_eq!(
+        menu.hedge
+            .as_ref()
+            .map(|(instrument, _)| instrument.clone()),
+        Some(object("BBB")),
+        "premise: the menu names the declared hedge"
+    );
+    assert!(
+        menu.venue.is_some(),
+        "premise: the menu names the declared venue"
+    );
+    // Bars for the traded instrument only: none is ever held for BBB.
+    platform.observe(observations("AAA", 90));
+    let order_id = fill_one(&mut platform, start())?;
+
+    let mut market = TwinMarket::new(twin_bars("AAA", 90, 30), CostModel::liquid_equity(), 20)?;
+    let set = platform.evaluate_alternatives(&order_id, &mut market)?;
+    assert!(
+        set.by_kind("different_hedge").is_none(),
+        "a hedge with no history was priced"
+    );
+    assert!(
+        set.by_kind("different_venue").is_some(),
+        "the venue arm was dropped with the hedge"
+    );
+
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        1,
+        "premise: one fill waits"
+    );
+    platform.observe(
+        twin_bars("AAA", 0, 5)
+            .into_iter()
+            .map(|bar| SensedRecord::Bar(Box::new(bar)))
+            .collect(),
+    );
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        0,
+        "the fill was left unscored: {}",
+        learn.detail
+    );
+    assert_eq!(
+        platform
+            .fill_scores()
+            .iter()
+            .filter(|score| score.order_id == order_id)
+            .count(),
+        1,
+        "the fill was not priced: {}",
+        learn.detail
+    );
+    Ok(())
+}
+
 #[test]
 fn an_order_the_platform_never_sent_has_no_alternatives_to_price() -> Result<()> {
     let platform = platform(PlatformConfig::default())?;

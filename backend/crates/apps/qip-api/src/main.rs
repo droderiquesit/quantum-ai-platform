@@ -171,7 +171,12 @@ fn run() -> Result<()> {
             // against; an empty list planned no hedge in any binary.
             .with_hedge_candidates(qip_kernel::config::paper_hedge_candidates(
                 &catalogue.universe,
-            )),
+            ))
+            // The committed counterfactual arms (R12-CAPITAL-4091, decision
+            // 17); a declaration that does not load stops the process.
+            .with_counterfactual_alternatives(
+                qip_kernel::counterfactual_alternatives::CounterfactualAlternatives::committed()?,
+            ),
     );
     config.central.arbitrage = arbitrage;
     if let Some(shelf) = load_yield_shelf()? {
@@ -324,6 +329,12 @@ fn run() -> Result<()> {
         &|name| std::env::var(name).ok(),
     )?;
     println!("  {}", desk_shipper.banner());
+    // The ledger's obligations, read before every cycle (R12-CAPITAL-4086).
+    let ledger_obligations =
+        qip_api::ledger_obligations::LedgerObligationsReader::from_lookup(&|name| {
+            std::env::var(name).ok()
+        })?;
+    println!("  {}", ledger_obligations.banner());
     qip_kernel::decision_record::require_source_commit(deployment)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance =
@@ -607,7 +618,8 @@ fn run() -> Result<()> {
     .with_cells(cells.clone())
     .with_archive(archive.clone())
     .with_cycle_overview(web.cycle_overview())
-    .with_desk_shipper(desk_shipper);
+    .with_desk_shipper(desk_shipper)
+    .with_ledger_obligations(ledger_obligations);
     if let Some(mesh) = &mesh {
         api = api.with_mesh(mesh.clone());
     }

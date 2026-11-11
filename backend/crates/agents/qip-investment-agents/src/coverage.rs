@@ -71,11 +71,17 @@ pub enum Scope {
     /// and weather claims landing on it and the supplier links into it
     /// (R12-REASON-3016).
     SupplyChain,
+    /// The book's capital position as the risk state holds it: cash, the
+    /// funding buffer, margin utilisation and the survival gross ceiling
+    /// (R12-CAPITAL-3020, ADR 0147 decision 8). Covered by the risk control
+    /// rather than a capital specialist, because a second agent reading the
+    /// same `RiskState` would be a correlated second finding from one origin.
+    CapitalPosition,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 12] = [
+    pub const ALL: [Scope; 13] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -88,6 +94,7 @@ impl Scope {
         Scope::ModelFailure,
         Scope::GeopoliticalRisk,
         Scope::SupplyChain,
+        Scope::CapitalPosition,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -104,6 +111,7 @@ impl Scope {
             Self::ModelFailure => "model_failure",
             Self::GeopoliticalRisk => "geopolitical_risk",
             Self::SupplyChain => "supply_chain",
+            Self::CapitalPosition => "capital_position",
         }
     }
 
@@ -131,6 +139,12 @@ impl Scope {
             Self::ModelFailure => &["model_failure_findings"],
             Self::GeopoliticalRisk => &["geopolitical_risk"],
             Self::SupplyChain => &["supply_chain_exposure"],
+            Self::CapitalPosition => &[
+                "cash",
+                "funding_buffer",
+                "margin_utilisation",
+                "survival_gross_ceiling",
+            ],
         }
     }
 

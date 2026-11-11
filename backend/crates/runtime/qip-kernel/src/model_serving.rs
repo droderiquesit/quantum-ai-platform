@@ -1169,7 +1169,7 @@ impl Platform {
         let verification = self.tournament.verify_model(
             card,
             self.quarantined_datasets(),
-            self.latest_regime_crossing(),
+            self.regime_crossing_for(card),
             now,
         );
         let refuted = verification
