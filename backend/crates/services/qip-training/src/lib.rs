@@ -146,6 +146,7 @@ pub mod labels;
 pub mod local;
 pub mod microstructure;
 pub mod serve;
+pub mod store;
 pub mod vertex;
 
 pub use cadence::{AuthorisedUpdate, TrainingCadence, UpdatePayload, UpdateScope};

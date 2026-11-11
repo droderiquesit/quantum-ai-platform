@@ -1080,9 +1080,11 @@ name = "qip-training"
 version = "0.1.0"
 dependencies = [
  "qip-ai",
+ "qip-contracts",
  "qip-core",
  "qip-numerics",
  "qip-quant",
+ "qip-storage",
  "qip-strategy",
  "qip-transport",
  "serde",

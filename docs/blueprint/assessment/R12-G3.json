@@ -1856,12 +1856,15 @@
   {
     "id": "R12-MODEL-10083",
     "status": "PARTIAL",
-    "current": "qip-training builds datasets locally with labels and estimators; no reads from GCS/BQ/Bigtable.",
+    "current": "qip-training assembles a dataset from the Tick Lake through the BlobStore port (store.rs): assemble reads a history the lake pinned, orders and dates rows by each print's knowable instant, and returns a DatasetManifest naming every source segment by key and SHA-256, the segments withheld by the grant, and the digest of the rows; rebuild re-reads the same pinned manifest and refuses a different snapshot set or row digest. No composition root calls it: the deep brain still fits on bars the platform holds. No read from BigQuery, Bigtable or Spanner Graph.",
     "evidence": [
-      "backend/crates/services/qip-training/src/dataset.rs",
-      "backend/crates/services/qip-training/tests/training.rs"
+      "backend/crates/services/qip-training/src/store.rs assemble, rebuild, DatasetManifest",
+      "backend/crates/services/qip-training/tests/store.rs::a_dataset_assembled_from_the_lake_names_its_source_snapshots_and_rebuilds_identically",
+      "backend/crates/services/qip-training/tests/store.rs::rows_are_ordered_and_dated_by_when_each_print_became_knowable_not_by_the_venues_clock",
+      "backend/crates/libs/qip-storage/src/lake.rs Lake::manifest",
+      "backend/crates/services/qip-training/src/dataset.rs"
     ],
-    "gap": "Store-backed dataset assembly with manifests.",
+    "gap": "2026-11-11 (batch l2-c1-01): the in-repository half is built — a dataset manifest names its source snapshots and rebuilds identically, against the BlobStore port the Cloud Storage adapter implements. What remains: (1) no composition root assembles a fit from the lake; qip-deepbrain fits on the platform's in-memory bars, and wiring it needs a deployed lake with recorded history to read; (2) the buckets are off (R12-DATA-10033, enable_cloud_storage, billed and owner-dispatched) so no dataset has been read from Cloud Storage over a private Google API; (3) BigQuery (R12-DATA-10036, billed), Bigtable and Spanner Graph have no dataset reader. Earlier gap: Store-backed dataset assembly with manifests.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1872,10 +1875,10 @@
       "R12-DATA-10036"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cd backend && cargo test -p qip-training --test store",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-11-11 batch l2-c1-01: seven tests in tests/store.rs, each mutation-verified and restored by copy + cmp: emptying snapshots; removing the digest comparison in rebuild; removing the snapshot comparison in rebuild; dating a print by event_time; dropping the grant filter on snapshots; reading a Correction as a price; lowering the lags + 2 bound. Each failed its named test."
   },
   {
     "id": "R12-MODEL-10084",
