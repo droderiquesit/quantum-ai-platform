@@ -99,6 +99,7 @@ pub mod tail;
 pub mod theory_revision;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
+pub mod treasury;
 pub mod valuation;
 pub mod venue_admission;
 pub mod venue_measurement;
