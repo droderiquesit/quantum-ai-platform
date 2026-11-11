@@ -732,6 +732,48 @@ fn the_filter_uses_no_future_information() {
     assert!(full[550][1] > 0.8, "late state probability {:?}", full[550]);
 }
 
+/// R12-MODEL-1157 counts this fit as the platform's unsupervised learning,
+/// so it must learn: the volatilities have to come from Baum-Welch's
+/// re-estimation, not from the median split it starts from. The recovery
+/// test above has tolerances wide enough that the starting guess passes it:
+/// with the variance update removed the fit stopped at sd 0.0038 and 0.0299,
+/// inside both of its bands, while the real fit lands at 0.0058 and 0.0244.
+#[test]
+fn the_hmm_fit_re_estimates_its_volatilities_rather_than_keeping_its_starting_guess() {
+    use qip_core::rng::{Rng, Xoshiro256};
+    use qip_numerics::hmm::GaussianHmm;
+
+    // The same two persistent regimes as the recovery test.
+    let mut rng = Xoshiro256::seeded(31);
+    let mut observations = Vec::with_capacity(1200);
+    let mut state = 0usize;
+    for _ in 0..1200 {
+        let switch_probability = if state == 0 { 0.02 } else { 0.06 };
+        if rng.bernoulli(switch_probability) {
+            state = 1 - state;
+        }
+        observations.push(if state == 0 {
+            rng.normal_with(0.0005, 0.006)
+        } else {
+            rng.normal_with(-0.001, 0.025)
+        });
+    }
+
+    let model = GaussianHmm::fit(&observations, 200, 1e-7).unwrap();
+    assert!(model.converged, "premise: the fit converged");
+    assert!(model.iterations > 1, "premise: the fit iterated");
+    assert!(
+        approx_eq(model.variances[0].sqrt(), 0.006, 0.001),
+        "calm sd {} is not the generating 0.006",
+        model.variances[0].sqrt()
+    );
+    assert!(
+        approx_eq(model.variances[1].sqrt(), 0.025, 0.002),
+        "stress sd {} is not the generating 0.025",
+        model.variances[1].sqrt()
+    );
+}
+
 #[test]
 fn the_hmm_refuses_an_inadequate_sample() {
     use qip_numerics::hmm::GaussianHmm;

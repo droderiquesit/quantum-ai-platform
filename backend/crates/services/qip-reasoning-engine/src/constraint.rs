@@ -12,8 +12,11 @@
 //! what a person can act on. It is found by deletion: drop each constraint in
 //! turn and keep it dropped only if what remains is still unsatisfiable.
 //!
-//! This is an in-tree backtracking search, not Z3 (refused under ADR 0099
-//! C5), and it decides only what it can enumerate: a problem whose search
+//! This is an in-tree backtracking search, not Z3 or any SAT, SMT or MILP
+//! crate: ADR 0150 decision 11 refuses those in the platform, because the
+//! cycle poses only a few Boolean variables. (ADR 0099 C5, cited here until
+//! 2026-11-11, decided only the offline research lane's half.) It decides
+//! only what it can enumerate: a problem whose search
 //! space exceeds [`MAX_ASSIGNMENTS`] is refused rather than left to run. There
 //! are no SMT theories beyond bounded linear integer arithmetic.
 //!
