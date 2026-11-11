@@ -1,0 +1,19 @@
+[package]
+name = "qip-treasury"
+description = "The Treasury Bank's books: the reserve floor, leverage decisions, internal funding, financing permissions, and which source funds which requirement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# ADR 0385 (amending ADR 0127 decision 2): this crate names no capital-brain
+# crate. `qip-acceptance`'s `treasury_boundary` suite pins the dependency set
+# below exactly, so a line added here fails a test rather than passing review
+# unnoticed.
+[dependencies]
+serde.workspace = true
+qip-core.workspace = true
+
+[lints]
+workspace = true

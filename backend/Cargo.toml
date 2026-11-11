@@ -57,6 +57,7 @@ members = [
     "crates/services/qip-prediction",
     "crates/services/qip-lifecycle",
     "crates/services/qip-capital",
+    "crates/services/qip-treasury",
     "crates/services/qip-cost-router",
     "crates/services/qip-twin",
     "crates/services/qip-agency",
@@ -162,6 +163,7 @@ qip-chain = { path = "crates/services/qip-chain" }
 qip-prediction = { path = "crates/services/qip-prediction" }
 qip-lifecycle = { path = "crates/services/qip-lifecycle" }
 qip-capital = { path = "crates/services/qip-capital" }
+qip-treasury = { path = "crates/services/qip-treasury" }
 qip-cost-router = { path = "crates/services/qip-cost-router" }
 qip-twin = { path = "crates/services/qip-twin" }
 qip-agency = { path = "crates/services/qip-agency" }

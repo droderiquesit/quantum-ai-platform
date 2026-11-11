@@ -2291,14 +2291,18 @@
   },
   {
     "id": "R12-CAPITAL-1096",
-    "status": "PARTIAL",
-    "current": "Functionality lives in qip-capital + qip-capital-fabric used by kernel; no single 'brain' boundary or autonomous loop is defined.",
+    "status": "COMPLETE",
+    "current": "qip-capital owns the Capital Brain with typed public contracts, is composed by the kernel and reached from the qip-api and qip-cli composition roots, has contract tests, and is closed under ADR 0127 decision 5: its closure reaches no alpha crate and no other brain's crate, and no crate below the kernel depends on it.",
     "evidence": [
-      "backend/crates/services/qip-capital/tests/treasury.rs:58",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
-      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_capital_brain_reaches_no_alpha_and_no_other_brain_and_only_the_fabric_depends_on_it"
+      "backend/crates/services/qip-capital/src/allocation.rs CapitalAllocator, DrawdownSchedule",
+      "backend/crates/libs/qip-contracts/src/allocation.rs AllocationLimits, Allocation, AllocationPlan (moved by ADR 0385)",
+      "backend/crates/services/qip-capital-fabric/src/plan.rs PrePositioningPlanner holds AllocationLimits, not the allocator",
+      "backend/crates/runtime/qip-kernel/src/platform.rs deployable_capital; qip-api and qip-cli depend on qip-capital",
+      "backend/crates/services/qip-capital/tests/ (contract tests)",
+      "backend/crates/tests/qip-acceptance/tests/brain_closure.rs the_capital_brain_reaches_no_alpha_and_no_other_brain_and_nothing_below_the_kernel_depends_on_it, only_the_kernel_and_the_apps_hold_two_brains",
+      "docs/adr/0385-treasury-and-funding-are-extracted-to-qip-treasury-the-bank-stays-in-the-capital-brain-and-the-allocators-plan-and-limit-types-cross-as-contracts.md decisions 3 and 4"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18). 2026-11-11: a closure test exists. qip-capital's closure reaches no alpha crate and no other brain's crate. The clause that no other brain's crate depends on it except through qip-contracts does not hold: qip-capital-fabric (the Settlement Brain's crate) depends on qip-capital directly for AllocationPlan, CapitalAllocator, AllocationLimits and DrawdownSchedule; the test pins that as the one direct dependent below the kernel. ADR 0127 expected the fabric's edge to move to qip-treasury, but the types it reads are the allocator's, not treasury's, and treasury is not yet extracted (R12-CAPITAL-1098). NEEDS-ADR (or an ADR 0127 amendment): whether the allocator's plan and limit types move to qip-contracts or the fabric's edge is admitted.",
+    "gap": "None against the inspection text. 2026-11-11 (batch l1-d1-01, ADR 0385): the one open edge is closed by removing it, not admitting it. The allocator's limits and plan are data and moved to qip_contracts::allocation; CapitalAllocator and DrawdownSchedule carry the decision and stayed. The fabric's planner holds the limits and its manifest names qip-capital only as a dev-dependency, which cargo does not give a library target. Outside this row: one assertion in the protected architecture.rs (SERVICE_TO_SERVICE_EDGES) still lists the removed edge and fails until integration applies docs/blueprint/lanes/l1-d1-01-R12-CAPITAL-1098-architecture.patch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2306,10 +2310,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test brain_closure (\"test result: ok. 8 passed; 0 failed\"); cargo test -p qip-capital -p qip-capital-fabric -p qip-contracts",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutations that fired, each restored with cp and cmp: qip-risk added to qip-capital's manifest under an inactive target table (the capital brain reaches another brain's {qip-risk}); qip-capital added to qip-twin's manifest the same way (direct dependents {qip-capital-fabric, qip-twin}). brain_closure: 8 passed, 0 failed. Stays PARTIAL."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-c1-01: closure test added; mutations that fired, each restored with cp and cmp: qip-risk added to qip-capital's manifest under an inactive target table (the capital brain reaches another brain's {qip-risk}); qip-capital added to qip-twin's manifest the same way (direct dependents {qip-capital-fabric, qip-twin}). brain_closure: 8 passed, 0 failed. Stays PARTIAL. 2026-11-11 batch l1-d1-01: promoted under ADR 0385. Mutations that fired on the closure test, each restored with cp: qip-capital moved back into the fabric's [dependencies] (dependents {qip-capital-fabric}); qip-risk under an inactive target table in qip-capital's manifest; qip-treasury under qip-execution-engine's manifest fails only_the_kernel_and_the_apps_hold_two_brains."
   },
   {
     "id": "R12-CAPITAL-1097",
@@ -2339,23 +2343,26 @@
   {
     "id": "R12-CAPITAL-1098",
     "status": "PARTIAL",
-    "current": "Functionality lives in qip-capital treasury and capital-fabric corridors/custody; no single 'brain' boundary or autonomous loop is defined.",
+    "current": "A crate owns the Treasury Bank: services/qip-treasury holds the reserve floor (CapitalBook), leverage decisions, internal funding, financing permissions and the funding plan, with typed public contracts and contract tests, and a boundary suite holds that it and the capital brain never name each other. No composition root reaches it.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/corridor.rs",
-      "backend/crates/services/qip-capital-fabric/src/custody.rs"
+      "backend/crates/services/qip-treasury/src/treasury.rs CapitalBook, LeverageBook, InternalFunding, FinancingPermissions",
+      "backend/crates/services/qip-treasury/src/funding.rs plan_funding",
+      "backend/crates/services/qip-treasury/tests/treasury.rs, tests/funding.rs (contract tests)",
+      "backend/crates/tests/qip-acceptance/tests/treasury_boundary.rs the_treasury_crate_depends_on_qip_core_alone_and_reaches_no_capital_brain_crate, the_capital_brain_cannot_reach_the_treasury_and_nothing_below_the_kernel_depends_on_it, neither_crates_source_names_the_other_and_the_bank_stays_in_the_capital_brain",
+      "docs/adr/0385-treasury-and-funding-are-extracted-to-qip-treasury-the-bank-stays-in-the-capital-brain-and-the-allocators-plan-and-limit-types-cross-as-contracts.md"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: the qip-treasury extraction and its arch test (shared with COVERAGE-7157). 2026-11-11 (batch l1-c1-01, not built): the extraction cannot be made as ADR 0127 decision 2 states it. treasury.rs names no other qip-capital module and funding.rs names only treasury, but bank.rs uses four capital-brain types directly (collateral::Pledge, dated_ladder::{DatedLadder, EntryKind, LadderEntry}, reservation::{ReservationLedger, MAXIMUM_RESERVATION_VALIDITY}, survival::SurvivalReport), and the decision says treasury depends on no capital-brain module except through qip-contracts. NEEDS-ADR (or an ADR 0127 amendment): whether those four move to qip-contracts (ReservationLedger and DatedLadder carry behaviour, not only data), or bank.rs stays in qip-capital and only treasury and funding are extracted.",
+    "gap": "2026-11-11 (batch l1-d1-01, ADR 0385 amending ADR 0127 decision 2): services/qip-treasury is extracted from qip-capital::{treasury, funding}; bank.rs stays in qip-capital because it drives ReservationLedger and DatedLadder, which carry behaviour and may not move to qip-contracts. The crate depends on qip-core alone and qip-capital does not depend on it; treasury_boundary.rs holds both. What remains against the inspection text is 'reached from a composition root': no kernel or app crate depends on qip-treasury, and plan_funding and the four books have no production caller (they had none inside qip-capital either). Composing them needs inputs nobody has given: a reserve floor and leverage ceilings (figures, DECISION-NEEDED from the owner) and the central treasury's available balance, which the kernel does not hold because the ledger is its authority (ADR 0123). Also: three assertions in the protected architecture.rs must follow the extraction; the change is docs/blueprint/lanes/l1-d1-01-R12-CAPITAL-1098-architecture.patch and architecture.rs fails on those three until integration applies it.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
+    "verification": "cd backend && cargo test -p qip-treasury && cargo test -p qip-acceptance --test treasury_boundary --test financing_permissions",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop. 2026-11-11 batch l1-d1-01: extraction built under ADR 0385. Mutations that fired on treasury_boundary, each restored with cp: qip-capital under qip-treasury's [dependencies], [dev-dependencies] and an inactive target table; qip-treasury under qip-capital's and the fabric's [dependencies]; pub mod funding restored to qip-capital; qip_treasury named in bank.rs; qip_capital named in qip-treasury/src/funding.rs; bank.rs copied into qip-treasury. treasury_boundary: 4 passed, 0 failed. Stays PARTIAL on the composition root."
   },
   {
     "id": "R12-CAPITAL-1099",

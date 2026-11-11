@@ -73,6 +73,7 @@ use qip_ai::memory::{
 };
 use qip_ai::retrieval::SearchIndex;
 use qip_ai::serving::{ModelProvider, NoProvider};
+use qip_capital::AllocationLimits;
 use qip_capital::bank::{IdleCash, RoutingOutcome, RoutingTerms, Shelf, route_idle_cash};
 use qip_capital::dated_ladder::{
     DatedLadder, EntryKind, LadderEntry as DatedEntry, RedemptionNotice,
@@ -85,7 +86,6 @@ use qip_capital::ledger::{
 };
 use qip_capital::margin::MarginModel;
 use qip_capital::reservation::ReservationLedger;
-use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
 use qip_capital_fabric::corridor::{Corridor, CorridorId};
 use qip_capital_fabric::gate::{CorridorFunding, FundingStanding};
 use qip_capital_fabric::journal::{
@@ -6349,10 +6349,7 @@ impl Platform {
         let counterfactuals =
             CounterfactualEngine::new(config.seed, menu, delay + CAPITAL_HORIZON)?;
         let pre_positioner = PrePositioningPlanner::new(
-            CapitalAllocator::new(
-                AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
-                DrawdownSchedule::default(),
-            ),
+            AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
             TransferCostModel::new(
                 TransactionCostModel::listed(1.0),
                 LiquidityProfile::listed(Decimal::from_int(5_000_000_000_000), 1.0),

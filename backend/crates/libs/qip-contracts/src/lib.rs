@@ -29,6 +29,7 @@
 
 pub mod action;
 pub mod admission;
+pub mod allocation;
 pub mod ambient;
 pub mod capital;
 pub mod captured_event;

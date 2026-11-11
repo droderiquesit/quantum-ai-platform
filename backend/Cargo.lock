@@ -155,6 +155,7 @@ dependencies = [
  "qip-streaming",
  "qip-training",
  "qip-transport",
+ "qip-treasury",
  "qip-twin",
  "qip-world-model",
  "serde",
@@ -1103,6 +1104,14 @@ dependencies = [
  "qip-tls",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "qip-treasury"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "serde",
 ]
 
 [[package]]

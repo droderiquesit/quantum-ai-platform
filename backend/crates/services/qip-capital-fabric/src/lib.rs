@@ -1,6 +1,6 @@
 //! `qip-capital-fabric` — pre-position capital before the opportunity exists.
 //!
-//! [`qip_capital`] decides how much risk the platform may take and issues the
+//! `qip_capital` decides how much risk the platform may take and issues the
 //! grants that let edge cells take it. It answers *how much*, and it answers it
 //! for now. This crate answers the question that comes next and that nobody asks
 //! until it is too late to act on: **where will that capital have to be, and
@@ -9,7 +9,7 @@
 //! The rule the whole crate implements is one sentence: *do not wait until an
 //! opportunity exists to move capital.* Forecast where it will be needed, and
 //! pre-position when the expected value of having it there exceeds the cost of
-//! putting it there. This is an extension of [`qip_capital`] forward in time,
+//! putting it there. This is an extension of `qip_capital` forward in time,
 //! not a replacement for it — the budget, the drawdown response and the venue
 //! limits are all still that crate's, composed here rather than restated.
 //!
@@ -32,7 +32,7 @@
 //!   morning's balance is refused rather than approved.
 //! * [`plan`] takes the decision. Benefit at the interval's **lower** bound
 //!   against cost at its **upper** bound, checked against
-//!   [`qip_capital::CapitalAllocator`]'s live limits, with every refusal naming
+//!   `qip_capital::CapitalAllocator`'s live limits, with every refusal naming
 //!   its figures.
 //! * [`mod@evaluate`] scores the plan afterwards against what the world actually
 //!   needed, which is what makes the forecaster improvable rather than merely
@@ -40,14 +40,14 @@
 //!
 //! # What is deliberately not here
 //!
-//! **Taking capital back.** [`qip_capital::RecallOrder`] already withdraws
+//! **Taking capital back.** `qip_capital::RecallOrder` already withdraws
 //! capital mid-flight, already models the fact that a recall is a request rather
 //! than a guarantee, and already has the envelope expiry as its backstop. A
 //! second, softer recall path in this crate would be a way to move capital that
 //! does not stop when the first one does.
 //!
 //! **A second budget.** The fabric spends the headroom left in a live
-//! [`qip_capital::AllocationPlan`] and checks every destination against the
+//! [`qip_contracts::allocation::AllocationPlan`] and checks every destination against the
 //! allocator's own per-venue limit. Two systems each holding a budget is two
 //! systems each believing they own the same dollar.
 //!
@@ -120,8 +120,9 @@
 //!     SettlementCalendar::weekday(SettlementConvention::T1)?,
 //! )?;
 //! settlement.assign_venue(VenueId::new("XTKS"), Region::new("apac"))?;
+//! // The planner takes the allocator's limits, not the allocator (ADR 0385).
 //! let planner = PrePositioningPlanner::new(
-//!     allocator,
+//!     allocator.limits().clone(),
 //!     TransferCostModel::new(
 //!         TransactionCostModel::listed(1.0),
 //!         LiquidityProfile::listed(Decimal::from_int(5_000_000_000_000), 1.0),
@@ -156,7 +157,7 @@
 //!     .with_forecast(forecast);
 //!
 //! // The live allocation: nothing drawn down, nothing yet committed.
-//! let live = planner.allocator().allocate(&[], 0.0, now)?;
+//! let live = allocator.allocate(&[], 0.0, now)?;
 //! let plan = planner.plan(&request, &live, now)?;
 //!
 //! // The gap the forecaster is confident about is 300m yen, plus the buffer the
