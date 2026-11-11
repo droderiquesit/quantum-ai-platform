@@ -4073,12 +4073,17 @@
   {
     "id": "R12-COVERAGE-7173",
     "status": "PARTIAL",
-    "current": "RegionalEpisode contract and edge regional_episodes tests; KnowledgeDelta missing.",
+    "current": "RegionalEpisode contract and edge regional_episodes tests. Corrected 2026-11-11: the carriage this row called missing exists under ADR 0207 (R12-REFLEX-6012). CellReport::episodes is an additive #[serde(default)] field; the cell sends its newest episodes on the mesh delta under a bound, qip-api builds the report with with_episodes and calls ingest_cell_report, and CentralPlane keeps a bounded, deduplicated store per cell. No KnowledgeDelta is derived from an episode, nothing passes one to EvidenceFabric and no learn_from call reads one.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/regional_episode.rs:68",
-      "backend/crates/edge/qip-edge/tests/regional_episodes.rs"
+      "backend/crates/edge/qip-edge/tests/regional_episodes.rs",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs::CellReport::episodes",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs::CentralPlane::store_episodes",
+      "backend/crates/apps/qip-api/src/mesh.rs (with_episodes)",
+      "backend/crates/tests/qip-acceptance/tests/regional_episodes.rs::an_episode_recorded_at_a_cell_reaches_the_central_store",
+      "docs/adr/0207 (decision 2: the central store is read by nothing that decides)"
     ],
-    "gap": "The wire the centre ingests (the CellReport that ingest_cell_report takes) carries no RegionalEpisode: a cell's episodes are held in its memory only (qip-contracts regional_episode.rs says so), so there is nothing for plane.rs to fold. Closing it needs an additive, signed CellReport field, a RegionalEpisode -> KnowledgeDelta(WorldModel) mapping, absorption through qip_evidence::EvidenceFabric and a Platform::learn_from call whose effect on the belief calibration a test can see.",
+    "gap": "The additive CellReport field is built (ADR 0207); the rest waits for a new ADR and was not built around (2026-11-11, batch l6-c1-01). Three standing records stop it: ADR 0207 decision 2 keeps the central episode store 'read by nothing that decides' and says a deciding reader needs 'a signed, sequenced carriage of their own'; ADR 0199 decision 2 carries episodes to a central consumer only when one names the decision they feed; and the mesh wire authenticates nobody, so no signing scheme exists for the field to be covered by. A RegionalEpisode also states no confidence, no structured subject and no claim, where KnowledgeDeltaFields requires confidence_bp and a key and ThesisClaim requires a class, direction, expected move, confidence and horizon, so the mapping and the learn_from call would each rest on an invented figure. The one decision: may a cell's self-classified episodes, arriving unauthenticated, feed the evidence fabric and the belief calibration, and if so under what signed carriage, with what confidence per episode kind, and by what rule an episode becomes a ThesisClaim and ThesisOutcome.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4089,7 +4094,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": "Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-11-11 batch l6-c1-01: re-read against the tree, no code changed, kept PARTIAL. Existing tests run: qip-edge --test regional_episodes 'test result: ok. 7 passed; 0 failed'; qip-acceptance --test regional_episodes 'test result: ok. 1 passed; 0 failed'; qip-kernel --lib an_episode_a_cell_reports_is_held_once 'test result: ok. 1 passed; 0 failed'; qip-mesh --lib a_delta_written_before_episodes_existed 'test result: ok. 1 passed; 0 failed'. No mutation run: no new test."
   },
   {
     "id": "R12-COVERAGE-7174",
