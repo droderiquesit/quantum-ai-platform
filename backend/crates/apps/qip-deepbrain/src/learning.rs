@@ -120,7 +120,9 @@
 //! for the next only because the regime key is the platform's, not the
 //! instrument's, and that is the whole of what this module claims.
 
-use crate::features::{FEATURES, FeatureLineage, LOOKBACK, feature_columns, next_bar_returns};
+use crate::features::{
+    FEATURES, FeatureLineage, LOOKBACK, feature_columns, live_feature_row, next_bar_returns,
+};
 use qip_ai::evaluation::DriftReport;
 use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage, PublishedArtifact};
 use qip_ai::serving::ModelArtifact;
@@ -132,6 +134,7 @@ use qip_kernel::central::models::{
     ModelRegistration, record_subject, register_fit, require_calibrated_baseline,
 };
 use qip_kernel::model_serving::{MIN_SHADOW_ROUNDS, ModelProducer};
+use qip_kernel::model_tournament::CardForecast;
 use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
@@ -476,6 +479,22 @@ pub struct LearningRound {
     /// (`LearningDesk::reverify_after_crossing`). Empty on a round whose
     /// subject did not cross, or whose models were evaluated since.
     pub reverified: Vec<Reverification>,
+    /// The production cards on this subject offered to the tournament as
+    /// entrants this round, and each offer that was refused or could not be
+    /// made (`LearningDesk::offer_card_forecasts`, ADR 0390). `None` on a
+    /// round a test drove without a platform.
+    pub card_forecasts: Option<CardOffers>,
+}
+
+/// What one round offered the tournament from its fitted cards (ADR 0390,
+/// R12-MODEL-3089).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CardOffers {
+    /// The forecasts standing after the offer.
+    pub entered: Vec<CardForecast>,
+    /// One sentence per production card on the subject that was not
+    /// entered, each naming why.
+    pub withheld: Vec<String>,
 }
 
 /// What became of one production model whose market crossed a regime boundary
@@ -707,6 +726,7 @@ impl LearningRound {
             promotion: None,
             rolled_back: Vec::new(),
             reverified: Vec::new(),
+            card_forecasts: None,
             class_choice: None,
         }
     }
@@ -793,6 +813,16 @@ impl LearningRound {
         let promotion = self.reverified.iter().fold(promotion, |line, outcome| {
             format!("{line}; {}", outcome.describe())
         });
+        let promotion = match &self.card_forecasts {
+            Some(offers) if !(offers.entered.is_empty() && offers.withheld.is_empty()) => {
+                format!(
+                    "{promotion}; {} card(s) entered the tournament, {} withheld",
+                    offers.entered.len(),
+                    offers.withheld.len()
+                )
+            }
+            _ => promotion,
+        };
         format!(
             "learning: {registered}{class}; {} model(s) measured for drift, {} \
              ineligible{unattributed}{degraded}{distilled}{promotion}{campaign}",
@@ -1914,6 +1944,114 @@ impl LearningDesk {
         self.reverify_against(platform, Platform::reevaluation_due, now)
     }
 
+    /// Offer the tournament a forecast from each production card on this
+    /// round's subject (ADR 0390, R12-MODEL-3089), replacing the subject's
+    /// previous offers.
+    ///
+    /// Each card is scored through the platform's provider on the round's
+    /// held-out tail — rows no fit this round saw — and on the newest bar's
+    /// feature row. The held-out rows whose realised error, added to the
+    /// newest prediction, leaves the next return above zero are counted, and
+    /// the count and the row total are what is offered: the kernel derives
+    /// the probability, so this desk asserts none. Nothing new is spent: the
+    /// serve is the one promotion and renewal already use.
+    ///
+    /// A production card this desk holds no artifact for, or whose serve
+    /// refuses, is withheld with the reason; the platform withholds a card
+    /// no decision may use. No card is entered to reach a count.
+    ///
+    /// Only this round's subject is offered, because only its rows are in
+    /// hand; another subject's cards stand until their own bar ends.
+    pub fn offer_card_forecasts(
+        &mut self,
+        platform: &mut Platform,
+        bars: &[Bar],
+        now: Timestamp,
+    ) -> Result<CardOffers> {
+        let Some((subject, holdout)) = self.renewal_rows.clone() else {
+            return Ok(CardOffers::default());
+        };
+        let mut offers = CardOffers::default();
+        let (Some(newest), Some(live)) = (bars.last(), live_feature_row(bars)) else {
+            platform.stage_card_forecasts(&self.registry, &subject, Vec::new(), now);
+            return Ok(offers);
+        };
+        let spacing = bars
+            .len()
+            .checked_sub(2)
+            .and_then(|previous| bars.get(previous))
+            .map(|previous| newest.close_time().since(previous.close_time()));
+        let Some(bar) = spacing else {
+            platform.stage_card_forecasts(&self.registry, &subject, Vec::new(), now);
+            return Ok(offers);
+        };
+        let references: Vec<String> = self
+            .registry
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .filter(|card| card_subject(card) == Some(subject.as_str()))
+            .map(ModelCard::reference)
+            .collect();
+        let mut offered = Vec::new();
+        for reference in references {
+            let Some(held) = self.promoted_artifacts.get(&reference) else {
+                offers.withheld.push(format!(
+                    "{reference}: this desk holds no artifact for it to score"
+                ));
+                continue;
+            };
+            let scored: Result<(Vec<f64>, f64)> = platform.serve_model(held).and_then(|served| {
+                let scores: Result<Vec<f64>> =
+                    holdout.rows().iter().map(|row| served.score(row)).collect();
+                Ok((scores?, served.score(&live)?))
+            });
+            let (scores, prediction) = match scored {
+                Ok(scored) => scored,
+                Err(error) => {
+                    offers
+                        .withheld
+                        .push(format!("{reference}: {}", error.message()));
+                    continue;
+                }
+            };
+            // The realised error on each held-out row, added to the newest
+            // prediction: the next return had the card erred as it did there.
+            let ups = scores
+                .iter()
+                .zip(holdout.targets())
+                .filter(|(score, target)| prediction + (**target - **score) > 0.0)
+                .count();
+            let (Ok(holdout_ups), Ok(holdout_rows)) =
+                (u32::try_from(ups), u32::try_from(scores.len()))
+            else {
+                offers.withheld.push(format!(
+                    "{reference}: {} held-out rows is more than a forecast can count",
+                    scores.len()
+                ));
+                continue;
+            };
+            offered.push(CardForecast {
+                reference,
+                subject: subject.clone(),
+                holdout_ups,
+                holdout_rows,
+                // The crossing from money to statistics: the close is a
+                // price, and the question measures a direction from it.
+                from_close: newest.close.to_f64(),
+                from_close_time: newest.close_time(),
+                bar,
+            });
+        }
+        offers.withheld.extend(platform.stage_card_forecasts(
+            &self.registry,
+            &subject,
+            offered,
+            now,
+        ));
+        offers.entered = platform.standing_card_forecasts(&subject);
+        Ok(offers)
+    }
+
     /// [`Self::reverify_after_crossing`] with the reader of "which crossing
     /// has this card not been evaluated since" named, so the renewal and the
     /// rollback can be driven in a test without first staging a market that
@@ -2280,6 +2418,7 @@ impl LearningDesk {
                         promotion: None,
                         rolled_back: Vec::new(),
                         reverified: Vec::new(),
+                        card_forecasts: None,
                     });
                 }
             };
@@ -2315,6 +2454,7 @@ impl LearningDesk {
             promotion: None,
             rolled_back: Vec::new(),
             reverified: Vec::new(),
+            card_forecasts: None,
         })
     }
 
@@ -3340,6 +3480,138 @@ mod tests {
     /// `reverify_after_crossing` — nothing is reverified and the first
     /// assertion fails; skip `record_evaluation` — the evaluation instant
     /// assertion fails and the second call reverifies again.
+    /// R12-MODEL-3089, ADR 0390. Until this the desk's production models
+    /// never forecast anything the tournament scored. The count is recounted
+    /// here from the served model and the round's own held-out rows, so a
+    /// desk that offered a figure it did not count is caught.
+    #[test]
+    fn a_production_card_is_offered_to_the_tournament_with_the_count_of_held_out_errors_that_leave_the_next_bar_up()
+    -> Result<()> {
+        let bbb = ObjectId::from_string("obj-BBB");
+        let mut desk = learning_desk();
+        let mut platform = regime_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&bbb, &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        // Premise: before it is promoted the card is not an entrant.
+        let before = desk.offer_card_forecasts(&mut platform, &bars, at())?;
+        assert!(before.entered.is_empty(), "{before:?}");
+        let promoted = through_shadow_for(
+            &mut desk,
+            &mut platform,
+            &bbb,
+            |step| super::tests_support::learnable(400 + step)[step..].to_vec(),
+            1,
+            at(),
+        )?;
+        assert!(
+            matches!(promoted, Some(PromotionOutcome::Promoted { .. })),
+            "premise: the model reached production: {promoted:?}"
+        );
+        let window = super::tests_support::learnable(460)[60..].to_vec();
+        desk.maybe_learn(&bbb, &window, REGIME, 9, at())?;
+
+        let offers = desk.offer_card_forecasts(&mut platform, &window, at())?;
+        let entered = offers
+            .entered
+            .iter()
+            .find(|forecast| forecast.reference == reference)
+            .ok_or_else(|| Error::not_found(format!("the production card's offer: {offers:?}")))?;
+
+        let (_, holdout) = desk
+            .renewal_rows
+            .clone()
+            .ok_or_else(|| Error::not_found("the round's held-out rows"))?;
+        let held = desk
+            .promoted_artifacts
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the promoted artifact"))?;
+        let served = platform.serve_model(held)?;
+        let live = crate::features::live_feature_row(&window)
+            .ok_or_else(|| Error::not_found("the newest feature row"))?;
+        let prediction = served.score(&live)?;
+        let mut ups = 0_u32;
+        for (row, target) in holdout.rows().iter().zip(holdout.targets()) {
+            if prediction + (target - served.score(row)?) > 0.0 {
+                ups += 1;
+            }
+        }
+        let rows = u32::try_from(holdout.rows().len()).map_err(|_| Error::invalid("rows"))?;
+        assert!(rows > 0, "premise: the round held rows out");
+        assert!(
+            ups > 0 && ups < rows,
+            "premise: the held-out errors disagree about the next bar ({ups} of {rows}), so a \
+             count that ignored them would not match"
+        );
+        assert_eq!((entered.holdout_ups, entered.holdout_rows), (ups, rows));
+        let newest = &window[window.len() - 1];
+        let previous = &window[window.len() - 2];
+        assert_eq!(
+            entered.from_close.to_bits(),
+            newest.close.to_f64().to_bits()
+        );
+        assert_eq!(entered.from_close_time, newest.close_time());
+        assert_eq!(
+            entered.bar,
+            newest.close_time().since(previous.close_time()),
+            "the span is the bars' own spacing"
+        );
+        assert_eq!(entered.subject, "obj-BBB");
+        assert_eq!(
+            platform.standing_card_forecasts("obj-BBB"),
+            offers.entered,
+            "what the desk reports entered is what the tournament holds"
+        );
+
+        // The platform, not the desk, is the door: a card no decision may
+        // use, another subject's card and an unregistered one are refused.
+        let development = desk
+            .registry
+            .iter()
+            .find(|card| card.stage != ModelStage::Production)
+            .map(ModelCard::reference)
+            .ok_or_else(|| Error::not_found("premise: a card that is not in production"))?;
+        let offer = |reference: &str, subject: &str| CardForecast {
+            reference: reference.to_string(),
+            subject: subject.to_string(),
+            ..entered.clone()
+        };
+        let refused = platform.stage_card_forecasts(
+            &desk.registry,
+            "obj-BBB",
+            vec![
+                offer(&development, "obj-BBB"),
+                offer("nobody@1", "obj-BBB"),
+                offer(&reference, "obj-BBB"),
+            ],
+            at(),
+        );
+        assert_eq!(refused.len(), 2, "{refused:?}");
+        let standing = platform.standing_card_forecasts("obj-BBB");
+        assert_eq!(standing.len(), 1, "{standing:?}");
+        assert_eq!(standing[0].reference, reference);
+        let refused = platform.stage_card_forecasts(
+            &desk.registry,
+            "obj-AAA",
+            vec![offer(&reference, "obj-AAA")],
+            at(),
+        );
+        assert_eq!(
+            refused.len(),
+            1,
+            "a card entered another instrument's question"
+        );
+        assert!(platform.standing_card_forecasts("obj-AAA").is_empty());
+        Ok(())
+    }
+
     #[test]
     fn a_healthy_production_model_is_evaluated_again_after_its_subject_crosses_and_left_standing()
     -> Result<()> {

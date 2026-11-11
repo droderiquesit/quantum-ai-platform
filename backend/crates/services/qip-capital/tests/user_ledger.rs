@@ -2221,3 +2221,30 @@ fn a_conversion_books_two_legs_at_the_recorded_rate_and_a_missing_rate_is_refuse
     assert_eq!(settled(&ledger, eur), Some(dec!("36")));
     Ok(())
 }
+
+// ADR 0405. The desk's tolerance narrows the operator's limit set, so it has
+// to be a term somebody can state. With the desk pinned at one the narrowing
+// read a figure that could never refuse an order.
+#[test]
+fn a_desk_that_states_a_risk_tolerance_holds_it_and_one_that_states_none_holds_one() -> Result<()> {
+    let stated =
+        Mandate::desk_tolerating(dec!("1000000"), Currency::USD, Decimal::ZERO, dec!("0.5"))?;
+    assert_eq!(stated.risk_tolerance(), dec!("0.5"));
+    // Nothing else about the desk moved.
+    let unstated = Mandate::desk_exploring(dec!("1000000"), Currency::USD, Decimal::ZERO)?;
+    assert_eq!(unstated.risk_tolerance(), Decimal::ONE);
+    assert_eq!(stated.capital(), unstated.capital());
+    assert_eq!(stated.jurisdiction(), unstated.jurisdiction());
+    assert_eq!(stated.permitted_families(), unstated.permitted_families());
+
+    // Refused like any other mandate's, not clamped.
+    let error =
+        Mandate::desk_tolerating(dec!("1000000"), Currency::USD, Decimal::ZERO, dec!("1.5"))
+            .expect_err("a tolerance above one is not a tolerance");
+    assert!(
+        error.message().starts_with("risk_tolerance"),
+        "{}",
+        error.message()
+    );
+    Ok(())
+}
