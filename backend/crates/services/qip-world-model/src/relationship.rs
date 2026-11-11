@@ -68,6 +68,9 @@ pub enum RelationshipKind {
     /// "who settles this claim" — is one hop forward rather than a scan of
     /// every edge pointing at it.
     ResolvedBy,
+    /// An instrument is quoted in a currency (R12-EXPAND-6031): the edge
+    /// from a market to the fx domain the universe record already states.
+    QuotedIn,
 }
 
 impl RelationshipKind {
@@ -96,6 +99,7 @@ impl RelationshipKind {
             Self::ContradictsThesis => "contradicts_thesis",
             Self::CounterpartyOf => "counterparty_of",
             Self::ResolvedBy => "resolved_by",
+            Self::QuotedIn => "quoted_in",
         }
     }
 

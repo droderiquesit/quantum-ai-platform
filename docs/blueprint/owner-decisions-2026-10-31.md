@@ -1033,6 +1033,37 @@ that narrows a security scanner, whatever the owner has delegated.
     one local, unpushed revert commit, so no pushed history was
     rewritten.
 
+26. **R12-LEDGER-5014 waits for a fabric versioning ADR** (lane L1,
+    2026-11-08). The row stays PARTIAL. The lane's chain-opened slice adds
+    the `ChainOpened` sequence to `SourceEvent` and `Decision::Filled`.
+    That changes the recorded shape of `reflex.journal_recorded` and
+    `reflex.outcome_recorded`, and `event_fabric_schema_lock` refuses a
+    shape change at v1. The slice is kept, unapplied, in
+    `docs/blueprint/lanes/l1-ledger-5014-chain-opened-wip.patch`. The
+    first move of a fabric topic from v1 to v2 needs one ADR on fabric
+    versioning. That ADR covers the lock rows, the bindings, the broker
+    registries and the versions each consumer admits. A single-row
+    argument does not move a topic. A separate P1 record that widens ADR
+    0100 section 5 is declined. R12-CAPITAL-5067 also stays PARTIAL: its
+    P2 task record needs a new fabric topic, which is its own change and
+    is not made under this ruling.
+
+27. **R12-RES-7106 does not land while any of its seven tests is red**
+    (lane L6, 2026-11-11). Under decision 25 the lane restored three of the
+    seven tests by changing their inputs only. Four stay red: one in
+    `qip-deepbrain` `research.rs`, two in `qip-fastbrain` `tape.rs` and one
+    in `qip-kernel` `position_record`. None of the seven is ignored,
+    deleted or reworded to pass, and the row stays PARTIAL. The lane keeps
+    its work as one unapplied patch file under `docs/blueprint/lanes/`. A
+    later session takes it from there. The two tape tests each get their
+    own derived tape. The kernel test gets a fixture if such a history
+    exists. For the research test the session first establishes whether
+    any band lies between the eligibility floor and
+    `DECISION_UNCERTAINTY_FLOOR`. If the band is empty, an ADR amends ADR
+    0238, narrowing only: an uncertain decision becomes an information
+    request and is never sized. The test is then restated to that
+    stricter property, with a mutation.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
