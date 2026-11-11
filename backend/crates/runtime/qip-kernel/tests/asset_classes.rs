@@ -567,9 +567,9 @@ fn a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_
         "premise: nothing filled"
     );
     // ADR 0398: a repo order needs the Repo permission for its counterparty.
-    let mut financing = qip_capital::treasury::FinancingPermissions::new();
+    let mut financing = qip_treasury::treasury::FinancingPermissions::new();
     financing.permit(
-        qip_capital::treasury::FinancingFunction::Repo,
+        qip_treasury::treasury::FinancingFunction::Repo,
         "desk-coverage",
         "cp-1",
         "US",
