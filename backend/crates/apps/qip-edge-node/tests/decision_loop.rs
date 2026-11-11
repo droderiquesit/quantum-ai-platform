@@ -1149,7 +1149,10 @@ fn a_running_funded_cell_authorises_legs_within_its_free_capital_and_a_halted_on
     );
     let offer = cell_offer(cell, t(11));
     assert_eq!(offer.quotes.len(), 1, "premise: the rig prices one book");
-    assert_eq!(offer.legs.len(), 2, "a buy and a sell: {:?}", offer.legs);
+    // A buy only: the rig's cell holds nothing yet, and a sell leg is bounded
+    // by the units held (ADR 0355), so it authorises none.
+    assert_eq!(offer.legs.len(), 1, "a buy alone: {:?}", offer.legs);
+    assert_eq!(offer.legs[0].side, LegSide::Buy, "{:?}", offer.legs);
     let quote = &offer.quotes[0];
     let mut notional = Decimal::ZERO;
     for leg in &offer.legs {
@@ -1189,6 +1192,72 @@ fn a_running_funded_cell_authorises_legs_within_its_free_capital_and_a_halted_on
         halted.legs.is_empty(),
         "a halted cell authorised {:?}",
         halted.legs
+    );
+    Ok(())
+}
+
+/// ADR 0355, R12-MESH-5052: a cell authorises a peer sell leg only up to the
+/// units it holds at that venue, and none when it holds none. Sized from the
+/// free capital alone, a cross-region cycle could sell what the cell does not
+/// have: a short the cycle never reasoned about, at a venue that would have
+/// to lend it. The rig's cell rests a one-unit buy every pass; flow taken
+/// against it fills it, three times, and the position is what bounds the
+/// sell, though the capital would allow far more.
+///
+/// Mutation: drop the position bound in `leg_authorities`, and the sell is
+/// authorised at the capital's size, failing the three-unit assertion.
+#[test]
+fn a_cell_authorises_a_sell_leg_only_up_to_the_units_it_holds_at_that_venue_and_none_when_it_holds_none()
+-> Result<()> {
+    use qip_edge_node::edge_quotes::cell_offer;
+    use qip_peer_link::boundary::Side as LegSide;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    rig.decisions.turn(t(10))?;
+    let sells = |decisions: &DecisionLoop, at: Timestamp| -> Vec<Decimal> {
+        cell_offer(decisions.cell(), at)
+            .legs
+            .into_iter()
+            .filter(|leg| leg.side == LegSide::Sell)
+            .map(|leg| leg.max_size)
+            .collect()
+    };
+    // Holding none: a buy is authorised and no sell.
+    assert_eq!(
+        rig.decisions.cell().position(&venue(), &object()),
+        Decimal::ZERO
+    );
+    assert!(
+        rig.decisions
+            .cell()
+            .region_allocation_free()
+            .is_some_and(|f| f.is_positive()),
+        "premise: capital is free, so a missing sell is the holding's doing"
+    );
+    assert!(
+        sells(&rig.decisions, t(11)).is_empty(),
+        "a sell with nothing held"
+    );
+
+    let mut second = 11;
+    while rig.decisions.cell().position(&venue(), &object()) < dec!("3") {
+        assert!(second < 40, "the cell never came to hold three units");
+        let gateway = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig trades the simulated venue");
+        let _ =
+            gateway.seed_aggressor(&object(), Side::Sell, dec!("99.5"), dec!("1"), t(second))?;
+        rig.decisions.turn(t(second))?;
+        second += 1;
+    }
+    let held = rig.decisions.cell().position(&venue(), &object());
+    assert_eq!(held, dec!("3"), "premise: the cell holds three units");
+    assert_eq!(
+        sells(&rig.decisions, t(second)),
+        vec![dec!("3")],
+        "the sell is not bounded by the three units held"
     );
     Ok(())
 }

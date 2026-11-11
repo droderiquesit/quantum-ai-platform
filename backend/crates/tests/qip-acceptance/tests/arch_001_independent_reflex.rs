@@ -231,11 +231,15 @@ fn reflex_and_cognitive_are_separate_deployable_binaries_that_do_not_link_each_o
 /// A doc comment on `work` that *explains* why it opens no socket must not
 /// count as opening one.
 fn cell_method_body(cell: &str, name: &str) -> String {
-    let opening = format!("    pub fn {name}(");
+    // Public or private: `Cell::work` is a public wrapper whose pass runs in
+    // the private `Cell::work_into` since ADR 0209, and the body is what
+    // this reads, wherever it sits.
+    let public = format!("    pub fn {name}(");
+    let private = format!("    fn {name}(");
     let start = cell
         .lines()
-        .position(|line| line.starts_with(&opening))
-        .unwrap_or_else(|| panic!("qip-edge's cell.rs declares no `{opening}`"));
+        .position(|line| line.starts_with(&public) || line.starts_with(&private))
+        .unwrap_or_else(|| panic!("qip-edge's cell.rs declares no `{public}` or `{private}`"));
     cell.lines()
         .skip(start)
         .take_while(|line| *line != "    }")
@@ -280,7 +284,8 @@ fn names(text: &str, word: &str) -> bool {
 /// name the transport, a socket, or the runtime.
 ///
 /// Mutation: insert `let _ = qip_transport::MeshConfig::default();` in the
-/// body of `Cell::work` — the assertion fires naming `work: qip_transport`.
+/// body of `Cell::work_into`, the pass `Cell::work` delegates to; the
+/// assertion fires naming `work_into: qip_transport`.
 /// Inserting the same line in `mesh.rs` must not fire, and does not, because
 /// only the two bodies are read.
 #[test]
@@ -299,19 +304,31 @@ fn the_cells_hot_path_bodies_name_no_transport_socket_or_runtime() {
 
     let on_bytes = cell_method_body(&cell, "on_bytes");
     let work = cell_method_body(&cell, "work");
-    // Premise: both bodies were extracted whole — each names what it is for.
+    // The pass itself, which `Cell::work` delegates to (ADR 0209): the
+    // wrapper alone is a few lines and would pass this scan however the
+    // pass below it waited.
+    let work_into = cell_method_body(&cell, "work_into");
+    // Premise: every body was extracted whole and names what it is for.
     assert!(
         on_bytes.lines().count() > 10 && names(&on_bytes, "bytes"),
         "premise: Cell::on_bytes was not extracted: {on_bytes}"
     );
     assert!(
-        work.lines().count() > 100 && names(&work, "gateway"),
-        "premise: Cell::work was not extracted or no longer takes the gateway: {} lines",
-        work.lines().count()
+        names(&work, "work_into") && names(&work, "gateway"),
+        "premise: Cell::work no longer delegates its pass to work_into: {work}"
+    );
+    assert!(
+        work_into.lines().count() > 100 && names(&work_into, "gateway"),
+        "premise: Cell::work_into was not extracted or no longer takes the gateway: {} lines",
+        work_into.lines().count()
     );
 
     let mut findings = Vec::new();
-    for (method, body) in [("on_bytes", &on_bytes), ("work", &work)] {
+    for (method, body) in [
+        ("on_bytes", &on_bytes),
+        ("work", &work),
+        ("work_into", &work_into),
+    ] {
         for forbidden in TRANSPORT_AND_SOCKETS {
             if names(body, forbidden) {
                 findings.push(format!("{method}: {forbidden}"));

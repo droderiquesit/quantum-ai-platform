@@ -90,8 +90,9 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    // Twenty-five: L2b's four probes and the Portfolio/Asset Brain (R12-ASSET-3019).
-    assert_eq!(roster.len(), 25, "the organisation is twenty-five agents");
+    // Twenty-six: L2b's four probes, the Portfolio/Asset Brain (R12-ASSET-3019)
+    // and the Crypto/On-chain Brain (R12-ASSET-3017).
+    assert_eq!(roster.len(), 26, "the organisation is twenty-six agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -654,8 +655,8 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    // Twenty-four since the Portfolio/Asset Brain joined (R12-ASSET-3019).
-    assert_eq!(org.len(), 24);
+    // Twenty-five since the Crypto/On-chain Brain joined (R12-ASSET-3017).
+    assert_eq!(org.len(), 25);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -2636,6 +2637,76 @@ fn the_portfolio_asset_brain_reports_an_empty_book_as_no_data() -> Result<()> {
         "an empty book reported a position count as if it had read one"
     );
     assert!(!report.covered_scopes().contains(&Scope::PortfolioAsset));
+    Ok(())
+}
+
+/// A desk whose chain slot holds an absorbed reorganisation, as the kernel
+/// writes it.
+fn desk_with_a_reorganised_chain() -> Arc<Desk> {
+    use qip_investment_agents::desk::{ChainView, PoolReading};
+    Arc::new(Desk::empty(now()).with_chain(ChainView {
+        observed: true,
+        confirmed_block: Some(40),
+        reorgs: 1,
+        deepest_reorg: 3,
+        bridged_transfers_failed: 2,
+        confirmed_trades: Some(17),
+        pools: vec![PoolReading {
+            pool: "pool-eth-usdc".to_string(),
+            reserve_base: qip_core::dec!("100"),
+            reserve_quote: qip_core::dec!("250000"),
+            trades: 17,
+        }],
+    }))
+}
+
+/// R12-ASSET-3017. The Crypto/On-chain Brain reads the confirmed chain, and
+/// nobody else reports it: a reorganisation under the book and the bridge
+/// transfers it failed reach the chief only through it.
+///
+/// Mutation: drop the `CryptoOnChainAnalyst` from `standard_agents` — the
+/// premise finding is missing and the scope is not covered.
+#[test]
+fn removing_the_crypto_onchain_brain_drops_crypto_onchain_from_coverage() -> Result<()> {
+    let desk = desk_with_a_reorganised_chain();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::CRYPTO_ONCHAIN)
+        .expect("premise: the Crypto/On-chain Brain reported on the chain");
+    assert_eq!(fact_value(finding, "chain_reorg_depth"), Some(3.0));
+    assert_eq!(fact_value(finding, "bridge_transfers_failed"), Some(2.0));
+    assert_eq!(fact_value(finding, "amm_pools_with_liquidity"), Some(1.0));
+    assert_eq!(fact_value(finding, "onchain_trades"), Some(17.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::CRYPTO_ONCHAIN)?;
+    assert!(with.contains(&Scope::CryptoOnChain), "{with:?}");
+    assert!(!without.contains(&Scope::CryptoOnChain), "{without:?}");
+    Ok(())
+}
+
+/// An unobserved chain is reported as no data, never as a quiet one.
+///
+/// Mutation: drop the `!chain.observed` early return — an unobserved chain
+/// reports zero reorgs as if it had read them and this fails.
+#[test]
+fn the_crypto_onchain_brain_reports_an_unobserved_chain_as_no_data() -> Result<()> {
+    let mut org = organisation(populated_desk())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::CRYPTO_ONCHAIN)
+        .expect("premise: the brain answered the brief");
+    assert_eq!(
+        finding.status,
+        qip_agents::finding::FindingStatus::NoView,
+        "an unobserved chain is no view, not a quiet chain"
+    );
+    assert!(fact_value(finding, "chain_reorg_depth").is_none());
+    assert!(!report.covered_scopes().contains(&Scope::CryptoOnChain));
     Ok(())
 }
 

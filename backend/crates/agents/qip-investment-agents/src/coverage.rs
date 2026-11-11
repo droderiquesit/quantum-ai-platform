@@ -48,6 +48,9 @@ pub enum Scope {
     /// The held book: its exposure, the positions held with no mandate and
     /// the ones being divested (R12-ASSET-3019).
     PortfolioAsset,
+    /// Protocol state, bridges, liquidity and on-chain flows as the
+    /// confirmed chain holds them (R12-ASSET-3017).
+    CryptoOnChain,
     /// Strategies that exploit the platform itself: fills systematically
     /// worse than arrival, a flow regular enough to be learned
     /// (R12-REASON-3023).
@@ -81,13 +84,14 @@ pub enum Scope {
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 13] = [
+    pub const ALL: [Scope; 14] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
         Scope::StressScenario,
         Scope::RiskRecommendation,
         Scope::PortfolioAsset,
+        Scope::CryptoOnChain,
         Scope::SelfExploitation,
         Scope::RegimeBreak,
         Scope::MarketManipulation,
@@ -105,6 +109,7 @@ impl Scope {
             Self::StressScenario => "stress_scenario",
             Self::RiskRecommendation => "risk_recommendation",
             Self::PortfolioAsset => "portfolio_asset",
+            Self::CryptoOnChain => "crypto_onchain",
             Self::SelfExploitation => "self_exploitation",
             Self::RegimeBreak => "regime_break",
             Self::MarketManipulation => "market_manipulation",
@@ -132,6 +137,12 @@ impl Scope {
                 "book_gross_exposure_ratio",
                 "positions_flagged_without_mandate",
                 "positions_unwinding",
+            ],
+            Self::CryptoOnChain => &[
+                "chain_reorg_depth",
+                "bridge_transfers_failed",
+                "amm_pools",
+                "onchain_trades",
             ],
             Self::SelfExploitation => &["self_exploitation_findings"],
             Self::RegimeBreak => &["regime_break_findings"],

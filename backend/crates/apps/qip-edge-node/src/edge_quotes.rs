@@ -23,6 +23,8 @@
 //! stops hearing from the loop stops being authorised within
 //! [`AUTHORITY_TTL`].
 
+use qip_contracts::venue::VenueId;
+use qip_core::ids::ObjectId;
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_edge::cell::Cell;
 use qip_peer_link::boundary::{EdgeQuote, LegAuthority, MAX_QUOTES, Offer, Side};
@@ -126,9 +128,24 @@ pub fn leg_authorities(cell: &Cell, quotes: &[EdgeQuote], now: Timestamp) -> Vec
             (Side::Buy, quote.ask, quote.ask_size),
             (Side::Sell, quote.bid, quote.bid_size),
         ] {
-            let Some(max_size) = divide_down(share, limit).filter(|s| s.is_positive()) else {
+            let Some(by_capital) = divide_down(share, limit) else {
                 continue;
             };
+            // ADR 0355 (R12-MESH-5052): a sell leg is bounded by the units
+            // this cell holds at that venue, and a cell holding none
+            // authorises none. Capital alone would let a peer cycle sell what
+            // the cell does not have, which is a short the cycle never
+            // reasoned about; the buy side stays bounded by the free share.
+            let max_size = match side {
+                Side::Buy => by_capital,
+                Side::Sell => by_capital.min(cell.position(
+                    &VenueId::new(quote.venue.as_str()),
+                    &ObjectId::from_string(quote.instrument.as_str()),
+                )),
+            };
+            if !max_size.is_positive() {
+                continue;
+            }
             authorities.push(LegAuthority {
                 venue: quote.venue.clone(),
                 instrument: quote.instrument.clone(),

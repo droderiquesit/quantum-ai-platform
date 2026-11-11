@@ -379,9 +379,12 @@
     "current": "backend/crates/runtime/qip-kernel/src/federation_stage.rs:74 ON_CHAIN world-model member observing one chain:confirmed-view feature; 'crypto/on-chain' is a required federation family (backend/crates/runtime/qip-kernel/src/federation_stage.rs:290)",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:465 member declaration",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:928 unit test that the family goes uncovered when the member expires"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:928 unit test that the family goes uncovered when the member expires",
+      "backend/crates/agents/qip-investment-agents/src/crypto_brain.rs (CryptoOnChainAnalyst, Scope::CryptoOnChain)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs (removing_the_crypto_onchain_brain_drops_crypto_onchain_from_coverage; the_crypto_onchain_brain_reports_an_unobserved_chain_as_no_data)",
+      "backend/crates/runtime/qip-kernel/tests/bridges.rs (after_observe_chain_absorbs_a_reorg_the_crypto_onchain_brains_slot_reports_its_depth)"
     ],
-    "gap": "No specialist covering protocol state, token economics, bridges, liquidity, smart contracts and on-chain flows; one observational federation member is not a brain.",
+    "gap": "2026-11-08 (wave1101 CODE_NOW): the Crypto/On-chain Brain is constructed in the production organisation (standard_agents, roster twenty-six) and reads the desk's chain slot, which the kernel writes every REASON from its confirmed view (reorgs and the deepest, failed bridge transfers, pool reserves, confirmed swaps); removing it drops Scope::CryptoOnChain from coverage. Remaining: (1) on every shipped binary the slot is unobserved, because Platform::observe_chain has no production caller until on-chain capture has a licensed source record (ADR 0157, R12-TICK-1175), so the brain reports no data on the default path; (2) token economics and smart contracts, two of the six scope items, have no source in the tree and are named as such in the finding's caveats.",
     "implemented": false,
     "tested": false,
     "integrated": true,
@@ -389,10 +392,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "integration: organisation.rs coverage and no-data tests; kernel bridges.rs reorg-reaches-the-slot test. Mutations: drop the analyst from standard_agents (premise finding missing, scope uncovered), drop the unobserved early return (a quiet chain reported), stop stage_reason calling brief_the_desk_on_chain (slot unobserved); each restored with cp and cmp.",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. | 2026-11-08 lane L3-DATA: built per the wave1101 closure; PARTIAL on the unlicensed chain source and the two scope items nothing in the tree sources."
   },
   {
     "id": "R12-ASSET-3018",
@@ -2136,9 +2139,12 @@
       "services/qip-learning-engine/src/tournament.rs::tests::a_forecaster_whose_synthetic_capital_falls_loses_weight_and_compute",
       "services/qip-learning-engine/src/tournament.rs::tests::cost_and_latency_each_move_influence",
       "services/qip-learning-engine/src/tournament.rs::tests::a_regime_change_predicted_to_break_a_forecaster_reweights_the_ensemble",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::influence_among"
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::influence_among",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::tests::a_detectors_step_count_is_ranked_only_against_other_detectors_and_never_against_money",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs CostMeter, Tournament::influence_among per-meter cost medians",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs observe_reasoning: detector cost = evidence items examined, CostMeter::Steps"
     ],
-    "gap": "Detectors are not metered: a detector is an in-cycle deterministic function whose hypothesis is formed at the pass instant (formed_at equals as_of), so a measured latency would be zero or a wall-clock reading the log could not replay, and no compute cost is metered for it. The aggregate still feeds no decision. Needs a replayable meter on the detector run (counted work, not wall time) before cost and latency can enter as measured.",
+    "gap": "2026-11-07 L2-INTEL, independent skeptic REFUTED COMPLETE. Open: (1) the latency clause is unmet for detectors, whose latency is unmetered and reads the neutral factor because ADR 0149 decision 13 declined to meter it (zero by construction); bar part 4 leaves the row PARTIAL until the owner changes the requirement or a replayable detector latency exists; temporary specialists carry neither cost nor latency. (2) No test isolates a single factor's effect on the weight for calibration, cost or latency: a_forecaster_whose_synthetic_capital_falls_loses_weight_and_compute also moves market share, and cost_and_latency_each_move_influence moves cost and latency together, so deleting one factor from the product may survive; each needs a single-factor weight test, mutation-verified. Done 2026-11-07: detectors metered by evidence items examined on CostMeter::Steps, ranked per meter, and the cost mean taken only over the forecaster's own meter's scores.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2149,7 +2155,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The information factor can only penalise negative information, never reward positive or penalise zero. a_forecaster_duplicating_another_adds_no_information asserts the information_value score, not the influence weight. The tournament is advisory by its own doc (model_tournament.rs:51-56), so 'influence' moves a recorded aggregate, not a decision. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; the grader closure (meter elapsed time per detector) would journal a non-replayable figure. Left PARTIAL with the corrected gap."
+    "notes": "Round-2 independent audit, 2026-10-11: The information factor can only penalise negative information, never reward positive or penalise zero. a_forecaster_duplicating_another_adds_no_information asserts the information_value score, not the influence weight. The tournament is advisory by its own doc (model_tournament.rs:51-56), so 'influence' moves a recorded aggregate, not a decision. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; the grader closure (meter elapsed time per detector) would journal a non-replayable figure. Left PARTIAL with the corrected gap. 2026-11-07 L2-INTEL: mutations, each restored by cmp: reading every forecaster's meter as Spend (one pooled median) failed a_detectors_step_count_is_ranked_only_against_other_detectors_and_never_against_money (cheap's cost factor 0.952 vs 0.980); the kernel detector's cost back to None failed an_important_prediction_journals_a_challenge_exchange_on_its_tournament_review (left None). The step count is not passed to the vote contract's compute cost, which stays zero for a step-metered entrant. Skeptic follow-up fixed: the cost mean now filters to the forecaster's current meter (a_forecaster_whose_meter_changed_is_ranked_on_its_current_meter_alone; mutation taking the mean over every meter failed it, 0.5 vs 0.981); the model_tournament.rs module doc no longer says detectors carry zero cost and latency. Not changed: a detector that examined no evidence costs zero steps and so reads cheapest among detectors, which is what it did."
   },
   {
     "id": "R12-MODEL-3091",
