@@ -1,0 +1,401 @@
+diff --git a/backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs b/backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs
+index 2bdd97e1..2f1a8e1a 100644
+--- a/backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs
++++ b/backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs
+@@ -134,6 +134,7 @@ fn filled(order: &str) -> Decision {
+         side: Some(BookSide::Ask),
+         quote_unit: Some("GBP".to_string()),
+         fee: None,
++        chain_opened: None,
+     }
+ }
+ 
+diff --git a/backend/crates/apps/qip-ledgerd/tests/fabric.rs b/backend/crates/apps/qip-ledgerd/tests/fabric.rs
+index 33762280..3e1280d6 100644
+--- a/backend/crates/apps/qip-ledgerd/tests/fabric.rs
++++ b/backend/crates/apps/qip-ledgerd/tests/fabric.rs
+@@ -341,6 +341,7 @@ impl Journal {
+             side: Some(side),
+             quote_unit: Some(UNIT.to_string()),
+             fee: fee.map(str::to_string),
++            chain_opened: None,
+         });
+         let outcome = OutcomeRecord {
+             cell: self.cell.clone(),
+diff --git a/backend/crates/apps/qip-ledgerd/tests/history.rs b/backend/crates/apps/qip-ledgerd/tests/history.rs
+index 4e886d6c..1c56d4c2 100644
+--- a/backend/crates/apps/qip-ledgerd/tests/history.rs
++++ b/backend/crates/apps/qip-ledgerd/tests/history.rs
+@@ -101,6 +101,7 @@ fn two_fills() -> Vec<Delivery> {
+             side: Some(side),
+             quote_unit: Some(UNIT.to_string()),
+             fee: None,
++            chain_opened: None,
+         };
+         let (decision, digest) = seal_v2(&previous, sequence, at, decision);
+         previous = digest.clone();
+diff --git a/backend/crates/apps/qip-ledgerd/tests/spanner.rs b/backend/crates/apps/qip-ledgerd/tests/spanner.rs
+index 48b1186c..0c6dad8d 100644
+--- a/backend/crates/apps/qip-ledgerd/tests/spanner.rs
++++ b/backend/crates/apps/qip-ledgerd/tests/spanner.rs
+@@ -312,6 +312,7 @@ fn two_fills() -> Vec<Delivery> {
+             side: Some(side),
+             quote_unit: Some("USD".to_string()),
+             fee: None,
++            chain_opened: None,
+         };
+         let (decision, digest) = seal_v2(&previous, sequence, at, decision);
+         previous = digest.clone();
+diff --git a/backend/crates/apps/qip-ledgerd/tests/store.rs b/backend/crates/apps/qip-ledgerd/tests/store.rs
+index b4718989..6f82fc37 100644
+--- a/backend/crates/apps/qip-ledgerd/tests/store.rs
++++ b/backend/crates/apps/qip-ledgerd/tests/store.rs
+@@ -79,6 +79,7 @@ fn fill(order: &str, quantity: u64, price: &str, side: BookSide, simulated: bool
+         side: Some(side),
+         quote_unit: Some(UNIT.to_string()),
+         fee: None,
++        chain_opened: None,
+     }
+ }
+ 
+diff --git a/backend/crates/edge/qip-edge/src/cell.rs b/backend/crates/edge/qip-edge/src/cell.rs
+index 7bf535f8..4d170805 100644
+--- a/backend/crates/edge/qip-edge/src/cell.rs
++++ b/backend/crates/edge/qip-edge/src/cell.rs
+@@ -1496,6 +1496,11 @@ struct Working {
+     /// behind it but the price is the order R12-GOV-6127 forbids. Set by
+     /// `record_sent`, the one place a `Working` enters the set.
+     grounds: Vec<String>,
++    /// The journal sequence of this order's `ChainOpened` entry, set by
++    /// `open_chain` (R12-LEDGER-5014), and stamped on every fill of the
++    /// order so the ledger can walk a booked fill back to the chain's
++    /// signals. `None` while no chain has been opened for it.
++    chain_opened: Option<u64>,
+ }
+ 
+ /// How many orders the cell will hold open at once.
+@@ -6625,6 +6630,7 @@ impl Cell {
+                 net: net_intent.clone(),
+                 region_committed,
+                 grounds: Vec::new(),
++                chain_opened: None,
+             },
+             schedule.equalised(),
+             grants,
+@@ -7367,17 +7373,23 @@ impl Cell {
+         // attributed to the decision state the cell was actually sizing
+         // under (ADR 0129 decision 5).
+         let applied = self.policy.as_ref().map(VerifiedPolicy::payload);
+-        self.journal.record(
+-            Decision::ChainOpened {
+-                correlation: correlation.as_str().to_string(),
+-                order_id: order_id.to_string(),
+-                pass: self.pass,
+-                signals,
+-                policy_sequence: applied.map(|payload| payload.sequence),
+-                decision: applied.and_then(|payload| payload.decision.clone()),
+-            },
+-            now,
+-        );
++        let opened = self
++            .journal
++            .record(
++                Decision::ChainOpened {
++                    correlation: correlation.as_str().to_string(),
++                    order_id: order_id.to_string(),
++                    pass: self.pass,
++                    signals,
++                    policy_sequence: applied.map(|payload| payload.sequence),
++                    decision: applied.and_then(|payload| payload.decision.clone()),
++                },
++                now,
++            )
++            .sequence;
++        if let Some(working) = self.working.get_mut(order_id) {
++            working.chain_opened = Some(opened);
++        }
+     }
+ 
+     /// Whether `orders` more can be held open under [`MAX_OPEN_ORDERS`].
+@@ -8120,6 +8132,7 @@ impl Cell {
+         let first_answer = working.order.filled.is_zero();
+         let was_complete = working.order.filled >= working.order.quantity;
+         let order_price = working.order.price;
++        let chain_opened = working.chain_opened;
+         working.order.filled += execution.quantity;
+         // §32.1's measurement is of a *completed* order: the leg stops
+         // being an exposure when the last of it has traded, and a first
+@@ -8211,6 +8224,9 @@ impl Cell {
+                 // never zero (LEDGER-019); an estimate here would be the
+                 // cell inventing a venue fact the ledger then books.
+                 fee: None,
++                // The chain this order opened at, so the ledger's booked
++                // event walks back to the signals (R12-LEDGER-5014).
++                chain_opened,
+             },
+             now,
+         );
+@@ -10614,6 +10630,7 @@ impl Cell {
+                 // a cycle leg over.
+                 region_committed: Decimal::ZERO,
+                 grounds: Vec::new(),
++                chain_opened: None,
+             },
+             schedule.equalised(),
+             grants,
+diff --git a/backend/crates/libs/qip-contracts/src/ledger.rs b/backend/crates/libs/qip-contracts/src/ledger.rs
+index 76640d9e..17fd8b2e 100644
+--- a/backend/crates/libs/qip-contracts/src/ledger.rs
++++ b/backend/crates/libs/qip-contracts/src/ledger.rs
+@@ -344,6 +344,13 @@ pub struct SourceEvent {
+     pub journal_sequence: u64,
+     pub journal_digest: String,
+     pub order_id: String,
++    /// The journal sequence of the cell's `ChainOpened` entry for this
++    /// order (R12-LEDGER-5014, ADR 0130 decision 3): the hop from the fill
++    /// back past the order to the chain's signals. Absent, and off the
++    /// wire, for an event booked from a fill that carried none, so an older
++    /// event decodes and keeps its digest.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub chain_opened: Option<u64>,
+ }
+ 
+ /// One immutable, balanced, simulated economic event (CONTRACT-016).
+@@ -670,6 +677,7 @@ mod tests {
+             journal_sequence: 7,
+             journal_digest: "d".to_string(),
+             order_id: "o-1".to_string(),
++            chain_opened: None,
+         }
+     }
+ 
+diff --git a/backend/crates/libs/qip-contracts/src/ledger_operation.rs b/backend/crates/libs/qip-contracts/src/ledger_operation.rs
+index 7bcc6886..17ac55e7 100644
+--- a/backend/crates/libs/qip-contracts/src/ledger_operation.rs
++++ b/backend/crates/libs/qip-contracts/src/ledger_operation.rs
+@@ -611,6 +611,7 @@ impl LedgerOperationFields {
+                 journal_sequence: self.sequence,
+                 journal_digest: self.digest()?,
+                 order_id: self.operation_id.clone(),
++                chain_opened: None,
+             },
+             self.settlement,
+             FeeReport::Unreported,
+diff --git a/backend/crates/libs/qip-contracts/src/reflex.rs b/backend/crates/libs/qip-contracts/src/reflex.rs
+index aed1781c..ce0d83a3 100644
+--- a/backend/crates/libs/qip-contracts/src/reflex.rs
++++ b/backend/crates/libs/qip-contracts/src/reflex.rs
+@@ -210,6 +210,14 @@ pub enum Decision {
+         quote_unit: Option<String>,
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         fee: Option<String>,
++        /// The journal sequence of the [`Self::ChainOpened`] entry this
++        /// order's chain began at (R12-LEDGER-5014, ADR 0130 decision 3), so
++        /// a booked fill walks back past the order to the signals that
++        /// caused it. Absent when the cell opened no chain for the order,
++        /// and absent is off the wire, so a fill sealed before the field
++        /// existed re-serialises, and re-digests, byte for byte.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        chain_opened: Option<u64>,
+     },
+     /// A position was hedged by placing an offset order at a venue.
+     ///
+diff --git a/backend/crates/libs/qip-contracts/tests/ledger_event.rs b/backend/crates/libs/qip-contracts/tests/ledger_event.rs
+index f90e216b..ba46238e 100644
+--- a/backend/crates/libs/qip-contracts/tests/ledger_event.rs
++++ b/backend/crates/libs/qip-contracts/tests/ledger_event.rs
+@@ -65,6 +65,7 @@ fn event() -> LedgerEvent {
+             journal_sequence: 4,
+             journal_digest: "d4".to_string(),
+             order_id: "order-9".to_string(),
++            chain_opened: None,
+         },
+         Settlement::Simulated,
+         FeeReport::Unreported,
+diff --git a/backend/crates/libs/qip-contracts/tests/reflex.rs b/backend/crates/libs/qip-contracts/tests/reflex.rs
+index c5c80b98..2a44d4f4 100644
+--- a/backend/crates/libs/qip-contracts/tests/reflex.rs
++++ b/backend/crates/libs/qip-contracts/tests/reflex.rs
+@@ -38,6 +38,7 @@ fn a_journal_entry_digest_is_unchanged_by_the_move_to_the_contract_layer() {
+         side: None,
+         quote_unit: None,
+         fee: None,
++        chain_opened: None,
+     };
+ 
+     // Assert the premise before the pinned value: the fixture really is the
+diff --git a/backend/crates/libs/qip-contracts/tests/reflex_v2.rs b/backend/crates/libs/qip-contracts/tests/reflex_v2.rs
+index 6692a931..12977898 100644
+--- a/backend/crates/libs/qip-contracts/tests/reflex_v2.rs
++++ b/backend/crates/libs/qip-contracts/tests/reflex_v2.rs
+@@ -78,6 +78,7 @@ fn a_filled_entry_without_side_quote_unit_or_fee_serialises_exactly_as_before()
+         side: None,
+         quote_unit: None,
+         fee: None,
++        chain_opened: None,
+     };
+     let posted = Decision::Filled {
+         order_id: "ord-1".to_string(),
+@@ -90,6 +91,7 @@ fn a_filled_entry_without_side_quote_unit_or_fee_serialises_exactly_as_before()
+         side: None,
+         quote_unit: None,
+         fee: Some("0".to_string()),
++        chain_opened: None,
+     };
+     // Premise: a reported fee — even a zero one, which is a venue fact and
+     // not an absence — is written, so the absence below is the attribute's
+diff --git a/backend/crates/libs/qip-portfolio/src/ledger.rs b/backend/crates/libs/qip-portfolio/src/ledger.rs
+index 4c1f897a..5b68bcd4 100644
+--- a/backend/crates/libs/qip-portfolio/src/ledger.rs
++++ b/backend/crates/libs/qip-portfolio/src/ledger.rs
+@@ -154,6 +154,7 @@ impl TryFrom<&OutcomeRecord> for PaperFill {
+             side,
+             quote_unit,
+             fee,
++            chain_opened,
+         } = &outcome.entry.decision
+         else {
+             return Err(Error::invalid(format!(
+@@ -262,6 +263,7 @@ impl TryFrom<&OutcomeRecord> for PaperFill {
+                 journal_sequence: outcome.journal_sequence,
+                 journal_digest: outcome.journal_digest.clone(),
+                 order_id: order_id.clone(),
++                chain_opened: *chain_opened,
+             },
+             venue: venue.clone(),
+             object: object.clone(),
+@@ -385,6 +387,7 @@ mod tests {
+                 side: Some(BookSide::Ask),
+                 quote_unit: Some("USD".to_string()),
+                 fee: None,
++                chain_opened: None,
+             },
+             digest: "test-digest".to_string(),
+             version: ChainVersion::V2,
+@@ -480,6 +483,7 @@ mod tests {
+                 side: None,
+                 quote_unit: Some("USD".to_string()),
+                 fee: None,
++                chain_opened: None,
+             },
+             digest: "d".to_string(),
+             version: ChainVersion::V2,
+diff --git a/backend/crates/libs/qip-portfolio/tests/accruals.rs b/backend/crates/libs/qip-portfolio/tests/accruals.rs
+index 60d1bf31..e92a61ab 100644
+--- a/backend/crates/libs/qip-portfolio/tests/accruals.rs
++++ b/backend/crates/libs/qip-portfolio/tests/accruals.rs
+@@ -28,6 +28,7 @@ fn source() -> SourceEvent {
+         journal_sequence: 7,
+         journal_digest: "d".to_string(),
+         order_id: "o-1".to_string(),
++        chain_opened: None,
+     }
+ }
+ 
+diff --git a/backend/crates/libs/qip-portfolio/tests/ledger_postings.rs b/backend/crates/libs/qip-portfolio/tests/ledger_postings.rs
+index 5a9cf4d6..1afba706 100644
+--- a/backend/crates/libs/qip-portfolio/tests/ledger_postings.rs
++++ b/backend/crates/libs/qip-portfolio/tests/ledger_postings.rs
+@@ -63,6 +63,7 @@ fn outcome(spec: &Spec) -> OutcomeRecord {
+             side: spec.side,
+             quote_unit: spec.quote_unit.clone(),
+             fee: spec.fee.clone(),
++            chain_opened: None,
+         },
+         digest: "digest-41".to_string(),
+         version: ChainVersion::V2,
+diff --git a/backend/crates/runtime/qip-kernel/src/desk_ledger.rs b/backend/crates/runtime/qip-kernel/src/desk_ledger.rs
+index 94ab37d7..3bc83c09 100644
+--- a/backend/crates/runtime/qip-kernel/src/desk_ledger.rs
++++ b/backend/crates/runtime/qip-kernel/src/desk_ledger.rs
+@@ -177,6 +177,7 @@ pub fn outcome_on(
+         }),
+         quote_unit: Some(DESK_QUOTE_UNIT.to_string()),
+         fee: Some(booked.costs.to_string()),
++        chain_opened: None,
+     };
+     let (decision, digest) = seal_v2(previous, sequence, booked.at, decision);
+     let record = OutcomeRecord {
+diff --git a/backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs b/backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs
+index 7a6e2c78..08e3c745 100644
+--- a/backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs
++++ b/backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs
+@@ -186,8 +186,8 @@ fn pass_marker_sample() -> PassMarker {
+ }
+ 
+ /// A v2-sealed entry with every posting field on `Decision::Filled` present
+-/// (`side`, `quote_unit`, `fee`) — see the module doc comment for why v2 and
+-/// not v1.
++/// (`side`, `quote_unit`, `fee`, `chain_opened`) — see the module doc comment
++/// for why v2 and not v1.
+ fn journal_entry_sample() -> JournalEntry {
+     JournalEntry {
+         sequence: 42,
+@@ -203,6 +203,7 @@ fn journal_entry_sample() -> JournalEntry {
+             side: Some(BookSide::Ask),
+             quote_unit: Some("USD".to_string()),
+             fee: Some("0.50".to_string()),
++            chain_opened: Some(40),
+         },
+         digest: "digest-1".to_string(),
+         version: ChainVersion::V2,
+diff --git a/backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs b/backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs
+index ca08e370..355f3735 100644
+--- a/backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs
++++ b/backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs
+@@ -380,6 +380,7 @@ fn fill_reporting_creates_a_ledger_posting() -> Result<()> {
+             side: Some(BookSide::Ask),
+             quote_unit: Some("GBP".to_string()),
+             fee: Some("10".to_string()),
++            chain_opened: None,
+         },
+         digest: "digest-1".to_string(),
+         version: ChainVersion::V2,
+@@ -429,6 +430,7 @@ fn ledger_posting_updates_venue_balance() -> Result<()> {
+             side: Some(BookSide::Ask),
+             quote_unit: Some("GBP".to_string()),
+             fee: Some("10".to_string()),
++            chain_opened: None,
+         },
+         digest: "digest-2".to_string(),
+         version: ChainVersion::V2,
+@@ -529,6 +531,7 @@ fn end_to_end_flow_from_tick_to_balance_update() -> Result<()> {
+             side: Some(BookSide::Ask),
+             quote_unit: Some("GBP".to_string()),
+             fee: Some("10".to_string()),
++            chain_opened: None,
+         },
+         digest: "digest-e2e".to_string(),
+         version: ChainVersion::V2,
+diff --git a/backend/crates/tests/qip-acceptance/tests/m5_performance.rs b/backend/crates/tests/qip-acceptance/tests/m5_performance.rs
+index e524d88b..0dfb4665 100644
+--- a/backend/crates/tests/qip-acceptance/tests/m5_performance.rs
++++ b/backend/crates/tests/qip-acceptance/tests/m5_performance.rs
+@@ -617,6 +617,7 @@ fn ledger_posting_latency() -> Result<()> {
+                 side: Some(BookSide::Ask),
+                 quote_unit: Some("GBP".to_string()),
+                 fee: Some("10".to_string()),
++                chain_opened: None,
+             },
+             digest: format!("digest-{}", i),
+             version: ChainVersion::V2,
+@@ -719,6 +720,7 @@ fn end_to_end_critical_path_latency() -> Result<()> {
+                 side: Some(BookSide::Ask),
+                 quote_unit: Some("GBP".to_string()),
+                 fee: Some("10".to_string()),
++                chain_opened: None,
+             },
+             digest: format!("digest-{}", index),
+             version: ChainVersion::V2,
+diff --git a/backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs b/backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs
+index 9bc2f7f2..cd527de3 100644
+--- a/backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs
++++ b/backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs
+@@ -615,6 +615,7 @@ fn filled(simulated: bool, shares: Vec<(String, String)>, side: Option<BookSide>
+         side,
+         quote_unit: Some("GBP".to_string()),
+         fee: None,
++        chain_opened: None,
+     }
+ }
+ 

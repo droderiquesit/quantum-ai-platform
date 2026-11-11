@@ -242,3 +242,43 @@ fn a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_
     assert_eq!(again.bridged_transfers_failed, 0);
     Ok(())
 }
+
+/// R12-ASSET-3017: after `observe_chain` absorbs a reorganisation, the next
+/// REASON writes its depth and the bridge transfer it failed into the slot
+/// the Crypto/On-chain Brain reads, so the brain reports what the kernel
+/// absorbed rather than an unobserved chain.
+///
+/// Mutation: stop `stage_reason` calling `brief_the_desk_on_chain` — the
+/// slot stays unobserved and the first assertion fails.
+#[test]
+fn after_observe_chain_absorbs_a_reorg_the_crypto_onchain_brains_slot_reports_its_depth()
+-> Result<()> {
+    let mut platform = platform()?;
+    let chain = chain();
+    assert!(
+        !platform.desk_chain_view().observed,
+        "premise: nothing has been observed"
+    );
+    platform.observe_chain(vec![
+        block(&chain, 1, "b1", "genesis"),
+        block(&chain, 2, "b2a", "b1"),
+    ]);
+    platform.open_bridge_transfer(transfer(2, "b2a")?)?;
+    let reorganised = platform.observe_chain(vec![
+        block(&chain, 2, "b2b", "b1"),
+        block(&chain, 3, "b3b", "b2b"),
+    ]);
+    assert_eq!(reorganised.reorgs, 1, "premise: {reorganised:?}");
+
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let view = platform.desk_chain_view();
+    assert!(view.observed, "REASON did not brief the desk on the chain");
+    assert_eq!(view.reorgs, 1);
+    assert_eq!(
+        view.deepest_reorg, 1,
+        "the reorg depth did not reach the brain"
+    );
+    assert_eq!(view.bridged_transfers_failed, 1);
+    Ok(())
+}

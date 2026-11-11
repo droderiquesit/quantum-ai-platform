@@ -152,8 +152,8 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
-    ModelsView, RiskView, TradeSide,
+    BookView, ChainView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth,
+    MarketView, ModelsView, PoolReading, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -504,6 +504,13 @@ pub struct Platform {
     /// because a chain's identity comes from the blocks rather than from
     /// configuration.
     chain: Option<ChainState>,
+    /// Reorganisations absorbed since this process started, the deepest one
+    /// and the bridge transfers they failed (R12-ASSET-3017). `observe_chain`
+    /// reports each call's counts; these are what the Crypto/On-chain
+    /// Brain reads across calls.
+    chain_reorgs: usize,
+    chain_deepest_reorg: u32,
+    chain_bridges_failed: usize,
     /// The confirmation depth this deployment requires before reading state.
     confirmations: Confirmations,
     /// Cross-chain transfers in flight, and what became of them.
@@ -1139,6 +1146,10 @@ pub struct Platform {
     /// reported past their drift threshold. Rebuilt before every REASON by
     /// `brief_the_desk_on_models`.
     models: Upstream<ModelsView>,
+    /// The confirmed chain as the desk's Crypto/On-chain Brain reads it
+    /// (R12-ASSET-3017), rebuilt before every REASON by
+    /// `brief_the_desk_on_chain`.
+    chain_view: Upstream<ChainView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -3555,6 +3566,11 @@ pub struct CycleJournalEntry {
 /// buffer the data rules prohibit. Past the bound a record is still logged
 /// under its own correlation id and is counted in `sensed_unlisted`.
 pub const MAX_SENSED_REFS_PER_CYCLE: usize = 4096;
+
+/// The source the knowledge graph names for a fact read off the platform's
+/// own universe record (R12-EXPAND-6031), so a relationship from a catalogue
+/// is never mistaken for one a connector or an analyst asserted.
+pub const UNIVERSE_SOURCE: &str = "kernel/universe";
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
@@ -6151,6 +6167,8 @@ impl Platform {
         desk.executions = executions.gate(desk.executions.required(), desk.executions.label());
         let models = Upstream::new(ModelsView::default());
         desk.models = models.gate(desk.models.required(), desk.models.label());
+        let chain_view = Upstream::new(ChainView::default());
+        desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6394,6 +6412,9 @@ impl Platform {
             source_leads: qip_data_finder::freshness::LeadLedger::new(),
             catalog: Catalog::new(),
             chain: None,
+            chain_reorgs: 0,
+            chain_deepest_reorg: 0,
+            chain_bridges_failed: 0,
             confirmations: Confirmations::exactly(config.chain_confirmations),
             bridges: BridgeLedger::new(),
             predictions: Vec::new(),
@@ -6601,6 +6622,7 @@ impl Platform {
             book,
             executions,
             models,
+            chain_view,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -7743,6 +7765,27 @@ impl Platform {
         // the fills it was sent is the thing a reconciler looks at next.
         self.capture_problems
             .extend(ingestion.advisory_disagreements.iter().cloned());
+        // R12-EXPAND-6066: each break that halted the cell, journaled so the
+        // deep brain's research can raise an execution gap naming it. A
+        // journal failure is a capture problem: the halt has already
+        // happened, and an unrecorded break must not undo it.
+        for record in crate::reconciliation_breaks::records_of(
+            &ingestion.cell,
+            &ingestion.halt_breaks,
+            reported_at,
+        ) {
+            if let Err(error) = self.journal_record(
+                record,
+                crate::reconciliation_breaks::RECONCILIATION_BREAK_ORIGIN,
+                now,
+            ) {
+                self.capture_problems.push(format!(
+                    "a reconciliation break at {} was not journaled: {}",
+                    ingestion.cell,
+                    error.message()
+                ));
+            }
+        }
         // One observation per report absorbed. `halted` is `None` exactly
         // where the report reconciled — the plane sets it from the union of
         // the cell's own breaks and the settlement's `UnsentFill` findings —
@@ -11889,6 +11932,55 @@ impl Platform {
         }
     }
 
+    /// Write the confirmed chain into the slot the desk's Crypto/On-chain
+    /// Brain reads, before the panel is convened (R12-ASSET-3017): the
+    /// reorganisations and failed bridge transfers absorbed so far, and the
+    /// pools and swap count at the confirmation depth. Unobserved until a
+    /// block has been absorbed, which the brain reports as no data.
+    fn brief_the_desk_on_chain(&self) {
+        let observed = self.chain.is_some();
+        let confirmed = self.confirmed_chain().ok();
+        let pools: Vec<PoolReading> = confirmed
+            .as_ref()
+            .map(|view| {
+                view.state()
+                    .pools()
+                    .map(|(id, pool)| PoolReading {
+                        pool: id.to_string(),
+                        reserve_base: pool.reserve_base,
+                        reserve_quote: pool.reserve_quote,
+                        trades: pool.trades,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let confirmed_block = confirmed
+            .as_ref()
+            .and_then(qip_chain::ConfirmedView::as_of)
+            .map(|block| block.get());
+        let confirmed_trades = confirmed.as_ref().map(|view| view.state().trades());
+        let (reorgs, deepest_reorg, bridged_transfers_failed) = (
+            self.chain_reorgs,
+            self.chain_deepest_reorg,
+            self.chain_bridges_failed,
+        );
+        self.chain_view.update(|view| {
+            view.observed = observed;
+            view.confirmed_block = confirmed_block;
+            view.reorgs = reorgs;
+            view.deepest_reorg = deepest_reorg;
+            view.bridged_transfers_failed = bridged_transfers_failed;
+            view.confirmed_trades = confirmed_trades;
+            view.pools = pools;
+        });
+    }
+
+    /// The chain the desk's Crypto/On-chain Brain reads, as REASON last wrote
+    /// it.
+    pub fn desk_chain_view(&self) -> Reading<'_, ChainView> {
+        self.chain_view.read()
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -13116,20 +13208,109 @@ impl Platform {
     /// (WORLD-057). No instrument id is, so a refusal here is an upstream
     /// bug, and it is reported at LEARN rather than swallowed.
     fn ensure_world_object(&mut self, object_id: &str, recorded_at: Timestamp) {
-        let written = self.world.update(|world| {
+        let written: Result<bool> = self.world.update(|world| {
             if world.graph().node(object_id).is_some() {
-                return Ok(());
+                return Ok(false);
             }
             world.graph_mut().add_node(Node::new(
                 object_id,
                 NodeKind::FinancialObject,
                 object_id,
                 recorded_at,
-            ))
+            ))?;
+            Ok(true)
         });
-        if let Err(error) = written {
-            self.capture_problems.push(format!(
+        match written {
+            Ok(true) => self.absorb_universe_record(object_id, recorded_at),
+            Ok(false) => {}
+            Err(error) => self.capture_problems.push(format!(
                 "an instrument was not recorded in the world model: {}",
+                error.message()
+            )),
+        }
+    }
+
+    /// The economic facts the universe record already states about an
+    /// instrument, written to the knowledge graph the first time the kernel
+    /// records it (R12-EXPAND-6031): its issuer, sector, country of primary
+    /// risk and quote currency, each an entity, joined to the instrument by
+    /// `issues`, `in_industry`, `domiciled_in` and `quoted_in`, with the
+    /// universe as source. Without these the graph held a bare node per
+    /// instrument and no edge, so the cross-domain synthesis had nothing to
+    /// walk on a default cycle. An instrument the universe does not hold
+    /// adds nothing, and an issuer is written only where the record names
+    /// one.
+    fn absorb_universe_record(&mut self, object_id: &str, recorded_at: Timestamp) {
+        use qip_world_model::graph::EntityKind;
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let Some(record) = self
+            .market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object_id))
+            .cloned()
+        else {
+            return;
+        };
+        let mut nodes = Vec::new();
+        let mut relations = Vec::new();
+        let mut link = |from: String, to: String, kind: RelationshipKind| {
+            relations.push(crate::evidence_intake::KnowledgeRelation {
+                relationship: Relationship::new(from, to, kind, 1.0, UNIVERSE_SOURCE),
+                valid_from: recorded_at,
+                confidence: 1.0,
+            });
+        };
+        if let Some(issuer) = record
+            .issuer
+            .as_deref()
+            .map(str::trim)
+            .filter(|i| !i.is_empty())
+        {
+            let id = format!("company:{issuer}");
+            nodes.push(Node::entity(&id, EntityKind::Company, issuer, recorded_at));
+            link(id, object_id.to_string(), RelationshipKind::Issues);
+        }
+        let sector = record.sector.to_string();
+        let sector_id = format!("sector:{sector}");
+        nodes.push(Node::entity(
+            &sector_id,
+            EntityKind::Sector,
+            &sector,
+            recorded_at,
+        ));
+        link(
+            object_id.to_string(),
+            sector_id,
+            RelationshipKind::InIndustry,
+        );
+        let geography = record.geography.trim();
+        if !geography.is_empty() {
+            let id = format!("country:{geography}");
+            nodes.push(Node::entity(
+                &id,
+                EntityKind::Country,
+                geography,
+                recorded_at,
+            ));
+            link(object_id.to_string(), id, RelationshipKind::DomiciledIn);
+        }
+        let currency = record.currency.to_string();
+        let currency_id = format!("currency:{currency}");
+        nodes.push(Node::entity(
+            &currency_id,
+            EntityKind::Currency,
+            &currency,
+            recorded_at,
+        ));
+        link(
+            object_id.to_string(),
+            currency_id,
+            RelationshipKind::QuotedIn,
+        );
+        if let Err(error) = self.absorb_knowledge(nodes, relations, recorded_at) {
+            self.capture_problems.push(format!(
+                "the universe record of {object_id} was not written to the knowledge graph: {}",
                 error.message()
             ));
         }
@@ -16523,6 +16704,7 @@ impl Platform {
         self.brief_the_desk_on_book();
         self.brief_the_desk_on_executions();
         self.brief_the_desk_on_models();
+        self.brief_the_desk_on_chain();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
@@ -25025,6 +25207,9 @@ impl Platform {
                         );
                     }
                     absorption.bridged_transfers_failed += failed.len();
+                    self.chain_reorgs += 1;
+                    self.chain_deepest_reorg = self.chain_deepest_reorg.max(reorg.depth());
+                    self.chain_bridges_failed += failed.len();
                 }
                 Err(error) => absorption.problems.push(error.message().to_string()),
             }
@@ -26021,6 +26206,30 @@ impl Platform {
     }
 
     /// What each priced refusal would have done, most recent last.
+    /// Every reconciliation-break record the log holds, oldest first
+    /// (R12-EXPAND-6066), read back as `knowledge_deltas` is.
+    pub fn reconciliation_break_records(
+        &self,
+    ) -> Result<Vec<crate::reconciliation_breaks::ReconciliationBreakRecord>> {
+        use crate::reconciliation_breaks::{
+            RECONCILIATION_BREAK_PREFIX, ReconciliationBreakRecord,
+        };
+        self.event_log()
+            .by_topic(<ReconciliationBreakRecord as EventBody>::TOPIC)
+            .into_iter()
+            .filter(|frame| {
+                frame
+                    .idempotency_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(RECONCILIATION_BREAK_PREFIX))
+            })
+            .map(|frame| {
+                let envelope = qip_streaming::envelope::StreamEnvelope::from_frame(frame)?;
+                Ok(envelope.decode::<ReconciliationBreakRecord>()?.body)
+            })
+            .collect()
+    }
+
     pub fn declined_scores(&self) -> &[DeclinedScore] {
         &self.declined_scores
     }

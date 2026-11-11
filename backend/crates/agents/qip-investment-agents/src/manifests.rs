@@ -50,6 +50,7 @@ pub mod ids {
     pub const COMPLIANCE: &str = "compliance-control";
     pub const POISONING: &str = "poisoning-detector";
     pub const PORTFOLIO_ASSET: &str = "portfolio-asset-brain";
+    pub const CRYPTO_ONCHAIN: &str = "crypto-onchain-brain";
     pub const SELF_EXPLOITATION: &str = "self-exploitation-probe";
     pub const REGIME_BREAK: &str = "regime-break-probe";
     pub const MANIPULATION: &str = "manipulation-probe";
@@ -171,6 +172,28 @@ pub fn portfolio_asset_brain(reviewed_at: Timestamp) -> AgentManifest {
     .with_limitations(vec![
         "reads the book as the kernel last wrote it; it forms no view on any instrument".into(),
         "states no horizon or hedge: those live in the kernel's position records".into(),
+    ])
+}
+
+pub fn crypto_onchain_brain(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::CRYPTO_ONCHAIN,
+        "Crypto/On-chain Brain",
+        "reads the confirmed chain for protocol state, the bridge transfers a reorganisation failed, pool liquidity and on-chain flow",
+        owners::RESEARCH,
+        reviewed_at,
+        &[],
+    )
+    .with_competencies(vec![
+        "reorganisation depth and the bridge transfers it withdrew".into(),
+        "automated-market-maker pool reserves and swap flow at the confirmation depth".into(),
+    ])
+    .with_limitations(vec![
+        "reads only a chain the kernel has absorbed; until a licensed on-chain source is \
+         recorded it reports no data"
+            .into(),
+        "states no token economics or smart-contract risk: no source in the tree carries either"
+            .into(),
     ])
 }
 
@@ -719,6 +742,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         compliance_control(reviewed_at),
         poisoning_detector(reviewed_at),
         portfolio_asset_brain(reviewed_at),
+        crypto_onchain_brain(reviewed_at),
         self_exploitation_probe(reviewed_at),
         regime_break_probe(reviewed_at),
         manipulation_probe(reviewed_at),
