@@ -977,6 +977,27 @@ impl Platform {
         served
     }
 
+    /// Run the four promotion tests on `artifact` over a recorded window,
+    /// through this platform's provider, and write the results on its card
+    /// in `registry` (ADR 0392, R12-MODEL-10202). The promotion that follows
+    /// refuses without them. See
+    /// [`crate::central::models::run_promotion_tests`].
+    pub fn test_model_for_promotion(
+        &self,
+        registry: &mut ModelRegistry,
+        artifact: &ModelArtifact,
+        recorded: &qip_training::dataset::TrainingDataset,
+        now: Timestamp,
+    ) -> Result<qip_ai::registry::PromotionTests> {
+        crate::central::models::run_promotion_tests(
+            self.model_provider.as_ref(),
+            registry,
+            artifact,
+            recorded,
+            now,
+        )
+    }
+
     /// Every promotion this process holds, by reference, in reference order.
     /// Whether a promotion record carries the central plane's signature
     /// over its reference, digest and stages (R12-EXPAND-6070). False for a
@@ -1069,7 +1090,11 @@ impl Platform {
     /// Promote a model with its artifact: serve it first, promote a scratch
     /// registry, journal, then adopt (blueprint §21.2's promote stage).
     ///
-    /// Four refusals, each before anything changes. The provider cannot
+    /// Five refusals, each before anything changes. The card's four
+    /// promotion tests — replay, calibration, classical baseline, envelope
+    /// — are missing, failed or were run on other bytes (ADR 0392; the
+    /// registry's refusal, and [`Self::test_model_for_promotion`] is what
+    /// runs them). The provider cannot
     /// serve the artifact — ADR 0083's own sentence, and the reason this is
     /// on the platform: a model the process could not evaluate is not one
     /// it may act on. The served model's arity disagrees with the card's
@@ -1290,6 +1315,26 @@ impl Platform {
         // self-fitted candidate, checked above), the registry's evaluation,
         // the verifier society's verdict.
         stages.push(format!("evaluation: {evidence}"));
+        // ADR 0392 (R12-MODEL-10202): the four promotion tests the registry
+        // has just required, each on the signed record with what it
+        // measured. Read off the card and never taken from the caller, and a
+        // card that lost them between the registry's check and here is a
+        // refusal, not a record with four lines missing.
+        let tests = card.promotion_tests.as_ref().ok_or_else(|| {
+            Error::denied(format!(
+                "{} is not promoted: its card holds no promotion tests to record",
+                artifact.reference
+            ))
+        })?;
+        for name in qip_ai::registry::PROMOTION_TESTS {
+            let test = tests.results.get(name).ok_or_else(|| {
+                Error::denied(format!(
+                    "{} is not promoted: its card holds no {name} test to record",
+                    artifact.reference
+                ))
+            })?;
+            stages.push(format!("{name}: {} on {}", test.evidence, tests.window));
+        }
         stages.push(format!("verifier: {verified}"));
         let mut record = ModelPromotion {
             reference: artifact.reference.clone(),

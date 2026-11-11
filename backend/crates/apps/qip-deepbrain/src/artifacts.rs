@@ -102,6 +102,15 @@ mod tests {
         });
         let mut registry = ModelRegistry::new();
         registry.register(card)?;
+        // ADR 0392: the registry publishes no artifact without its four
+        // promotion tests, so the fixture runs them on the series it fitted.
+        qip_kernel::central::models::run_promotion_tests(
+            &InTreeProvider,
+            &mut registry,
+            &artifact,
+            &data,
+            now,
+        )?;
         let published = registry.promote_artifact(&artifact, now)?;
         Ok((published, artifact.digest))
     }

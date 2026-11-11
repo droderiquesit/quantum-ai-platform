@@ -38,9 +38,14 @@
 //!   its own homework, exactly as the foundry would if it scored its own
 //!   candidates.
 
-use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ResourceBudget};
+use qip_ai::registry::{
+    CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, EvaluationRecord, ModelCard, ModelRegistry,
+    PromotionTest, PromotionTests, REPLAY_TEST, RISK_ENVELOPE_TEST, ResourceBudget,
+};
+use qip_ai::serving::{ModelArtifact, ModelProvider};
 use qip_core::error::{Error, Result};
 use qip_core::{ModelId, Timestamp};
+use qip_training::dataset::TrainingDataset;
 use qip_training::local::{SkillPolicy, TrainedTeacher};
 use std::collections::BTreeMap;
 
@@ -301,4 +306,204 @@ pub fn register_fit(
         passed,
         verdict,
     })
+}
+
+/// Run the four promotion tests on `artifact` over a recorded window and
+/// write the results on its card (ADR 0392, R12-MODEL-10202).
+///
+/// The failure it prevents: a model was promoted on a passing evaluation
+/// alone. Nothing had run the bytes again over recorded inputs, measured a
+/// calibration for them, compared them with a classical predictor, or shown
+/// that their output is a number a deterministic check can carry.
+///
+/// The caller supplies the record and nothing else: rows the process
+/// observed, with the value each row's next bar realised. The verdicts are
+/// computed here, through `provider` (the one that will serve the artifact,
+/// so there is no second arithmetic), and bound to the artifact's digest.
+///
+/// - **replay**: two separately served instances score every recorded row
+///   to the same bits.
+/// - **calibration**: a least-squares scale and offset from the outputs to
+///   the realised values can be measured (`Calibration::fit`). An output
+///   that does not vary has none.
+/// - **classical baseline**: the outputs' root-mean-square error is strictly
+///   below the zero-move predictor's on the same rows. The zero-move
+///   predictor is the classical no-skill forecast of a return; the window's
+///   own mean would be computed from the values it is scored on.
+/// - **envelope**: every output is finite. A non-finite score compares false
+///   against every deterministic threshold, which reads as a quiet decision
+///   and not as a breach. The largest output and the largest recorded move
+///   are written beside it as a measurement and judged by nothing: a bound
+///   on magnitude is a figure, and nobody has given one.
+///
+/// A failed test is a result written on the card, so the promotion refusal
+/// names it. An `Err` is a window the tests cannot run on at all — no card,
+/// a window naming other features, an artifact the provider will not serve
+/// — and writes nothing. A `TrainingDataset` holds at least one row by
+/// construction, so there is no empty window to refuse here.
+pub fn run_promotion_tests(
+    provider: &dyn ModelProvider,
+    registry: &mut ModelRegistry,
+    artifact: &ModelArtifact,
+    recorded: &TrainingDataset,
+    now: Timestamp,
+) -> Result<PromotionTests> {
+    let reference = &artifact.reference;
+    let card = registry
+        .get(reference)
+        .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+    if card.features != recorded.feature_names() {
+        return Err(Error::invalid(format!(
+            "{reference} reads [{}] and the recorded window {} holds [{}]; the promotion tests \
+             run on rows of the features the card names",
+            card.features.join(", "),
+            recorded.name(),
+            recorded.feature_names().join(", ")
+        )));
+    }
+    let rows = recorded.rows();
+    let realised = recorded.targets();
+    let first = provider.serve(artifact)?;
+    let second = provider.serve(artifact)?;
+
+    let mut outputs = Vec::with_capacity(rows.len());
+    let mut replay_failure = None;
+    for (index, row) in rows.iter().enumerate() {
+        match (first.score(row), second.score(row)) {
+            (Ok(one), Ok(other)) if one.to_bits() == other.to_bits() => outputs.push(one),
+            (Ok(one), Ok(other)) => {
+                replay_failure = Some(format!(
+                    "recorded row {index} scored {one} and then {other}; a model that does not \
+                     repeat its own output cannot be replayed"
+                ));
+                break;
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                replay_failure = Some(format!(
+                    "recorded row {index} could not be scored: {}",
+                    error.message()
+                ));
+                break;
+            }
+        }
+    }
+
+    let mut results = BTreeMap::new();
+    let mut record = |name: &str, passed: bool, evidence: String| {
+        results.insert(name.to_string(), PromotionTest { passed, evidence });
+    };
+    match replay_failure {
+        Some(failure) => {
+            let unmeasured =
+                || "not measured: the replay did not score every recorded row".to_string();
+            record(REPLAY_TEST, false, failure);
+            record(CALIBRATION_TEST, false, unmeasured());
+            record(CLASSICAL_BASELINE_TEST, false, unmeasured());
+            record(RISK_ENVELOPE_TEST, false, unmeasured());
+        }
+        None => {
+            let mut bits = Vec::with_capacity(outputs.len() * 8);
+            for output in &outputs {
+                bits.extend_from_slice(&output.to_bits().to_be_bytes());
+            }
+            record(
+                REPLAY_TEST,
+                true,
+                format!(
+                    "{} recorded row(s) of {} scored twice by {} to the same bits (outputs {})",
+                    rows.len(),
+                    recorded.name(),
+                    provider.name(),
+                    qip_core::hash::sha256_hex(&bits)
+                ),
+            );
+            // The envelope before the two measurements that need arithmetic
+            // on the outputs: a non-finite output makes both meaningless.
+            let stray = outputs.iter().position(|output| !output.is_finite());
+            let largest = |values: &[f64]| values.iter().fold(0.0_f64, |max, v| max.max(v.abs()));
+            match stray {
+                Some(index) => record(
+                    RISK_ENVELOPE_TEST,
+                    false,
+                    format!(
+                        "recorded row {index} scored {}; a score that is not finite compares \
+                         false against every deterministic threshold",
+                        outputs[index]
+                    ),
+                ),
+                None => record(
+                    RISK_ENVELOPE_TEST,
+                    true,
+                    format!(
+                        "every output finite on {} row(s); largest output {:.6} beside a \
+                         largest recorded move of {:.6} (measured, not judged)",
+                        rows.len(),
+                        largest(&outputs),
+                        largest(realised)
+                    ),
+                ),
+            }
+            match qip_training::local::Calibration::fit(&outputs, realised) {
+                Ok(calibration) if stray.is_none() => record(
+                    CALIBRATION_TEST,
+                    true,
+                    format!(
+                        "realised = {:.6} x output + {:.6} over {} row(s)",
+                        calibration.scale,
+                        calibration.offset,
+                        rows.len()
+                    ),
+                ),
+                Ok(_) => record(
+                    CALIBRATION_TEST,
+                    false,
+                    "not measured: an output on the window is not finite".to_string(),
+                ),
+                Err(error) => record(CALIBRATION_TEST, false, error.message().to_string()),
+            }
+            let error_of = |scores: &[f64]| {
+                let squared: f64 = scores
+                    .iter()
+                    .zip(realised)
+                    .map(|(score, target)| (score - target).powi(2))
+                    .sum();
+                (squared / scores.len() as f64).sqrt()
+            };
+            let model_rmse = error_of(&outputs);
+            let zero_move_rmse = error_of(&vec![0.0; outputs.len()]);
+            // Strictly less, as a `partial_cmp`: an incomparable pair (a NaN
+            // error) fails the test, never passes it.
+            let beats = matches!(
+                model_rmse.partial_cmp(&zero_move_rmse),
+                Some(std::cmp::Ordering::Less)
+            );
+            record(
+                CLASSICAL_BASELINE_TEST,
+                beats,
+                format!(
+                    "rmse {model_rmse:.6} against the zero-move predictor's {zero_move_rmse:.6} \
+                     on {} row(s){}",
+                    rows.len(),
+                    if beats {
+                        ""
+                    } else {
+                        "; a model that is not strictly better than predicting no move has \
+                         shown nothing over the classical forecast"
+                    }
+                ),
+            );
+        }
+    }
+    let tests = PromotionTests {
+        artifact_digest: artifact.digest.clone(),
+        window: recorded.name().to_string(),
+        rows: rows.len(),
+        ran_at: now,
+        results,
+    };
+    let card = registry
+        .get_mut(reference)
+        .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+    card.promotion_tests = Some(tests.clone());
+    Ok(tests)
 }
