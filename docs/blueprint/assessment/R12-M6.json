@@ -2487,9 +2487,10 @@
   },
   {
     "id": "R12-AGENCY-6105",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Activated attention events now reach qip-agency via AmbientOpportunity -> promote -> ActionGuard -> internal outbox draft, by default in deepbrain. No DesiredOutcome/ActionOpportunity types.",
     "evidence": [
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:729 the door's admission: ActionGuard::preflight_observed, then execution and authorise, before an OutboxDraft is written",
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (no agency target)",
       "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs::AmbientAgency::route",
@@ -2498,7 +2499,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::every_draft_the_node_writes_is_executed_under_the_one_registered_identity",
       "backend/crates/tests/qip-acceptance/tests/ambient_effect_boundary.rs (run_governed and similar calls absent from the ambient door)"
     ],
-    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated to the guard path per ADR 0145 decisions 4 and 5: opportunity, promotion, ActionGuard, then the outbox draft. The ambient door runs the guard, not engine::run, and no per-opportunity structural model of what a notice changes is written (it would restate the declaration d4 refuses); running eleven stages over one draft tool would restate standing policy, and writing that model to pass the row is the invented closure the 2026-10-24 record rules out. DesiredOutcome and ActionOpportunity are not built, by decision. tested set from the deepbrain ambient_agency node tests. Earlier: the ambient path runs no engine::run by decision; the eight stages before ObserveEffect on a learning record are seated, not run, and the record says so (ADR 0145 decisions 4 and 5). (dated 2026-10-24)",
+    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is restated to the guard path per ADR 0145 decisions 4 and 5: opportunity, promotion, ActionGuard, then the outbox draft. The ambient door runs the guard, not engine::run, and no per-opportunity structural model of what a notice changes is written (it would restate the declaration d4 refuses); running eleven stages over one draft tool would restate standing policy, and writing that model to pass the row is the invented closure the 2026-10-24 record rules out. DesiredOutcome and ActionOpportunity are not built, by decision. tested set from the deepbrain ambient_agency node tests. Earlier: the ambient path runs no engine::run by decision; the eight stages before ObserveEffect on a learning record are seated, not run, and the record says so (ADR 0145 decisions 4 and 5). (dated 2026-10-24) 2026-11-11 (fw-c-01, regrade on the ruling's reading): met as the ruling reads it, quoted: 'The row is graded on the guard path: opportunity, promotion, ActionGuard, then the outbox draft.' Mutation: ActionGuard::revoke made a no-op that leaves the tool registered; a_revoked_drafting_tool_withholds_every_draft_and_leaves_the_platform_log_identical failed at ambient_agency.rs:692 ('premise: the guard withheld', nothing withheld); restored byte for byte (git diff empty): deepbrain ambient_agency 10 passed, qip-acceptance ambient_effect_boundary 3 passed. DesiredOutcome and ActionOpportunity are not built, by decision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2508,7 +2509,7 @@
       "R12-AGENCY-6079"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency; cargo +1.94.1 test -p qip-acceptance --test ambient_effect_boundary",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test ambient_agency; cargo test -p qip-acceptance --test ambient_effect_boundary (10 and 3 passed, 0 failed, 2026-11-11)",
     "work_item": "",
     "size": "M",
     "notes": "Re-read 2026-10-18 (lane L10) against qip-agency ambient_intake.rs::attempt and qip-deepbrain ambient_agency.rs: the sub-goal exists and is journaled; the engine stages do not run. Held PARTIAL with the reason above rather than a one-edge SCM invented to satisfy the check. Re-graded 2026-10-24 under ADR 0145 (accepted 2026-10-19): No per-opportunity structural model of what a notice changes is written; the ambient path declares none and runs the guard, not engine::run. Owner ruling 2026-10-31 (REGRADE_TEXT): The ambient door runs the guard, not engine::run, and no per-opportunity structural model of what a notice changes is written (ADR 0145 decisions 4 and 5)."
