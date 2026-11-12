@@ -287,8 +287,11 @@ pub struct TemporalInputs {
     /// entered when the hypothesis formed settles that long after it, and
     /// the timeline is asked to hold settlement before the deadline: a
     /// claim that resolves before its trade could settle is refused as a
-    /// link. The lag counts calendar days, so the settlement instant is the
-    /// earliest the convention allows — a weekend only makes it later.
+    /// link. The platform walks the lag in settlement days on the home
+    /// jurisdiction's calendar, so a weekend or a declared holiday moves the
+    /// settlement instant; no holiday dates are committed, so a holiday
+    /// counts as a settlement day until one is declared. A record written
+    /// before 2026-11-12 carries a calendar-day lag, which replays as itself.
     /// Absent on a record written before the field existed.
     #[serde(default)]
     pub settlement: Option<(String, Duration)>,

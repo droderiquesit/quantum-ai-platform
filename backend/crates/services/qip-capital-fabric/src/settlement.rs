@@ -279,6 +279,31 @@ impl SettlementCalendar {
         )))
     }
 
+    /// The instant `days` settlement days after `from`, at the same time of
+    /// day (R12-REASON-3055).
+    ///
+    /// A claim's settlement instant was its formation plus the convention's
+    /// lag in calendar days, so a T+2 trade formed on a Thursday read as
+    /// settling on Saturday and a claim due on Sunday was admitted as
+    /// resolving after settlement when the trade could not settle before
+    /// Monday. This walks settlement days instead: an instant on a day that
+    /// does not settle is first rolled to the next settlement day's start,
+    /// and each further day skips weekends and declared holidays. No cut-off
+    /// is applied, because the caller is ordering a claim against its trade,
+    /// not quoting when funds are usable; [`Self::quote`] is that answer.
+    pub fn after_settlement_days(&self, from: Timestamp, days: u32) -> Result<Timestamp> {
+        let mut day = self.settlement_day_at_or_after(from)?;
+        let time_of_day = if day == from.start_of_day() {
+            from.since(day)
+        } else {
+            Duration::ZERO
+        };
+        for _ in 0..days {
+            day = self.settlement_day_at_or_after(day.saturating_add(Duration::from_days(1)))?;
+        }
+        Ok(day.saturating_add(time_of_day))
+    }
+
     /// Quote an instruction: value date, settlement date and availability.
     ///
     /// The value date is the first settlement day the instruction can be dated
