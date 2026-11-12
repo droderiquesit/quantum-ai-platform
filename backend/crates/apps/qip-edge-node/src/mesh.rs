@@ -467,6 +467,18 @@ pub struct MeshInbound {
 }
 
 impl MeshInbound {
+    /// What a poll that reached both downlinks returns, from batches the
+    /// caller already holds: a replay of a recorded poll, or a test of what
+    /// [`apply_inbound`] does with a batch, without a centre to poll. It
+    /// verifies nothing — the batches carry only what a downlink verified,
+    /// and their types have no other constructor that does.
+    pub fn from_batches(capital: DownlinkBatch, policy: PolicyBatch) -> Self {
+        Self {
+            capital: Ok(capital),
+            policy: Ok(policy),
+        }
+    }
+
     /// Apply this poll's halt commands to `cell` now and keep its capital
     /// and policy for later, returning how many halts applied.
     ///

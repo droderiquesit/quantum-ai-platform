@@ -76,6 +76,29 @@ pub struct FxForwardValuation {
     pub outright: Decimal,
 }
 
+/// One FX swap, valued as its two legs from the universe's own records.
+///
+/// A swap exchanges at the near date and reverses at the far one, so its
+/// figure is the pair of outrights and the points between them. A near leg
+/// settling inside a whole day of the valuation instant is a spot leg and is
+/// read at spot, on the same rule that refuses a forward that close.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FxSwapValuation {
+    pub base: Currency,
+    pub quote: Currency,
+    /// The `FxSpot` instrument the spot was read from.
+    pub spot_object: String,
+    pub spot: Decimal,
+    /// Whole days to the near leg; zero for a spot leg.
+    pub near_days: u32,
+    /// Units of quote per unit of base at the near leg.
+    pub near_outright: Decimal,
+    /// The far leg, valued exactly as an outright forward on the far date.
+    pub far: FxForwardValuation,
+    /// Far outright less near outright, in units of quote per unit of base.
+    pub swap_points: Decimal,
+}
+
 /// One repo, valued per unit of its collateral.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepoValuation {
@@ -151,6 +174,7 @@ pub struct FinancingRegister {
     /// `(base, quote)` to the spot instrument's id and price.
     spots: BTreeMap<(Currency, Currency), (String, Decimal)>,
     forwards: BTreeMap<String, FxForwardValuation>,
+    swaps: BTreeMap<String, FxSwapValuation>,
     repos: BTreeMap<String, RepoValuation>,
     perpetuals: BTreeMap<String, PerpetualFunding>,
     composites: BTreeMap<String, CompositeValuation>,
@@ -189,6 +213,16 @@ impl FinancingRegister {
                     match register.value_forward(fx, credit, as_of) {
                         Ok(valuation) => {
                             register.forwards.insert(id, valuation);
+                        }
+                        Err(error) => {
+                            register.refusals.insert(id, error.to_string());
+                        }
+                    }
+                }
+                (InstrumentType::FxSwap, Extension::Fx(fx)) => {
+                    match register.value_swap(fx, credit, as_of) {
+                        Ok(valuation) => {
+                            register.swaps.insert(id, valuation);
                         }
                         Err(error) => {
                             register.refusals.insert(id, error.to_string());
@@ -271,6 +305,82 @@ impl FinancingRegister {
                  state `settlement_date` on its FX details",
             )
         })?;
+        self.value_leg(fx, settlement, credit, as_of)
+    }
+
+    /// Value an FX swap as its near and far legs.
+    ///
+    /// Refused rather than read as a forward: a swap stating no near leg, one
+    /// whose far leg is not after its near leg, and one whose near leg has
+    /// already settled — what remains of that is an outright forward on the
+    /// far date, and the record should say so rather than this register
+    /// valuing half an instrument under the name of the whole.
+    fn value_swap(
+        &self,
+        fx: &FxDetails,
+        credit: &CreditRegister,
+        as_of: Timestamp,
+    ) -> Result<FxSwapValuation> {
+        let near = fx.near_settlement_date.ok_or_else(|| {
+            Error::invalid(
+                "the swap states no near leg, so it is one exchange and not two; state \
+                 `near_settlement_date` on its FX details, or record it as an FxForward",
+            )
+        })?;
+        let far = fx.settlement_date.ok_or_else(|| {
+            Error::invalid(
+                "the swap states no far leg; state `settlement_date` on its FX details as the \
+                 date the near exchange reverses",
+            )
+        })?;
+        if far <= near {
+            return Err(Error::invalid(
+                "the swap's far leg does not settle after its near leg, so nothing reverses; \
+                 state a far `settlement_date` later than `near_settlement_date`",
+            ));
+        }
+        if near <= as_of {
+            return Err(Error::invalid(
+                "the swap's near leg has already settled; what remains is an outright forward on \
+                 the far date, so record it as an FxForward",
+            ));
+        }
+        let far = self.value_leg(fx, far, credit, as_of)?;
+        let (near_days, near_outright) = match whole_days(as_of, near) {
+            // A leg settling inside a whole day is a spot leg.
+            None => (0, far.spot),
+            Some(_) => {
+                let leg = self.value_leg(fx, near, credit, as_of)?;
+                (leg.days, leg.outright)
+            }
+        };
+        let swap_points = far.outright.checked_sub(near_outright).ok_or_else(|| {
+            Error::numeric(format!(
+                "the swap points between {near_outright} and {} overflowed",
+                far.outright
+            ))
+        })?;
+        Ok(FxSwapValuation {
+            base: fx.base_currency,
+            quote: fx.quote_currency,
+            spot_object: far.spot_object.clone(),
+            spot: far.spot,
+            near_days,
+            near_outright,
+            far,
+            swap_points,
+        })
+    }
+
+    /// One exchange of `fx`'s pair settling at `settlement`, carried from the
+    /// universe's spot along the two currencies' sovereign curves.
+    fn value_leg(
+        &self,
+        fx: &FxDetails,
+        settlement: Timestamp,
+        credit: &CreditRegister,
+        as_of: Timestamp,
+    ) -> Result<FxForwardValuation> {
         let days = whole_days(as_of, settlement).ok_or_else(|| {
             Error::invalid(
                 "the forward settles less than a whole day after the valuation instant, which is \
@@ -313,6 +423,15 @@ impl FinancingRegister {
         self.forwards.get(object_id)
     }
 
+    /// The swap valued under `object_id`, if it could be.
+    pub fn swap(&self, object_id: &str) -> Option<&FxSwapValuation> {
+        self.swaps.get(object_id)
+    }
+
+    pub fn swaps(&self) -> impl Iterator<Item = (&String, &FxSwapValuation)> {
+        self.swaps.iter()
+    }
+
     /// The repo valued under `object_id`, if it could be.
     pub fn repo(&self, object_id: &str) -> Option<&RepoValuation> {
         self.repos.get(object_id)
@@ -351,25 +470,62 @@ impl FinancingRegister {
 
     /// The universe's spot pairs as a conversion table against `base`.
     ///
-    /// Only pairs quoted directly against `base` are priced: a pair with
-    /// `base` as its quote currency prices its base currency at the spot, and
-    /// a pair with `base` as its base currency prices its quote currency at
-    /// the reciprocal. A cross is not triangulated here, because a rate built
-    /// through a third currency is a figure no instrument in the universe
-    /// quotes; a currency with no direct pair stays unpriced and
-    /// [`FxRates::to_base`] refuses it, as it did before this existed.
+    /// A pair with `base` as its quote currency prices its base currency at
+    /// the spot, and a pair with `base` as its base currency prices its quote
+    /// currency at the reciprocal.
+    ///
+    /// A currency with no pair against `base` is priced through a cross only
+    /// when exactly one route reaches it: one pair joining it to a currency
+    /// that is itself quoted directly against `base`. Both legs of that rate
+    /// are instruments the universe quotes, so the figure is derived and not
+    /// assumed. Two routes are two claims about one rate that will disagree
+    /// by the cross's basis, and choosing between them would be choosing a
+    /// price; such a currency stays unpriced, as does one no route reaches,
+    /// and [`FxRates::to_base`] refuses it. A cross is never built on another
+    /// cross: a third leg compounds the basis and no instrument quotes it.
     pub fn fx_rates(&self, base: Currency) -> Result<FxRates> {
-        let mut rates = FxRates::new(base);
+        let mut direct: BTreeMap<Currency, Decimal> = BTreeMap::new();
         for ((pair_base, pair_quote), (object, spot)) in &self.spots {
             if *pair_quote == base && *pair_base != base {
-                rates = rates.with_rate(*pair_base, *spot)?;
+                direct.insert(*pair_base, *spot);
             } else if *pair_base == base && *pair_quote != base {
-                let reciprocal = Decimal::ONE.checked_div(*spot).ok_or_else(|| {
-                    Error::numeric(format!(
-                        "the reciprocal of spot {spot} on {object} overflowed"
-                    ))
-                })?;
-                rates = rates.with_rate(*pair_quote, reciprocal)?;
+                direct.insert(*pair_quote, reciprocal(*spot, object)?);
+            }
+        }
+        // Every route to a currency not quoted against `base`: through the
+        // pair's other currency, which must be.
+        let mut crosses: BTreeMap<Currency, Vec<Decimal>> = BTreeMap::new();
+        for ((pair_base, pair_quote), (object, spot)) in &self.spots {
+            if *pair_base == base || *pair_quote == base {
+                continue;
+            }
+            match (direct.get(pair_base), direct.get(pair_quote)) {
+                // Base currency priced: one unit of the quote currency is
+                // 1/spot units of the base currency.
+                (Some(via), None) => {
+                    let rate = via.checked_div(*spot).ok_or_else(|| {
+                        Error::numeric(format!("the cross through {object} at {spot} overflowed"))
+                    })?;
+                    crosses.entry(*pair_quote).or_default().push(rate);
+                }
+                // Quote currency priced: one unit of the base currency is
+                // spot units of the quote currency.
+                (None, Some(via)) => {
+                    let rate = spot.checked_mul(*via).ok_or_else(|| {
+                        Error::numeric(format!("the cross through {object} at {spot} overflowed"))
+                    })?;
+                    crosses.entry(*pair_base).or_default().push(rate);
+                }
+                _ => {}
+            }
+        }
+        let mut rates = FxRates::new(base);
+        for (currency, rate) in direct {
+            rates = rates.with_rate(currency, rate)?;
+        }
+        for (currency, routes) in crosses {
+            if let [rate] = routes.as_slice() {
+                rates = rates.with_rate(currency, *rate)?;
             }
         }
         Ok(rates)
@@ -379,6 +535,7 @@ impl FinancingRegister {
     /// holds no forward and no repo.
     pub fn summary(&self) -> String {
         if self.forwards.is_empty()
+            && self.swaps.is_empty()
             && self.repos.is_empty()
             && self.perpetuals.is_empty()
             && self.composites.is_empty()
@@ -387,10 +544,11 @@ impl FinancingRegister {
             return String::new();
         }
         format!(
-            "; financing register values {} FX forward(s) by covered interest parity and {} \
-             repo(s) and funds {} perpetual(s) from the premium over the underlying and values {} \
+            "; financing register values {} FX forward(s) and {} FX swap(s) by covered interest \
+             parity and {} repo(s) and funds {} perpetual(s) from the premium over the underlying and values {} \
              index(es) and basket(s) from their constituents, {} unvalued",
             self.forwards.len(),
+            self.swaps.len(),
             self.repos.len(),
             self.perpetuals.len(),
             self.composites.len(),
@@ -564,6 +722,15 @@ fn fund_perpetual(
 }
 
 /// Whole days from `from` to `to`; `None` when there is not one.
+/// One unit of a pair's quote currency in its base currency.
+fn reciprocal(spot: Decimal, object: &str) -> Result<Decimal> {
+    Decimal::ONE.checked_div(spot).ok_or_else(|| {
+        Error::numeric(format!(
+            "the reciprocal of spot {spot} on {object} overflowed"
+        ))
+    })
+}
+
 fn whole_days(from: Timestamp, to: Timestamp) -> Option<u32> {
     if to <= from {
         return None;

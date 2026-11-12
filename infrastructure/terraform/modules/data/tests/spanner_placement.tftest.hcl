@@ -75,3 +75,57 @@ run "a_region_with_no_decided_placement_plans_while_spanner_is_off" {
     error_message = "enable_spanner = false planned a Spanner instance."
   }
 }
+
+# ADR 0394: the leader is a validated variable. The pair below proves the
+# validation refuses a region outside nam3 and admits the write origin; a
+# validation proven only to refuse is indistinguishable from one that refuses
+# everything.
+run "a_default_leader_outside_nam3s_read_write_regions_is_refused" {
+  command = plan
+
+  variables {
+    enable_spanner         = true
+    spanner_default_leader = "europe-west1"
+  }
+
+  expect_failures = [var.spanner_default_leader]
+}
+
+run "nam3s_witness_region_is_refused_as_the_default_leader" {
+  command = plan
+
+  variables {
+    enable_spanner         = true
+    spanner_default_leader = "us-central1"
+  }
+
+  expect_failures = [var.spanner_default_leader]
+}
+
+run "the_default_leader_us_east4_is_admitted_and_reaches_the_ddl" {
+  command = plan
+
+  variables {
+    enable_spanner         = true
+    spanner_default_leader = "us-east4"
+  }
+
+  assert {
+    condition     = contains(google_spanner_database.positions[0].ddl, "ALTER DATABASE `positions` SET OPTIONS (default_leader = 'us-east4')")
+    error_message = "spanner_default_leader = us-east4 was admitted but did not reach the positions database's DDL."
+  }
+}
+
+run "the_default_leader_us_east1_reaches_the_ddl" {
+  command = plan
+
+  variables {
+    enable_spanner         = true
+    spanner_default_leader = "us-east1"
+  }
+
+  assert {
+    condition     = contains(google_spanner_database.positions[0].ddl, "ALTER DATABASE `positions` SET OPTIONS (default_leader = 'us-east1')")
+    error_message = "spanner_default_leader = us-east1 did not reach the DDL, so the variable is not what sets the leader."
+  }
+}

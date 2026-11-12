@@ -4619,7 +4619,7 @@
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_recall_returns_its_book_to_the_treasury_at_expiry_across_restarts"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: Decision::Settled booked end to end (a T+2 fill reaches cash on the second simulated day); inventory stays with commerce_research's producer.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: Decision::Settled booked end to end (a T+2 fill reaches cash on the second simulated day); inventory stays with commerce_research's producer. 2026-11-12 (wave580 fw-e-01): not built this pass because its precondition is absent — no in_settlement account, no Decision::Settled arm in qip-contracts' reflex Decision and no settlement clock in the node's simulated gateway exist, so the end-to-end test needs ADR 0130's LEDGER-5011 slice first, several crates' work rather than one row's remainder.",
     "implemented": true,
     "tested": true,
     "integrated": true,

@@ -1549,7 +1549,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:89 a_risk_envelope_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:103 a_risk_envelope_refuses_each_broken_invariant"
     ],
-    "gap": "RiskEnvelopeFields still has no producer: PolicyPayload.risk_envelope is assembled unproduced in qip-api mesh.rs. Needs the LimitSet -> RiskEnvelope mapping (hard, scenario and causal-driver limits, health requirements, emergency mode) and the cell-side decode that refuses a payload missing a field; see R12-CONTRACT-1195, which shares both halves.",
+    "gap": "RiskEnvelopeFields still has no producer: PolicyPayload.risk_envelope is assembled unproduced in qip-api mesh.rs. Needs the LimitSet -> RiskEnvelope mapping (hard, scenario and causal-driver limits, health requirements, emergency mode) and the cell-side decode that refuses a payload missing a field; see R12-CONTRACT-1195, which shares both halves. 2026-11-12 (wave580 fw-e-01): not built because the typed envelope refuses an empty scenario_limits or health_requirements and the tree has no producer for either — qip_risk::limits::LimitKind has no stress-scenario or causal-driver arm, and no committed configuration states a model or feed staleness or quality floor — so a producer would need figures nobody gave (decision 28: an arm with no producer is not built on an invented input).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1618,7 +1618,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:205 an_episode_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:214 an_episode_refuses_each_broken_invariant_including_one_with_no_counterfactual"
     ],
-    "gap": "No production seam constructs or consumes Episode (grep of EpisodeFields outside qip-contracts finds nothing). Production episodes are libs/qip-ai/src/memory/episode.rs:462 and libs/qip-agents/src/memory.rs:23.",
+    "gap": "No production seam constructs or consumes Episode (grep of EpisodeFields outside qip-contracts finds nothing). Production episodes are libs/qip-ai/src/memory/episode.rs:462 and libs/qip-agents/src/memory.rs:23. 2026-11-12 (wave580 fw-e-01): not built in this pass because the production episode (qip_ai::memory::episode::Episode) carries no counterfactual, and the contract refuses an episode without one; a producer needs a join from each episode's decision to Platform::evaluate_alternatives' scores by order id, plus a consumer the gap also names, a kernel seam larger than one row's remainder.",
     "implemented": true,
     "tested": true,
     "integrated": false,
