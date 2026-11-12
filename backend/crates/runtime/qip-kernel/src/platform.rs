@@ -1459,12 +1459,15 @@ pub struct Platform {
     /// horizon is looked up through the leg's hypothesis ids in the
     /// justifications DECIDE registered, never defaulted: a leg whose
     /// hypotheses carry none records nothing here, and the position's record
-    /// then refuses rather than stating a horizon nobody approved.
+    /// then refuses rather than stating a horizon nobody approved. Journalled
+    /// as a [`PositionHorizonRecorded`] and rebuilt from the log at assembly
+    /// by [`Self::resume_position_horizons`].
     position_horizons: BTreeMap<String, (String, Duration)>,
     /// The exit plan each object was last sized with, by object id, written
     /// by `construct_from` on the same terms as [`Self::position_horizons`]
     /// (R12-ASSET-4069, ADR 0183): only once the proposal's capital is held,
-    /// bounded by the universe, not rebuilt on a restart. A proposal any leg
+    /// bounded by the universe, and re-dated from the same journalled record
+    /// on a restart. A proposal any leg
     /// of which has no admissible plan is refused before it holds capital,
     /// so nothing reaches ACT without one.
     position_exit_plans: BTreeMap<String, qip_financial::position_record::ExitPlan>,
@@ -5438,6 +5441,40 @@ impl EventBody for LotAdjusted {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The journalled record of the thesis one proposal leg was sized on: its
+/// hypothesis, that hypothesis's approved horizon and the instant the leg was
+/// sized (R12-ASSET-4067, R12-ASSET-4069).
+///
+/// Written by `construct_from` once the proposal's capital is held, beside
+/// the in-memory horizon and exit plan it records, and read back at assembly
+/// by [`Platform::resume_position_horizons`]. Until this record existed both
+/// lived only in memory: a restart resumed every position from the book's
+/// fills and refused every one of them a holding record ("no hypothesis
+/// horizon on record") and an exit plan, so the longer the platform ran the
+/// fewer of its positions could say why or until when they were held.
+///
+/// Every input the exit plan is dated from is a field here, and the plan
+/// itself is not: a resumed plan is re-dated through the same lockup check
+/// construction ran ([`qip_financial::position_record::ExitPlan::new`]), so a
+/// record cannot carry a plan the instrument's terms would refuse.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PositionHorizonRecorded {
+    pub object_id: String,
+    pub hypothesis: String,
+    pub horizon: Duration,
+    pub sized_at: Timestamp,
+}
+
+impl EventBody for PositionHorizonRecorded {
+    const TOPIC: Topic = Topic::PositionUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer [`PositionHorizonRecorded`] carries, and the discriminator
+/// its resume selects on beside the topic, for the reason [`BOOK_ORIGIN`]
+/// gives.
+const POSITION_HORIZON_ORIGIN: &str = "kernel/position-horizon";
+
 /// The empty lifecycle register [`Platform`]'s `asset_book` starts from, and
 /// restarts from when the book is resumed from the log. One constructor for
 /// both so the resumed register is the one assembly would have built.
@@ -6822,6 +6859,9 @@ impl Platform {
         // the positions, the fees, the drawdown's peak and the day's loss
         // were all forgotten, and the limits read a book that held nothing.
         platform.resume_book(now)?;
+        // Each sized leg's thesis horizon and exit plan, so a resumed
+        // position can state both (R12-ASSET-4067, R12-ASSET-4069).
+        platform.resume_position_horizons()?;
         // The desk's book is funded by the central treasury with the
         // platform's initial equity, and that funding is a financial fact the
         // ledger is the authority for (ADR 0123). Journaled once, so every
@@ -19435,6 +19475,29 @@ impl Platform {
         // written only now that the proposal's capital is held: a refused
         // hold returned above, and a target the platform never committed
         // capital to is not the target of anything it holds.
+        // Journalled before the in-memory records move, and a record the log
+        // refuses releases the hold and refuses the proposal: a thesis held in
+        // memory and absent from the log is the one a restart forgets.
+        for leg in &outcome.proposal.legs {
+            let Some((hypothesis, horizon)) = self.justified_hypotheses.horizon(&leg.hypotheses)
+            else {
+                continue;
+            };
+            let record = PositionHorizonRecorded {
+                object_id: leg.object_id.as_str().to_string(),
+                hypothesis,
+                horizon,
+                sized_at: now,
+            };
+            if let Err(error) = self.journal_record(record, POSITION_HORIZON_ORIGIN, now) {
+                if notional.is_positive() {
+                    let _ = self
+                        .reservations
+                        .release(outcome.proposal.proposal_id.as_str(), now);
+                }
+                return Err(error);
+            }
+        }
         self.position_exit_plans.extend(exit_plans);
         let mandate = self.user_ledger.desk().as_str().to_string();
         for leg in &outcome.proposal.legs {
@@ -19496,7 +19559,24 @@ impl Platform {
                     leg.hypotheses
                 ))
             })?;
-        let exit_at = now
+        self.dated_exit_plan(&leg.object_id, &hypothesis, horizon, now)
+    }
+
+    /// The exit plan for `object_id` sized on `hypothesis` at `sized_at`:
+    /// dated at `sized_at` plus `horizon`, routed as a sale, and checked
+    /// against the instrument's declared lockup. The one function both
+    /// [`Self::exit_plan_for`] at construction and
+    /// [`Self::resume_position_horizons`] at assembly date a plan through, so
+    /// a resumed plan passes the check a constructed one did.
+    fn dated_exit_plan(
+        &self,
+        object_id: &ObjectId,
+        hypothesis: &str,
+        horizon: Duration,
+        sized_at: Timestamp,
+    ) -> Result<qip_financial::position_record::ExitPlan> {
+        let object = object_id.as_str();
+        let exit_at = sized_at
             .as_nanos()
             .checked_add(horizon.as_nanos())
             .map(Timestamp::from_nanos)
@@ -19504,14 +19584,14 @@ impl Platform {
                 Error::numeric(format!(
                     "the leg in {object} has a horizon from {} no timestamp can represent; the \
                  position would open with no exit plan",
-                    now.to_rfc3339()
+                    sized_at.to_rfc3339()
                 ))
             })?;
         let lockup = {
             let market = self.market.read();
             match market
                 .universe
-                .get(&leg.object_id)
+                .get(object_id)
                 .map(|record| &record.extension)
             {
                 Some(qip_financial::extensions::Extension::PrivateAsset(details)) => {
@@ -19545,8 +19625,62 @@ impl Platform {
         })
     }
 
+    /// Rebuild each sized object's hypothesis horizon and exit plan from the
+    /// [`PositionHorizonRecorded`] records the log holds, the latest per
+    /// object winning as the latest construction's did (R12-ASSET-4067,
+    /// R12-ASSET-4069). Returns how many records were read.
+    ///
+    /// The plan is re-dated through [`Self::dated_exit_plan`], so a resumed
+    /// plan passes the lockup check a constructed one did. Refused — assembly
+    /// stops — when a record cannot be decoded or its plan is one the
+    /// instrument's terms now refuse: skipping it would resume a position the
+    /// log says has an exit with none, and inventing one would date an exit
+    /// nobody approved.
+    ///
+    /// The mandate a leg was sized under is not rebuilt here: proposals are
+    /// not journalled, and ASSET-4066's flag on a resumed position stands.
+    fn resume_position_horizons(&mut self) -> Result<usize> {
+        let mut latest: BTreeMap<String, PositionHorizonRecorded> = BTreeMap::new();
+        let mut read = 0usize;
+        for record in self.event_log.records() {
+            if record.event.lineage.producer != POSITION_HORIZON_ORIGIN
+                || record.event.topic != PositionHorizonRecorded::TOPIC
+            {
+                continue;
+            }
+            let body = StreamEnvelope::from_frame(&record.event)?
+                .decode::<PositionHorizonRecorded>()?
+                .body;
+            read += 1;
+            latest.insert(body.object_id.clone(), body);
+        }
+        for (object, body) in latest {
+            let plan = self
+                .dated_exit_plan(
+                    &ObjectId::from_string(&object),
+                    &body.hypothesis,
+                    body.horizon,
+                    body.sized_at,
+                )
+                .map_err(|refusal| {
+                    Error::invalid(format!(
+                        "the log records {object} sized on hypothesis {} at {}, and the exit \
+                         plan it dates is one this universe refuses: {}; restore the reference \
+                         record the position was sized against",
+                        body.hypothesis,
+                        body.sized_at.to_rfc3339(),
+                        refusal.message()
+                    ))
+                })?;
+            self.position_exit_plans.insert(object.clone(), plan);
+            self.position_horizons
+                .insert(object, (body.hypothesis, body.horizon));
+        }
+        Ok(read)
+    }
+
     /// The exit plan the last construction that sized `object_id` dated for
-    /// it, or `None` where no construction this process ran has
+    /// it, or `None` where no construction this log records has
     /// (R12-ASSET-4069).
     pub fn position_exit_plan(
         &self,
@@ -19665,7 +19799,7 @@ impl Platform {
             || {
                 Error::invalid(format!(
                     "{object_id} is held with no hypothesis horizon on record — no construction \
-                     in this process sized it — so its investment horizon cannot be stated; \
+                     this log records sized it — so its investment horizon cannot be stated; \
                      size it through a construction or unwind it"
                 ))
             },
