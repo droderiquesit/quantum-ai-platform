@@ -412,10 +412,7 @@ fn a_fill_that_names_its_decision_books_under_its_cell_with_every_contributor() 
     );
     assert_eq!(
         event.intent_ids(),
-        vec![
-            format!("{CELL}/3/38/alpha"),
-            format!("{CELL}/3/38/beta")
-        ]
+        vec![format!("{CELL}/3/38/alpha"), format!("{CELL}/3/38/beta")]
     );
     // The round trip of a schema 2 event is `qip-contracts`'
     // `tests/ledger_event.rs`; this crate does not take a JSON dependency for it.
