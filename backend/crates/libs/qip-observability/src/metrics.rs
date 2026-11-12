@@ -1465,6 +1465,10 @@ pub mod names {
     pub const LEDGER_PARKED_KEYS: &str = "qip_ledger_parked_keys";
     pub const LEDGER_LIVE_FILL_REFUSED: &str = "qip_ledger_live_fill_refused_total";
     pub const LEDGER_UNBALANCED_REFUSED: &str = "qip_ledger_unbalanced_refused_total";
+    /// Custody reconciliation breaks found by `qip-ledgerd`, by `direction`
+    /// (`ledger_over_venue`, `venue_over_ledger`; ADR 0130 decision 4,
+    /// ADR 0442). One per instrument per statement compared.
+    pub const LEDGER_CUSTODY_BREAKS: &str = "qip_ledger_custody_breaks_total";
     pub const LEDGER_LAG: &str = "qip_ledger_lag_records";
     pub const LEDGER_STORE_RETRIES: &str = "qip_ledger_store_retries_total";
     /// How long the longest-parked cell has been parked, in seconds. A park

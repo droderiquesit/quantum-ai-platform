@@ -17604,6 +17604,44 @@ impl Platform {
             ));
         }
 
+        // ADR 0456 (R12-AMBIENT-9029): every run on the log, whole — the
+        // accesses it was refused as well as the finding it returned —
+        // before any finding from it is synthesised. A run the log refused
+        // is a run whose findings no hypothesis may rest on, because that
+        // hypothesis could not be reproduced from the log; so the stage
+        // stops here, fail-closed, rather than reasoning on evidence it
+        // could not keep. The runs that did reach the log stay there.
+        let mut unjournaled = Vec::new();
+        for run in &report.runs {
+            let body = crate::agent_journal::AgentRunJournal {
+                cycle: self.cycle,
+                record: run.clone(),
+            };
+            if let Err(error) = self.journal_record(body, crate::agent_journal::ORIGIN, now) {
+                unjournaled.push(format!(
+                    "agent run {} could not be journaled: {}",
+                    run.run_id,
+                    error.message()
+                ));
+            }
+        }
+        if !unjournaled.is_empty() {
+            let outcome = StageOutcome::ran(
+                Stage::Reason,
+                report.findings.len(),
+                format!(
+                    "{} finding(s) from {} run(s); {} run(s) unjournaled, so no hypothesis was formed",
+                    report.findings.len(),
+                    report.runs.len(),
+                    unjournaled.len()
+                ),
+            );
+            return problems
+                .into_iter()
+                .chain(unjournaled)
+                .fold(outcome, |acc, problem| acc.with_problem(problem));
+        }
+
         // Synthesise. The mechanism comes from the anomaly that produced the
         // opportunity, so the thesis says why rather than merely what — and
         // where the anomaly does not imply a mechanism, no hypothesis is
@@ -30620,6 +30658,27 @@ fn mechanism_for(
         | AnomalyKind::SentimentShift
         | AnomalyKind::AlternativeDataDivergence
         | AnomalyKind::UnexplainedMove => None,
+    }
+}
+
+/// Test-only seams for `agent_journal`'s tests (ADR 0456). Kept in one block
+/// here, after every shipped `impl Platform` method, because
+/// `qip-acceptance`'s `api_boundary` enumerates the platform's mutators by
+/// reading this file up to its first `#[cfg(test)]`: a test seam placed among
+/// the shipped methods hid every mutator after it from that check.
+#[cfg(test)]
+impl Platform {
+    /// Seat a different organisation, for a test that needs an agent on the
+    /// panel that reaches past its manifest. The replacement still passes
+    /// `Organisation::new`'s roster validation.
+    pub(crate) fn replace_organisation(&mut self, organisation: Organisation) {
+        self.organisation = organisation;
+    }
+
+    /// Swap the event log, for the fail-closed test, which needs a log that
+    /// refuses every append.
+    pub(crate) fn replace_event_log(&mut self, event_log: EventLog) {
+        self.event_log = event_log;
     }
 }
 
