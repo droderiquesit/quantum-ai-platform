@@ -9,6 +9,8 @@
 //! a change which quietly breaks one half — a gate that passes on no data, a
 //! split on a singleton, a rollback that needs a new revision — fails here.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use std::fs;
 use std::path::PathBuf;
 
