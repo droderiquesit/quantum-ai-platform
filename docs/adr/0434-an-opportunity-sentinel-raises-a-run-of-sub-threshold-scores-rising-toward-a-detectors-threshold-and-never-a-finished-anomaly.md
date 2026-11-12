@@ -109,6 +109,20 @@ choose by itself; this ADR chooses one.
 - Only the cross-region family is driven end to end through the sweep in a
   test; the other four are proven at the scoring and scanner seam.
 
+## What it costs
+
+- A pair-wise cross-asset score every sweep: the same O(n²) walk over priced
+  pairs the breakdown detector already makes, run a second time.
+- Memory of at most three scores per family and subject present in the
+  sweep.
+- More research-task signals through the attention router's budget. A
+  precursor that never becomes a dislocation is research spent on noise;
+  the floor and the strict three-sweep rise are what bound that, and
+  neither has been calibrated against a real tape.
+- Three of five families do nothing until a deployment configures them,
+  so the requirement's breadth is promised by the code and delivered by
+  configuration nobody has written yet.
+
 ## What would make this wrong
 
 A precursor that the anomaly detector would already have flagged in the
