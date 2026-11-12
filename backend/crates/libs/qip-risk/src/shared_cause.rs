@@ -452,6 +452,27 @@ impl SharedCauseExposure {
         state
     }
 
+    /// The drivers attributed on `axis` — driver, then instrument, then the
+    /// weight the driver was charged at — or `None` when the axis was never
+    /// declared or was refused.
+    ///
+    /// Read by [`crate::systemic`], which needs *which* instruments share a
+    /// driver and not only the bucket's total; the bucket on
+    /// [`RiskState::axis_exposures`] has already summed that away. A borrow,
+    /// never a copy, so the contagion level reads the attribution this type
+    /// charged rather than a second derivation of it.
+    pub fn attributed(&self, axis: &str) -> Option<&BTreeMap<String, BTreeMap<String, Decimal>>> {
+        if self.refusals.contains_key(axis) {
+            return None;
+        }
+        self.attributed.get(axis)
+    }
+
+    /// Why the producer refused `axis`, if it did.
+    pub fn refusal(&self, axis: &str) -> Option<&str> {
+        self.refusals.get(axis).map(String::as_str)
+    }
+
     fn check_axis(&self, axis: &str) -> Result<()> {
         if is_shared_cause_axis(axis) {
             return Ok(());
