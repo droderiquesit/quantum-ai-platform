@@ -244,7 +244,7 @@ fn ledger(records: &[P1Record], label: &str) -> Result<(LedgerStore, Arc<Metrics
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(t(0)));
     let metrics = Arc::new(Metrics::new("qip-ledgerd"));
     let store = LedgerStore::open(
-        &scratch(label),
+        scratch(label),
         qip_storage::EngineConfig::new(clock),
         LedgerTelemetry::new(Arc::clone(&metrics)),
     )?;
