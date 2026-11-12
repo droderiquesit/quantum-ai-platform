@@ -78,6 +78,17 @@ file, and nothing measured a mechanism crossing regions.
 - A cross-region driver is caught only on the standing book, for the reason
   `shared_cause` states: a proposed order names one bucket per axis.
 
+## What it costs
+
+- Two more axes on every risk read: a filter over the counterparty axis and
+  one pass over the causal-driver attribution already built, both bounded by
+  the venue list and the held book.
+- Two more shipped caps, so a desk book can now be refused for stranded gross
+  or for a cross-region driver where it was admitted before. That is the
+  point, and it is a narrowing a desk will notice.
+- The operational figure is only as broad as its evidence: a venue failing in
+  a way that never clusters feasibility refusals is not charged.
+
 ## What would make this wrong
 
 A measured source of operational failure other than withdrawal (a halted
