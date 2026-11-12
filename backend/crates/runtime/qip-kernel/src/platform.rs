@@ -152,8 +152,9 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ChainView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth,
-    MarketView, ModelsView, PoolReading, RiskView, TradeSide,
+    BookPurpose, BookView, ChainView, ComplianceView, Desk, ExecutionRecord, ExecutionView,
+    ForecasterHealth, HedgeStanding, HeldHorizon, MarketView, ModelsView, PoolReading, RiskView,
+    TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -6326,6 +6327,7 @@ impl Platform {
                     now,
                 ),
                 marks: BTreeMap::new(),
+                purpose: BookPurpose::default(),
             },
             RiskView {
                 state: RiskState {
@@ -6351,6 +6353,7 @@ impl Platform {
         let book = Upstream::new(BookView {
             portfolio: asset_book_opened(initial_equity, now),
             marks: BTreeMap::new(),
+            purpose: BookPurpose::default(),
         });
         desk.book = book.gate(desk.book.required(), desk.book.label());
         let executions = Upstream::new(ExecutionView::default());
@@ -12262,10 +12265,70 @@ impl Platform {
                     .map(|bar| (object.to_string(), bar.close))
             })
             .collect();
+        let purpose = self.book_purpose(&portfolio, &marks);
         self.book.update(|view| {
             view.portfolio = portfolio;
             view.marks = marks;
+            view.purpose = purpose;
         });
+    }
+
+    /// What each held position is held for, as the desk's Portfolio/Asset
+    /// Brain reads it (R12-ASSET-3019, ADR 0468), from the records the
+    /// platform already decides with so the brain cannot disagree with
+    /// them: the horizon and hypothesis `construct_from` recorded, the
+    /// sizing instant beside the mandate, the hedge standing
+    /// [`Self::position_obligations`] states, and the factor breakdown
+    /// [`Portfolio::exposures`] computes from the catalogue loadings.
+    ///
+    /// A refusal from either of the last two is carried as its reason and
+    /// leaves the slot empty, so the brain reports every position as
+    /// undeclared and says why, rather than reporting the book unhedged.
+    fn book_purpose(
+        &self,
+        portfolio: &Portfolio,
+        marks: &BTreeMap<String, Decimal>,
+    ) -> BookPurpose {
+        use qip_financial::position_record::Declared;
+        let mut purpose = BookPurpose::default();
+        for position in portfolio.positions() {
+            let object = position.object_id.as_str();
+            if let Some((hypothesis, horizon)) = self.position_horizons.get(object) {
+                purpose.horizons.insert(
+                    object.to_string(),
+                    HeldHorizon {
+                        hypothesis: hypothesis.clone(),
+                        horizon: *horizon,
+                        sized_at: self
+                            .position_mandates
+                            .get(object)
+                            .map(crate::position_register::PositionMandate::sized_at),
+                    },
+                );
+            }
+        }
+        match self.position_obligations() {
+            Ok(obligations) => {
+                for (object, record) in obligations {
+                    let standing = match record.hedges() {
+                        Declared::Present(policies) => HedgeStanding::Hedged(policies.clone()),
+                        Declared::NoneApplicable { reason } => HedgeStanding::Unhedged {
+                            reason: reason.clone(),
+                        },
+                    };
+                    purpose.hedges.insert(object, standing);
+                }
+            }
+            Err(refusal) => purpose.hedges_refused = Some(refusal.message().to_string()),
+        }
+        let market = self.market.read();
+        match portfolio.exposures(&market.universe, marks) {
+            Ok(breakdown) => {
+                purpose.factor_exposure = breakdown.by_factor.net;
+            }
+            Err(refusal) => purpose.factors_refused = Some(refusal.message().to_string()),
+        }
+        purpose
     }
 
     /// List `object_id` in the universe history from `at` the first time the

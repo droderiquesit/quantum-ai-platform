@@ -137,6 +137,9 @@ impl Scope {
                 "book_gross_exposure_ratio",
                 "positions_flagged_without_mandate",
                 "positions_unwinding",
+                "positions_past_horizon",
+                "positions_hedged",
+                "causal_drivers_allocated",
             ],
             Self::CryptoOnChain => &[
                 "chain_reorg_depth",
