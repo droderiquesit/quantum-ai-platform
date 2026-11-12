@@ -1383,7 +1383,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:746-786 PolicyPayload with signature",
       "backend/crates/libs/qip-contracts/src/control_pack.rs::ControlPackAnnouncement"
     ],
-    "gap": "Announcement library-only (no producer/consumer binary); no object/artifact-storage package fetch path.",
+    "gap": "Announcement library-only (no producer/consumer binary); no object/artifact-storage package fetch path. 2026-11-12 (wave580 fw-i-01, read, nothing built): the size bound and the algo:64-hex digest shape cannot be enforced on ModelManifest as it stands, because the one production producer (model_serving.rs, DistilledManifestEntry digest: model.digest()) fills each value with qip-strategy DistilledModel::digest(), a '|'-joined encoding of the model's name, form and every coefficient's bits — not a fixed-length hash, and growing with the model — so a shape check would refuse every manifest the kernel issues and a byte bound would cap model size rather than announcement size. Closing it needs a wire decision first (a SHA-256 of that canonical form, computed alike by the centre, the cell and the release pack's InlineModel, with the pinned digests ADR 0149 decision 17 keeps byte-identical migrated), then MAX_MANIFEST_BYTES and a checked decode. InlineModel itself is a name and a digest, not weights, so it does not by its shape break 'fabric carries references'; the digest it carries is the encoding above.",
     "implemented": true,
     "tested": true,
     "integrated": false,

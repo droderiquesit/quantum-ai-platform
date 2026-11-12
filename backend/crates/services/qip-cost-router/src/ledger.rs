@@ -147,11 +147,39 @@ pub fn report_by<'a>(
     report
 }
 
+/// A cost report cut by all four dimensions at once, each read off the same
+/// entries through [`report_by`], so the four cannot disagree about the total.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostReport {
+    pub strategy: BTreeMap<String, Decimal>,
+    pub model: BTreeMap<String, Decimal>,
+    pub data_source: BTreeMap<String, Decimal>,
+    pub region: BTreeMap<String, Decimal>,
+}
+
+impl CostReport {
+    /// Spend per key on every dimension across `ledgers`.
+    pub fn of<'a>(ledgers: impl IntoIterator<Item = &'a ComputeLedger> + Clone) -> Self {
+        Self {
+            strategy: report_by(ledgers.clone(), CostDimension::Strategy),
+            model: report_by(ledgers.clone(), CostDimension::Model),
+            data_source: report_by(ledgers.clone(), CostDimension::DataSource),
+            region: report_by(ledgers, CostDimension::Region),
+        }
+    }
+}
+
 /// The running cost of one decision.
 #[derive(Clone, Debug)]
 pub struct ComputeLedger {
     decision: String,
     charges: Vec<TierCharge>,
+    /// Per charge, an attribution narrower than the ledger's, aligned with
+    /// `charges`. A cycle's ledger is one bill under one budget, but a rung
+    /// inside it can be known to serve one strategy — the REASON panel's
+    /// decision is the desk's — and splitting the ledger to say so would give
+    /// each half its own budget and widen the cycle's.
+    charge_attributions: Vec<Option<Attribution>>,
     agents: BudgetLedger,
     attribution: Attribution,
 }
@@ -169,6 +197,7 @@ impl ComputeLedger {
         Ok(Self {
             decision,
             charges: Vec::new(),
+            charge_attributions: Vec::new(),
             agents,
             attribution: Attribution::default(),
         })
@@ -189,18 +218,26 @@ impl ComputeLedger {
         let key = |part: &Option<String>| part.clone().unwrap_or_else(|| UNATTRIBUTED.to_string());
         self.charges
             .iter()
-            .map(|charge| CostEntry {
-                decision: self.decision.clone(),
-                tier: charge.tier,
-                cost: charge.cost,
-                strategy: key(&self.attribution.strategy),
-                model: charge
-                    .tier
-                    .model_tier()
-                    .map_or(NO_MODEL, |model| model.as_str())
-                    .to_string(),
-                data_source: key(&self.attribution.data_source),
-                region: key(&self.attribution.region),
+            .enumerate()
+            .map(|(index, charge)| {
+                let attribution = self
+                    .charge_attributions
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .unwrap_or(&self.attribution);
+                CostEntry {
+                    decision: self.decision.clone(),
+                    tier: charge.tier,
+                    cost: charge.cost,
+                    strategy: key(&attribution.strategy),
+                    model: charge
+                        .tier
+                        .model_tier()
+                        .map_or(NO_MODEL, |model| model.as_str())
+                        .to_string(),
+                    data_source: key(&attribution.data_source),
+                    region: key(&attribution.region),
+                }
             })
             .collect()
     }
@@ -297,6 +334,21 @@ impl ComputeLedger {
 
         let charge = TierCharge::of(tier);
         self.charges.push(charge);
+        self.charge_attributions.push(None);
+        Ok(charge)
+    }
+
+    /// Charge one rung known to serve a narrower attribution than the
+    /// ledger's, under the same budget. A refused rung records nothing.
+    pub fn charge_attributed(
+        &mut self,
+        tier: IntelligenceTier,
+        attribution: Attribution,
+    ) -> Result<TierCharge> {
+        let charge = self.charge(tier)?;
+        if let Some(slot) = self.charge_attributions.last_mut() {
+            *slot = Some(attribution);
+        }
         Ok(charge)
     }
 
