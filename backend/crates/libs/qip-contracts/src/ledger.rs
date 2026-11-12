@@ -131,6 +131,17 @@ pub enum Account {
     /// `mandate:<mandate>` — what the platform owes a mandate's owner for
     /// the capital it subscribed (R12-LEDGER-5021).
     Mandate { mandate: String },
+    /// `in_settlement:<cell>/<strategy>` — the cash leg of a paper fill at a
+    /// venue that settles on a cycle, between the trade date and the venue's
+    /// `Settled` record (ADR 0130 decision 1, ADR 0440; R12-LEDGER-5011).
+    ///
+    /// Kept apart from `trading:` so that the strategy's cash balance is the
+    /// cash it may spend: a sale's proceeds that have not settled sit here,
+    /// not in the book, and the cell's own settlement gate and the ledger say
+    /// the same thing about them. Either sign is legitimate — a sale awaits
+    /// cash (debit), a purchase owes it (credit) — so this is not an account
+    /// [`Account::holds_a_quantity`] keeps non-negative.
+    InSettlement { cell: String, strategy: String },
 }
 
 impl Account {
@@ -138,7 +149,8 @@ impl Account {
         match self {
             Self::Trading { cell, strategy }
             | Self::Reserved { cell, strategy }
-            | Self::LotBasis { cell, strategy } => vec![cell, strategy],
+            | Self::LotBasis { cell, strategy }
+            | Self::InSettlement { cell, strategy } => vec![cell, strategy],
             Self::TaxLot {
                 cell,
                 strategy,
@@ -178,6 +190,7 @@ impl Account {
             Self::Commitment { .. } => "commitment",
             Self::Tax { .. } => "tax",
             Self::Mandate { .. } => "mandate",
+            Self::InSettlement { .. } => "in_settlement",
         }
     }
 
@@ -250,6 +263,10 @@ impl std::str::FromStr for Account {
                 cell: cell.clone(),
                 strategy: strategy.clone(),
             },
+            ("in_settlement", [cell, strategy]) => Self::InSettlement {
+                cell: cell.clone(),
+                strategy: strategy.clone(),
+            },
             ("taxlot", [cell, strategy, lot]) => Self::TaxLot {
                 cell: cell.clone(),
                 strategy: strategy.clone(),
@@ -294,7 +311,7 @@ impl std::str::FromStr for Account {
             (
                 "trading" | "reserved" | "lotbasis" | "taxlot" | "venue" | "fees" | "margin"
                 | "accrual" | "treasury" | "custody" | "inventory" | "collateral" | "obligation"
-                | "commitment" | "tax" | "mandate",
+                | "commitment" | "tax" | "mandate" | "in_settlement",
                 _,
             ) => return refuse("it has the wrong number of `/`-separated names for its kind"),
             _ => return refuse("its kind is not a subledger this ledger keeps"),
@@ -331,6 +348,41 @@ pub enum FeeReport {
     Unreported,
 }
 
+/// Where the cash an event moved stands in the simulated settlement
+/// lifecycle (R12-LEDGER-5011; ADR 0130 decision 1, ADR 0440).
+///
+/// **Orthogonal to [`Settlement`], and no widening of it.** [`Settlement`] is
+/// the paper fence — every event is `Simulated`, and nothing here can say
+/// otherwise. This is the *stage* a simulated fill's cash has reached:
+/// booked to the book at once, waiting on the simulated venue, or moved to
+/// the book by the venue's own record that it settled. A live settlement has
+/// no representation here either: the only producer of [`Self::Settled`] is
+/// a `Decision::Settled` the ledger refuses unless it is marked simulated.
+///
+/// Read off an event by [`LedgerEvent::settlement_state`]. Only the two
+/// non-immediate stages are stored, so an event booked before stages existed
+/// re-encodes byte for byte and reads as [`Self::Immediate`] — which is what
+/// it was, since it could not have posted to an `in_settlement` account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementState {
+    /// The cash leg was booked to `trading:` at the fill: the venue credits
+    /// on the fill, or no settlement cycle was declared for it.
+    Immediate,
+    /// The cash leg was booked to `in_settlement:` and waits on the venue.
+    InSettlement,
+    /// The venue reported that the fills on this journal sequences settled
+    /// on `settlement_date`, and this event moved their cash from
+    /// `in_settlement:` to `trading:`.
+    Settled {
+        settlement_date: Timestamp,
+        /// The journal sequences of the fills this settlement closed, in
+        /// ascending order: the link from the settlement back to the fill
+        /// postings it moved (ADR 0130 decision 3).
+        fills: Vec<u64>,
+    },
+}
+
 /// The observed fact a ledger event was booked from (LEDGER-019, LEDGER-021).
 ///
 /// The journal entry's sequence and digest place the fill on the chain it
@@ -364,6 +416,10 @@ pub struct LedgerEvent {
     owner: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attribution: Option<Attribution>,
+    /// Stored only for a stage other than [`SettlementState::Immediate`], so
+    /// every event booked before stages existed re-encodes as it was stored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settlement_state: Option<SettlementState>,
 }
 
 /// The links from a booked fill back to the decision that caused it, beyond
@@ -392,13 +448,22 @@ struct LedgerEventWire {
     owner: Option<String>,
     #[serde(default)]
     attribution: Option<Attribution>,
+    #[serde(default)]
+    settlement_state: Option<SettlementState>,
 }
 
 impl TryFrom<LedgerEventWire> for LedgerEvent {
     type Error = Error;
 
     fn try_from(wire: LedgerEventWire) -> Result<Self> {
-        let mut event = Self::new(wire.source, wire.settlement, wire.fee, wire.postings)?;
+        // An event read back meets the same stage refusals as one built in
+        // code: an `in_settlement` posting with no stage is refused by `new`.
+        let mut event = match wire.settlement_state {
+            None => Self::new(wire.source, wire.settlement, wire.fee, wire.postings)?,
+            Some(state) => {
+                Self::staged(wire.source, wire.settlement, wire.fee, wire.postings, state)?
+            }
+        };
         // An event written before ownership existed has neither; one that
         // states either meets the same refusals as one built in code.
         if let Some(owner) = wire.owner {
@@ -450,7 +515,71 @@ impl LedgerEvent {
     /// * an empty name, unit or source field, or a `:` or `/` inside an
     ///   account name, which would make two different accounts render to the
     ///   same text.
+    ///
+    /// * a posting to an `in_settlement:` account — an event that holds cash
+    ///   pending settlement must say so, through [`Self::staged`], or a
+    ///   reader of its stage would be told the cash was booked at once.
     pub fn new(
+        source: SourceEvent,
+        settlement: Settlement,
+        fee: FeeReport,
+        postings: Vec<Posting>,
+    ) -> Result<Self> {
+        if let Some(posting) = postings
+            .iter()
+            .find(|posting| matches!(posting.account, Account::InSettlement { .. }))
+        {
+            return Err(Error::invalid(format!(
+                "the event posts to {} but states no settlement stage; build an event that \
+                 holds cash in settlement with `LedgerEvent::staged`, so its stage is read \
+                 off the event and not guessed",
+                posting.account
+            )));
+        }
+        Self::build(source, settlement, fee, postings)
+    }
+
+    /// Build an event at a stated [`SettlementState`].
+    ///
+    /// [`SettlementState::Immediate`] is [`Self::new`]. The two other stages
+    /// are refused unless the event posts to at least one `in_settlement:`
+    /// account — a stage with nothing in settlement is a claim the postings
+    /// do not support — and [`SettlementState::Settled`] is refused unless it
+    /// names at least one fill, in strictly ascending order, so the link back
+    /// to the postings it closed is never blank and never ambiguous.
+    pub fn staged(
+        source: SourceEvent,
+        settlement: Settlement,
+        fee: FeeReport,
+        postings: Vec<Posting>,
+        state: SettlementState,
+    ) -> Result<Self> {
+        if state == SettlementState::Immediate {
+            return Self::new(source, settlement, fee, postings);
+        }
+        if !postings
+            .iter()
+            .any(|posting| matches!(posting.account, Account::InSettlement { .. }))
+        {
+            return Err(Error::invalid(format!(
+                "the event states settlement stage {state:?} but posts to no `in_settlement:` \
+                 account; a stage with nothing in settlement is not one the postings show"
+            )));
+        }
+        if let SettlementState::Settled { fills, .. } = &state
+            && (fills.is_empty() || fills.windows(2).any(|pair| pair[0] >= pair[1]))
+        {
+            return Err(Error::invalid(format!(
+                "a settlement must name the fills it closed in strictly ascending journal \
+                 order; got {fills:?}"
+            )));
+        }
+        let mut event = Self::build(source, settlement, fee, postings)?;
+        event.settlement_state = Some(state);
+        Ok(event)
+    }
+
+    fn build(
         source: SourceEvent,
         settlement: Settlement,
         fee: FeeReport,
@@ -568,6 +697,7 @@ impl LedgerEvent {
             postings,
             owner: None,
             attribution: None,
+            settlement_state: None,
         })
     }
 
@@ -623,6 +753,15 @@ impl LedgerEvent {
 
     pub fn settlement(&self) -> Settlement {
         self.settlement
+    }
+
+    /// Where this event's cash stands in the simulated settlement lifecycle.
+    /// An event that stored no stage was booked immediately: [`Self::new`]
+    /// refuses an `in_settlement:` posting without one.
+    pub fn settlement_state(&self) -> SettlementState {
+        self.settlement_state
+            .clone()
+            .unwrap_or(SettlementState::Immediate)
     }
 
     pub fn fee(&self) -> FeeReport {

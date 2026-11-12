@@ -99,11 +99,13 @@ use qip_contracts::reflex::{ChainSpan, Decision, OutcomeRecord};
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, hmac_sha256, to_hex};
 use qip_core::{Decimal, Timestamp};
-use qip_portfolio::ledger::{PaperFill, post};
+use qip_portfolio::ledger::{
+    PaperFill, PaperSettlement, post, post_in_settlement, post_settlement,
+};
 use qip_storage::EngineConfig;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -127,6 +129,11 @@ const PREFIX_JOURNAL: &str = "journal/";
 const PREFIX_WATERMARK: &str = "watermark/";
 const PREFIX_OPERATION: &str = "operation/";
 const PREFIX_LOT: &str = "lot/";
+/// The fills of one order whose cash waits on the venue's `Settled`
+/// record, keyed `pending/<cell>/<order>` (ADR 0440). Bounded by the orders
+/// in settlement: a settlement deletes its order's row in the batch that
+/// books it.
+const PREFIX_PENDING: &str = "pending/";
 const KEY_PROBE: &str = "meta/probe";
 
 /// How many key ranges a monotonic key family is spread over
@@ -518,6 +525,12 @@ pub struct LedgerStore {
     /// restart, which understates it, and that understatement is stated on
     /// [`Self::record_mismatch_age`] rather than hidden.
     parked_since: Mutex<BTreeMap<String, std::time::Instant>>,
+    /// Venues whose paper fills settle on a cycle, so a fill's cash leg is
+    /// booked to `in_settlement:` and waits on the venue's `Settled` record
+    /// (ADR 0130 decision 1, ADR 0440). Empty unless the composition root
+    /// says otherwise, and a venue not named here books its cash at the
+    /// fill, as every fill did before this set existed.
+    settlement_cycle_venues: BTreeSet<String>,
 }
 
 impl LedgerStore {
@@ -543,11 +556,37 @@ impl LedgerStore {
             telemetry,
             writer: Mutex::new(()),
             parked_since: Mutex::new(BTreeMap::new()),
+            settlement_cycle_venues: BTreeSet::new(),
         };
         ledger.verify_history()?;
         // A restarted process reports the parks it inherited, not zero.
         ledger.record_parked_keys()?;
         Ok(ledger)
+    }
+
+    /// Name the venues whose paper fills settle on a cycle (ADR 0440).
+    ///
+    /// A fill at one of them books its cash leg to `in_settlement:` and only
+    /// that venue's `Decision::Settled` moves it to `trading:`. Refused when a
+    /// name is blank: a blank venue matches no fill, and a declaration that
+    /// declares nothing reads as a configured cycle while being none.
+    pub fn with_settlement_cycle_venues(
+        mut self,
+        venues: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
+        for venue in venues {
+            refuse_blank("settlement-cycle venue", &venue)?;
+            self.settlement_cycle_venues.insert(venue);
+        }
+        Ok(self)
+    }
+
+    /// The fills of `order_id` on `cell` whose cash is in settlement, in the
+    /// order they were booked; empty when none is.
+    pub fn pending_settlement(&self, cell: &str, order_id: &str) -> Result<Vec<LedgerEvent>> {
+        Ok(self
+            .read::<Vec<LedgerEvent>>(&pending_key(cell, order_id))?
+            .unwrap_or_default())
     }
 
     /// `local` or `spanner`.
@@ -920,11 +959,18 @@ impl LedgerStore {
 
         // The fourth paper fence, before the chain: a live fill is refused as
         // live wherever it sits, and never waits behind a gap to be counted.
+        // A settlement meets the same fence: the venue's word that cash
+        // settled is booked only when it is marked simulated (ADR 0440).
         let fill = match &delivery.record {
             P1Record::Outcome(outcome) => match &outcome.entry.decision {
-                Decision::Filled { simulated, .. } => {
-                    Some((PaperFill::try_from(outcome.as_ref()), *simulated))
-                }
+                Decision::Filled { simulated, .. } => Some((
+                    PaperFill::try_from(outcome.as_ref()).map(Economic::Fill),
+                    *simulated,
+                )),
+                Decision::Settled { simulated, .. } => Some((
+                    PaperSettlement::try_from(outcome.as_ref()).map(Economic::Settlement),
+                    *simulated,
+                )),
                 _ => None,
             },
             P1Record::Span(_) => None,
@@ -1014,6 +1060,7 @@ impl LedgerStore {
             return self.park_cell(delivery, &cursor, park, ParkReason::Integrity, detail);
         }
 
+        let mut pending: Option<(String, Option<Vec<LedgerEvent>>)> = None;
         let event = match fill {
             None => None,
             Some((Err(refusal), _)) => {
@@ -1025,22 +1072,64 @@ impl LedgerStore {
                     refusal.message().to_string(),
                 );
             }
-            Some((Ok(paper), _)) => match post(&paper) {
-                Ok(event) => Some(event),
-                Err(refusal) => {
-                    self.telemetry.unbalanced_refused();
-                    return self.park_cell(
-                        delivery,
-                        &cursor,
-                        park,
-                        ParkReason::RefusedFill,
-                        refusal.message().to_string(),
-                    );
+            Some((Ok(Economic::Fill(paper)), _)) => {
+                let in_settlement = self.settlement_cycle_venues.contains(paper.venue());
+                let posted = if in_settlement {
+                    post_in_settlement(&paper)
+                } else {
+                    post(&paper)
+                };
+                match posted {
+                    Ok(event) => {
+                        if in_settlement {
+                            let key = pending_key(cell, &paper.source().order_id);
+                            let mut held: Vec<LedgerEvent> = self.read(&key)?.unwrap_or_default();
+                            held.push(event.clone());
+                            pending = Some((key, Some(held)));
+                        }
+                        Some(event)
+                    }
+                    Err(refusal) => {
+                        self.telemetry.unbalanced_refused();
+                        return self.park_cell(
+                            delivery,
+                            &cursor,
+                            park,
+                            ParkReason::RefusedFill,
+                            refusal.message().to_string(),
+                        );
+                    }
                 }
-            },
+            }
+            Some((Ok(Economic::Settlement(settlement)), _)) => {
+                let key = pending_key(cell, &settlement.source().order_id);
+                let held: Vec<LedgerEvent> = self.read(&key)?.unwrap_or_default();
+                match post_settlement(&settlement, &held) {
+                    Ok(event) => {
+                        pending = Some((key, None));
+                        Some(event)
+                    }
+                    Err(refusal) => {
+                        return self.park_cell(
+                            delivery,
+                            &cursor,
+                            park,
+                            ParkReason::RefusedFill,
+                            refusal.message().to_string(),
+                        );
+                    }
+                }
+            }
         };
 
         let mut batch = LedgerBatch::new();
+        // The pending row moves in the batch that books the event, so a
+        // settlement and the row it closes are never committed apart.
+        match pending {
+            None => {}
+            Some((key, Some(held))) => batch = batch.put_as(key, &held)?,
+            Some((key, None)) => batch = batch.delete(key),
+        }
         if let Some(event) = &event {
             match self.fold(event) {
                 Ok(rows) => {
@@ -1568,6 +1657,13 @@ impl LedgerStore {
 
 // --- helpers --------------------------------------------------------------------
 
+/// What an outcome books: a fill, or the venue's settlement of one order's
+/// fills (ADR 0440). Both are refused as live by the same fence.
+enum Economic {
+    Fill(PaperFill),
+    Settlement(PaperSettlement),
+}
+
 fn refuse_blank(what: &str, value: &str) -> Result<()> {
     if value.is_empty() {
         return Err(Error::invalid(format!(
@@ -1778,6 +1874,10 @@ fn chain_position(key: &str) -> Result<(String, u64, u64)> {
 /// (R12-LEDGER-8137): a per-cell hot row, bounded by the cell count rather
 /// than growing, and left unsharded because a cell's tail is read and
 /// written as one value. Recorded here so it is a stated choice.
+fn pending_key(cell: &str, order_id: &str) -> String {
+    format!("{PREFIX_PENDING}{}/{}", hex(cell), hex(order_id))
+}
+
 fn tail_key(cell: &str) -> String {
     format!("{PREFIX_TAIL}{}", hex(cell))
 }
