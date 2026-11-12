@@ -113,6 +113,7 @@
 //! # }
 //! ```
 
+pub mod benefit;
 pub mod context;
 pub mod data;
 pub mod engine;
@@ -121,6 +122,7 @@ pub mod reputation;
 pub mod router;
 pub mod tier;
 
+pub use benefit::{ModelBenefit, SpendBook};
 pub use context::{
     Conditions, DecisionContext, Determinism, Horizon, MarketRegime, Region, VolatilityRegime,
 };

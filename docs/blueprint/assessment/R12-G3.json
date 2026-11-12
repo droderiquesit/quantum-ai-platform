@@ -3253,12 +3253,15 @@
   {
     "id": "R12-FINOPS-10139",
     "status": "PARTIAL",
-    "current": "qip-agents BudgetLedger stops an agent over budget; cost-router tracks reputation; no benefit-per-dollar benchmark.",
+    "current": "qip-agents BudgetLedger stops an agent over budget. qip-cost-router's SpendBook accumulates every ComputeLedger's model-rung charges (cost, latency, count) and SpendBook::report joins them to the ReputationBook per rung into a ModelBenefit (correct/observed calls, hit rate in bp, cost per correct call, latency per correct call; None where nothing divides). The kernel absorbs each cycle's ledger where it bills it (Platform, beside cycle_ledger) and Platform::model_benefit reports the join against the routing reputation LEARN scores.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/budget.rs",
-      "backend/crates/libs/qip-agents/src/runtime.rs:468"
+      "backend/crates/services/qip-cost-router/src/benefit.rs SpendBook::absorb, SpendBook::report, ModelBenefit",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::model_benefit (model_spend.absorb beside self.cycle_ledger = Some(ledger))",
+      "backend/crates/services/qip-cost-router/tests/cost_router.rs the_spend_book_joins_billed_cost_and_latency_to_each_rungs_record_per_correct_call",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_decisions_conditions (R12-FINOPS-10139 block)"
     ],
-    "gap": "Queue quotas exist and are tested (QueueQuotas in qip-training job.rs, enforced by LocalTrainingProvider::submit and the Vertex provider) but no composition root constructs a training provider with quotas, so no running process bounds a queue; and no benefit-per-dollar or per-latency benchmark exists (ComputeLedger records cost and latency per decision, the reputation book scores accuracy per condition, and nothing joins them).",
+    "gap": "2026-11-12 (lane fw-j-01): the benefit join exists and the kernel computes it from the cycles it billed, but (1) nothing reads it to decide: the router does not rank rungs by cost per correct call, and the report is neither journaled nor exported as a metric, so it lives in process memory and is lost on restart; (2) spend is joined on the rung, not the model version, because ComputeLedger bills a tier and not a name@version reference; (3) queue quotas: QueueQuotas exist and are enforced by LocalTrainingProvider::submit and the Vertex provider, but no composition root (qip-deepbrain or other) constructs a training provider with quotas, so no running process bounds a queue. Not attempted in this lane.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3266,10 +3269,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents",
+    "verification": "cargo test -p qip-cost-router --test cost_router the_spend_book; cargo test -p qip-kernel --test learning the_cycle_that_grades; cargo test -p qip-agents",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's TrainingSpec::concurrency_quota duplicates QueueQuotas, which already refuses a submit into a full queue (training.rs:1677). The open work is a deepbrain-side provider that declares quotas, and a benefit signal the router can divide by cost. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's TrainingSpec::concurrency_quota duplicates QueueQuotas, which already refuses a submit into a full queue (training.rs:1677). The open work is a deepbrain-side provider that declares quotas, and a benefit signal the router can divide by cost. Kept PARTIAL. Lane fw-j-01 2026-11-12: added the benefit-per-dollar/per-latency join (SpendBook) and its kernel caller; 5 mutations fired (latency not summed, correct not joined, divide by observations, deterministic code billed to a rung, kernel absorb removed). Kept PARTIAL: advisory and unjournaled, joined per rung, and the training-quota root is still unwired."
   },
   {
     "id": "R12-FINOPS-10140",
