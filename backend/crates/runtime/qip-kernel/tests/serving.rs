@@ -1558,7 +1558,11 @@ fn a_training_pipeline_candidate_that_skipped_its_paper_trial_is_refused_and_one
         Some(ModelStage::Development),
         "a refusal moved the card"
     );
-    assert!(registry.require_for_decision(&reference, minute(10)).is_err());
+    assert!(
+        registry
+            .require_for_decision(&reference, minute(10))
+            .is_err()
+    );
 
     for round in 1..i64::from(MIN_TRIAL_ROUNDS) {
         registry.record_trial_round(
@@ -1589,14 +1593,18 @@ fn a_training_pipeline_candidate_that_skipped_its_paper_trial_is_refused_and_one
         .promote_model(&mut registry, &artifact, None, &[], minute(10))
         .unwrap_err();
     assert!(
-        early.message().contains("a trial is evidence only once it has run"),
+        early
+            .message()
+            .contains("a trial is evidence only once it has run"),
         "{early}"
     );
     assert_eq!(promotion_records(&platform), 0, "a refusal reached the log");
 
     platform.promote_model(&mut registry, &artifact, None, &[], minute(30))?;
     assert!(
-        registry.require_for_decision(&reference, minute(31)).is_ok(),
+        registry
+            .require_for_decision(&reference, minute(31))
+            .is_ok(),
         "the tried candidate is decision-eligible"
     );
     let record = platform
@@ -1611,7 +1619,9 @@ fn a_training_pipeline_candidate_that_skipped_its_paper_trial_is_refused_and_one
         .ok_or_else(|| Error::not_found("a first stage"))?;
     assert!(
         trial.starts_with("trial since")
-            && trial.contains(&format!("{MIN_TRIAL_ROUNDS} round(s) in simulation and paper")),
+            && trial.contains(&format!(
+                "{MIN_TRIAL_ROUNDS} round(s) in simulation and paper"
+            )),
         "{trial}"
     );
     Ok(())
@@ -1633,12 +1643,18 @@ fn a_quantum_informed_candidate_that_beat_its_baseline_is_refused_without_a_pape
     let candidate = teacher("bar-linear-qt", "0.1.0")?;
     let reference = registered_untried(&mut registry, &candidate)?;
     let artifact = InTreeProvider::pack(&candidate)?;
-    let baseline = teacher_on("bar-baseline-qt", "0.1.0", "bar-linear-qt-data", WORSE_RIDGE)?;
+    let baseline = teacher_on(
+        "bar-baseline-qt",
+        "0.1.0",
+        "bar-linear-qt-data",
+        WORSE_RIDGE,
+    )?;
+    let baseline_reference = baseline.reference();
     let data = dataset("bar-baseline-qt-data")?;
     let (fit_set, _) = data.split_at_fraction(0.25)?;
     registered(&mut registry, &baseline.calibrated_on(&fit_set)?)?;
     let informed = || ModelProducer::QuantumInformed {
-        baseline: baseline.reference(),
+        baseline: baseline_reference.clone(),
         workload: Some("PortfolioAllocation".to_string()),
     };
 
