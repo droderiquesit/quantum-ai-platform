@@ -54,6 +54,7 @@ pub mod dna;
 pub mod episodic;
 pub mod factory;
 pub mod foundry;
+pub mod hedge_narrowing;
 pub mod horizon;
 pub mod insights;
 pub mod learning;

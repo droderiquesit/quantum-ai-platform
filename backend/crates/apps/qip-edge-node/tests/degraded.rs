@@ -767,3 +767,66 @@ fn a_cell_refuses_a_hedge_frame_for_another_cell_past_its_deadline_for_a_venue_i
     );
     Ok(())
 }
+
+/// The node's half of R12-CAPITAL-10098 (ADR 0407): a narrowing the policy
+/// downlink verified is applied through `apply_inbound`, the seam the node's
+/// decision loop runs, and one the cell refuses is reported as refused on
+/// the tick rather than dropped. Until this test the arm that hands a
+/// verified narrowing to `Cell::apply_hedge` was untested; every hedge test
+/// called `apply_hedge` itself.
+#[test]
+fn a_verified_hedge_narrowing_is_applied_through_the_nodes_inbound_seam_and_a_refused_one_is_reported()
+-> Result<()> {
+    use qip_edge::mesh::{DownlinkBatch, PolicyBatch};
+    use qip_edge_node::mesh::{MeshInbound, apply_inbound};
+
+    let (mut node, _gateway, _feed, _link, _stats, _held) = cut_off_and_long()?;
+    assert!(
+        node.cell.live_hedge(t(12)).is_none(),
+        "premise: the cell holds no narrowing before the poll"
+    );
+    let applied = VerifiedHedge::verify(
+        narrowing(CELL, "HP-IN", t(11), t(25), venue(), Decimal::ZERO)?,
+        KEY,
+        CELL,
+        t(12),
+    )?;
+    let ungranted = VerifiedHedge::verify(
+        narrowing(
+            CELL,
+            "HP-OUT",
+            t(11).saturating_add(Duration::from_secs(1)),
+            t(25),
+            VenueId::new("NOT-GRANTED"),
+            Decimal::ZERO,
+        )?,
+        KEY,
+        CELL,
+        t(12),
+    )?;
+    let policy = PolicyBatch {
+        hedges: vec![applied, ungranted],
+        ..PolicyBatch::default()
+    };
+    let tick = apply_inbound(
+        &mut node.cell,
+        MeshInbound::from_batches(DownlinkBatch::default(), policy),
+        t(12),
+        None,
+        None,
+    );
+    assert_eq!(tick.hedges, vec!["HP-IN".to_string()], "{:?}", tick.refused);
+    assert!(
+        tick.refused
+            .iter()
+            .any(|line| line.starts_with("hedge HP-OUT") && line.contains("NOT-GRANTED")),
+        "the refused narrowing was not reported: {:?}",
+        tick.refused
+    );
+    let live = node
+        .cell
+        .live_hedge(t(12))
+        .ok_or_else(|| qip_core::error::Error::not_found("the applied narrowing"))?;
+    assert_eq!(live.plan_id(), "HP-IN");
+    Ok(())
+}
