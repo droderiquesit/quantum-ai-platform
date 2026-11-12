@@ -3829,13 +3829,18 @@
   },
   {
     "id": "R12-RISK-1162",
-    "status": "PARTIAL",
-    "current": "Pre-trade limits (leverage, exposure, concentration, ES, counterparty), shared-cause risk, settlement gate; operational/systemic risk not modelled.",
+    "status": "COMPLETE",
+    "current": "All twelve scope items map to a seam reached from a composition root and a named #[test]. Ten pre-existed: pre-trade (PreTradeChecker::check), post-trade (RiskMonitor::observe), market (RiskState::with_tail_risk), liquidity (Platform::liquidatable_within), counterparty (COUNTERPARTY_AXIS), concentration (sector-concentration), causal-driver (shared_cause seat_causal_drivers), settlement (qip-edge GATE_SETTLEMENT on Cell::work), model (Platform::venue_misfit, twin-misfit-venue-gross) and data (RiskState::unevaluated refusing every order). Since 2026-11-12 (ADR 0462) operational risk is qip_risk::operational::with_operational_failure, the counterparty gross stranded at a venue the platform has withdrawn, and systemic risk is qip_risk::systemic::with_systemic_contagion, the gross one causal driver reaches across two or more regions; both run in Platform::risk_state_from and are capped by shipped MaxAxisWeight limits operational-failure-venue-gross (0.25) and systemic-contagion (0.35). qip-acceptance risk_management_scope fails when any item's seam or test leaves, when a mapped test loses #[test], when a producer leaves risk_state_from, or when an axis item is uncapped.",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/limits.rs:118",
-      "backend/crates/libs/qip-risk/src/shared_cause.rs"
+      "backend/crates/libs/qip-risk/src/operational.rs with_operational_failure",
+      "backend/crates/libs/qip-risk/src/systemic.rs with_systemic_contagion",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::risk_state_from",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::gross_stranded_at_a_venue_the_platform_withdrew_blocks_through_risk_state",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::one_causal_driver_reaching_two_regions_blocks_through_risk_state_and_one_region_does_not",
+      "backend/crates/tests/qip-acceptance/tests/risk_management_scope.rs",
+      "docs/adr/0462-operational-and-systemic-risk-are-two-axes-the-shipped-axis-weight-veto-reads.md"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3846,7 +3851,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Graded 2026-11-12 by session t50-18. Mutation-verified: the new producers, the new caps and the inspection suite (see the lane commit). The ten pre-existing mapped tests were run, not re-mutated in this lane. Operational risk is bounded to withdrawal evidence; crowding across other firms' books is not modelled (no such data in the tree). qip-compliance model_risk.rs is reached by no composition root and is not the mapped model-risk seam."
   },
   {
     "id": "R12-CAPITAL-1163",
