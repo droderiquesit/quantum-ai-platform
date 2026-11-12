@@ -210,6 +210,15 @@ pub enum Decision {
         quote_unit: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fee: Option<String>,
+        /// The sequence of the cell's own [`Self::OrderSent`] entry for
+        /// `order_id` on this session's chain: the decision the fill rests
+        /// on, whose contributors are `shares` (ADR 0454). Optional and
+        /// skipped when absent for the reason `side` is, so every digest a
+        /// cell sealed before it existed stays where it was; an absent value
+        /// means the producer stated no decision, and the ledger books such
+        /// a fill at schema 1 only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision_sequence: Option<u64>,
     },
     /// A position was hedged by placing an offset order at a venue.
     ///

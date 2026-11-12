@@ -312,6 +312,7 @@ fn two_fills() -> Vec<Delivery> {
             side: Some(side),
             quote_unit: Some("USD".to_string()),
             fee: None,
+            decision_sequence: None,
         };
         let (decision, digest) = seal_v2(&previous, sequence, at, decision);
         previous = digest.clone();
