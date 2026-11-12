@@ -35,9 +35,12 @@ consuming one. That is closed in the same lane (`MarketStatePackWire`).
 1. **The carrier is the pass's `FeatureDigest`.** The pack rides as an
    optional field of the digest on `reflex.feature_digested`; no
    `FeatureSnapshot` is built. Adding it changes the digest's locked shape,
-   so the schema lock row in `qip-events/schemas.lock.json` moves with it,
-   by the suite's own procedure, and its fixture carries the pack `Some` so
-   the lock sees the nested shape.
+   so `REFLEX_FEATURE_DIGESTED` moves to schema version 2 (CONTRACT-046: a
+   shape change without a version bump fails CI), its lock row's fixture
+   carries the pack `Some` so the lock sees the nested shape, and version 1
+   is retired rather than kept beside it: its one surveyed consumer,
+   `qip-edge-node`, decodes version 2's type, which reads a version 1 body
+   with the pack absent, and no deployed process holds a version 1 line.
 2. **The producer is the seam that builds the digest.** The owner's triage
    named `event_fabric/drain.rs`; the drain only ships what the scheduler
    recorded, and holds `MarketEvent`s only inside the lake writer. The pack
@@ -66,9 +69,14 @@ consuming one. That is closed in the same lane (`MarketStatePackWire`).
 - R12-CONTRACT-7072's verification field — a pack missing any required
   field is refused on construction and on decode, and a round trip keeps
   every field — is met by `qip-contracts/tests/market_state.rs`.
-- Decisions 1–5 are the plan for the carriage, producer and consumer; a
-  slice that lands only part of them grades the row PARTIAL and names what
-  remains in the assessment.
+- Decisions 1–4 landed with this ADR (session t50-01): the carrier field,
+  the version bump, `qip_edge_node::market_state::market_state_of`, and its
+  call in the scheduler's digest seam. Decision 5, the consumer, did not;
+  the row stays PARTIAL and the assessment names it.
+- Measured on the first pass of `decision_loop`'s rig: the simulated feed
+  stamps pass 1's events at the pass's own instant, so pass 1 is
+  unattested on every node start (logged "ships no market state pack").
+  Every later pass carries a pack.
 
 ## What it costs
 
