@@ -3133,23 +3133,26 @@
   },
   {
     "id": "R12-LEDGER-8136",
-    "status": "MISSING",
-    "current": "Config literal nam-eur-asea; no default_leader.",
+    "status": "PARTIAL",
+    "current": "ADR 0393: modules/data keys the ledger's placement by the writer's region. us-east4 (qip-ledgerd's region in dev) plans google_spanner_instance.global on nam3 and the positions database's default_leader at us-east4 by DDL; enable_spanner in a region with no decided placement fails a lifecycle.precondition naming the ADR, so the data stays in the United States until a residency review adds an entry. Spanner remains off in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:385"
+      "infrastructure/terraform/modules/data/main.tf local.spanner_placements, google_spanner_instance.global config and precondition, google_spanner_database.positions ddl",
+      "infrastructure/terraform/modules/data/tests/spanner_placement.tftest.hcl (three plans: us-east4 admitted on nam3 with leader us-east4; europe-west2 with Spanner on refused; europe-west2 with Spanner off admitted)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration (instance reads the placement; every placement config multi-region)",
+      "docs/adr/0393-the-ledgers-spanner-instance-is-nam3-with-its-default-leader-at-us-east4-the-write-origin-and-its-data-stays-in-the-united-states-until-a-residency-review.md"
     ],
-    "gap": "Leader choice + rationale.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "2026-11-12 (orchestrator, independent verification of the 2026-11-12 grade): held PARTIAL. The placement itself is built: modules/data keys it by region, us-east4 maps to nam3 with default_leader us-east4 by DDL, an undecided region is refused by precondition, and ADR 0393 records why. Three parts of the owner's 2026-10-31 closure for this row are unmet. (1) The acceptance test the row cites (infrastructure.rs the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration) asserts only that no placement config starts with regional-, so a bare single region such as us-east4 would pass; the closure asks for an explicit list of Google multi-region configuration names that admits nam3 and refuses regional-* and any single region. (2) The closure asks for default_leader to come from a modules/data variable defaulting to us-east4 and validated against nam3's read-write regions; the leader is a literal in local.spanner_placements. (3) ADR 0393 does not record either departure. Earlier: ",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/spanner_placement.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The ledger holds simulated paper balances and no customer data, so no foreign residency rule binds it today. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The ledger's Spanner instance is nam3 with its leader at the us-east4 write origin, and its data stays in the United States until a residency review says otherwise."
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The ledger holds simulated paper balances and no customer data, so no foreign residency rule binds it today. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The ledger's Spanner instance is nam3 with its leader at the us-east4 write origin, and its data stays in the United States until a residency review says otherwise. 2026-11-12 fw-d-01: closed by ADR 0393. Mutations in modules/data/main.tf, each restored by cp+cmp: default_leader us-east4 -> us-east1 fails the admitting run at the DDL assertion; config -> \"nam-eur-asea\" fails it at the nam3 assertion; precondition condition -> var.enable_spanner || ... fails the refusing run ('Missing expected failure'). For the acceptance test: map config -> regional-us-east4 fails 'is a single region'; instance config -> literal \"nam3\" fails 'is not the placement ADR 0393 decides'. terraform test in modules/data: 31 passed. No credentialed plan was run; Spanner is off in every environment, so none would show the instance."
   },
   {
     "id": "R12-LEDGER-8137",
@@ -3185,7 +3188,7 @@
       "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_decision_path_reads_a_balance_from_a_derived_copy (9fb4ebe3)",
       "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_production_source_outside_the_warehouse_module_and_its_one_insert_only_sink_queries_a_derived_copy_calls_the_bigquery_rest_host_or_reads_a_spanner_change_stream"
     ],
-    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.\n2026-11-06 (lane L1-MONEY, 57c3163d + follow-up): the guard scans qip-mesh too (only the client module and the one batch-load sink may name the warehouse), refuses the BigQuery REST API in both its URL and its relative /bigquery/v2/ path form outside the client, and refuses change-stream readers and FROM READ_/CHANGE STREAM SQL; each detector is checked against seeded fixtures. One skeptic REFUTED promotion on bar 3. Remaining: a type alias or grouped import (use qip_mesh::{bigquery::X}) passes the name scan; the GCS staging objects under warehouse-staging/ can be read back by any BlobStore holder unguarded; no Pub/Sub or Dataflow feed detector; the Memorystore cache (qip-storage redis.rs) as a derived copy is not covered; qip-api's qip-capital Book is a second balance source the guard's doc does not name.",
+    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.\n2026-11-06 (lane L1-MONEY, 57c3163d + follow-up): the guard scans qip-mesh too (only the client module and the one batch-load sink may name the warehouse), refuses the BigQuery REST API in both its URL and its relative /bigquery/v2/ path form outside the client, and refuses change-stream readers and FROM READ_/CHANGE STREAM SQL; each detector is checked against seeded fixtures. One skeptic REFUTED promotion on bar 3. Remaining: a type alias or grouped import (use qip_mesh::{bigquery::X}) passes the name scan; the GCS staging objects under warehouse-staging/ can be read back by any BlobStore holder unguarded; no Pub/Sub or Dataflow feed detector; the Memorystore cache (qip-storage redis.rs) as a derived copy is not covered; qip-api's qip-capital Book is a second balance source the guard's doc does not name.\n2026-11-12 (session fw-d-01): not closed in a fast-win slot. Each of the five remaining items is its own detector, with seeded fixtures and a mutation per detector. Two of them also need a decision first: whether the Memorystore cache, and qip-api's qip-capital Book, count as derived copies or as named sources.",
     "implemented": false,
     "tested": false,
     "integrated": false,

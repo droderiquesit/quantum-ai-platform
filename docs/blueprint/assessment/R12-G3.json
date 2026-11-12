@@ -3128,7 +3128,7 @@
     "evidence": [
       "infrastructure/terraform/main.tf:106-119 local.labels"
     ],
-    "gap": "Add plane/region/owner/workload and a scan test.",
+    "gap": "Add plane/region/owner/workload and a scan test. owner and region are now in local.labels (main.tf), so plane and workload remain. 2026-11-12: larger than a fast-win slot, since it needs a plane vocabulary chosen between resource-hierarchy's tokens and catalogue.tf's, merge(local.labels, {plane, workload}) at 28 module calls, a labels variable on the modules that lack one, the gitops manifests and the foundation projects, and build-pool.tf's call as a protected patch.",
     "implemented": true,
     "tested": false,
     "integrated": true,

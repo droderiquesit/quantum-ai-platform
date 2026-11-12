@@ -1,6 +1,6 @@
 # Terraform test: the ledger's Spanner instance is planned on Enterprise Plus
 #
-# R12-LEDGER-8132. The `nam-eur-asea` multi-region configuration carries the
+# R12-LEDGER-8132. The `nam3` multi-region configuration (ADR 0393) carries the
 # external-consistency guarantee the ledger of record is placed on Spanner
 # for (ADR 0113) only on Enterprise Plus; an instance with no edition plans
 # the project's default and reads in review as the same resource while
@@ -13,13 +13,13 @@ mock_provider "google" {}
 variables {
   project_id           = "test-project"
   environment          = "test"
-  region               = "us-central1"
+  region               = "us-east4"
   enable_cloud_storage = false
   enable_bigquery      = false
   enable_bigtable      = false
   enable_alloydb       = false
   enable_memorystore   = false
-  key_ring_id          = "/projects/test-project/locations/us-central1/keyRings/test"
+  key_ring_id          = "/projects/test-project/locations/us-east4/keyRings/test"
   network_id           = "projects/test-project/global/networks/default"
   labels               = {}
 }
