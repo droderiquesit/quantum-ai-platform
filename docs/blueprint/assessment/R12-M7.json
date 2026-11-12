@@ -2047,16 +2047,15 @@
   },
   {
     "id": "R12-CONTRACT-7088",
-    "status": "PARTIAL",
-    "current": "qip_contracts KnowledgeDelta (strict decode, one-version step, no fast-forward over a known conflict) has a production producer: Platform::absorb_evidence (runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for), called every cycle by qip-fastbrain (node.rs:162), journals one validated delta per admitted claim on Topic::WorldModelUpdated as KnowledgeDeltaRecord, naming the claim and its document as provenance and the contested claim as a conflict under ReviewRequired. qip-evidence's own KnowledgeDelta remains the per-batch summary a poll reports, and is a different thing.",
+    "status": "COMPLETE",
+    "current": "qip_contracts::knowledge_delta::KnowledgeDeltaFields (Validated<_>, deny_unknown_fields, schema_version 1) carries every field the requirement names: target (ontology / world_model / memory) with base_version and new_version (exactly one step), changes (Assert/Retract, each stated in full), provenance (at least one id), confidence_bp, conflicts, originating_brain, originating_region and merge_policy (FastForwardOnly / ReviewRequired / PreferHigherConfidence), plus delta_id and created_at. Construction and decode both refuse a missing, unknown or foreign-version field, a missing field inside either change shape, and each broken invariant (version gap/rewind/overflow, no change, blank key, no provenance, confidence above one, blank origin, fast-forward over a known conflict); a round trip preserves the value and the bytes. In production Platform::absorb_evidence (qip-kernel/src/evidence_intake.rs knowledge_delta_for), reached through admit_world_records from qip-fastbrain node.rs, qip-deepbrain connectors.rs and qip-api routes.rs, journals one validated delta per admitted claim as KnowledgeDeltaRecord.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/knowledge_delta.rs:73 type",
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for and KnowledgeDeltaRecord",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:162 platform.absorb_evidence",
-      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:856 a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field"
+      "backend/crates/libs/qip-contracts/src/knowledge_delta.rs KnowledgeDeltaFields and Contract::check",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs::a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field (top-level loop and, since 2026-11-12, refuses_missing_and_unknown_nested on /changes/0/assert and /changes/1/retract)",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs::a_knowledge_delta_refuses_each_broken_invariant",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for and KnowledgeDeltaRecord; backend/crates/runtime/qip-kernel/tests/evidence_intake.rs"
     ],
-    "gap": "The delta is produced and journalled by the fast brain and decoded only by a test: no receiving brain (deep brain or another region) reads Topic::WorldModelUpdated knowledge-delta records and applies them under the merge policy. The grader's closure (convert qip-evidence's batch KnowledgeDelta) is the wrong seam: that type is a batch summary with no versions or merge policy.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2064,10 +2063,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts --test section27_contracts knowledge_delta (2 passed); cargo test -p qip-contracts --no-fail-fast (422 passed, 0 failed); cargo test -p qip-kernel --test evidence_intake (14 passed). Mutation-verified 2026-11-12: #[serde(default)] on KnowledgeDeltaFields::conflicts fails the round-trip test with 'KnowledgeDelta without `conflicts` was admitted'; #[serde(default)] on ChangeOp::Assert's value fails it with 'without `/changes/0/assert/value` was refused for another reason, so the field is defaulted' (unguarded before this lane's nested assertion); `if false && ...` on the FastForwardOnly-over-conflict check fails a_knowledge_delta_refuses_each_broken_invariant with '`fast-forward over a conflict` was admitted by new'. Each restored byte-for-byte and both tests passed.",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: register text corrected - the earlier gap ('no production seam constructs it') was stale since evidence_intake landed. Kept PARTIAL for the missing receiver."
+    "notes": "2026-10-18 lane L23: register text corrected - the earlier gap ('no production seam constructs it') was stale since evidence_intake landed. Kept PARTIAL for the missing receiver. 2026-11-12 lane fw-m-01: graded COMPLETE. Decision on the receiver: this is a contract row whose text is that the typed contract exists carrying the named fields and whose bar is a unit test of construction, decode and round trip; it does not name applying a delta. Applying deltas from another brain or region is owned by R12-WORLD-9016 (now-state-coordinator consumes knowledge deltas), R12-EXPAND-6039 (federated intelligence shares KnowledgeDelta) and R12-COVERAGE-7173 (regional experience merged into global learning), and stays open there: no brain yet reads Topic::WorldModelUpdated knowledge-delta records and applies them under merge_policy. Grading this row PARTIAL for that would count the same missing receiver against four rows."
   },
   {
     "id": "R12-CONTRACT-7089",
