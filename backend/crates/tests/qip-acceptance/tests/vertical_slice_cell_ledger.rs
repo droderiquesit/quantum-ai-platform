@@ -615,6 +615,7 @@ fn filled(simulated: bool, shares: Vec<(String, String)>, side: Option<BookSide>
         side,
         quote_unit: Some("GBP".to_string()),
         fee: None,
+        decision_sequence: None,
     }
 }
 

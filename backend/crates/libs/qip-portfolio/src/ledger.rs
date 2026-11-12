@@ -33,7 +33,8 @@
 //! [`FeeReport::Unreported`]; it is never estimated, and never zero.
 
 use qip_contracts::ledger::{
-    Account, Direction, FeeReport, LedgerEvent, Posting, Settlement, SettlementState, SourceEvent,
+    Account, Attribution, Direction, FeeReport, LedgerEvent, Posting, Settlement, SettlementState,
+    SourceEvent,
 };
 use qip_contracts::message::BookSide;
 use qip_contracts::reflex::{Decision, OutcomeRecord};
@@ -60,6 +61,10 @@ pub struct PaperFill {
     /// Keyed by strategy so the postings come out in one order on every
     /// run, whatever order the cell listed the shares in.
     shares: BTreeMap<String, Decimal>,
+    /// The cell's `OrderSent` entry this fill rests on, when the cell stated
+    /// it (ADR 0454). Present, the fill books at schema 2 under the cell that
+    /// sent it with its full attribution chain; absent, at schema 1.
+    decision_sequence: Option<u64>,
 }
 
 /// Parse a journal decimal exactly, or refuse.
@@ -154,6 +159,7 @@ impl TryFrom<&OutcomeRecord> for PaperFill {
             side,
             quote_unit,
             fee,
+            decision_sequence,
         } = &outcome.entry.decision
         else {
             return Err(Error::invalid(format!(
@@ -271,6 +277,7 @@ impl TryFrom<&OutcomeRecord> for PaperFill {
             price,
             fee,
             shares: split,
+            decision_sequence: *decision_sequence,
         })
     }
 }
@@ -303,6 +310,11 @@ impl PaperFill {
 
     pub fn shares(&self) -> &BTreeMap<String, Decimal> {
         &self.shares
+    }
+
+    /// The cell's `OrderSent` entry this fill rests on, when stated.
+    pub fn decision_sequence(&self) -> Option<u64> {
+        self.decision_sequence
     }
 }
 
@@ -400,13 +412,29 @@ fn post_at(fill: &PaperFill, cash_leg: CashLeg) -> Result<LedgerEvent> {
         CashLeg::Immediate => SettlementState::Immediate,
         CashLeg::InSettlement => SettlementState::InSettlement,
     };
-    LedgerEvent::staged(
+    let event = LedgerEvent::staged(
         fill.source.clone(),
         Settlement::Simulated,
         fill.fee,
         postings,
         state,
-    )
+    )?;
+    // ADR 0454: a fill whose cell stated the decision it rests on books at
+    // schema 2, owned by that cell, with the chain from the fill through the
+    // order and the decision to each contributor's share. One the producer
+    // stated no decision for stays schema 1: the ledger does not rebuild a
+    // chain nobody stated.
+    match fill.decision_sequence {
+        Some(decision_sequence) => event.attributed(
+            fill.source.cell.clone(),
+            Attribution {
+                order_id: fill.source.order_id.clone(),
+                decision_sequence,
+                contributors: fill.shares.clone(),
+            },
+        ),
+        None => Ok(event),
+    }
 }
 
 /// A venue's report that one order's fills settled, which the ledger may
@@ -621,6 +649,7 @@ mod tests {
                 side: Some(BookSide::Ask),
                 quote_unit: Some("USD".to_string()),
                 fee: None,
+                decision_sequence: None,
             },
             digest: "test-digest".to_string(),
             version: ChainVersion::V2,
@@ -716,6 +745,7 @@ mod tests {
                 side: None,
                 quote_unit: Some("USD".to_string()),
                 fee: None,
+                decision_sequence: None,
             },
             digest: "d".to_string(),
             version: ChainVersion::V2,

@@ -93,6 +93,24 @@ fn registry_with(teacher: &TrainedTeacher) -> Result<ModelRegistry> {
         registration.passed,
         "premise: the fit cleared the skill bar"
     );
+    // ADR 0436 (R12-MODEL-4022): a training-pipeline candidate is promoted
+    // only out of a completed simulation or paper trial, dated before every
+    // promotion these tests make, so a refusal further on is not about it.
+    if registry
+        .get(&registration.reference)
+        .is_some_and(|card| card.trial.is_none())
+    {
+        for round in 1..=i64::from(qip_ai::registry::MIN_TRIAL_ROUNDS) {
+            registry.record_trial_round(
+                &registration.reference,
+                qip_ai::registry::TrialVenue::Paper,
+                "staged by the test",
+                start().saturating_sub(qip_core::Duration::from_secs(
+                    i64::from(qip_ai::registry::MIN_TRIAL_ROUNDS) + 1 - round,
+                )),
+            )?;
+        }
+    }
     Ok(registry)
 }
 
