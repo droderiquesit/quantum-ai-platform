@@ -221,6 +221,26 @@ fn a_strategy_pack_round_trips_and_refuses_a_missing_unknown_or_foreign_field() 
     Ok(())
 }
 
+/// Besides `schema_version`, the pack's top-level keys are only `pack_id`,
+/// two instants and `strategies`; every field the requirement names —
+/// hypotheses, universes, dependencies, capacity, envelope, retirement rules
+/// — lives one or two records down, where the top-level check never looked.
+/// Mutation-tested on 2026-11-12: `#[serde(default)]` on the envelope's
+/// `min_net_edge_bp` was admitted outright, a producer that stopped stating
+/// the edge floor shipping a floor of zero; on `hypotheses` it was refused
+/// only because an empty list breaks an invariant.
+#[test]
+fn a_compiled_strategy_and_its_envelope_and_retirement_rules_each_refuse_a_missing_or_unknown_field()
+ {
+    for pointer in [
+        "/strategies/0",
+        "/strategies/0/envelope",
+        "/strategies/0/retirement_rules/0/envelope_breached",
+    ] {
+        refuses_missing_and_unknown_nested(strategy_pack(), pointer);
+    }
+}
+
 #[test]
 fn a_strategy_pack_refuses_each_broken_invariant() {
     each_refused(

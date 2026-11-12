@@ -129,8 +129,8 @@ pub use context::{
 pub use data::{DataCostModel, DataReads, DataSource};
 pub use engine::CostEngine;
 pub use ledger::{
-    Attribution, ComputeLedger, CostDimension, CostEntry, NO_MODEL, TierCharge, UNATTRIBUTED,
-    report_by,
+    Attribution, ComputeLedger, CostDimension, CostEntry, CostReport, NO_MODEL, TierCharge,
+    UNATTRIBUTED, report_by,
 };
 pub use reputation::{ContextualReputation, Judgement, Rated, Record, ReputationBook};
 pub use router::{
