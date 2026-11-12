@@ -317,6 +317,29 @@ fn in_memory(universe: Universe, config: PlatformConfig) -> Result<Platform> {
     )
 }
 
+/// Buy ten units of `symbol` through the desk control path, so the book
+/// holds it; the premise is asserted rather than assumed.
+fn hold(platform: &mut Platform, symbol: &str) -> Result<()> {
+    let order = platform.order_for(
+        object(symbol),
+        qip_execution_engine::order::Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-hedge-leg",
+        vec!["hyp-hedge-leg".to_string()],
+        start(),
+    )?;
+    platform.submit_order(order, start())?;
+    assert!(
+        platform
+            .positions_at_cost()
+            .get(object(symbol).as_str())
+            .is_some_and(|(quantity, _)| !quantity.is_zero()),
+        "premise: obj-{symbol} is held"
+    );
+    Ok(())
+}
+
 fn present<T: Clone>(declared: &Declared<T>, what: &str) -> T {
     match declared {
         Declared::Present(value) => value.clone(),
@@ -357,14 +380,15 @@ fn none_reason<T: std::fmt::Debug>(declared: &Declared<T>, what: &str) -> String
 #[test]
 fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none() -> Result<()> {
     let policies = vec![
-        // Hedged with the held name itself: since 2026-11-12 a covering
-        // policy is a hedge only where its hedge instrument is held, and one
-        // cycle of this fixture opens one position.
+        // Hedged with a distinct instrument the book holds: obj-HEDGE, an
+        // information-technology name bought after the cycle opens obj-AAA.
+        // Until 2026-11-12 this policy hedged with obj-AAA itself, and the
+        // test read a position offsetting itself as hedged.
         HedgePolicyDeclaration::new(
             "tech-beta",
             HedgeAxis::Sector,
             Sector::InformationTechnology.as_str(),
-            object("AAA"),
+            object("HEDGE"),
             dec!("1"),
         ),
         HedgePolicyDeclaration::new(
@@ -377,7 +401,9 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
     ];
 
     // --- the listed name -------------------------------------------------
-    let mut listed_book = in_memory(universe()?, config().with_hedge_policies(policies))?;
+    let mut hedged_universe = universe()?;
+    hedged_universe.insert(listed("HEDGE")?)?;
+    let mut listed_book = in_memory(hedged_universe, config().with_hedge_policies(policies))?;
     listed_book.observe(tape("AAA"));
     let report = listed_book.run_cycle(start());
     assert!(report.traversed_every_stage(), "{}", report.summarise());
@@ -385,6 +411,7 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
         listed_book.positions_at_cost().contains_key("obj-AAA"),
         "premise: the cycle opened a position in obj-AAA"
     );
+    hold(&mut listed_book, "HEDGE")?;
     let ex_date = start().saturating_add(Duration::from_days(30));
     listed_book.observe(vec![SensedRecord::CorporateAction(Box::new(
         CorporateAction {
@@ -404,12 +431,24 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
         .get("obj-AAA")
         .expect("the held position states its obligations");
     let hedges = present(aaa.hedges(), "obj-AAA's hedge relationship");
-    assert_eq!(hedges.len(), 2, "{hedges:?}");
+    assert_eq!(hedges.len(), 1, "{hedges:?}");
     assert!(
-        hedges
-            .iter()
-            .any(|hedge| hedge.starts_with("tech-beta (hedged with obj-AAA on sector ")),
+        hedges[0].starts_with("tech-beta (hedged with obj-HEDGE on sector "),
         "{hedges:?}"
+    );
+    // The hedge leg itself: it hedges the bucket obj-AAA is held in, and
+    // nothing else. Not hedged by tech-beta although tech-beta covers it — a
+    // position is not its own hedge — and not the hedge for energy, where
+    // nothing is held.
+    let hedge_leg = obligations
+        .get("obj-HEDGE")
+        .expect("the held hedge leg states its obligations");
+    assert_eq!(
+        present(hedge_leg.hedges(), "obj-HEDGE's hedge relationship"),
+        vec![format!(
+            "tech-beta (this position is the hedge for sector {})",
+            Sector::InformationTechnology.as_str()
+        )],
     );
     let actions = present(
         aaa.corporate_actions(),
@@ -1088,6 +1127,56 @@ fn a_declared_hedge_whose_instrument_is_not_held_is_not_a_hedge_and_the_record_i
         logged.hedges(),
         aaa.hedges(),
         "the log states the same hedge relationship the platform serves"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-4068: a position named as its own hedge, with nothing else
+/// held in the bucket it hedges, states no hedge and says why.
+///
+/// tech-beta hedges the information-technology sector with obj-AAA, and
+/// obj-AAA is the only position. It is covered by the policy and it is the
+/// policy's hedge instrument, so both arms used to read as a hedge: "hedged
+/// with obj-AAA" — a long offsetting itself — and "the hedge for
+/// information technology" — over a bucket in which nothing else is held.
+/// Neither offsets anything.
+///
+/// Mutations: in `hedge_review::policies_relating_to`, push a self-covering
+/// policy to `held` instead of `own` — obj-AAA reads as hedged by itself;
+/// set `exposed = true` without looking at the book — obj-AAA reads as the
+/// hedge for a bucket nothing else is held in. Either fails `none_reason`.
+#[test]
+fn a_position_named_as_its_own_hedge_over_a_bucket_holding_nothing_else_states_no_hedge()
+-> Result<()> {
+    let policies = vec![HedgePolicyDeclaration::new(
+        "tech-beta",
+        HedgeAxis::Sector,
+        Sector::InformationTechnology.as_str(),
+        object("AAA"),
+        dec!("1"),
+    )];
+    let mut book = in_memory(universe()?, config().with_hedge_policies(policies))?;
+    book.observe(tape("AAA"));
+    let report = book.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let held = book.positions_at_cost();
+    assert_eq!(
+        held.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["obj-AAA"],
+        "premise: obj-AAA is the only position"
+    );
+    let obligations = book.position_obligations()?;
+    let aaa = obligations
+        .get("obj-AAA")
+        .expect("the held position states its obligations");
+    let reason = none_reason(aaa.hedges(), "obj-AAA's hedge relationship");
+    assert!(
+        reason.contains("with this position as its own hedge, which offsets nothing: tech-beta (hedged with obj-AAA on sector "),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("no other held position lies in the bucket it hedges: tech-beta (this position is the hedge for sector "),
+        "{reason}"
     );
     Ok(())
 }

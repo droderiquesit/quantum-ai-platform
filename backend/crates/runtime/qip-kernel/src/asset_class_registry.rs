@@ -1008,6 +1008,33 @@ impl AssetClassRegistry {
         Ok(self)
     }
 
+    /// This registry with `class`'s record withdrawn *and* every sibling's
+    /// offset into `class` dropped from its hedge map (R12-COVERAGE-5100).
+    ///
+    /// [`Self::without`] refuses to withdraw a class a sibling hedges with,
+    /// which is right for the question it answers — "may this one record go
+    /// on its own" — and makes it useless for the other question: does the
+    /// record of `FixedIncome`, `Credit` or `Rates` itself admit that class's
+    /// instruments? Those three hedge into one another, so `without` refused
+    /// all three, and the test that asked accepted the hedge-map refusal as
+    /// the answer. A refusal reached through a sibling's hedge map proves
+    /// nothing about the class's own record. This withdraws the record and
+    /// every offset that named it, so what is left is a table `shipped` could
+    /// have produced — narrower in every column, no hedge into an unheld
+    /// class — and an instrument of `class` meets the refusal that names its
+    /// own class.
+    ///
+    /// Narrowing only, like `without`: fewer records and fewer offsets,
+    /// never a new one.
+    pub fn withdrawing(mut self, class: AssetClass) -> Result<Self> {
+        self.records.remove(&class);
+        for record in self.records.values_mut() {
+            record.hedge_classes.remove(&class);
+        }
+        self.check_hedge_map()?;
+        Ok(self)
+    }
+
     /// Admit one instrument, or refuse naming its class.
     ///
     /// §17.7's "an unregistered class cannot be traded", as the one sentence

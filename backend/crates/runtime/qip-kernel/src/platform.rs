@@ -19833,26 +19833,46 @@ impl Platform {
         use qip_financial::position_record::Declared;
         let market = self.market.read();
         let mut obligations = BTreeMap::new();
+        let held: std::collections::BTreeSet<String> = self
+            .capital
+            .positions
+            .iter()
+            .filter(|(_, lot)| !lot.quantity.is_zero())
+            .map(|(object, _)| object.clone())
+            .collect();
         for object in self.capital.positions.keys() {
             let relations = crate::hedge_review::policies_relating_to(
                 &self.config.hedge_policies,
                 object,
                 &market.universe,
-                |hedge| {
-                    self.capital
-                        .positions
-                        .get(hedge.as_str())
-                        .is_some_and(|lot| !lot.quantity.is_zero())
-                },
+                &held,
             )?;
+            let mut unhedged = Vec::new();
+            if !relations.unheld.is_empty() {
+                unhedged.push(format!(
+                    "declared over this position, but its hedge instrument is not held: {}",
+                    relations.unheld.join("; ")
+                ));
+            }
+            if !relations.own.is_empty() {
+                unhedged.push(format!(
+                    "declared over this position with this position as its own hedge, which \
+                     offsets nothing: {}",
+                    relations.own.join("; ")
+                ));
+            }
+            if !relations.idle.is_empty() {
+                unhedged.push(format!(
+                    "this position is a declared hedge, but no other held position lies in \
+                     the bucket it hedges: {}",
+                    relations.idle.join("; ")
+                ));
+            }
             let hedges = if !relations.held.is_empty() {
                 Declared::Present(relations.held)
-            } else if !relations.unheld.is_empty() {
+            } else if !unhedged.is_empty() {
                 Declared::NoneApplicable {
-                    reason: format!(
-                        "declared over this position, but its hedge instrument is not held: {}",
-                        relations.unheld.join("; ")
-                    ),
+                    reason: unhedged.join("; and "),
                 }
             } else if self.config.hedge_policies.is_empty() {
                 Declared::NoneApplicable {
