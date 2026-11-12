@@ -21,6 +21,7 @@ pub mod catalogue;
 pub mod category;
 pub mod commerce;
 pub mod commerce_resale;
+pub mod company;
 pub mod constraints;
 pub mod costs;
 pub mod credit;

@@ -3051,6 +3051,58 @@ fn members_as_of(platform: &Platform, at: Timestamp) -> Vec<String> {
         .collect()
 }
 
+/// R12-REASON-3013, ADR 0458: a corporate action the tape announces reaches
+/// the slot the Company/Fundamental Brain reads at the next REASON, and a
+/// platform no corporate-action feed has reached says so rather than
+/// reporting an empty calendar.
+///
+/// Mutations: stop `stage_reason` calling `brief_the_desk_on_company` — the
+/// slot stays unobserved after the cycle; drop the `corporate_actions_seen`
+/// write in `queue_corporate_action` — the action is held but the slot reads
+/// as having no source.
+#[test]
+fn an_announced_corporate_action_reaches_the_company_fundamental_brains_slot() -> Result<()> {
+    let mut platform = platform()?;
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    {
+        let view = platform.desk_company_view();
+        assert!(
+            !view.corporate_actions_observed,
+            "no feed has delivered a corporate action, so the slot has no source"
+        );
+        assert!(view.corporate_actions.is_empty());
+    }
+    let absorbed = platform.observe(vec![SensedRecord::CorporateAction(Box::new(
+        CorporateAction {
+            object_id: object("AAA"),
+            ex_date: start().saturating_add(Duration::from_days(30)),
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::CashDividend {
+                amount: dec!("0.5"),
+            },
+            announced_at: start(),
+        },
+    ))]);
+    assert_eq!(absorbed, 1, "premise: the action was absorbed");
+    let report = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let view = platform.desk_company_view();
+    assert!(
+        view.corporate_actions_observed,
+        "REASON did not brief the desk on the company"
+    );
+    assert_eq!(
+        view.corporate_actions.len(),
+        1,
+        "{:?}",
+        view.corporate_actions
+    );
+    assert_eq!(view.corporate_actions[0].object_id, object("AAA"));
+    Ok(())
+}
+
 /// R12-TICK-2090: the platform keeps the universe that existed. A delisting
 /// announced on the tape ends the name's membership at its ex-date and not
 /// before, so a backtest as of a date before the ex-date still holds it; a

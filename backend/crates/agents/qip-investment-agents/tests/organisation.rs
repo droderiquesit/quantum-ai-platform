@@ -90,9 +90,10 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    // Twenty-six: L2b's four probes, the Portfolio/Asset Brain (R12-ASSET-3019)
-    // and the Crypto/On-chain Brain (R12-ASSET-3017).
-    assert_eq!(roster.len(), 26, "the organisation is twenty-six agents");
+    // Twenty-seven: L2b's four probes, the Portfolio/Asset Brain
+    // (R12-ASSET-3019), the Crypto/On-chain Brain (R12-ASSET-3017) and the
+    // Company/Fundamental Brain (R12-REASON-3013).
+    assert_eq!(roster.len(), 27, "the organisation is twenty-seven agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -655,8 +656,8 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    // Twenty-five since the Crypto/On-chain Brain joined (R12-ASSET-3017).
-    assert_eq!(org.len(), 25);
+    // Twenty-six since the Company/Fundamental Brain joined (R12-REASON-3013).
+    assert_eq!(org.len(), 26);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -2707,6 +2708,320 @@ fn the_crypto_onchain_brain_reports_an_unobserved_chain_as_no_data() -> Result<(
     );
     assert!(fact_value(finding, "chain_reorg_depth").is_none());
     assert!(!report.covered_scopes().contains(&Scope::CryptoOnChain));
+    Ok(())
+}
+
+// --- the Company/Fundamental Brain (R12-REASON-3013) ----------------------
+
+const ACME_ISSUER: &str = "ent-acme";
+
+fn days(n: i64) -> Duration {
+    Duration::from_days(n)
+}
+
+/// What the company slot and the world model hold about ACME's issuer.
+#[derive(Default)]
+struct CompanyFixture {
+    /// `(reported, consensus, period_end)` for ACME's revenue, absorbed
+    /// through the world model's own fundamental absorber.
+    revenue: Option<(&'static str, &'static str, Timestamp)>,
+    company: qip_investment_agents::desk::CompanyView,
+}
+
+/// ACME's issuer as the kernel links it: an `Issues` edge in the knowledge
+/// graph, the revenue absorbed by `WorldModel::absorb_fundamental` after the
+/// kernel's definition of the metric and its surprise, and `company` behind
+/// the company-reference gate.
+fn desk_with_company(fixture: CompanyFixture) -> Arc<Desk> {
+    use qip_world_model::relationship::{Relationship, RelationshipKind};
+    let mut world = WorldModel::new();
+    world.graph_mut().assert_fact(
+        qip_world_model::graph::Fact::new(
+            Relationship::new(
+                ACME_ISSUER,
+                object("ACME").as_str(),
+                RelationshipKind::Issues,
+                1.0,
+                "reference",
+            ),
+            now().saturating_sub(days(400)),
+            now().saturating_sub(days(400)),
+            1.0,
+        )
+        .unwrap(),
+    );
+    if let Some((reported, consensus, period_end)) = fixture.revenue {
+        for name in ["revenue", "revenue_surprise"] {
+            world.features_mut().define(
+                Feature::new(name, "reported fundamental", "fundamentals-vendor")
+                    .with_lag(days(30))
+                    .with_staleness(days(200)),
+            );
+        }
+        world.absorb_fundamental(&qip_financial::intelligence::FundamentalUpdate {
+            entity_id: ACME_ISSUER.to_string(),
+            metric: "revenue".to_string(),
+            value: Decimal::parse(reported).unwrap(),
+            unit: "USD".to_string(),
+            period_end,
+            period: qip_financial::intelligence::FiscalPeriod::Quarter,
+            consensus: Some(Decimal::parse(consensus).unwrap()),
+            prior_value: None,
+            is_restatement: false,
+            provenance: Provenance::synthetic("fundamentals-vendor", now().saturating_sub(days(5))),
+            quality: qip_financial::quality::DataQuality::default(),
+            evidence_unretrievable: false,
+        });
+    }
+    let mut desk = Desk::empty(now()).with_company(fixture.company);
+    desk.world = qip_agents::runtime::Gated::new(world, Capability::ReadWorldModel, "world-model");
+    Arc::new(desk)
+}
+
+fn guidance(
+    low: &str,
+    high: &str,
+    period_end: Timestamp,
+) -> qip_financial::company::ManagementGuidance {
+    qip_financial::company::ManagementGuidance::new(
+        ACME_ISSUER,
+        "revenue",
+        Decimal::parse(low).unwrap(),
+        Decimal::parse(high).unwrap(),
+        period_end,
+        now().saturating_sub(days(120)),
+        "investor-relations",
+    )
+    .unwrap()
+}
+
+/// Every source populated: revenue 121 against a consensus of 110 and
+/// management's 100-120 range, a dividend going ex in ten days, and a
+/// balance sheet of 100 debt, 20 cash, 40 EBITDA with 30 due in 100 days and
+/// 50 in 800.
+fn fully_reported_company() -> CompanyFixture {
+    let quarter_end = now().saturating_sub(days(40));
+    CompanyFixture {
+        revenue: Some(("121", "110", quarter_end)),
+        company: qip_investment_agents::desk::CompanyView {
+            corporate_actions_observed: true,
+            corporate_actions: vec![qip_market::corporate_action::CorporateAction {
+                object_id: object("ACME"),
+                ex_date: now().saturating_add(days(10)),
+                record_date: None,
+                payment_date: None,
+                kind: qip_market::corporate_action::CorporateActionKind::CashDividend {
+                    amount: dec!("0.5"),
+                },
+                announced_at: now().saturating_sub(days(2)),
+            }],
+            guidance: vec![guidance("100", "120", quarter_end)],
+            capital_structures: vec![
+                qip_financial::company::CapitalStructure::new(
+                    ACME_ISSUER,
+                    quarter_end,
+                    now().saturating_sub(days(5)),
+                    dec!("100"),
+                    dec!("20"),
+                    Some(dec!("40")),
+                    vec![
+                        qip_financial::company::DebtMaturity {
+                            due: now().saturating_add(days(100)),
+                            amount: dec!("30"),
+                        },
+                        qip_financial::company::DebtMaturity {
+                            due: now().saturating_add(days(800)),
+                            amount: dec!("50"),
+                        },
+                    ],
+                    "annual-filing",
+                )
+                .unwrap(),
+            ],
+        },
+    }
+}
+
+const COMPANY_SCOPES: [Scope; 5] = [
+    Scope::FinancialStatements,
+    Scope::Earnings,
+    Scope::CorporateEvents,
+    Scope::ManagementGuidance,
+    Scope::CapitalStructure,
+];
+
+fn company_finding(desk: Arc<Desk>) -> Result<qip_agents::finding::AgentFinding> {
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    Ok(report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::COMPANY_FUNDAMENTAL)
+        .expect("premise: the Company/Fundamental Brain answered the brief")
+        .clone())
+}
+
+/// R12-REASON-3013. The Company/Fundamental Brain is constructed in the
+/// production organisation (`Organisation::standard`), emits a finding for
+/// each of its five sub-scopes, and nobody else does: without it the
+/// organisation covers none of them. Each figure is checked against the
+/// fixture, not merely for presence.
+///
+/// Mutations: drop the analyst from `standard_agents` — the premise finding
+/// is missing; compute the guidance gap from the low instead of the
+/// midpoint — `guidance_gap` is 0.21, not 0.1; drop the capital-structure
+/// arm — the scope is not covered.
+#[test]
+fn removing_the_company_fundamental_brain_drops_its_five_scopes_from_coverage() -> Result<()> {
+    let desk = desk_with_company(fully_reported_company());
+    let finding = company_finding(desk.clone())?;
+    let close = |label: &str, want: f64| {
+        let got = fact_value(&finding, label).unwrap_or(f64::NAN);
+        assert!((got - want).abs() < 1e-9, "{label}: {got} != {want}");
+    };
+    close("statement_metrics_reported", 1.0);
+    close("revenue", 121.0);
+    close("earnings_surprise", 0.1);
+    close("corporate_actions_pending", 1.0);
+    close("next_ex_date_days", 10.0);
+    close("guidance_midpoint", 110.0);
+    close("guidance_gap", 0.1);
+    close("net_debt", 80.0);
+    close("net_leverage", 2.0);
+    close("debt_due_within_year", 0.3);
+    assert!(
+        finding.missing_inputs.is_empty(),
+        "{:?}",
+        finding.missing_inputs
+    );
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::COMPANY_FUNDAMENTAL)?;
+    for scope in COMPANY_SCOPES {
+        assert!(
+            with.contains(&scope),
+            "{scope:?} not covered with: {with:?}"
+        );
+        assert!(
+            !without.contains(&scope),
+            "{scope:?} covered without: {without:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A figure the brain read off the store is stamped observed with the
+/// store's record, not as the brain's own computation; guidance carries its
+/// issuer's record.
+///
+/// Mutation: stamp the earnings surprise with `computed` — the provenance is
+/// no longer observed and this fails.
+#[test]
+fn the_company_fundamental_brain_stamps_what_it_read_as_observed() -> Result<()> {
+    let finding = company_finding(desk_with_company(fully_reported_company()))?;
+    let provenance = |label: &str| {
+        finding
+            .facts
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.provenance.clone())
+            .expect("premise: the fact was reported")
+    };
+    match provenance("earnings_surprise") {
+        NumericProvenance::Observed { record_id, .. } => {
+            assert!(
+                record_id.starts_with("feature:revenue_surprise@ent-acme:"),
+                "{record_id}"
+            );
+        }
+        other => panic!("earnings surprise stamped {other:?}"),
+    }
+    match provenance("guidance_midpoint") {
+        NumericProvenance::Observed { source, .. } => assert_eq!(source, "investor-relations"),
+        other => panic!("guidance midpoint stamped {other:?}"),
+    }
+    Ok(())
+}
+
+/// What every deployed binary holds today: fundamentals the kernel absorbs,
+/// and no corporate-action feed, guidance or balance sheet. The brain covers
+/// statements and earnings and names the other three missing — never zero
+/// actions, never guidance met.
+///
+/// Mutation: report `corporate_actions_pending` without checking
+/// `corporate_actions_observed` — corporate events is covered by a zero
+/// nobody measured and this fails.
+#[test]
+fn the_company_fundamental_brain_names_a_source_it_lacks_missing_rather_than_zero() -> Result<()> {
+    let desk = desk_with_company(CompanyFixture {
+        revenue: Some(("121", "110", now().saturating_sub(days(40)))),
+        company: Default::default(),
+    });
+    let finding = company_finding(desk.clone())?;
+    assert!(fact_value(&finding, "corporate_actions_pending").is_none());
+    assert!(fact_value(&finding, "guidance_gap").is_none());
+    assert!(fact_value(&finding, "net_debt").is_none());
+    for prefix in [
+        "corporate events",
+        "management guidance",
+        "capital structure",
+    ] {
+        assert!(
+            finding.missing_inputs.iter().any(|m| m.starts_with(prefix)),
+            "{prefix} not named missing: {:?}",
+            finding.missing_inputs
+        );
+    }
+    let mut org = organisation(desk)?;
+    let covered = org.dispatch(&brief(), now(), &lineage()).covered_scopes();
+    assert!(covered.contains(&Scope::FinancialStatements));
+    assert!(covered.contains(&Scope::Earnings));
+    for scope in [
+        Scope::CorporateEvents,
+        Scope::ManagementGuidance,
+        Scope::CapitalStructure,
+    ] {
+        assert!(!covered.contains(&scope), "{scope:?}: {covered:?}");
+    }
+    Ok(())
+}
+
+/// Guidance is judged only against a figure for the period it guided: a
+/// revenue reported for another quarter leaves it outstanding.
+///
+/// Mutation: drop the `valid_at == period_end` filter — the other quarter's
+/// revenue is scored against this guidance and `guidance_gap` appears.
+#[test]
+fn guidance_is_judged_only_against_the_period_it_guided() -> Result<()> {
+    let mut fixture = fully_reported_company();
+    fixture.company.guidance = vec![guidance("100", "120", now().saturating_add(days(50)))];
+    let finding = company_finding(desk_with_company(fixture))?;
+    assert!(
+        fact_value(&finding, "guidance_midpoint").is_some(),
+        "premise: guidance was read"
+    );
+    assert!(fact_value(&finding, "guidance_gap").is_none());
+    assert_eq!(fact_value(&finding, "guidance_outstanding"), Some(1.0));
+    Ok(())
+}
+
+/// An instrument with no issuer on record is no data, and says that is why,
+/// rather than reading as a company with nothing reported.
+///
+/// Mutation: resolve a missing issuer to a placeholder instead of returning
+/// early — the finding is still no view, but its claim no longer names the
+/// missing issuer and this fails.
+#[test]
+fn the_company_fundamental_brain_reports_an_instrument_with_no_issuer_as_no_data() -> Result<()> {
+    let finding = company_finding(populated_desk())?;
+    assert_eq!(finding.status, FindingStatus::NoView);
+    assert!(finding.facts.is_empty());
+    assert!(
+        finding
+            .claim
+            .starts_with("no issuer is on record for obj-ACME"),
+        "{}",
+        finding.claim
+    );
     Ok(())
 }
 

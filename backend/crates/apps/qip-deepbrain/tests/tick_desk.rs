@@ -984,3 +984,201 @@ fn the_run_loop_hands_the_platforms_own_orders_to_the_tick_desk() -> Result<()> 
     );
     Ok(())
 }
+
+/// One quote in the edge node's lake line shape as ADR 0438 writes it:
+/// the typed sync record's fields at the top level, beside a clock block.
+fn synced_line(
+    cell: &str,
+    region: &str,
+    venue: &str,
+    instrument: &str,
+    sequence: u64,
+    ms: i64,
+    uncertainty: Duration,
+) -> Result<String> {
+    use qip_contracts::sync::{AssetKey, ClockSource, CrossPartition, SyncMetadata};
+    let message = MarketMessage::new(
+        ObjectId::from_string(instrument),
+        Origin::new(VenueId::new(venue), "itch-a", 0, sequence),
+        MessageBody::Quote {
+            bid: Some((d(99.99), d(5.0))),
+            ask: Some((d(100.01), d(5.0))),
+        },
+        at(ms),
+        at(ms),
+    );
+    let hash = MarketEvent::hash_payload(&message)?;
+    let event = MarketEvent::new(
+        message,
+        at(ms),
+        at(ms),
+        at(ms),
+        uncertainty,
+        hash,
+        Licence::Granted {
+            dataset: "vendor-depth".into(),
+            usage: Usage::Trade,
+            expires_at: Timestamp::MAX,
+        },
+    )?;
+    let sync = SyncMetadata::new(
+        region,
+        cell,
+        ClockSource::VenueStated,
+        AssetKey {
+            venue: venue.to_string(),
+            feed: "itch-a".to_string(),
+            partition: 0,
+            instrument: instrument.to_string(),
+        },
+        CrossPartition::Aligned(Vec::new()),
+    )?;
+    let mut line = serde_json::to_value(&sync)?;
+    let Some(fields) = line.as_object_mut() else {
+        return Err(qip_core::error::Error::invalid(
+            "a sync record did not serialise as an object",
+        ));
+    };
+    fields.insert("exchange_time_ns".into(), at(ms).as_nanos().into());
+    fields.insert("capture_time_ns".into(), at(ms).as_nanos().into());
+    fields.insert("sequence".into(), sequence.into());
+    fields.insert(
+        "clock".into(),
+        serde_json::json!({
+            "normalized_time_ns": at(ms).as_nanos(),
+            "uncertainty_ns": uncertainty.as_nanos(),
+        }),
+    );
+    fields.insert("event".into(), serde_json::to_value(&event)?);
+    Ok(qip_core::canonical::canonical_json(&line))
+}
+
+/// Seal London's tick at 0 ms and New York's at 1 ms and 10 ms, each known
+/// to 100 µs, as two cells' segments.
+fn seal_two_regions(store: &MemoryBlobStore) -> Result<()> {
+    let doubt = Duration::from_micros(100);
+    // Two instruments, because the replay keeps one book per instrument and
+    // a reaction across regions is learned between two of them.
+    for (cell, region, venue, instrument, ticks) in [
+        ("edge-lon", "europe-west2", "XLON", "obj-ACME", vec![(1, 0)]),
+        (
+            "edge-nyc",
+            "us-east4",
+            "XNYS",
+            "obj-ACME-US",
+            vec![(1, 1), (2, 10)],
+        ),
+    ] {
+        let mut body = Vec::new();
+        for (sequence, ms) in ticks {
+            body.extend_from_slice(
+                synced_line(cell, region, venue, instrument, sequence, ms, doubt)?.as_bytes(),
+            );
+            body.push(b'\n');
+        }
+        let partition = Partition::new(
+            RecordClass::Market,
+            venue,
+            "2026-10-11",
+            instrument,
+            Entitlement {
+                id: "vendor-depth".into(),
+                raw_retention_permitted: false,
+            },
+        )?;
+        Lake::new(store).write_segment(
+            &partition,
+            &format!("{cell}-o00000000000000000001"),
+            body,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+/// R12-TICK-2048, ADR 0438: where lake lines from two regions meet, ticks are
+/// related across cells and ordered only beyond both ticks' doubt and both
+/// cells' stated clock bound. With a 1 ms bound the pair's half-width is
+/// 2.2 ms: New York's 1 ms tick is unordered against London's, its 10 ms
+/// tick is ordered. With no bound stated, no cross-region order is computed
+/// and the round says why.
+///
+/// Mutation: in `CrossRegionAligner::relate`, drop `+ self.cell_clock_bound`
+/// — the 1 ms pair is ordered and `unordered` reads 0.
+#[test]
+fn the_desk_relates_two_regions_ticks_only_beyond_the_stated_cell_clock_bound() -> Result<()> {
+    use qip_deepbrain::tick_desk::CELL_CLOCK_BOUND_VARIABLE;
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_two_regions(&lake)?;
+
+    let mut bounded = config();
+    bounded.cell_clock_bound = Some(Duration::from_millis(1));
+    let mut desk = TickDesk::new(
+        bounded,
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert_eq!(
+        round.synced_ticks, 3,
+        "premise: every line carried its record"
+    );
+    let summary = round.cross_region.expect("a bound was stated");
+    assert_eq!(summary.ticks, 3);
+    assert_eq!(
+        summary.pairs, 2,
+        "each New York tick against London's latest"
+    );
+    assert_eq!(summary.cross_region_pairs, 2);
+    assert_eq!((summary.ordered, summary.unordered), (1, 1), "{summary:?}");
+    assert_eq!(
+        summary.regions,
+        BTreeSet::from(["europe-west2".to_string(), "us-east4".to_string()])
+    );
+    assert_eq!(
+        summary.assets,
+        BTreeSet::from(["XLON/obj-ACME".to_string(), "XNYS/obj-ACME-US".to_string()])
+    );
+
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    // A later instant: the manifest is named by it, and one input set is
+    // described once.
+    let round = desk.round(&graph()?, at(400_001), Vec::new())?;
+    assert_eq!(round.synced_ticks, 3);
+    assert!(
+        round.cross_region.is_none(),
+        "ordered on a bound nobody stated"
+    );
+    assert!(
+        round
+            .cross_region_withheld
+            .as_deref()
+            .is_some_and(|why| why.contains(CELL_CLOCK_BOUND_VARIABLE)),
+        "{:?}",
+        round.cross_region_withheld
+    );
+
+    let read = |value: Option<&str>| {
+        TickDeskConfig::from_lookup(&|name: &str| match name {
+            EVERY_VARIABLE => Some("1".to_string()),
+            ENTITLEMENTS_VARIABLE => Some("vendor-depth".to_string()),
+            CELL_CLOCK_BOUND_VARIABLE => value.map(str::to_string),
+            _ => None,
+        })
+    };
+    assert_eq!(read(None)?.cell_clock_bound, None);
+    assert_eq!(
+        read(Some("250000"))?.cell_clock_bound,
+        Some(Duration::from_micros(250))
+    );
+    assert!(read(Some("-1")).is_err(), "a negative bound was admitted");
+    assert!(
+        read(Some("1ms")).is_err(),
+        "an unparseable bound was admitted"
+    );
+    Ok(())
+}

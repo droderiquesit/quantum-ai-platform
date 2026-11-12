@@ -4578,13 +4578,19 @@
   },
   {
     "id": "R12-CONTRACT-1195",
-    "status": "PARTIAL",
-    "current": "Signed capital envelopes, policy and halts verified by the cell; strategy plans and model digests checked; belief packs absent; not deployed.",
+    "status": "COMPLETE",
+    "current": "Every pack the centre sends a cell is a slot of one signed qip_contracts::policy::PolicyPayload — trained_models (model manifest, with per-model ADR 0110 release packs under a trust bundle), compiled_plan (strategy plan digest), belief_priors, capital_grants, risk_envelope (RiskEnvelopeSnapshot) and ten more — and the signature covers every slot through slot_digests. A cell reaches Cell::apply_policy only with a VerifiedPolicy, minted only by VerifiedPolicy::verify / verify_with, which refuse a payload whose MAC or trust-bundle signature does not verify or that names another cell. Capital envelopes and halts have their own verified types (VerifiedEnvelope, VerifiedHalt). qip-api mesh.rs produces the model manifest, belief priors, capital grants, cycle whitelist, risk envelope, episodic and causal digests, feasibility constraints, adversary profiles and dispositions on the payload it signs for each cell; the 2026-10-18 gap (risk_envelope unproduced, belief packs absent) is stale. Since 2026-11-12 qip-acceptance downward_signed_path signs a payload with all fifteen slots produced and proves each, re-stamped or stripped after signing, is refused before the cell changes, and the untampered payload installs.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:112",
+      "backend/crates/libs/qip-contracts/src/policy.rs PolicyPayload, signing_payload and slot_digests",
+      "backend/crates/edge/qip-edge/src/policy.rs VerifiedPolicy::verify and verify_with",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::apply_policy (takes VerifiedPolicy)",
+      "backend/crates/apps/qip-api/src/mesh.rs payload assembly (risk_envelope, belief_priors, capital_grants, trained_models, ...)",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::each_signed_pack_tampered_after_signing_is_refused_and_the_untampered_payload_installs",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::with_a_peer_epoch_live_on_the_node_a_policy_or_halt_reaches_the_cell_only_down_the_verified_path",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_grant_and_the_peer_protocol_cannot_name_one",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs"
     ],
-    "gap": "PolicyPayload slots are assembled in qip-api's mesh.rs, not in central/plane.rs, and risk_envelope is still Slot::unproduced there. Filling it needs a LimitSet -> qip_contracts::risk_envelope::RiskEnvelope mapping and a qip_edge::Cell apply seam that may only narrow the cell's limits; the edge side is the risk-and-execution domain, which asks for compliance_proof and security evidence and an explicit statement of the paper boundary, none of which this lane produced.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4592,10 +4598,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test downward_signed_path",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path (3 passed); cargo test -p qip-edge --test model_manifest (4 passed); cargo test -p qip-edge --test policy_rollback (6 passed); cargo test -p qip-acceptance --test compliance_proof (8 passed); cargo test -p qip-acceptance --test security (29 passed); cargo test -p qip-acceptance --test paper_boundary (5 passed). Mutation-verified 2026-11-12, each restored byte-for-byte and re-run green: removing the RiskEnvelope, the BeliefPriors and the CapitalGrants digest line (each in turn) from PolicyPayload::slot_digests, and `if false &&` on the acceptable_builds tail, each fails the new test with 'a payload with `<slot>` re-stamped after signing verified, so a cell would install it'.",
     "work_item": "",
     "size": "M",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-11-12 lane fw-m-01: graded COMPLETE against the integration bar (a cell installs only packs whose signature verifies; tampered packs are refused), now proven for every slot rather than only the halt flag. Paper boundary intact: this lane changed only a test; the three layers (Terraform's refusal of live ceilings, AutonomyLevel::deployable in the composition roots, qip-edge Cell's paper-only constructor) are untouched, and paper_boundary, compliance_proof and security pass. For the skeptic: compiled_plan (the strategy plan) is produced in tree by qip-cli's operator `grant` command and not by qip-api's per-cycle payload, and nothing is deployed (execution_nodes_enabled false); the bar is the cell's install rule, which holds for every slot whoever produces it."
   },
   {
     "id": "R12-REFLEX-1196",
@@ -4701,7 +4707,7 @@
   {
     "id": "R12-EVID-1200",
     "status": "PARTIAL",
-    "current": "Truth loop acceptance tests show the gate order and refusal; reached from the central cycle. Since 2026-10-24 all three composition roots that observe connector records gate observe on the world fabric: qip-deepbrain ConnectorArm::poll, qip-fastbrain node::step_with (Feed::poll pairs each connector record with its claim id via poll_referencing_identified; Batch::release drops records whose claim EvidenceIntake::withheld names; StepOutcome::withheld counts them) and qip-api POST /cycle (ApiFeed::sense pairs records with claims, the route now calls Platform::absorb_evidence on ApiFeed::drain_evidence - it never absorbed connector evidence before - and Sensed::release gates observe_fresh; the cycle body reports sense.withheld).",
+    "current": "Truth loop acceptance tests show the gate order and refusal; reached from the central cycle. Since 2026-10-24 all three composition roots that observe connector records gate observe on the world fabric: qip-deepbrain ConnectorArm::poll, qip-fastbrain node::step_with (Feed::poll pairs each connector record with its claim id via poll_referencing_identified; Batch::release drops records whose claim EvidenceIntake::withheld names; StepOutcome::withheld names them) and qip-api POST /cycle (ApiFeed::sense pairs records with claims, the route now calls Platform::absorb_evidence on ApiFeed::drain_evidence - it never absorbed connector evidence before - and Sensed::release gates observe_fresh; the cycle body reports sense.withheld). Since 2026-11-12 a withheld record is refused by name: EvidenceIntake::withheld maps each claim id to the world fabric's reason (the disagreeing instants of an impossible timeline, the identity signals of a spoof, or the fabric's refusal), Platform::admit_world_records returns Released::withheld as WithheldRecord {claim, reason} in the order offered, qip-fastbrain StepOutcome::problems carries one line per withheld claim, qip-api POST /cycle's body names them under sense.withheld_claims beside the count, and qip-deepbrain ConnectorArm::last_withheld keeps them.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:475 one event travels all stages",
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model",
@@ -4715,9 +4721,12 @@
       "backend/crates/apps/qip-api/src/routes.rs POST /cycle absorb_evidence then Sensed::release",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::admit_world_records",
       "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::the_world_record_seam_releases_only_what_the_fabric_stood_behind",
-      "backend/crates/apps/qip-fastbrain/tests/registrations.rs::a_fast_brain_step_observes_only_what_the_world_fabric_released"
+      "backend/crates/apps/qip-fastbrain/tests/registrations.rs::a_fast_brain_step_observes_only_what_the_world_fabric_released",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_record_the_world_fabric_withholds_is_refused_by_its_claim_with_the_fabrics_reason",
+      "backend/crates/apps/qip-fastbrain/src/node.rs::tests::a_record_the_world_fabric_withheld_is_one_of_the_steps_problems_by_name",
+      "backend/crates/apps/qip-api/src/routes.rs::tests::the_cycle_body_names_each_withheld_claim_with_the_fabrics_reason"
     ],
-    "gap": "2026-10-24 (skeptic-refuted promotion after 36f7665e): the three connector arms (qip-fastbrain node::step_with, qip-deepbrain ConnectorArm::poll, qip-api POST /cycle) now reach their records only through Platform::admit_world_records, and deleting that call in step_with or the route fails a test. Not met: (1) the seam is not the only path to observe - Platform::observe stays public, a record with claim None passes unchecked, and world data reaches observe without evidence through the fast brain's Live REST arm, qip-deepbrain evolution.rs's replay adapter (which can be a vendor connector's recording), and qip-cli demo's REST, narrative and alternative-data adapters; (2) a withheld record is not refused by name to anyone - Released, StepOutcome and SenseSummary carry counts, only ConnectorArm keeps the intake's ids and reasons; (3) no global-scout stage runs ahead of evidence (ADR 0144's scout job is unbuilt; the per-poll licensing gate is not a scout stage); (4) no committed environment configures a connector, so the gate acts on nothing by default. Remaining: make world-source records reach observe only through the seam by type (crate-private observe or a token), give or refuse claims for the Live, vendor-replay and narrative arms, surface withheld ids with reasons, add the scout stage or record its decline by ADR, and run a connector on a committed default path.",
+    "gap": "2026-11-12 (lane t50-24): gap (2) of 2026-10-24 is closed - a withheld record is now refused by name with the world fabric's reason at the kernel seam (Released::withheld), the fast brain's step problems and POST /cycle's sense.withheld_claims, each test mutation-verified. Still not met, so PARTIAL: (1) the seam is not the only path to observe - Platform::observe stays public, a record with claim None passes unchecked, and world data reaches observe without evidence through the fast brain's Live REST arm, qip-deepbrain evolution.rs's replay adapter (which can be a vendor connector's recording), and qip-cli demo's REST, narrative and alternative-data adapters; (3) no global-scout stage runs ahead of evidence (ADR 0144's scout job is unbuilt; the per-poll licensing gate is not a scout stage), nor is its decline recorded by ADR; (4) no committed environment configures a connector, so the gate acts on nothing by default. Also unproven: the fast brain's step_with hand-off of Released::withheld to StepOutcome is held by its type, not by a test driving a forged claim through a live feed. Earlier record, 2026-10-24 (skeptic-refuted promotion after 36f7665e): the three connector arms now reach their records only through Platform::admit_world_records, and deleting that call in step_with or the route fails a test.",
     "implemented": true,
     "tested": true,
     "integrated": false,

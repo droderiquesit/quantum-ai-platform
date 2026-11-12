@@ -729,3 +729,60 @@ fn sustained_slippage_drift_changes_no_deployed_package_no_parameter_and_no_size
     );
     Ok(())
 }
+
+/// R12-CONTRACT-7069 / ADR 0454: each fill names the decision it rests on —
+/// the sequence of its order's own `OrderSent` entry — so the ledger books
+/// the chain the cell stated and never rebuilds one by order id. Two partial
+/// fills of one order name the same decision.
+///
+/// Mutation: journal `decision_sequence: None` on `Decision::Filled` in
+/// `Cell::confirm_execution_reports`' fill path — both assertions on the
+/// named sequence fail.
+#[test]
+fn every_fill_names_the_order_sent_entry_of_the_order_it_filled() -> Result<()> {
+    let (mut cell, _metrics) = trading_cell(&[
+        ("alpha", SignalKind::Enter, "100"),
+        ("beta", SignalKind::Enter, "50"),
+    ])?;
+    let mut gateway = ReportingGateway::default();
+    let (_, order) = send_one(&mut cell, &mut gateway, t(50))?;
+    let sent: Vec<u64> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter(|entry| {
+            matches!(&entry.decision, Decision::OrderSent { order_id, .. }
+                if *order_id == order.order_id)
+        })
+        .map(|entry| entry.sequence)
+        .collect();
+    assert_eq!(sent.len(), 1, "the premise is one OrderSent for the order");
+
+    let third = order.quantity / dec!("3");
+    gateway.report(&order.order_id, third, order.price, t(55));
+    cell.confirm_execution_reports(&mut gateway, t(56));
+    gateway.report(&order.order_id, third, order.price, t(57));
+    cell.confirm_execution_reports(&mut gateway, t(58));
+
+    let named: Vec<(u64, Option<u64>)> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::Filled {
+                decision_sequence, ..
+            } => Some((entry.sequence, *decision_sequence)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named.len(), 2, "the premise is two fills on the order");
+    for (fill_sequence, decision) in named {
+        assert_eq!(
+            decision,
+            Some(sent[0]),
+            "fill {fill_sequence} names no decision or another one"
+        );
+        assert!(sent[0] < fill_sequence, "the decision precedes its fill");
+    }
+    Ok(())
+}

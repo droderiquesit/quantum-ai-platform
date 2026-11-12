@@ -55,7 +55,7 @@ use qip_data_finder::reference::{DataReference, RevisionCheck, SourceOrigin};
 use qip_data_finder::refetch::{ReFetchDriver, ReFetchFinding, TransportRefetcher};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
-use qip_kernel::evidence_intake::EvidenceIntake;
+use qip_kernel::evidence_intake::{EvidenceIntake, WithheldRecord};
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord};
 use qip_market_ingestion::connector::SourceConnector;
 use qip_market_ingestion::connector::journal::StreamLedger;
@@ -250,8 +250,9 @@ pub struct ConnectorArm {
     /// What the last poll's evidence did to the world fabric.
     last_evidence: EvidenceIntake,
     /// Records the last poll released that the world fabric withheld from
-    /// observation (R12-EVID-1200).
-    last_withheld: usize,
+    /// observation (R12-EVID-1200), each named by its claim with the
+    /// fabric's reason.
+    last_withheld: Vec<WithheldRecord>,
     /// Where this arm keeps its knowledge packs, when the root opened a
     /// store for them (R12-DATA-1041).
     pack_store: Option<Arc<dyn BlobStore>>,
@@ -301,7 +302,7 @@ impl ConnectorArm {
                 admission,
                 admitted,
                 last_evidence: EvidenceIntake::default(),
-                last_withheld: 0,
+                last_withheld: Vec::new(),
                 pack_store: None,
                 pack_stats: PackStoreStats::default(),
                 refetch: ReFetchDriver::new(),
@@ -373,7 +374,7 @@ impl ConnectorArm {
             admission,
             admitted,
             last_evidence: EvidenceIntake::default(),
-            last_withheld: 0,
+            last_withheld: Vec::new(),
             pack_store: None,
             pack_stats: PackStoreStats::default(),
             refetch: ReFetchDriver::new(),
@@ -447,9 +448,10 @@ impl ConnectorArm {
         &self.last_evidence
     }
 
-    /// Records the last poll released that the world fabric withheld.
-    pub const fn last_withheld(&self) -> usize {
-        self.last_withheld
+    /// Records the last poll released that the world fabric withheld, each
+    /// named by its claim with the fabric's reason.
+    pub fn last_withheld(&self) -> &[WithheldRecord] {
+        &self.last_withheld
     }
 
     pub fn source_id(&self) -> &str {

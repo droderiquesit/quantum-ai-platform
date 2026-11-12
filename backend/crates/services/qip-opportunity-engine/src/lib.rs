@@ -21,6 +21,7 @@ pub mod catalyst;
 pub mod detector;
 pub mod engine;
 pub mod opportunity;
+pub mod precursor;
 
 pub use catalyst::{
     CatalystDetector, CatalystLink, ImpactAssessment, ImpactEstimate, ImpactHistory, ImpactScope,
@@ -29,3 +30,6 @@ pub use catalyst::{
 pub use detector::{Anomaly, AnomalyKind, DetectionContext, Detector, DetectorRegistry};
 pub use engine::{EngineConfig, OpportunityEngine};
 pub use opportunity::{Investigation, Opportunity, OpportunityRank};
+pub use precursor::{
+    LegSet, Precursor, PrecursorConfig, PrecursorFamily, PrecursorScanner, PrecursorScore,
+};
