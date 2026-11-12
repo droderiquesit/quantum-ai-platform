@@ -154,13 +154,17 @@ fn a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_cl
 }
 
 /// R12-COVERAGE-5098 and -5103: an FX spot, a cash equivalent and a crypto
-/// spot assemble into the platform beside an equity, and an FX and a crypto
-/// order go through the full desk control path and fill at the simulated
-/// venue — paper, by the broker's own stamp.
+/// spot assemble into the platform beside an equity, and an FX, a cash and a
+/// crypto order go through the full desk control path and fill at the
+/// simulated venue — paper, by the broker's own stamp.
 ///
-/// Mutation: delete the `ForeignExchange` (or `DigitalAsset`, or `Cash`)
-/// record from `AssetClassRegistry::shipped` and `assemble` refuses the
-/// universe naming the instrument, so this test fails at its first `?`.
+/// Mutations that fired (2026-11-12): deleting the `ForeignExchange` record
+/// from `AssetClassRegistry::shipped` (and `Cash`'s hedge into it, which
+/// `shipped` would otherwise refuse first) stops `assemble` with
+/// "obj-EURUSD is a foreign_exchange and no record registers that class";
+/// deleting the `Cash` record (and FX's hedge into it) stops it with
+/// "obj-USD-CASH is a cash and no record registers that class". Dropping
+/// the cash order from the loop fails the `obj-USD-CASH` fill assertion.
 #[test]
 fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result<()> {
     let mut platform = assemble(universe_of(vec![
@@ -187,7 +191,7 @@ fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result
         );
     }
     let fills_before = platform.orders().fills().len();
-    for id in ["obj-EURUSD", "obj-BTC"] {
+    for id in ["obj-EURUSD", "obj-USD-CASH", "obj-BTC"] {
         let order = platform.order_for(
             ObjectId::from_string(id),
             qip_execution_engine::order::Side::Buy,
@@ -216,6 +220,7 @@ fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result
         .collect();
     assert!(filled.contains(&"obj-EURUSD"), "{filled:?}");
     assert!(filled.contains(&"obj-BTC"), "{filled:?}");
+    assert!(filled.contains(&"obj-USD-CASH"), "{filled:?}");
     assert!(
         fills.iter().all(|fill| fill.simulated),
         "a fill on the coverage path was not stamped simulated"

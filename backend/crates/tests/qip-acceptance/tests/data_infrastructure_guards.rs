@@ -519,6 +519,12 @@ fn no_bucket_or_dataset_lands_external_world_content() {
 /// that recorded nothing, or stores that stayed empty, would pass `!contains`
 /// for a source that never carried the canary.
 ///
+/// The lake is granted `canonical`. It was granted `canonical+raw` until
+/// 2026-11-12, when ADR 0416 made the deep brain refuse that right for every
+/// connector arm; `qip-deepbrain`'s
+/// `a_raw_retention_right_is_refused_because_a_connector_payload_never_reaches_the_raw_slot`
+/// holds the refusal, and the `ConnectorFeed` canary runs under both rights.
+///
 /// Mutated by building `FetchDigest::of`'s `locator` as the locator followed
 /// by the lossy-UTF-8 body: the reference the platform journals then carries
 /// the body and the event-log assertion fails; restored byte for byte.
@@ -558,7 +564,7 @@ fn a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_
     let packs = Arc::new(MemoryBlobStore::new());
     let lake = Arc::new(MemoryBlobStore::new());
     let lookup = |name: &str| {
-        (name == TICK_LAKE_RETENTION_VARIABLE).then(|| format!("{entitlement}=canonical+raw"))
+        (name == TICK_LAKE_RETENTION_VARIABLE).then(|| format!("{entitlement}=canonical"))
     };
     let settings = TickLakeSettings::from_lookup(&lookup)
         .expect("the retention variable parses")

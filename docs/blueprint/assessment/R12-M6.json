@@ -1473,7 +1473,7 @@
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs an_entry_missing_a_declared_field_is_refused (mutation: accept a Supported verdict with no benchmark), a_contradiction_stays_unresolved_until_a_campaign_on_the_same_id_concludes (mutation: record_concluded skips the resolution)",
       "backend/crates/services/qip-expansion/tests/executor.rs a_contradiction_observation_on_a_sweep_opens_one_registry_contradiction (mutation: drop the contradiction record in offer_by_deadline)"
     ],
-    "gap": "The desk can name a benchmark only for fill-bias campaigns; a second capability class reaching conclude needs its ADR 0192 row named in the desk first. A contradiction whose campaign never concludes is bounded only by the cap (ADR 0348's costs). The registry is in memory and is not journaled, so contradictions and open questions do not survive a restart.",
+    "gap": "The desk can name a benchmark only for fill-bias campaigns; a second capability class reaching conclude needs its ADR 0192 row named in the desk first. A contradiction whose campaign never concludes is bounded only by the cap (ADR 0348's costs). The registry is in memory and is not journaled, so contradictions and open questions do not survive a restart. 2026-11-12 (fw-f-01, not built): journalling the registry needs a restore path the deep brain does not have for any of its research state (ResearchLoop rebuilds nothing from a log on start), so it is a persistence design for the whole loop, not a registry change; a second capability class at conclude needs its ADR 0192 benchmark row, which only a person can name.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1565,7 +1565,7 @@
       "docs/adr/0345-causal-driver-coverage-is-measured-on-the-graphs-own-drivers-against-the-history-of-the-instruments-they-reach-and-language-waits-for-a-source-record-that-states-one.md",
       "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming_its_dimension (mutations: coverage handed the static map; the instruments-only filter dropped)"
     ],
-    "gap": "No production writer claims an edge whose effect lacks history, so the dimension has not fired outside tests. Language is not a coverage dimension: no source record states the language of what it admits, and ADR 0345 decision 5 keeps it out until one does. The causal graph has no edge cap, so the sweep's pass over it grows with the graph (ADR 0345's costs). The ontology seeding reads the static catalogue map, so no causal-driver ontology type is registered.",
+    "gap": "No production writer claims an edge whose effect lacks history, so the dimension has not fired outside tests. Language is not a coverage dimension: no source record states the language of what it admits, and ADR 0345 decision 5 keeps it out until one does. The causal graph has no edge cap, so the sweep's pass over it grows with the graph (ADR 0345's costs). The ontology seeding reads the static catalogue map, so no causal-driver ontology type is registered. 2026-11-12 (fw-f-01, not built): the edge cap is a figure nobody has given; a shipped writer of edges whose effects lack history needs an edge source beyond price-history precedence, which the tree does not hold, so under decision 28's fifth preference the arm stays declared absent rather than fed an invented input.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2876,7 +2876,7 @@
       "backend/crates/edge/qip-edge/tests/envelope_exposure.rs::an_armed_cell_admits_an_order_inside_a_bounded_envelope_and_refuses_one_outside_its_product_class_function_or_leverage_naming_which",
       "backend/crates/libs/qip-contracts/tests/authority_bounds.rs::an_envelope_stating_two_different_leverages_is_refused_whichever_block_is_added_second"
     ],
-    "gap": "Not armed and not issued on any binary (2026-10-24): the issuer does not yet state the authority block (CapitalRequest, EnvelopeTerms and CentralPlane::issue_narrowed carry exposure but no AuthorityBounds, so the ADR section 5 payload comparison covers no authority claim), qip-edge-node assemble does not build the instrument-to-class map from the catalogue or call with_authority_bounds_required, and the arbitrage desk legs (admit_leg) are not yet checked against the block. Rollout order per ADR 0155 section 6: issuer, then the node map, then the switch; arming earlier is the refuse-everything failure.",
+    "gap": "Not armed and not issued on any binary (2026-10-24): the issuer does not yet state the authority block (CapitalRequest, EnvelopeTerms and CentralPlane::issue_narrowed carry exposure but no AuthorityBounds, so the ADR section 5 payload comparison covers no authority claim), qip-edge-node assemble does not build the instrument-to-class map from the catalogue or call with_authority_bounds_required, and the arbitrage desk legs (admit_leg) are not yet checked against the block. Rollout order per ADR 0155 section 6: issuer, then the node map, then the switch; arming earlier is the refuse-everything failure. 2026-11-12 (fw-g-01): not built in this lane; the remainder is three ordered changes in three crates (the authority block on CapitalRequest, EnvelopeTerms and CentralPlane::issue_narrowed; the node's catalogue-derived instrument-to-class map with with_authority_bounds_required; admit_leg against the block), each its own slice, and arming any before the issuer states the block is the refuse-everything failure ADR 0155 section 6 names.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2988,15 +2988,16 @@
   },
   {
     "id": "R12-GOV-6125",
-    "status": "PARTIAL",
-    "current": "AuthorityLevel.permits orders classes and check_authority refuses lower authority (unit tests); library-only; AuthorityLevel itself is unsigned.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/action.rs:158 AuthorityLevel orders the classes and :168 permits admits a class only at its own level or above; :393 check_authority refuses an intent whose class needs more authority than is present, naming the level required. AuthorityLevel is an unsigned value and check_authority has no caller outside unit tests.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:49-90",
-      "backend/crates/libs/qip-contracts/src/action.rs:229 check_authority",
-      "backend/crates/libs/qip-contracts/src/action.rs:648 unit test: capital intent refused at operational authority",
-      "backend/crates/libs/qip-contracts/src/action.rs:668 admitted at capital authority"
+      "backend/crates/libs/qip-contracts/src/action.rs:158 AuthorityLevel; :168 permits; :393 check_authority",
+      "backend/crates/libs/qip-contracts/src/action.rs:1090 an_action_intent_of_a_class_requiring_capital_authority_is_refused_when_only_lower_authority_is_present",
+      "backend/crates/libs/qip-contracts/src/action.rs:1110 an_action_intent_of_a_class_requiring_capital_authority_is_admitted_once_capital_authority_is_supplied (renamed 2026-11-12 from ..._once_the_signed_authority_is_supplied: nothing in it is signed)",
+      "2026-11-12 lane fw-h-01: cargo test -p qip-contracts --lib an_action_intent_of_a_class_requiring_capital_authority: 2 passed. Mutation `if authority.permits(..)` -> `if true` at :394 fails :1090 (panicked at action.rs:1100); mutation adding `(AuthorityLevel::Capital, ActionClass::Capital) => false` before the Capital arm of permits fails :1110 (panicked at action.rs:1121); each restored byte for byte, 2 passed.",
+      "2026-11-12 lane fw-h-01 bar: the requirement and its unit verification ask for a stronger authority class, not a signed or attested one; the attested-approval work (ADR 0120 verifier, an unconstructible attestation token, a Capital-class caller of check_authority) is beyond the bar and stays in integrated false"
     ],
-    "gap": "Three parts, none present. (1) qip-api has no Presence::Attested: auth.rs Presence has the single Unattested variant, Principal::presence always answers it and authentication_instant refuses, so nothing can mint an attested presence; ADR 0120 (accepted 2026-10-11) specifies it as an ECDSA P-256 WebAuthn assertion over a request-bound challenge from a POST /operator-challenges route, enrolled public keys baked into the image, none of which is built (ring is admitted by ADR 0110, no verification code uses it). (2) qip_contracts::action::check_authority has no caller outside its own unit tests, so changing it to take an Approval would gate nothing on a running path. (3) A qip-contracts Approval type cannot be minted only by qip-api (a public constructor can be called by anyone); the structural guarantee needs the attestation type to be unconstructible outside the verifier, i.e. defined beside the WebAuthn verifier and passed into the contract as an opaque token. Build order: the verifier and challenge route in qip-api first, then an attestation token in qip-contracts, then a Capital-class caller of check_authority.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,

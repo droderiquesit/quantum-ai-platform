@@ -384,13 +384,18 @@ fn a_digest_carries_the_sources_etag_its_parser_and_the_cursor_the_poll_left() -
 /// R12-DATA-1039: the capture path set the raw bytes and their hash to `None`
 /// for every event, so the lake held canonical records nobody could check
 /// against what the source sent. Each released envelope now carries its
-/// event's payload and hash, and `captured_of` hands both to the lake;
-/// a payload past the bound keeps its hash and drops its bytes.
+/// event's payload and hash; `captured_of` hands the hash to the lake and,
+/// since ADR 0416, never the bytes, because a connector's payload is
+/// external content the lake must not keep (R12-DATA-2014). A payload past
+/// the bound keeps its hash and drops its bytes.
 ///
 /// Mutation: put `raw_sha256: None, raw: None` back in `captured_of` — the
-/// captured hash assertion fails.
+/// captured hash assertion fails. Handing the bytes on again
+/// (`raw: raw.and_then(|payload| payload.bytes.clone())`) fails the
+/// assertion that the capture carries no bytes.
 #[test]
-fn a_released_tick_reaches_the_lake_with_its_raw_payload_and_hash() -> Result<()> {
+fn a_released_tick_reaches_the_lake_with_its_raw_payload_hash_and_without_its_bytes() -> Result<()>
+{
     let text = body(&[("e1", "2026-08-24T14:59:00Z", "101.25")]);
     let mut runtime = runtime(manifest(), None)?;
     let mut connector = TestConnector::new(manifest());
@@ -414,7 +419,10 @@ fn a_released_tick_reaches_the_lake_with_its_raw_payload_and_hash() -> Result<()
     )?
     .expect("a tick is a market-class event");
     assert_eq!(captured.raw_sha256.as_deref(), Some(raw.sha256.as_str()));
-    assert_eq!(captured.raw.as_deref(), Some(expected.as_slice()));
+    assert!(
+        captured.raw.is_none(),
+        "a connector's payload bytes were handed to the lake"
+    );
 
     let huge = serde_json::json!({ "blob": "x".repeat(MAX_RAW_PAYLOAD_BYTES + 1) });
     let bounded = RawPayload::of(&huge)?;

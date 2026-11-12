@@ -1946,6 +1946,10 @@ impl LearningDesk {
     /// does not is recorded as failing, refuted, and rolled back through
     /// [`Platform::rollback_model`].
     ///
+    /// A predecessor a rollback reactivates is judged in the same round, on
+    /// the same rows, before any cycle reads it, and rolled back in turn if
+    /// it fails; each reference is judged at most once a round.
+    ///
     /// Only this round's subject is examined, because only its rows are in
     /// hand. A model on another subject is reached on the round that subject
     /// is fitted.
@@ -2078,15 +2082,23 @@ impl LearningDesk {
         let Some((subject, holdout)) = self.renewal_rows.clone() else {
             return Ok(Vec::new());
         };
-        let pending: Vec<(String, Timestamp)> = self
+        let mut pending: std::collections::VecDeque<(String, Timestamp)> = self
             .registry
             .iter()
             .filter(|card| card.stage == ModelStage::Production)
             .filter(|card| card_subject(card) == Some(subject.as_str()))
             .filter_map(|card| due(platform, card).map(|crossing| (card.reference(), crossing)))
             .collect();
+        // Each reference is judged at most once a round. A rollback retires
+        // the refuted card and reactivates one it displaced, so the chain is
+        // finite already; the set makes that a property of this loop rather
+        // than of the registry's history.
+        let mut judged: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut outcomes = Vec::new();
-        for (reference, crossing) in pending {
+        while let Some((reference, crossing)) = pending.pop_front() {
+            if !judged.insert(reference.clone()) {
+                continue;
+            }
             // Strictly after the crossing: a row at or before it describes
             // the regime the model was already evaluated in.
             let fresh: Vec<usize> = holdout
@@ -2162,6 +2174,18 @@ impl LearningDesk {
                     if let Some(artifact) = self.displaced_artifacts.remove(&reactivated) {
                         self.promoted_artifacts
                             .insert(reactivated.clone(), artifact);
+                    }
+                    // The predecessor comes back on an evaluation older
+                    // than the crossing that just refuted its successor.
+                    // Judged now, on the same rows, before any cycle reads
+                    // it: left for the next round it would serve decisions
+                    // on a regime it was never evaluated in, which is the
+                    // stale authority this re-verification exists to end.
+                    if let Some(card) = self.registry.get(&reactivated)
+                        && card_subject(card) == Some(subject.as_str())
+                        && let Some(crossing) = due(platform, card)
+                    {
+                        pending.push_back((reactivated.clone(), crossing));
                     }
                     outcomes.push(Reverification::RolledBack {
                         retired: reference,
@@ -3798,7 +3822,7 @@ mod tests {
     /// return now predicts its opposite. The production model, fitted before,
     /// is evaluated on rows after the change, fails the bar it was registered
     /// against, is refuted by the verifier society and rolled back to the
-    /// model it displaced. That model is then judged the same way on the next
+    /// model it displaced. That model is then judged the same way in the same
     /// round, fails too, and has nothing behind it — the one it could return
     /// to has a failed evaluation — so it is reported refuted in place rather
     /// than swapped back and forth.
@@ -3806,9 +3830,10 @@ mod tests {
     /// Mutations: record every renewed evaluation as passed — nothing is
     /// rolled back; treat a refutation as survival — the same; drop the
     /// artifact bookkeeping after the rollback — the reactivated model is
-    /// reported unscorable on the second call instead of refuted.
+    /// reported unscorable instead of refuted; drop the push of the
+    /// reactivated model onto the worklist — it is judged a round late.
     #[test]
-    fn a_production_model_refuted_after_its_subject_crosses_is_rolled_back_and_its_predecessor_judged_next()
+    fn a_production_model_refuted_after_its_subject_crosses_is_rolled_back_and_its_predecessor_judged_in_the_same_round()
     -> Result<()> {
         let mut desk = learning_desk();
         let mut platform = serving_platform()?;
@@ -3879,52 +3904,47 @@ mod tests {
         // covers a drifted one.
         desk.registry.record_drift(&first, 0.0)?;
 
+        // One call: the successor is refuted and rolled back, and the
+        // predecessor it returns to — evaluated before the crossing too — is
+        // judged on the same rows in the same round, before any cycle reads
+        // it. Until 2026-11-12 it came back standing on its pre-crossing
+        // evaluation and was judged only on the following round.
         let outcomes = desk.reverify_against(&mut platform, due_since(crossing), now)?;
         assert!(
             matches!(
                 outcomes.as_slice(),
-                [Reverification::RolledBack { retired, reactivated, reason }]
+                [
+                    Reverification::RolledBack { retired, reactivated, reason },
+                    Reverification::Refuted { reference, reason: refuted, not_rolled_back },
+                ]
                     if *retired == second && *reactivated == first
                         && reason.contains("did not pass")
-            ),
-            "{outcomes:?}"
-        );
-        assert_eq!(
-            desk.registry.get(&second).map(|card| card.stage),
-            Some(ModelStage::Retired)
-        );
-        assert_eq!(
-            desk.registry.get(&first).map(|card| card.stage),
-            Some(ModelStage::Production)
-        );
-        assert!(platform.model_promotions().contains_key(&first));
-        assert!(!platform.model_promotions().contains_key(&second));
-
-        // The reactivated model was evaluated before the crossing too.
-        let next = now.saturating_add(qip_core::Duration::from_mins(1));
-        let outcomes = desk.reverify_against(&mut platform, due_since(crossing), next)?;
-        assert!(
-            matches!(
-                outcomes.as_slice(),
-                [Reverification::Refuted { reference, reason, not_rolled_back }]
-                    if *reference == first
-                        && reason.contains("did not pass")
+                        && *reference == first
+                        && refuted.contains("did not pass")
                         && not_rolled_back.contains("no known-good predecessor")
             ),
             "{outcomes:?}"
-        );
-        assert_eq!(
-            desk.registry
-                .get(&first)
-                .and_then(|card| card.latest_evaluation())
-                .map(|evaluation| evaluation.passed),
-            Some(false)
         );
         assert_eq!(
             desk.registry.get(&second).map(|card| card.stage),
             Some(ModelStage::Retired),
             "the refuted successor was swapped back in"
         );
+        assert!(!platform.model_promotions().contains_key(&second));
+        assert_eq!(
+            desk.registry
+                .get(&first)
+                .and_then(|card| card.latest_evaluation())
+                .map(|evaluation| (evaluation.passed, evaluation.evaluated_at)),
+            Some((false, now)),
+            "the predecessor was not judged in the round it returned"
+        );
+
+        // Judged once: the next round finds it evaluated since the crossing
+        // and asks nothing again.
+        let next = now.saturating_add(qip_core::Duration::from_mins(1));
+        let outcomes = desk.reverify_against(&mut platform, due_since(crossing), next)?;
+        assert!(outcomes.is_empty(), "{outcomes:?}");
         Ok(())
     }
 

@@ -36,7 +36,12 @@ accuracy.
     { "kind": "analyst",  "key": "macro-analyst",     "samples": 1,  "accuracy": null,                  "calibrated": false },
     { "kind": "detector", "key": "price_dislocation", "samples": 10, "accuracy": "0.21428571428571427", "calibrated": true }
   ],
-  "minimum_sample": 10
+  "minimum_sample": 10,
+  "health": {
+    "observed_at": "2025-10-09T08:53:20Z",
+    "halted": false,
+    "degraded": { "self_model": "stale" }
+  }
 }
 ```
 
@@ -49,6 +54,10 @@ accuracy.
 | `components[].accuracy` | decimal string or `null` | The engine's estimated accuracy — the hit rate shrunk toward one half by four pseudo-observations, `(hits + 2) / (samples + 4)` — as the exact text of the engine's own number. `null` whenever `samples < minimum_sample`: the engine refuses to estimate a thin record and the route does not fill the gap. Render `null` as "not yet measured", not as zero. |
 | `components[].calibrated` | bool | Whether `accuracy` is present. Always equal to `accuracy != null` and to `samples >= minimum_sample`; the route refuses to serve a body in which those disagree. |
 | `minimum_sample` | integer | The count below which the engine reports no accuracy. Present on every body, including an empty one, so a page can explain a `null` without a second request. |
+| `health` | object or `null` | The self-model's newest operational-health reading, which the kernel takes after LEARN on every cycle. `null` before the first cycle has taken one; never filled in as healthy. |
+| `health.observed_at` | RFC 3339 string | The instant of the reading. |
+| `health.halted` | bool | Whether the global kill switch was tripped at the reading. |
+| `health.degraded` | object | Every §6.2 degradation row that did not read fresh, keyed by the row's `snake_case` name, with `"stale"` or `"unavailable"`. Empty when every row read fresh. |
 
 ## `GET /api/v1/cognition/precedents`
 

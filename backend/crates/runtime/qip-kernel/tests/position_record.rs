@@ -497,7 +497,7 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
             leverage_only(),
         )
     };
-    {
+    let (sized_hypothesis, sized_horizon, sized_plan) = {
         let mut first = over(start())?;
         first.observe(tape("PRIV"));
         let report = first.run_cycle(start());
@@ -546,22 +546,38 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
             "the LEARN stage did not count the record: {}",
             report.summarise()
         );
-    }
+        let plan = *first
+            .position_exit_plan(fund)
+            .expect("premise: the construction dated an exit plan for obj-PRIV");
+        assert_eq!(plan.exit_at(), start().saturating_add(approved_horizon));
+        (record.hypothesis().to_string(), record.horizon(), plan)
+    };
 
+    // A second process over the same log, which ran no construction: the
+    // horizon and the exit plan are the journalled ones, not refused and not
+    // re-derived from a thesis this process never approved (R12-ASSET-4067,
+    // R12-ASSET-4069). Before the record was journalled, this process
+    // refused the holding "no hypothesis horizon on record" and held no plan.
+    //
+    // Mutation: drop the `resume_position_horizons` call at assembly — the
+    // resumed holding is refused and this assertion fails.
     let later = start().saturating_add(Duration::from_hours(1));
     let second = over(later)?;
     assert!(
         second.positions_at_cost().contains_key(fund),
         "premise: the resumed book holds obj-PRIV"
     );
-    let refusal = second
-        .position_holding(fund, later)
-        .err()
-        .map(|error| error.message().to_string())
-        .unwrap_or_default();
     assert!(
-        refusal.starts_with("obj-PRIV is held with no hypothesis horizon on record"),
-        "a resumed position with no approved hypothesis stated a horizon: {refusal:?}"
+        second.proposals().is_empty(),
+        "premise: the second process constructed nothing, so what it states is resumed"
+    );
+    let resumed = second.position_holding(fund, later)?;
+    assert_eq!(resumed.hypothesis(), sized_hypothesis);
+    assert_eq!(resumed.horizon(), sized_horizon);
+    assert_eq!(
+        second.position_exit_plan(fund).copied(),
+        Some(sized_plan),
+        "the resumed exit plan is not the one construction dated"
     );
     // And a holding nobody has is refused, not recorded.
     assert!(second.position_holding("obj-NONE", later).is_err());

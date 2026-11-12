@@ -1147,20 +1147,24 @@ mod tests {
     /// connector — the premises prove it was served, released, captured and
     /// drained — and must survive in none of them.
     ///
-    /// The lake is given the right ADR 0151 decision 8 gives a source whose
-    /// licence has not been read as permitting raw bytes: `canonical`. Under
-    /// `canonical+raw` the per-event slice is kept by design (R12-DATA-1039,
-    /// ADR 0181) and would carry this canary; that is recorded on the row as
-    /// the decision this test does not take.
+    /// The poll runs twice, once with the lake granted `canonical` and once
+    /// with `canonical+raw`. Under the second the lake would keep each
+    /// event's raw bytes if it were handed them; ADR 0416 keeps a
+    /// connector's payload out of the raw slot, so the lake holds the
+    /// payload's hash and not its bytes. The hash is asserted present in
+    /// both modes, so the hash-only rule R12-DATA-1039 asks of the
+    /// connector path is exercised rather than vacuously met.
     ///
-    /// Mutated three ways, each restored byte for byte: `captured_of`'s
+    /// Mutated four ways, each restored byte for byte: `captured_of`'s
     /// `canonical` built as the record plus the lossy raw bytes fails
     /// 'the tick lake retained the body'; the runtime's `evidence_of` call
     /// given the event body as its `cause` fails 'the evidence handed on
     /// carried the body'; the runtime's pack id built with the body's
-    /// excerpt fails 'a knowledge pack retained the body'. Given
-    /// `canonical+raw` instead, the test fails 'the tick lake retained the
-    /// body under ….raw': the raw slot holds the ticker object whole.
+    /// excerpt fails 'a knowledge pack retained the body'; and `captured_of`
+    /// handing the payload's bytes to the lake again fails, under
+    /// `canonical+raw` only, 'the tick lake sealed a raw slot for a
+    /// connector payload (raw right true)'. `captured_of` given no hash
+    /// fails 'the lake did not keep the payload's hash (raw right false)'.
     #[test]
     fn a_canary_in_a_market_body_reaches_no_tick_lake_evidence_or_knowledge_pack_the_poll_hands_on()
     {
@@ -1169,109 +1173,133 @@ mod tests {
         use qip_storage::tick_capture::{RetentionRight, TickLakeWriter};
 
         const CANARY: &str = "CANARY-41d7e0a2-not-for-retention";
-        let opened = instant("2026-08-27T00:00:00Z");
-        let body = format!(
-            r#"{{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"2026-08-26T23:59:59Z","note":"{CANARY}"}}"#
-        );
-        let mut manifest =
-            CoinbaseTickerConnector::shipped_manifest().expect("the shipped manifest parses");
-        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
-        let entitlement = format!("{:?}", manifest.licensing).to_ascii_lowercase();
-        let lake = Arc::new(qip_storage::MemoryBlobStore::new());
-        let writer = TickLakeWriter::new(
-            lake.clone(),
-            BTreeMap::from([(
-                entitlement,
-                RetentionRight {
-                    canonical: true,
-                    raw: false,
-                },
-            )]),
-            512,
-            4_096,
-        )
-        .expect("the lake writer opens");
-        let connector = CoinbaseTickerConnector::new(
-            manifest.clone(),
-            "BTC-USD",
-            ObjectId::from_string("BTC-USD"),
-            CoinbaseTickerConnector::VENUE,
-        )
-        .expect("the connector builds");
-        let transport = Box::new(SourceEmulator::serving(
-            manifest.endpoint.path.clone(),
-            body.clone(),
-        ));
-        let mut feed =
-            ConnectorFeed::over_transport(Box::new(connector), manifest, transport, 7, opened)
-                .expect("the emulator answers the health probe")
-                .with_tick_lake(writer);
-
-        let records = feed
-            .poll_referencing(opened, &mut |_| Ok(()))
-            .expect("the poll delivers");
-        assert!(
-            body.contains(CANARY),
-            "premise: the served body carries the canary"
-        );
-        assert!(
-            !records.is_empty(),
-            "premise: the ticker was read and released"
-        );
-        assert!(
-            !format!("{records:?}").contains(CANARY),
-            "a record carried the body"
-        );
-
-        let evidence = feed.drain_evidence();
-        assert_eq!(
-            evidence.len(),
-            records.len(),
-            "premise: every released record handed its evidence on"
-        );
-        assert!(
-            !format!("{evidence:?}").contains(CANARY)
-                && !serde_json::to_string(&evidence)
-                    .expect("evidence serialises")
-                    .contains(CANARY),
-            "the evidence handed on carried the body"
-        );
-
-        let packs = feed.drain_knowledge_packs();
-        assert!(
-            !packs.is_empty(),
-            "premise: the poll produced a knowledge pack"
-        );
-        for (pack, _) in &packs {
-            let encoded = pack.encode().expect("a pack encodes");
-            assert!(
-                !String::from_utf8_lossy(&encoded).contains(CANARY)
-                    && !format!("{pack:?}").contains(CANARY),
-                "a knowledge pack retained the body"
+        for raw in [false, true] {
+            let opened = instant("2026-08-27T00:00:00Z");
+            let body = format!(
+                r#"{{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"2026-08-26T23:59:59Z","note":"{CANARY}"}}"#
             );
-        }
+            let mut manifest =
+                CoinbaseTickerConnector::shipped_manifest().expect("the shipped manifest parses");
+            manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+            let entitlement = format!("{:?}", manifest.licensing).to_ascii_lowercase();
+            let lake = Arc::new(qip_storage::MemoryBlobStore::new());
+            let writer = TickLakeWriter::new(
+                lake.clone(),
+                BTreeMap::from([(
+                    entitlement,
+                    RetentionRight {
+                        canonical: true,
+                        raw,
+                    },
+                )]),
+                512,
+                4_096,
+            )
+            .expect("the lake writer opens");
+            let connector = CoinbaseTickerConnector::new(
+                manifest.clone(),
+                "BTC-USD",
+                ObjectId::from_string("BTC-USD"),
+                CoinbaseTickerConnector::VENUE,
+            )
+            .expect("the connector builds");
+            let transport = Box::new(SourceEmulator::serving(
+                manifest.endpoint.path.clone(),
+                body.clone(),
+            ));
+            let mut feed =
+                ConnectorFeed::over_transport(Box::new(connector), manifest, transport, 7, opened)
+                    .expect("the emulator answers the health probe")
+                    .with_tick_lake(writer);
 
-        let sealed = feed.flush_tick_lake().expect("the lake seals");
-        assert_eq!(
-            feed.tick_lake_failures().0,
-            0,
-            "premise: every capture was accepted"
-        );
-        assert!(
-            !sealed.is_empty(),
-            "premise: the released ticker was sealed into the lake"
-        );
-        let blobs = lake.list("").expect("the lake lists");
-        assert!(
-            !blobs.is_empty(),
-            "premise: the lake holds the sealed segment"
-        );
-        for key in blobs {
-            let bytes = lake.get(&key).expect("reads").expect("listed key exists");
+            let records = feed
+                .poll_referencing(opened, &mut |_| Ok(()))
+                .expect("the poll delivers");
             assert!(
-                !String::from_utf8_lossy(&bytes).contains(CANARY),
-                "the tick lake retained the body under {key}"
+                body.contains(CANARY),
+                "premise: the served body carries the canary"
             );
+            assert!(
+                !records.is_empty(),
+                "premise: the ticker was read and released"
+            );
+            assert!(
+                !format!("{records:?}").contains(CANARY),
+                "a record carried the body"
+            );
+
+            let evidence = feed.drain_evidence();
+            assert_eq!(
+                evidence.len(),
+                records.len(),
+                "premise: every released record handed its evidence on"
+            );
+            assert!(
+                !format!("{evidence:?}").contains(CANARY)
+                    && !serde_json::to_string(&evidence)
+                        .expect("evidence serialises")
+                        .contains(CANARY),
+                "the evidence handed on carried the body"
+            );
+
+            let packs = feed.drain_knowledge_packs();
+            assert!(
+                !packs.is_empty(),
+                "premise: the poll produced a knowledge pack"
+            );
+            for (pack, _) in &packs {
+                let encoded = pack.encode().expect("a pack encodes");
+                assert!(
+                    !String::from_utf8_lossy(&encoded).contains(CANARY)
+                        && !format!("{pack:?}").contains(CANARY),
+                    "a knowledge pack retained the body"
+                );
+            }
+
+            let sealed = feed.flush_tick_lake().expect("the lake seals");
+            assert_eq!(
+                feed.tick_lake_failures().0,
+                0,
+                "premise: every capture was accepted"
+            );
+            assert!(
+                !sealed.is_empty(),
+                "premise: the released ticker was sealed into the lake"
+            );
+            let served: serde_json::Value =
+                serde_json::from_str(&body).expect("the served body parses");
+            let payload_sha256 = qip_core::sha256_hex(
+                &serde_json::to_vec(&served).expect("the served payload encodes"),
+            );
+            for segment in &sealed {
+                assert!(
+                    segment.raw_key.is_none(),
+                    "the tick lake sealed a raw slot for a connector payload (raw right {raw})"
+                );
+                let events = qip_storage::lake::Lake::new(lake.as_ref())
+                    .read_market_segment(segment)
+                    .expect("the segment reads back");
+                assert!(
+                    !events.is_empty()
+                        && events
+                            .iter()
+                            .all(|event| event.raw_sha256.as_deref()
+                                == Some(payload_sha256.as_str())),
+                    "the lake did not keep the payload's hash (raw right {raw})"
+                );
+            }
+            let blobs = lake.list("").expect("the lake lists");
+            assert!(
+                !blobs.is_empty(),
+                "premise: the lake holds the sealed segment"
+            );
+            for key in blobs {
+                let bytes = lake.get(&key).expect("reads").expect("listed key exists");
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains(CANARY),
+                    "the tick lake retained the body under {key}"
+                );
+            }
         }
     }
 
