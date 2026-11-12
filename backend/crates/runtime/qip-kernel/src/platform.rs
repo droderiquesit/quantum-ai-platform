@@ -649,10 +649,15 @@ pub struct Platform {
     /// instant of the re-promotion that released it. Resumed with the holds.
     replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
     /// The latest concluded microstructure delta per venue, re-admitted
-    /// through its contract (ADR 0226). Read only by the release of a
-    /// replay-divergence hold, which it may keep and never lift.
+    /// through its contract (ADR 0226). Read by the release of a
+    /// replay-divergence hold, which it may keep and never lift, and folded
+    /// once each into [`Self::microstructure_model`] in LEARN.
     microstructure_deltas:
         BTreeMap<(String, String), qip_contracts::microstructure_delta::MicrostructureDelta>,
+    /// The tick/microstructure model the deltas update (R12-MODEL-1198):
+    /// per-venue fill-probability, slippage and impact estimates, the left
+    /// fold of its own journal records and resumed from them.
+    microstructure_model: crate::microstructure_model::MicrostructureModel,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -6575,6 +6580,7 @@ impl Platform {
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
+        let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -6648,6 +6654,7 @@ impl Platform {
             replay_divergence_holds: replay_divergence_resumed.0,
             replay_divergence_windows: replay_divergence_resumed.1,
             microstructure_deltas: BTreeMap::new(),
+            microstructure_model: microstructure_model_resumed,
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -22817,6 +22824,17 @@ impl Platform {
         // this cycle's errors are read, and beside `review_sizing` rather than
         // inside it because that narrows an instrument on the desk and this
         // narrows a strategy's grant at the centre. It withdraws no venue.
+        // R12-MODEL-1198: the cells' concluded residuals update the
+        // tick/microstructure model, after `score_filled` like the twin's own
+        // calibration. Narrowing-only reader: the misfit-venue cap.
+        let (reviewed, problems) = self.learn_microstructure(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         let (reviewed, problems) = self.review_replay_divergence(now);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
@@ -24269,6 +24287,16 @@ impl Platform {
     /// [`qip_risk::limits::VENUE_TWIN_MISFIT_AXIS`] (R12-RES-7104). The
     /// buckets are the counterparty axis's own running gross, so the cap
     /// reads what the book carries there and not a second count.
+    /// Whether `venue` is charged to the misfit-venue cap: its twin is
+    /// persistently wrong ([`Self::twin_misfit`]), or the microstructure
+    /// model the cells' residuals update says its execution model is wrong
+    /// by as much (R12-MODEL-1198,
+    /// [`crate::microstructure_model::MicrostructureModel::misfit`]). Either
+    /// reading narrows; neither can widen what the other charged.
+    pub fn venue_misfit(&self, venue: &str) -> bool {
+        self.twin_misfit(venue) || self.microstructure_model.misfit(venue).is_some()
+    }
+
     fn with_twin_misfit(&self, state: RiskState) -> RiskState {
         let mut state = state;
         let misfit: BTreeMap<String, Decimal> = state
@@ -24276,7 +24304,7 @@ impl Platform {
             .get(qip_risk::limits::COUNTERPARTY_AXIS)
             .into_iter()
             .flatten()
-            .filter(|(venue, _)| self.twin_misfit(venue))
+            .filter(|(venue, _)| self.venue_misfit(venue))
             .map(|(venue, gross)| (venue.clone(), *gross))
             .collect();
         if !misfit.is_empty() {
@@ -24666,9 +24694,10 @@ impl Platform {
         // the breach was discovered — if the aggregate had carried a bucket
         // at all — only by the monitor, one cycle late.
         let mut axes = self.exposure_axes_for(object_id.as_str());
-        // An order to a venue whose twin is misfit is charged to the misfit
-        // axis too, so the cap sees it before the order exists.
-        if self.twin_misfit(self.broker.name()) {
+        // An order to a venue whose twin, or whose microstructure model, is
+        // misfit is charged to the misfit axis too, so the cap sees it before
+        // the order exists.
+        if self.venue_misfit(self.broker.name()) {
             axes.insert(
                 qip_risk::limits::VENUE_TWIN_MISFIT_AXIS.to_string(),
                 self.broker.name().to_string(),
@@ -28017,6 +28046,79 @@ impl Platform {
     ) -> Option<&qip_contracts::microstructure_delta::MicrostructureDelta> {
         self.microstructure_deltas
             .get(&(venue.to_string(), cell.to_string()))
+    }
+
+    /// The tick/microstructure model LEARN updates from the cells' concluded
+    /// deltas (R12-MODEL-1198). See [`crate::microstructure_model`].
+    pub fn microstructure_model(&self) -> &crate::microstructure_model::MicrostructureModel {
+        &self.microstructure_model
+    }
+
+    /// The LEARN pass for R12-MODEL-1198: fold every held delta newer than
+    /// its (venue, cell) pair's last fold into the microstructure model, in
+    /// pair order, journaling each fold before the model moves — so the
+    /// model the platform reads is the model [`crate::microstructure_model::resume`]
+    /// rebuilds from the log, and a fold that could not be journaled is a
+    /// fold that did not happen and is retried next cycle.
+    fn learn_microstructure(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        use crate::microstructure_model::{MICROSTRUCTURE_MODEL_ORIGIN, MicrostructureFold};
+        let mut problems = Vec::new();
+        let pending: Vec<MicrostructureFold> = self
+            .microstructure_deltas
+            .iter()
+            .filter(|((venue, cell), delta)| {
+                self.microstructure_model
+                    .is_unfolded(venue, cell, delta.window_end)
+            })
+            .map(|(_, delta)| MicrostructureFold::of(delta, now))
+            .collect();
+        let mut folded = 0usize;
+        for fold in pending {
+            let next = match self.microstructure_model.folded(&fold) {
+                Ok(next) => next,
+                Err(error) => {
+                    problems.push(format!(
+                        "microstructure model: delta {} for {} from {} was not folded: {}",
+                        fold.delta_id,
+                        fold.venue,
+                        fold.cell,
+                        error.message()
+                    ));
+                    continue;
+                }
+            };
+            let label = format!("{} for {} from {}", fold.delta_id, fold.venue, fold.cell);
+            if let Err(error) = self.journal_record(fold, MICROSTRUCTURE_MODEL_ORIGIN, now) {
+                problems.push(format!(
+                    "microstructure model: delta {label} was not folded because the fold could \
+                     not be journaled: {}",
+                    error.message()
+                ));
+                continue;
+            }
+            self.microstructure_model = next;
+            folded += 1;
+        }
+        let misfit: Vec<String> = self
+            .microstructure_model
+            .venues()
+            .keys()
+            .filter_map(|venue| self.microstructure_model.misfit(venue))
+            .collect();
+        if folded == 0 && misfit.is_empty() {
+            return (None, problems);
+        }
+        let mut summary = format!(
+            "microstructure model: {folded} delta(s) folded, {} venue(s) modelled",
+            self.microstructure_model.venues().len()
+        );
+        if !misfit.is_empty() {
+            summary.push_str(&format!(
+                "; charged to the misfit-venue cap: {}",
+                misfit.join("; ")
+            ));
+        }
+        (Some(summary), problems)
     }
 
     /// The LEARN pass for R12-RES-7104: release every hold a re-promotion

@@ -4646,13 +4646,19 @@
   {
     "id": "R12-MODEL-1198",
     "status": "PARTIAL",
-    "current": "stage_learn calls calibrate_resolved, score_declined (missed opportunities) and score_filled; no tick/microstructure model update.",
+    "current": "stage_learn calls calibrate_resolved, score_declined (missed opportunities) and score_filled, and since 2026-11-12 learn_microstructure: every admitted MicrostructureDelta newer than its (venue, cell) pair's last fold is folded once into Platform's MicrostructureModel (per-venue fill-probability, slippage and impact estimates; Decimal, EWMA at qip_twin's DEFAULT_LEARNING_RATE), the fold journaled on ComplianceEvaluated under kernel/microstructure-model before the model moves, and microstructure_model::resume rebuilds the model from the log at construction. Reader: Platform::venue_misfit charges a venue to the twin-misfit-venue-gross cap when the model's slippage or impact estimate is at or past TWIN_MISFIT_BIAS_BPS over REPLAY_DIVERGENCE_MIN_SAMPLE samples (narrowing only; fill probability is measured and decides nothing, no tolerance for it is in the tree). qip-deepbrain's research_pass admits each sweep's concluded deltas (ResearchRound::admit_deltas) and reports refusals as side failures.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
+      "backend/crates/runtime/qip-kernel/src/microstructure_model.rs:175 MicrostructureModel::folded",
+      "backend/crates/runtime/qip-kernel/src/microstructure_model.rs:259 MicrostructureModel::misfit",
+      "backend/crates/runtime/qip-kernel/src/microstructure_model.rs:288 resume",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:22684 stage_learn calls learn_microstructure",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:24150 venue_misfit",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:10122 a_concluded_delta_updates_the_microstructure_model_in_learn_and_narrows_its_venue",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:10240 the_microstructure_model_is_rebuilt_from_the_log_on_a_restart",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:309 research_pass admits concluded deltas",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:99"
     ],
-    "gap": "Tick/microstructure model update path.",
+    "gap": "2026-11-12: the update path, its journal, its resume and its narrowing reader exist and are tested in-process; what remains is a delta reaching it in a deployed process. (1) Admission refuses a delta for a venue no registered strategy trades at; qip-deepbrain's campaigns conclude on the desk venue's scored fills while its foundry registers candidates at XSIM, so in that configuration every admission is refused (said on the cycle line, measured only in test: ambient_journal.rs a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta). (2) No cell report carries a MicrostructureDelta to the centre (edge to Platform::ingest_cell_report). (3) research_pass's call to admit_deltas is not driven by a test; only admit_deltas is. (4) The row's 'updates the world model' half was not re-assessed by this lane.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4660,7 +4666,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-kernel --test learning; cargo test -p qip-kernel --test central microstructure; cargo test -p qip-kernel --lib microstructure_model; cargo test -p qip-deepbrain --test ambient_journal remeasured",
     "work_item": "",
     "size": "M",
     "notes": ""

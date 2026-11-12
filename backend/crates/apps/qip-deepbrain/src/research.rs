@@ -1032,6 +1032,31 @@ pub struct ResearchRound {
     pub deltas: Vec<qip_contracts::microstructure_delta::MicrostructureDelta>,
 }
 
+impl ResearchRound {
+    /// Admit every delta this round concluded to `platform`, so its next
+    /// LEARN folds them into the microstructure model (R12-MODEL-1198).
+    /// Returns one line per refusal — a venue no registered strategy trades
+    /// at, or a delta no newer than the one held — so the caller says it
+    /// rather than swallowing it.
+    pub fn admit_deltas(&self, platform: &mut Platform) -> Vec<String> {
+        self.deltas
+            .iter()
+            .filter_map(|delta| {
+                platform
+                    .admit_microstructure_delta((**delta).clone())
+                    .err()
+                    .map(|error| {
+                        format!(
+                            "microstructure delta {} was not admitted: {}",
+                            delta.delta_id,
+                            error.message()
+                        )
+                    })
+            })
+            .collect()
+    }
+}
+
 /// Fills a campaign's venue must have scored since the campaign opened
 /// before it is concluded on them. Fewer is a re-measurement too thin to
 /// tell a residual from noise; the campaign stays open until it has them.
