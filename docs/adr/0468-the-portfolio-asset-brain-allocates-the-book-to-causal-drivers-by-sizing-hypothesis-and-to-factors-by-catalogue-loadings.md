@@ -81,6 +81,19 @@ the position was sized on.
 - Nothing reads these figures to decide. A future limit on driver
   concentration would need its own figure from the owner.
 
+## What it costs
+
+- The desk's book slot grows a second structure every REASON: one horizon
+  and one hedge entry per held position and one figure per loaded factor,
+  bounded by the held book and the catalogue's factor set.
+- `book_purpose` runs `position_obligations` and `Portfolio::exposures` a
+  second time each cycle, beside their existing callers; both are linear
+  in the held book.
+- A single-driver attribution is coarser than a weight-split one (below),
+  accepted because it partitions the book and needs no figure nobody gave.
+- Every `BookView` literal in the tree now names `purpose`, so a test that
+  builds a book states what it is held for or says it states nothing.
+
 ## What would make this wrong
 
 A position sized on several hypotheses at once is attributed to the first
