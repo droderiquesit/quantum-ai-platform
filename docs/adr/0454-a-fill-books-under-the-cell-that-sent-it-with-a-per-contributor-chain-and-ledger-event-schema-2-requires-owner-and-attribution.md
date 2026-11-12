@@ -108,6 +108,22 @@ governs:
   the chain from fill to order to decision to each contributor's share.
 - Every event `qip-ledgerd` already holds stays readable and unchanged.
 
+## What it costs
+
+- One more optional field on `Decision::Filled` and on `PaperFill`, and a
+  `schema` field on `LedgerEvent`: every reader of a fill entry now meets a
+  value it may ignore, and every writer of a fill literal must state it.
+- Schema 2 events carry the contributor map twice in substance — once as
+  the per-strategy postings and once as the chain — on purpose, so the two
+  can be compared and a chain that does not describe its event is refused.
+  That is bytes per fill in `qip-ledgerd`'s store.
+- Two schemas are read forever: schema 1 is never rewritten, so no
+  migration retires it, and every consumer of `LedgerEvent` must accept an
+  event with no owner and no chain.
+- Until the desk states its decision, the ledger holds attributed and
+  unattributed fills side by side, and a report over owners must say which
+  fills had none.
+
 ## What would make this wrong
 
 A cell whose working orders survive a session restart would journal a fill
