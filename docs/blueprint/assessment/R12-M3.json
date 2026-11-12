@@ -2257,25 +2257,26 @@
   },
   {
     "id": "R12-MODEL-3094",
-    "status": "PARTIAL",
-    "current": "Tournament admits Temporary forecasters with expiry and kernel calls retire_expired each cycle (unit-tested); nothing in production spawns a temporary specialist.",
+    "status": "COMPLETE",
+    "current": "qip-kernel's TournamentStage (model_tournament.rs) spawns a TemporarySpecialist on a subject when a resolution leaves the standing population's aggregate residual above SPAWN_RESIDUAL (via WorldModelSpawner::propose_branch, the branch recorded on the review's spawned list). The specialist carries expires_at = spawn + TEMPORARY_LIFETIME, enters the tournament as ForecasterKind::Temporary with that expiry, forecasts from its own Laplace-smoothed outcome frequency on the subject's later questions, and at expiry is retired by Tournament::retire_expired, dropped from the stage's temporaries with its score history, and absent from the next question's entrants. Platform's REASON stage calls observe_reasoning and stage_learn calls learn and journals the review under TOURNAMENT_ORIGIN, so the spawn and retirement run in the production cycle.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/spawning.rs:52 WorldModelSpawner",
-      "backend/crates/services/qip-world-model/tests/spawning.rs",
-      "backend/crates/services/qip-world-model/tests/federation.rs:370"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs struct TemporarySpecialist (expires_at), TournamentStage::observe_outcome (spawn), observe_reasoning (expiry filter on entrants), learn (retire_expired and temporaries.retain)",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs Tournament::retire_expired",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::tests::a_subject_the_population_missed_spawns_a_temporary_specialist_that_competes_until_it_expires",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn (journal_record(review, TOURNAMENT_ORIGIN, ..)) and the REASON call to self.tournament.observe_reasoning"
     ],
-    "gap": "Production spawning of ephemeral specialists. WorldModelSpawner proposes a federation branch (a hypothesis record, parent id, trigger residual) when a residual exceeds a threshold; it does not produce a forecaster, so admitting ForecasterKind::Temporary entrants from it would submit forecasts no model made. A temporary specialist needs a forecasting function per spawned entity (a fitted or rule-based model that answers the tournament question) and a residual signal that reaches the kernel; neither exists, and the live entrants stay the detector class and the panel analysts.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-kernel --lib a_subject_the_population_missed (1 passed); cargo test -p qip-learning-engine --lib tournament (25 passed). Mutation-verified 2026-11-12: `&& false` on observe_reasoning's expiry filter fails at the 'competes' assertion (no temporary forecast); swapping observe_outcome's residual arms fails at 'a population that called it right spawns nothing'; `let live = true` in learn's temporaries.retain fails at 'a retired temporary's score history outlived it'; `&& false` on Tournament::retire_expired's filter fails at review.retired.contains(temporary). Each restored byte-for-byte and the test passed.",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; same missing forecaster-per-entity as R12-MODEL-3089. Left PARTIAL with the corrected gap."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; same missing forecaster-per-entity as R12-MODEL-3089. Left PARTIAL with the corrected gap. 2026-11-12 lane fw-m-01: the 2026-10-18 gap is stale — TournamentStage now spawns a TemporarySpecialist with its own outcome-frequency forecaster on a residual (R12-MODEL-7198) and retires it at expiry; graded COMPLETE against the unit bar (spawned specialist carries an expiry and is excluded once expired) on the four mutations in verification. Scope note for the skeptic: specialists are keyed on the tournament's subjects (instruments a hypothesis names), spawned on a forecast miss; the requirement's examples (election, weather system) are reached only insofar as they are tournament subjects — the bar does not name per-event-type spawning and none is claimed."
   },
   {
     "id": "R12-MODEL-3095",
