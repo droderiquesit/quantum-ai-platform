@@ -486,13 +486,16 @@
   {
     "id": "R12-MODEL-4022",
     "status": "PARTIAL",
-    "current": "Strategies climb HoldoutGate -> PaperGate -> ShadowGate -> PilotGate -> ScaledGate in qip-lifecycle; models are promoted on holdout evaluation only.",
+    "current": "ADR 0436: Platform::promote_model_from refuses a TrainingPipeline or QuantumInformed candidate whose card has no simulation or paper trial, fewer than MIN_TRIAL_ROUNDS rounds, or a last round dated after the promotion (require_completed_trial), before anything changes; the trial's stage line is signed onto the ModelPromotion record. The trial is ModelCard::trial (qip-ai TrialRecord), written only by ModelRegistry::record_trial_round on a two-arm TrialVenue {Simulation, Paper} with no arm that can name a live venue. SelfFitted keeps its shadow gate.",
     "evidence": [
-      "backend/crates/services/qip-lifecycle/src/gates.rs:130 HoldoutGate",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs require_completed_trial",
+      "backend/crates/libs/qip-ai/src/registry.rs TrialRecord, TrialVenue, ModelRegistry::record_trial_round",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs a_training_pipeline_candidate_that_skipped_its_paper_trial_is_refused_and_one_tried_is_eligible",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs a_quantum_informed_candidate_that_beat_its_baseline_is_refused_without_a_paper_trial",
+      "backend/crates/libs/qip-ai/tests/registry.rs a_trial_round_is_refused_when_blank_repeated_or_recorded_after_acceptance",
+      "docs/adr/0436-a-training-pipeline-or-quantum-informed-candidate-is-promoted-only-after-a-recorded-simulation-or-paper-trial.md"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): the gap above is stale. ModelStage::Shadow with MIN_SHADOW_ROUNDS = 3 exists, and the deep brain's own candidates (ModelProducer::SelfFitted) cannot be promoted without it (require_completed_shadow). Open: ModelProducer::TrainingPipeline, the producer Platform::promote_model uses, skips the shadow stage. Requiring it was tried and reverted unpushed: 21 kernel and qip-api tests promote TrainingPipeline fixtures, and nine of them assert exact card stages or exercise the shadow refusal itself, so each needs reworking rather than a shared helper. Shadow rounds also score rmse on later bars, not twin-priced paper fills, so whether the shadow is 'simulation and paper trading' stands under bar part 4.",
+    "gap": "2026-11-12 (lane t50-05): the kernel's promotion now refuses an untried TrainingPipeline or QuantumInformed candidate (ADR 0436, mutation-verified). Open: (1) ModelRegistry::promote and promote_artifact called directly do not read the trial, so a card can reach decision eligibility without one by that door; moving the gate into the registry touches about eighty call sites. (2) Nothing in production records a trial round, and a round's evidence is the caller's sentence: tying each round to simulated fills the event log holds is bar part 4. (3) SelfFitted candidates pass on the shadow stage, which scores rmse on later bars rather than paper fills.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -500,7 +503,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test serving (19 passed) and cargo test -p qip-ai --test registry (4 passed), 2026-11-12; seven mutations each failed the named test at its asserting line",
     "work_item": "",
     "size": "M",
     "notes": "2026-10-18 lane L06: not implemented; requiring a trial record nothing produces would stop every promotion. Left PARTIAL with the corrected gap."
@@ -1614,7 +1617,7 @@
       "backend/crates/runtime/qip-kernel/tests/position_life.rs a_whole_sale_on_the_default_venue_reaches_flat_and_is_attributed_after_settling, an_exited_unsettled_position_is_not_attributed",
       "backend/crates/services/qip-execution-engine/tests/execution.rs an_open_sale_is_worked_down_to_the_long_held_and_an_open_purchase_is_not, a_halted_scope_works_nothing, working_a_remainder_draws_nothing_from_the_venues_random_stream"
     ],
-    "gap": "2026-10-25: skeptic REFUTED on part 2: the kernel walks every desk position discover to attribute through LifeStage::transition and attributes only settled lives, but on the default simulated broker no position reaches Exit (immediate_fill_fraction 0.6 never takes a sale to flat, and a flip needs a borrow reading observe_borrow has no production caller for), so Exit/Settle/Attribute run only in a test; remaining step is a default-path way to exit in full (a fill rule that can reach flat or a production borrow source). 2026-11-12 (wave580 fw-i-01, read, nothing built): confirmed in qip-execution-engine broker.rs SimulatedBroker::submit that each submission fills immediate_fill_fraction (0.6) of the remaining quantity in fixed point, and the remainder is recorded (Action::PartiallyFilled) and never worked, so a sale converges geometrically and at the ninth decimal rounds to a zero fill without reaching flat; the docstring's 'the rest is worked' has no implementation. The remaining design choice is how the remainder is worked (a resting remainder that fills on a later pass, or a residue rule) without inventing a fill rate; not reached in this session.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1625,7 +1628,7 @@
     "verification": "cargo test -p qip-kernel --test position_life; cargo test -p qip-portfolio life_stage",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path. 2026-11-12 lane fw-l-01: option (a) by ADR 0424 — the 2026-10-25 refutation (no position reaches Exit on the default simulated broker) is closed on the default path: the new position_life test uses the shipped SimulationSettings, no observe_borrow, and walks open -> partial sale -> next-cycle working to flat -> Exit -> LEARN before settlement (Exit held) -> LEARN after settlement (Attribute). Mutations, each fired and restored byte-for-byte: work_sales returns before working anything (\"the next cycle did not work the sale's remainder to flat\"); work purchases as well (the book holds 2, same assertion; the unit test's \"a purchase's remainder was worked\"); work the whole remainder past the long (\"a worked sale sold past flat\"); drop the kill-switch check (\"a halted scope's sale was worked\"); draw from the venue's rng in SimulatedBroker::work (\"working moved the venue's random stream\"). observe_borrow keeps no production caller: a borrow source is a data source whose licensing posture qip-data-finder must evaluate first, which is not this lane's to admit."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path. 2026-11-12 lane fw-l-01: option (a) by ADR 0424 — the 2026-10-25 refutation (no position reaches Exit on the default simulated broker) is closed on the default path: the new position_life test uses the shipped SimulationSettings, no observe_borrow, and walks open -> partial sale -> next-cycle working to flat -> Exit -> LEARN before settlement (Exit held) -> LEARN after settlement (Attribute). Mutations, each fired and restored byte-for-byte: work_sales returns before working anything (\"the next cycle did not work the sale's remainder to flat\"); work purchases as well (the book holds 2, same assertion; the unit test's \"a purchase's remainder was worked\"); work the whole remainder past the long (\"a worked sale sold past flat\"); drop the kill-switch check (\"a halted scope's sale was worked\"); draw from the venue's rng in SimulatedBroker::work (\"working moved the venue's random stream\"). observe_borrow keeps no production caller: a borrow source is a data source whose licensing posture qip-data-finder must evaluate first, which is not this lane's to admit. Merge 2026-11-12: lane fw-i-01's read-only finding of the same day (each submission fills 0.6 of the remainder in fixed point and the remainder is never worked, so a sale converges geometrically without reaching flat) is the defect ADR 0424 closes; its gap text is superseded by this grade."
   },
   {
     "id": "R12-ASSET-4072",

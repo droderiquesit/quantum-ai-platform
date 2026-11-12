@@ -2557,3 +2557,188 @@ fn the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_th
     }
     assert_eq!(raised, 1, "the review after the restart was skipped");
 }
+
+/// Sixty quiet days of one product listed twice, the second listing a
+/// basis point or so from the first, from `start()` onward.
+fn two_listings() -> Vec<SensedRecord> {
+    let noise = [0.0, 0.001, 0.002, 0.0015, 0.0005];
+    let mut records = Vec::new();
+    for day in 0..60i64 {
+        let at = start().saturating_add(Duration::from_days(day));
+        let a = 100.0 + (day % 3) as f64 * 0.2;
+        records.push(bar("AAA", at, a));
+        records.push(bar("AAA.EU", at, a * (1.0 - noise[(day % 5) as usize])));
+    }
+    records
+}
+
+/// One more day of both listings, the second `discount` below the first.
+fn listing_day(day: i64, discount: f64) -> (Vec<SensedRecord>, Timestamp) {
+    let at = start().saturating_add(Duration::from_days(day));
+    let a = 100.0 + (day % 3) as f64 * 0.2;
+    (
+        vec![bar("AAA", at, a), bar("AAA.EU", at, a * (1.0 - discount))],
+        at,
+    )
+}
+
+fn sentinel_research(on: bool) -> ResearchLoop {
+    let config = ResearchConfig {
+        opportunity_sentinel: on,
+        ..ResearchConfig::default()
+    };
+    ResearchLoop::new(config, BTreeMap::new())
+        .and_then(|l| {
+            l.with_precursors(qip_opportunity_engine::PrecursorConfig {
+                regional_pairs: BTreeSet::from([("AAA".to_string(), "AAA.EU".to_string())]),
+                ..qip_opportunity_engine::PrecursorConfig::default()
+            })
+        })
+        .unwrap_or_else(|e| panic!("the research loop assembles: {e}"))
+}
+
+/// Sweep once per new day, each day's discount from `discounts`.
+fn sweep_listings(
+    loop_: &mut ResearchLoop,
+    discounts: &[f64],
+) -> Vec<qip_deepbrain::research::ResearchRound> {
+    let mut platform = platform();
+    platform.observe(two_listings());
+    assert_eq!(platform.price_history().len(), 2, "premise: two listings");
+    discounts
+        .iter()
+        .enumerate()
+        .map(|(k, discount)| {
+            let (records, at) = listing_day(60 + k as i64, *discount);
+            platform.observe(records);
+            loop_
+                .sweep(&platform, at, &set(&[]), &set(&["US"]))
+                .unwrap_or_else(|e| panic!("{e}"))
+        })
+        .collect()
+}
+
+fn precursor_events(round: &qip_deepbrain::research::ResearchRound) -> Vec<String> {
+    round
+        .signals
+        .iter()
+        .filter(|s| s.subject().starts_with("precursor:"))
+        .filter(|s| round.attention_events.iter().any(|e| e.signal_id == s.id()))
+        .map(|s| s.subject().to_string())
+        .collect()
+}
+
+/// R12-AMBIENT-3069: a price gap between two listings of one product,
+/// widening across three sweeps while still inside the band an anomaly
+/// would need, reaches the attention router as one research-task
+/// opportunity signal on the third — before any detector fires — and with
+/// the sentinel switched off the same tape routes nothing of the kind.
+///
+/// The failure this prevents: a dislocation noticed only once it is one,
+/// after it has cost money. Mutation: drop the `precursors_now` routing
+/// loop in `sweep_over` — the routed-signal assertion fails; read the
+/// switch as always on — the disabled half fails.
+#[test]
+fn a_widening_regional_gap_routes_one_precursor_before_any_anomaly_and_none_when_the_sentinel_is_off()
+ {
+    let widening = [0.0021, 0.0024, 0.0027];
+    let mut on = sentinel_research(true);
+    let rounds = sweep_listings(&mut on, &widening);
+    for round in &rounds {
+        assert!(
+            round
+                .signals
+                .iter()
+                .all(|s| !s.subject().contains("AAA") || s.subject().starts_with("precursor:")),
+            "premise: no detector flagged either listing: {:?}",
+            round.signals
+        );
+    }
+    assert!(rounds[0].precursors.is_empty() && rounds[1].precursors.is_empty());
+    assert_eq!(rounds[2].precursors.len(), 1, "{:?}", rounds[2].precursors);
+    let found = &rounds[2].precursors[0];
+    assert_eq!(
+        found.family,
+        qip_opportunity_engine::PrecursorFamily::CrossRegion
+    );
+    assert!(
+        found.scores.iter().all(|s| *s < found.threshold),
+        "a precursor is below the threshold: {found:?}"
+    );
+    assert_eq!(
+        precursor_events(&rounds[2]),
+        vec!["precursor:cross_region:AAA|AAA.EU".to_string()],
+        "the precursor reaches the attention router"
+    );
+    let signal = rounds[2]
+        .signals
+        .iter()
+        .find(|s| s.subject().starts_with("precursor:"))
+        .unwrap_or_else(|| panic!("a precursor signal"));
+    assert_eq!(
+        signal.class(),
+        qip_contracts::ambient::SignalClass::Opportunity
+    );
+    assert_eq!(
+        signal.wake_targets(),
+        &[qip_contracts::ambient::Pathway::ResearchTask]
+    );
+
+    let mut off = sentinel_research(false);
+    let quiet = sweep_listings(&mut off, &widening);
+    assert!(
+        quiet
+            .iter()
+            .all(|r| r.precursors.is_empty() && precursor_events(r).is_empty()),
+        "a disabled sentinel raises nothing: {:?}",
+        quiet.iter().map(|r| &r.precursors).collect::<Vec<_>>()
+    );
+}
+
+/// The other half of the bar: a gap that holds still is no precursor, and
+/// one that jumps past the threshold is the anomaly path's and not a
+/// precursor. Mutation: drop the `reading.score >= reading.threshold` arm
+/// in `PrecursorScanner::observe` — the jump raises one.
+#[test]
+fn a_steady_regional_gap_raises_no_precursor_and_one_already_past_its_threshold_is_not_one() {
+    let mut steady = sentinel_research(true);
+    let flat = sweep_listings(&mut steady, &[0.0024, 0.0024, 0.0024]);
+    assert!(
+        flat.iter().all(|r| r.precursors.is_empty()),
+        "{:?}",
+        flat.iter().map(|r| &r.precursors).collect::<Vec<_>>()
+    );
+
+    let mut jumping = sentinel_research(true);
+    let jumped = sweep_listings(&mut jumping, &[0.0021, 0.0024, 0.02]);
+    assert!(
+        jumped.iter().all(|r| r.precursors.is_empty()),
+        "{:?}",
+        jumped.iter().map(|r| &r.precursors).collect::<Vec<_>>()
+    );
+}
+
+/// The switch reads `on` and `off` and refuses anything else, so a typo
+/// cannot quietly turn the sentinel off.
+#[test]
+fn the_opportunity_sentinel_switch_reads_on_and_off_and_refuses_anything_else() {
+    let read = |value: &'static str| {
+        ResearchConfig::from_lookup(&move |name: &str| {
+            (name == qip_deepbrain::research::OPPORTUNITY_SENTINEL_VARIABLE)
+                .then(|| value.to_string())
+        })
+    };
+    let unset = ResearchConfig::from_lookup(&|_: &str| None).unwrap_or_else(|e| panic!("{e}"));
+    assert!(unset.opportunity_sentinel, "on by default");
+    assert!(
+        !read("off")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .opportunity_sentinel
+    );
+    assert!(
+        read("on")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .opportunity_sentinel
+    );
+    assert!(read("of").is_err(), "a typo is refused");
+}

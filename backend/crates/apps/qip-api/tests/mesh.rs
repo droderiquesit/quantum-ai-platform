@@ -2714,6 +2714,16 @@ fn the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_t
         start(),
     )?;
     tested(&mut registry, &teacher)?;
+    // ADR 0436: a training-pipeline candidate is promoted only out of a
+    // completed simulation or paper trial.
+    for round in 1..=i64::from(qip_ai::registry::MIN_TRIAL_ROUNDS) {
+        registry.record_trial_round(
+            &registration.reference,
+            qip_ai::registry::TrialVenue::Paper,
+            "staged by the test",
+            start().saturating_add(Duration::from_secs(round)),
+        )?;
+    }
     assert!(
         registration.passed,
         "premise: the fit cleared the skill bar"
