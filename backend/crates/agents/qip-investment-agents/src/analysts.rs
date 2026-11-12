@@ -249,7 +249,7 @@ impl Agent for MacroAnalyst {
         if !missing.is_empty() {
             builder = builder.missing(missing);
         }
-        builder.build()
+        builder.build_against(brief)
     }
 }
 
@@ -392,7 +392,7 @@ impl Agent for EquityAnalyst {
             "realised volatility doubles, making the reading noise".to_string(),
         ])
         .caveats(caveats)
-        .build()
+        .build_against(brief)
     }
 }
 
@@ -559,7 +559,7 @@ impl Agent for CreditAnalyst {
             }
         }
 
-        builder.build()
+        builder.build_against(brief)
     }
 }
 
@@ -714,7 +714,7 @@ impl Agent for DerivativesAnalyst {
             "realised volatility is backward looking; the premium may be compensation for a known future event"
                 .to_string(),
         ])
-        .build()
+        .build_against(brief)
     }
 }
 
@@ -899,7 +899,7 @@ impl Agent for CommoditiesAnalyst {
         .caveats(vec![
             "roll yield is a carry component, not a directional view on the spot price".to_string(),
         ])
-        .build()
+        .build_against(brief)
     }
 }
 
@@ -997,7 +997,7 @@ impl Agent for FxRatesAnalyst {
                 names::REALISED_VOLATILITY,
                 subject.as_str()
             )])
-            .build();
+            .build_against(brief);
         };
 
         let volatility = volatility_fact.value;
@@ -1050,7 +1050,7 @@ impl Agent for FxRatesAnalyst {
             "carry trades lose money in the tail; this reading says nothing about the tail"
                 .to_string(),
         ])
-        .build()
+        .build_against(brief)
     }
 }
 
@@ -1214,6 +1214,6 @@ impl Agent for AlternativeDataAnalyst {
         if !missing.is_empty() {
             builder = builder.missing(missing);
         }
-        builder.build()
+        builder.build_against(brief)
     }
 }
