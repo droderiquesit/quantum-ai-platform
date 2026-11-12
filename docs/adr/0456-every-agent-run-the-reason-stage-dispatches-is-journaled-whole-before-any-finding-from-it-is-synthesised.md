@@ -87,6 +87,19 @@ R12-AMBIENT-9029 therefore stays PARTIAL.
   cycle with no thesis rather than a thesis with no record, chosen on
   purpose (principle 3, fail closed).
 
+## What would make this wrong
+
+- A Fabric task/result interface that carries briefs to specialists out of
+  process. Its result envelope would then be the record of a run, and
+  journaling the in-process `AgentRunRecord` beside it would be a second
+  account of the same fact; one of the two should go.
+- A roster large enough, or a cadence fast enough, that one frame per run
+  is a log-volume problem. The fix would be measured before it is chosen,
+  and it must not drop denied accesses from the record.
+- Evidence that a stalled log should not stop REASON: for instance, a
+  reproducible thesis that does not depend on the panel's findings. No
+  such thesis exists today.
+
 ## Consequences
 
 - A replay can now answer which specialist said what, under which manifest,

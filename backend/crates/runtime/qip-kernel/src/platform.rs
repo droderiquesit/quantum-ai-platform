@@ -12077,22 +12077,6 @@ impl Platform {
         &self.organisation
     }
 
-    /// Seat a different organisation, for `agent_journal`'s tests, which need
-    /// an agent on the panel that reaches past its manifest. Test-only: the
-    /// replacement still passes `Organisation::new`'s roster validation, but
-    /// a deployment has no reason to swap its panel after assembly.
-    #[cfg(test)]
-    pub(crate) fn replace_organisation(&mut self, organisation: Organisation) {
-        self.organisation = organisation;
-    }
-
-    /// Swap the event log, for `agent_journal`'s fail-closed test, which
-    /// needs a log that refuses every append.
-    #[cfg(test)]
-    pub(crate) fn replace_event_log(&mut self, event_log: EventLog) {
-        self.event_log = event_log;
-    }
-
     /// Re-run the governance review at a given instant.
     ///
     /// Exposed because a long-running platform will eventually be operating on
@@ -30632,6 +30616,27 @@ fn mechanism_for(
         | AnomalyKind::SentimentShift
         | AnomalyKind::AlternativeDataDivergence
         | AnomalyKind::UnexplainedMove => None,
+    }
+}
+
+/// Test-only seams for `agent_journal`'s tests (ADR 0456). Kept in one block
+/// here, after every shipped `impl Platform` method, because
+/// `qip-acceptance`'s `api_boundary` enumerates the platform's mutators by
+/// reading this file up to its first `#[cfg(test)]`: a test seam placed among
+/// the shipped methods hid every mutator after it from that check.
+#[cfg(test)]
+impl Platform {
+    /// Seat a different organisation, for a test that needs an agent on the
+    /// panel that reaches past its manifest. The replacement still passes
+    /// `Organisation::new`'s roster validation.
+    pub(crate) fn replace_organisation(&mut self, organisation: Organisation) {
+        self.organisation = organisation;
+    }
+
+    /// Swap the event log, for the fail-closed test, which needs a log that
+    /// refuses every append.
+    pub(crate) fn replace_event_log(&mut self, event_log: EventLog) {
+        self.event_log = event_log;
     }
 }
 
