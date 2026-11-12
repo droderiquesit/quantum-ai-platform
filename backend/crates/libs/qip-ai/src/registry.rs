@@ -921,13 +921,36 @@ impl ModelRegistry {
     /// Register `card`, or replace the card already held under its reference.
     ///
     /// Refuses a new reference once the registry holds [`MAX_CARDS`] cards
-    /// (R12-MODEL-9003). A replacement is always admitted: it does not grow
-    /// the registry. Refused rather than evicted, because a card the event log
-    /// still names and the registry silently dropped is a replay that cannot
-    /// find it; the refusal is the visible control, and the caller counts and
-    /// journals it.
+    /// (R12-MODEL-9003). A replacement does not grow the registry and is
+    /// admitted at the cap. Refused rather than evicted, because a card the
+    /// event log still names and the registry silently dropped is a replay
+    /// that cannot find it; the refusal is the visible control, and the
+    /// caller counts and journals it.
+    ///
+    /// A replacement may revise what is recorded about a version and never
+    /// which artifact the version names (R12-COVERAGE-7170): once the held
+    /// card is bound to an artifact digest, a card under the same reference
+    /// carrying a different digest, or none, is refused. A version here is a
+    /// string and is not ordered; what makes the registry versioned is that
+    /// `name@version` names one artifact, every version is its own card, and
+    /// a successor is a new reference beside the old one.
+    /// [`Self::promote_artifact`] and [`Self::register_package`] already held
+    /// that line; this door did not, so re-registering a promoted version
+    /// swapped the bytes every earlier decision cited without a refusal.
     pub fn register(&mut self, card: ModelCard) -> Result<()> {
         let reference = card.reference();
+        if let Some(bound) = self
+            .cards
+            .get(&reference)
+            .and_then(|held| held.artifact_digest.as_deref())
+            && card.artifact_digest.as_deref() != Some(bound)
+        {
+            return Err(Error::denied(format!(
+                "{reference} is bound to artifact {bound} and the card offered carries {}; a \
+                 version names one artifact, so register the new bytes under a new version",
+                card.artifact_digest.as_deref().unwrap_or("no artifact")
+            )));
+        }
         // ADR 0198: `promote` is the one door into production for a model the
         // platform fitted for itself, and this seam honours the same rule, so
         // a card built at `Production` cannot walk around the shadow stage

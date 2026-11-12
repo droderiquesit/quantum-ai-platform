@@ -68,8 +68,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// The variable naming what the tick lake may keep per licensing class, as
-/// `class=canonical` or `class=canonical+raw`, comma-separated — for example
-/// `public=canonical+raw,internal=canonical`. Unset, no arm captures.
+/// `class=canonical`, comma-separated — for example
+/// `public=canonical,internal=canonical`. Unset, no arm captures.
+///
+/// `canonical+raw` is refused and stops the process (ADR 0416): every arm
+/// here is a connector, a connector's payload is external content that is
+/// discarded once extracted (R12-DATA-2014), and `captured_of` hands the lake
+/// the payload's hash and never its bytes. A raw right granted here could
+/// therefore keep nothing, and accepting it would let an operator believe raw
+/// bytes were retained when they were not.
 ///
 /// Read here and not defaulted: a retention right is a reading of a vendor's
 /// terms, and a right nobody evaluated is not a right. A class the variable
@@ -97,10 +104,10 @@ pub struct TickLakeSettings {
 
 impl TickLakeSettings {
     /// `None` when the variable is unset. Refuses a blank list, an unknown
-    /// class, a class named twice, and any right other than `canonical` or
-    /// `canonical+raw` — raw bytes kept without the canonical record would
-    /// be a lake nothing can replay, and `none` is said by leaving the class
-    /// out.
+    /// class, a class named twice, `canonical+raw` (ADR 0416: a connector's
+    /// payload never reaches the raw slot), and any right other than
+    /// `canonical` — raw bytes kept without the canonical record would be a
+    /// lake nothing can replay, and `none` is said by leaving the class out.
     pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Option<Self>> {
         let Some(raw) = lookup(TICK_LAKE_RETENTION_VARIABLE) else {
             return Ok(None);
@@ -110,7 +117,7 @@ impl TickLakeSettings {
             let Some((class, right)) = entry.split_once('=') else {
                 return Err(Error::invalid(format!(
                     "{TICK_LAKE_RETENTION_VARIABLE} entry `{entry}` is not `class=right`; name a \
-                     licensing class and `canonical` or `canonical+raw`"
+                     licensing class and `canonical`"
                 )));
             };
             let class = class.trim().to_ascii_lowercase();
@@ -125,14 +132,18 @@ impl TickLakeSettings {
                     canonical: true,
                     raw: false,
                 },
-                "canonical+raw" => RetentionRight {
-                    canonical: true,
-                    raw: true,
-                },
+                "canonical+raw" => {
+                    return Err(Error::invalid(format!(
+                        "{TICK_LAKE_RETENTION_VARIABLE} gives `{class}` the right \
+                         `canonical+raw`, which a connector arm cannot use: a connector's \
+                         payload is external content and the lake keeps its hash, never its \
+                         bytes (ADR 0416, R12-DATA-2014); grant `canonical`"
+                    )));
+                }
                 other => {
                     return Err(Error::invalid(format!(
                         "{TICK_LAKE_RETENTION_VARIABLE} gives `{class}` the right `{other}`; \
-                         only `canonical` and `canonical+raw` exist, and a class that may keep \
+                         only `canonical` exists for a connector arm, and a class that may keep \
                          nothing is left out of the list"
                     )));
                 }
@@ -766,13 +777,13 @@ mod tests {
             TickLakeSettings::from_lookup(&|_| None)?.is_none(),
             "unset is no lake"
         );
-        let settings = lake("public=canonical+raw, internal=canonical")?
+        let settings = lake("public=canonical, internal=canonical")?
             .ok_or_else(|| qip_core::error::Error::not_found("settings"))?;
         assert_eq!(
             settings.retention.get("public"),
             Some(&RetentionRight {
                 canonical: true,
-                raw: true
+                raw: false
             })
         );
         assert_eq!(
@@ -787,6 +798,36 @@ mod tests {
         assert!(lake("vendorx=canonical").is_err());
         assert!(lake("public=canonical,public=canonical+raw").is_err());
         assert!(lake("public").is_err());
+        Ok(())
+    }
+
+    /// ADR 0416: every arm here is a connector, and a connector's payload
+    /// is external content the lake keeps the hash of and never the bytes
+    /// (R12-DATA-2014). Until 2026-11-12 `canonical+raw` was admitted, and a
+    /// lake given it sealed a fetched ticker object whole in its raw slot.
+    /// The right is now refused by name, so a deployment that asks for raw
+    /// retention stops rather than running on a right it cannot have. The
+    /// premise — the same class admitted at `canonical` — keeps the refusal
+    /// from passing on a parser that refuses everything.
+    ///
+    /// Mutation: map `canonical+raw` back to `RetentionRight { canonical:
+    /// true, raw: true }` — the refusal assertion fails.
+    #[test]
+    fn a_raw_retention_right_is_refused_because_a_connector_payload_never_reaches_the_raw_slot()
+    -> Result<()> {
+        assert!(
+            lake("public=canonical")?.is_some(),
+            "premise: the class is admitted at canonical"
+        );
+        let refused = match lake("public=canonical+raw") {
+            Ok(_) => panic!("a raw retention right was admitted for a connector arm"),
+            Err(error) => error.message().to_string(),
+        };
+        assert!(
+            refused.contains("ADR 0416") && refused.contains("`canonical+raw`"),
+            "the refusal does not name its reason: {refused}"
+        );
+        assert!(lake("public=canonical, internal=canonical+raw").is_err());
         Ok(())
     }
 }

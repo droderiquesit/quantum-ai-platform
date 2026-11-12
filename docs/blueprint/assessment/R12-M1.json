@@ -930,7 +930,7 @@
       "qip-storage/tests/lake.rs::raw_bytes_are_kept_only_where_the_entitlement_permits_and_the_hash_is_kept_either_way",
       "qip-deepbrain/src/connectors.rs::tests::a_tick_lake_retention_list_admits_only_what_it_names"
     ],
-    "gap": "Carry raw venue bytes (or at least their hash) from the connector into CapturedMarketEvent so the hash-only rule is exercised in production; condition retention of the platform's own records on legal/policy obligations rather than a constant; rights per venue rather than per licensing class; a deployment that sets the retention variable (none does).",
+    "gap": "2026-11-12 fix-c-01: the connector half of the first item is settled by ADR 0416: captured_of carries the payload's hash and never its bytes (connector/evidence.rs captured_of), so every connector capture is hash-only in production and the deep brain refuses `canonical+raw`; raw bytes reach the lake only from the platform's own simulated depth (ADR 0181). The current text's 'raw: None and raw_sha256: None' describes the path before 2026-10-11. What remains is unchanged: retention of the platform's own records conditioned on legal and policy obligations rather than a constant; rights per venue rather than per licensing class; a deployment that sets the retention variable. Earlier: Carry raw venue bytes (or at least their hash) from the connector into CapturedMarketEvent so the hash-only rule is exercised in production; condition retention of the platform's own records on legal/policy obligations rather than a constant; rights per venue rather than per licensing class; a deployment that sets the retention variable (none does).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3755,7 +3755,7 @@
   {
     "id": "R12-MODEL-1159",
     "status": "PARTIAL",
-    "current": "qip-evolution generate/mutate/promotion and qip-lifecycle demotion run from deepbrain; scale of thousands not measured.",
+    "current": "qip-evolution generate/mutate/promotion and qip-lifecycle demotion run from deepbrain. Since 2026-11-12 (ADR 0408) every candidate the factory registers is stressed against standard_library() at the largest position its run held, at MarketFactor's beta and the backtest's own cost frictions, and the result is reported on the round, not gated. Simulate has no step of its own, paper trade has no live feed, and decay and retire need a human-approved pilot.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/evolution.rs:36",
       "backend/crates/services/qip-lifecycle/src/demotion.rs",
@@ -3763,9 +3763,12 @@
       "backend/crates/services/qip-lifecycle/tests/lifecycle.rs::a_thousand_strategies_promote_and_retire_through_the_ledger_with_the_live_set_bounded_and_a_retired_id_still_refused",
       "backend/crates/runtime/qip-kernel/src/central/factory.rs StrategyFactory::register live-count refusal",
       "backend/crates/runtime/qip-kernel/tests/central.rs::a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused",
-      "backend/crates/services/qip-evolution/tests/evolution.rs:413 the_same_challenger_wins_a_small_search_and_loses_a_large_one (5,000 generated and counted)"
+      "backend/crates/services/qip-evolution/tests/evolution.rs:413 the_same_challenger_wins_a_small_search_and_loses_a_large_one (5,000 generated and counted)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs EvolutionEngine::stress_peak, peak_exposure, RoundSummary::record_stress (ADR 0408)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs tests::every_registered_candidate_is_stressed_against_the_whole_scenario_library",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs tests::a_candidate_is_stressed_at_the_largest_position_its_run_held_and_not_the_one_it_ended_on"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): the in-lane skeptic REFUTED it. Of the eight scope items, generate and backtest are reached from qip-deepbrain's EvolutionEngine, but simulate has no step of its own and stress has no code. Paper trade is unreachable: PaperEvidence has no production constructor, so no strategy reaches GateStage::Paper. Decay and retire are reachable only after a promotion past Paper, so they fire on nothing on the default path. The 1,000-strategy measure drives the ledger directly, not the factory from a root. The bounded live set (MAX_LIVE_STRATEGIES, mutation-verified at central.rs) holds.",
+    "gap": "2026-11-12 (session mod-a-01, ADR 0408): stress is built: every registered candidate is stressed against the scenario library on the deep brain's path, measured and not gated because no tolerance for a candidate's stressed loss has been given. What remains: (1) simulate has no step of its own beyond the backtest's simulation clock (in repository); (2) paper trade needs PaperEvidence against a live feed, and the deep brain's only stream is the synthetic exchange, so it needs a deployed licensed source (outside the repository); (3) decay and retire fire only on a strategy with a pilot baseline, and Pilot requires a human approval, so neither fires on the default path without a person; (4) the 1,000-strategy measure drives the ledger, not the factory from a root (in repository). 2026-10-30 (lane L2-INTEL): the in-lane skeptic REFUTED it. Of the eight scope items, generate and backtest are reached from qip-deepbrain's EvolutionEngine, but simulate has no step of its own and stress has no code. Paper trade is unreachable: PaperEvidence has no production constructor, so no strategy reaches GateStage::Paper. Decay and retire are reachable only after a promotion past Paper, so they fire on nothing on the default path. The 1,000-strategy measure drives the ledger directly, not the factory from a root. The bounded live set (MAX_LIVE_STRATEGIES, mutation-verified at central.rs) holds.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3776,7 +3779,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL. 2026-10-30 L2-INTEL: mutation live >= usize::MAX in central/factory.rs fails a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused; restored by copy + cmp."
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL. 2026-10-30 L2-INTEL: mutation live >= usize::MAX in central/factory.rs fails a_full_desk_refuses_a_new_candidate_until_one_retires_and_a_retired_id_stays_refused; restored by copy + cmp. 2026-11-12 mod-a-01: mutations, each restored by cp + cmp: record_stress replaced by a discard failed every_registered_candidate_is_stressed_against_the_whole_scenario_library (2 registered and 0 stressed); peak_exposure taking the last non-zero position failed a_candidate_is_stressed_at_the_largest_position_its_run_held_and_not_the_one_it_ended_on (Decimal(50) against Decimal(300))."
   },
   {
     "id": "R12-ASSET-1160",
