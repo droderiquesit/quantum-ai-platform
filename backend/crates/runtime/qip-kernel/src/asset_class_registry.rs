@@ -1204,6 +1204,72 @@ mod tests {
         Ok(())
     }
 
+    /// R12-COVERAGE-5098's own mutation, for the two classes that row names:
+    /// with the `ForeignExchange` and `Cash` records removed, an FX spot and
+    /// a cash instrument are each refused by the admission `Platform::new`
+    /// calls, naming its class. Until this existed only `DigitalAsset` was
+    /// ever withdrawn, so a `ForeignExchange` or `Cash` record that `admit`
+    /// stopped consulting would have left every test green.
+    ///
+    /// The two are removed together, from the table itself, because each
+    /// hedges into the other: `without` refuses to withdraw either alone, as
+    /// `shipped` would refuse such a table, and this test asserts that too.
+    #[test]
+    fn removing_the_fx_and_cash_records_makes_their_instruments_refused_by_the_same_admission()
+    -> Result<()> {
+        use qip_financial::asset_class::InstrumentType;
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::quality::Provenance;
+        let at = qip_core::Timestamp::from_secs(1_760_000_000);
+        let instrument = |id: &str, kind: InstrumentType| {
+            FinancialObject::builder(
+                qip_core::ObjectId::from_string(id),
+                id,
+                kind,
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("SIM")
+            .price(Decimal::ONE)
+            .tick_size(Decimal::parse("0.00001").ok_or_else(|| Error::invalid("tick"))?)
+            .provenance(Provenance::synthetic("asset-class-test", at))
+            .build(at)
+        };
+        let fx = instrument("obj-EURUSD", InstrumentType::FxSpot)?;
+        let cash = instrument("obj-USD-CASH", InstrumentType::Cash)?;
+        assert_eq!(fx.asset_class, AssetClass::ForeignExchange);
+        assert_eq!(cash.asset_class, AssetClass::Cash);
+        let shipped = AssetClassRegistry::shipped()?;
+        // Premise: the shipped table admits both.
+        shipped.admit(&fx)?;
+        shipped.admit(&cash)?;
+        for class in [AssetClass::ForeignExchange, AssetClass::Cash] {
+            assert!(
+                shipped.clone().without(class).is_err(),
+                "{} was withdrawn alone while its sibling hedges into it",
+                class.as_str()
+            );
+        }
+        let mut narrowed = shipped;
+        narrowed.records.remove(&AssetClass::ForeignExchange);
+        narrowed.records.remove(&AssetClass::Cash);
+        for object in [&fx, &cash] {
+            let refused = narrowed
+                .admit(object)
+                .expect_err("an instrument of a removed class was admitted");
+            let expected = format!(
+                "{} is a {} and no record registers",
+                object.object_id.as_str(),
+                object.asset_class.as_str()
+            );
+            assert!(
+                refused.message().contains(&expected),
+                "{}",
+                refused.message()
+            );
+        }
+        Ok(())
+    }
+
     /// R12-ASSET-1015: the registry maps each of the six product kinds §1.1
     /// names — liquid, event-driven, illiquid, private, tokenized, physical —
     /// to its own adapter and a lifecycle engine, and a class it does not
