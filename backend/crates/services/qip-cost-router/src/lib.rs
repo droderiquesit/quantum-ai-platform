@@ -113,6 +113,7 @@
 //! # }
 //! ```
 
+pub mod benefit;
 pub mod context;
 pub mod data;
 pub mod engine;
@@ -121,14 +122,15 @@ pub mod reputation;
 pub mod router;
 pub mod tier;
 
+pub use benefit::{ModelBenefit, SpendBook};
 pub use context::{
     Conditions, DecisionContext, Determinism, Horizon, MarketRegime, Region, VolatilityRegime,
 };
 pub use data::{DataCostModel, DataReads, DataSource};
 pub use engine::CostEngine;
 pub use ledger::{
-    Attribution, ComputeLedger, CostDimension, CostEntry, NO_MODEL, TierCharge, UNATTRIBUTED,
-    report_by,
+    Attribution, ComputeLedger, CostDimension, CostEntry, CostReport, NO_MODEL, TierCharge,
+    UNATTRIBUTED, report_by,
 };
 pub use reputation::{ContextualReputation, Judgement, Rated, Record, ReputationBook};
 pub use router::{

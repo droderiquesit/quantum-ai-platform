@@ -70,6 +70,101 @@ fn a_type_above_version_one_enters_the_ontology_only_through_an_evaluated_extens
     assert_eq!(registry.type_count(), 2, "both versions are kept");
 }
 
+/// R12-EXPAND-6056's bar: an Ontology Registry entry missing a declared field
+/// is refused. A type registered with a blank schema is a type every detector
+/// reading it would consult and find nothing in — the registry would say the
+/// type exists while recording no shape for it, and a blank name or
+/// description is an entry nobody can find or explain. Each is refused at
+/// `register` and leaves the registry empty, and a stored entry whose JSON
+/// lacks a field is refused at `decode` naming serde's missing field. The
+/// full spec is admitted first, so the refusals are of the blank field and
+/// not of the fixture. Mutation: drop the `schema` check in
+/// `OntologyTypeSpec::validate` — the blank-schema spec is registered and
+/// `get_latest` finds it.
+#[test]
+fn an_ontology_entry_missing_a_declared_field_is_refused_and_registers_nothing() {
+    let full = || OntologyTypeSpec {
+        family: OntologyTypeFamily::Asset,
+        name: "equity".to_string(),
+        version: 1,
+        schema: r#"{"type":"object","required":["isin"]}"#.to_string(),
+        description: "a listed share".to_string(),
+    };
+    let mut admitted = OntologyRegistry::new();
+    admitted
+        .register(full())
+        .expect("premise: the full spec is admitted");
+    assert!(
+        admitted
+            .get_latest(OntologyTypeFamily::Asset, "equity")
+            .is_some(),
+        "premise: an admitted spec is found"
+    );
+
+    let blanks = [
+        (
+            "name",
+            OntologyTypeSpec {
+                name: " ".to_string(),
+                ..full()
+            },
+        ),
+        (
+            "schema",
+            OntologyTypeSpec {
+                schema: String::new(),
+                ..full()
+            },
+        ),
+        (
+            "description",
+            OntologyTypeSpec {
+                description: "\t".to_string(),
+                ..full()
+            },
+        ),
+    ];
+    for (field, spec) in blanks {
+        let mut registry = OntologyRegistry::new();
+        let refused = registry
+            .register(spec.clone())
+            .expect_err(&format!("a spec with a blank {field} was registered"));
+        assert!(
+            refused
+                .message()
+                .contains(&format!("OntologyTypeSpec.{field} is blank")),
+            "the blank {field} was refused for another reason: {refused}"
+        );
+        assert_eq!(registry.type_count(), 0, "blank {field} left an entry");
+        assert!(
+            registry
+                .get_latest(OntologyTypeFamily::Asset, &spec.name)
+                .is_none(),
+            "blank {field} is found by get_latest"
+        );
+    }
+
+    let object = serde_json::to_value(full()).unwrap();
+    let object = object.as_object().unwrap();
+    assert!(
+        OntologyTypeSpec::decode(&serde_json::to_vec(object).unwrap()).is_ok(),
+        "premise: the full spec decodes"
+    );
+    assert_eq!(object.len(), 5, "premise: five declared fields");
+    for key in object.keys() {
+        let mut missing = object.clone();
+        missing.remove(key);
+        let refused = OntologyTypeSpec::decode(&serde_json::to_vec(&missing).unwrap())
+            .expect_err(&format!("a spec without `{key}` decoded"));
+        assert!(
+            refused
+                .to_string()
+                .contains(&format!("missing field `{key}`")),
+            "a spec without `{key}` was refused for another reason: {refused}"
+        );
+    }
+}
+
 /// ADR 0198: a lesson's promotion policy cannot have its floors lowered to a
 /// gate that cannot refuse. Mutation: drop the `minimum_support < 2` refusal
 /// in `PromotionPolicy::new` — the zero-support policy is admitted and the
@@ -359,7 +454,8 @@ fn a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_versi
 
 mod memory_registry {
     use qip_agents::memory::{
-        Disposition, Episode, EpisodeOutcome, MemoryRegistry, ResearchMemory,
+        Disposition, Episode, EpisodeOutcome, MemoryRegistry, RETAINED_MEMORY_ENTRIES,
+        ResearchMemory,
     };
     use qip_contracts::expansion::{MemoryEntry, MemoryKind, RetentionPolicy, ValuePolicy};
     use qip_core::ids::AgentRunId;
@@ -488,6 +584,98 @@ mod memory_registry {
         open.outcome = None;
         assert_eq!(registry.consult(&open), None);
         assert_eq!(registry.retained_for("analyst-a"), 0);
+    }
+
+    fn valued(id: &str, created_at_ms: u64, importance: f64, max_age_ms: u64) -> MemoryEntry {
+        let mut e = entry(MemoryKind::Episodic, max_age_ms);
+        e.id = id.to_string();
+        e.created_at_ms = created_at_ms;
+        e.importance = importance;
+        e
+    }
+
+    /// R12-EXPAND-6057: at capacity the registry gives up the entry its own
+    /// value policy rates least, not the oldest. The oldest entry is a
+    /// costly failure (importance 0.9); a later one sits below its 0.3
+    /// threshold, and a third has lower importance but clears its own lower
+    /// threshold. First-in-first-out would drop the failure; ranking by raw
+    /// importance would drop the third. Mutations: evict index 0 in `admit`
+    /// — the failure is gone; drop the threshold key from the ordering —
+    /// the modest entry is gone.
+    #[test]
+    fn a_full_registry_evicts_the_entry_below_its_value_threshold_rather_than_the_oldest() {
+        let mut registry = MemoryRegistry::standard();
+        let year = 365 * 24 * 60 * 60 * 1_000;
+        let base = 1_760_000_000_000;
+        registry
+            .admit(valued("costly-miss", base, 0.9, year))
+            .unwrap();
+        registry
+            .admit(valued("unsurprising", base + 1, 0.25, year))
+            .unwrap();
+        // Lower importance still, but above its own, lower threshold: the
+        // value policy, not the raw importance, decides.
+        let mut modest = valued("modest-but-valued", base + 2, 0.2, year);
+        modest.value_policy.importance_threshold = 0.1;
+        registry.admit(modest).unwrap();
+        for n in 3..RETAINED_MEMORY_ENTRIES as u64 {
+            registry
+                .admit(valued(&format!("call-{n}"), base + n, 0.6, year))
+                .unwrap();
+        }
+        assert_eq!(
+            registry.entries().count(),
+            RETAINED_MEMORY_ENTRIES,
+            "premise: the working set is full"
+        );
+        registry
+            .admit(valued("newest", base + 10_000, 0.6, year))
+            .unwrap();
+        let ids: Vec<&str> = registry.entries().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids.len(), RETAINED_MEMORY_ENTRIES);
+        assert!(
+            ids.contains(&"costly-miss"),
+            "the oldest, valuable entry stays"
+        );
+        assert!(
+            !ids.contains(&"unsurprising"),
+            "the entry below its threshold left"
+        );
+        assert!(ids.contains(&"modest-but-valued"), "{ids:?}");
+        assert_eq!(registry.evicted_for_value(), 1);
+        assert_eq!(registry.expired(), 0);
+    }
+
+    /// R12-EXPAND-6057: an entry leaves once its own declared retention age
+    /// has passed by the registry's clock, the newest creation instant
+    /// admitted, even while the set is far from full. Mutation: make the
+    /// retention `retain` keep everything — the expired entry is still held
+    /// and `expired()` reads 0.
+    #[test]
+    fn an_entry_past_its_retention_age_leaves_when_a_newer_one_is_admitted() {
+        let mut registry = MemoryRegistry::standard();
+        let base = 1_760_000_000_000;
+        registry
+            .admit(valued("short-lived", base, 0.9, 1_000))
+            .unwrap();
+        registry
+            .admit(valued("long-lived", base, 0.9, 1_000_000))
+            .unwrap();
+        registry
+            .admit(valued("on-time", base + 1_000, 0.9, 1_000_000))
+            .unwrap();
+        let ids: Vec<&str> = registry.entries().map(|e| e.id.as_str()).collect();
+        assert!(
+            ids.contains(&"short-lived"),
+            "premise: an entry exactly at its age is still inside it: {ids:?}"
+        );
+        registry
+            .admit(valued("later", base + 1_001, 0.9, 1_000_000))
+            .unwrap();
+        let ids: Vec<&str> = registry.entries().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["long-lived", "on-time", "later"]);
+        assert_eq!(registry.expired(), 1);
+        assert_eq!(registry.evicted_for_value(), 0);
     }
 }
 

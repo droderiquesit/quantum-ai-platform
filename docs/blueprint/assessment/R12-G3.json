@@ -580,16 +580,19 @@
   },
   {
     "id": "R12-FABRIC-10026",
-    "status": "PARTIAL",
-    "current": "event-fabric-broker exposes a disk_type variable (hyperdisk) and journal device; the module is not instantiated by main.tf. The acceptance test named for this does not read Terraform.",
+    "status": "COMPLETE",
+    "current": "event-fabric-broker's instance template declares a second, non-boot, kept disk named qip-journal whose disk_type is var.disk_type (main.tf:72-76), default hyperdisk-balanced, and var.disk_type refuses anything not hyperdisk-* (variables.tf:83-95). A plan test asserts the journal disk itself is a Hyperdisk and that a local-SSD or standard persistent disk journal is refused.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf disk_type",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:21 instance template",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure.rs:218 fabric_085_... (fixture-only)"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:72-76 journal disk (device_name qip-journal, disk_type = var.disk_type)",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:83-95 disk_type, validation startswith(var.disk_type, \"hyperdisk-\")",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:378 the_journal_disk_is_a_persistent_hyperdisk (added 2026-11-12)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:392 a_local_ssd_journal_is_refused (added 2026-11-12); :256 provisioned_journal_performance_on_a_persistent_disk_type_is_refused (pd-balanced)",
+      "2026-11-12 lane fw-h-01: terraform 1.9.8 (release zip checked against HashiCorp's SHA256SUMS, signature not checked) in the module, mocked provider: terraform test 25 passed, 0 failed; terraform validate valid; terraform fmt -check -recursive infrastructure/terraform clean. Mutation: the journal disk's disk_type set to the literal pd-ssd fails the_journal_disk_is_a_persistent_hyperdisk (the existing journal-disk run passed it); mutation: the validation reduced to var.disk_type != \"pd-balanced\" fails a_local_ssd_journal_is_refused (24 passed, 1 failed); each restored byte for byte, 25 passed.",
+      "2026-11-12 lane fw-h-01: qip-acceptance suites reading the module (architecture_memory_index, event_fabric_infrastructure, event_fabric_scaling, infrastructure, no_service_mesh, terraform_plan, workload_identity) all passed"
     ],
-    "gap": "Instantiate broker module; real plan test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -3176,17 +3179,18 @@
   },
   {
     "id": "R12-FINOPS-10136",
-    "status": "PARTIAL",
-    "current": "qip-cost-router's ComputeLedger carries an Attribution (strategy, data source, region; each optional and reported as 'unattributed' when unknown) and exposes entries(): every charge with its strategy, model (from the rung's ModelTier, 'no-model' for deterministic rungs), data-source and region keys. report_by(ledgers, CostDimension) sums spend per key exactly, read off the entries. The kernel's per-cycle ledger (Platform::charge_cycle) is attributed to the platform's region and to no strategy or source, because a cycle's compute serves every strategy it looked at.",
+    "status": "COMPLETE",
+    "current": "qip-cost-router's ComputeLedger carries an Attribution (strategy, data source, region; each optional and reported as 'unattributed' when unknown) and, since 2026-11-12, a per-charge attribution narrower than the ledger's (ComputeLedger::charge_attributed) under the same budget. entries() gives every charge its strategy, model (from the rung's ModelTier, 'no-model' for deterministic rungs), data-source and region keys; report_by sums spend per key exactly and CostReport::of cuts one bill by all four dimensions through it. On the shipped path Platform::charge_cycle bills the cycle's rungs to the home region and the REASON panel's rungs, the decision the desk acts on, to DESK_STRATEGY ('central-desk'); Platform::journal_cycle seals the four-way report into every CycleJournalEntry as cost_by (schema version 2, read back by qip-deepbrain's operations from the log), each cut summing to the entry's compute_cost. No production ledger names a data source: the cycle's compute and the panel's decision each weigh every source behind the opportunity, and the tree has no measured per-source split, so the data-source key reads 'unattributed' — the requirement's 'where attribution is possible'.",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/ledger.rs:81 Attribution",
-      "backend/crates/services/qip-cost-router/src/ledger.rs:188 ComputeLedger::entries",
-      "backend/crates/services/qip-cost-router/src/ledger.rs:135 report_by",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10998 cycle ledger attributed to HOME_REGION",
-      "backend/crates/services/qip-cost-router/tests/attribution.rs each_charge_carries_strategy_model_source_and_region_and_the_rollup_sums_per_strategy",
-      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:741 a_cycles_bill_is_attributed_to_its_region_and_reported_per_region"
+      "backend/crates/services/qip-cost-router/src/ledger.rs::ComputeLedger::charge_attributed, ::entries, CostReport::of, report_by",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::charge_cycle (DESK_STRATEGY on the REASON rungs), ::journal_cycle (cost_by), CycleJournalEntry::cost_by (SCHEMA_VERSION 2)",
+      "backend/crates/runtime/qip-kernel/tests/body_schema_lock.rs (CycleJournalEntry v2 ids)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_convened_cycle_bills_the_panel_to_the_desk_and_journals_its_bill_per_dimension",
+      "backend/crates/services/qip-cost-router/tests/attribution.rs::a_rung_charged_to_a_strategy_reports_under_it_while_the_rest_keep_the_ledgers_keys",
+      "backend/crates/services/qip-cost-router/tests/attribution.rs::each_charge_carries_strategy_model_source_and_region_and_the_rollup_sums_per_strategy",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs::a_cycles_bill_is_attributed_to_its_region_and_reported_per_region"
     ],
-    "gap": "2026-10-24: Closes when a shipped binary reports cost by dimension: a production caller of qip_cost_router::report_by (an api route, qip-cli command or journaled event) over the ledgers a cycle or decision actually opened, and production code that attributes a ledger to a strategy and to a data source (today only CostAttribution::region(HOME_REGION) in Platform::charge_cycle sets any key), or the requirement is narrowed to 'carries keys'.",
+    "gap": "2026-11-12 (wave580 fw-i-01): none against the bar. Data source is reported as 'unattributed' on every production ledger because nothing in the tree measures a per-source share of a decision's compute; that is the requirement's 'where attribution is possible', stated rather than guessed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3199,7 +3203,7 @@
     "verification": "cargo test -p qip-cost-router --test attribution && cargo test -p qip-kernel --test platform_outcomes a_cycles_bill_is_attributed_to_its_region_and_reported_per_region",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18. Mutations: dropping with_attribution in charge_cycle fails the kernel test (region unattributed); making entries() ignore the ledger's strategy fails the cost-router test at the strategy key. Both restored. Strategy and data-source keys are populated only where a ledger is opened for one decision about one strategy; the cycle ledger honestly reports them as unattributed rather than splitting a shared bill. AUDIT-4 2026-10-24: regraded, report_by and CostDimension have no caller outside qip-cost-router and tests; the only production attribution is the region on the cycle ledger (platform.rs:11859), and that ledger is discarded after total_cost(). Nothing in a shipped binary reports cost per strategy, model, data source or region. The attribution and kernel tests are real and mutation-checked (dropping with_attribution fails platform_outcomes.rs:819)."
+    "notes": "Lane L24 2026-10-18. Mutations: dropping with_attribution in charge_cycle fails the kernel test (region unattributed); making entries() ignore the ledger's strategy fails the cost-router test at the strategy key. Both restored. Strategy and data-source keys are populated only where a ledger is opened for one decision about one strategy; the cycle ledger honestly reports them as unattributed rather than splitting a shared bill. AUDIT-4 2026-10-24: regraded, report_by and CostDimension have no caller outside qip-cost-router and tests; the only production attribution is the region on the cycle ledger (platform.rs:11859), and that ledger is discarded after total_cost(). Nothing in a shipped binary reports cost per strategy, model, data source or region. The attribution and kernel tests are real and mutation-checked (dropping with_attribution fails platform_outcomes.rs:819). 2026-11-12 wave580 fw-i-01: production caller and strategy attribution landed. Mutations, each fired and restored byte-for-byte (cmp): REASON rungs charged unattributed fails a_convened_cycle_bills... ('the panel's rungs are the desk's'); journaling cost_by None fails it ('the journal carries the bill per dimension'); entries() ignoring the per-charge attribution fails it and fails a_rung_charged_to_a_strategy... (attribution.rs:128)."
   },
   {
     "id": "R12-FINOPS-10137",
@@ -3253,12 +3257,15 @@
   {
     "id": "R12-FINOPS-10139",
     "status": "PARTIAL",
-    "current": "qip-agents BudgetLedger stops an agent over budget; cost-router tracks reputation; no benefit-per-dollar benchmark.",
+    "current": "qip-agents BudgetLedger stops an agent over budget. qip-cost-router's SpendBook accumulates every ComputeLedger's model-rung charges (cost, latency, count) and SpendBook::report joins them to the ReputationBook per rung into a ModelBenefit (correct/observed calls, hit rate in bp, cost per correct call, latency per correct call; None where nothing divides). The kernel absorbs each cycle's ledger where it bills it (Platform, beside cycle_ledger) and Platform::model_benefit reports the join against the routing reputation LEARN scores.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/budget.rs",
-      "backend/crates/libs/qip-agents/src/runtime.rs:468"
+      "backend/crates/services/qip-cost-router/src/benefit.rs SpendBook::absorb, SpendBook::report, ModelBenefit",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::model_benefit (model_spend.absorb beside self.cycle_ledger = Some(ledger))",
+      "backend/crates/services/qip-cost-router/tests/cost_router.rs the_spend_book_joins_billed_cost_and_latency_to_each_rungs_record_per_correct_call",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_decisions_conditions (R12-FINOPS-10139 block)"
     ],
-    "gap": "Queue quotas exist and are tested (QueueQuotas in qip-training job.rs, enforced by LocalTrainingProvider::submit and the Vertex provider) but no composition root constructs a training provider with quotas, so no running process bounds a queue; and no benefit-per-dollar or per-latency benchmark exists (ComputeLedger records cost and latency per decision, the reputation book scores accuracy per condition, and nothing joins them).",
+    "gap": "2026-11-12 (lane fw-j-01): the benefit join exists and the kernel computes it from the cycles it billed, but (1) nothing reads it to decide: the router does not rank rungs by cost per correct call, and the report is neither journaled nor exported as a metric, so it lives in process memory and is lost on restart; (2) spend is joined on the rung, not the model version, because ComputeLedger bills a tier and not a name@version reference; (3) queue quotas: QueueQuotas exist and are enforced by LocalTrainingProvider::submit and the Vertex provider, but no composition root (qip-deepbrain or other) constructs a training provider with quotas, so no running process bounds a queue. Not attempted in this lane.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3266,10 +3273,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents",
+    "verification": "cargo test -p qip-cost-router --test cost_router the_spend_book; cargo test -p qip-kernel --test learning the_cycle_that_grades; cargo test -p qip-agents",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the closure's TrainingSpec::concurrency_quota duplicates QueueQuotas, which already refuses a submit into a full queue (training.rs:1677). The open work is a deepbrain-side provider that declares quotas, and a benefit signal the router can divide by cost. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's TrainingSpec::concurrency_quota duplicates QueueQuotas, which already refuses a submit into a full queue (training.rs:1677). The open work is a deepbrain-side provider that declares quotas, and a benefit signal the router can divide by cost. Kept PARTIAL. Lane fw-j-01 2026-11-12: added the benefit-per-dollar/per-latency join (SpendBook) and its kernel caller; 5 mutations fired (latency not summed, correct not joined, divide by observations, deterministic code billed to a rung, kernel absorb removed). Kept PARTIAL: advisory and unjournaled, joined per rung, and the training-quota root is still unwired."
   },
   {
     "id": "R12-FINOPS-10140",
@@ -3298,14 +3305,20 @@
   },
   {
     "id": "R12-FINOPS-10141",
-    "status": "MISSING",
-    "current": "No anomaly job or task path; acceptance test documents the gap.",
+    "status": "PARTIAL",
+    "current": "qip_observability::billing::detect reads billing-export rows (project, service, labels, cost, currency, usage window) against declared SpendThresholds (project, label selector, figure, window) and returns one CostAnomaly per threshold per epoch-aligned window whose summed cost exceeds it, carrying project, labels, amount, threshold and a stable fingerprint that names the breach and not its size (late rows do not raise a second task); mixed currencies, a reversed usage window, a non-positive threshold or an empty window are refused by name. qip_kernel::cost_anomaly_tasks::journal writes one CostAnomalyTask per anomaly into the hash-chained EventLog (Topic::SystemAlert, idempotency key cost-anomaly:<fingerprint>) and refuses a second report of the same breach. Pure detector in the lib (qip-edge links qip-observability as I/O-free); the adapter is in the kernel.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4589 cost_anomalies_are_not_yet_journaled_to_fabric_tasks"
+      "backend/crates/libs/qip-observability/src/billing.rs detect, fingerprint",
+      "backend/crates/runtime/qip-kernel/src/cost_anomaly_tasks.rs journal, CostAnomalyTask",
+      "backend/crates/libs/qip-observability/tests/billing.rs spend_over_a_threshold_in_a_window_raises_one_anomaly_carrying_project_labels_amount_and_threshold",
+      "backend/crates/libs/qip-observability/tests/billing.rs the_fingerprint_names_the_breach_and_not_its_size",
+      "backend/crates/runtime/qip-kernel/tests/cost_anomaly_tasks.rs a_journaled_anomaly_is_one_chained_task_and_a_second_report_of_it_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs a_billing_export_fixture_raises_one_journaled_cost_anomaly_task_and_a_duplicate_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_scheduled_job_feeds_the_cost_anomaly_detector_yet (gap pin, Terraform half of the replaced test)"
     ],
-    "gap": "Anomaly job + task adapter.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-11-12 (lane fw-j-01): the detector and the task adapter exist and are proven with a billing fixture, but the job does not: nothing schedules a read of the billing export (no google_bigquery_data_transfer_config, no budget pubsub_topic; pinned by no_scheduled_job_feeds_the_cost_anomaly_detector_yet), no composition root calls detect or journal, and no SpendThresholds are declared in configuration. The tasks land in an EventLog handed to the adapter, not yet in a Fabric task queue a person is assigned from.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -3313,10 +3326,10 @@
       "R12-FINOPS-10135"
     ],
     "blocked_by": "",
-    "verification": "integration test with billing fixture",
+    "verification": "cargo test -p qip-observability --test billing; cargo test -p qip-kernel --test cost_anomaly_tasks; cargo test -p qip-acceptance --test infrastructure a_billing_export",
     "work_item": "",
     "size": "M",
-    "notes": "That test asserts only that a budget resource exists; it would still pass after the feature lands."
+    "notes": "That test asserts only that a budget resource exists; it would still pass after the feature lands. Lane fw-j-01 2026-11-12: MISSING->PARTIAL. The old pin cost_anomalies_are_not_yet_journaled_to_fabric_tasks fired on the new CostAnomaly type as designed and was replaced in-tree (infrastructure.rs is not a protected path): its Terraform half kept unchanged as no_scheduled_job_feeds_the_cost_anomaly_detector_yet, its Rust half replaced by the billing-fixture integration test it named. 5 mutations fired (selector ignored, at-threshold flagged, amount in fingerprint, currencies summed, journal dedup off)."
   },
   {
     "id": "R12-FINOPS-10142",

@@ -1485,11 +1485,15 @@ mod tests {
                 object: "obj-AAA".into(),
                 notional: 900_000.0,
                 days_to_liquidate: None,
+                region: None,
+                counterparty: None,
             },
             crate::tail::TailPosition {
                 object: "obj-BBB".into(),
                 notional: -700_000.0,
                 days_to_liquidate: Some(3.0),
+                region: None,
+                counterparty: None,
             },
         ];
         let generated = crate::tail::survival_worlds(

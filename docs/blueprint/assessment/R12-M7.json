@@ -1383,7 +1383,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:746-786 PolicyPayload with signature",
       "backend/crates/libs/qip-contracts/src/control_pack.rs::ControlPackAnnouncement"
     ],
-    "gap": "Announcement library-only (no producer/consumer binary); no object/artifact-storage package fetch path.",
+    "gap": "Announcement library-only (no producer/consumer binary); no object/artifact-storage package fetch path. 2026-11-12 (wave580 fw-i-01, read, nothing built): the size bound and the algo:64-hex digest shape cannot be enforced on ModelManifest as it stands, because the one production producer (model_serving.rs, DistilledManifestEntry digest: model.digest()) fills each value with qip-strategy DistilledModel::digest(), a '|'-joined encoding of the model's name, form and every coefficient's bits — not a fixed-length hash, and growing with the model — so a shape check would refuse every manifest the kernel issues and a byte bound would cap model size rather than announcement size. Closing it needs a wire decision first (a SHA-256 of that canonical form, computed alike by the centre, the cell and the release pack's InlineModel, with the pinned digests ADR 0149 decision 17 keeps byte-identical migrated), then MAX_MANIFEST_BYTES and a checked decode. InlineModel itself is a name and a digest, not weights, so it does not by its shape break 'fabric carries references'; the digest it carries is the encoding above.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1491,14 +1491,17 @@
   },
   {
     "id": "R12-CONTRACT-7065",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 StrategyPack = Validated<StrategyPackFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 StrategyPack = Validated<StrategyPackFields>: each CompiledStrategy carries strategy, plan_digest, hypotheses, universes, dependencies, capacity, a PerformanceEnvelope and retirement_rules; the pack, each compiled strategy, its envelope and each retirement rule decode under deny_unknown_fields with no field defaulted, and invariants are refused on construction and on decode. StrategyPackFields has no producer outside qip-contracts.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 type",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:215 a_strategy_pack_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:224 a_strategy_pack_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/src/strategy_pack.rs:23 CompiledStrategy; :46 PerformanceEnvelope; :59 RetirementRule; :70 StrategyPackFields; :79 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:216 a_strategy_pack_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:233 a_compiled_strategy_and_its_envelope_and_retirement_rules_each_refuse_a_missing_or_unknown_field (added 2026-11-12; /strategies/0, /strategies/0/envelope, /strategies/0/retirement_rules/0/envelope_breached)",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:245 a_strategy_pack_refuses_each_broken_invariant",
+      "2026-11-12 lane fw-h-01: cargo test -p qip-contracts --test section27_contracts: 23 passed. Mutations, each failing only the new test and each restored byte for byte: #[serde(default)] on CompiledStrategy.hypotheses (refused for another reason, so the field is defaulted); #[serde(default)] on PerformanceEnvelope.min_net_edge_bp (admitted outright before this test); deny_unknown_fields removed from PerformanceEnvelope (admitted an unknown field at /strategies/0/envelope); deny_unknown_fields removed from CompiledStrategy (admitted an unknown field at /strategies/0).",
+      "2026-11-12 lane fw-h-01 bar: the unit contract; a factory producer whose pack digest equals the shipped plan's is integration and stays in integrated false"
     ],
-    "gap": "StrategyPackFields still appears nowhere outside qip-contracts. The compiled plan the centre ships (PlanDigest in PolicyPayload.compiled_plan, assembled in qip-api mesh.rs) carries none of the pack's dependencies, hypotheses, universes, capacity, envelope or retirement rules, so a StrategyPack built beside it would invent them; the pack needs those inputs from the factory before its digest can equal the plan's.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1786,11 +1789,11 @@
     "current": "qip_contracts::symbolic::SymbolicDerivation = Validated<SymbolicDerivationFields> (backend/crates/libs/qip-contracts/src/symbolic.rs:86) carries goal, conclusion, rules (rule, constraint and graph-path ids), evidence, solver and result, violated_assumptions, uncertainty_bp and a trace whose every step cites only declared rules, evidence or earlier steps and ends on the conclusion; every record and every trace step decodes under deny_unknown_fields with no field defaulted. qip-deepbrain's research loop builds one per compiled discovery through the reasoning engine's Cognitive Compiler.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/symbolic.rs:60-83 SymbolicDerivationFields; :48-57 TraceStep; :86 type",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:767 a_symbolic_derivation_round_trips_and_refuses_a_missing_unknown_or_foreign_field (now also refuses_missing_and_unknown_nested at /trace/0)",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:780 a_symbolic_derivation_refuses_each_broken_invariant_including_an_uncheckable_trace",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:787 a_symbolic_derivation_round_trips_and_refuses_a_missing_unknown_or_foreign_field (now also refuses_missing_and_unknown_nested at /trace/0)",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:800 a_symbolic_derivation_refuses_each_broken_invariant_including_an_uncheckable_trace",
       "backend/crates/libs/qip-contracts/tests/common/mod.rs::refuses_missing_and_unknown_nested (added 2026-11-12)",
       "backend/crates/services/qip-reasoning-engine/src/compiler.rs:210 formalise -> SymbolicDerivation::new at :254; backend/crates/apps/qip-deepbrain/src/research.rs:4410 self.compiler.compile",
-      "2026-11-12 lane fw-h-01: cargo test -p qip-contracts --test section27_contracts symbolic_derivation: 2 passed. Mutations, each failing :767 and each restored byte for byte: #[serde(default)] on evidence (`refused for another reason, so the field is defaulted`); #[serde(default)] on TraceStep.inference (same, at /trace/0/inference; the top-level helper alone could not see it); deny_unknown_fields removed from TraceStep (`admitted an unknown field at /trace/0`); deny_unknown_fields removed from SymbolicDerivationFields (`admitted an unknown field`).",
+      "2026-11-12 lane fw-h-01: cargo test -p qip-contracts --test section27_contracts symbolic_derivation: 2 passed. Mutations, each failing :787 and each restored byte for byte: #[serde(default)] on evidence (`refused for another reason, so the field is defaulted`); #[serde(default)] on TraceStep.inference (same, at /trace/0/inference; the top-level helper alone could not see it); deny_unknown_fields removed from TraceStep (`admitted an unknown field at /trace/0`); deny_unknown_fields removed from SymbolicDerivationFields (`admitted an unknown field`).",
       "2026-11-12 lane fw-h-01 bar: the unit contract. qip-kernel's symbolic_stage.rs:383 still keeps its own richer SymbolicDerivation for the journal and verify(); retiring it into the contract is consolidation beyond this row's bar"
     ],
     "gap": "",
@@ -2044,16 +2047,15 @@
   },
   {
     "id": "R12-CONTRACT-7088",
-    "status": "PARTIAL",
-    "current": "qip_contracts KnowledgeDelta (strict decode, one-version step, no fast-forward over a known conflict) has a production producer: Platform::absorb_evidence (runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for), called every cycle by qip-fastbrain (node.rs:162), journals one validated delta per admitted claim on Topic::WorldModelUpdated as KnowledgeDeltaRecord, naming the claim and its document as provenance and the contested claim as a conflict under ReviewRequired. qip-evidence's own KnowledgeDelta remains the per-batch summary a poll reports, and is a different thing.",
+    "status": "COMPLETE",
+    "current": "qip_contracts::knowledge_delta::KnowledgeDeltaFields (Validated<_>, deny_unknown_fields, schema_version 1) carries every field the requirement names: target (ontology / world_model / memory) with base_version and new_version (exactly one step), changes (Assert/Retract, each stated in full), provenance (at least one id), confidence_bp, conflicts, originating_brain, originating_region and merge_policy (FastForwardOnly / ReviewRequired / PreferHigherConfidence), plus delta_id and created_at. Construction and decode both refuse a missing, unknown or foreign-version field, a missing field inside either change shape, and each broken invariant (version gap/rewind/overflow, no change, blank key, no provenance, confidence above one, blank origin, fast-forward over a known conflict); a round trip preserves the value and the bytes. In production Platform::absorb_evidence (qip-kernel/src/evidence_intake.rs knowledge_delta_for), reached through admit_world_records from qip-fastbrain node.rs, qip-deepbrain connectors.rs and qip-api routes.rs, journals one validated delta per admitted claim as KnowledgeDeltaRecord.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/knowledge_delta.rs:73 type",
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for and KnowledgeDeltaRecord",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:162 platform.absorb_evidence",
-      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:856 a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field"
+      "backend/crates/libs/qip-contracts/src/knowledge_delta.rs KnowledgeDeltaFields and Contract::check",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs::a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field (top-level loop and, since 2026-11-12, refuses_missing_and_unknown_nested on /changes/0/assert and /changes/1/retract)",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs::a_knowledge_delta_refuses_each_broken_invariant",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for and KnowledgeDeltaRecord; backend/crates/runtime/qip-kernel/tests/evidence_intake.rs"
     ],
-    "gap": "The delta is produced and journalled by the fast brain and decoded only by a test: no receiving brain (deep brain or another region) reads Topic::WorldModelUpdated knowledge-delta records and applies them under the merge policy. The grader's closure (convert qip-evidence's batch KnowledgeDelta) is the wrong seam: that type is a batch summary with no versions or merge policy.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2061,10 +2063,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts --test section27_contracts knowledge_delta (2 passed); cargo test -p qip-contracts --no-fail-fast (422 passed, 0 failed); cargo test -p qip-kernel --test evidence_intake (14 passed). Mutation-verified 2026-11-12: #[serde(default)] on KnowledgeDeltaFields::conflicts fails the round-trip test with 'KnowledgeDelta without `conflicts` was admitted'; #[serde(default)] on ChangeOp::Assert's value fails it with 'without `/changes/0/assert/value` was refused for another reason, so the field is defaulted' (unguarded before this lane's nested assertion); `if false && ...` on the FastForwardOnly-over-conflict check fails a_knowledge_delta_refuses_each_broken_invariant with '`fast-forward over a conflict` was admitted by new'. Each restored byte-for-byte and both tests passed.",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: register text corrected - the earlier gap ('no production seam constructs it') was stale since evidence_intake landed. Kept PARTIAL for the missing receiver."
+    "notes": "2026-10-18 lane L23: register text corrected - the earlier gap ('no production seam constructs it') was stale since evidence_intake landed. Kept PARTIAL for the missing receiver. 2026-11-12 lane fw-m-01: graded COMPLETE. Decision on the receiver: this is a contract row whose text is that the typed contract exists carrying the named fields and whose bar is a unit test of construction, decode and round trip; it does not name applying a delta. Applying deltas from another brain or region is owned by R12-WORLD-9016 (now-state-coordinator consumes knowledge deltas), R12-EXPAND-6039 (federated intelligence shares KnowledgeDelta) and R12-COVERAGE-7173 (regional experience merged into global learning), and stays open there: no brain yet reads Topic::WorldModelUpdated knowledge-delta records and applies them under merge_policy. Grading this row PARTIAL for that would count the same missing receiver against four rows."
   },
   {
     "id": "R12-CONTRACT-7089",
@@ -2121,15 +2123,15 @@
     "current": "backend/crates/libs/qip-contracts/src/control_pack.rs:65 ControlPackAnnouncement = Validated<ControlPackAnnouncementFields>: kind, uri, digest, version, signer, attestation, target_regions, target_nodes, activate_from/activate_until, expires_at, rollback_parent and required_acks, decoded under deny_unknown_fields with no field defaulted, and refused on construction and on decode for each broken invariant.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/control_pack.rs:65 type; :39-61 the fields the requirement names",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:931 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:953 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:967 a_control_pack_announcement_refuses_each_broken_invariant",
       "backend/crates/libs/qip-contracts/tests/common/mod.rs::refuses_missing_unknown_and_foreign_version now requires serde's own `missing field` refusal for each removed key (2026-11-12), so a defaulted field whose default breaks an invariant no longer passes as missing",
       "backend/crates/runtime/qip-kernel/src/model_trust.rs::Platform::admit_control_announcements",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs::Platform::model_manifest_targeted",
       "backend/crates/apps/qip-cli/src/control_pack.rs (qip control-pack announce / verify)",
       "backend/crates/runtime/qip-kernel/tests/release_packs.rs::a_pack_announced_for_another_node_is_withheld_from_this_nodes_manifest",
       "backend/crates/apps/qip-cli/tests/control_pack.rs::an_announcement_stands_only_for_the_node_it_targets_and_only_for_the_pack_it_attests",
-      "2026-11-12 lane fw-h-01 mutation: #[serde(default)] on required_acks first survived, because decode maps the zero-acks invariant refusal to code schema; the shared missing-field helper was tightened to require serde's `missing field` message, after which the mutation fails :931 with `ControlPackAnnouncement without required_acks was refused for another reason, so the field is defaulted`; restored byte for byte and all 30 binaries pass.",
+      "2026-11-12 lane fw-h-01 mutation: #[serde(default)] on required_acks first survived, because decode maps the zero-acks invariant refusal to code schema; the shared missing-field helper was tightened to require serde's `missing field` message, after which the mutation fails :953 with `ControlPackAnnouncement without required_acks was refused for another reason, so the field is defaulted`; restored byte for byte and all 30 binaries pass.",
       "2026-11-12 lane fw-h-01 bar: the unit contract; default-path wiring and PolicyApplied acknowledgement counting are behaviour beyond it and stay in integrated/deployable false"
     ],
     "gap": "",

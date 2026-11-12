@@ -39,6 +39,7 @@ pub mod evidence;
 pub mod hypothesis;
 pub mod lifecycle;
 pub mod network;
+pub mod ontology;
 pub mod redteam;
 pub mod rules;
 pub mod temporal;

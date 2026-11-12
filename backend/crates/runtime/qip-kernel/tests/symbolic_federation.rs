@@ -848,6 +848,48 @@ fn assert_refused_for(
 }
 
 #[test]
+fn a_journaled_rule_verdict_carrying_a_proof_step_the_pack_never_took_is_refused_on_replay()
+-> Result<()> {
+    // R12-REASON-1138. The failure this guards: the rule verdict is journaled
+    // with its proof trace, and replay is what makes that trace evidence.
+    // `rules.verified` is computed when the record is written, so it says
+    // nothing about the record read back; a trace edited afterwards to cite a
+    // rule that never fired would read as a proof unless replay re-derives
+    // it. The fixture's facts fire no rule, so the journaled trace is empty
+    // and any step in it is a fabrication.
+    let (platform, derivation) = journaled_derivation()?;
+    let Step::Derived(verdict) = &derivation.rules.verdict else {
+        panic!(
+            "premise: the rule pack derived a verdict: {:?}",
+            derivation.rules.verdict
+        );
+    };
+    assert!(
+        verdict.trace.is_empty(),
+        "premise: the fixture fires no rule, so a pushed step is not one the pack took: {:?}",
+        verdict.trace
+    );
+    let mut corrupted = derivation.clone();
+    if let Step::Derived(verdict) = &mut corrupted.rules.verdict {
+        verdict.trace.push(qip_reasoning_engine::rules::TraceStep {
+            rule: "r10-eligible".to_string(),
+            fact: "eligible".to_string(),
+            value: qip_reasoning_engine::rules::Value::Bool(true),
+        });
+    }
+    let refusal = symbolic_stage::verify(&corrupted, platform.world().causal())
+        .expect_err("a verdict with a fabricated proof step was accepted as reproducible");
+    assert!(
+        refusal
+            .message()
+            .contains("the claimed verdict differs from re-evaluation of the pack"),
+        "refused, but not for the rule verdict: {}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+#[test]
 fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay()
 -> Result<()> {
     // R12-REASON-1133. The failure this guards: replay re-checked only the
@@ -1985,5 +2027,60 @@ fn a_friday_claims_settlement_lag_is_walked_in_settlement_days_across_the_weeken
         Duration::from_days(3),
         "a Friday T+1 settles on the Monday, three calendar days on, not on the Saturday"
     );
+    Ok(())
+}
+
+#[test]
+fn a_journaled_derivation_carries_its_subject_as_a_closed_knowledge_graph_and_replay_refuses_an_edited_closure()
+-> Result<()> {
+    // R12-REASON-3054. The failure this guards: the cycle typed a subject
+    // against a list of names and could not say what followed from the
+    // type — that an equity is an instrument, that a hypothesis about an
+    // anomaly on it rests on it. Every fact below is one the cycle inferred
+    // rather than asserted, read back from the journal.
+    use qip_reasoning_engine::ontology::{Derivation, Fact};
+    let (platform, derivation) = journaled_derivation()?;
+    let knowledge = derivation
+        .knowledge
+        .as_ref()
+        .expect("the cycle journals a knowledge-graph part");
+    let Step::Derived(inference) = &knowledge.inference else {
+        panic!(
+            "the knowledge graph refused the cycle's facts: {:?}",
+            knowledge.inference
+        );
+    };
+    assert!(inference.is_consistent(), "{:?}", inference.violations);
+    let hypothesis = format!("hypothesis:{}", derivation.hypothesis_id);
+    let instrument = format!("instrument:{}", derivation.subject);
+    // Premise: neither fact is asserted, so holding them is inference.
+    let typed = Fact::instance(&instrument, "instrument");
+    let grounded = Fact::related(&hypothesis, "grounded_in", &instrument);
+    let inverse = Fact::related(&instrument, "concerned_by", &hypothesis);
+    for fact in [&typed, &grounded, &inverse] {
+        assert!(!knowledge.asserted.contains(fact), "{fact:?} was asserted");
+    }
+    assert!(matches!(
+        inference.derivation(&typed),
+        Some(Derivation::IsA { .. })
+    ));
+    assert!(matches!(
+        inference.derivation(&grounded),
+        Some(Derivation::Transitive { .. })
+    ));
+    assert!(matches!(
+        inference.derivation(&inverse),
+        Some(Derivation::Inverse { .. })
+    ));
+    // An equity is not a dated contract, so no claim outlives it.
+    assert!(!knowledge.outlived_by_claim(&derivation.hypothesis_id, &derivation.subject));
+
+    let mut edited = derivation.clone();
+    if let Some(k) = edited.knowledge.as_mut()
+        && let Step::Derived(i) = &mut k.inference
+    {
+        i.facts.retain(|(f, _)| f != &grounded);
+    }
+    assert_refused_for(&platform, &edited, "knowledge graph");
     Ok(())
 }

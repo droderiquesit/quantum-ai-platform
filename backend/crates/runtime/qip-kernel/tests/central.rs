@@ -10037,3 +10037,269 @@ fn competing_proposals_never_sum_past_the_grant() -> Result<()> {
     }
     Ok(())
 }
+
+// --- R12-MODEL-1198: the tick/microstructure model LEARN updates ---------
+
+fn platform_under_the_misfit_cap_at(path: Option<&std::path::Path>) -> Result<Platform> {
+    let shipped = LimitSet::conservative_default()
+        .limits
+        .into_iter()
+        .find(|limit| limit.name == "twin-misfit-venue-gross")
+        .expect("the shipped set carries the misfit-venue cap");
+    let mut config = PlatformConfig::default().with_initial_equity(dec!("1000000"));
+    if let Some(path) = path {
+        config = config.with_event_log_file(path);
+    }
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe(),
+        LimitSet::new("misfit-only").with(shipped),
+    )
+}
+
+fn slippage_delta(
+    id: &str,
+    venue: &VenueId,
+    ends: Timestamp,
+    observed: i64,
+) -> qip_contracts::microstructure_delta::MicrostructureDeltaFields {
+    qip_contracts::microstructure_delta::MicrostructureDeltaFields {
+        schema_version: 1,
+        delta_id: id.to_string(),
+        cell: CELL.to_string(),
+        venue: venue.clone(),
+        model_version: "twin-fill-v1".to_string(),
+        window_start: ends.saturating_sub(Duration::from_days(1)),
+        window_end: ends,
+        residuals: vec![qip_contracts::microstructure_delta::Residual {
+            kind: qip_contracts::microstructure_delta::ResidualKind::Slippage,
+            instrument: "AAA".to_string(),
+            modelled: dec!("5"),
+            observed: Decimal::from_int(observed),
+            samples: qip_kernel::replay_divergence::REPLAY_DIVERGENCE_MIN_SAMPLE as u64,
+        }],
+    }
+}
+
+/// Four buys of 70,000 at the desk venue: the fourth takes its gross past a
+/// quarter of a million of equity, which the misfit cap refuses only where
+/// the venue is charged to the misfit axis.
+fn four_buys(platform: &mut Platform, at: Timestamp) -> Result<()> {
+    for n in 0..4 {
+        let order = platform.order_from(
+            ObjectId::from_string("obj-AAA"),
+            qip_execution_engine::order::Side::Buy,
+            dec!("700"),
+            dec!("100"),
+            &format!("prop-micro-{n}"),
+            vec![format!("hyp-prop-micro-{n}")],
+            at,
+        );
+        platform.submit_order(order, at)?;
+    }
+    Ok(())
+}
+
+fn microstructure_folds(platform: &Platform) -> Result<usize> {
+    let mut folds = 0;
+    for event in platform.event_log().events() {
+        if event.lineage.producer == qip_kernel::microstructure_model::MICROSTRUCTURE_MODEL_ORIGIN {
+            qip_streaming::envelope::StreamEnvelope::from_frame(event)?
+                .decode::<qip_kernel::microstructure_model::MicrostructureFold>()?;
+            folds += 1;
+        }
+    }
+    Ok(folds)
+}
+
+/// Mutation: delete the `learn_microstructure` call from `stage_learn` —
+/// fails at "LEARN did not fold"; make `venue_misfit` read only
+/// `twin_misfit` — fails at "the model's misfit did not charge the venue".
+#[test]
+fn a_concluded_delta_updates_the_microstructure_model_in_learn_and_narrows_its_venue() -> Result<()>
+{
+    let mut platform = platform_under_the_misfit_cap_at(None)?;
+    let desk = VenueId::new(platform.desk_venue());
+    register_at_venue(
+        platform.central_mut(),
+        &StrategyId::new("micro-a"),
+        CELL,
+        desk.clone(),
+    )?;
+    let concluded = start().saturating_add(Duration::from_hours(1));
+    assert!(platform.admit_microstructure_delta(slippage_delta("delta-1", &desk, concluded, 155))?);
+    assert!(
+        platform
+            .microstructure_model()
+            .venue(desk.as_str())
+            .is_none(),
+        "premise: admission alone updates no model; LEARN does"
+    );
+    assert!(
+        !platform.venue_misfit(desk.as_str()),
+        "premise: no misfit before LEARN"
+    );
+
+    let learned = concluded.saturating_add(Duration::from_mins(5));
+    let report = platform.run_cycle(learned);
+    let slippage = platform
+        .microstructure_model()
+        .venue(desk.as_str())
+        .and_then(|venue| venue.slippage.clone())
+        .expect("LEARN did not fold the concluded delta into the model");
+    assert_eq!(slippage.error, dec!("150"));
+    assert_eq!(slippage.deltas, 1);
+    assert_eq!(
+        microstructure_folds(&platform)?,
+        1,
+        "the fold is not on the log"
+    );
+    assert!(
+        report
+            .summarise()
+            .contains("microstructure model: 1 delta(s) folded"),
+        "the fold is not in LEARN's detail:\n{}",
+        report.summarise()
+    );
+    assert!(
+        !platform.twin_misfit(desk.as_str()),
+        "premise: the twin itself is not misfit, so the narrowing is the model's"
+    );
+    assert!(
+        platform.venue_misfit(desk.as_str()),
+        "the model's misfit did not charge the venue to the misfit cap"
+    );
+
+    // A second cycle folds nothing again: a delta counts once.
+    platform.run_cycle(learned.saturating_add(Duration::from_mins(5)));
+    assert_eq!(
+        microstructure_folds(&platform)?,
+        1,
+        "the same delta was folded twice"
+    );
+
+    let error = four_buys(
+        &mut platform,
+        learned.saturating_add(Duration::from_mins(10)),
+    )
+    .expect_err("the fourth buy was admitted at a venue the model says is misfit");
+    assert!(
+        error.message().contains("twin-misfit-venue-gross"),
+        "refused for another reason: {}",
+        error.message()
+    );
+    Ok(())
+}
+
+/// Mutation: `misfit` returning `Some` for any held estimate — fails at
+/// "a delta inside the threshold narrowed the venue".
+#[test]
+fn a_delta_inside_the_threshold_is_folded_and_narrows_nothing() -> Result<()> {
+    let mut platform = platform_under_the_misfit_cap_at(None)?;
+    let desk = VenueId::new(platform.desk_venue());
+    register_at_venue(
+        platform.central_mut(),
+        &StrategyId::new("micro-a"),
+        CELL,
+        desk.clone(),
+    )?;
+    let concluded = start().saturating_add(Duration::from_hours(1));
+    assert!(platform.admit_microstructure_delta(slippage_delta("delta-1", &desk, concluded, 25))?);
+    let learned = concluded.saturating_add(Duration::from_mins(5));
+    platform.run_cycle(learned);
+    assert_eq!(
+        platform
+            .microstructure_model()
+            .venue(desk.as_str())
+            .and_then(|venue| venue.slippage.as_ref().map(|e| e.error)),
+        Some(dec!("20")),
+        "premise: the delta was folded"
+    );
+    assert!(
+        !platform.venue_misfit(desk.as_str()),
+        "a delta inside the threshold narrowed the venue"
+    );
+    four_buys(
+        &mut platform,
+        learned.saturating_add(Duration::from_mins(10)),
+    )
+    .map_err(|error| {
+        qip_core::error::Error::invalid(format!(
+            "a delta inside the threshold narrowed the venue: {}",
+            error.message()
+        ))
+    })
+}
+
+/// Mutation: make `microstructure_model::resume` return the default model —
+/// fails at "the restarted platform lost the model".
+#[test]
+fn the_microstructure_model_is_rebuilt_from_the_log_on_a_restart() -> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-microstructure-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let concluded = start().saturating_add(Duration::from_hours(1));
+    let learned = concluded.saturating_add(Duration::from_mins(5));
+    let before = {
+        let mut platform = platform_under_the_misfit_cap_at(Some(&path))?;
+        let desk = VenueId::new(platform.desk_venue());
+        register_at_venue(
+            platform.central_mut(),
+            &StrategyId::new("micro-a"),
+            CELL,
+            desk.clone(),
+        )?;
+        assert!(
+            platform
+                .admit_microstructure_delta(slippage_delta("delta-1", &desk, concluded, 155))?
+        );
+        platform.run_cycle(learned);
+        let later = concluded.saturating_add(Duration::from_hours(1));
+        assert!(platform.admit_microstructure_delta(slippage_delta("delta-2", &desk, later, 5))?);
+        platform.run_cycle(later.saturating_add(Duration::from_mins(5)));
+        let model = platform.microstructure_model().clone();
+        assert_eq!(
+            model
+                .venue(desk.as_str())
+                .and_then(|v| v.slippage.as_ref().map(|e| e.error)),
+            Some(dec!("120")),
+            "premise: two deltas folded, the second a fifth of the way toward zero"
+        );
+        model
+    };
+    let mut restarted = platform_under_the_misfit_cap_at(Some(&path))?;
+    assert_eq!(
+        restarted.microstructure_model(),
+        &before,
+        "the restarted platform lost the model"
+    );
+    let desk = VenueId::new(restarted.desk_venue());
+    assert!(
+        restarted.venue_misfit(desk.as_str()),
+        "the resumed model narrows nothing"
+    );
+    // The same delta re-sent after the restart is not folded a second time.
+    register_at_venue(
+        restarted.central_mut(),
+        &StrategyId::new("micro-a"),
+        CELL,
+        desk.clone(),
+    )?;
+    let later = concluded.saturating_add(Duration::from_hours(1));
+    assert!(restarted.admit_microstructure_delta(slippage_delta("delta-2", &desk, later, 5))?);
+    restarted.run_cycle(later.saturating_add(Duration::from_hours(1)));
+    assert_eq!(
+        restarted.microstructure_model(),
+        &before,
+        "a re-sent delta was folded again"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}

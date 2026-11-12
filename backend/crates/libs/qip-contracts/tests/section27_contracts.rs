@@ -221,6 +221,26 @@ fn a_strategy_pack_round_trips_and_refuses_a_missing_unknown_or_foreign_field() 
     Ok(())
 }
 
+/// Besides `schema_version`, the pack's top-level keys are only `pack_id`,
+/// two instants and `strategies`; every field the requirement names —
+/// hypotheses, universes, dependencies, capacity, envelope, retirement rules
+/// — lives one or two records down, where the top-level check never looked.
+/// Mutation-tested on 2026-11-12: `#[serde(default)]` on the envelope's
+/// `min_net_edge_bp` was admitted outright, a producer that stopped stating
+/// the edge floor shipping a floor of zero; on `hypotheses` it was refused
+/// only because an empty list breaks an invariant.
+#[test]
+fn a_compiled_strategy_and_its_envelope_and_retirement_rules_each_refuse_a_missing_or_unknown_field()
+ {
+    for pointer in [
+        "/strategies/0",
+        "/strategies/0/envelope",
+        "/strategies/0/retirement_rules/0/envelope_breached",
+    ] {
+        refuses_missing_and_unknown_nested(strategy_pack(), pointer);
+    }
+}
+
 #[test]
 fn a_strategy_pack_refuses_each_broken_invariant() {
     each_refused(
@@ -858,6 +878,13 @@ fn knowledge() -> KnowledgeDeltaFields {
 fn a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field() -> Result<()> {
     round_trips(knowledge())?;
     refuses_missing_unknown_and_foreign_version(knowledge());
+    // The top-level loop cannot see inside `changes`: an assertion that
+    // gained `#[serde(default)]` on its value would decode as an empty
+    // assertion and be refused only by the blank-value invariant, and a
+    // retraction with a defaulted key likewise — a producer would never have
+    // had to state what it changed. Each change is a record stated in full.
+    refuses_missing_and_unknown_nested(knowledge(), "/changes/0/assert");
+    refuses_missing_and_unknown_nested(knowledge(), "/changes/1/retract");
     round_trips(KnowledgeDeltaFields {
         conflicts: vec![],
         merge_policy: MergePolicy::FastForwardOnly,

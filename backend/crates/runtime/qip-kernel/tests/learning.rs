@@ -504,6 +504,84 @@ fn the_cycle_that_grades_a_thesis_journals_each_agents_hit_rate() -> Result<()> 
     Ok(())
 }
 
+/// R12-FINOPS-10136 on the shipped path: a cycle that convenes the panel
+/// bills the panel's rungs to the desk strategy that acts on what it
+/// approves, and the cycle's journal entry — which `qip-deepbrain` reads back
+/// — carries the bill cut by strategy, model, data source and region, each
+/// summing to exactly the cycle's cost. Mutations: charge the REASON rungs
+/// with `ledger.charge` instead of `charge_attributed` — the desk key is
+/// absent; journal `cost_by: None` — the entry carries no report.
+#[test]
+fn a_convened_cycle_bills_the_panel_to_the_desk_and_journals_its_bill_per_dimension() -> Result<()>
+{
+    use qip_cost_router::IntelligenceTier;
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    assert!(
+        platform
+            .reason_routing()
+            .is_some_and(|routing| routing.dispatched),
+        "premise: the panel convened"
+    );
+    let ledger = platform.cycle_ledger().expect("a cycle has run");
+    let panel: Decimal = ledger
+        .charges()
+        .iter()
+        .filter(|charge| charge.tier == IntelligenceTier::MultiAgentReasoning)
+        .map(|charge| charge.cost)
+        .fold(Decimal::ZERO, |sum, cost| sum + cost);
+    assert!(
+        panel.is_positive(),
+        "premise: the panel convened and was billed: {}",
+        ledger.basis()
+    );
+    let entry = platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .iter()
+        .filter_map(|event| {
+            event
+                .decode::<qip_kernel::platform::CycleJournalEntry>()
+                .ok()
+                .map(|envelope| envelope.body)
+        })
+        .next_back()
+        .expect("the cycle was journaled");
+    let report = entry
+        .cost_by
+        .expect("the journal carries the bill per dimension");
+    let total = |cut: &std::collections::BTreeMap<String, Decimal>| {
+        cut.values().fold(Decimal::ZERO, |sum, cost| sum + *cost)
+    };
+    for cut in [
+        &report.strategy,
+        &report.model,
+        &report.data_source,
+        &report.region,
+    ] {
+        assert_eq!(total(cut), entry.compute_cost, "{report:?}");
+    }
+    assert_eq!(entry.compute_cost, platform.last_cycle_cost());
+    let desk = report
+        .strategy
+        .get("central-desk")
+        .copied()
+        .expect("the panel's rungs are the desk's");
+    assert!(desk >= panel, "{report:?}");
+    assert!(
+        report.strategy.contains_key(qip_cost_router::UNATTRIBUTED),
+        "the cycle-wide rungs stay unattributed to a strategy: {report:?}"
+    );
+    assert_eq!(
+        report.region.keys().collect::<Vec<_>>(),
+        vec!["home"],
+        "{report:?}"
+    );
+    Ok(())
+}
+
 /// R12-MODEL-10123, ADR 0391. Until this, a resolved thesis scored the
 /// forecast and the agents that argued it and never the routing that bought
 /// it: `qip_cost_router::ReputationBook` had no caller outside its own
@@ -516,6 +594,10 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
     let mut platform = platform()?;
     platform.observe(bars("AAA", 120));
     let first = platform.run_cycle(start());
+    // R12-FINOPS-10139: what each cycle billed the panel's rung, read off
+    // the ledger the cycle charged, to check the spend book against below.
+    let panel = qip_cost_router::IntelligenceTier::MultiAgentReasoning;
+    let mut panel_charges = platform.cycle_ledger().map_or(0, |l| l.count(panel));
     assert!(
         !platform.predictions().is_empty(),
         "premise: a claim was written:\n{}",
@@ -587,6 +669,7 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         .collect();
     platform.observe(swings);
     let second = platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    panel_charges += platform.cycle_ledger().map_or(0, |l| l.count(panel));
     let learn = second.stage(Stage::Learn).expect("learn ran");
     assert!(
         learn.detail.contains("graded"),
@@ -626,6 +709,31 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         learn.detail.contains("1 routing choice(s) scored"),
         "{}",
         learn.detail
+    );
+
+    // R12-FINOPS-10139. The failure this guards: the ledger knew what the
+    // rung cost and the book how often it was right, and no figure divided
+    // one by the other. The join is read back from the running platform.
+    assert!(panel_charges > 0, "premise: the cycles billed the panel");
+    let benefit = platform.model_benefit();
+    let row = benefit
+        .iter()
+        .find(|b| b.model == panel.as_str())
+        .expect("the panel's rung is reported");
+    assert!(row.references.contains(&rung), "{row:?}");
+    assert_eq!(row.spend.charges, panel_charges as u64, "{row:?}");
+    assert_eq!(
+        row.spend.cost,
+        panel.cost() * Decimal::from_int(panel_charges as i64)
+    );
+    assert_eq!(
+        (row.correct, row.observations),
+        (u64::from(record.correct), u64::from(record.observations))
+    );
+    assert_eq!(
+        row.cost_per_correct,
+        (record.correct > 0).then_some(row.spend.cost),
+        "one scored call: the cost per correct call is the whole bill or none"
     );
     Ok(())
 }
