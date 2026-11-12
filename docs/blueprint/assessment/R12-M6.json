@@ -1335,7 +1335,7 @@
   },
   {
     "id": "R12-EXPAND-6056",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The registry is built in qip-deepbrain main.rs by research::sweep_ontology_over from the coverage map the detector reads - the five types every detector reads, an Asset type per asset class the universe holds, and the coverage_gap Event type - and handed to ResearchLoop::with_ontology. Every sweep_over consults it: check_ontology stops the sweep if a detector's type is missing and check_coverage_registered stops it, naming the class, if the coverage map holds an asset class the registry does not. Each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology. Since 2026-10-31 sweep_ontology_over also names every venue the coverage map holds as a Market type and every geography as an Entity type (coverage_dimension_type), so a venue or geography coverage gap is a gap in a type the registry holds.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/registries.rs OntologyRegistry::extend",
@@ -1345,20 +1345,22 @@
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name",
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds",
       "backend/crates/apps/qip-deepbrain/src/research.rs coverage_dimension_type, sweep_ontology_over",
-      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_venue_and_geography_the_coverage_map_holds"
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_venue_and_geography_the_coverage_map_holds",
+      "backend/crates/libs/qip-contracts/src/expansion.rs OntologyTypeFamily (the eight families) and OntologyTypeSpec::validate / decode",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs an_ontology_entry_missing_a_declared_field_is_refused_and_registers_nothing"
     ],
-    "gap": "Governed extension is not reached by the running binary (2026-10-18): nothing calls extend_ontology outside tests, because the only item the desk concludes is a fill-bias campaign, so no Ontology-class item (GapClass::Ontology, raised from Wanting::Type) ever finishes with a passing EvaluationRecord to cite. The registry is therefore seeded once at start and never versioned in a running process. The Asset, Market (venues), Entity (geographies) and coverage-gap Event families are seeded from the coverage map; the Relationship, Product and CausalDriver families hold nothing the sweep reads. The triage's second clause (an ExtendOntology executor applying a validated OntologyPatch on a passing EvaluationRecord) is not built: R12-EXPAND-6029's propose_type registers a candidate's version one directly and no Ontology-class item concludes with an EvaluationRecord, so extend_ontology still has no production caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-agents --test expansion_registries (17 passed); cargo test -p qip-deepbrain --test expansion_rows (22 passed); cargo test -p qip-acceptance --test registry_versioning (8 passed). Mutation-verified 2026-11-12, each restored byte-for-byte and re-run green: dropping the schema, the name, and the description check (each in turn) in OntologyTypeSpec::validate fails an_ontology_entry_missing_a_declared_field_is_refused_and_registers_nothing with 'a spec with a blank <field> was registered'; #[serde(default)] on OntologyTypeSpec::schema fails it with 'a spec without `schema` was refused for another reason' (decode no longer refuses the absent field itself); deleting the check_ontology and check_coverage_registered calls in ResearchLoop::sweep_over fails expansion_rows a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name, so the registry qip-deepbrain main.rs builds and hands to with_ontology is consulted on every sweep.",
     "work_item": "",
     "size": "M",
-    "notes": "Mutations (2026-10-18): deleting the check_coverage_registered call in sweep_over fails a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name; skipping the Asset registration loop in sweep_ontology_over fails the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds and four sweep tests. Earlier: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the extension test. The expected ontology_types in a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted rose by two (the Equity Asset type and the coverage-gap Event type the seeded registry now holds). Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology. 2026-10-31 L4b-expand: venue and geography types seeded (triage 'Now' clause); mutation skipping the dimension loop fails the new test. Stays PARTIAL: governed extension unreached in a running binary."
+    "notes": "Mutations (2026-10-18): deleting the check_coverage_registered call in sweep_over fails a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name; skipping the Asset registration loop in sweep_ontology_over fails the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds and four sweep tests. Earlier: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the extension test. The expected ontology_types in a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted rose by two (the Equity Asset type and the coverage-gap Event type the seeded registry now holds). Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology. 2026-10-31 L4b-expand: venue and geography types seeded (triage 'Now' clause); mutation skipping the dimension loop fails the new test. Stays PARTIAL: governed extension unreached in a running binary. 2026-11-12 lane fw-m-01: graded COMPLETE against the bar's two parts. (1) An entry missing a declared field is refused: the new test admits the full spec first, then refuses a blank name, schema and description at register (leaving type_count 0 and get_latest empty) and each absent field at decode with serde's missing-field refusal. (2) The registry is consulted on a running path: qip-deepbrain main.rs builds it with sweep_ontology_over and every sweep_over consults it. Residuals deliberately left to the rows that own them, not this bar: OntologyRegistry::extend has no production caller (governed extension in a running process is R12-EXPAND-6029's OntologyPatch, R12-EXPAND-1014 and R12-EXPAND-1021), and the seeded registry holds no Relationship, Product, CausalDriver or Lifecycle type because nothing the sweep reads is of those families; the registry admits all eight."
   },
   {
     "id": "R12-EXPAND-6057",

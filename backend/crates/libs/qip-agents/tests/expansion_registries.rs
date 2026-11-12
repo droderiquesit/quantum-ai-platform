@@ -70,6 +70,101 @@ fn a_type_above_version_one_enters_the_ontology_only_through_an_evaluated_extens
     assert_eq!(registry.type_count(), 2, "both versions are kept");
 }
 
+/// R12-EXPAND-6056's bar: an Ontology Registry entry missing a declared field
+/// is refused. A type registered with a blank schema is a type every detector
+/// reading it would consult and find nothing in — the registry would say the
+/// type exists while recording no shape for it, and a blank name or
+/// description is an entry nobody can find or explain. Each is refused at
+/// `register` and leaves the registry empty, and a stored entry whose JSON
+/// lacks a field is refused at `decode` naming serde's missing field. The
+/// full spec is admitted first, so the refusals are of the blank field and
+/// not of the fixture. Mutation: drop the `schema` check in
+/// `OntologyTypeSpec::validate` — the blank-schema spec is registered and
+/// `get_latest` finds it.
+#[test]
+fn an_ontology_entry_missing_a_declared_field_is_refused_and_registers_nothing() {
+    let full = || OntologyTypeSpec {
+        family: OntologyTypeFamily::Asset,
+        name: "equity".to_string(),
+        version: 1,
+        schema: r#"{"type":"object","required":["isin"]}"#.to_string(),
+        description: "a listed share".to_string(),
+    };
+    let mut admitted = OntologyRegistry::new();
+    admitted
+        .register(full())
+        .expect("premise: the full spec is admitted");
+    assert!(
+        admitted
+            .get_latest(OntologyTypeFamily::Asset, "equity")
+            .is_some(),
+        "premise: an admitted spec is found"
+    );
+
+    let blanks = [
+        (
+            "name",
+            OntologyTypeSpec {
+                name: " ".to_string(),
+                ..full()
+            },
+        ),
+        (
+            "schema",
+            OntologyTypeSpec {
+                schema: String::new(),
+                ..full()
+            },
+        ),
+        (
+            "description",
+            OntologyTypeSpec {
+                description: "\t".to_string(),
+                ..full()
+            },
+        ),
+    ];
+    for (field, spec) in blanks {
+        let mut registry = OntologyRegistry::new();
+        let refused = registry
+            .register(spec.clone())
+            .expect_err(&format!("a spec with a blank {field} was registered"));
+        assert!(
+            refused
+                .message()
+                .contains(&format!("OntologyTypeSpec.{field} is blank")),
+            "the blank {field} was refused for another reason: {refused}"
+        );
+        assert_eq!(registry.type_count(), 0, "blank {field} left an entry");
+        assert!(
+            registry
+                .get_latest(OntologyTypeFamily::Asset, &spec.name)
+                .is_none(),
+            "blank {field} is found by get_latest"
+        );
+    }
+
+    let object = serde_json::to_value(full()).unwrap();
+    let object = object.as_object().unwrap();
+    assert!(
+        OntologyTypeSpec::decode(&serde_json::to_vec(object).unwrap()).is_ok(),
+        "premise: the full spec decodes"
+    );
+    assert_eq!(object.len(), 5, "premise: five declared fields");
+    for key in object.keys() {
+        let mut missing = object.clone();
+        missing.remove(key);
+        let refused = OntologyTypeSpec::decode(&serde_json::to_vec(&missing).unwrap())
+            .expect_err(&format!("a spec without `{key}` decoded"));
+        assert!(
+            refused
+                .to_string()
+                .contains(&format!("missing field `{key}`")),
+            "a spec without `{key}` was refused for another reason: {refused}"
+        );
+    }
+}
+
 /// ADR 0198: a lesson's promotion policy cannot have its floors lowered to a
 /// gate that cannot refuse. Mutation: drop the `minimum_support < 2` refusal
 /// in `PromotionPolicy::new` — the zero-support policy is admitted and the
