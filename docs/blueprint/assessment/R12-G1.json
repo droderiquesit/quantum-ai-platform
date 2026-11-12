@@ -3133,7 +3133,7 @@
   },
   {
     "id": "R12-LEDGER-8136",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "ADR 0393: modules/data keys the ledger's placement by the writer's region. us-east4 (qip-ledgerd's region in dev) plans google_spanner_instance.global on nam3 and the positions database's default_leader at us-east4 by DDL; enable_spanner in a region with no decided placement fails a lifecycle.precondition naming the ADR, so the data stays in the United States until a residency review adds an entry. Spanner remains off in every environment.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf local.spanner_placements, google_spanner_instance.global config and precondition, google_spanner_database.positions ddl",
@@ -3141,7 +3141,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration (instance reads the placement; every placement config multi-region)",
       "docs/adr/0393-the-ledgers-spanner-instance-is-nam3-with-its-default-leader-at-us-east4-the-write-origin-and-its-data-stays-in-the-united-states-until-a-residency-review.md"
     ],
-    "gap": "",
+    "gap": "2026-11-12 (orchestrator, independent verification of the 2026-11-12 grade): held PARTIAL. The placement itself is built: modules/data keys it by region, us-east4 maps to nam3 with default_leader us-east4 by DDL, an undecided region is refused by precondition, and ADR 0393 records why. Three parts of the owner's 2026-10-31 closure for this row are unmet. (1) The acceptance test the row cites (infrastructure.rs the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration) asserts only that no placement config starts with regional-, so a bare single region such as us-east4 would pass; the closure asks for an explicit list of Google multi-region configuration names that admits nam3 and refuses regional-* and any single region. (2) The closure asks for default_leader to come from a modules/data variable defaulting to us-east4 and validated against nam3's read-write regions; the leader is a literal in local.spanner_placements. (3) ADR 0393 does not record either departure. Earlier: ",
     "implemented": true,
     "tested": true,
     "integrated": true,
