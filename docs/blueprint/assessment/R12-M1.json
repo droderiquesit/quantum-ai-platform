@@ -3234,7 +3234,7 @@
   },
   {
     "id": "R12-REASON-1138",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-reasoning-engine's RulePack::evaluate forward-chains to a Verdict whose trace lists every rule that fired, in order, with the fact and value it set (backend/crates/services/qip-reasoning-engine/src/rules.rs:113 TraceStep, :122 Verdict, :154 evaluate); RulePack::verify re-evaluates and refuses any verdict, trace included, that differs (:232). REASON's symbolic stage derives one SymbolicDerivation per formed hypothesis over the panel's confidence, dissent and evidence count (backend/crates/runtime/qip-kernel/src/symbolic_stage.rs rules(), :818-821), journals it, and symbolic_stage::verify re-runs the pack on the journaled inputs on replay.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/rules.rs:113 TraceStep; :122 Verdict.trace; :154 evaluate (trace.push at :211); :232 verify",
@@ -3245,7 +3245,7 @@
       "2026-11-12 lane fw-h-01: cargo test -p qip-reasoning-engine --no-fail-fast (6 binaries ok, rules 57 passed); qip-kernel --test symbolic_federation (25 passed); qip-kernel --lib (492 passed). Mutation: RulePack::evaluate pushes no trace step fails four reasoning-engine tests (rules.rs:120, :359, :522, :642) and two kernel lib tests (symbolic_stage.rs:1549, :1656), but not symbolic_federation.rs:353, whose fixture fires no rule; mutation: RulePack::verify compares pack, version and facts but not the trace fails the new replay test (panicked at symbolic_federation.rs:881). Each restored byte for byte, all pass.",
       "2026-11-12 lane fw-h-01 bar: the unit verification (a reasoning task uses proof traces; its result recorded and reproducible). The cycle fixture's journaled trace is empty because no rule fires on its facts; the trace's contents are proven on derive() in the kernel lib tests and its reproducibility on replay by the new test. The requirement's 'coupled to neural models' is met only as far as the pack's inputs are the panel's confidence and dissent; no test names that coupling"
     ],
-    "gap": "",
+    "gap": "2026-11-12 (wave580 round 37, independent skeptic REFUTED the COMPLETE grade from fw-h-01): two halves of the bar are unmet. (1) 'coupled to neural models': the rule pack's inputs are the panel's effective confidence, dissenter count, evidence count and flags (platform.rs SymbolicInput, symbolic_stage.rs rule_inputs); nothing ties a proof trace to a neural model's output and no test names that coupling. (2) 'recorded and reproducible': the only cycle-and-journal test (tests/symbolic_federation.rs a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces) fires no rule, so the journaled trace is empty; the tamper test proves a fabricated step is refused, but no test journals a non-empty trace the pack took and accepts it on replay_recorded. What holds: RulePack::evaluate builds an ordered trace, RulePack::verify compares the whole verdict, REASON derives under the production pack and journals it, and replay re-checks it. Remaining: a journaled non-empty trace accepted on replay, and a stated coupling to a model output with a test. ",
     "implemented": true,
     "tested": true,
     "integrated": true,
