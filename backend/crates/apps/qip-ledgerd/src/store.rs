@@ -135,6 +135,11 @@ const PREFIX_LOT: &str = "lot/";
 /// statement compared for that cell at that venue, so a statement at or
 /// behind it is answered as stale and never journals its break twice.
 const PREFIX_CUSTODY: &str = "custody/";
+/// The fills of one order whose cash waits on the venue's `Settled`
+/// record, keyed `pending/<cell>/<order>` (ADR 0440). Bounded by the orders
+/// in settlement: a settlement deletes its order's row in the batch that
+/// books it.
+const PREFIX_PENDING: &str = "pending/";
 const KEY_PROBE: &str = "meta/probe";
 
 /// How many key ranges a monotonic key family is spread over
