@@ -237,3 +237,26 @@ variable "reader_service_accounts" {
   type        = list(string)
   default     = []
 }
+
+variable "spanner_default_leader" {
+  description = <<-EOT
+    The region the ledger's `positions` database leads from (ADR 0394,
+    amending ADR 0393). Every read-write transaction commits through the
+    leader, so it belongs where `qip-ledgerd`, the only writer, runs:
+    `us-east4` under ADR 0035.
+
+    Refused unless it is one of `nam3`'s two read-write regions, `us-east4`
+    (Northern Virginia, Google's default leader for `nam3`) and `us-east1`
+    (South Carolina), as Google's instance-configuration page listed them on
+    2026-11-12. `us-central1` is `nam3`'s witness and holds no leader; any
+    other region is not in the configuration at all, and Spanner would
+    refuse the DDL at apply, after the instance had been created and billed.
+  EOT
+  type        = string
+  default     = "us-east4"
+
+  validation {
+    condition     = contains(["us-east4", "us-east1"], var.spanner_default_leader)
+    error_message = "spanner_default_leader must be a read-write region of nam3, the ledger's configuration (ADR 0394): us-east4 or us-east1. A witness region or a region outside nam3 cannot lead the positions database."
+  }
+}

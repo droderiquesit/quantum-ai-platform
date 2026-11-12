@@ -13854,13 +13854,90 @@ fn the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuratio
         !configs.is_empty(),
         "premise: local.spanner_placements names no configuration, so nothing below is checked"
     );
+    // ADR 0394: a name is admitted only if Google lists it as a multi-region
+    // configuration. Until 2026-11-12 this refused only the `regional-`
+    // prefix, which admitted a bare region (`us-east4`), a dual-region
+    // configuration, and a misspelling such as the `nam-eur-asea` the ledger
+    // was declared on for months — a string Google never published.
     for config in configs {
         assert!(
             !config.starts_with("regional-"),
             "the ledger's placement config `{config}` is a single region, not a multi-region \
              configuration; external consistency across regions needs one"
         );
+        assert!(
+            GOOGLE_SPANNER_MULTI_REGION_CONFIGS.contains(&config),
+            "the ledger's placement config `{config}` is not one of Google's multi-region Spanner \
+             configurations ({GOOGLE_SPANNER_MULTI_REGION_CONFIGS:?}); a single region, a \
+             dual-region configuration or a misspelt name is not the placement ADR 0394 admits"
+        );
     }
+}
+
+/// Google's multi-region Spanner instance configurations, as the
+/// instance-configuration page
+/// (`docs.cloud.google.com/spanner/docs/instance-configurations`) listed them
+/// on 2026-11-12: the one-continent set and the two three-continent ones. The
+/// `dual-region-*` configurations and every `regional-*` one are left out on
+/// purpose (ADR 0394). A name Google adds later is admitted by adding it here
+/// in a reviewed change, not by a pattern that also admits what Google never
+/// published.
+const GOOGLE_SPANNER_MULTI_REGION_CONFIGS: &[&str] = &[
+    "asia1",
+    "asia2",
+    "eur3",
+    "eur5",
+    "eur6",
+    "eur7",
+    "nam3",
+    "nam6",
+    "nam7",
+    "nam8",
+    "nam9",
+    "nam10",
+    "nam11",
+    "nam12",
+    "nam13",
+    "nam14",
+    "nam15",
+    "nam16",
+    "nam22",
+    "nam23",
+    "nam24",
+    "nam-eur-asia1",
+    "nam-eur-asia3",
+];
+
+#[test]
+fn the_multi_region_list_admits_nam3_and_refuses_a_regional_a_single_region_and_a_misspelt_name() {
+    // The list is the guard above; this proves it has both halves. A list
+    // that admitted nothing would fail the placement test for the wrong
+    // reason, and one that admitted a bare region would pass it for one.
+    let admits = |name: &str| GOOGLE_SPANNER_MULTI_REGION_CONFIGS.contains(&name);
+    assert!(
+        admits("nam3"),
+        "nam3, ADR 0393's placement, is not admitted"
+    );
+    for refused in [
+        "regional-us-east4",
+        "regional-europe-west2",
+        "us-east4",
+        "europe-west1",
+        "dual-region-germany1",
+        "nam-eur-asea",
+        "",
+    ] {
+        assert!(
+            !admits(refused),
+            "`{refused}` is admitted as a multi-region Spanner configuration"
+        );
+    }
+    assert!(
+        GOOGLE_SPANNER_MULTI_REGION_CONFIGS
+            .iter()
+            .all(|name| !name.starts_with("regional-") && !name.starts_with("dual-region-")),
+        "the multi-region list holds a regional or dual-region configuration"
+    );
 }
 
 // --- five networks, each deny-by-default on ingress ---------------------------
