@@ -100,6 +100,12 @@ pub enum FieldRole {
     Aggressor,
     /// Trading state.
     Status,
+    /// The quantity an auction would match at its indicative price.
+    PairedQuantity,
+    /// The quantity left unmatched at the indicative price.
+    ImbalanceQuantity,
+    /// The side holding the unmatched quantity: 0 bid, 1 ask, 2 none.
+    ImbalanceSide,
     /// Present in the schema but not interpreted; decoded so it can be logged.
     Informational,
 }
@@ -157,6 +163,11 @@ pub enum SbeMessageKind {
     Trade,
     /// A trading-state change.
     Status,
+    /// An auction's indicative price, paired quantity and imbalance
+    /// (R12-TICK-2053). Without it a venue's auction messages had no
+    /// template kind to decode under, so the only auction fact an SBE feed
+    /// could deliver was the cross print that ended it.
+    Auction,
 }
 
 /// One template in the schema.
@@ -464,6 +475,36 @@ impl SbeDecoder {
                     }
                 };
                 Some(MessageBody::StatusChange { status })
+            }
+            SbeMessageKind::Auction => {
+                let field = |role| entry.get(role).or_else(|| header.get(role));
+                let paired = field(FieldRole::PairedQuantity)?.as_decimal()?;
+                let imbalance = field(FieldRole::ImbalanceQuantity)?.as_decimal()?;
+                // An absent side field and the explicit "none" code are the
+                // venue saying the auction does not lean; any other value is
+                // a code this schema does not define, and is refused rather
+                // than read as whichever side it happens to resemble.
+                let imbalance_side = match field(FieldRole::ImbalanceSide) {
+                    None | Some(SbeValue::Uint(2)) => None,
+                    Some(raw) => match raw.as_side() {
+                        Some(side) => Some(side),
+                        None => {
+                            let detail = format!("unmapped imbalance side {raw:?}");
+                            self.skip(SkipReason::Malformed { detail }, offset, captured_at);
+                            return None;
+                        }
+                    },
+                };
+                // A zero indicative price is no price yet, not a cross at zero.
+                let indicative_price = field(FieldRole::Price)
+                    .and_then(SbeValue::as_decimal)
+                    .filter(|price| !price.is_zero());
+                Some(MessageBody::AuctionUpdate {
+                    indicative_price,
+                    paired,
+                    imbalance,
+                    imbalance_side,
+                })
             }
         }
     }

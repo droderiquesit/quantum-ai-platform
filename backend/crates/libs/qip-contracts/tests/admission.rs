@@ -185,3 +185,83 @@ fn a_market_event_is_admitted_through_the_one_constructor_and_yields_its_header(
     );
     Ok(())
 }
+
+/// R12-TICK-2053: a market event's wire form is the one the lake holds —
+/// the same keys in the same order — and decoding it goes back through the
+/// refusals rather than around them. A derived `Deserialize` admitted a line
+/// whose payload had been altered after its hash was taken, whose
+/// uncertainty was negative, or whose entitlement was never granted.
+///
+/// Mutation: drop the hash comparison in `TryFrom<MarketEventWire>` — the
+/// altered line decodes ("an altered payload was decoded"). Mutation: drop
+/// the entitlement check there — the denied line decodes.
+#[test]
+fn a_market_event_line_decodes_back_through_its_refusals_and_keeps_its_wire_form() -> Result<()> {
+    let payload = message(t(10), t(20));
+    let hash = MarketEvent::hash_payload(&payload)?;
+    let event = MarketEvent::new(
+        payload,
+        t(10),
+        t(20),
+        t(21),
+        Duration::from_millis(5),
+        hash,
+        granted(),
+    )?;
+    let line = serde_json::to_value(&event)?;
+    let keys: Vec<&str> = line
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    // serde_json's map is ordered by key here, so compare as sets and pin
+    // the field set the lake was written with.
+    let mut expected = vec![
+        "payload",
+        "event_time",
+        "receive_time",
+        "normalized_time",
+        "uncertainty",
+        "source_hash",
+        "entitlement",
+    ];
+    expected.sort_unstable();
+    let mut keys = keys;
+    keys.sort_unstable();
+    assert_eq!(keys, expected, "the wire form moved");
+    let back: MarketEvent = serde_json::from_value(line.clone())?;
+    assert_eq!(back, event, "premise: an honest line round-trips");
+    assert_eq!(back.admission(), event.admission());
+
+    let mut altered = line.clone();
+    altered["payload"]["capture_time"] = serde_json::to_value(t(25))?;
+    assert!(
+        serde_json::from_value::<MarketEvent>(altered).is_err(),
+        "an altered payload was decoded"
+    );
+
+    let mut negative = line.clone();
+    negative["uncertainty"] = serde_json::to_value(Duration::from_nanos(-1))?;
+    assert!(
+        serde_json::from_value::<MarketEvent>(negative).is_err(),
+        "a negative uncertainty was decoded"
+    );
+
+    let mut denied = line.clone();
+    denied["entitlement"] = serde_json::to_value(Entitlement::Denied {
+        dataset: "itch-a".into(),
+        usage: Usage::Trade,
+        reason: "never licensed".into(),
+    })?;
+    assert!(
+        serde_json::from_value::<MarketEvent>(denied).is_err(),
+        "a line under a denied entitlement was decoded"
+    );
+
+    // Deliberately admitted on read: a line received before it happened is
+    // what the replay's knowability exclusion finds and counts.
+    let mut early = line;
+    early["receive_time"] = serde_json::to_value(t(5))?;
+    let early: MarketEvent = serde_json::from_value(early)?;
+    assert_eq!(early.receive_time(), t(5));
+    Ok(())
+}

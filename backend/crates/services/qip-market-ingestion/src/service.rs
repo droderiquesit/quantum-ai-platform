@@ -663,10 +663,13 @@ mod tests {
 
     #[test]
     fn a_sensed_record_round_trips_through_its_event_and_a_foreign_topic_is_refused() {
-        // Premise: eleven distinct topics, one per `SensedRecord` variant.
-        assert_eq!(SensedRecord::TOPICS.len(), 11);
+        // Premise: twelve distinct topics, one per `SensedRecord` variant
+        // except the three session facts (status, auction, reset), which
+        // share `market.session` and are told apart by the body's own tag
+        // (`session::SessionRecord`); `tests/canonical.rs` round-trips each.
+        assert_eq!(SensedRecord::TOPICS.len(), 12);
         let distinct: std::collections::BTreeSet<_> = SensedRecord::TOPICS.iter().collect();
-        assert_eq!(distinct.len(), 11);
+        assert_eq!(distinct.len(), 12);
 
         let (context, _clock) = Context::deterministic(at(), 1);
         let lineage = Lineage::root(context.ids().generate(at()), "test");

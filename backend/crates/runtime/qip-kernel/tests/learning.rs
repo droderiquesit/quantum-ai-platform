@@ -3392,3 +3392,73 @@ fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate(
     assert!(platform.declined_scores().is_empty());
     Ok(())
 }
+
+// --- venue session facts reach the centre typed (R12-TICK-2053) -------------
+
+fn book(symbol: &str, at: Timestamp) -> SensedRecord {
+    use qip_market::book::{BookLevel, OrderBook};
+    let level = |price: &str| BookLevel {
+        price: Decimal::parse(price).unwrap_or_default(),
+        size: dec!("500"),
+        order_count: 2,
+    };
+    SensedRecord::Book(Box::new(OrderBook {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        at,
+        bids: vec![level("99.99")],
+        asks: vec![level("100.01")],
+        sequence: 7,
+    }))
+}
+
+/// A venue's halt reaches the centre as a typed status record, and the next
+/// book from that venue is taken as depth at a halted venue rather than as
+/// continuous trading. Before the status record existed every central book
+/// was filed under `VenueStatus::Open`, a halt included.
+///
+/// Mutation: read `VenueStatus::Open` for the book again in
+/// `Platform::absorb_records` — the halted venue counts as usable
+/// ("a halted venue's book was read as tradable depth").
+#[test]
+fn a_venue_halt_reaches_the_centre_typed_and_the_next_book_is_read_under_it() -> Result<()> {
+    use qip_contracts::venue::VenueStatus;
+    use qip_market_ingestion::session::VenueStatusUpdate;
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+
+    // Premise: an ordinary book is usable depth.
+    assert_eq!(platform.observe(vec![book("AAA", at)]), 1);
+    let map = platform
+        .liquidity()
+        .current_map(&object("AAA"), at)
+        .expect("premise: the book is mapped");
+    assert_eq!(
+        map.usable_venue_count(),
+        1,
+        "premise: an open venue is usable"
+    );
+
+    let halted_at = at.saturating_add(Duration::from_secs(1));
+    let halt = SensedRecord::Status(Box::new(VenueStatusUpdate {
+        object_id: object("AAA"),
+        venue: "XNYS".to_string(),
+        at: halted_at,
+        capture_time: halted_at,
+        sequence: Some(8),
+        status: VenueStatus::Halted,
+    }));
+    let next = halted_at.saturating_add(Duration::from_secs(1));
+    assert_eq!(platform.observe(vec![halt, book("AAA", next)]), 2);
+    let map = platform
+        .liquidity()
+        .current_map(&object("AAA"), next)
+        .expect("the book is mapped");
+    assert_eq!(map.venue_count(), 1);
+    assert_eq!(
+        map.usable_venue_count(),
+        0,
+        "a halted venue's book was read as tradable depth"
+    );
+    Ok(())
+}

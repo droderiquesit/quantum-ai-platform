@@ -1030,7 +1030,28 @@ fn the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one() 
         1,
         "a book cannot be built from increments alone and no snapshot was asked for"
     );
-    assert_eq!(books.len(), 1, "one book from one instrument: {books:?}");
+    // One book, and — since R12-TICK-2053 — the venue's first stated status
+    // as its own typed record, which the book alone could not carry.
+    assert_eq!(
+        books
+            .iter()
+            .filter(|record| matches!(record, SensedRecord::Book(_)))
+            .count(),
+        1,
+        "one book from one instrument: {books:?}"
+    );
+    assert!(
+        books.iter().any(|record| matches!(
+            record,
+            SensedRecord::Status(update) if update.status == qip_contracts::venue::VenueStatus::Open
+        )),
+        "the venue's status did not reach the platform as a typed record: {books:?}"
+    );
+    assert_eq!(
+        books.len(),
+        2,
+        "a book and a status, nothing else: {books:?}"
+    );
 
     let cell_book = depth
         .venue_state(SYMBOL)

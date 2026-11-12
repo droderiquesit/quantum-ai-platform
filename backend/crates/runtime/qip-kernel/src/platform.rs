@@ -1325,6 +1325,14 @@ pub struct Platform {
     /// Quoted spread history per instrument, in basis points — the series the
     /// liquidity-deterioration detector reads. A statistic, so `f64`.
     spread_history: BTreeMap<String, Vec<f64>>,
+    /// The last trading state each venue stated for each instrument, from
+    /// [`SensedRecord::Status`] (R12-TICK-2053), keyed `(instrument,
+    /// venue)`. A book's depth observation is taken under this status
+    /// rather than under an assumed `Open`: until a venue's status reached
+    /// the centre as a typed record, every central book was filed as
+    /// continuous trading, including one published during a halt. Bounded
+    /// by [`VENUE_STATUS_BOUND`]; a new key past it is refused and reported.
+    venue_status: BTreeMap<(String, String), VenueStatus>,
     /// Named surprise series — fundamentals against consensus, keyed
     /// `entity:metric` — the series the observation detector reads.
     observation_history: BTreeMap<String, Vec<f64>>,
@@ -6825,6 +6833,7 @@ impl Platform {
             claim_scores: qip_evolution::scoring::Scoreboard::strategies(),
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
+            venue_status: BTreeMap::new(),
             observation_history: BTreeMap::new(),
             world,
             market,
@@ -13455,11 +13464,42 @@ impl Platform {
                             spread.to_f64() / mid.to_f64() * 10_000.0,
                         );
                     }
-                    let observation =
-                        DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, VenueStatus::Open);
+                    // The venue's own last stated status where it stated
+                    // one; a venue that never has is read as quoting
+                    // continuously, as a quote is below.
+                    let status = self
+                        .venue_status
+                        .get(&(book.object_id.as_str().to_string(), book.venue.clone()))
+                        .copied()
+                        .unwrap_or(VenueStatus::Open);
+                    let observation = DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, status);
                     self.absorb_depth(observation, book.at);
                     self.market
                         .update(|market| market.snapshot.apply_book(*book));
+                    absorbed += 1;
+                }
+                SensedRecord::Status(update) => {
+                    let key = (update.object_id.as_str().to_string(), update.venue.clone());
+                    if self.venue_status.len() >= VENUE_STATUS_BOUND
+                        && !self.venue_status.contains_key(&key)
+                    {
+                        self.capture_problems.push(format!(
+                            "a status for {} at {} was refused: {VENUE_STATUS_BOUND} instrument \
+                             and venue pairs are already tracked",
+                            key.0, key.1
+                        ));
+                        continue;
+                    }
+                    self.ensure_world_object(update.object_id.as_str(), update.at);
+                    self.venue_status.insert(key, update.status);
+                    absorbed += 1;
+                }
+                // An auction's imbalance and a book reset are logged with
+                // their lineage on receipt (`observe_with_lineage`) and reach
+                // no central series yet: the centre holds no auction book,
+                // and its books are snapshots a reset does not invalidate —
+                // the next published book replaces the last.
+                SensedRecord::Auction(_) | SensedRecord::Reset(_) => {
                     absorbed += 1;
                 }
                 SensedRecord::News(item) => {
@@ -30196,6 +30236,11 @@ fn push_bounded_bars(series: &mut Vec<Bar>, bar: Bar) {
         series.drain(..series.len() - SERIES_HISTORY);
     }
 }
+
+/// The most `(instrument, venue)` pairs [`Platform`]'s venue-status table
+/// holds. Several times any universe this build runs; a feed naming more is
+/// refused rather than grown into.
+const VENUE_STATUS_BOUND: usize = 4096;
 
 /// The desk's bar series length at which the snapshot is rebuilt from the
 /// platform's own bounded history.
