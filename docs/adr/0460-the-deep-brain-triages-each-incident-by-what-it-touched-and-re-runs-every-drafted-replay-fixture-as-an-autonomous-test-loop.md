@@ -71,6 +71,30 @@ it.
    shift and has not recovered. `qip_aiops_fixture_checks_total{outcome}`
    counts each check.
 
+## What it costs
+
+- The loop reads the operations journal's samples once per fixture check,
+  every six iterations; the journal is the record, so the cost grows with
+  it. A bounded index over samples is the remedy if it ever shows in
+  iteration time, which the same loop would detect.
+- Severity is coarse by design: three classes, decided by what was touched.
+  Two Critical incidents are not ordered against each other by magnitude,
+  only by age.
+- `IncidentRecord` carries one more optional field; a reader written
+  against the old shape still decodes new records only if it ignores
+  unknown fields.
+
+## What would make this wrong
+
+- A second process opening incidents with a different notion of
+  "abnormal": triage would then rank two loops' incidents on two scales.
+  One predicate per process, or a shared one, is required before that.
+- A detector change that makes old fixtures stop reproducing: every check
+  would read `no_longer_reproduces`, correctly, and the fixtures would need
+  redrafting rather than the check relaxing.
+- An owner instruction that severity follow a stated money or exposure
+  figure; this record deliberately states none.
+
 ## Consequences
 
 - An operator reading the deep brain's iteration record sees
@@ -79,10 +103,6 @@ it.
 - A fixture that stops reproducing, or a shift that has not cleared, is
   named on the iteration record; one that cleared or is waiting is counted
   only.
-- The loop reads the operations journal's samples once per check, every six
-  iterations; the journal is the record, so the cost grows with it. A
-  bounded index over samples is the remedy if it ever shows in iteration
-  time, which the same loop would detect.
 
 ## What this leaves open
 
