@@ -3305,14 +3305,20 @@
   },
   {
     "id": "R12-FINOPS-10141",
-    "status": "MISSING",
-    "current": "No anomaly job or task path; acceptance test documents the gap.",
+    "status": "PARTIAL",
+    "current": "qip_observability::billing::detect reads billing-export rows (project, service, labels, cost, currency, usage window) against declared SpendThresholds (project, label selector, figure, window) and returns one CostAnomaly per threshold per epoch-aligned window whose summed cost exceeds it, carrying project, labels, amount, threshold and a stable fingerprint that names the breach and not its size (late rows do not raise a second task); mixed currencies, a reversed usage window, a non-positive threshold or an empty window are refused by name. qip_kernel::cost_anomaly_tasks::journal writes one CostAnomalyTask per anomaly into the hash-chained EventLog (Topic::SystemAlert, idempotency key cost-anomaly:<fingerprint>) and refuses a second report of the same breach. Pure detector in the lib (qip-edge links qip-observability as I/O-free); the adapter is in the kernel.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4589 cost_anomalies_are_not_yet_journaled_to_fabric_tasks"
+      "backend/crates/libs/qip-observability/src/billing.rs detect, fingerprint",
+      "backend/crates/runtime/qip-kernel/src/cost_anomaly_tasks.rs journal, CostAnomalyTask",
+      "backend/crates/libs/qip-observability/tests/billing.rs spend_over_a_threshold_in_a_window_raises_one_anomaly_carrying_project_labels_amount_and_threshold",
+      "backend/crates/libs/qip-observability/tests/billing.rs the_fingerprint_names_the_breach_and_not_its_size",
+      "backend/crates/runtime/qip-kernel/tests/cost_anomaly_tasks.rs a_journaled_anomaly_is_one_chained_task_and_a_second_report_of_it_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs a_billing_export_fixture_raises_one_journaled_cost_anomaly_task_and_a_duplicate_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_scheduled_job_feeds_the_cost_anomaly_detector_yet (gap pin, Terraform half of the replaced test)"
     ],
-    "gap": "Anomaly job + task adapter.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-11-12 (lane fw-j-01): the detector and the task adapter exist and are proven with a billing fixture, but the job does not: nothing schedules a read of the billing export (no google_bigquery_data_transfer_config, no budget pubsub_topic; pinned by no_scheduled_job_feeds_the_cost_anomaly_detector_yet), no composition root calls detect or journal, and no SpendThresholds are declared in configuration. The tasks land in an EventLog handed to the adapter, not yet in a Fabric task queue a person is assigned from.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -3320,10 +3326,10 @@
       "R12-FINOPS-10135"
     ],
     "blocked_by": "",
-    "verification": "integration test with billing fixture",
+    "verification": "cargo test -p qip-observability --test billing; cargo test -p qip-kernel --test cost_anomaly_tasks; cargo test -p qip-acceptance --test infrastructure a_billing_export",
     "work_item": "",
     "size": "M",
-    "notes": "That test asserts only that a budget resource exists; it would still pass after the feature lands."
+    "notes": "That test asserts only that a budget resource exists; it would still pass after the feature lands. Lane fw-j-01 2026-11-12: MISSING->PARTIAL. The old pin cost_anomalies_are_not_yet_journaled_to_fabric_tasks fired on the new CostAnomaly type as designed and was replaced in-tree (infrastructure.rs is not a protected path): its Terraform half kept unchanged as no_scheduled_job_feeds_the_cost_anomaly_detector_yet, its Rust half replaced by the billing-fixture integration test it named. 5 mutations fired (selector ignored, at-threshold flagged, amount in fingerprint, currencies summed, journal dedup off)."
   },
   {
     "id": "R12-FINOPS-10142",

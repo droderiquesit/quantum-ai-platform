@@ -9,8 +9,8 @@ register (ADR 0099), and there is no second one.
 | Measure | Count | Share of applicable |
 |---|---|---|
 | Blueprint completion (COMPLETE) | 572 | 37.7% |
-| Implemented (behaviour exists in code) | 1373 | 90.4% |
-| Tested (a named test demonstrates it) | 1289 | 84.9% |
+| Implemented (behaviour exists in code) | 1374 | 90.5% |
+| Tested (a named test demonstrates it) | 1290 | 85.0% |
 | Integrated (reached from a composition root) | 925 | 60.9% |
 | Deployable (provisionable from committed config) | 209 | 13.8% |
 | End-to-end demonstrated | 20 | 1.3% |
@@ -18,8 +18,8 @@ register (ADR 0099), and there is no second one.
 | Status | Requirements |
 |---|---|
 | COMPLETE | 572 |
-| PARTIAL | 848 |
-| MISSING | 66 |
+| PARTIAL | 849 |
+| MISSING | 65 |
 | BLOCKED | 31 |
 | NEEDS-VALIDATION | 1 |
 
@@ -56,7 +56,7 @@ register (ADR 0099), and there is no second one.
 | [GCP](#gcp) | 54 | 9 | 34 | 5 | 6 | 0 | 43 | 36 | 0 |
 | [API](#api) | 8 | 1 | 7 | 0 | 0 | 0 | 8 | 7 | 0 |
 | [RES](#res) | 61 | 21 | 36 | 4 | 0 | 0 | 50 | 45 | 0 |
-| [FINOPS](#finops) | 15 | 3 | 8 | 4 | 0 | 0 | 11 | 8 | 0 |
+| [FINOPS](#finops) | 15 | 3 | 9 | 3 | 0 | 0 | 12 | 9 | 0 |
 | [COVERAGE](#coverage) | 57 | 14 | 42 | 1 | 0 | 0 | 56 | 56 | 1 |
 
 ## ARCH
@@ -1667,7 +1667,7 @@ register (ADR 0099), and there is no second one.
 | R12-FINOPS-10138 | Retention is tiered and derived duplicates are bounded | Derived stores carry lifecycle/retention rules (tested); Fabric retention policy per stream class exists in qip-events; Bigtable/BQ tiers not active. | PARTIAL | 2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. The bounded half holds: every derived store carries a retention or lifecycle rule, and it is tested. The tiers are not on. Bigtable stays declined at about $950 a month (R12-DATA-9053, R12-DATA-10035). The segment bucket comes on with the change that lands its first writer (R12-DATA-8125, R12-DATA-8127). The hot tier is graded on a deployed broker's retention, not on code, and Bigtable is not funded to pass the row. It stays PARTIAL. Closes on: No code now. When R12-DATA-8127's batch-load writer lands with enable_cloud_storage set in dev's protected tfvars, a dev plan showing the segments bucket's lifecycle and the BigQuery aggregates closes the GCS and BigQuery tiers. The hot tier closes on a broker baked and deployed in dev holding replay under its retention classes. Bigtable reopens only through R12-DATA-9053's ADR, which must state a measured need and a ceiling. Earlier: 2026-10-24 (deployment-dependent, billed): the retention and lifecycle rules and Fabric retention classes exist and are tested; active Bigtable/BigQuery tiers need the data module provisioned in an environment, which nothing has applied. Needs the owner to enable the tiers and a plan this lane may not run. | R12-DATA-10033, R12-DATA-10035 | P1 | cargo test -p qip-acceptance --test infrastructure |  |
 | R12-FINOPS-10139 | AI work has budgets, quotas and benefit-per-dollar benchmarks | qip-agents BudgetLedger stops an agent over budget. qip-cost-router's SpendBook accumulates every ComputeLedger's model-rung charges (cost, latency, count) and SpendBook::report joins them to the ReputationBook per rung into a ModelBenefit (correct/observed calls, hit rate in bp, cost per correct call, latency per correct call; None where nothing divides). The kernel absorbs each cycle's ledger where it bills it (Platform, beside cycle_ledger) and Platform::model_benefit reports the join against the routing reputation LEARN scores. | PARTIAL | 2026-11-12 (lane fw-j-01): the benefit join exists and the kernel computes it from the cycles it billed, but (1) nothing reads it to decide: the router does not rank rungs by cost per correct call, and the report is neither journaled nor exported as a metric, so it lives in process memory and is lost on restart; (2) spend is joined on the rung, not the model version, because ComputeLedger bills a tier and not a name@version reference; (3) queue quotas: QueueQuotas exist and are enforced by LocalTrainingProvider::submit and the Vertex provider, but no composition root (qip-deepbrain or other) constructs a training provider with quotas, so no running process bounds a queue. Not attempted in this lane. |  | P2 | cargo test -p qip-cost-router --test cost_router the_spend_book; cargo test -p qip-kernel --test learning the_cycle_that_grades; cargo test -p qip-agents |  |
 | R12-FINOPS-10140 | Autonomous agents have daily/monthly model, build and tool budgets | scripts/model-gateway.mjs refuses to configure (exit 78, nothing sent) unless ALGORIK_WORKER_MAX_CALLS, ALGORIK_WORKER_DAILY_CALLS, ALGORIK_WORKER_MONTHLY_CALLS, ALGORIK_WORKER_BUILD_CALLS and ALGORIK_WORKER_TOOL_CALLS are all positive numbers; an unset budget is the same refusal as zero. Each budget is enforced from the ledger and a spent one refuses the call with an audit line (refused:daily-budget, refused:monthly-budget). The fleet worker passes all four explicitly; its cross-task day stays bounded in dollars by its ceiling refusal (ADR 0102). | COMPLETE |  |  | P1 | node --test scripts/model-gateway.test.mjs scripts/fleet/worker.test.mjs |  |
-| R12-FINOPS-10141 | Cost anomalies raise Fabric/incident tasks | No anomaly job or task path; acceptance test documents the gap. | MISSING | Anomaly job + task adapter. | R12-FINOPS-10135 | P2 | integration test with billing fixture |  |
+| R12-FINOPS-10141 | Cost anomalies raise Fabric/incident tasks | qip_observability::billing::detect reads billing-export rows (project, service, labels, cost, currency, usage window) against declared SpendThresholds (project, label selector, figure, window) and returns one CostAnomaly per threshold per epoch-aligned window whose summed cost exceeds it, carrying project, labels, amount, threshold and a stable fingerprint that names the breach and not its size (late rows do not raise a second task); mixed currencies, a reversed usage window, a non-positive threshold or an empty window are refused by name. qip_kernel::cost_anomaly_tasks::journal writes one CostAnomalyTask per anomaly into the hash-chained EventLog (Topic::SystemAlert, idempotency key cost-anomaly:<fingerprint>) and refuses a second report of the same breach. Pure detector in the lib (qip-edge links qip-observability as I/O-free); the adapter is in the kernel. | PARTIAL | 2026-11-12 (lane fw-j-01): the detector and the task adapter exist and are proven with a billing fixture, but the job does not: nothing schedules a read of the billing export (no google_bigquery_data_transfer_config, no budget pubsub_topic; pinned by no_scheduled_job_feeds_the_cost_anomaly_detector_yet), no composition root calls detect or journal, and no SpendThresholds are declared in configuration. The tasks land in an EventLog handed to the adapter, not yet in a Fabric task queue a person is assigned from. | R12-FINOPS-10135 | P2 | cargo test -p qip-observability --test billing; cargo test -p qip-kernel --test cost_anomaly_tasks; cargo test -p qip-acceptance --test infrastructure a_billing_export |  |
 | R12-FINOPS-10142 | Cost actions never auto-delete production state | The budget has no programmatic action and a test refuses one. | COMPLETE |  |  | P0 | cargo test -p qip-acceptance --test infrastructure a_billing_budget_notifies_and_never_carries_a_programmatic_action |  |
 
 ## COVERAGE
