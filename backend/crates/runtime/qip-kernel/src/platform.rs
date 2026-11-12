@@ -17979,9 +17979,28 @@ impl Platform {
                 .get(subject.as_str())
                 .and_then(|class| self.asset_class_registry.get(*class))
                 .and_then(|record| match record.settlement() {
+                    // Settlement days on the home jurisdiction's calendar,
+                    // not calendar days (REASON-3055): a Thursday T+2 claim
+                    // settles on the Monday, and a claim due on the Sunday
+                    // is refused as resolving before its trade could
+                    // settle. The calendar is the one the pre-positioning
+                    // planner quotes on, so the two cannot disagree about
+                    // which days settle. Only where no calendar answers is
+                    // the lag the calendar-day count, which is a lower
+                    // bound: it can admit too much, never refuse too much.
                     crate::asset_class_registry::ClassSettlement::Exchange(convention) => Some((
                         convention.as_str().to_string(),
-                        Duration::from_days(i64::from(convention.days())),
+                        self.settlement_book()
+                            .calendar_of(&CapitalRegion::new(HOME_REGION))
+                            .and_then(|calendar| {
+                                calendar
+                                    .after_settlement_days(hypothesis.formed_at, convention.days())
+                                    .ok()
+                            })
+                            .map_or_else(
+                                || Duration::from_days(i64::from(convention.days())),
+                                |settles| settles.since(hypothesis.formed_at),
+                            ),
                     )),
                     crate::asset_class_registry::ClassSettlement::PeriodicStatement => None,
                 }),
@@ -19652,13 +19671,26 @@ impl Platform {
         let market = self.market.read();
         let mut obligations = BTreeMap::new();
         for object in self.capital.positions.keys() {
-            let related = crate::hedge_review::policies_relating_to(
+            let relations = crate::hedge_review::policies_relating_to(
                 &self.config.hedge_policies,
                 object,
                 &market.universe,
+                |hedge| {
+                    self.capital
+                        .positions
+                        .get(hedge.as_str())
+                        .is_some_and(|lot| !lot.quantity.is_zero())
+                },
             )?;
-            let hedges = if !related.is_empty() {
-                Declared::Present(related)
+            let hedges = if !relations.held.is_empty() {
+                Declared::Present(relations.held)
+            } else if !relations.unheld.is_empty() {
+                Declared::NoneApplicable {
+                    reason: format!(
+                        "declared over this position, but its hedge instrument is not held: {}",
+                        relations.unheld.join("; ")
+                    ),
+                }
             } else if self.config.hedge_policies.is_empty() {
                 Declared::NoneApplicable {
                     reason: "no hedge policy is declared for this deployment".to_string(),
@@ -22627,6 +22659,22 @@ impl Platform {
                         obligations.len()
                     );
                     outcome = StageOutcome { detail, ..outcome };
+                    // The records themselves, not only their counts, so the
+                    // log answers which position was unhedged and why. A
+                    // journal that failed is a problem on the line, never
+                    // swallowed: a count the desk saw and the log lacks is
+                    // two stories about one cycle.
+                    let record = crate::position_register::PositionObligationsStated {
+                        positions: obligations,
+                        cycle: self.cycle,
+                        at: now,
+                    };
+                    if let Err(error) = self.journal_record(record, "kernel/positions", now) {
+                        outcome = outcome.with_problem(format!(
+                            "the held positions' obligations were counted and not journalled: {}",
+                            error.message()
+                        ));
+                    }
                 }
                 Err(error) => {
                     outcome = outcome.with_problem(format!(
