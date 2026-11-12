@@ -282,13 +282,16 @@
   {
     "id": "R12-REASON-3013",
     "status": "PARTIAL",
-    "current": "EquityAnalyst and CreditAnalyst in production; fundamental surprise series ingested by the platform.",
+    "current": "CompanyFundamentalAnalyst (company-fundamental-brain) is constructed in Organisation::standard and covers five scopes (FinancialStatements, Earnings, CorporateEvents, ManagementGuidance, CapitalStructure): reported fundamentals from the world model, corporate actions from a CompanyView slot the kernel writes every REASON, guidance and capital structure as typed qip_financial::company records (ADR 0458). Removing it drops all five scopes from coverage.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/analysts.rs:218 EquityAnalyst",
-      "backend/crates/agents/qip-investment-agents/src/analysts.rs:361 CreditAnalyst",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9305 fundamental surprise series"
+      "backend/crates/agents/qip-investment-agents/src/fundamental_brain.rs CompanyFundamentalAnalyst",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::FinancialStatements..CapitalStructure",
+      "backend/crates/libs/qip-financial/src/company.rs ManagementGuidance, CapitalStructure",
+      "backend/crates/runtime/qip-kernel/src/platform.rs brief_the_desk_on_company",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_company_fundamental_brain_drops_its_five_scopes_from_coverage",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs an_announced_corporate_action_reaches_the_company_fundamental_brains_slot"
     ],
-    "gap": "No management-guidance or capital-structure model.",
+    "gap": "2026-11-12: management guidance and capital structure have no ingestion arm (no SensedRecord variant, no absorber, no licensed source), so on every deployed binary the brain names both missing; corporate events are covered only once a corporate-action feed reaches the kernel. Remaining: an ingestion path and licensed source for guidance and balance sheets feeding CompanyView.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -296,10 +299,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test learning an_announced_corporate_action",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "t50-16 2026-11-12, ADR 0458. Stale citation platform.rs:9305 replaced."
   },
   {
     "id": "R12-REASON-3014",
