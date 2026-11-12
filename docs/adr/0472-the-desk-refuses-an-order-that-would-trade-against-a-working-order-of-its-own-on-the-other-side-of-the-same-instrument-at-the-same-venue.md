@@ -48,6 +48,31 @@ ownership, printing volume nobody traded.
    (`working_venues`, pruned exactly as `working_axes` is), never every order
    ever sent, so a long-running desk pays nothing more per submission.
 
+## What it costs
+
+- The desk cannot rest orders on both sides of one book at one venue. A
+  two-sided quote would be refused on its second leg. The desk has no
+  market-making path today, and a later one needs its own record and a
+  price-aware rule.
+- A desk that wants to reverse while a resting order is still open must
+  cancel that order first. Before this change it could send the opposite
+  order straight away; now that takes one more step.
+- One more label value, `conduct-self-trade`, on the kernel's refusal
+  series, and one more `working_venues` entry per open order, pruned at
+  every check.
+
+## What would make this wrong
+
+- The desk comes to need two-sided quoting at one venue. Then the broad rule
+  refuses legitimate quotes, and a price-aware rule against the venue's
+  documented matching becomes worth its risk.
+- A venue offers self-trade prevention that the platform can verify per
+  order. The venue would then refuse the cross itself, and the desk's
+  refusal would duplicate it. It would still be kept until that prevention
+  is shown on the venue's own record.
+- Desk orders begin working at a venue the broker's name does not identify.
+  The venue key is then wrong, and opposite orders at one venue can pass.
+
 ## Not decided here
 
 Marking the close, momentum ignition and quote stuffing (gap 3's remainder);
