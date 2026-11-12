@@ -4011,17 +4011,23 @@
   },
   {
     "id": "R12-COVERAGE-7170",
-    "status": "PARTIAL",
-    "current": "Brain/memory/ontology/capability types exist. The ontology registry refuses a version not above the latest per name. Since 2026-10-18 the research registry does too: every verdict is kept as a numbered version (ResearchRegistry::record_version refuses zero and a version not above the latest; record takes the next), and the Source Registry versions each registration: a re-assessment later than the held record replaces it as the next version, one at the same instant keeps the version, and one older than the held record is refused.",
+    "status": "COMPLETE",
+    "current": "Brain/memory/ontology/capability types exist. The ontology registry refuses a version not above the latest per name. Since 2026-10-18 the research registry does too: every verdict is kept as a numbered version (ResearchRegistry::record_version refuses zero and a version not above the latest; record takes the next), and the Source Registry versions each registration: a re-assessment later than the held record replaces it as the next version, one at the same instant keeps the version, and one older than the held record is refused. Since 2026-11-12 (session cov-a-01, ADR 0410) the other four meet the same rule: BrainRegistry::succeed admits only the held version plus one whose parent_version_id names the held version; MemoryRegistry::admit numbers an entry as the next version of its id and admit_version refuses zero and a version not above the latest held, counting the refusal; ToolRegistry records version one at registration and the next at each promotion that widens the scope, citing its evaluation, and mints nothing for a grant already held; ModelRegistry::register refuses a card that would rebind a digest-bound name@version to other bytes or none, since a model version is an unordered string. qip-acceptance registry_versioning drives all eight registries through their public doors against the rule.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:367-457",
       "backend/crates/libs/qip-agents/src/registries.rs",
       "backend/crates/libs/qip-agents/src/research.rs:87 ResearchRegistry::record_version",
       "backend/crates/services/qip-data-finder/src/decision.rs:548 RegisteredSource::succeeding",
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_version_is_kept",
-      "backend/crates/services/qip-data-finder/tests/source_registry.rs a_re_registration_raises_the_source_version_and_a_stale_one_is_refused"
+      "backend/crates/services/qip-data-finder/tests/source_registry.rs a_re_registration_raises_the_source_version_and_a_stale_one_is_refused",
+      "backend/crates/apps/qip-deepbrain/src/brains.rs::BrainRegistry::succeed",
+      "backend/crates/libs/qip-agents/src/memory.rs::MemoryRegistry::admit_version",
+      "backend/crates/libs/qip-agents/src/tools.rs::ToolRegistry::promote",
+      "backend/crates/libs/qip-ai/src/registry.rs::ModelRegistry::register",
+      "backend/crates/tests/qip-acceptance/tests/registry_versioning.rs (8 tests, one per registry)",
+      "docs/adr/0410-a-registry-is-versioned-when-a-successor-takes-the-next-version-a-stale-one-is-refused-and-no-version-is-rebound.md"
     ],
-    "gap": "Research and source registries are now versioned (the source registry on the default path through Platform's DataFinder; the research registry is held by qip-expansion's desk, which no binary constructs). Remaining for the composite: the memory, brain, tool and model registries' versioning has not been checked against the same rule, and no acceptance suite proves the composite.",
+    "gap": "Nothing in the repository remains for the requirement as ADR 0410 reads it. Stated limits, not gaps: the brain and source registries keep the version in force and its lineage and not superseded versions, because no figure bounds such a history (ADR 0410 decision 2); BrainRegistry::succeed and the research registry have no binary caller (no binary constructs qip-expansion's desk, and the deep brain registers each brain once), so integrated stays false. Deployment remains outside: nothing is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4029,10 +4035,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test registry_versioning",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-10-18 lane L23: mutations fired - accepting a research version equal to the latest ('version 2 was accepted over latest 2'); accepting a source registration older than the held one (the stale assess no longer erred); not bumping the source version on a later registration (left Some(1), right Some(2))."
+    "notes": "2026-10-18 lane L23: mutations fired - accepting a research version equal to the latest ('version 2 was accepted over latest 2'); accepting a source registration older than the held one (the stale assess no longer erred); not bumping the source version on a later registration (left Some(1), right Some(2)). 2026-11-12 session cov-a-01: the l6-c1-01 draft patch applied, its two sixteen-entry histories (brain, source) removed as an invented figure, ADR 0410 written; graded COMPLETE pending the independent skeptic. cargo test -p qip-acceptance --test registry_versioning: 'test result: ok. 8 passed; 0 failed'. Mutations that fired, each restored byte-for-byte: memory admit_version '<= latest' -> '< latest' ('version 2 was accepted over latest 2'); brain succeed '!= next' -> '< next' ('a skipped version was admitted'); brain parent check removed ('a successor naming no parent was admitted'); model digest-binding check removed ('a held version was rebound to another artifact'); tool promotion written in place (version left Some(1), expected Some(2)); research record_version '<= latest' -> '< latest' ('version 2 was accepted over latest 2'); capability duplicate check removed ('a capability already recorded was recorded again'); source stale check removed ('a registration older than the held one replaced it'); ontology duplicate and not-above-latest checks removed ('version 1 was accepted over latest 2')."
   },
   {
     "id": "R12-COVERAGE-7171",
