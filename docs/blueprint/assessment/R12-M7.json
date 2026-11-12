@@ -3148,11 +3148,11 @@
     "evidence": [
       "backend/crates/services/qip-agency/src/autonomy.rs:545 drift (BelowPredicted at :548); :565 observe",
       "backend/crates/services/qip-agency/src/engine.rs:736 learn -> policy.observe",
-      "backend/crates/services/qip-agency/tests/agency.rs:1403 an_effect_outside_the_predicted_interval_or_an_unpredicted_side_effect_returns_a_policy_to_shadow (effect 0 against [1, 5] returns NarrowReversible to Shadow)",
+      "backend/crates/services/qip-agency/tests/agency.rs:1404 an_effect_outside_the_predicted_interval_or_an_unpredicted_side_effect_returns_a_policy_to_shadow (effect 0 against [1, 5] returns NarrowReversible to Shadow)",
       "backend/crates/services/qip-agency/tests/agency.rs:2873 an_effect_outside_the_prediction_learned_after_an_action_returns_the_policy_to_shadow (through engine::learn)",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
-      "2026-11-12 lane fw-h-01: cargo test -p qip-agency --test agency: 64 passed; qip-deepbrain --test ambient_agency: 10 passed. Mutation deleting `self.authority = Authority::Shadow` in observe fails four tests including :1403 (panicked at agency.rs:1422) and :2873 (panicked at :2898); mutation `if false && effect < low` in drift fails only :1403 (panicked at agency.rs:1422, the below-prediction case); each restored byte for byte, 64 passed."
+      "2026-11-12 lane fw-h-01: cargo test -p qip-agency --test agency: 64 passed; qip-deepbrain --test ambient_agency: 10 passed. Mutation deleting `self.authority = Authority::Shadow` in observe fails four tests including :1404 (panicked at agency.rs:1422) and :2873 (panicked at :2898); mutation `if false && effect < low` in drift fails only :1404 (panicked at agency.rs:1422, the below-prediction case); each restored byte for byte, 64 passed."
     ],
     "gap": "",
     "implemented": true,
