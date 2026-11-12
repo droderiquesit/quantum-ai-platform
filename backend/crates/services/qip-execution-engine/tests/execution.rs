@@ -2108,3 +2108,139 @@ fn a_desk_order_that_would_trade_against_its_own_working_order_is_refused_before
     );
     Ok(())
 }
+
+// --- working a partial sale's remainder (ADR 0424) --------------------------
+
+fn half_fills() -> Result<SimulatedBroker> {
+    let settings = SimulationSettings::default()
+        .with_rejection_probability(0.0)?
+        .with_immediate_fill_fraction(dec!("0.5"))?;
+    Ok(SimulatedBroker::new(settings, 3))
+}
+
+/// ADR 0424: an open sale's remainder is worked to flat and no further, and
+/// an open purchase's is not worked at all. Working skips the pre-trade
+/// check the order passed on submission, which is sound only for a fill that
+/// reduces exposure.
+///
+/// Mutation: drop the `Side::Sell` filter in `OrderManager::work_sales` —
+/// the purchase is worked ("a purchase's remainder was worked"). Mutation:
+/// work the whole remainder rather than `min(remaining, room)` — the sale
+/// sells past the long ("a worked sale sold past flat").
+#[test]
+fn an_open_sale_is_worked_down_to_the_long_held_and_an_open_purchase_is_not() -> Result<()> {
+    let mut manager = manager();
+    let mut broker = half_fills()?;
+    let controller = AutonomyController::new();
+    let bought = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "1000"),
+        &mut broker,
+        &controller,
+    );
+    let sold = submit(
+        &mut manager,
+        order("BBB", Side::Sell, "1000"),
+        &mut broker,
+        &controller,
+    );
+    // Premise: both filled half and are open with five hundred left.
+    assert!(bought.accepted && sold.accepted);
+    assert_eq!(manager.open_orders().len(), 2, "premise: both orders open");
+
+    // The desk holds 500 of AAA and 300 of BBB. The sale has 500 left and
+    // only 300 of that takes the long to flat; the other 200 would open a
+    // short the working must not open.
+    let held = BTreeMap::from([
+        (object("AAA").as_str().to_string(), dec!("500")),
+        (object("BBB").as_str().to_string(), dec!("300")),
+    ]);
+    let later = now().saturating_add(Duration::from_secs(60));
+    let worked = manager.work_sales(&mut broker, &controller, &held, later);
+    assert_eq!(
+        worked.len(),
+        1,
+        "a purchase's remainder was worked: {worked:?}"
+    );
+    let sale = &worked[0];
+    assert_eq!(sale.side, Side::Sell);
+    let quantity: Decimal = sale.fills.iter().map(|fill| fill.quantity).sum();
+    assert_eq!(quantity, dec!("300"), "a worked sale sold past flat");
+    assert!(sale.fills.iter().all(|fill| fill.simulated));
+
+    // Working the same book again with nothing left long works nothing.
+    let flat = BTreeMap::from([(object("BBB").as_str().to_string(), Decimal::ZERO)]);
+    assert!(
+        manager
+            .work_sales(&mut broker, &controller, &flat, later)
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// A stopped platform does not trade an order it accepted before it stopped.
+///
+/// Mutation: drop the `is_halted` check in `work_sales` — the halted scope's
+/// sale is worked ("a halted scope's sale was worked").
+#[test]
+fn a_halted_scope_works_nothing() -> Result<()> {
+    let mut manager = manager();
+    let mut broker = half_fills()?;
+    let mut controller = AutonomyController::new();
+    submit(
+        &mut manager,
+        order("BBB", Side::Sell, "1000"),
+        &mut broker,
+        &controller,
+    );
+    controller
+        .kill_switch_mut()
+        .trip_scope("momentum", now(), "risk-monitor", "test halt");
+    let held = BTreeMap::from([(object("BBB").as_str().to_string(), dec!("500"))]);
+    let worked = manager.work_sales(&mut broker, &controller, &held, now());
+    assert!(worked.is_empty(), "a halted scope's sale was worked");
+    Ok(())
+}
+
+/// Working draws nothing from the venue's random stream, so a replay of the
+/// same orders fills the same way whether or not a remainder was worked in
+/// between.
+///
+/// Mutation: draw `self.rng.next_f64()` at the top of
+/// `SimulatedBroker::work` — the next submission's fill id and the
+/// submitted count move ("working moved the venue's random stream").
+#[test]
+fn working_a_remainder_draws_nothing_from_the_venues_random_stream() -> Result<()> {
+    let settings = SimulationSettings::default()
+        .with_rejection_probability(0.3)?
+        .with_immediate_fill_fraction(dec!("0.5"))?;
+    let run = |work: bool| -> Result<Vec<String>> {
+        let mut broker = SimulatedBroker::new(settings, 11);
+        // The venue's own state is all that matters here: the submission
+        // draws, the working must not.
+        // Accepted or rejected, it consumed one draw either way.
+        let first = order("AAA", Side::Sell, "1000");
+        let _first = broker.submit(&first, now());
+        if work {
+            broker.work(&first, dec!("100"), now())?;
+        }
+        let mut outcomes = Vec::new();
+        for index in 0..200 {
+            let mut next = order(&format!("N{index}"), Side::Buy, "10");
+            next.order_id = OrderId::from_string(format!("next-{index}"));
+            outcomes.push(match broker.submit(&next, now()) {
+                Ok(fills) => format!("filled {}", fills.len()),
+                Err(_) => "rejected".to_string(),
+            });
+        }
+        Ok(outcomes)
+    };
+    assert_eq!(
+        run(false)?,
+        run(true)?,
+        "working moved the venue's random stream"
+    );
+    // Premise: the stream does reject sometimes, so equality is not vacuous.
+    assert!(run(false)?.iter().any(|outcome| outcome == "rejected"));
+    Ok(())
+}
