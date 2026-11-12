@@ -12,6 +12,7 @@
   `FeatureSnapshot` P2 record"). The producer, the never-over-zero rule and
   the downgrade-only consumer stand.
 - **Rows**: R12-CONTRACT-7072.
+- **Versioning**: moves `reflex.feature_digested` to v2 under ADR 0429.
 
 ## Context
 
@@ -34,13 +35,35 @@ consuming one. That is closed in the same lane (`MarketStatePackWire`).
 
 1. **The carrier is the pass's `FeatureDigest`.** The pack rides as an
    optional field of the digest on `reflex.feature_digested`; no
-   `FeatureSnapshot` is built. Adding it changes the digest's locked shape,
-   so `REFLEX_FEATURE_DIGESTED` moves to schema version 2 (CONTRACT-046: a
-   shape change without a version bump fails CI), its lock row's fixture
-   carries the pack `Some` so the lock sees the nested shape, and version 1
-   is retired rather than kept beside it: its one surveyed consumer,
-   `qip-edge-node`, decodes version 2's type, which reads a version 1 body
-   with the pack absent, and no deployed process holds a version 1 line.
+   `FeatureSnapshot` is built. The digest's locked shape changes, so the
+   topic moves from v1 to v2 under
+   [ADR 0429](0429-an-event-fabric-topic-moves-schema-version-by-additive-change-in-one-commit-across-lock-binding-broker-and-consumers-and-a-prior-version-retires-only-on-evidence.md),
+   clause by clause:
+   - *1, 2 (additive)*: the one change is `market_state:
+     Option<MarketStatePack>`, absent when `None`; no field removed or
+     retyped.
+   - *3a binding*: `REFLEX_FEATURE_DIGESTED.schema_version` is 2, its doc
+     naming this ADR.
+   - *3b lock row and fixture*: the v2 row is the schema-lock suite's own
+     regeneration output; its fixture carries a pack with a sequence-gap
+     flag, so `integrity`'s element shape is locked.
+   - *3c survey*: `consumers.lock.json` surveys v2 with its one decoder,
+     `qip-edge-node` (`grep -rn FeatureDigest backend/crates --include=*.rs`
+     finds no other crate decoding it outside tests and `qip-contracts`).
+   - *3d broker*: no edit; the broker admits by `locked_descriptors()` over
+     the embedded lock. `streams.*.json` names the topic, not a version, and
+     is unchanged.
+   - *3e consumer admits*: `writer::decode_as` admits a version at or below
+     its binding;
+     `event_fabric_outbox.rs::the_v2_digest_consumer_admits_a_v1_body_with_no_pack_and_refuses_a_newer_version`
+     decodes a v1 body under v2 with the pack absent and refuses v3.
+   - *4 retirement of v1*: (i) by 3e's test; (ii) the producer,
+     `qip-edge-node`, is deployed nowhere: `execution_nodes = {}` in test,
+     stage and prod, and dev's `execution_nodes_enabled = false`
+     (`grep -n execution_nodes infrastructure/environments/*/terraform.tfvars`,
+     read 2026-11-12), and the digest has no other producer; (iii)
+     `event_fabric_schema_lock`'s gate tests pass over the v2-only lock and
+     inventory. So v1's lock row and survey are removed in the same commit.
 2. **The producer is the seam that builds the digest.** The owner's triage
    named `event_fabric/drain.rs`; the drain only ships what the scheduler
    recorded, and holds `MarketEvent`s only inside the lake writer. The pack

@@ -1038,3 +1038,53 @@ fn a_late_event_stretches_the_pass_interval_rather_than_losing_the_pack() {
         "premise: the tape is contiguous"
     );
 }
+
+/// ADR 0429 clause 3, for `reflex.feature_digested` v1 to v2 (ADR 0428): the
+/// one surveyed consumer admits the retired version. A v1 body — the digest
+/// as it was before the pack existed, at `schema_version: 1` — decodes
+/// through `writer::feature_digest` under the v2 binding with the pack
+/// absent, and a body from a version newer than the binding is refused.
+/// Retiring v1 from the lock is safe only because this holds.
+///
+/// Mutation: make `decode_as` in `event_fabric/writer.rs` admit only the
+/// binding's own version (`!=` for `>`) — the v1 body is refused and the
+/// first `expect` fails. (Dropping `#[serde(default)]` from
+/// `FeatureDigest::market_state` does not fire it, and need not: serde
+/// already reads an absent `Option` field as `None`; the field being an
+/// `Option` is what keeps v1 readable.)
+#[test]
+fn the_v2_digest_consumer_admits_a_v1_body_with_no_pack_and_refuses_a_newer_version() {
+    use qip_events::envelope::AnyEvent;
+    use qip_events::event_fabric::bindings::REFLEX_FEATURE_DIGESTED;
+    assert_eq!(
+        REFLEX_FEATURE_DIGESTED.schema_version, 2,
+        "premise: the binding is at v2"
+    );
+    let v1 = serde_json::json!({
+        "cell": CELL, "session": "1", "pass": 3, "now_ns": t(20).as_nanos(),
+        "instruments": [], "ticks": 0, "applied": 0,
+        "applied_from_ns": 0, "applied_to_ns": 0, "applied_digest": sha256_hex(b""),
+    });
+    let at = |schema_version: u32| AnyEvent {
+        event_id: EventId::from_string(format!("v{schema_version}")),
+        topic: REFLEX_FEATURE_DIGESTED.topic,
+        schema_version,
+        occurred_at: t(20),
+        recorded_at: t(20),
+        sequence: 0,
+        lineage: qip_core::Lineage::root(
+            qip_core::lineage::CorrelationId::from_string("c-1"),
+            "test",
+        ),
+        idempotency_key: None,
+        payload: v1.clone(),
+        payload_hash: sha256_hex(canonical_json(&v1).as_bytes()),
+    };
+    let digest = writer::feature_digest(&at(1)).expect("a v1 digest decodes under v2");
+    assert_eq!(digest.pass, 3);
+    assert!(digest.market_state.is_none(), "a v1 body carries no pack");
+    assert!(
+        writer::feature_digest(&at(3)).is_err(),
+        "a body newer than the binding is refused"
+    );
+}
