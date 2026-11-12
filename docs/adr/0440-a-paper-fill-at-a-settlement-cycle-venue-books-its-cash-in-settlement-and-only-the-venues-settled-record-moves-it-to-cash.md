@@ -82,6 +82,24 @@ without answering them:
   settlement clock in `qip-edge-node`, for a venue with cycle terms) and the
   composition-root setting remain, and must land together.
 
+## What it costs
+
+- A second statement of which venues settle on a cycle, in the ledger's
+  composition root beside the cell's `SettlementTerms`, until `Filled` can
+  carry the terms. The two can drift; a drift shows as cash held pending for
+  ever or as a settlement that parks the cell, both visible and neither
+  silent.
+- A `pending/` row per order in settlement, rewritten on every partial fill
+  and deleted at settlement. Bounded by the orders in settlement, not by
+  history.
+- A new failure mode ADR 0130 already named: a lost `Settled` record leaves
+  cash in settlement for ever. It is visible as a non-zero `in_settlement:`
+  balance, and it is why decision 7 keeps the setting off until the producer
+  lands.
+- A consumer built before `Decision::Settled` cannot decode it and parks the
+  cell. That is fail-closed, and it is a reason to deploy the ledger before
+  any node that emits the record.
+
 ## What would make this wrong
 
 - If the fabric versioning ADR lets `Filled` carry terms, decision 3's
