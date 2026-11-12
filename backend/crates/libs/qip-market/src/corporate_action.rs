@@ -34,6 +34,11 @@ pub enum CorporateActionKind {
     },
     /// The instrument ceases to trade.
     Delisting { reason: String },
+    /// The product failed — wound up, defaulted, withdrawn worthless — and
+    /// ceases to trade. Terminal like a delisting, and kept distinct from one
+    /// so the historical universe can say a name went to nothing rather than
+    /// left in good order (R12-TICK-2090, ADR 0446).
+    Failed { reason: String },
     /// Ticker or name change; economics are unaffected.
     Renamed { new_symbol: String },
 }
@@ -229,12 +234,13 @@ impl CorporateAction {
                         ))
                     })
             }
-            // Mergers, delistings and renames do not adjust the prior series:
+            // Mergers, delistings, failures and renames do not adjust the prior series:
             // the instrument's history stands as traded. This is the only
             // `Decimal::ONE` left in the function, and it is now the only thing
             // it can mean.
             CorporateActionKind::Merger { .. }
             | CorporateActionKind::Delisting { .. }
+            | CorporateActionKind::Failed { .. }
             | CorporateActionKind::Renamed { .. } => Ok(Decimal::ONE),
         }
     }
@@ -252,7 +258,9 @@ impl CorporateAction {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.kind,
-            CorporateActionKind::Delisting { .. } | CorporateActionKind::Merger { .. }
+            CorporateActionKind::Delisting { .. }
+                | CorporateActionKind::Failed { .. }
+                | CorporateActionKind::Merger { .. }
         )
     }
 

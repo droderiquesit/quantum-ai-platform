@@ -5,7 +5,7 @@
 //! the mutation it was verified against.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_contracts::ledger::{Account, Direction, LedgerEvent};
+use qip_contracts::ledger::{Account, Direction, LedgerEvent, SettlementState};
 use qip_contracts::message::BookSide;
 use qip_contracts::reflex::{
     ChainSpan, ChainVersion, Decision, JournalEntry, OutcomeRecord, seal_v2,
@@ -1110,4 +1110,292 @@ fn consecutive_deliveries_for_one_cell_never_write_chain_keys_that_sort_in_write
         firsts.windows(2).any(|pair| pair[0] > pair[1]),
         "the chain's keys sort in the order they were written: {keys:?}"
     );
+}
+
+// --- settlement state (R12-LEDGER-5011, ADR 0130 decision 1-2, ADR 0440) ----
+
+fn settled(order: &str, settlement_date: Timestamp, simulated: bool) -> Decision {
+    Decision::Settled {
+        order_id: order.to_string(),
+        venue: VENUE.to_string(),
+        settlement_date,
+        simulated,
+    }
+}
+
+fn settling(dir: &Path) -> (LedgerStore, Arc<Metrics>) {
+    let (store, metrics) = open(dir);
+    let store = store
+        .with_settlement_cycle_venues([VENUE.to_string()])
+        .expect("a named venue is admitted");
+    (store, metrics)
+}
+
+fn trading(strategy: &str) -> Account {
+    Account::Trading {
+        cell: "cell-a".to_string(),
+        strategy: strategy.to_string(),
+    }
+}
+
+fn in_settlement(strategy: &str) -> Account {
+    Account::InSettlement {
+        cell: "cell-a".to_string(),
+        strategy: strategy.to_string(),
+    }
+}
+
+fn last_event(store: &LedgerStore) -> LedgerEvent {
+    store
+        .fill_events()
+        .expect("events")
+        .pop()
+        .expect("an event was booked")
+}
+
+#[test]
+fn a_sale_at_a_settlement_cycle_venue_holds_its_proceeds_in_settlement_until_the_venue_settles_them()
+ {
+    // The failure this prevents: the ledger calling a sale's proceeds
+    // spendable on the trade date while the cell's own settlement gate says
+    // they are not (ADR 0130's context). Mutation verified twice: posting
+    // the cash leg to `trading:` in `post_in_settlement` is refused by
+    // `LedgerEvent::staged` (a stage with nothing in settlement) and parks
+    // the cell, failing the first `Posted` assertion; dropping the
+    // `in_settlement:` cash leg leaves the event unbalanced in USD, which
+    // `LedgerEvent::new` refuses, and parks it the same way (the
+    // requirement's "drop the posting and the balance check fails").
+    let dir = temp_dir("settle-sale");
+    let (store, _) = settling(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    let sale = j.outcome(fill("a-0", 10, "10", BookSide::Bid, true));
+    assert_eq!(
+        store.apply(&at(0, &sale)).expect("apply"),
+        Disposition::Posted { postings: 4 }
+    );
+
+    // Before the settlement: the units left the book, the cash did not
+    // arrive, and the event says why.
+    assert_eq!(
+        store.balance(&trading("alpha"), "OBJ-ACME").expect("units"),
+        Decimal::from_int(-10),
+        "premise: the position moved at the trade date"
+    );
+    assert_eq!(
+        store.balance(&trading("alpha"), UNIT).expect("cash"),
+        Decimal::ZERO,
+        "unsettled proceeds were booked as spendable cash"
+    );
+    assert_eq!(
+        store
+            .balance(&in_settlement("alpha"), UNIT)
+            .expect("pending"),
+        Decimal::from_int(100)
+    );
+    let pending = last_event(&store);
+    assert_eq!(pending.settlement_state(), SettlementState::InSettlement);
+    assert_eq!(
+        store
+            .pending_settlement("cell-a", "a-0")
+            .expect("pending")
+            .len(),
+        1
+    );
+
+    // The pending row survives a restart: a process that lost it would
+    // refuse the venue's settlement as settling nothing.
+    drop(store);
+    let (store, _) = settling(&dir);
+
+    let date = Timestamp::from_secs(1_790_172_800);
+    let settlement = j.outcome(settled("a-0", date, true));
+    assert_eq!(
+        store.apply(&at(1, &settlement)).expect("apply"),
+        Disposition::Posted { postings: 2 }
+    );
+    assert_eq!(
+        store.balance(&trading("alpha"), UNIT).expect("cash"),
+        Decimal::from_int(100),
+        "the settlement did not reach the book"
+    );
+    assert_eq!(
+        store
+            .balance(&in_settlement("alpha"), UNIT)
+            .expect("pending"),
+        Decimal::ZERO,
+        "the settlement left cash in settlement"
+    );
+    assert_eq!(
+        last_event(&store).settlement_state(),
+        SettlementState::Settled {
+            settlement_date: date,
+            fills: vec![0],
+        }
+    );
+    assert!(
+        store
+            .pending_settlement("cell-a", "a-0")
+            .expect("pending")
+            .is_empty(),
+        "a settled order is still held as pending"
+    );
+    assert!(
+        store
+            .trial_balance()
+            .expect("trial balance")
+            .values()
+            .all(|total| *total == Decimal::ZERO),
+        "the trial balance does not close"
+    );
+    // The fill's own event still reads as it was booked: in settlement. A
+    // settlement is a new event, never an edit of the fill (LEDGER-017).
+    assert_eq!(
+        store.fill_events().expect("events")[0].settlement_state(),
+        SettlementState::InSettlement
+    );
+}
+
+#[test]
+fn a_purchase_filled_in_parts_keeps_its_cash_in_the_book_until_one_settlement_pays_for_every_part()
+{
+    // The failure this prevents: a purchase whose cash left the book at the
+    // trade date, and an order filled twice whose settlement paid for one
+    // part and stranded the other. Mutation verified: settling only the
+    // last held fill in `post_settlement` books two postings instead of four
+    // and fails the `Posted` assertion, stranding the first part's 50 USD.
+    let dir = temp_dir("settle-buy");
+    let (store, _) = settling(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    let first = j.outcome(fill("a-0", 5, "10", BookSide::Ask, true));
+    let second = j.outcome(fill("a-0", 3, "10", BookSide::Ask, true));
+    store.apply(&at(0, &first)).expect("apply");
+    store.apply(&at(1, &second)).expect("apply");
+    assert_eq!(
+        store.balance(&trading("alpha"), UNIT).expect("cash"),
+        Decimal::ZERO,
+        "a purchase paid before settlement"
+    );
+    assert_eq!(
+        store.balance(&in_settlement("alpha"), UNIT).expect("owed"),
+        Decimal::from_int(-80),
+        "premise: both parts are owed in settlement"
+    );
+
+    let date = Timestamp::from_secs(1_790_172_800);
+    let settlement = j.outcome(settled("a-0", date, true));
+    assert_eq!(
+        store.apply(&at(2, &settlement)).expect("apply"),
+        Disposition::Posted { postings: 4 }
+    );
+    assert_eq!(
+        store.balance(&trading("alpha"), UNIT).expect("cash"),
+        Decimal::from_int(-80)
+    );
+    assert_eq!(
+        store.balance(&in_settlement("alpha"), UNIT).expect("owed"),
+        Decimal::ZERO
+    );
+    assert_eq!(
+        last_event(&store).settlement_state(),
+        SettlementState::Settled {
+            settlement_date: date,
+            fills: vec![0, 1],
+        }
+    );
+}
+
+#[test]
+fn a_fill_at_a_venue_with_no_declared_cycle_books_its_cash_at_once_and_reads_as_immediate() {
+    // The failure this prevents: every venue's cash held pending because
+    // one venue settles on a cycle. Mutation verified: making the store post
+    // every fill through `post_in_settlement` leaves 0 USD in the book and
+    // fails the cash assertion.
+    let dir = temp_dir("settle-instant");
+    let (store, _) = open(&dir);
+    let store = store
+        .with_settlement_cycle_venues(["sim-other".to_string()])
+        .expect("admitted");
+    let mut j = Journal::new("cell-a", 1);
+    let sale = j.outcome(fill("a-0", 10, "10", BookSide::Bid, true));
+    store.apply(&at(0, &sale)).expect("apply");
+    assert_eq!(
+        store.balance(&trading("alpha"), UNIT).expect("cash"),
+        Decimal::from_int(100)
+    );
+    assert_eq!(
+        last_event(&store).settlement_state(),
+        SettlementState::Immediate
+    );
+    assert!(
+        store
+            .pending_settlement("cell-a", "a-0")
+            .expect("pending")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_settlement_of_an_order_with_nothing_in_settlement_parks_the_cell_and_moves_nothing() {
+    // The failure this prevents: a venue's settlement booked against cash the
+    // ledger never held pending, which would double the proceeds, or a
+    // refused settlement silently stepped over. Mutation verified: the store
+    // advancing past a refused settlement instead of parking returns
+    // `Advanced` and fails the `Parked` assertion; holding every fill
+    // pending whatever its venue books this settlement and fails it too.
+    let dir = temp_dir("settle-nothing");
+    let (store, _) = open(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    let sale = j.outcome(fill("a-0", 10, "10", BookSide::Bid, true));
+    store.apply(&at(0, &sale)).expect("apply");
+    let before = store.balances().expect("balances");
+    let settlement = j.outcome(settled("a-0", Timestamp::from_secs(1_790_172_800), true));
+    assert_eq!(
+        store.apply(&at(1, &settlement)).expect("apply"),
+        Disposition::Parked {
+            reason: ParkReason::RefusedFill
+        }
+    );
+    assert_eq!(store.balances().expect("balances"), before);
+    assert_eq!(store.fill_events().expect("events").len(), 1);
+}
+
+#[test]
+fn a_settlement_not_marked_simulated_is_refused_as_live_and_leaves_the_cash_in_settlement() {
+    // The fourth paper fence, for the new record: a `Settled` that does not
+    // say it is simulated is refused exactly as a live fill is. Mutation
+    // verified: removing the `simulated` check in `PaperSettlement::try_from`
+    // books it, moves 100 USD to the book and fails every assertion below.
+    let dir = temp_dir("settle-live");
+    let (store, metrics) = settling(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    let sale = j.outcome(fill("a-0", 10, "10", BookSide::Bid, true));
+    store.apply(&at(0, &sale)).expect("apply");
+    let live = j.outcome(settled("a-0", Timestamp::from_secs(1_790_172_800), false));
+    assert_eq!(
+        store.apply(&at(1, &live)).expect("apply"),
+        Disposition::Parked {
+            reason: ParkReason::LiveFill
+        }
+    );
+    assert_eq!(counter(&metrics, names::LEDGER_LIVE_FILL_REFUSED), 1);
+    assert_eq!(
+        store
+            .balance(&in_settlement("alpha"), UNIT)
+            .expect("pending"),
+        Decimal::from_int(100)
+    );
+    assert_eq!(
+        store.balance(&trading("alpha"), UNIT).expect("cash"),
+        Decimal::ZERO
+    );
+}
+
+#[test]
+fn a_blank_settlement_cycle_venue_is_refused() {
+    // A blank name matches no fill, so a declaration of one reads as a
+    // configured cycle while being none. Mutation verified: removing the
+    // `refuse_blank` call admits it and fails this.
+    let dir = temp_dir("settle-blank");
+    let (store, _) = open(&dir);
+    assert!(store.with_settlement_cycle_venues([String::new()]).is_err());
 }

@@ -1107,9 +1107,9 @@ const SITES: &[(&str, &str, &str, usize, Class)] = &[
         "services/qip-market-ingestion/src/tape.rs",
         ".place(",
         "*",
-        4,
+        5,
         Class::NotAnOrder {
-            why: "places a reading on a bitemporal timeline",
+            why: "places a record on a bitemporal timeline (bars, releases, readings, declarations and, since ADR 0446, listing changes)",
         },
     ),
     (

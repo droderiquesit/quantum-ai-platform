@@ -35,7 +35,7 @@
 //! lattice forecast. The forecasts are journaled whole, so a later reader
 //! can score them without trusting this process's memory.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use qip_contracts::forecast::{
     Forecast, ForecastSolver, ForecastState, ForecastTask, ForecastTrigger,
@@ -61,6 +61,12 @@ pub const LATTICE_MAX_PENDING: usize = 4_096;
 
 /// Questions the strategic backlog holds while the service is down.
 pub const LATTICE_MAX_BACKLOG: usize = 1_024;
+
+/// Forecast misses kept for a reader that has not yet read them (the deep
+/// brain's research sweep, R12-AMBIENT-3066). Past it the oldest is dropped
+/// and the reader is told how many it lost, so a sweep that fell behind
+/// reports a gap rather than a quiet stretch.
+pub const LATTICE_MISSES_KEPT: usize = 256;
 
 /// Returns a target needs before it is forecast at all.
 pub const LATTICE_MIN_RETURNS: usize = 5;
@@ -337,6 +343,23 @@ fn tasks_for(
     tasks
 }
 
+/// A resolved forecast whose outcome fell outside its own 80% interval: the
+/// expected future state the lattice held at a horizon, and the reality that
+/// departed from it (R12-AMBIENT-3066). The facts only — the quantiles and the
+/// outcome as scored — so a reader sizes the miss itself and a degenerate
+/// interval is refused where it is read rather than repaired here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForecastMiss {
+    pub forecast_id: String,
+    pub subject: String,
+    pub horizon: LatticeHorizon,
+    pub issued_at: Timestamp,
+    pub observed_at: Timestamp,
+    /// The 10th, 50th and 90th percentiles the forecast stated.
+    pub quantiles: [f64; 3],
+    pub outcome: f64,
+}
+
 /// The stage's state across passes.
 #[derive(Debug)]
 pub struct LatticeStage {
@@ -362,6 +385,11 @@ pub struct LatticeStage {
     /// The close each subject's regime return was last taken through, so a
     /// bar is counted once however many passes see it.
     regime_seen: BTreeMap<String, Timestamp>,
+    /// Resolutions outside their 80% interval, newest last, bounded by
+    /// [`LATTICE_MISSES_KEPT`]; and how many were ever recorded, the
+    /// sequence number of the newest.
+    misses: VecDeque<ForecastMiss>,
+    missed: u64,
 }
 
 impl LatticeStage {
@@ -377,6 +405,8 @@ impl LatticeStage {
             signals: LatticeSignals::default(),
             regime_returns: BTreeMap::new(),
             regime_seen: BTreeMap::new(),
+            misses: VecDeque::new(),
+            missed: 0,
         })
     }
 
@@ -477,6 +507,16 @@ impl LatticeStage {
         multiplier.map(Ok)
     }
 
+    /// Misses recorded after sequence number `seen`, oldest first, the
+    /// sequence number of the newest, and how many were lost because the
+    /// reader fell more than [`LATTICE_MISSES_KEPT`] behind.
+    pub fn misses_since(&self, seen: u64) -> (Vec<&ForecastMiss>, u64, u64) {
+        let oldest_kept = self.missed - self.misses.len() as u64;
+        let lost = oldest_kept.saturating_sub(seen);
+        let skip = usize::try_from(seen.saturating_sub(oldest_kept)).unwrap_or(usize::MAX);
+        (self.misses.iter().skip(skip).collect(), self.missed, lost)
+    }
+
     pub fn calibrator(&self) -> &Calibrator {
         &self.calibrator
     }
@@ -562,7 +602,27 @@ impl LatticeStage {
                         resolved_at: now,
                     };
                     match self.calibrator.score(&resolution) {
-                        Ok(record) => scored.push(record),
+                        Ok(record) => {
+                            // Reality outside the interval the lattice held
+                            // is the sentinel's finding: kept for the deep
+                            // brain's sweep to route, not only scored.
+                            if !record.covered {
+                                self.misses.push_back(ForecastMiss {
+                                    forecast_id: id.clone(),
+                                    subject: p.subject.clone(),
+                                    horizon: p.horizon,
+                                    issued_at: p.issued_at,
+                                    observed_at,
+                                    quantiles: p.quantiles,
+                                    outcome,
+                                });
+                                self.missed += 1;
+                                while self.misses.len() > LATTICE_MISSES_KEPT {
+                                    self.misses.pop_front();
+                                }
+                            }
+                            scored.push(record);
+                        }
                         Err(e) => refused.push((id.clone(), e.message().to_string())),
                     }
                     self.pending.remove(&id);

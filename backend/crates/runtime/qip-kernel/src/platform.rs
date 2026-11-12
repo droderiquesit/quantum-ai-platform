@@ -1222,6 +1222,8 @@ pub struct Platform {
     /// version (R12-WORLD-3034): the record that a distilled procedure was
     /// retrieved for reuse, not only stored.
     procedures_briefed: Vec<(String, u32)>,
+    /// The procedure checks the last convening's findings carried.
+    procedures_followed: Vec<qip_agents::finding::ProcedureCheck>,
     /// (event id, horizon in bars) pairs whose market reaction has been
     /// measured and applied to the causal graph (R12-WORLD-6015), so each
     /// is applied once. Pruned to events still held in `market_events`.
@@ -3151,7 +3153,55 @@ const PROCEDURE_WINDOW: usize = 8;
 
 /// The name an analyst's procedure is kept under in research memory.
 fn procedure_name(agent_id: &str) -> String {
-    format!("procedure:{agent_id}")
+    qip_agents::memory::procedure_name_for(agent_id)
+}
+
+/// The evidence prefix an analyst's research episode names its subject
+/// under, so a distilled procedure can key its rules on the instrument the
+/// next brief names first rather than on prose.
+const SUBJECT_EVIDENCE: &str = "subject:";
+
+/// The method an analyst's correct calls amount to: for each subject, the
+/// lean most of them took, ties going to the latest, with the count that
+/// took it. Calls with no subject evidence give no rule.
+fn procedure_rules(
+    calls: &[&qip_agents::memory::Episode],
+) -> Vec<qip_agents::memory::ProcedureRule> {
+    // subject -> (positive, negative, latest lean)
+    let mut tally: BTreeMap<&str, (usize, usize, &str)> = BTreeMap::new();
+    for call in calls {
+        let Some(subject) = call
+            .evidence
+            .iter()
+            .find_map(|e| e.strip_prefix(SUBJECT_EVIDENCE))
+        else {
+            continue;
+        };
+        let lean = call.conclusion.as_str();
+        let entry = tally.entry(subject).or_insert((0, 0, lean));
+        match lean {
+            "positive" => entry.0 += 1,
+            "negative" => entry.1 += 1,
+            _ => continue,
+        }
+        entry.2 = lean;
+    }
+    tally
+        .into_iter()
+        .filter_map(|(subject, (positive, negative, latest))| {
+            let (lean, support) =
+                if positive > negative || (positive == negative && latest == "positive") {
+                    ("positive", positive)
+                } else {
+                    ("negative", negative)
+                };
+            (support > 0).then(|| qip_agents::memory::ProcedureRule {
+                subject: subject.to_string(),
+                lean: lean.to_string(),
+                support,
+            })
+        })
+        .collect()
 }
 
 /// Record a new version of `agent_id`'s procedure when memory holds at least
@@ -3191,6 +3241,14 @@ fn distil_procedure(
         .is_some_and(|held| held.supporting_episodes == support)
     {
         return Ok(None);
+    }
+    // A method an analyst can follow where its calls name their subject;
+    // the calls as prose steps only where none does, which the analyst
+    // cannot check itself against and the record says so by carrying no
+    // rule.
+    let rules = procedure_rules(recent);
+    if !rules.is_empty() {
+        return memory.record_method(&name, rules, support, at).map(Some);
     }
     let steps: Vec<String> = recent
         .iter()
@@ -6770,6 +6828,7 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             procedures_briefed: Vec::new(),
+            procedures_followed: Vec::new(),
             reactions_applied: BTreeSet::new(),
             reaction_contradictions: Vec::new(),
             future_tree: None,
@@ -13090,6 +13149,13 @@ impl Platform {
         &self.procedures_briefed
     }
 
+    /// How the last convening's analysts sat against their own procedures:
+    /// one check per finding whose agent held a rule for the brief's subject
+    /// (R12-WORLD-3034).
+    pub fn procedures_followed(&self) -> &[qip_agents::finding::ProcedureCheck] {
+        &self.procedures_followed
+    }
+
     /// The most recent calibration, if any thesis has resolved informatively.
     pub fn calibration(&self) -> Option<&CalibrationReport> {
         self.last_calibration.as_ref()
@@ -14875,12 +14941,35 @@ impl Platform {
         // — end the listing; `CorporateAction::is_terminal` is the one
         // place that says which kinds those are, so a kind added there ends
         // a listing here without a second list to keep in step.
+        // A failure is terminal too, and is matched first so it ends the
+        // listing *as a failure*: filed as an ordinary delisting, a product
+        // that went to nothing would read in the history as one that left in
+        // good order (ADR 0446). A spinoff lists its spun entity from the
+        // ex-date, beside the parent, unless the history already names it —
+        // a spun entity the catalogue assembled is listed already, and a
+        // re-fed tape must not list it twice.
         let membership = match &action.kind {
             CorporateActionKind::Renamed { new_symbol } => Some(self.universe_history.rename(
                 &action.object_id,
                 new_symbol.clone(),
                 action.ex_date,
             )),
+            CorporateActionKind::Failed { reason } => Some(self.universe_history.fail(
+                &action.object_id,
+                action.ex_date,
+                reason.clone(),
+            )),
+            CorporateActionKind::Spinoff { spun_entity, .. } => {
+                let child = ObjectId::from_string(spun_entity.as_str());
+                (!self.universe_history.is_named(&child)).then(|| {
+                    self.universe_history.list_spinoff(
+                        &action.object_id,
+                        child,
+                        spun_entity.clone(),
+                        action.ex_date,
+                    )
+                })
+            }
             _ if action.is_terminal() => Some(
                 self.universe_history
                     .delist(&action.object_id, action.ex_date),
@@ -17554,6 +17643,14 @@ impl Platform {
             .map(|p| (p.name.clone(), p.version))
             .collect();
         let report = self.organisation.dispatch(&brief, now, lineage);
+        // What each analyst did with its procedure, read off the findings
+        // the panel returned (R12-WORLD-3034): delivered is not reused, and
+        // only the finding can say the agent executed the step.
+        self.procedures_followed = report
+            .findings
+            .iter()
+            .filter_map(|finding| finding.procedure.clone())
+            .collect();
         self.telemetry
             .metrics
             .increment(names::AGENT_RUNS, labels([]), report.runs.len() as u64);
@@ -18761,7 +18858,10 @@ impl Platform {
                         episode.instrument, episode.claim.claim
                     ),
                     conclusion: format!("{:?}", stance.direction).to_ascii_lowercase(),
-                    evidence: vec![episode.episode_id.clone()],
+                    evidence: vec![
+                        episode.episode_id.clone(),
+                        format!("{SUBJECT_EVIDENCE}{}", episode.instrument),
+                    ],
                     conviction: stance.conviction,
                     outcome: Some(ResearchOutcome {
                         resolved_at: outcome.resolved_at,
@@ -30499,6 +30599,7 @@ fn corporate_action_class(kind: &CorporateActionKind) -> &'static str {
         CorporateActionKind::Merger { .. } => "corporate_action/merger",
         CorporateActionKind::Spinoff { .. } => "corporate_action/spinoff",
         CorporateActionKind::Delisting { .. } => "corporate_action/delisting",
+        CorporateActionKind::Failed { .. } => "corporate_action/failed",
         CorporateActionKind::Renamed { .. } => "corporate_action/renamed",
     }
 }
@@ -31650,7 +31751,12 @@ mod decide_tests {
     ///
     /// Mutations: drop the `distil_procedure` call in `write_research_memory`
     /// (memory holds no procedure); brief the panel without procedures
-    /// (`procedures_briefed` stays empty).
+    /// (`procedures_briefed` stays empty). 2026-11-12 (t50-09): the analyst
+    /// then checks its present call against the procedure's rule for the
+    /// brief's subject, and the check is read off its finding; mutations:
+    /// build analysts' findings with `build` instead of `build_against` (no
+    /// check reaches `procedures_followed`); drop the subject evidence from
+    /// the research episode (the procedure carries no rule).
     #[test]
     fn an_analysts_distilled_procedure_is_retrieved_at_its_next_convening() {
         use qip_ai::memory::{
@@ -31661,14 +31767,18 @@ mod decide_tests {
         use qip_market_ingestion::adapter::SensedRecord;
         let start = Timestamp::from_secs(1_760_000_000);
         let mut platform = small_book_platform();
-        let analyst = platform
-            .organisation
-            .roster()
-            .iter()
-            .next()
-            .expect("a roster")
-            .id
-            .clone();
+        // The equity analyst, because it answers a brief about one equity
+        // from the tape below; the roster's first member is the chief, who
+        // takes no lean of its own on a subject.
+        let analyst = "equity-analyst".to_string();
+        assert!(
+            platform
+                .organisation
+                .roster()
+                .iter()
+                .any(|m| m.id == analyst),
+            "premise: {analyst} is on the roster"
+        );
         let name = procedure_name(&analyst);
         let resolved = |n: i64| Episode {
             episode_id: format!("ep-{n}"),
@@ -31721,7 +31831,20 @@ mod decide_tests {
             .expect("three correct calls distil a procedure");
         assert_eq!(procedure.version, 1);
         assert_eq!(procedure.supporting_episodes.len(), 3);
-        assert_eq!(procedure.steps.len(), 3);
+        // A method, not a list of past calls: one rule for the one subject
+        // the three calls were about, leaning the way all three were right.
+        assert_eq!(
+            procedure.rules,
+            vec![qip_agents::memory::ProcedureRule {
+                subject: "AAPL".to_string(),
+                lean: "positive".to_string(),
+                support: 3,
+            }]
+        );
+        assert_eq!(
+            procedure.steps,
+            vec!["on AAPL: lean positive (3 correct call(s))"]
+        );
         platform.write_research_memory(&resolved(3), learned_at);
         assert_eq!(
             platform
@@ -31769,6 +31892,20 @@ mod decide_tests {
             platform.procedures_briefed().contains(&(name.clone(), 1)),
             "the convening was not briefed with {name}: {:?}",
             platform.procedures_briefed()
+        );
+        // Reused, not only delivered: the analyst executed its rule for the
+        // brief's subject, and its finding says whether the call followed it.
+        let checks = platform.procedures_followed();
+        let check = checks.iter().find(|c| c.name == name).unwrap_or_else(|| {
+            panic!("{analyst} did not check its call against {name}: {checks:?}")
+        });
+        assert_eq!(check.version, 1);
+        assert_eq!(check.subject, "AAPL");
+        assert_eq!(check.procedure_lean, "positive");
+        assert_eq!(
+            check.followed,
+            check.present_lean == "positive",
+            "{check:?}"
         );
     }
 
