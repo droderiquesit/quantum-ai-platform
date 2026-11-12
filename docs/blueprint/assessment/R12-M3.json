@@ -507,9 +507,10 @@
       "backend/crates/services/qip-cost-router/tests/determine.rs::a_determined_routing_is_deterministic_code_in_every_regime_and_horizon",
       "backend/crates/tests/qip-acceptance/tests/order_placement_paths.rs",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs SAFETY_CRITICAL (now names backend/crates/libs/qip-risk) and no_safety_critical_engine_can_reach_a_language_model",
-      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::observe_book_under_routing, monitor_routing; test decide_tests::every_limit_evaluation_takes_a_deterministic_routing_witness"
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::observe_book_under_routing, monitor_routing; test decide_tests::every_limit_evaluation_takes_a_deterministic_routing_witness",
+      "backend/crates/libs/qip-risk/src/gate.rs DeterministicGate; qip-cost-router DeterministicRouting::gate; qip-risk-engine RiskMonitor::observe(gate: &DeterministicGate, ..) records Observation::routed; qip-acceptance architecture::only_the_cost_router_mints_a_deterministic_gate; qip-risk-engine tests/risk_engine.rs every_observation_records_the_routing_its_gate_carried (ADR 0430)"
     ],
-    "gap": "2026-10-24 (lane L1-MONEY, skeptic REFUTED on 6c80831e): the risk monitor's pass is now routed through Router::determine like the pre-trade check, and a router refusal halts the book. Still unmet: (1) the witness is a record — it is stored in monitor_routing and never constrains RiskMonitor::observe, so the guarantee that a limit is computed without a model is still the crate-level absence of qip-ai from qip-risk/qip-risk-engine, which holds; (2) qip-kernel is not model-free (it depends on qip-ai), and kernel-side gate sites take no witness: the survival waterfall's limit checks (survival.rs), MinLiquidity at submit, sign-off and release gating, and the kill-switch path beyond monitor.enforce. Closes by moving the kernel's limit and gate code into a crate listed in SAFETY_CRITICAL (the qip-survival extraction ADR 0127 decided, R12-CAPITAL-7204), or by making each kernel gate take the witness.",
+    "gap": "2026-11-12 (orchestrator, round 42): the architecture guard only_the_cost_router_mints_a_deterministic_gate that lane t50-02 wrote edits backend/crates/tests/qip-acceptance/tests/architecture.rs, a protected guard suite, so it was not merged; it is docs/blueprint/lanes/t50-02-architecture-deterministic-gate.patch for the owner. Until it is applied, nothing in the tree refuses a second minter of DeterministicGate outside qip-cost-router. 2026-11-12 (lane t50-02, ADR 0430): gap (1) closed — RiskMonitor::observe now demands a qip_risk::gate::DeterministicGate the cost router mints from a DeterministicRouting, records its rationale on every Observation, and an architecture scan refuses the constructor in any production source but qip-cost-router/src/router.rs. Still unmet: (2) qip-kernel is not model-free and kernel-side gates take no witness: the survival waterfall's limit checks (survival.rs, extraction owned by R12-CAPITAL-7204 / lane t50-19 under ADR 0127), PreTradeChecker::check and MinLiquidity at submit (routed first but not by signature), sign-off and release gating, and the kill-switch path beyond monitor.enforce.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -520,7 +521,7 @@
     "verification": "cargo test -p qip-cost-router --test cost_router",
     "work_item": "",
     "size": "S",
-    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The Required arm is now constructed by a running path and the test fails if the call is removed (pretrade_routing stays None). The gate-bypass concern is covered by a2ca740d. Weakest COMPLETE: nothing fails if the limits were changed to call a model. 2026-10-24 lane L1-MONEY: added libs/qip-risk to SAFETY_CRITICAL. Mutation: qip-ai.workspace = true in qip-risk/Cargo.toml FAILED no_safety_critical_engine_can_reach_a_language_model (it fired through qip-execution-engine before the list entry too, so the entry names an already-held property); Cargo.toml and Cargo.lock restored, cmp clean. architecture: 56 passed 0 failed. Kept PARTIAL. 2026-10-24 lane L1-MONEY (6c80831e plus a hardened scan): mutation calling the monitor directly in stage_act_orders FAILED the test ('the monitor's pass was not routed'); restored. The skeptic also found the first scan stopped at a production #[cfg(test)] attribute and matched a variable name; the scan now ends at the first test module and matches any .observe( on a monitor receiver."
+    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The Required arm is now constructed by a running path and the test fails if the call is removed (pretrade_routing stays None). The gate-bypass concern is covered by a2ca740d. Weakest COMPLETE: nothing fails if the limits were changed to call a model. 2026-10-24 lane L1-MONEY: added libs/qip-risk to SAFETY_CRITICAL. Mutation: qip-ai.workspace = true in qip-risk/Cargo.toml FAILED no_safety_critical_engine_can_reach_a_language_model (it fired through qip-execution-engine before the list entry too, so the entry names an already-held property); Cargo.toml and Cargo.lock restored, cmp clean. architecture: 56 passed 0 failed. Kept PARTIAL. 2026-10-24 lane L1-MONEY (6c80831e plus a hardened scan): mutation calling the monitor directly in stage_act_orders FAILED the test ('the monitor's pass was not routed'); restored. The skeptic also found the first scan stopped at a production #[cfg(test)] attribute and matched a variable name; the scan now ends at the first test module and matches any .observe( on a monitor receiver. 2026-11-12 lane t50-02 (ADR 0430): witness constrains RiskMonitor::observe by signature. Mutations, each restored with cp+cmp: recording an empty `routed` in observe FAILED risk_engine every_observation_records_the_routing_its_gate_carried and qip-kernel every_limit_evaluation_takes_a_deterministic_routing_witness ('does not carry the routing its gate was minted from'); minting the gate directly in observe_book_under_routing FAILED architecture only_the_cost_router_mints_a_deterministic_gate naming qip-kernel/src/platform.rs; renaming observe's gate parameter FAILED the same test ('no longer demands the deterministic gate'). Kept PARTIAL."
   },
   {
     "id": "R12-REASON-3023",
@@ -1630,12 +1631,17 @@
   {
     "id": "R12-AMBIENT-3069",
     "status": "PARTIAL",
-    "current": "Opportunity-engine anomaly detector runs in DISCOVER.",
+    "current": "Every deep-brain sweep runs the opportunity sentinels (ADR 0434): precursor::score reads the sweep's DetectionContext for five families (cross-asset correlation departure on every priced pair, sharing detector::correlation_departure with the breakdown detector; cross-region gap, event return, physical-product reading and multi-leg spread robust z), PrecursorScanner raises a run of three strictly rising scores below the matching detector's threshold and past half of it, never a subject a detector flagged that sweep, and precursor_signal routes each as a SignalClass::Opportunity AmbientSignal (Pathway::ResearchTask) through the attention router, recorded on ResearchRound::precursors. QIP_DEEPBRAIN_OPPORTUNITY_SENTINEL (on|off, default on, anything else refused) switches it; off, nothing is scored or raised.",
     "evidence": [
-      "backend/crates/services/qip-opportunity-engine/src/detector.rs:992",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10942 stage_discover"
+      "backend/crates/services/qip-opportunity-engine/src/precursor.rs:208 score, :371 PrecursorScanner::observe",
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:756 correlation_departure (shared with CorrelationBreakdownDetector)",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2313 the sentinel in sweep_over, :2773 routed, :4751 precursor_signal",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:2642 a_widening_regional_gap_routes_one_precursor_before_any_anomaly_and_none_when_the_sentinel_is_off (mutations: drop the routing loop -> no attention event; read the switch as always on -> the disabled half raises one)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:2698 a_steady_regional_gap_raises_no_precursor_and_one_already_past_its_threshold_is_not_one (mutation: drop the threshold arm in observe -> the jump is raised and the sweep refuses its severity)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:2719 the_opportunity_sentinel_switch_reads_on_and_off_and_refuses_anything_else (mutation: accept `of` -> fails)",
+      "docs/adr/0434-an-opportunity-sentinel-raises-a-run-of-sub-threshold-scores-rising-toward-a-detectors-threshold-and-never-a-finished-anomaly.md"
     ],
-    "gap": "Detects anomalies, not precursors; not ambient.",
+    "gap": "2026-11-12: (1) 'runs in production' needs a deployed qip-deepbrain, and none is deployed; (2) cross-region, physical-product and multi-leg are silent until a deployment names regional pairs, physical readings and leg sets, which main.rs does not yet read, and event is silent because the sweep's context carries no events; a deployed sentinel today watches cross-asset pairs only; (3) only cross-region is driven end to end through the sweep in a test; the other families are proven at the scoring and scanner seam.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1643,10 +1649,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-deepbrain --test research; cargo test -p qip-opportunity-engine --lib precursor",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane t50-04, 2026-11-12: kept PARTIAL. Precursor definition chosen under ADR 0434."
   },
   {
     "id": "R12-AMBIENT-3070",

@@ -91,6 +91,7 @@ use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThr
 use qip_kernel::federation_stage::{self, Resolution};
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
+use qip_opportunity_engine::precursor::{self, Precursor, PrecursorConfig, PrecursorScanner};
 use qip_reasoning_engine::compiler::{
     CognitiveCompiler, Compiled, CompilerBounds, Condition, Discovery, Finding as Established,
     PackageSigner, ReflexRule, SignedReflexPackage, Verification,
@@ -549,6 +550,12 @@ pub struct ResearchConfig {
     /// raises a capital-preparation signal per recommended movement
     /// (R12-AMBIENT-3072). On by default; a sweep with it off raises none.
     pub capital_sentinel: bool,
+    /// Whether the sweep runs the opportunity sentinels (R12-AMBIENT-3069,
+    /// ADR 0434): sub-threshold detector statistics rising toward a
+    /// dislocation become research-task signals before the anomaly fires.
+    /// On by default; with it off the sweep scores nothing and raises no
+    /// precursor. Set by [`OPPORTUNITY_SENTINEL_VARIABLE`].
+    pub opportunity_sentinel: bool,
     /// How far ahead the sentinel asks the planner to look. A day by
     /// default, the horizon DECIDE plans over, so the two read one plan: a
     /// horizon shorter than a venue's settlement refuses every lane as
@@ -564,6 +571,9 @@ pub struct ResearchConfig {
     /// it. Default 256.
     pub attention_held_capacity: usize,
 }
+
+/// The variable switching the opportunity sentinels: `on` or `off`.
+pub const OPPORTUNITY_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_OPPORTUNITY_SENTINEL";
 
 /// The variable naming the attention router's hourly activation budget.
 pub const ATTENTION_BUDGET_VARIABLE: &str = "QIP_DEEPBRAIN_ATTENTION_BUDGET_PER_HOUR";
@@ -616,6 +626,7 @@ impl Default for ResearchConfig {
             qpu_per_sweep: Decimal::ZERO,
             agent_budgets: BTreeMap::new(),
             capital_sentinel: true,
+            opportunity_sentinel: true,
             capital_horizon: CAPITAL_HORIZON,
             attention_budget_per_hour: 256,
             attention_held_capacity: 256,
@@ -682,6 +693,20 @@ impl ResearchConfig {
         }
         if let Some(raw) = lookup(AGENT_BUDGETS_VARIABLE) {
             config.agent_budgets = parse_agent_budgets(&raw)?;
+        }
+        if let Some(raw) = lookup(OPPORTUNITY_SENTINEL_VARIABLE) {
+            // Refused rather than read as off: a typo that silently
+            // disabled the sentinel would be noticed only after the
+            // dislocation it should have seen coming.
+            config.opportunity_sentinel = match raw.trim() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(Error::invalid(format!(
+                        "{OPPORTUNITY_SENTINEL_VARIABLE} is {raw:?}; state `on` or `off`"
+                    )));
+                }
+            };
         }
         Ok(config)
     }
@@ -980,6 +1005,9 @@ pub struct ResearchRound {
     /// warning threshold — each raised this sweep as a risk-review signal
     /// before the limit fires (R12-AMBIENT-3070), by limit name.
     pub limit_warnings: BTreeMap<String, f64>,
+    /// The precursors the opportunity sentinels raised this sweep, each
+    /// routed as one research-task signal (R12-AMBIENT-3069).
+    pub precursors: Vec<Precursor>,
     /// Pre-positioning movements the sweep recommended and the router
     /// activated for capital preparation (R12-AMBIENT-3065/3072): advice for
     /// the treasury, never a transfer.
@@ -1579,6 +1607,9 @@ pub struct ResearchLoop {
     desk: ExpansionDesk,
     router: AttentionRouter,
     detectors: DetectorRegistry,
+    /// The opportunity sentinels' memory and what they watch (ADR 0434).
+    precursors: PrecursorScanner,
+    precursor_config: PrecursorConfig,
     persistence: PersistenceTracker,
     /// The second persistence detector, over the federation's resolutions
     /// (ADR 0346).
@@ -1847,6 +1878,8 @@ impl ResearchLoop {
             desk,
             router: AttentionRouter::new(policy),
             detectors: DetectorRegistry::standard(),
+            precursors: PrecursorScanner::new(),
+            precursor_config: PrecursorConfig::default(),
             persistence: PersistenceTracker::new(PERSIST_SWEEPS)?,
             beliefs: BeliefWatch::new()?,
             ticks: TickCampaignDetector::new()?,
@@ -2100,6 +2133,16 @@ impl ResearchLoop {
 
     /// Publish signed packages to `store`. Without a signer nothing is
     /// written whatever the store: an unsigned package cannot be loaded.
+    /// Replace what the opportunity sentinels watch — the regional pairs,
+    /// physical readings and leg sets a deployment names. Refused when the
+    /// configuration could not tell a rise from a reading.
+    pub fn with_precursors(mut self, config: PrecursorConfig) -> Result<Self> {
+        config.validate()?;
+        self.precursor_config = config;
+        self.precursors = PrecursorScanner::new();
+        Ok(self)
+    }
+
     pub fn with_package_store(mut self, store: Arc<dyn BlobStore>) -> Self {
         self.package_store = Some(store);
         self
@@ -2263,6 +2306,18 @@ impl ResearchLoop {
         }
         let anomalies = self.detectors.detect_all(&context);
         round.anomalies = anomalies.len();
+        // The opportunity sentinels (R12-AMBIENT-3069, ADR 0434): the same
+        // statistics below their thresholds, remembered across sweeps, and
+        // a run rising toward one raised before the detector fires. A
+        // subject any detector flagged this sweep is the anomaly path's.
+        let precursors_now: Vec<Precursor> = if self.config.opportunity_sentinel {
+            let flagged: BTreeSet<String> = anomalies.iter().map(|a| a.subject.clone()).collect();
+            let scores = precursor::score(&context, &self.precursor_config);
+            self.precursors
+                .observe(&scores, &flagged, &self.precursor_config, now)
+        } else {
+            Vec::new()
+        };
         let mut members: Vec<(String, Observation)> = Vec::new();
         let mut readings: Vec<Reading> = Vec::new();
         let mut flagged: BTreeSet<String> = BTreeSet::new();
@@ -2714,6 +2769,13 @@ impl ResearchLoop {
                 .limit_warnings
                 .insert(signal.subject().to_string(), utilisation);
             routable.push((None, signal));
+        }
+        for found in precursors_now {
+            routable.push((
+                None,
+                precursor_signal(&found, now, self.config.signal_ttl, &mut self.issued)?,
+            ));
+            round.precursors.push(found);
         }
         // The capital sentinel (R12-AMBIENT-3072): the DECIDE stage's
         // pre-positioning plan, one capital-preparation signal per
@@ -4678,6 +4740,63 @@ pub fn limit_approach_signals(
         out.push((signal, utilisation));
     }
     Ok(out)
+}
+
+/// The research-task signal one precursor is (R12-AMBIENT-3069, ADR 0434).
+///
+/// Severity is how far the newest score has come toward the detector's
+/// threshold, so a run at 90% of a breakdown outranks one at 55%; the
+/// subject names the family, so two families approaching one instrument
+/// are two signals and not a cluster of one.
+pub fn precursor_signal(
+    found: &Precursor,
+    now: Timestamp,
+    ttl: Duration,
+    issued: &mut u64,
+) -> Result<AmbientSignal> {
+    let approach = found.approach();
+    let severity = basis_points(approach)?;
+    let decimal = |value: f64| {
+        Decimal::from_f64(value)
+            .ok_or_else(|| Error::numeric("a precursor score has no decimal form"))
+    };
+    let newest = found
+        .scores
+        .last()
+        .copied()
+        .ok_or_else(|| Error::invalid("a precursor with no scores is no run"))?;
+    *issued += 1;
+    let family = found.family.as_str();
+    AmbientSignal::new(
+        format!("ambient-{issued}"),
+        SignalClass::Opportunity,
+        format!("precursor:{family}:{}", found.subject),
+        severity,
+        Trigger::Event(format!("precursor_{family}")),
+        now,
+        Detection {
+            observed_deviation: decimal(newest)?,
+            expected_baseline: decimal(found.threshold)?,
+            horizon: Duration::ZERO,
+            novelty_bp: severity,
+            affected_entities: found.subject.split('|').map(str::to_string).collect(),
+            urgency_bp: severity,
+            wake_targets: vec![Pathway::ResearchTask],
+            evidence_ids: vec![
+                format!("precursor:{family}"),
+                format!(
+                    "scores:{}",
+                    found
+                        .scores
+                        .iter()
+                        .map(|s| format!("{s:.3}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            ],
+            expiry: now.saturating_add(ttl),
+        },
+    )
 }
 
 /// The figures of one planned movement the sweep reads, copied out of the

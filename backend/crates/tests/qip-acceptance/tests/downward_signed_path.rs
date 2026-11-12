@@ -430,3 +430,254 @@ fn nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_gra
         );
     }
 }
+
+/// A payload whose every slot is produced, as the centre signs it when it
+/// has something for each: the trained model manifest, the compiled plan,
+/// belief priors, the episodic and causal digests, the regime, capital
+/// grants, the cycle whitelist, the risk envelope, inventory targets,
+/// feasibility constraints, adversary profiles, dispositions, opportunity
+/// definitions and the acceptable builds. Contents are small but not empty
+/// where emptiness would be the same bytes as a tampered value.
+fn every_slot_produced(sequence: u64, issued: Timestamp) -> PolicyPayload {
+    use qip_contracts::policy::{
+        AdversaryProfiles, BeliefPriors, BuildSet, CausalDigest, CycleWhitelist, Dispositions,
+        EpisodicDigest, FeasibilityConstraints, GrantManifest, InventoryTargets, ModelManifest,
+        OpportunityManifest, PlanDigest, RegimeState, RiskEnvelopeSnapshot, Slot,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let map = |k: &str, v: &str| BTreeMap::from([(k.to_string(), v.to_string())]);
+    let dec = |k: &str, v: i64| BTreeMap::from([(k.to_string(), Decimal::from_int(v))]);
+    let mut p = PolicyPayload::unproduced(sequence, CELL, issued);
+    p.trained_models = Slot::produced(
+        ModelManifest::unreleased(map("fill-probability", "sha256:aa")),
+        issued,
+    );
+    p.compiled_plan = Slot::produced(
+        PlanDigest {
+            digest: "plan-1".into(),
+            strategies: 2,
+        },
+        issued,
+    );
+    p.belief_priors = Slot::produced(
+        BeliefPriors {
+            priors: BTreeMap::from([("rates".to_string(), 0.25)]),
+        },
+        issued,
+    );
+    p.episodic_digest = Slot::produced(
+        EpisodicDigest {
+            digest: "ep-1".into(),
+            episodes: 3,
+        },
+        issued,
+    );
+    p.causal_digest = Slot::produced(
+        CausalDigest {
+            active_edges: vec!["rates->fx".into()],
+        },
+        issued,
+    );
+    p.regime_state = Slot::produced(
+        RegimeState {
+            regime: "trend/calm".into(),
+            confidence: 0.6,
+        },
+        issued,
+    );
+    p.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec!["grant-1".into()],
+        },
+        issued,
+    );
+    p.cycle_whitelist = Slot::produced(
+        CycleWhitelist {
+            cycles: map("usd>eur>usd", "digest-1"),
+            conversions: Vec::new(),
+            start_sizes: BTreeMap::new(),
+        },
+        issued,
+    );
+    p.risk_envelope = Slot::produced(
+        RiskEnvelopeSnapshot {
+            limits: serde_json::json!({ "max_gross_notional": "1000000" }),
+        },
+        issued,
+    );
+    p.inventory_targets = Slot::produced(
+        InventoryTargets {
+            targets: dec("XLON:ACME", 100),
+            reference_prices: dec("XLON:ACME", 50),
+        },
+        issued,
+    );
+    p.feasibility_constraints = Slot::produced(
+        FeasibilityConstraints {
+            minimum_order: dec("XLON", 1),
+            fee_floor: dec("XLON", 0),
+            tick: dec("XLON", 1),
+            withdrawn_venues: BTreeSet::new(),
+            dark_regions: BTreeSet::new(),
+        },
+        issued,
+    );
+    p.adversary_profiles = Slot::produced(
+        AdversaryProfiles {
+            venues: BTreeMap::from([("XLON".to_string(), serde_json::json!({"posture": "calm"}))]),
+        },
+        issued,
+    );
+    // A produced but empty disposition set is off the wire by design (it
+    // says nothing), so one unwind makes the slot a signed one.
+    p.dispositions = Slot::produced(
+        Dispositions {
+            unwinds: BTreeMap::from([(
+                qip_contracts::signal::StrategyId::new("mean-reversion"),
+                dec("XLON:ACME", 10),
+            )]),
+        },
+        issued,
+    );
+    p.opportunity_definitions = Slot::produced(
+        OpportunityManifest {
+            opportunities: map("opp-1", "definition-1"),
+        },
+        issued,
+    );
+    p.acceptable_builds = Slot::produced(
+        BuildSet {
+            builds: BTreeSet::from(["build-1".to_string()]),
+        },
+        issued,
+    );
+    p
+}
+
+/// Every slot name [`every_slot_produced`] fills, in declaration order.
+const SLOTS: [&str; 15] = [
+    "trained_models",
+    "compiled_plan",
+    "belief_priors",
+    "episodic_digest",
+    "causal_digest",
+    "regime_state",
+    "capital_grants",
+    "cycle_whitelist",
+    "risk_envelope",
+    "inventory_targets",
+    "feasibility_constraints",
+    "adversary_profiles",
+    "dispositions",
+    "opportunity_definitions",
+    "acceptable_builds",
+];
+
+/// `slot` of `p`, re-stamped at `later` (same value) when `strip` is false,
+/// and unproduced when it is true. Both are edits a relay could make without
+/// the key: a slot moved forward in time reads fresher than the centre said,
+/// and a slot dropped narrows nothing the cell can tell was signed.
+fn tamper(p: &mut PolicyPayload, slot: &str, strip: bool, later: Timestamp) -> bool {
+    use qip_contracts::policy::Slot;
+    macro_rules! edit {
+        ($field:ident) => {{
+            let value = p.$field.value().cloned();
+            p.$field = match (strip, value) {
+                (true, _) => Slot::unproduced(),
+                (false, Some(v)) => Slot::produced(v, later),
+                (false, None) => return false,
+            };
+            true
+        }};
+    }
+    match slot {
+        "trained_models" => edit!(trained_models),
+        "compiled_plan" => edit!(compiled_plan),
+        "belief_priors" => edit!(belief_priors),
+        "episodic_digest" => edit!(episodic_digest),
+        "causal_digest" => edit!(causal_digest),
+        "regime_state" => edit!(regime_state),
+        "capital_grants" => edit!(capital_grants),
+        "cycle_whitelist" => edit!(cycle_whitelist),
+        "risk_envelope" => edit!(risk_envelope),
+        "inventory_targets" => edit!(inventory_targets),
+        "feasibility_constraints" => edit!(feasibility_constraints),
+        "adversary_profiles" => edit!(adversary_profiles),
+        "dispositions" => edit!(dispositions),
+        "opportunity_definitions" => edit!(opportunity_definitions),
+        "acceptable_builds" => edit!(acceptable_builds),
+        _ => false,
+    }
+}
+
+/// R12-CONTRACT-1195: a cell installs only packs whose signature verifies,
+/// and a tampered pack is refused — for every pack the centre sends down,
+/// not only the halt flag the test above alters. The model manifest, the
+/// strategy plan, the belief priors, the capital grants and the risk
+/// envelope are each a slot of the one signed `PolicyPayload`, so "a
+/// tampered pack" is a payload with one slot edited after signing. Each of
+/// the fifteen slots, re-stamped later or stripped, is refused by
+/// `VerifiedPolicy::verify` — the only way to a `VerifiedPolicy`, which is
+/// the only argument `Cell::apply_policy` takes — and leaves the cell where
+/// it was; the untampered payload, with every slot produced, then applies.
+///
+/// The failure this prevents: a slot outside the signing string. A slot
+/// added to the struct and forgotten in `signing_payload` would be
+/// installable by anyone between the centre and the cell, and the halt-only
+/// tamper above would never notice. Mutation: make `signing_payload` omit
+/// `risk_envelope` — re-stamping or stripping that slot then verifies and
+/// the assertion naming `risk_envelope` fails.
+#[test]
+fn each_signed_pack_tampered_after_signing_is_refused_and_the_untampered_payload_installs()
+-> Result<()> {
+    let issued = at(1);
+    let later = at(2);
+    let signed = every_slot_produced(9, issued).signed(KEY)?;
+    let mut cell = cell()?;
+    assert!(
+        cell.policy_sequence().is_none(),
+        "premise: the cell has applied no policy"
+    );
+    assert!(
+        VerifiedPolicy::verify(signed.clone(), KEY, CELL, at(3)).is_ok(),
+        "premise: the untampered payload verifies"
+    );
+    for slot in SLOTS {
+        for strip in [false, true] {
+            let mut tampered = signed.clone();
+            assert!(
+                tamper(&mut tampered, slot, strip, later),
+                "premise: `{slot}` was produced in the signed payload"
+            );
+            assert_ne!(
+                serde_json::to_value(&tampered).unwrap(),
+                serde_json::to_value(&signed).unwrap(),
+                "premise: tampering `{slot}` changed the payload"
+            );
+            let how = if strip { "stripped" } else { "re-stamped" };
+            let refused = VerifiedPolicy::verify(tampered, KEY, CELL, at(3));
+            assert!(
+                refused.is_err(),
+                "a payload with `{slot}` {how} after signing verified, so a cell would install it"
+            );
+            assert!(
+                refused
+                    .unwrap_err()
+                    .to_string()
+                    .contains("does not verify against this cell's key"),
+                "`{slot}` {how} was refused for something other than its signature"
+            );
+        }
+    }
+    assert!(
+        cell.policy_sequence().is_none(),
+        "the cell changed before anything verified reached it"
+    );
+    cell.apply_policy(VerifiedPolicy::verify(signed, KEY, CELL, at(3))?, at(3))?;
+    assert_eq!(
+        cell.policy_sequence(),
+        Some(9),
+        "the untampered payload did not install"
+    );
+    Ok(())
+}

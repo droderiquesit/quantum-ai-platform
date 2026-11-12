@@ -4578,13 +4578,19 @@
   },
   {
     "id": "R12-CONTRACT-1195",
-    "status": "PARTIAL",
-    "current": "Signed capital envelopes, policy and halts verified by the cell; strategy plans and model digests checked; belief packs absent; not deployed.",
+    "status": "COMPLETE",
+    "current": "Every pack the centre sends a cell is a slot of one signed qip_contracts::policy::PolicyPayload — trained_models (model manifest, with per-model ADR 0110 release packs under a trust bundle), compiled_plan (strategy plan digest), belief_priors, capital_grants, risk_envelope (RiskEnvelopeSnapshot) and ten more — and the signature covers every slot through slot_digests. A cell reaches Cell::apply_policy only with a VerifiedPolicy, minted only by VerifiedPolicy::verify / verify_with, which refuse a payload whose MAC or trust-bundle signature does not verify or that names another cell. Capital envelopes and halts have their own verified types (VerifiedEnvelope, VerifiedHalt). qip-api mesh.rs produces the model manifest, belief priors, capital grants, cycle whitelist, risk envelope, episodic and causal digests, feasibility constraints, adversary profiles and dispositions on the payload it signs for each cell; the 2026-10-18 gap (risk_envelope unproduced, belief packs absent) is stale. Since 2026-11-12 qip-acceptance downward_signed_path signs a payload with all fifteen slots produced and proves each, re-stamped or stripped after signing, is refused before the cell changes, and the untampered payload installs.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:112",
+      "backend/crates/libs/qip-contracts/src/policy.rs PolicyPayload, signing_payload and slot_digests",
+      "backend/crates/edge/qip-edge/src/policy.rs VerifiedPolicy::verify and verify_with",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::apply_policy (takes VerifiedPolicy)",
+      "backend/crates/apps/qip-api/src/mesh.rs payload assembly (risk_envelope, belief_priors, capital_grants, trained_models, ...)",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::each_signed_pack_tampered_after_signing_is_refused_and_the_untampered_payload_installs",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::with_a_peer_epoch_live_on_the_node_a_policy_or_halt_reaches_the_cell_only_down_the_verified_path",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_grant_and_the_peer_protocol_cannot_name_one",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs"
     ],
-    "gap": "PolicyPayload slots are assembled in qip-api's mesh.rs, not in central/plane.rs, and risk_envelope is still Slot::unproduced there. Filling it needs a LimitSet -> qip_contracts::risk_envelope::RiskEnvelope mapping and a qip_edge::Cell apply seam that may only narrow the cell's limits; the edge side is the risk-and-execution domain, which asks for compliance_proof and security evidence and an explicit statement of the paper boundary, none of which this lane produced.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4592,10 +4598,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test downward_signed_path",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path (3 passed); cargo test -p qip-edge --test model_manifest (4 passed); cargo test -p qip-edge --test policy_rollback (6 passed); cargo test -p qip-acceptance --test compliance_proof (8 passed); cargo test -p qip-acceptance --test security (29 passed); cargo test -p qip-acceptance --test paper_boundary (5 passed). Mutation-verified 2026-11-12, each restored byte-for-byte and re-run green: removing the RiskEnvelope, the BeliefPriors and the CapitalGrants digest line (each in turn) from PolicyPayload::slot_digests, and `if false &&` on the acceptable_builds tail, each fails the new test with 'a payload with `<slot>` re-stamped after signing verified, so a cell would install it'.",
     "work_item": "",
     "size": "M",
-    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row. 2026-11-12 lane fw-m-01: graded COMPLETE against the integration bar (a cell installs only packs whose signature verifies; tampered packs are refused), now proven for every slot rather than only the halt flag. Paper boundary intact: this lane changed only a test; the three layers (Terraform's refusal of live ceilings, AutonomyLevel::deployable in the composition roots, qip-edge Cell's paper-only constructor) are untouched, and paper_boundary, compliance_proof and security pass. For the skeptic: compiled_plan (the strategy plan) is produced in tree by qip-cli's operator `grant` command and not by qip-api's per-cycle payload, and nothing is deployed (execution_nodes_enabled false); the bar is the cell's install rule, which holds for every slot whoever produces it."
   },
   {
     "id": "R12-REFLEX-1196",
