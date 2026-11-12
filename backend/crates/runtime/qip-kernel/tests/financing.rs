@@ -102,6 +102,7 @@ fn eurusd(id: &str, price: Decimal, settles_in_days: Option<i64>) -> Result<Fina
             quote_currency: Currency::USD,
             settlement_date: settles_in_days
                 .map(|days| start().saturating_add(Duration::from_days(days))),
+            near_settlement_date: None,
             forward_points: 0.0,
             rate_differential: 0.0,
         }));
@@ -658,5 +659,203 @@ fn an_index_and_a_basket_are_valued_from_their_stated_constituents_and_one_that_
             "{id} did not reach the cycle report: {problems:?}"
         );
     }
+    Ok(())
+}
+
+/// A spot pair on `base`/`quote` at `price`.
+fn spot_pair(id: &str, base: Currency, quote: Currency, price: Decimal) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::FxSpot,
+        liquidity(),
+    )
+    .venue("OTC")
+    .currency(quote)
+    .price(price)
+    .tick_size(dec!("0.00001"))
+    .provenance(provenance())
+    .extension(Extension::Fx(FxDetails {
+        base_currency: base,
+        quote_currency: quote,
+        settlement_date: None,
+        near_settlement_date: None,
+        forward_points: 0.0,
+        rate_differential: 0.0,
+    }))
+    .build(start())
+}
+
+/// An EUR/USD swap exchanging at `near` and reversing at `far`.
+fn eurusd_swap(id: &str, near: Option<Timestamp>, far: Timestamp) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::FxSwap,
+        liquidity(),
+    )
+    .venue("OTC")
+    .currency(Currency::USD)
+    .price(dec!("1.10"))
+    .tick_size(dec!("0.00001"))
+    .provenance(provenance())
+    .underlying(ObjectId::from_string("obj-EURUSD"))
+    .extension(Extension::Fx(FxDetails {
+        base_currency: Currency::EUR,
+        quote_currency: Currency::USD,
+        settlement_date: Some(far),
+        near_settlement_date: near,
+        forward_points: 0.0,
+        rate_differential: 0.0,
+    }))
+    .build(start())
+}
+
+/// Parity on the fixture's flat curves: spot × e^((r_usd − r_eur) × t).
+fn parity(days: f64) -> f64 {
+    1.10 * ((0.05 - 0.03) * days / 365.25_f64).exp()
+}
+
+/// R12-COVERAGE-5098 (2): a swap is two exchanges, and the register values
+/// both, where `FxDetails` once carried one date and a swap could only have
+/// been read as a forward on its far leg — the points, which are the swap's
+/// whole economics, dropped.
+///
+/// Mutation that fired: valuing the near leg on the far date in
+/// `FinancingRegister::value_swap` makes the two legs one, and the tenor
+/// assertion fails (`left: (120, 120)`, right `(30, 120)`).
+#[test]
+fn an_fx_swap_is_valued_as_its_two_legs_and_one_stating_a_single_date_is_refused() -> Result<()> {
+    let mut objects = flat_curve("UST", Currency::USD, 0.05)?;
+    objects.extend(flat_curve("BUND", Currency::EUR, 0.03)?);
+    objects.push(eurusd("obj-EURUSD", dec!("1.10"), None)?);
+    let day = |days: i64| start().saturating_add(Duration::from_days(days));
+    objects.push(eurusd_swap("obj-SWAP-1M3M", Some(day(30)), day(120))?);
+    // Near leg inside a day of the valuation instant: a spot leg.
+    objects.push(eurusd_swap(
+        "obj-SWAP-SPOT3M",
+        Some(start().saturating_add(Duration::from_secs(3_600))),
+        day(90),
+    )?);
+    objects.push(eurusd_swap("obj-SWAP-ONE-DATE", None, day(90))?);
+    objects.push(eurusd_swap("obj-SWAP-BACKWARDS", Some(day(90)), day(30))?);
+    let mut platform = assemble(objects)?;
+    let register = platform.financing_register();
+
+    let swap = register
+        .swap("obj-SWAP-1M3M")
+        .unwrap_or_else(|| panic!("the swap was not valued: {:?}", register.problems()));
+    assert_eq!((swap.near_days, swap.far.days), (30, 120));
+    assert_eq!(swap.spot_object, "obj-EURUSD");
+    let near = swap.near_outright.to_f64();
+    assert!(
+        (near - parity(30.0)).abs() < 1e-5,
+        "near outright {near} is not the 30-day parity figure {}",
+        parity(30.0)
+    );
+    let far = swap.far.outright.to_f64();
+    assert!(
+        (far - parity(120.0)).abs() < 1e-5,
+        "far outright {far} is not the 120-day parity figure {}",
+        parity(120.0)
+    );
+    assert_eq!(
+        swap.swap_points,
+        swap.far.outright - swap.near_outright,
+        "the points are the far leg less the near"
+    );
+    assert!(swap.swap_points.is_positive(), "{swap:?}");
+
+    let spot_start = register.swap("obj-SWAP-SPOT3M").unwrap_or_else(|| {
+        panic!(
+            "the spot-start swap was not valued: {:?}",
+            register.problems()
+        )
+    });
+    assert_eq!(spot_start.near_days, 0);
+    assert_eq!(spot_start.near_outright, dec!("1.10"));
+
+    assert!(register.swap("obj-SWAP-ONE-DATE").is_none());
+    assert!(register.swap("obj-SWAP-BACKWARDS").is_none());
+    let (detail, problems) = understand_problems(&mut platform);
+    assert!(detail.contains("and 2 FX swap(s)"), "{detail}");
+    let unvalued = |id: &str, reason: &str| {
+        problems.iter().any(|problem| {
+            problem.starts_with(&format!("financing instrument {id} is unvalued:"))
+                && problem.contains(reason)
+        })
+    };
+    assert!(
+        unvalued("obj-SWAP-ONE-DATE", "states no near leg"),
+        "{problems:?}"
+    );
+    assert!(
+        unvalued("obj-SWAP-BACKWARDS", "does not settle after its near leg"),
+        "{problems:?}"
+    );
+    Ok(())
+}
+
+/// R12-COVERAGE-5098 (3): a currency with no pair against the base is priced
+/// through the one pair that joins it to a directly quoted currency, and a
+/// currency two pairs reach stays unpriced, because two routes are two
+/// figures for one rate.
+///
+/// Mutations that fired: skipping the cross pass in
+/// `FinancingRegister::fx_rates` leaves sterling unpriced ("no rate for GBP
+/// against the USD base"); taking the first of several routes (`routes.first()`) prices the
+/// franc and the refusal assertion fails ("a currency two routes reach was
+/// priced").
+#[test]
+fn a_cross_is_priced_through_the_one_pair_that_reaches_it_and_two_routes_leave_it_unpriced()
+-> Result<()> {
+    let mut objects = flat_curve("UST", Currency::USD, 0.05)?;
+    objects.push(spot_pair(
+        "obj-EURUSD",
+        Currency::EUR,
+        Currency::USD,
+        dec!("1.10"),
+    )?);
+    objects.push(spot_pair(
+        "obj-AUDUSD",
+        Currency::AUD,
+        Currency::USD,
+        dec!("0.65"),
+    )?);
+    objects.push(spot_pair(
+        "obj-EURGBP",
+        Currency::EUR,
+        Currency::GBP,
+        dec!("0.85"),
+    )?);
+    objects.push(spot_pair(
+        "obj-EURCHF",
+        Currency::EUR,
+        Currency::CHF,
+        dec!("0.95"),
+    )?);
+    objects.push(spot_pair(
+        "obj-AUDCHF",
+        Currency::AUD,
+        Currency::CHF,
+        dec!("0.58"),
+    )?);
+    let platform = assemble(objects)?;
+    let rates = platform.financing_register().fx_rates(Currency::USD)?;
+
+    // Premise: the two legs of the cross are each quoted directly.
+    assert_eq!(rates.to_base(dec!("1"), Currency::EUR)?, dec!("1.10"));
+    assert_eq!(rates.to_base(dec!("1"), Currency::AUD)?, dec!("0.65"));
+    // One pound is 1/0.85 euros, each 1.10 dollars.
+    let pound = rates.to_base(dec!("1"), Currency::GBP)?.to_f64();
+    assert!(
+        (pound - 1.10 / 0.85).abs() < 1e-8,
+        "sterling {pound} is not 1.10 / 0.85"
+    );
+    let franc = rates.to_base(dec!("1"), Currency::CHF);
+    assert!(
+        franc.is_err(),
+        "a currency two routes reach was priced: {franc:?}"
+    );
     Ok(())
 }
