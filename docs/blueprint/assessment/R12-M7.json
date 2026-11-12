@@ -1491,14 +1491,17 @@
   },
   {
     "id": "R12-CONTRACT-7065",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 StrategyPack = Validated<StrategyPackFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 StrategyPack = Validated<StrategyPackFields>: each CompiledStrategy carries strategy, plan_digest, hypotheses, universes, dependencies, capacity, a PerformanceEnvelope and retirement_rules; the pack, each compiled strategy, its envelope and each retirement rule decode under deny_unknown_fields with no field defaulted, and invariants are refused on construction and on decode. StrategyPackFields has no producer outside qip-contracts.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 type",
+      "backend/crates/libs/qip-contracts/src/strategy_pack.rs:23 CompiledStrategy; :46 PerformanceEnvelope; :59 RetirementRule; :70 StrategyPackFields; :79 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:215 a_strategy_pack_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:224 a_strategy_pack_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:233 a_compiled_strategy_and_its_envelope_and_retirement_rules_each_refuse_a_missing_or_unknown_field (added 2026-11-12; /strategies/0, /strategies/0/envelope, /strategies/0/retirement_rules/0/envelope_breached)",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs a_strategy_pack_refuses_each_broken_invariant",
+      "2026-11-12 lane fw-h-01: cargo test -p qip-contracts --test section27_contracts: 23 passed. Mutations, each failing only the new test and each restored byte for byte: #[serde(default)] on CompiledStrategy.hypotheses (refused for another reason, so the field is defaulted); #[serde(default)] on PerformanceEnvelope.min_net_edge_bp (admitted outright before this test); deny_unknown_fields removed from PerformanceEnvelope (admitted an unknown field at /strategies/0/envelope); deny_unknown_fields removed from CompiledStrategy (admitted an unknown field at /strategies/0).",
+      "2026-11-12 lane fw-h-01 bar: the unit contract; a factory producer whose pack digest equals the shipped plan's is integration and stays in integrated false"
     ],
-    "gap": "StrategyPackFields still appears nowhere outside qip-contracts. The compiled plan the centre ships (PlanDigest in PolicyPayload.compiled_plan, assembled in qip-api mesh.rs) carries none of the pack's dependencies, hypotheses, universes, capacity, envelope or retirement rules, so a StrategyPack built beside it would invent them; the pack needs those inputs from the factory before its digest can equal the plan's.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
