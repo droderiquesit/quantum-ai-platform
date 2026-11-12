@@ -1066,7 +1066,6 @@ dependencies = [
  "qip-capital",
  "qip-contracts",
  "qip-core",
- "qip-risk",
  "serde",
 ]
 

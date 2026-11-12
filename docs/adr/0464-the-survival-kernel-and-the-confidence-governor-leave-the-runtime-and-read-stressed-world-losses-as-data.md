@@ -38,7 +38,10 @@ moves with them. Doing it showed three couplings the decision did not see:
 ## Decision
 
 1. **`services/qip-survival` holds `survival` and `confidence`**, depending
-   on `qip-core`, `qip-contracts`, `qip-capital`, `qip-risk` and `serde` only.
+   on `qip-core`, `qip-contracts`, `qip-capital` and `serde` only, and is the
+   Capital Brain's second crate (`brain_closure.rs`), so it reaches no other
+   brain. `install_survival_limit`, which builds a Risk Brain limit, moves to
+   the kernel's `survival_limit.rs`.
    `qip-kernel` re-exports both modules, so `qip_kernel::survival::…` and
    `qip_kernel::confidence::…` paths are unchanged.
 2. **The survival kernel reads `StressedWorlds`, a list of `WorldLoss {
@@ -79,6 +82,21 @@ moves with them. Doing it showed three couplings the decision did not see:
 - The test `every_survival_world_the_book_fails_withholds_a_reserve_named_for_it`
   moves from `survival.rs` to `tail.rs`: it generates worlds with `tail`,
   which `qip-survival` cannot name.
+
+## What it costs
+
+- One more workspace crate, and two more seams the kernel builds data
+  across (`StressReport::worlds`, `distribution_reading`) each cycle — a
+  `Vec` of names and losses and one of shifts, both bounded by the stress
+  library and the instruments summarised.
+- `install_survival_limit` lives in the kernel (`survival_limit.rs`), not
+  beside the ceiling it guards; `qip_kernel::survival` re-exports it so no
+  caller moved. The survival kernel is the Capital Brain's second crate, so
+  it may not name the Risk Brain's limit types, and only the composition
+  installs a Risk Brain limit on a Capital Brain figure (ADR 0127
+  decision 5). ADR 0127 decision 3's allowance of `qip-risk` is withdrawn.
+- A scenario name and a loss are all the survival kernel sees of a world. A
+  reserve that needed more of a world would need this record reopened.
 
 ## What would make this wrong
 

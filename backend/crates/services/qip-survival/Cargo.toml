@@ -7,8 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Libraries, `qip-capital` and `qip-risk` only (ADR 0127 decision 3). A
-# dependency that reaches a crate generating alpha or holding a model fails
+# Libraries and `qip-capital` only. ADR 0127 decision 3 also allowed
+# `qip-risk`; ADR 0464 places this crate in the Capital Brain, and decision 5
+# of the same record lets no brain reach another but through `qip-contracts`,
+# so the survival limit the Risk Brain evaluates is installed by the kernel.
+# A dependency that reaches a crate generating alpha or holding a model fails
 # `qip-acceptance`'s `survival_independence` closure test, which is the
 # property this crate exists to make checkable.
 [dependencies]
@@ -16,7 +19,6 @@ serde.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
 qip-capital.workspace = true
-qip-risk.workspace = true
 
 [lints]
 workspace = true
