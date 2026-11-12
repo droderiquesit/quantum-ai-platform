@@ -793,26 +793,29 @@
   {
     "id": "R12-WORLD-3034",
     "status": "PARTIAL",
-    "current": "qip_agents::memory::ResearchMemory holds versioned procedures. record_procedure stores the next version of a named procedure only on at least MINIMUM_PROCEDURE_SUPPORT (3) distinct held episodes resolved correct by then, refusing a blank name, no steps or a blank step. Each name keeps up to VERSIONS_PER_PROCEDURE (16) versions, and MAX_PROCEDURES bounds the names. procedure_as_of retrieves the latest version known at a date, so past decisions stay reconstructable.",
+    "current": "qip_agents::memory::ResearchMemory holds versioned procedures. record_procedure stores the next version of a named procedure only on at least MINIMUM_PROCEDURE_SUPPORT (3) distinct held episodes resolved correct by then; record_method stores it as rules (on subject, lean positive|negative, support) an agent can execute, refusing no rule, a blank or repeated subject, another lean or zero support. Platform::distil_procedure keys the rules on each analyst research episode's subject: evidence. procedure_as_of retrieves the latest version known at a date. The brief delivers it; every analyst builds through FindingBuilder::build_against, which runs AgentBrief::check_procedure against the brief's first object and records a ProcedureCheck on the finding, stating a departure as a caveat without moving direction or conviction (ADR 0444); Platform::procedures_followed reads the checks off the panel's findings.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/memory.rs::ResearchMemory::record_procedure, procedure_as_of",
       "backend/crates/libs/qip-agents/tests/memory.rs::a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version",
       "backend/crates/runtime/qip-kernel/src/platform.rs distil_procedure, procedure_name, Platform::procedures_briefed",
       "backend/crates/libs/qip-agents/src/finding.rs AgentBrief.procedures",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::an_analysts_distilled_procedure_is_retrieved_at_its_next_convening"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::an_analysts_distilled_procedure_is_retrieved_at_its_next_convening",
+      "backend/crates/libs/qip-agents/tests/memory.rs::a_brief_checks_a_call_against_its_agents_own_procedure_rule",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs::an_analyst_checks_its_call_against_its_own_procedure_and_states_a_departure",
+      "docs/adr/0444-an-analyst-checks-its-call-against-its-own-procedure-and-the-check-never-moves-conviction.md"
     ],
-    "gap": "2026-10-30 (L4, commit ad473767, skeptic REFUTED). Closed: a procedure is stored and versioned on the default LEARN path (write_research_memory -> distil_procedure, once an analyst holds MINIMUM_PROCEDURE_SUPPORT correct calls, a version only when support changes) and retrieved at the next convening on the default REASON path into AgentBrief.procedures, recorded by Platform::procedures_briefed. Still open: no agent reads brief.procedures, so the procedure is delivered and not reused; its steps are past calls (question and lean), not a method anything could follow; strategy templates, data adapters, playbooks and remediation patterns are not stored at all and no ADR declines them; the test seeds memory through write_research_memory rather than driving LEARN end to end; MAX_PROCEDURES (256) has no supersede path for procedures, unreachable at today's roster size.",
+    "gap": "2026-11-12 (t50-09, ADR 0444). Closed: the procedure is reused, not only delivered — distilled as subject rules, executed by every analyst against the brief's subject, recorded on its finding and read into Platform::procedures_followed, conviction untouched. Still open: strategy templates, data adapters, playbooks and remediation patterns are not stored (ADR 0444 decision 5: no consumer reads memory for them yet); the kernel test still seeds memory through write_research_memory rather than driving a resolved cycle's LEARN into the next REASON; MAX_PROCEDURES (256) has no supersede path; the chief and non-analyst agents build findings without build_against.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-agents --test memory a_procedure_is_recorded_only_after_enough_correct_episodes",
+    "verification": "cd backend && cargo test -p qip-agents --test memory && cargo test -p qip-investment-agents --test organisation an_analyst_checks && cargo test -p qip-kernel --lib an_analysts_distilled_procedure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path. 2026-10-30 (L4), commit ad473767: three mutants killed (skip distil_procedure; brief without procedures, killed once the record was read off the brief; count a repeated run twice), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->MISSING. Unchanged. 2026-10-24 (L4): MISSING corrected to PARTIAL by reading the code; no code changed. Not promoted: there is no running path. 2026-10-30 (L4), commit ad473767: three mutants killed (skip distil_procedure; brief without procedures, killed once the record was read off the brief; count a repeated run twice), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL. 2026-11-12 (t50-09): eight mutants killed and restored sha256-identical — check_procedure always followed; record_method dropping rules; record_method admitting any non-empty lean; EquityAnalyst building with build; build_against dropping the caveat; build_against dropping the check; the research episode dropping subject evidence; procedures_followed ignoring findings. Stays PARTIAL."
   },
   {
     "id": "R12-WORLD-3035",
