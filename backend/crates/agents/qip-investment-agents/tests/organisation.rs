@@ -3097,6 +3097,93 @@ fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> R
     Ok(())
 }
 
+/// R12-REASON-3023. The manipulation probe *emits* what each arm finds, not
+/// only that it looked. The examination test above counts instruments, and a
+/// probe that dropped either arm's findings while still marking the
+/// instrument examined passed it, because the fixture holds no manipulation
+/// shape: deleting `findings.extend(probe_book(..))` and keeping
+/// `looked = true` survived every test in this crate on 2026-11-12. Here the
+/// book-only instrument's book is crossed and the tape-only instrument's last
+/// bar carries nine times the tape's median volume on an unchanged close, so
+/// each arm contributes exactly one finding to the count the probe reports.
+///
+/// Mutations, both run on 2026-11-12: delete the book arm's
+/// `findings.extend(probe_book(..))` line, keeping `looked = true`, and
+/// `manipulation_findings` reads 1 where 2 was expected; replace the tape
+/// arm's `findings.extend(tape)` with nothing, and likewise. Each restored
+/// byte for byte.
+#[test]
+fn the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings() -> Result<()> {
+    let mut universe = Universe::new();
+    universe.insert(equity("WASH", "100")).unwrap();
+    universe.insert(equity("CROSS", "100")).unwrap();
+    let mut snapshot = MarketSnapshot::new(now());
+    let mut tape = bars("WASH", 12, 0.0);
+    let last = tape.last().cloned().expect("premise: the tape has bars");
+    let mut spike = last.clone();
+    spike.open_time = last.open_time.saturating_add(Duration::from_hours(1));
+    spike.open = last.close;
+    spike.high = last.close;
+    spike.low = last.close;
+    // The same close as the bar before: a zero-basis-point move.
+    spike.volume = dec!("9000000");
+    spike.vwap = Some(last.close);
+    tape.push(spike);
+    for bar in tape {
+        snapshot.apply_bar(bar);
+    }
+    snapshot.apply_book(OrderBook::from_levels(
+        object("CROSS"),
+        "XNYS",
+        now(),
+        vec![BookLevel::new(dec!("100.10"), dec!("500"))],
+        vec![BookLevel::new(dec!("100.05"), dec!("500"))],
+    ));
+    let desk = Arc::new(
+        Desk::new(
+            MarketView { snapshot, universe },
+            WorldModel::new(),
+            BookView {
+                portfolio: Portfolio::new(
+                    PortfolioId::from_string("pf-probe"),
+                    "probe",
+                    Currency::USD,
+                    Decimal::from_int(1_000_000),
+                    now(),
+                ),
+                marks: BTreeMap::new(),
+            },
+            RiskView {
+                state: RiskState::default(),
+                limits: LimitSet::conservative_default(),
+            },
+            ComplianceView::default(),
+            ResearchMemory::new(),
+            SearchIndex::new(),
+        )
+        .with_executions(fixture_executions())
+        .with_models(fixture_models()),
+    );
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::MANIPULATION)
+        .expect("premise: the manipulation probe ran");
+    assert_eq!(
+        fact_value(finding, "instruments_examined"),
+        Some(2.0),
+        "premise: each instrument is examined through its one arm: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(finding, "manipulation_findings"),
+        Some(2.0),
+        "one finding from the crossed book and one from the wash tape: {finding:?}"
+    );
+    Ok(())
+}
+
 /// R12-REASON-3012. The macro analyst reads the world model's geopolitical
 /// claims as well as the macro series, and nobody else does: without it the
 /// organisation has no view of geopolitical exposure at all. On a desk

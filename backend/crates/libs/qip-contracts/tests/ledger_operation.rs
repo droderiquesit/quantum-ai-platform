@@ -212,7 +212,109 @@ fn every_kind() -> Vec<(OperationKind, BTreeSet<&'static str>)> {
             },
             set(&["trading", "venue"]),
         ),
+        (repo_maturity(dec!("3")), set(&["trading", "venue"])),
     ]
+}
+
+fn repo_maturity(interest: Decimal) -> OperationKind {
+    OperationKind::RepoMaturity {
+        book: book(),
+        venue: "simulated-venue".to_string(),
+        counterparty: "cp-1".to_string(),
+        repo: "obj-REPO-1M".to_string(),
+        units: dec!("10"),
+        cash_unit: "USD".to_string(),
+        principal: dec!("1000"),
+        interest,
+    }
+}
+
+/// ADR 0398: the far leg of a repo the book lent under. The failures this
+/// prevents: the interest booked to an accrual, where a credit is read back
+/// by `LedgerObligations` as cash the platform owes, so income would be
+/// withheld from deployable capital as a debt; principal and interest merged
+/// into one posting nobody can split afterwards; and a negative interest or
+/// a repo repaid in its own unit admitted and booked.
+///
+/// Mutations that fired: `repaid_by` built as `Account::Accrual` — "the far
+/// leg touched an accrual"; the `interest.is_positive()` postings dropped —
+/// the trading account's cash reads 1000, not 1003; the negative-interest
+/// refusal removed — "a negative interest was admitted".
+#[test]
+fn a_repo_maturity_retires_the_units_and_repays_principal_and_interest_apart_and_never_through_an_accrual()
+ {
+    let event = Validated::new(operation("op-repo", repo_maturity(dec!("3"))))
+        .expect("premise: a repaid repo is admissible")
+        .to_event()
+        .expect("event");
+    assert!(
+        event
+            .postings()
+            .iter()
+            .all(|p| p.account.subledger() != "accrual"),
+        "the far leg touched an accrual"
+    );
+    let trading = |unit: &str| {
+        event
+            .postings()
+            .iter()
+            .filter(|p| p.account.subledger() == "trading" && p.unit == unit)
+            .fold(Decimal::ZERO, |net, p| match p.direction {
+                Direction::Debit => net + p.amount,
+                Direction::Credit => net - p.amount,
+            })
+    };
+    assert_eq!(
+        trading("USD"),
+        dec!("1003"),
+        "principal and interest reach the book"
+    );
+    assert_eq!(
+        trading("obj-REPO-1M"),
+        dec!("-10"),
+        "the units leave the book"
+    );
+    let cash_legs: Vec<Decimal> = event
+        .postings()
+        .iter()
+        .filter(|p| p.account.subledger() == "trading" && p.unit == "USD")
+        .map(|p| p.amount)
+        .collect();
+    assert_eq!(
+        cash_legs,
+        vec![dec!("1000"), dec!("3")],
+        "principal and interest are apart"
+    );
+    let repaid_by: BTreeSet<String> = event
+        .postings()
+        .iter()
+        .filter(|p| p.account.subledger() == "venue" && p.unit == "USD")
+        .map(|p| p.account.to_string())
+        .collect();
+    assert_eq!(repaid_by, BTreeSet::from(["venue:cp-1".to_string()]));
+
+    // A repo at a zero rate posts no interest leg and is still admissible.
+    let flat = Validated::new(operation("op-flat", repo_maturity(Decimal::ZERO)))
+        .expect("premise: zero interest is admissible")
+        .to_event()
+        .expect("event");
+    assert_eq!(flat.postings().len(), 4);
+
+    assert!(
+        Validated::new(operation("op-neg", repo_maturity(dec!("-1")))).is_err(),
+        "a negative interest was admitted"
+    );
+    let mut own_unit = repo_maturity(dec!("3"));
+    if let OperationKind::RepoMaturity { cash_unit, .. } = &mut own_unit {
+        *cash_unit = "obj-REPO-1M".to_string();
+    }
+    let refusal = Validated::new(operation("op-own", own_unit))
+        .expect_err("a repo repaid in its own unit was admitted");
+    assert!(
+        refusal.message().contains("its own unit"),
+        "{}",
+        refusal.message()
+    );
 }
 
 fn net_per_unit(event: &LedgerEvent) -> BTreeMap<String, Decimal> {
@@ -239,7 +341,7 @@ fn net_per_unit(event: &LedgerEvent) -> BTreeMap<String, Decimal> {
 #[test]
 fn every_operation_kind_posts_to_its_own_subledgers_and_closes_in_every_unit() {
     let kinds = every_kind();
-    assert_eq!(kinds.len(), 14, "premise: one of every kind");
+    assert_eq!(kinds.len(), 15, "premise: one of every kind");
     for (i, (kind, expected)) in kinds.into_iter().enumerate() {
         let fields = operation(&format!("op-{i}"), kind);
         let admitted = Validated::new(fields.clone())
