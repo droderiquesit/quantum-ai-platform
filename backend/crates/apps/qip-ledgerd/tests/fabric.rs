@@ -341,6 +341,7 @@ impl Journal {
             side: Some(side),
             quote_unit: Some(UNIT.to_string()),
             fee: fee.map(str::to_string),
+            decision_sequence: None,
         });
         let outcome = OutcomeRecord {
             cell: self.cell.clone(),

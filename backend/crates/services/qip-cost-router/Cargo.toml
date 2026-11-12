@@ -14,6 +14,10 @@ qip-contracts.workspace = true
 qip-financial.workspace = true
 qip-agents.workspace = true
 qip-ai.workspace = true
+# ADR 0430: the router mints the model-free witness `qip_risk::gate::DeterministicGate`
+# that the risk monitor demands. The edge points inward (a service on a lib);
+# `qip-risk` gains nothing and stays model-free.
+qip-risk.workspace = true
 
 [dev-dependencies]
 # The reputation tests round-trip a `Judgement` through JSON to prove that the
