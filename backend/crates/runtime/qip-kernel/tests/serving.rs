@@ -352,6 +352,8 @@ fn an_artifact_whose_arity_disagrees_with_its_card_is_refused_before_anything_ch
     registry
         .register(card)
         .expect("a registry below its cap admits a card");
+    // Tried, so the refusal below is the arity and not the trial (ADR 0436).
+    tried(&mut registry, &teacher.reference())?;
     assert!(
         InTreeProvider.serve(&artifact).is_ok(),
         "premise: the provider serves the artifact on its own terms"
@@ -1029,6 +1031,9 @@ fn every_accepted_model_makes_a_pack_naming_its_predecessor_and_delta_and_walkin
         !rejected.passed,
         "premise: the fit did not clear its bar, so its card holds no acceptance"
     );
+    // Tried, so its refusal below is the missing acceptance and not the
+    // missing trial (ADR 0436).
+    tried(&mut registry, &rejected.reference)?;
 
     let member = |entries: &[(&String, &String)]| -> BTreeMap<String, String> {
         entries
