@@ -344,6 +344,20 @@ impl RefusalReason {
     }
 }
 
+/// What [`OrderManager::work_sales`] filled on one open order (ADR 0424).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkedOrder {
+    pub order_id: OrderId,
+    pub object_id: qip_core::ObjectId,
+    pub side: Side,
+    /// The order's arrival price, which a worked fill's slippage is
+    /// measured against as the order's first fill was.
+    pub arrival_price: Decimal,
+    pub venue: String,
+    /// Only the fills this working produced, not the order's earlier ones.
+    pub fills: Vec<Fill>,
+}
+
 /// What happened to a submission.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubmissionResult {
@@ -1055,6 +1069,121 @@ impl OrderManager {
                 result
             }
         }
+    }
+
+    /// Work the unfilled remainder of every open sale, up to the long
+    /// `held` names for its instrument, at the venue that accepted it
+    /// (ADR 0424). Returns what each worked order filled, in order-id order.
+    ///
+    /// The simulated venue fills a fraction of an order on submission and
+    /// the rest stayed open and unworked, so a sale of a whole long left
+    /// four tenths of it for ever and no desk position on the default venue
+    /// reached flat. Only a sale is worked, and only down to flat: working a
+    /// remainder skips the pre-trade check the order passed when it was
+    /// submitted, which is sound for a fill that reduces exposure and not
+    /// for one that adds it. A purchase's remainder, and the part of a sale
+    /// that would open or extend a short, stay open as before.
+    ///
+    /// The kill switch and the autonomy level are checked as on submission,
+    /// and a withdrawn or non-simulated venue works nothing, so a stopped
+    /// platform does not trade an order it accepted before it stopped, and
+    /// no remainder reaches a venue the paper ceiling forbids.
+    pub fn work_sales(
+        &mut self,
+        broker: &mut dyn Broker,
+        autonomy: &AutonomyController,
+        held: &BTreeMap<String, Decimal>,
+        at: Timestamp,
+    ) -> Vec<WorkedOrder> {
+        let mut worked = Vec::new();
+        if !broker.is_simulated()
+            || self.is_withdrawn(broker.name())
+            || !autonomy.level().executes()
+        {
+            return worked;
+        }
+        let candidates: Vec<String> = self
+            .working_axes
+            .keys()
+            .filter(|id| {
+                self.orders.get(id.as_str()).is_some_and(|order| {
+                    order.state.is_open()
+                        && matches!(order.side, Side::Sell)
+                        && order.remaining_quantity().is_positive()
+                })
+            })
+            .cloned()
+            .collect();
+        // What each sale may still take off, shared across the open sales in
+        // one instrument so two of them cannot together sell past flat.
+        let mut long: BTreeMap<String, Decimal> = held
+            .iter()
+            .filter(|(_, quantity)| quantity.is_positive())
+            .map(|(instrument, quantity)| (instrument.clone(), *quantity))
+            .collect();
+        for id in candidates {
+            let Some(mut order) = self.orders.remove(id.as_str()) else {
+                continue;
+            };
+            let room = long
+                .get(order.object_id.as_str())
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            let quantity = order.remaining_quantity().min(room);
+            if autonomy.kill_switch().is_halted(&order.scope) || !quantity.is_positive() {
+                self.orders.insert(id, order);
+                continue;
+            }
+            let fills = match broker.work(&order, quantity, at) {
+                Ok(fills) => fills,
+                Err(error) => {
+                    self.reconciliation_breaks.push(format!(
+                        "venue {} could not work order {}: {}",
+                        broker.name(),
+                        order.order_id.as_str(),
+                        error.message()
+                    ));
+                    self.orders.insert(id, order);
+                    continue;
+                }
+            };
+            let mut accepted = Vec::new();
+            for fill in fills {
+                let mut fill = fill;
+                fill.simulated = broker.is_simulated();
+                self.sessions.answer(broker.name(), fill.clone(), at);
+                match order.apply_fill(fill.clone()) {
+                    Ok(()) => {
+                        if let Some(left) = long.get_mut(order.object_id.as_str()) {
+                            *left = (*left - fill.quantity).max(Decimal::ZERO);
+                        }
+                        accepted.push(fill);
+                    }
+                    Err(error) => self.reconciliation_breaks.push(format!(
+                        "venue {} reported a worked fill of {} on order {} that the order \
+                         refused: {}",
+                        broker.name(),
+                        fill.quantity,
+                        order.order_id.as_str(),
+                        error.message()
+                    )),
+                }
+            }
+            if !accepted.is_empty() {
+                self.conduct
+                    .filled(&order.object_id, book_side_of(order.side), at);
+                worked.push(WorkedOrder {
+                    order_id: order.order_id.clone(),
+                    object_id: order.object_id.clone(),
+                    side: order.side,
+                    arrival_price: order.arrival_price,
+                    venue: broker.name().to_string(),
+                    fills: accepted,
+                });
+            }
+            self.orders.insert(id, order);
+        }
+        worked
     }
 
     /// Cancel a working order: the desk's own withdrawal, which the conduct
