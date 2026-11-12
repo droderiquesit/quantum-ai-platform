@@ -580,16 +580,19 @@
   },
   {
     "id": "R12-FABRIC-10026",
-    "status": "PARTIAL",
-    "current": "event-fabric-broker exposes a disk_type variable (hyperdisk) and journal device; the module is not instantiated by main.tf. The acceptance test named for this does not read Terraform.",
+    "status": "COMPLETE",
+    "current": "event-fabric-broker's instance template declares a second, non-boot, kept disk named qip-journal whose disk_type is var.disk_type (main.tf:72-76), default hyperdisk-balanced, and var.disk_type refuses anything not hyperdisk-* (variables.tf:83-95). A plan test asserts the journal disk itself is a Hyperdisk and that a local-SSD or standard persistent disk journal is refused.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf disk_type",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:21 instance template",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure.rs:218 fabric_085_... (fixture-only)"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:72-76 journal disk (device_name qip-journal, disk_type = var.disk_type)",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:83-95 disk_type, validation startswith(var.disk_type, \"hyperdisk-\")",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:378 the_journal_disk_is_a_persistent_hyperdisk (added 2026-11-12)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:392 a_local_ssd_journal_is_refused (added 2026-11-12); :256 provisioned_journal_performance_on_a_persistent_disk_type_is_refused (pd-balanced)",
+      "2026-11-12 lane fw-h-01: terraform 1.9.8 (release zip checked against HashiCorp's SHA256SUMS, signature not checked) in the module, mocked provider: terraform test 25 passed, 0 failed; terraform validate valid; terraform fmt -check -recursive infrastructure/terraform clean. Mutation: the journal disk's disk_type set to the literal pd-ssd fails the_journal_disk_is_a_persistent_hyperdisk (the existing journal-disk run passed it); mutation: the validation reduced to var.disk_type != \"pd-balanced\" fails a_local_ssd_journal_is_refused (24 passed, 1 failed); each restored byte for byte, 25 passed.",
+      "2026-11-12 lane fw-h-01: qip-acceptance suites reading the module (architecture_memory_index, event_fabric_infrastructure, event_fabric_scaling, infrastructure, no_service_mesh, terraform_plan, workload_identity) all passed"
     ],
-    "gap": "Instantiate broker module; real plan test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
