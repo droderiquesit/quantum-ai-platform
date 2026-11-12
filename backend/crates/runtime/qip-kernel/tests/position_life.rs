@@ -206,3 +206,91 @@ fn an_exited_unsettled_position_is_not_attributed() -> Result<()> {
     );
     Ok(())
 }
+
+/// R12-ASSET-4071 on the default path: a desk position on the shipped
+/// simulated venue — its default fill fraction, no borrow reading — walks
+/// discover to attribute. The venue fills six tenths of a sale on
+/// submission; the next ACT stage works the remainder down to flat
+/// (ADR 0424), so the position exits, settles on the venue's calendar and is
+/// attributed by the LEARN after settlement. Before ADR 0424 the remainder
+/// stayed open for ever and the position never reached `Exit`.
+///
+/// Mutation: in `OrderManager::work_sales` return before working anything —
+/// "the next cycle did not work the sale's remainder to flat". Mutation:
+/// work purchases as well as sales — the opening order's remainder of two
+/// fills, the book holds two, and "the next cycle did not work the sale's
+/// remainder to flat: 2 held" fails before the open-purchase assertion.
+#[test]
+fn a_whole_sale_on_the_default_venue_reaches_flat_and_is_attributed_after_settling() -> Result<()> {
+    let mut platform = platform()?;
+    order(&mut platform, Side::Buy, dec!("5"), "open")?;
+    let opened = held(&platform);
+    // Premise: the default venue fills a fraction, not the whole order.
+    assert_eq!(opened, dec!("3"), "premise: the venue fills 3 of 5");
+
+    order(&mut platform, Side::Sell, opened, "close")?;
+    let left = held(&platform);
+    // Premise: the sale filled in part, so without working the book is not
+    // flat — the state R12-ASSET-4071's gap named.
+    assert!(
+        left.is_positive() && left < opened,
+        "premise: the sale fills in part, left {left}"
+    );
+    assert_eq!(
+        platform.position_life_stage(object().as_str()),
+        Some(LifeStage::Hold),
+        "premise: a partial sale leaves the position held"
+    );
+
+    let report = platform.run_cycle(start());
+    assert!(
+        report.stage(Stage::Act).is_some_and(|act| act.ran),
+        "ACT did not run"
+    );
+    assert!(
+        held(&platform).is_zero(),
+        "the next cycle did not work the sale's remainder to flat: {} held",
+        held(&platform)
+    );
+    // The purchase's own remainder (two of five) is still open and was not
+    // worked: a purchase filled a cycle late would add risk against limits
+    // read a cycle earlier.
+    assert!(
+        platform
+            .orders()
+            .open_orders()
+            .iter()
+            .any(|open| matches!(open.side, Side::Buy) && open.remaining_quantity() == dec!("2")),
+        "a purchase's remainder was worked"
+    );
+    assert_eq!(
+        platform.position_life_stage(object().as_str()),
+        Some(LifeStage::Exit),
+        "a position taken flat must exit"
+    );
+
+    let (_, life) = platform
+        .position_lives()
+        .lives()
+        .find(|(held, _)| *held == object().as_str())
+        .expect("an exited life is kept until it is attributed");
+    let settles_at = life
+        .settles_at()
+        .expect("the desk venue's calendar schedules the exit's settlement");
+    let after = Timestamp::from_secs(settles_at.as_secs() + 60);
+    let report = platform.run_cycle(after);
+    assert!(
+        !report
+            .problems()
+            .iter()
+            .any(|(_, problem)| problem.contains("position in obj-LIFE")),
+        "the life register refused a transition: {:?}",
+        report.problems()
+    );
+    assert_eq!(
+        platform.position_life_stage(object().as_str()),
+        Some(LifeStage::Attribute),
+        "a settled position on the default path was not attributed"
+    );
+    Ok(())
+}

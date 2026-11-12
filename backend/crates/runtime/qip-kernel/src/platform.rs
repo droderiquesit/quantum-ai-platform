@@ -21907,7 +21907,22 @@ impl Platform {
     }
 
     fn stage_act(&mut self, now: Timestamp, correlation: &CorrelationId) -> StageOutcome {
+        // ADR 0424: the remainder of every open sale is worked down to flat
+        // before any new order, so a sale a cycle ago that the venue filled
+        // in part completes here and the position can reach `Exit`. Before
+        // anything this stage submits, so a new order is sized against the
+        // book the worked fills left.
+        let worked = self.work_open_sales(now);
         let outcome = self.stage_act_orders(now, correlation);
+        let outcome = if worked > 0 {
+            let detail = format!(
+                "{}; {worked} open sale(s) worked toward flat",
+                outcome.detail
+            );
+            StageOutcome { detail, ..outcome }
+        } else {
+            outcome
+        };
         // ADR 0079: a region whose every cell has been silent past the
         // operator's window is derived dark, and the transition — in either
         // direction — is put on the record here, in the stage whose
@@ -25097,6 +25112,224 @@ impl Platform {
         }
     }
 
+    /// Work the remainder of every open desk sale down to the long the desk
+    /// holds (ADR 0424), booking what fills through [`Self::book_venue_fills`]
+    /// like any other desk fill. Returns the number of orders that filled.
+    ///
+    /// The fills are captured as `Filled` under the cycle's correlation with
+    /// no placement record: the order was placed, and counted as submitted,
+    /// on the cycle that sent it.
+    fn work_open_sales(&mut self, now: Timestamp) -> usize {
+        let held: BTreeMap<String, Decimal> = self
+            .positions_at_cost()
+            .into_iter()
+            .map(|(instrument, (quantity, _))| (instrument, quantity))
+            .collect();
+        let worked = self
+            .orders
+            .work_sales(self.broker.as_mut(), &self.autonomy, &held, now);
+        if worked.is_empty() {
+            return 0;
+        }
+        let correlation = self.correlation_for(now);
+        for order in &worked {
+            for fill in &order.fills {
+                self.telemetry.metrics.count(
+                    names::ORDERS_FILLED,
+                    labels([("venue", order.venue.as_str())]),
+                );
+                if !fill.simulated {
+                    self.telemetry
+                        .metrics
+                        .count(names::LIVE_FILLS, labels([("venue", order.venue.as_str())]));
+                }
+            }
+            self.book_venue_fills(
+                None,
+                &correlation,
+                &order.order_id,
+                &order.object_id,
+                order.side,
+                order.arrival_price,
+                &VenueId::new(order.venue.clone()),
+                &order.fills,
+                now,
+            );
+        }
+        worked.len()
+    }
+
+    /// Ledger, journal, capture and book each of `fills` for one order:
+    /// the one booking path for a desk fill, shared by a submission's fills
+    /// and a worked remainder's (ADR 0424), so the two cannot be recorded
+    /// differently. `placed` is the decision record a fill is captured
+    /// under — the placement on submission, none for a worked fill, whose
+    /// order was placed on an earlier cycle.
+    #[allow(clippy::too_many_arguments)]
+    fn book_venue_fills(
+        &mut self,
+        placed: Option<&Decision>,
+        correlation: &CorrelationId,
+        order_id: &qip_core::ids::OrderId,
+        object_id: &ObjectId,
+        side: Side,
+        arrival: Decimal,
+        venue: &VenueId,
+        fills: &[qip_execution_engine::order::Fill],
+        now: Timestamp,
+    ) {
+        let venue = venue.clone();
+        let correlation = correlation.clone();
+        for fill in fills {
+            // The ledger record first, and the book only if the record exists.
+            //
+            // The venue has already filled by now, so the order of the two
+            // writes is the only control left. A fill booked into
+            // `self.capital` and then refused by the ledger would leave cash
+            // and position saying one thing and the double-entry ledger
+            // another, with nothing to show which was right. So the record is
+            // made (and checked by the ledger's own posting rules) before any
+            // state moves, and a fill with no record moves nothing: it is
+            // counted, put on the capture problems, and is a break against the
+            // venue for a person — absent from the book and the ledger alike,
+            // which is the one disagreement that is at least the same on both
+            // sides. A fill already on the chain is a replay and is a no-op
+            // here too, so a batch offered twice cannot book twice.
+            let booked = FillBooked {
+                order_id: fill.order_id.to_string(),
+                fill_id: fill.fill_id.to_string(),
+                object_id: object_id.to_string(),
+                venue: venue.to_string(),
+                side,
+                quantity: fill.quantity,
+                price: fill.price,
+                costs: fill.costs,
+                at: fill.at,
+                simulated: fill.simulated,
+            };
+            if fill.order_id != *order_id || fill.venue != venue.as_str() {
+                self.refuse_unledgered_fill(
+                    "mismatch",
+                    &booked,
+                    format!(
+                        "it names order {} at venue {} but arrived in the submission of order \
+                         {} at {}",
+                        fill.order_id, fill.venue, order_id, venue
+                    ),
+                );
+                continue;
+            }
+            match self
+                .desk_ledger
+                .admit(&booked, DESK_STRATEGY, correlation.as_str())
+            {
+                Ok(Admission::Recorded { .. }) => {}
+                Ok(Admission::Duplicate) => continue,
+                // Valid, but nothing has drained the feed and it has no room.
+                // Capacity says nothing about the fill: the venue holds the
+                // position, so the book books it, and the gap is counted and
+                // surfaced. The chain advanced over it, so the record is
+                // re-derivable from the log and nothing is lost; declining the
+                // fill here would make a long-running desk stop booking what the
+                // venue filled.
+                Ok(Admission::Overflowed { sequence }) => {
+                    self.note_unqueued_fill(&booked, sequence);
+                }
+                Err(error) => {
+                    self.refuse_unledgered_fill("refused", &booked, error.message().to_string());
+                    continue;
+                }
+            }
+            // P&L is not realised by opening a position, so the only money that
+            // has moved is what the fill cost. Reporting an opening trade's
+            // gross as profit is the direction that flatters.
+            let slippage = slippage_bps(arrival, fill.price, side);
+            let outcome = RealisedOutcome::realised(now, Decimal::ZERO, fill.costs, fill.quantity)
+                .with_slippage_bps(slippage);
+            self.capture_after(
+                placed,
+                now,
+                &correlation,
+                object_id.clone(),
+                Action::Filled {
+                    order_id: order_id.clone(),
+                    venue: venue.clone(),
+                    quantity: fill.quantity,
+                    price: fill.price,
+                },
+                outcome,
+                format!("filled at {} against an arrival of {arrival}", fill.price),
+            );
+
+            // A fill is capital that had to be at a venue on a date. That is
+            // exactly the observation the demand forecaster is fitted on, and
+            // it is the only source of it the loop actually sees.
+            self.record_capital_demand(
+                CapitalLocation::new(
+                    CapitalRegion::new(HOME_REGION),
+                    Currency::USD,
+                    venue.clone(),
+                ),
+                DemandKind::Cash,
+                fill.at,
+                fill.notional().abs(),
+            );
+            // A fill in an instrument the desk declared as a hedge is hedge
+            // demand as well as cash: the fill itself does not say it was a
+            // hedge, but the declarations name every instrument a hedge may
+            // be struck in, and that is the only statement of intent the
+            // platform holds. Read from the same declarations the DECIDE
+            // survey proposes from, so a hedge cannot be proposed in an
+            // instrument whose fill would not be recognised.
+            if self.is_declared_hedge_instrument(object_id) {
+                self.record_capital_demand(
+                    CapitalLocation::new(
+                        CapitalRegion::new(HOME_REGION),
+                        Currency::USD,
+                        venue.clone(),
+                    ),
+                    DemandKind::Hedge,
+                    fill.at,
+                    fill.notional().abs(),
+                );
+            }
+
+            // And it is capital that moved. This is the edge that makes the
+            // risk state real: the same fills the outcome capture records are
+            // the fills the monitor's equity is built from, so the two can
+            // never tell different stories.
+            //
+            // Journalled first, so the book is the fold of the log and a
+            // restart rebuilds it ([`Self::resume_book`]). A log that will
+            // not take the record does not stop the booking: the venue has
+            // already filled, and a book that left the fill out would read
+            // every limit low by exactly it. What it costs is said out loud
+            // instead — this is the one state a restart cannot rebuild.
+            if let Err(error) =
+                self.journal_record_under(booked, BOOK_ORIGIN, now, correlation.clone())
+            {
+                self.capture_problems.push(format!(
+                    "fill {} on order {} was booked and could not be journalled ({}); the book \
+                     now holds what the event log cannot rebuild and a restart would open \
+                     without it — archive the log to free its capacity before this process \
+                     stops",
+                    fill.fill_id,
+                    order_id,
+                    error.message()
+                ));
+            }
+            self.book_desk_fill(
+                object_id.as_str(),
+                venue.as_str(),
+                side,
+                fill.price,
+                fill.quantity,
+                fill.costs,
+                fill.at,
+            );
+        }
+    }
+
     /// Put one submission on the record, whichever way it went.
     ///
     /// A refusal produces a [`RealisedOutcome::nothing_happened`] rather than
@@ -25332,154 +25565,17 @@ impl Platform {
             "the control path accepted the order and it reached a venue",
         );
 
-        for fill in &result.fills {
-            // The ledger record first, and the book only if the record exists.
-            //
-            // The venue has already filled by now, so the order of the two
-            // writes is the only control left. A fill booked into
-            // `self.capital` and then refused by the ledger would leave cash
-            // and position saying one thing and the double-entry ledger
-            // another, with nothing to show which was right. So the record is
-            // made (and checked by the ledger's own posting rules) before any
-            // state moves, and a fill with no record moves nothing: it is
-            // counted, put on the capture problems, and is a break against the
-            // venue for a person — absent from the book and the ledger alike,
-            // which is the one disagreement that is at least the same on both
-            // sides. A fill already on the chain is a replay and is a no-op
-            // here too, so a batch offered twice cannot book twice.
-            let booked = FillBooked {
-                order_id: fill.order_id.to_string(),
-                fill_id: fill.fill_id.to_string(),
-                object_id: object_id.to_string(),
-                venue: venue.to_string(),
-                side,
-                quantity: fill.quantity,
-                price: fill.price,
-                costs: fill.costs,
-                at: fill.at,
-                simulated: fill.simulated,
-            };
-            if fill.order_id != result.order_id || fill.venue != venue.as_str() {
-                self.refuse_unledgered_fill(
-                    "mismatch",
-                    &booked,
-                    format!(
-                        "it names order {} at venue {} but arrived in the submission of order \
-                         {} at {}",
-                        fill.order_id, fill.venue, result.order_id, venue
-                    ),
-                );
-                continue;
-            }
-            match self
-                .desk_ledger
-                .admit(&booked, DESK_STRATEGY, correlation.as_str())
-            {
-                Ok(Admission::Recorded { .. }) => {}
-                Ok(Admission::Duplicate) => continue,
-                // Valid, but nothing has drained the feed and it has no room.
-                // Capacity says nothing about the fill: the venue holds the
-                // position, so the book books it, and the gap is counted and
-                // surfaced. The chain advanced over it, so the record is
-                // re-derivable from the log and nothing is lost; declining the
-                // fill here would make a long-running desk stop booking what the
-                // venue filled.
-                Ok(Admission::Overflowed { sequence }) => {
-                    self.note_unqueued_fill(&booked, sequence);
-                }
-                Err(error) => {
-                    self.refuse_unledgered_fill("refused", &booked, error.message().to_string());
-                    continue;
-                }
-            }
-            // P&L is not realised by opening a position, so the only money that
-            // has moved is what the fill cost. Reporting an opening trade's
-            // gross as profit is the direction that flatters.
-            let slippage = slippage_bps(arrival, fill.price, side);
-            let outcome = RealisedOutcome::realised(now, Decimal::ZERO, fill.costs, fill.quantity)
-                .with_slippage_bps(slippage);
-            self.capture_after(
-                placed.as_ref(),
-                now,
-                &correlation,
-                object_id.clone(),
-                Action::Filled {
-                    order_id: result.order_id.clone(),
-                    venue: venue.clone(),
-                    quantity: fill.quantity,
-                    price: fill.price,
-                },
-                outcome,
-                format!("filled at {} against an arrival of {arrival}", fill.price),
-            );
-
-            // A fill is capital that had to be at a venue on a date. That is
-            // exactly the observation the demand forecaster is fitted on, and
-            // it is the only source of it the loop actually sees.
-            self.record_capital_demand(
-                CapitalLocation::new(
-                    CapitalRegion::new(HOME_REGION),
-                    Currency::USD,
-                    venue.clone(),
-                ),
-                DemandKind::Cash,
-                fill.at,
-                fill.notional().abs(),
-            );
-            // A fill in an instrument the desk declared as a hedge is hedge
-            // demand as well as cash: the fill itself does not say it was a
-            // hedge, but the declarations name every instrument a hedge may
-            // be struck in, and that is the only statement of intent the
-            // platform holds. Read from the same declarations the DECIDE
-            // survey proposes from, so a hedge cannot be proposed in an
-            // instrument whose fill would not be recognised.
-            if self.is_declared_hedge_instrument(object_id) {
-                self.record_capital_demand(
-                    CapitalLocation::new(
-                        CapitalRegion::new(HOME_REGION),
-                        Currency::USD,
-                        venue.clone(),
-                    ),
-                    DemandKind::Hedge,
-                    fill.at,
-                    fill.notional().abs(),
-                );
-            }
-
-            // And it is capital that moved. This is the edge that makes the
-            // risk state real: the same fills the outcome capture records are
-            // the fills the monitor's equity is built from, so the two can
-            // never tell different stories.
-            //
-            // Journalled first, so the book is the fold of the log and a
-            // restart rebuilds it ([`Self::resume_book`]). A log that will
-            // not take the record does not stop the booking: the venue has
-            // already filled, and a book that left the fill out would read
-            // every limit low by exactly it. What it costs is said out loud
-            // instead — this is the one state a restart cannot rebuild.
-            if let Err(error) =
-                self.journal_record_under(booked, BOOK_ORIGIN, now, correlation.clone())
-            {
-                self.capture_problems.push(format!(
-                    "fill {} on order {} was booked and could not be journalled ({}); the book \
-                     now holds what the event log cannot rebuild and a restart would open \
-                     without it — archive the log to free its capacity before this process \
-                     stops",
-                    fill.fill_id,
-                    result.order_id,
-                    error.message()
-                ));
-            }
-            self.book_desk_fill(
-                object_id.as_str(),
-                venue.as_str(),
-                side,
-                fill.price,
-                fill.quantity,
-                fill.costs,
-                fill.at,
-            );
-        }
+        self.book_venue_fills(
+            placed.as_ref(),
+            &correlation,
+            &result.order_id,
+            object_id,
+            side,
+            arrival,
+            &venue,
+            &result.fills,
+            now,
+        );
 
         // The part of the order the venue did not fill (MODEL-039). The
         // slices above are what traded; what did not trade was recorded
