@@ -15,9 +15,11 @@
 //! [`crate::platform::Platform`], because the inputs live there.
 
 use qip_core::{Decimal, Duration, Error, Result, Timestamp};
+use qip_events::{EventBody, Topic};
 use qip_financial::cashflow::Commitment;
 use qip_financial::position_record::Declared;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The mandate a held object was sized under and the weight it was sized
 /// toward, as the last construction that touched it left them
@@ -106,7 +108,9 @@ impl PositionObligations {
         }
     }
 
-    /// Every declared hedge policy relating to the position, in words.
+    /// Every declared hedge policy relating to the position whose hedge is
+    /// actually held, in words; a covering policy whose hedge instrument is
+    /// not held is named in the `NoneApplicable` reason instead.
     pub fn hedges(&self) -> &Declared<Vec<String>> {
         &self.hedges
     }
@@ -120,6 +124,32 @@ impl PositionObligations {
     /// The capital commitment the book holds on the instrument.
     pub fn commitments(&self) -> &Declared<Commitment> {
         &self.commitments
+    }
+}
+
+/// Every held position's obligations for one cycle, as the log carries them
+/// (R12-ASSET-4068).
+///
+/// Until this existed LEARN counted the records onto its stage line and
+/// dropped them, so "obj-AAA was unhedged on that cycle, and why" could not
+/// be answered from the log a replay reads. Bounded by the held book, keyed
+/// by object id in a `BTreeMap` so two processes journal the same bytes.
+/// Filed under [`Topic::RiskEvaluated`] beside the hedge survey: it is a
+/// statement about risk, and nothing decides on it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PositionObligationsStated {
+    pub positions: BTreeMap<String, PositionObligations>,
+    pub cycle: u64,
+    pub at: Timestamp,
+}
+
+impl EventBody for PositionObligationsStated {
+    const TOPIC: Topic = Topic::RiskEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!("position-obligations:{}", self.cycle))
     }
 }
 

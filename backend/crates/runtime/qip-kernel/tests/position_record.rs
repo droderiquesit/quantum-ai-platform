@@ -21,6 +21,7 @@
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
+use qip_events::Topic;
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::extensions::{Extension, PrivateAssetDetails};
@@ -32,6 +33,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::{CycleReport, Stage};
 use qip_kernel::hedge_review::HedgePolicyDeclaration;
 use qip_kernel::platform::Platform;
+use qip_kernel::position_register::PositionObligationsStated;
 use qip_market::bar::{Bar, Interval};
 use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -40,6 +42,7 @@ use qip_portfolio::PositionLifecycle;
 use qip_reasoning_engine::redteam::ReviewPolicy;
 use qip_risk::hedge::HedgeAxis;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_streaming::envelope::StreamEnvelope;
 
 /// See the module note: low enough that the panel approves a thesis on the
 /// synthetic tape. Not the shipped value.
@@ -354,11 +357,14 @@ fn none_reason<T: std::fmt::Debug>(declared: &Declared<T>, what: &str) -> String
 #[test]
 fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none() -> Result<()> {
     let policies = vec![
+        // Hedged with the held name itself: since 2026-11-12 a covering
+        // policy is a hedge only where its hedge instrument is held, and one
+        // cycle of this fixture opens one position.
         HedgePolicyDeclaration::new(
             "tech-beta",
             HedgeAxis::Sector,
             Sector::InformationTechnology.as_str(),
-            object("HEDGE"),
+            object("AAA"),
             dec!("1"),
         ),
         HedgePolicyDeclaration::new(
@@ -398,9 +404,11 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
         .get("obj-AAA")
         .expect("the held position states its obligations");
     let hedges = present(aaa.hedges(), "obj-AAA's hedge relationship");
-    assert_eq!(hedges.len(), 1, "{hedges:?}");
+    assert_eq!(hedges.len(), 2, "{hedges:?}");
     assert!(
-        hedges[0].starts_with("tech-beta (hedged with obj-HEDGE on sector "),
+        hedges
+            .iter()
+            .any(|hedge| hedge.starts_with("tech-beta (hedged with obj-AAA on sector ")),
         "{hedges:?}"
     );
     let actions = present(
@@ -997,6 +1005,73 @@ fn a_capital_call_on_a_private_funds_commitment_moves_its_lifecycle_from_committ
         platform.private_stage(fund_id.as_str()),
         Some(PrivateStage::Funding),
         "a capital call did not move the commitment's lifecycle"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-4068: a declared hedge policy is the position's hedge only where
+/// its hedge instrument is actually held, and the per-position record reaches
+/// the log rather than only the stage line's counts.
+///
+/// The failure this guards: the hedge relationship was resolved from the
+/// declarations alone, so a book that declared "hedge information technology
+/// with obj-HEDGE" and never bought obj-HEDGE read as hedged; and LEARN
+/// counted each record and dropped it, so the log could not say which
+/// position was unhedged on a cycle, or why.
+///
+/// Mutations: pass `|_| true` as `held` in `Platform::position_obligations`
+/// and obj-AAA reads as hedged by the obj-HEDGE it does not hold; delete the
+/// `journal_record` of `PositionObligationsStated` in LEARN and the log holds
+/// no record of the cycle's obligations.
+#[test]
+fn a_declared_hedge_whose_instrument_is_not_held_is_not_a_hedge_and_the_record_is_journalled()
+-> Result<()> {
+    let policies = vec![HedgePolicyDeclaration::new(
+        "tech-beta",
+        HedgeAxis::Sector,
+        Sector::InformationTechnology.as_str(),
+        object("HEDGE"),
+        dec!("1"),
+    )];
+    let mut book = in_memory(universe()?, config().with_hedge_policies(policies))?;
+    book.observe(tape("AAA"));
+    let report = book.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let held = book.positions_at_cost();
+    assert!(held.contains_key("obj-AAA"), "premise: obj-AAA is held");
+    assert!(
+        !held.contains_key("obj-HEDGE"),
+        "premise: the hedge leg is not"
+    );
+
+    let obligations = book.position_obligations()?;
+    let aaa = obligations
+        .get("obj-AAA")
+        .expect("the held position states its obligations");
+    let reason = none_reason(aaa.hedges(), "obj-AAA's hedge relationship");
+    assert!(
+        reason
+            .contains("hedge instrument is not held: tech-beta (hedged with obj-HEDGE on sector "),
+        "the unhedged position does not name the declared hedge it lacks: {reason}"
+    );
+
+    let mut journalled = Vec::new();
+    for record in book.event_log().by_topic(Topic::RiskEvaluated) {
+        if let Ok(envelope) = StreamEnvelope::from_frame(record)
+            && let Ok(decoded) = envelope.decode::<PositionObligationsStated>()
+        {
+            journalled.push(decoded.body);
+        }
+    }
+    assert_eq!(journalled.len(), 1, "one obligations record for one cycle");
+    let logged = journalled[0]
+        .positions
+        .get("obj-AAA")
+        .expect("the journalled record carries the held position");
+    assert_eq!(
+        logged.hedges(),
+        aaa.hedges(),
+        "the log states the same hedge relationship the platform serves"
     );
     Ok(())
 }

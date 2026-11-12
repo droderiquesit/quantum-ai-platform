@@ -1522,17 +1522,16 @@
   },
   {
     "id": "R12-ASSET-4068",
-    "status": "PARTIAL",
-    "current": "Kernel keeps pending corporate actions, a CommitmentBook of private commitments and a per-cycle hedge review; they are not tied into one per-position record (PositionRecord's Declared::NoneApplicable is unused).",
+    "status": "COMPLETE",
+    "current": "Platform::position_obligations states, for every held position, its hedge relationship, pending corporate actions and commitments, each Declared::Present or NoneApplicable with a reason. Since 2026-11-12 the hedge relationship is resolved against the book: hedge_review::policies_relating_to takes a held predicate, and a covering policy counts as the position's hedge only where its hedge instrument is held at a non-zero quantity; a covering policy whose hedge is not held is named in the NoneApplicable reason. LEARN journals the whole per-position record each cycle as PositionObligationsStated (Topic::RiskEvaluated, key position-obligations:<cycle>) beside the stage line's counts, so the log answers which position was unhedged and why. Whether a held hedge offsets its exposure by the declared beta is the hedge survey's measurement (HedgeSurveyed, journaled the same cycle), not this record's.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:995 corporate_actions_pending",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:693 commitments",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15662 hedge_review::review",
-      "backend/crates/libs/qip-financial/src/position_record.rs:25 Declared",
-      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::position_obligations)",
-      "backend/crates/runtime/qip-kernel/src/hedge_review.rs (policies_relating_to)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::position_obligations",
+      "backend/crates/runtime/qip-kernel/src/hedge_review.rs policies_relating_to, HedgeRelations",
+      "backend/crates/runtime/qip-kernel/src/position_register.rs PositionObligationsStated",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs::each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs::a_declared_hedge_whose_instrument_is_not_held_is_not_a_hedge_and_the_record_is_journalled"
     ],
-    "gap": "2026-10-25: skeptic REFUTED: position_obligations resolves the hedge relationship from declared policies whose axis bucket covers the instrument (hedge_review::policies_relating_to), not from a hedge actually held, and LEARN discards the per-position record each cycle; remaining step is to resolve the hedge against an actual hedge holding and journal or serve the record.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1540,10 +1539,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted (corporate_actions_pending near platform.rs:1180, commitments near :777, hedge_review::review call near :19064). 2026-10-25: b04dfb4f adds position_obligations (hedges, pending corporate actions, commitments, each Declared::Present or NoneApplicable with a reason). Mutation: NoneApplicable replaced by Present(vec![]); test fails. Skeptic (security-engineer) REFUTED as above."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted (corporate_actions_pending near platform.rs:1180, commitments near :777, hedge_review::review call near :19064). 2026-10-25: b04dfb4f adds position_obligations (hedges, pending corporate actions, commitments, each Declared::Present or NoneApplicable with a reason). Mutation: NoneApplicable replaced by Present(vec![]); test fails. Skeptic (security-engineer) REFUTED as above. 2026-11-12 wave580 fw-e-01: both refuted points built — hedge resolved against the held instrument, record journaled. Mutations fired, restored byte for byte: held predicate replaced by |_| true -> the new test fails ('stated as [tech-beta (hedged with obj-HEDGE ...)] where none applies'); the PositionObligationsStated journal_record removed -> the new test fails (0 records against 1). The older test's tech-beta now hedges with the held obj-AAA, because one cycle of that fixture opens one position and a second name could not be opened in it."
   },
   {
     "id": "R12-ASSET-4069",

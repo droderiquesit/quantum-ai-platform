@@ -19592,13 +19592,26 @@ impl Platform {
         let market = self.market.read();
         let mut obligations = BTreeMap::new();
         for object in self.capital.positions.keys() {
-            let related = crate::hedge_review::policies_relating_to(
+            let relations = crate::hedge_review::policies_relating_to(
                 &self.config.hedge_policies,
                 object,
                 &market.universe,
+                |hedge| {
+                    self.capital
+                        .positions
+                        .get(hedge.as_str())
+                        .is_some_and(|lot| !lot.quantity.is_zero())
+                },
             )?;
-            let hedges = if !related.is_empty() {
-                Declared::Present(related)
+            let hedges = if !relations.held.is_empty() {
+                Declared::Present(relations.held)
+            } else if !relations.unheld.is_empty() {
+                Declared::NoneApplicable {
+                    reason: format!(
+                        "declared over this position, but its hedge instrument is not held: {}",
+                        relations.unheld.join("; ")
+                    ),
+                }
             } else if self.config.hedge_policies.is_empty() {
                 Declared::NoneApplicable {
                     reason: "no hedge policy is declared for this deployment".to_string(),
@@ -22567,6 +22580,22 @@ impl Platform {
                         obligations.len()
                     );
                     outcome = StageOutcome { detail, ..outcome };
+                    // The records themselves, not only their counts, so the
+                    // log answers which position was unhedged and why. A
+                    // journal that failed is a problem on the line, never
+                    // swallowed: a count the desk saw and the log lacks is
+                    // two stories about one cycle.
+                    let record = crate::position_register::PositionObligationsStated {
+                        positions: obligations,
+                        cycle: self.cycle,
+                        at: now,
+                    };
+                    if let Err(error) = self.journal_record(record, "kernel/positions", now) {
+                        outcome = outcome.with_problem(format!(
+                            "the held positions' obligations were counted and not journalled: {}",
+                            error.message()
+                        ));
+                    }
                 }
                 Err(error) => {
                     outcome = outcome.with_problem(format!(
