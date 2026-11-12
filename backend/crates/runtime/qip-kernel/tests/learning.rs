@@ -1232,6 +1232,61 @@ fn a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are
     Ok(())
 }
 
+/// Every desk fill `DeskShipper` carries to the ledger stream is one the
+/// in-process LEARN stage prices (R12-MODEL-7210, ADR 0448).
+///
+/// The gap this closes was a reading, not a missing path: the shipped P1
+/// records were said to reach "no learner", and a consumer of the ledger
+/// stream was proposed to feed them back. The shipped record and the
+/// learner's queue are written from the same booked fill in the same
+/// `Platform`, so a second consumer would score each desk fill twice. What
+/// must hold instead is the join, and this pins it: the order id on the
+/// pending outcome record is the order id LEARN scores.
+///
+/// Mutation: in `Platform::capture_submission`, replace the desk path's
+/// `self.filled.push(FilledPath { .. })` with a `drop` — the record still
+/// ships and no score names its order ("shipped and never learned from").
+#[test]
+fn every_desk_fill_shipped_to_the_ledger_is_one_the_learn_stage_prices() -> Result<()> {
+    use qip_contracts::reflex::Decision;
+    let mut platform = platform()?;
+    platform.observe(flat_bars_after(
+        "AAA",
+        start().saturating_sub(Duration::from_days(91)),
+        90,
+        100.0,
+    ));
+    let order_id = fill_one(&mut platform, "prop-shipped", start())?;
+    let shipped: Vec<String> = platform
+        .pending_desk_outcomes()
+        .iter()
+        .filter_map(|outcome| match &outcome.record.entry.decision {
+            Decision::Filled { order_id, .. } => Some(order_id.to_string()),
+            _ => None,
+        })
+        .collect();
+    // Premise: the fill became a record waiting to ship.
+    assert!(
+        shipped.iter().any(|id| id == order_id.as_str()),
+        "the premise failed: no shipped record names {order_id}: {shipped:?}"
+    );
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scored: Vec<&str> = platform
+        .fill_scores()
+        .iter()
+        .map(|score| score.order_id.as_str())
+        .collect();
+    for id in &shipped {
+        assert!(
+            scored.contains(&id.as_str()),
+            "desk fill {id} was shipped and never learned from: scored {scored:?}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left() -> Result<()> {
     // The failure this guards (R12-MODEL-6004): the simulated venue fills 60%

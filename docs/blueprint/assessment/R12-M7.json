@@ -4932,12 +4932,16 @@
   {
     "id": "R12-MODEL-7210",
     "status": "PARTIAL",
-    "current": "LEARN scores fills/declines/counterfactuals; desk fills also become P1 records and fastbrain's DeskShipper carries them to the ledger stream (loopback-tested, nothing deployed). Nothing consumes them for learning.",
+    "current": "LEARN scores desk fills (score_filled), desk declines (score_declined) and cells' refusals that carry legs (score_cell_refusals) each cycle. Since 2026-11-12 (ADR 0448, lane t50-11) a cell's refusal of a fully reasoned directional intent at envelope_expiry, capital, hedge_target, envelope_drawdown, the exposure and authority gates, autonomy and net_edge carries the leg it proposed on DeltaRefusal::legs, so the centre queues and prices it beside the arbitrage cycles. Desk outcome records DeskShipper ships are written from the same booked fill as the FilledPath score_filled prices; the join is pinned by a test rather than given a second learner.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::refuse_proposed",
+      "backend/crates/edge/qip-edge/tests/reservation.rs a_signal_refused_at_observation_ships_the_leg_it_proposed_on_the_delta",
+      "backend/crates/tests/qip-acceptance/tests/cell_refusal_learning.rs",
+      "docs/adr/0448-a-cell-refusal-of-a-fully-reasoned-intent-carries-the-leg-it-proposed-so-learn-prices-cell-vetoes.md"
     ],
-    "gap": "Desk risk-limit vetoes are already learned from: capture_submission records Action::Rejected with gate, rules and readings and queues the sizing-evidence refusals for score_declined. Not learned from: edge-cell refusals, which reach the centre as DeltaRefusal { gate, reason, venue } with no instrument, side or size (see R12-MESH-5068 for the wire change), and desk outcome records, which DeskShipper carries to the ledger stream and no learner consumes.",
+    "gap": "2026-11-12 (lane t50-11): still not priced — cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4945,10 +4949,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-kernel --test learning; cargo test -p qip-edge --test reservation; cargo test -p qip-acceptance --test cell_refusal_learning",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. Gap corrected 2026-10-18 (lane L01): the desk half of 'rejected-by-risk' is done and tested; the edge half needs the cell wire to carry the refused intent."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. Gap corrected 2026-10-18 (lane L01): the desk half of 'rejected-by-risk' is done and tested; the edge half needs the cell wire to carry the refused intent. Re-graded 2026-11-12 (lane t50-11, ADR 0448): PARTIAL. Cell decision-gate refusals now carry their proposed leg and are priced by LEARN end to end in test; desk outcome records are covered by the in-process LEARN path (pinned by every_desk_fill_shipped_to_the_ledger_is_one_the_learn_stage_prices). Remaining gates named in gap."
   },
   {
     "id": "R12-FABRIC-7211",
