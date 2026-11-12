@@ -3523,6 +3523,13 @@ pub struct CycleJournalEntry {
     /// What the cycle cost in compute. Exact, because it ends up inside a
     /// [`qip_contracts::edge::NetEdge`].
     pub compute_cost: Decimal,
+    /// The same bill per strategy, model, data source and region, each a
+    /// `qip_cost_router::report_by` over the cycle's ledger, so the four
+    /// cuts and `compute_cost` are one claim (R12-FINOPS-10136). Absent on
+    /// a cycle whose ledger did not open, and on a record sealed before the
+    /// field existed (schema version 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_by: Option<qip_cost_router::CostReport>,
     /// The lines an operator would have read at three in the morning.
     pub summary: String,
     /// The belief calibration as LEARN left it, on a cycle that scored at
@@ -5056,7 +5063,9 @@ impl EventBody for CycleJournalEntry {
     // eventually notices that a stage keeps failing, and this is the artefact
     // it would notice it from.
     const TOPIC: Topic = Topic::LearningCompleted;
-    const SCHEMA_VERSION: u32 = 1;
+    // 2: `cost_by` (R12-FINOPS-10136). A version-1 record decodes with it
+    // absent.
+    const SCHEMA_VERSION: u32 = 2;
 
     fn idempotency_key(&self) -> Option<String> {
         // One entry per cycle. A journal that could record the same cycle
@@ -14422,7 +14431,15 @@ impl Platform {
     /// charged for the panel it convened. Returns whatever the budget refused,
     /// for the report to carry.
     fn charge_cycle(&mut self, stages: &[StageOutcome]) -> Vec<String> {
-        let mut tiers = Vec::new();
+        // Each rung with the attribution narrower than the cycle's, where
+        // one is known; in stage order, so a budget that refuses part-way
+        // truncates the same bill it always did.
+        let desk = CostAttribution {
+            strategy: Some(DESK_STRATEGY.to_string()),
+            data_source: None,
+            region: Some(HOME_REGION.to_string()),
+        };
+        let mut tiers: Vec<(IntelligenceTier, Option<CostAttribution>)> = Vec::new();
         for outcome in stages {
             if !outcome.ran {
                 continue;
@@ -14430,23 +14447,35 @@ impl Platform {
             // Every stage that ran is at least one capability invocation. A
             // rule that runs a billion times is not free, and a ledger that
             // only counted model calls could not see that.
-            tiers.push(IntelligenceTier::DeterministicCode);
+            tiers.push((IntelligenceTier::DeterministicCode, None));
             match outcome.stage {
                 // The detectors are fitted estimators evaluated in process.
-                Stage::Discover => tiers.push(IntelligenceTier::StatisticalModel),
+                Stage::Discover => tiers.push((IntelligenceTier::StatisticalModel, None)),
                 // The panel is billed from the router's own record of where
                 // the decision was placed, never from the fact that findings
                 // came back. Those were two independent claims about what a
                 // cycle cost, and they disagree the moment the router declines
                 // — which it now can.
+                //
+                // The panel's decision is the desk's: the desk's own orders
+                // implement what REASON approves, and every desk fill is
+                // charged to `DESK_STRATEGY`, so those rungs are attributed to
+                // it (R12-FINOPS-10136). No data source is named: the
+                // decision weighs every source behind the opportunity, and
+                // naming one would be a key nobody measured.
                 Stage::Reason => {
                     if let Some(routing) = &self.reason_routing {
-                        tiers.extend(routing.charges().into_iter().map(|charge| charge.tier));
+                        tiers.extend(
+                            routing
+                                .charges()
+                                .into_iter()
+                                .map(|charge| (charge.tier, Some(desk.clone()))),
+                        );
                     }
                 }
                 // Resampling a path is a counterfactual run, not a rule.
                 Stage::Simulate if outcome.produced > 0 => {
-                    tiers.push(IntelligenceTier::Simulation);
+                    tiers.push((IntelligenceTier::Simulation, None));
                 }
                 _ => {}
             }
@@ -14461,8 +14490,12 @@ impl Platform {
                 Err(error) => return vec![format!("the compute ledger refused to open: {error}")],
             };
         let mut problems = Vec::new();
-        for tier in tiers {
-            if let Err(error) = ledger.charge(tier) {
+        for (tier, attribution) in tiers {
+            let charged = match attribution {
+                Some(attribution) => ledger.charge_attributed(tier, attribution),
+                None => ledger.charge(tier),
+            };
+            if let Err(error) = charged {
                 problems.push(format!(
                     "the cycle exhausted its compute budget at {}: {}",
                     tier.as_str(),
@@ -14526,6 +14559,12 @@ impl Platform {
                 .collect(),
             halted: report.halted,
             compute_cost: self.last_cycle_cost(),
+            // The bill cut by strategy, model, data source and region, read
+            // off the same ledger `compute_cost` is (R12-FINOPS-10136).
+            cost_by: self
+                .cycle_ledger
+                .as_ref()
+                .map(|ledger| qip_cost_router::CostReport::of([ledger])),
             summary: report.summarise(),
             calibration: self.cycle_calibration.clone(),
             counterfactuals: self.cycle_counterfactuals.clone(),
@@ -18477,6 +18516,7 @@ impl Platform {
             return None;
         }
         let registry = &mut self.memory_registry;
+        let mut admit_refusals: Vec<String> = Vec::new();
         self.research_memory.update(|memory| {
             for stance in &episode.stances {
                 let leaned = match stance.direction {
@@ -18510,29 +18550,34 @@ impl Platform {
                 };
                 // Valued before it is stored and stored whatever the value:
                 // compression is a summary beside the episode, never a drop,
-                // so `hit_rate` counts every resolved call.
-                registry.consult(&analyst_episode);
+                // so `hit_rate` counts every resolved call. The registry's
+                // disposition decides what kind of memory the call becomes.
+                let disposition = registry.consult(&analyst_episode);
                 // The same call as a typed memory entry with its policies
-                // declared (R12-EXPAND-6057): an episode when the analyst
-                // was right, a failure when not, valued at its calibration
-                // surprise under the registry's own threshold. Built from
-                // validated fields, so a refusal here is a kernel defect;
-                // the registry counts it (`MemoryRegistry::refused`), and
-                // that count has no production reader yet, which the row's
-                // gap records. An episode with no outcome has no surprise
-                // and is stored unvalued rather than valued at a guess.
+                // declared (R12-EXPAND-6057): kept whole, an episode when the
+                // analyst was right and a failure when not; compressed, an
+                // abstraction carrying the analyst's running summary, because
+                // the registry has given up the call's detail and an entry
+                // claiming to hold it would be the detail it gave up. Valued
+                // at its calibration surprise under the registry's own
+                // threshold. Built from validated fields, so a refusal here
+                // is a kernel defect and is carried as a cycle problem. An
+                // episode with no outcome has no surprise and is stored
+                // unvalued rather than valued at a guess.
                 let Some(surprise) = MemoryRegistry::importance(&analyst_episode) else {
                     memory.record_episode(analyst_episode);
                     continue;
                 };
-                let entry = qip_contracts::expansion::MemoryEntry {
-                    id: analyst_episode.run_id.to_string(),
-                    kind: if correct {
-                        qip_contracts::expansion::MemoryKind::Episodic
-                    } else {
-                        qip_contracts::expansion::MemoryKind::Failure
-                    },
-                    content: format!(
+                let compressed = disposition == Some(qip_agents::memory::Disposition::Compressed);
+                let content = match registry.summary_for(&stance.agent_id) {
+                    Some(summary) if compressed => format!(
+                        "{} compressed: {} of {} unsurprising calls right, mean surprise {:.3}",
+                        stance.agent_id,
+                        summary.correct,
+                        summary.episodes,
+                        summary.importance_sum / summary.episodes.max(1) as f64
+                    ),
+                    _ => format!(
                         "{}: concluded {}; {}",
                         analyst_episode.question,
                         analyst_episode.conclusion,
@@ -18542,6 +18587,17 @@ impl Platform {
                             .map(|o| o.explanation.as_str())
                             .unwrap_or("unresolved")
                     ),
+                };
+                let entry = qip_contracts::expansion::MemoryEntry {
+                    id: analyst_episode.run_id.to_string(),
+                    kind: if compressed {
+                        qip_contracts::expansion::MemoryKind::CompressedAbstraction
+                    } else if correct {
+                        qip_contracts::expansion::MemoryKind::Episodic
+                    } else {
+                        qip_contracts::expansion::MemoryKind::Failure
+                    },
+                    content,
                     retention_policy: qip_contracts::expansion::RetentionPolicy {
                         max_age_ms: ANALYST_EPISODE_RETENTION_MS,
                         description: "one year: a call made under a regime a year gone no \
@@ -18565,7 +18621,9 @@ impl Platform {
                         episode.instrument.clone(),
                     ],
                 };
-                let _ = registry.admit(entry);
+                if let Err(error) = registry.admit(entry) {
+                    admit_refusals.push(error.message().to_string());
+                }
                 memory.record_episode(analyst_episode);
             }
             // Distil each analyst's procedure once memory holds enough of its
@@ -18573,16 +18631,48 @@ impl Platform {
             // reads it back through the brief.
             let mut refused = Vec::new();
             for stance in &episode.stances {
-                if let Err(error) = distil_procedure(memory, &stance.agent_id, now) {
-                    refused.push(format!(
+                match distil_procedure(memory, &stance.agent_id, now) {
+                    Err(error) => refused.push(format!(
                         "{}'s procedure was not recorded: {}",
                         stance.agent_id,
                         error.message()
-                    ));
+                    )),
+                    // A new version of the analyst's procedure is a
+                    // procedural memory, valued at the analyst's hit rate:
+                    // a way of answering that is right more often is worth
+                    // more to keep.
+                    Ok(Some(version)) => {
+                        let name = procedure_name(&stance.agent_id);
+                        let Some(rate) = memory.hit_rate(&stance.agent_id, now) else {
+                            continue;
+                        };
+                        let steps = memory
+                            .procedure_as_of(&name, now)
+                            .map(|p| p.steps.len())
+                            .unwrap_or(0);
+                        let entry = research_memory_entry(
+                            format!("{name}:v{version}"),
+                            qip_contracts::expansion::MemoryKind::Procedural,
+                            format!("{name} version {version}: {steps} step(s)"),
+                            now,
+                            rate,
+                            registry.importance_threshold(),
+                            vec![stance.agent_id.clone(), name],
+                        );
+                        if let Err(error) = registry.admit(entry) {
+                            admit_refusals.push(error.message().to_string());
+                        }
+                    }
+                    Ok(None) => {}
                 }
             }
             self.capture_problems.extend(refused);
         });
+        self.capture_problems.extend(
+            admit_refusals
+                .into_iter()
+                .map(|why| format!("the memory registry refused an entry: {why}")),
+        );
 
         if episode.claim.direction == 0.0 {
             return None;
@@ -18622,11 +18712,29 @@ impl Platform {
         match tally.lesson {
             LessonState::Unpromoted if clears => {
                 let statement = candidate.statement.clone();
+                let support = candidate.smoothed_support();
                 let promoted = self
                     .research_memory
                     .update(|memory| memory.promote(candidate, policy));
                 promoted.ok().map(|_| {
                     tally.lesson = LessonState::Live;
+                    // A promoted lesson is semantic knowledge: a statement
+                    // about a class of claims, valued at its smoothed support.
+                    let entry = research_memory_entry(
+                        lesson_id.as_str().to_string(),
+                        qip_contracts::expansion::MemoryKind::Semantic,
+                        statement.clone(),
+                        now,
+                        support,
+                        self.memory_registry.importance_threshold(),
+                        vec![class.clone(), "lesson".to_string()],
+                    );
+                    if let Err(error) = self.memory_registry.admit(entry) {
+                        self.capture_problems.push(format!(
+                            "the memory registry refused an entry: {}",
+                            error.message()
+                        ));
+                    }
                     format!("lesson {} promoted: {statement}", lesson_id.as_str())
                 })
             }
@@ -20472,6 +20580,44 @@ impl Platform {
                 // results above already stand, and the gap is in the record.
                 let cycle = self.cycle;
                 let mut refused = 0usize;
+                // Each applied library scenario is also a simulation memory
+                // (R12-EXPAND-6057), valued at the share of equity it took:
+                // a loss is the warning a simulation is kept for, so a
+                // scenario the book gained under is worth nothing as one and
+                // a loss beyond the whole book is worth no more than the
+                // whole book. A conditional shock has no result of its own
+                // in `scenarios` and is not valued at a guess.
+                for episode in &report.episodes {
+                    let Some(result) = report
+                        .scenarios
+                        .iter()
+                        .find(|r| r.scenario == episode.scenario())
+                    else {
+                        continue;
+                    };
+                    if !result.loss_fraction.is_finite() {
+                        continue;
+                    }
+                    let entry = research_memory_entry(
+                        format!("simulation:{cycle}:{}", episode.scenario()),
+                        qip_contracts::expansion::MemoryKind::Simulation,
+                        format!(
+                            "scenario {} took {:.2}% of equity",
+                            episode.scenario(),
+                            result.loss_fraction * 100.0
+                        ),
+                        now,
+                        result.loss_fraction.clamp(0.0, 1.0),
+                        self.memory_registry.importance_threshold(),
+                        vec![episode.scenario().to_string(), "stress".to_string()],
+                    );
+                    if let Err(error) = self.memory_registry.admit(entry) {
+                        detail.push_str(&format!(
+                            "; the memory registry refused a simulation entry: {}",
+                            error.message()
+                        ));
+                    }
+                }
                 for episode in report.episodes.clone() {
                     if self
                         .journal_record(
@@ -29781,6 +29927,40 @@ const LESSON_WINDOW: usize = 64;
 /// contract, which refuses an entry that declares none.
 const ANALYST_EPISODE_RETENTION_MS: u64 = 365 * 24 * 60 * 60 * 1_000;
 
+/// A memory entry the kernel admits for a kind other than an analyst's call
+/// (R12-EXPAND-6057), under the same one-year retention and the registry's
+/// own value threshold, so every kind the registry holds is governed by the
+/// policy the analyst episodes already declare rather than by a second
+/// figure nobody gave.
+fn research_memory_entry(
+    id: String,
+    kind: qip_contracts::expansion::MemoryKind,
+    content: String,
+    now: Timestamp,
+    importance: f64,
+    importance_threshold: f64,
+    tags: Vec<String>,
+) -> qip_contracts::expansion::MemoryEntry {
+    qip_contracts::expansion::MemoryEntry {
+        id,
+        kind,
+        content,
+        retention_policy: qip_contracts::expansion::RetentionPolicy {
+            max_age_ms: ANALYST_EPISODE_RETENTION_MS,
+            description: "one year, as the analyst episodes declare".to_string(),
+        },
+        value_policy: qip_contracts::expansion::ValuePolicy {
+            importance_threshold,
+            rationale: "the registry's own importance threshold".to_string(),
+        },
+        // A clock at or before the epoch converts to zero, which `validate`
+        // refuses rather than stamping an instant nobody's clock produced.
+        created_at_ms: u64::try_from(now.as_millis()).unwrap_or(0),
+        importance,
+        tags,
+    }
+}
+
 /// The recent resolutions of one claim class, split by whether the claim
 /// held, and where its lesson stands.
 #[derive(Debug, Default)]
@@ -33561,6 +33741,48 @@ mod simulate_tests {
              computation {expected}; a beta silently dropped to zero would read {} instead",
             (liquidation_cost / equity).max(0.0)
         );
+    }
+
+    /// R12-EXPAND-6057: every library scenario SIMULATE applies is also a
+    /// Simulation memory in the registry, valued at the share of equity it
+    /// took, so the registry holds simulations beside the calls LEARN
+    /// scores. Mutation: delete the Simulation admit in `stage_simulate` —
+    /// the count reads 0.
+    #[test]
+    fn each_library_scenario_simulate_applies_is_admitted_as_a_simulation_memory() {
+        use qip_contracts::expansion::MemoryKind;
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        platform.capital.positions.insert(
+            "AAPL".to_string(),
+            PositionLot {
+                quantity: Decimal::from_int(100),
+                average_price: Decimal::from_int(100),
+            },
+        );
+        assert_eq!(
+            platform.memory_registry().admitted(MemoryKind::Simulation),
+            0,
+            "premise: nothing simulated yet"
+        );
+        platform.stage_simulate(start());
+        let report = platform.stress.clone().expect("a stress report");
+        assert!(!report.scenarios.is_empty(), "premise: the library ran");
+        let registry = platform.memory_registry();
+        assert_eq!(
+            registry.admitted(MemoryKind::Simulation),
+            report.scenarios.len()
+        );
+        let worst = &report.scenarios[0];
+        let entry = registry
+            .held(MemoryKind::Simulation, &worst.scenario)
+            .next()
+            .expect("the worst scenario is held");
+        assert!(
+            (entry.importance - worst.loss_fraction.clamp(0.0, 1.0)).abs() < 1e-12,
+            "{entry:?}"
+        );
+        assert_eq!(registry.refused(), 0);
     }
 
     /// R12-EXPAND-6033 (ADR 0149 decision 18): every scenario SIMULATE
@@ -38780,6 +39002,19 @@ mod episodic_slot_tests {
             line.starts_with("lesson lesson-claims-mean_reversion promoted: "),
             "{line}"
         );
+        // The promoted lesson is semantic knowledge in the Memory Registry
+        // (R12-EXPAND-6057). Mutation: delete the Semantic admit in the
+        // promotion arm — the count reads 0.
+        {
+            use qip_contracts::expansion::MemoryKind;
+            let registry = platform.memory_registry();
+            assert_eq!(registry.admitted(MemoryKind::Semantic), 1);
+            let semantic: Vec<_> = registry
+                .held(MemoryKind::Semantic, "mean_reversion")
+                .collect();
+            assert_eq!(semantic.len(), 1, "{semantic:?}");
+            assert_eq!(semantic[0].id, "lesson-claims-mean_reversion");
+        }
         {
             let memory = platform.research_memory.read();
             assert_eq!(memory.episode_count(), 4);
@@ -38871,12 +39106,17 @@ mod episodic_slot_tests {
     }
 
     /// R12-EXPAND-6057 on the shipped path: every resolved call LEARN scores
-    /// is also admitted to the Memory Registry as a typed entry — Episodic
-    /// when the analyst was right, Failure when not — with its retention and
-    /// value policies declared, so the registry holds what the requirement
-    /// names rather than two counters. Mutation: delete the
-    /// `registry.admit(entry)` call in `write_research_memory` — both
-    /// `admitted` counts read 0 and the first assertion fails.
+    /// is also admitted to the Memory Registry as a typed entry with its
+    /// retention and value policies declared, and the registry's own
+    /// disposition decides the kind: a call kept whole is Episodic when the
+    /// analyst was right and Failure when not, a call the registry
+    /// compressed is a CompressedAbstraction carrying the analyst's summary,
+    /// and each new version of the analyst's distilled procedure is a
+    /// Procedural entry. Mutations: delete the `registry.admit(entry)` call
+    /// for the analyst's calls in `write_research_memory` — every call count
+    /// reads 0; ignore the disposition (`let compressed = false`) — the
+    /// abstraction count reads 0 and Episodic reads 4; delete the Procedural
+    /// admit — the procedural count reads 0.
     #[test]
     fn learn_writes_each_resolved_call_as_a_typed_memory_entry_with_declared_policies() {
         use qip_ai::memory::{AnalystStance, StanceDirection};
@@ -38887,19 +39127,23 @@ mod episodic_slot_tests {
             0,
             "premise: nothing admitted yet"
         );
+        // Three confident calls that came off (surprise 0.05, compressed),
+        // one confident miss (surprise 0.95, kept), and one even-handed call
+        // that came off (surprise 0.5, kept).
         let calls = [
-            ("ep-1", 12.0),
-            ("ep-2", 12.0),
-            ("ep-3", 12.0),
-            ("ep-4", -12.0),
+            ("ep-1", 12.0, 0.95),
+            ("ep-2", 12.0, 0.95),
+            ("ep-3", 12.0, 0.95),
+            ("ep-4", -12.0, 0.95),
+            ("ep-5", 12.0, 0.5),
         ];
-        for (n, (id, moved)) in calls.into_iter().enumerate() {
+        for (n, (id, moved, conviction)) in calls.into_iter().enumerate() {
             let at = start().saturating_add(Duration::from_hours(n as i64 + 1));
             let mut episode = resolved(id, at);
             episode.stances = vec![AnalystStance {
                 agent_id: "analyst-a".to_string(),
                 direction: StanceDirection::Positive,
-                conviction: 0.95,
+                conviction,
             }];
             if let Some(outcome) = episode.outcome.as_mut() {
                 outcome.realised_move_bps = moved;
@@ -38908,24 +39152,41 @@ mod episodic_slot_tests {
         }
         let registry = platform.memory_registry();
         assert_eq!(
-            registry.admitted(MemoryKind::Episodic),
+            registry.admitted(MemoryKind::CompressedAbstraction),
             3,
-            "three calls came off"
+            "the three unsurprising calls were compressed"
         );
         assert_eq!(registry.admitted(MemoryKind::Failure), 1, "one missed");
+        assert_eq!(
+            registry.admitted(MemoryKind::Episodic),
+            1,
+            "one surprising call came off"
+        );
+        // The procedure is distilled at the third correct call and versioned
+        // again at the fifth, whose support differs; the miss adds nothing.
+        assert_eq!(registry.admitted(MemoryKind::Procedural), 2);
         assert_eq!(
             registry.refused(),
             0,
             "every entry LEARN built was well-formed"
         );
         let entries: Vec<_> = registry.entries().collect();
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 7);
         for entry in &entries {
             entry.validate().expect("an admitted entry validates");
             assert!(entry.retention_policy.max_age_ms > 0);
             assert!(entry.tags.iter().any(|t| t == "analyst-a"), "{entry:?}");
-            assert!(entry.id.ends_with(":analyst-a"), "{entry:?}");
         }
+        let abstraction = entries
+            .iter()
+            .rfind(|e| e.kind == MemoryKind::CompressedAbstraction)
+            .expect("an abstraction");
+        assert!(
+            abstraction
+                .content
+                .contains(" 3 of 3 unsurprising calls right"),
+            "{abstraction:?}"
+        );
         let failure = entries
             .iter()
             .find(|e| e.kind == MemoryKind::Failure)

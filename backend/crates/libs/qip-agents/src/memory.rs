@@ -52,8 +52,9 @@ pub const DEFAULT_IMPORTANCE_THRESHOLD: f64 = 0.3;
 /// How many admitted [`MemoryEntry`] records the registry keeps whole, newest
 /// last, beside its per-kind counts (R12-EXPAND-6057). The counts are the
 /// record of what was admitted; the entries are a bounded working set for a
-/// reader that wants the last few, and the oldest leaves when a newer one
-/// arrives rather than the set growing with the platform's uptime.
+/// reader that wants the last few. The set never grows with the platform's
+/// uptime, and what leaves it is decided by the entries' own declared
+/// policies, not by arrival order: see [`MemoryRegistry::admit`].
 pub const RETAINED_MEMORY_ENTRIES: usize = 256;
 
 /// A way of answering a kind of question, distilled from episodes that
@@ -559,8 +560,17 @@ pub struct MemoryRegistry {
     /// or out of range. Counted on the registry, so a producer that builds a
     /// malformed entry is visible here rather than only in its own error.
     refused: usize,
-    /// The last [`RETAINED_MEMORY_ENTRIES`] admitted entries, oldest first.
+    /// At most [`RETAINED_MEMORY_ENTRIES`] admitted entries, in admission
+    /// order, each still inside its own retention policy.
     entries: VecDeque<MemoryEntry>,
+    /// The newest creation instant admitted, in epoch milliseconds: the
+    /// registry's clock for retention, so expiry replays from the entries
+    /// alone and reads no wall clock.
+    clock_ms: u64,
+    /// Entries dropped because their retention policy's age had passed.
+    expired: usize,
+    /// Entries dropped at capacity because their value was the least held.
+    evicted_for_value: usize,
 }
 
 impl MemoryRegistry {
@@ -585,6 +595,9 @@ impl MemoryRegistry {
             admitted: BTreeMap::new(),
             refused: 0,
             entries: VecDeque::new(),
+            clock_ms: 0,
+            expired: 0,
+            evicted_for_value: 0,
         })
     }
 
@@ -597,6 +610,9 @@ impl MemoryRegistry {
             admitted: BTreeMap::new(),
             refused: 0,
             entries: VecDeque::new(),
+            clock_ms: 0,
+            expired: 0,
+            evicted_for_value: 0,
         }
     }
 
@@ -650,17 +666,70 @@ impl MemoryRegistry {
     /// `[0, 1]`, or no tags. The refusal is counted on the registry as well
     /// as returned, because the producer that built the entry is the party
     /// least likely to read its own error.
+    ///
+    /// The declared policies are what decide what the working set keeps.
+    /// On every admission the registry's clock advances to the newest
+    /// creation instant it has seen, and every held entry older than its own
+    /// `retention_policy.max_age_ms` by that clock leaves ([`Self::expired`]).
+    /// When the set is still full, the entry of least value leaves
+    /// ([`Self::evicted_for_value`]): one below its own
+    /// `value_policy.importance_threshold` before any at or above it, then
+    /// the lowest importance, then the oldest. First-in-first-out would let a
+    /// burst of unsurprising calls push out the one costly failure the
+    /// registry exists to remember, and would read a retention policy that
+    /// was declared and never consulted.
     pub fn admit(&mut self, entry: MemoryEntry) -> Result<()> {
         if let Err(error) = entry.validate() {
             self.refused += 1;
             return Err(error);
         }
         *self.admitted.entry(entry.kind).or_default() += 1;
-        if self.entries.len() == RETAINED_MEMORY_ENTRIES {
-            self.entries.pop_front();
+        self.clock_ms = self.clock_ms.max(entry.created_at_ms);
+        let clock = self.clock_ms;
+        let before = self.entries.len();
+        self.entries.retain(|held| {
+            clock.saturating_sub(held.created_at_ms) <= held.retention_policy.max_age_ms
+        });
+        self.expired += before - self.entries.len();
+        if self.entries.len() >= RETAINED_MEMORY_ENTRIES {
+            let least = self
+                .entries
+                .iter()
+                .enumerate()
+                .min_by(|(i, a), (j, b)| {
+                    let valued =
+                        |e: &MemoryEntry| e.importance >= e.value_policy.importance_threshold;
+                    valued(a)
+                        .cmp(&valued(b))
+                        .then(a.importance.total_cmp(&b.importance))
+                        .then(i.cmp(j))
+                })
+                .map(|(i, _)| i);
+            if let Some(index) = least {
+                self.entries.remove(index);
+                self.evicted_for_value += 1;
+            }
         }
         self.entries.push_back(entry);
         Ok(())
+    }
+
+    /// Entries dropped because their declared retention age had passed.
+    pub fn expired(&self) -> usize {
+        self.expired
+    }
+
+    /// Entries dropped at capacity as the least valuable held.
+    pub fn evicted_for_value(&self) -> usize {
+        self.evicted_for_value
+    }
+
+    /// The held entries of `kind` carrying `tag`, in admission order: what a
+    /// running decision reads back from the registry.
+    pub fn held(&self, kind: MemoryKind, tag: &str) -> impl Iterator<Item = &MemoryEntry> {
+        self.entries
+            .iter()
+            .filter(move |e| e.kind == kind && e.tags.iter().any(|t| t == tag))
     }
 
     /// Entries admitted under `kind` since the registry was built.

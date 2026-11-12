@@ -90,13 +90,13 @@ const LOCKED: &[(&str, u32, &str)] = &[
     ),
     (
         "CycleJournalEntry",
-        1,
-        "538ac8a14ab46b404fa858fa5eff105a5cfd088ae496f48e85b47bc127c26104",
+        2,
+        "1e7b8e84013b667304d80ea8c4ff1825c14d3d9fdad7782b2e3ee81e4530b6ae",
     ),
     (
         "CycleJournalEntry/calibration+counterfactuals",
-        1,
-        "e526c0531318622861286d040217b471f08a054f54102e23ef89a7e29d57e4a2",
+        2,
+        "a58b5cc0a205e96c9d3992ec3cec8d16b3710fd62c06ef9927c3ace6b6e4a3e9",
     ),
 ];
 
@@ -245,6 +245,7 @@ fn cycle_journal() -> CycleJournalEntry {
         problems: vec!["a problem".to_string()],
         halted: false,
         compute_cost: Decimal::from_int(1),
+        cost_by: None,
         summary: "a summary".to_string(),
         calibration: None,
         counterfactuals: None,
@@ -266,11 +267,19 @@ fn cycle_journal() -> CycleJournalEntry {
 }
 
 /// The same entry with the two sub-journals LEARN writes most often filled,
+/// and its per-dimension cost report,
 /// and every collection inside them non-empty, so a rename or a retyped field
 /// inside either is part of the id.
 fn cycle_journal_filled() -> CycleJournalEntry {
     let earned = Simulated::of(Decimal::from_int(2));
+    let cut = |key: &str| BTreeMap::from([(key.to_string(), Decimal::from_int(1))]);
     CycleJournalEntry {
+        cost_by: Some(qip_cost_router::CostReport {
+            strategy: cut("central-desk"),
+            model: cut("no-model"),
+            data_source: cut("unattributed"),
+            region: cut("home"),
+        }),
         calibration: Some(CalibrationJournal {
             evaluated_this_cycle: 2,
             evaluations_in_window: 30,
