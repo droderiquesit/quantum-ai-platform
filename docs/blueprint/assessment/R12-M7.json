@@ -3143,16 +3143,18 @@
   },
   {
     "id": "R12-AGENCY-7133",
-    "status": "PARTIAL",
-    "current": "ActionPolicy::observe narrows authority; engine::learn calls it after attribution, and qip-cli calls engine::learn_shadowed after every shadowed pass, so a widened policy whose simulated effect lies outside its predicted uplift returns to shadow on the default path. The journal record carries the interval and the authority before and after. qip-deepbrain calls engine::learn, and so ActionPolicy::observe, on every draft follow-up with a measured effect, holding the Communication policy to a predicted uplift of exactly zero; the DraftLearning record carries the authority before and after.",
+    "status": "COMPLETE",
+    "current": "ActionPolicy::drift (backend/crates/services/qip-agency/src/autonomy.rs:545) names an effect below or above the predicted uplift and any unpredicted side effect; ActionPolicy::observe (:565) returns the policy to Shadow on any drift; engine::learn (backend/crates/services/qip-agency/src/engine.rs:661, observe at :736) calls it on every attributed outcome. qip-cli calls engine::learn_shadowed after every shadowed pass and qip-deepbrain calls engine::learn on every measured draft follow-up; the deepbrain policy starts at Shadow and nothing on that path widens it, so there it has nothing to narrow.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/autonomy.rs ActionPolicy::observe, predicted_uplift",
-      "backend/crates/services/qip-agency/src/engine.rs learn_shadowed",
+      "backend/crates/services/qip-agency/src/autonomy.rs:545 drift (BelowPredicted at :548); :565 observe",
+      "backend/crates/services/qip-agency/src/engine.rs:736 learn -> policy.observe",
+      "backend/crates/services/qip-agency/tests/agency.rs:1403 an_effect_outside_the_predicted_interval_or_an_unpredicted_side_effect_returns_a_policy_to_shadow (effect 0 against [1, 5] returns NarrowReversible to Shadow)",
+      "backend/crates/services/qip-agency/tests/agency.rs:2873 an_effect_outside_the_prediction_learned_after_an_action_returns_the_policy_to_shadow (through engine::learn)",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
-      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
+      "2026-11-12 lane fw-h-01: cargo test -p qip-agency --test agency: 64 passed; qip-deepbrain --test ambient_agency: 10 passed. Mutation deleting `self.authority = Authority::Shadow` in observe fails four tests including :1403 (panicked at agency.rs:1422) and :2873 (panicked at :2898); mutation `if false && effect < low` in drift fails only :1403 (panicked at agency.rs:1422, the below-prediction case); each restored byte for byte, 64 passed."
     ],
-    "gap": "The deepbrain policy starts at Shadow and nothing on that path widens it, so observe() cannot be shown to narrow anything there; the only widened policy is the CLI's, on simulated effects.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
