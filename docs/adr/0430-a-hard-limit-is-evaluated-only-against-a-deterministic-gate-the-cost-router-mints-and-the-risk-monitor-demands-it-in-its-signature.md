@@ -65,13 +65,22 @@ refuses any edge from it to a crate that reaches a model.
   `RiskMonitor::enforce`. Those remain kernel-side gates without a witness in
   their signature, and are the row's remaining gap.
 
+## What it costs
+
+- One new edge, `qip-cost-router` on `qip-risk`. It points inward and adds
+  nothing to what `qip-risk` reaches.
+- Every caller of `RiskMonitor::observe`, tests included, must hold a gate.
+  Tests mint their own; production must ask the router.
+- The guarantee against forgery is a source scan, not the type system. A
+  scan can be defeated by code it does not read (a macro, a build script),
+  and that weakness is accepted rather than hidden.
+- The observation record grows one string per pass. `Observation` is held in
+  memory by the monitor and is not persisted by any caller today.
+
 ## Consequences
 
 - A second production call of the monitor without a router-minted gate fails
   to compile (no gate) or fails the architecture suite (forged gate).
-- The observation record grows one string per pass. `Observation` is held in
-  memory by the monitor and is not persisted by any caller today.
-
 ## What would make this wrong
 
 A path that holds a `DeterministicRouting` obtained other than from
