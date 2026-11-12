@@ -1691,7 +1691,7 @@
       "backend/crates/apps/qip-edge-node/tests/replay_manifests.rs::replaying_a_spool_with_a_torn_tail_leaves_the_spool_byte_for_byte_as_it_was",
       "backend/crates/libs/qip-contracts/tests/replay_manifest.rs::a_manifest_read_off_the_wire_missing_any_field_is_refused_and_a_complete_one_round_trips_every_field"
     ],
-    "gap": "2026-10-30 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): the manifest carries no universe, no time window (one pass instant and tape offsets) and dataset partitions only for control streams; ReplayManifest::new still builds one without assumptions, nested AppliedReadings options are not refused when absent, and nothing carries a manifest between brains — the replay is an operator subcommand with markers only under QIP_VENUE_FEED=simulated.",
+    "gap": "2026-10-30 (lane L5-EDGE, skeptic HOLDS-AS-PARTIAL): the manifest carries no universe, no time window (one pass instant and tape offsets) and dataset partitions only for control streams; ReplayManifest::new still builds one without assumptions, nested AppliedReadings options are not refused when absent, and nothing carries a manifest between brains — the replay is an operator subcommand with markers only under QIP_VENUE_FEED=simulated. 2026-11-12 (fw-f-01, not built): each remaining part is its own change: a universe and time window on ReplayManifest (and refusal of ReplayManifest::new without assumptions) move the StatedManifest wire form every reader decodes, and carrying a manifest between brains needs a new topic past the schema lock and a consumer that does not exist; together more than one time-boxed lane.",
     "implemented": true,
     "tested": true,
     "integrated": true,

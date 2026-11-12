@@ -30,6 +30,7 @@
 use qip_kernel::Platform;
 use qip_kernel::platform::HypothesisPrecedent;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// Outcomes a component needs before the engine reports an accuracy.
 ///
@@ -60,12 +61,34 @@ pub struct ComponentView {
     pub calibrated: bool,
 }
 
+/// The self-model's newest operational-health reading, as a page renders it
+/// (R12-WORLD-3036).
+///
+/// The kernel writes this reading after LEARN on every cycle and, until this
+/// view, nothing read it: the platform's account of itself held whether it
+/// was halted and which of the things it sizes on had gone stale, and no
+/// surface could show either. Every field is read off the reading the kernel
+/// holds; the route computes nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HealthView {
+    /// The instant of the reading, RFC 3339 UTC.
+    pub observed_at: String,
+    /// Whether the global kill switch was tripped at the reading.
+    pub halted: bool,
+    /// Every §6.2 degradation row that did not read fresh, by the row's
+    /// `snake_case` name, with what it read (`stale` or `unavailable`). Empty
+    /// when every row was fresh.
+    pub degraded: BTreeMap<String, String>,
+}
+
 /// The body of `GET /cognition/self-model`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SelfModelView {
     /// Sorted by `(kind, key)`, both lexicographic.
     pub components: Vec<ComponentView>,
     pub minimum_sample: usize,
+    /// The newest health reading, or `null` before the first cycle took one.
+    pub health: Option<HealthView>,
 }
 
 /// Build `/cognition/self-model` from the platform.
@@ -109,9 +132,19 @@ pub fn self_model(platform: &Platform) -> Result<SelfModelView, String> {
     // The engine's map orders by its kind enum, which a page cannot know;
     // the contract promises lexicographic `(kind, key)`, so sort to that.
     components.sort_by(|a, b| (&a.kind, &a.key).cmp(&(&b.kind, &b.key)));
+    let health = platform.self_model().health().map(|reading| HealthView {
+        observed_at: reading.observed_at.to_rfc3339(),
+        halted: reading.halted,
+        degraded: reading
+            .degraded
+            .iter()
+            .map(|(row, freshness)| (row.as_str().to_string(), freshness.as_str().to_string()))
+            .collect(),
+    });
     Ok(SelfModelView {
         components,
         minimum_sample: MINIMUM_SAMPLE,
+        health,
     })
 }
 

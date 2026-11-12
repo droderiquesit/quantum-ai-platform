@@ -1471,7 +1471,7 @@
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs an_entry_missing_a_declared_field_is_refused (mutation: accept a Supported verdict with no benchmark), a_contradiction_stays_unresolved_until_a_campaign_on_the_same_id_concludes (mutation: record_concluded skips the resolution)",
       "backend/crates/services/qip-expansion/tests/executor.rs a_contradiction_observation_on_a_sweep_opens_one_registry_contradiction (mutation: drop the contradiction record in offer_by_deadline)"
     ],
-    "gap": "The desk can name a benchmark only for fill-bias campaigns; a second capability class reaching conclude needs its ADR 0192 row named in the desk first. A contradiction whose campaign never concludes is bounded only by the cap (ADR 0348's costs). The registry is in memory and is not journaled, so contradictions and open questions do not survive a restart.",
+    "gap": "The desk can name a benchmark only for fill-bias campaigns; a second capability class reaching conclude needs its ADR 0192 row named in the desk first. A contradiction whose campaign never concludes is bounded only by the cap (ADR 0348's costs). The registry is in memory and is not journaled, so contradictions and open questions do not survive a restart. 2026-11-12 (fw-f-01, not built): journalling the registry needs a restore path the deep brain does not have for any of its research state (ResearchLoop rebuilds nothing from a log on start), so it is a persistence design for the whole loop, not a registry change; a second capability class at conclude needs its ADR 0192 benchmark row, which only a person can name.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1563,7 +1563,7 @@
       "docs/adr/0345-causal-driver-coverage-is-measured-on-the-graphs-own-drivers-against-the-history-of-the-instruments-they-reach-and-language-waits-for-a-source-record-that-states-one.md",
       "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming_its_dimension (mutations: coverage handed the static map; the instruments-only filter dropped)"
     ],
-    "gap": "No production writer claims an edge whose effect lacks history, so the dimension has not fired outside tests. Language is not a coverage dimension: no source record states the language of what it admits, and ADR 0345 decision 5 keeps it out until one does. The causal graph has no edge cap, so the sweep's pass over it grows with the graph (ADR 0345's costs). The ontology seeding reads the static catalogue map, so no causal-driver ontology type is registered.",
+    "gap": "No production writer claims an edge whose effect lacks history, so the dimension has not fired outside tests. Language is not a coverage dimension: no source record states the language of what it admits, and ADR 0345 decision 5 keeps it out until one does. The causal graph has no edge cap, so the sweep's pass over it grows with the graph (ADR 0345's costs). The ontology seeding reads the static catalogue map, so no causal-driver ontology type is registered. 2026-11-12 (fw-f-01, not built): the edge cap is a figure nobody has given; a shipped writer of edges whose effects lack history needs an edge source beyond price-history precedence, which the tree does not hold, so under decision 28's fifth preference the arm stays declared absent rather than fed an invented input.",
     "implemented": true,
     "tested": true,
     "integrated": true,
