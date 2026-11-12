@@ -47,11 +47,13 @@
 //! Paper only. Nothing here can reach a venue; every execution is a replay.
 
 use qip_ai::registry::ModelCard;
+use qip_contracts::sync::{SyncMetadata, SyncOrder};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ModelId, Timestamp};
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_kernel::fusion::{FusionConfig, MarketTrace, OpportunityMap, TracePoint, fuse};
 use qip_kernel::platform::FillScore;
+use qip_sequencing::CrossRegionAligner;
 use qip_simulation_engine::conditions::MessageBudget;
 use qip_simulation_engine::tick_replay::{
     ExecutionModel, OrderSide, ReplayOrder, ReplayRun, ReplaySession, ReplayTick,
@@ -79,6 +81,10 @@ pub const LATENCY_MS_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_LATENCY_MS";
 pub const FEE_BPS_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_FEE_BPS";
 pub const IMPACT_BPS_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_IMPACT_BPS";
 pub const MEASURE_CODEC_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_MEASURE_CODEC";
+/// The half-width, in nanoseconds, every capturing cell's clock is stated to
+/// hold against the common reference (ADR 0438). Unset: no cross-region
+/// order is computed, because no figure for it has been stated.
+pub const CELL_CLOCK_BOUND_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_CELL_CLOCK_BOUND_NS";
 
 /// The blob namespace the desk writes its model cards and maps under.
 pub const OUTPUT_NAMESPACE: &str = qip_storage::classes::TICK_DESK_NAMESPACE;
@@ -109,6 +115,9 @@ pub struct TickDeskConfig {
     pub execution: ExecutionModel,
     /// A codec to measure each round, or none.
     pub measure_codec: Option<SegmentCodec>,
+    /// The bound each cell's clock holds against the reference, where one
+    /// has been stated; `None` withholds cross-region alignment.
+    pub cell_clock_bound: Option<Duration>,
 }
 
 impl TickDeskConfig {
@@ -133,6 +142,7 @@ impl TickDeskConfig {
                 }),
             },
             measure_codec: None,
+            cell_clock_bound: None,
         }
     }
 
@@ -232,6 +242,20 @@ impl TickDeskConfig {
             if !codec.is_identity() {
                 config.measure_codec = Some(codec);
             }
+        }
+        if let Some(bound) = lookup(CELL_CLOCK_BOUND_VARIABLE).filter(|v| !v.trim().is_empty()) {
+            let nanos: i64 = bound.trim().parse().map_err(|_| {
+                Error::invalid(format!(
+                    "{CELL_CLOCK_BOUND_VARIABLE}={bound:?} is not a whole number of nanoseconds"
+                ))
+            })?;
+            if nanos < 0 {
+                return Err(Error::invalid(format!(
+                    "{CELL_CLOCK_BOUND_VARIABLE}={nanos} is negative; a clock bound is a \
+                     half-width, zero or more"
+                )));
+            }
+            config.cell_clock_bound = Some(Duration::from_nanos(nanos));
         }
         Ok(config)
     }
@@ -344,6 +368,79 @@ pub struct TickRound {
     pub world_branches_refused: usize,
     pub tree_log_score: Option<f64>,
     pub compression: Option<CompressionReport>,
+    /// Present ticks whose lake line carried typed sync metadata and a
+    /// disciplined clock (R12-TICK-2048).
+    pub synced_ticks: usize,
+    /// What the cross-region aligner made of them, where a cell clock bound
+    /// was stated; why not, where it was not.
+    pub cross_region: Option<CrossRegionSummary>,
+    pub cross_region_withheld: Option<String>,
+}
+
+/// The cross-region alignment of one round's ticks (ADR 0438): counts a
+/// person can check, not the pairs themselves, which grow with the product
+/// of ticks and partitions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CrossRegionSummary {
+    /// Ticks fed to the aligner.
+    pub ticks: usize,
+    /// Ticks refused because their cell's discipline could not place them.
+    pub unplaced: usize,
+    /// Pairs of ticks from two different cells, and of those, from two
+    /// different regions.
+    pub pairs: usize,
+    pub cross_region_pairs: usize,
+    /// Cross-region pairs ordered beyond both clocks and both cell bounds,
+    /// and those the bound left unordered.
+    pub ordered: usize,
+    pub unordered: usize,
+    /// Every region and asset (`venue/instrument`) a related tick came from.
+    pub regions: BTreeSet<String>,
+    pub assets: BTreeSet<String>,
+}
+
+/// Relate the round's synced ticks across cells, in normalized-time order
+/// (ties by cell, partition, sequence, so a replay relates the same pairs).
+fn cross_region_summary(
+    bound: Duration,
+    synced: &mut [(Timestamp, Duration, u64, SyncMetadata)],
+) -> Result<CrossRegionSummary> {
+    synced.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.3.cell().cmp(b.3.cell()))
+            .then_with(|| a.3.asset().path().cmp(&b.3.asset().path()))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    let mut aligner = CrossRegionAligner::new(bound)?;
+    let mut summary = CrossRegionSummary::default();
+    for (normalized, uncertainty, sequence, sync) in synced.iter() {
+        summary.ticks += 1;
+        let Ok(related) = aligner.relate(sync, *sequence, *normalized, *uncertainty) else {
+            summary.unplaced += 1;
+            continue;
+        };
+        for alignment in related {
+            summary.pairs += 1;
+            if !alignment.crosses_regions() {
+                continue;
+            }
+            summary.cross_region_pairs += 1;
+            match alignment.order_of_other {
+                SyncOrder::Unordered => summary.unordered += 1,
+                SyncOrder::Before | SyncOrder::After => summary.ordered += 1,
+            }
+            summary.regions.insert(alignment.region.clone());
+            summary.regions.insert(alignment.other_region.clone());
+            summary
+                .assets
+                .insert(format!("{}/{}", alignment.venue, alignment.instrument));
+            summary.assets.insert(format!(
+                "{}/{}",
+                alignment.other_venue, alignment.other_instrument
+            ));
+        }
+    }
+    Ok(summary)
 }
 
 impl TickRound {
@@ -627,6 +724,36 @@ impl TickDesk {
             .filter(|tick| tick.knowable_at <= now)
             .map(|tick| (tick.knowable_at, tick.clock_uncertainty))
             .collect();
+        // Where lake lines from more than one cell meet (R12-TICK-2048, ADR
+        // 0438): every present, uncontaminated tick whose line carried typed
+        // sync metadata and a disciplined clock is related across cells,
+        // widened by the stated cell clock bound. With no bound stated, no
+        // cross-region order is computed rather than one assumed.
+        let mut synced: Vec<(Timestamp, Duration, u64, SyncMetadata)> = history
+            .ticks
+            .iter()
+            .filter(|tick| tick.knowable_at <= now && tick.knowable_at >= tick.event_time)
+            .filter_map(|tick| {
+                let sync = tick.sync.clone()?;
+                let clock = tick.clock?;
+                Some((
+                    clock.normalized_time,
+                    clock.uncertainty,
+                    tick.message.origin.sequence,
+                    sync,
+                ))
+            })
+            .collect();
+        round.synced_ticks = synced.len();
+        match self.config.cell_clock_bound {
+            Some(bound) => round.cross_region = Some(cross_region_summary(bound, &mut synced)?),
+            None => {
+                round.cross_region_withheld = Some(format!(
+                    "{CELL_CLOCK_BOUND_VARIABLE} is unset: no bound on the capturing cells' \
+                     clocks has been stated, so ticks from two cells are not ordered"
+                ));
+            }
+        }
         for tick in history.ticks {
             if tick.knowable_at > now {
                 continue;

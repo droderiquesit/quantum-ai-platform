@@ -703,31 +703,20 @@ impl Detector for CorrelationBreakdownDetector {
 
         for (index, first) in subjects.iter().enumerate() {
             for second in subjects.iter().skip(index + 1) {
-                let a = stats::log_returns(&context.prices[*first]);
-                let b = stats::log_returns(&context.prices[*second]);
-                let n = a.len().min(b.len());
-                if n < self.recent_window * 3 {
+                let Some(departure) = correlation_departure(
+                    &context.prices[*first],
+                    &context.prices[*second],
+                    self.recent_window,
+                    self.minimum_baseline,
+                ) else {
                     continue;
-                }
-
-                let baseline =
-                    stats::correlation(&a[..n - self.recent_window], &b[..n - self.recent_window]);
-                if baseline.abs() < self.minimum_baseline {
-                    continue;
-                }
-                let recent =
-                    stats::correlation(&a[n - self.recent_window..], &b[n - self.recent_window..]);
-
-                // Fisher's transform makes a correlation difference roughly
-                // normal, with a standard error that depends only on the sample
-                // sizes. Comparing raw correlations would treat a move from
-                // 0.90 to 0.80 the same as one from 0.10 to 0.00.
-                let z_baseline = fisher(baseline);
-                let z_recent = fisher(recent);
-                let standard_error = ((1.0 / (n - self.recent_window - 3).max(1) as f64)
-                    + (1.0 / (self.recent_window - 3).max(1) as f64))
-                    .sqrt();
-                let z = (z_recent - z_baseline) / standard_error;
+                };
+                let CorrelationDeparture {
+                    z,
+                    recent,
+                    baseline,
+                    sample_size: n,
+                } = departure;
                 if z.abs() < self.threshold {
                     continue;
                 }
@@ -751,6 +740,60 @@ impl Detector for CorrelationBreakdownDetector {
         }
         anomalies
     }
+}
+
+/// How far a pair's recent correlation has moved from its long-run one, in
+/// standard errors of Fisher's transform — the statistic
+/// [`CorrelationBreakdownDetector`] fires on. Shared with the precursor
+/// sentinel (ADR 0434) so that "below the detector's threshold" means the
+/// same number in both places: two copies of the arithmetic would drift, and
+/// a precursor scored on a different statistic could sit "below threshold"
+/// while the detector had already fired.
+///
+/// `None` when the history is shorter than three recent windows or the
+/// long-run correlation is weaker than `minimum_baseline` — a pair with no
+/// relationship has none to break.
+pub fn correlation_departure(
+    first: &[f64],
+    second: &[f64],
+    recent_window: usize,
+    minimum_baseline: f64,
+) -> Option<CorrelationDeparture> {
+    let a = stats::log_returns(first);
+    let b = stats::log_returns(second);
+    let n = a.len().min(b.len());
+    if recent_window == 0 || n < recent_window * 3 {
+        return None;
+    }
+    let baseline = stats::correlation(&a[..n - recent_window], &b[..n - recent_window]);
+    if baseline.abs() < minimum_baseline {
+        return None;
+    }
+    let recent = stats::correlation(&a[n - recent_window..], &b[n - recent_window..]);
+    // Fisher's transform makes a correlation difference roughly normal, with
+    // a standard error that depends only on the sample sizes. Comparing raw
+    // correlations would treat a move from 0.90 to 0.80 the same as one from
+    // 0.10 to 0.00.
+    let standard_error = ((1.0 / (n - recent_window - 3).max(1) as f64)
+        + (1.0 / (recent_window - 3).max(1) as f64))
+        .sqrt();
+    Some(CorrelationDeparture {
+        z: (fisher(recent) - fisher(baseline)) / standard_error,
+        recent,
+        baseline,
+        sample_size: n,
+    })
+}
+
+/// One pair's correlation departure; see [`correlation_departure`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CorrelationDeparture {
+    /// Signed standard errors between the recent and long-run correlation.
+    pub z: f64,
+    pub recent: f64,
+    pub baseline: f64,
+    /// Aligned returns behind the two correlations.
+    pub sample_size: usize,
 }
 
 /// Flags spread widening.

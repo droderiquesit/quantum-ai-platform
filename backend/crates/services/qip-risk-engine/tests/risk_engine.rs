@@ -815,10 +815,57 @@ fn an_order_for_zero_quantity_is_refused() {
 
 // --- continuous monitoring --------------------------------------------------
 
+/// A test mints its own witness: a unit test of the monitor is not a path an
+/// order takes, and `only_the_cost_router_mints_a_deterministic_gate` scans
+/// production source only (ADR 0430).
+fn gate() -> qip_risk::gate::DeterministicGate {
+    qip_risk::gate::DeterministicGate::minted_by_router_determination("a monitor unit test")
+}
+
+/// ADR 0430, R12-RISK-3022: the witness the monitor demands is on the record
+/// of every evaluation it made, breach or clean, so the routing a limit verdict
+/// was reached under can be read off the observations rather than trusted to a
+/// field the caller kept beside the call.
+///
+/// Mutation: record `String::new()` as `routed` in `RiskMonitor::observe` —
+/// both assertions fire.
+#[test]
+fn every_observation_records_the_routing_its_gate_carried() {
+    let mut monitor = RiskMonitor::new(limits(), MonitorPolicy::default());
+    let clean = qip_risk::gate::DeterministicGate::minted_by_router_determination("clean pass");
+    let breach = qip_risk::gate::DeterministicGate::minted_by_router_determination("drawdown pass");
+    let mut breached = state("10000000", "0");
+    breached.drawdown = 0.25;
+
+    monitor.observe(
+        &clean,
+        &state("10000000", "0"),
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
+    monitor.observe(
+        &breach,
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
+
+    let routed: Vec<&str> = monitor
+        .observations()
+        .iter()
+        .map(|observation| observation.routed.as_str())
+        .collect();
+    assert_eq!(routed.len(), 2, "premise: both passes were observed");
+    assert_eq!(routed, ["clean pass", "drawdown pass"]);
+}
+
 #[test]
 fn a_clean_book_continues() -> Result<()> {
     let mut monitor = RiskMonitor::new(limits(), MonitorPolicy::default());
     let action = monitor.observe(
+        &gate(),
         &state("10000000", "0"),
         "momentum",
         AutonomyLevel::PaperTrading,
@@ -836,7 +883,13 @@ fn a_drawdown_past_the_threshold_halts_everything_immediately() -> Result<()> {
     let mut breached = state("10000000", "0");
     breached.drawdown = 0.25;
 
-    let action = monitor.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    let action = monitor.observe(
+        &gate(),
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
     assert!(matches!(action, MonitorAction::HaltGlobally { .. }));
     assert!(!action.permits_new_risk());
     assert!(
@@ -855,7 +908,13 @@ fn a_single_day_loss_past_the_threshold_halts_everything() -> Result<()> {
     let mut monitor = RiskMonitor::new(limits(), MonitorPolicy::default());
     let mut breached = state("10000000", "0");
     breached.daily_loss = 0.08;
-    let action = monitor.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    let action = monitor.observe(
+        &gate(),
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
     assert!(matches!(action, MonitorAction::HaltGlobally { .. }));
     Ok(())
 }
@@ -867,7 +926,13 @@ fn a_first_limit_breach_goes_reduce_only_rather_than_halting() -> Result<()> {
     let mut monitor = RiskMonitor::new(limits(), MonitorPolicy::default());
     let breached = state("10000000", "20000000");
 
-    let action = monitor.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    let action = monitor.observe(
+        &gate(),
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
     assert!(
         matches!(action, MonitorAction::ReduceOnly { .. }),
         "{action:?}"
@@ -888,6 +953,7 @@ fn a_persistent_breach_escalates_to_a_scoped_halt() -> Result<()> {
     let mut last = MonitorAction::Continue;
     for i in 0..3 {
         last = monitor.observe(
+            &gate(),
             &breached,
             "momentum",
             AutonomyLevel::PaperTrading,
@@ -908,7 +974,13 @@ fn the_same_breach_halts_immediately_at_a_live_autonomy_level() -> Result<()> {
     // moving, and the platform should favour stopping.
     let mut monitor = RiskMonitor::new(limits(), MonitorPolicy::default());
     let breached = state("10000000", "20000000");
-    let action = monitor.observe(&breached, "momentum", AutonomyLevel::AutonomousLive, now());
+    let action = monitor.observe(
+        &gate(),
+        &breached,
+        "momentum",
+        AutonomyLevel::AutonomousLive,
+        now(),
+    );
     assert!(
         matches!(action, MonitorAction::HaltScope { .. }),
         "{action:?}"
@@ -920,6 +992,7 @@ fn the_same_breach_halts_immediately_at_a_live_autonomy_level() -> Result<()> {
 fn a_resolved_breach_resets_the_counter() -> Result<()> {
     let mut monitor = RiskMonitor::new(limits(), MonitorPolicy::default());
     monitor.observe(
+        &gate(),
         &state("10000000", "20000000"),
         "momentum",
         AutonomyLevel::PaperTrading,
@@ -928,6 +1001,7 @@ fn a_resolved_breach_resets_the_counter() -> Result<()> {
     assert_eq!(monitor.consecutive_breaches(), 1);
 
     monitor.observe(
+        &gate(),
         &state("10000000", "0"),
         "momentum",
         AutonomyLevel::PaperTrading,
@@ -944,7 +1018,13 @@ fn deciding_and_enforcing_are_separate_so_a_dry_run_is_possible() -> Result<()> 
     let mut breached = state("10000000", "0");
     breached.drawdown = 0.30;
 
-    let action = monitor.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    let action = monitor.observe(
+        &gate(),
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
     let mut switch = KillSwitch::new();
     assert!(!switch.is_globally_tripped(), "observing must not enforce");
     monitor.enforce(&action, &mut switch, now());
@@ -957,6 +1037,7 @@ fn every_observation_is_recorded() -> Result<()> {
     let mut monitor = RiskMonitor::new(limits(), MonitorPolicy::default());
     for i in 0..4 {
         monitor.observe(
+            &gate(),
             &state("10000000", "0"),
             "momentum",
             AutonomyLevel::PaperTrading,
@@ -1025,8 +1106,15 @@ fn a_breach_that_outlives_the_grace_period_halts_before_the_third_reading() -> R
 
     // Inside the grace period: still reduce-only on the second reading.
     let mut inside = RiskMonitor::new(limits(), policy);
-    inside.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    inside.observe(
+        &gate(),
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
     let second = inside.observe(
+        &gate(),
         &breached,
         "momentum",
         AutonomyLevel::PaperTrading,
@@ -1040,8 +1128,15 @@ fn a_breach_that_outlives_the_grace_period_halts_before_the_third_reading() -> R
     // Beyond it: the second reading halts the scope, and the count is still
     // two, so it was the clock that fired.
     let mut beyond = RiskMonitor::new(limits(), policy);
-    beyond.observe(&breached, "momentum", AutonomyLevel::PaperTrading, now());
+    beyond.observe(
+        &gate(),
+        &breached,
+        "momentum",
+        AutonomyLevel::PaperTrading,
+        now(),
+    );
     let second = beyond.observe(
+        &gate(),
         &breached,
         "momentum",
         AutonomyLevel::PaperTrading,

@@ -11,6 +11,7 @@
 
 use crate::autonomy::{AutonomyLevel, KillSwitch};
 use qip_core::time::{Duration, Timestamp};
+use qip_risk::gate::DeterministicGate;
 use qip_risk::limits::{LimitCheck, LimitSet, RiskState};
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +115,12 @@ pub struct Observation {
     pub check: LimitCheck,
     /// Consecutive observations in breach as of this one.
     pub consecutive_breaches: usize,
+    /// The rationale of the deterministic routing this evaluation was taken
+    /// under, copied from the [`DeterministicGate`] the caller had to hold
+    /// (ADR 0430). On the record so an auditor reading the observations sees
+    /// which routing every limit verdict was reached under, not only that the
+    /// kernel kept one somewhere beside the call.
+    pub routed: String,
 }
 
 /// Watches the book against its limits.
@@ -171,8 +178,17 @@ impl RiskMonitor {
     /// Evaluate the state and decide what to do.
     ///
     /// `scope` names what would be halted if a scoped halt is the answer.
+    ///
+    /// `gate` is the witness that this evaluation was routed as a
+    /// deterministic decision (ADR 0430, R12-RISK-3022). It is in the
+    /// signature so a caller that never asked the cost router has nothing to
+    /// pass: before it, the kernel kept its routing as a record beside this
+    /// call, and a second call site written without one compiled and
+    /// evaluated the limits just as well. Its rationale is copied onto the
+    /// observation.
     pub fn observe(
         &mut self,
+        gate: &DeterministicGate,
         state: &RiskState,
         scope: &str,
         level: AutonomyLevel,
@@ -262,6 +278,7 @@ impl RiskMonitor {
             action: action.clone(),
             check,
             consecutive_breaches: self.consecutive_breaches,
+            routed: gate.rationale().to_string(),
         });
         action
     }
