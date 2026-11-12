@@ -1408,6 +1408,14 @@ impl OrderManager {
     /// working (ADR 0472). The first by id, so the refusal names the same
     /// resting order on every replay.
     ///
+    /// A market order's remainder is excluded by [`rests_in_a_book`]: it
+    /// takes liquidity and never rests where another order could take it,
+    /// and two aggressive orders of the desk's own each take resting
+    /// liquidity rather than each other. Counted, every partly filled
+    /// market order refused the desk's next opposite order on the
+    /// instrument, which is how a desk with a margin call was kept from
+    /// buying again after it had sold its way out.
+    ///
     /// The last condition is [`Broker::works_remainder`]. The simulated
     /// venue never works a purchase's remainder (ADR 0424), so that
     /// remainder stays open here and rests nowhere. Counted, it refused
@@ -1431,6 +1439,7 @@ impl OrderManager {
                     && orders.get(id.as_str()).is_some_and(|working| {
                         working.object_id == order.object_id
                             && working.side != order.side
+                            && rests_in_a_book(&working.order_type)
                             && broker.works_remainder(working.side)
                             && working.remaining_quantity().is_positive()
                     })
@@ -1552,6 +1561,16 @@ pub fn order_type_for(participation: f64, window_minutes: u32) -> Result<OrderTy
         // sensible way to work it.
         OrderType::Participation { rate: 0.10 }
     })
+}
+
+/// Whether an order of this type leaves a remainder resting in a book, where
+/// a later order of the desk's own could trade with it (ADR 0472). Every
+/// type but a market order is counted. A limit order rests. The scheduled
+/// and participation types are worked as child orders whose prices nobody
+/// here sees, and counting them costs only a refusal, while missing them
+/// would let a wash trade through.
+const fn rests_in_a_book(order_type: &OrderType) -> bool {
+    !matches!(order_type, OrderType::Market)
 }
 
 /// The book an order takes from, in the cell's vocabulary: a buy lifts the

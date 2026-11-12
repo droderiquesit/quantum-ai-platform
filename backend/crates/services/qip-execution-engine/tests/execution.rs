@@ -2015,10 +2015,32 @@ fn a_desk_order_that_would_trade_against_its_own_working_order_is_refused_before
     let placed = |index: usize, object: &str, side: Side| {
         let mut order = order(object, side, "10");
         order.order_id = OrderId::from_string(format!("ord-{object}-{index}"));
+        order.order_type = OrderType::Limit { price: dec!("100") };
         order
     };
 
-    // Premise: a buy rests unfilled at the venue.
+    // A market order's open remainder takes liquidity and rests in no book,
+    // so it refuses nothing: counted, a desk that sold its way out of a
+    // margin call with a partly filled market sale could not buy again.
+    let mut market = order("MKT", Side::Buy, "10");
+    market.order_id = OrderId::from_string("ord-MKT-0".to_string());
+    assert!(matches!(market.order_type, OrderType::Market), "premise");
+    let result = submit(&mut manager, market, &mut venue, &controller);
+    assert!(
+        result.accepted && result.fills.is_empty(),
+        "premise: the market buy stays open"
+    );
+    let mut sale = order("MKT", Side::Sell, "10");
+    sale.order_id = OrderId::from_string("ord-MKT-1".to_string());
+    let result = submit(&mut manager, sale, &mut venue, &controller);
+    assert!(
+        result.accepted,
+        "a sale was refused against a market order's remainder: {:?}",
+        result.refusal
+    );
+    venue.submitted = 0;
+
+    // Premise: a limit buy rests unfilled at the venue.
     let result = submit(
         &mut manager,
         placed(0, "AAA", Side::Buy),
@@ -2261,9 +2283,17 @@ fn a_purchase_remainder_the_simulated_venue_never_works_does_not_refuse_a_sale_b
     let mut venue = SimulatedBroker::new(partial, 3);
     let mut manager = manager();
     let controller = AutonomyController::new();
+    // Limit orders priced through the market, so each fills its immediate
+    // fraction and leaves a remainder of a type that rests in a book.
     let placed = |index: usize, object: &str, side: Side| {
         let mut order = order(object, side, "10");
         order.order_id = OrderId::from_string(format!("ord-{object}-{index}"));
+        order.order_type = OrderType::Limit {
+            price: match side {
+                Side::Buy => dec!("1000"),
+                Side::Sell => dec!("1"),
+            },
+        };
         order
     };
 

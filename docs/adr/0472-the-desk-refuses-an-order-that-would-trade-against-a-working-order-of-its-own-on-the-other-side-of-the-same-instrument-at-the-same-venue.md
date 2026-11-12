@@ -28,8 +28,16 @@ ownership, printing volume nobody traded.
    check (6b) and before pre-trade risk and the broker: an order is refused
    when an accepted order of the desk's own is still open at the same venue
    (the broker's name, as every venue fact in the manager is keyed), on the
-   same instrument, on the other side, with quantity left to fill, **on a
+   same instrument, on the other side, with quantity left to fill, **of a
+   type that rests in a book** (every type but `OrderType::Market`), **on a
    side whose remainder the venue keeps working** (`Broker::works_remainder`).
+
+   A market order's remainder takes liquidity and rests nowhere, and two
+   aggressive orders of the desk's own each take resting liquidity rather
+   than each other. A wash trade needs a resting order of the desk's own
+   on one side. The scheduled and participation types are counted, because
+   their child orders' prices are not visible here. Counting them costs a
+   refusal; missing them would let a wash trade through.
    Only such a remainder rests where a later order could match it. The port
    answers `true` by default, which fails closed for a real or unknown
    venue. `SimulatedBroker` answers `false` for a purchase, because ADR 0424
@@ -40,7 +48,11 @@ ownership, printing volume nobody traded.
    test bought, was left with an open purchase remainder no venue worked,
    and was then refused its sale as a wash trade, so the desk could never
    sell a partly filled purchase. The lane had run only `qip-kernel --lib`,
-   and the orchestrator caught it before the merge.
+   and the orchestrator caught it before the merge. The works-remainder
+   condition fixed eleven of them. The twelfth, in `margin_funding_limits`,
+   sold out of a margin call with a partly filled market sale and was then
+   refused its buy. That case is what the market-order condition answers:
+   the desk path sends market orders, and their remainders never rest.
 2. **Any** opposite working order counts, whatever either limit price is.
    Whether two limits cross depends on the venue's matching rules; a price
    test here would be a model of them nobody checked, and a wrong one lets a
@@ -61,6 +73,10 @@ ownership, printing volume nobody traded.
    ever sent, so a long-running desk pays nothing more per submission.
 
 ## What it costs
+
+- The desk's cycle sends market orders, so on its default path the check
+  fires only against the limit orders the quote loop rests. It fires on the
+  orders a venue could actually match, and that is the trade it accepts.
 
 - The rule trusts each venue's own answer about which remainders it works.
   A simulated venue that answered `false` wrongly would let a desk order
@@ -106,4 +122,6 @@ second buy was refused". `a_purchase_remainder_the_simulated_venue_never_works_d
 in the same suite, mutation-verified twice: dropping the works-remainder
 condition fails it at "a sale was refused against a purchase remainder
 nobody works"; making the simulator answer `false` for a sale fails it at
-"expected a self-trade refusal against the sale".
+"expected a self-trade refusal against the sale". Counting a market order's
+remainder fails the first test at "a sale was refused against a market
+order's remainder".
