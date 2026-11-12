@@ -717,7 +717,7 @@ fn a_record_whose_claim_the_world_fabric_holds_inadmissible_is_not_released_for_
 
     assert_eq!(intake.admitted, 2, "{intake:?}");
     assert_eq!(
-        intake.withheld.iter().cloned().collect::<Vec<_>>(),
+        intake.withheld.keys().cloned().collect::<Vec<_>>(),
         vec!["f1".to_string()]
     );
     let released = intake.release(vec![
@@ -752,13 +752,71 @@ fn the_world_record_seam_releases_only_what_the_fabric_stood_behind() {
     );
 
     assert_eq!(released.records, vec!["honest-record", "unclaimed-record"]);
-    assert_eq!(released.withheld, 1);
+    assert_eq!(released.withheld.len(), 1, "{:?}", released.withheld);
     assert_eq!(released.intake.admitted, 2, "{:?}", released.intake);
     assert_eq!(
         platform.evidence_held(),
         2,
         "the poll's evidence was absorbed"
     );
+}
+
+/// R12-EVID-1200's verification bar, "refused by name": the seam names the
+/// one record it kept from `observe` — the claim it rested on and the world
+/// fabric's reason, the instants that disagree — and names nothing it
+/// released. Until 2026-11-12 `Released::withheld` was a count, so a
+/// refusal reached nobody by name. Mutations: in `admit_world_records`,
+/// push the withheld record with an empty reason — the reason assertions
+/// fail; and in `absorb_evidence`'s inadmissible branch, insert a reason not
+/// derived from the verdict — the timeline assertion fails.
+#[test]
+fn a_record_the_world_fabric_withholds_is_refused_by_its_claim_with_the_fabrics_reason() {
+    let mut platform = platform();
+    let honest = checked("h1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let mut forged = checked("f1", "https://b.example", "rate 1.12", "1.10", &hash('b'));
+    forged.record.ingestion_timestamp = at(5);
+    forged.verdict = honest.verdict.clone();
+    assert!(
+        forged.verdict.admissible,
+        "premise: the connector's private fabric called the forged claim admissible"
+    );
+
+    let released = platform.admit_world_records(
+        vec![honest, forged],
+        vec![
+            ("honest-record", Some("h1".to_string())),
+            ("forged-record", Some("f1".to_string())),
+        ],
+        at(30),
+    );
+
+    assert_eq!(released.records, vec!["honest-record"]);
+    let [refused] = released.withheld.as_slice() else {
+        panic!("one record withheld, named: {:?}", released.withheld);
+    };
+    assert_eq!(refused.claim, "f1");
+    assert!(
+        refused
+            .reason
+            .starts_with("held inadmissible by the world fabric: "),
+        "the reason does not say the world fabric held it inadmissible: {}",
+        refused.reason
+    );
+    assert!(
+        refused.reason.contains(&format!(
+            "ingested at {} before its source published it at {}",
+            at(5).to_rfc3339(),
+            at(10).to_rfc3339()
+        )),
+        "the reason does not name the instants that disagree: {}",
+        refused.reason
+    );
+    assert_eq!(
+        released.intake.withheld.get("f1"),
+        Some(&refused.reason),
+        "the seam's reason is the intake's, not a second account of it"
+    );
+    assert!(refused.describe().starts_with("`f1`: held inadmissible"));
 }
 
 /// Every knowledge delta the kernel has journalled, re-admitted through the

@@ -601,9 +601,10 @@ fn a_fast_brain_step_observes_only_what_the_world_fabric_released() -> Result<()
         3,
         "the step did not hand the connector's three claims to the world fabric"
     );
-    assert_eq!(
-        outcome.withheld, 0,
-        "the fabric stood behind every honest rate"
+    assert!(
+        outcome.withheld.is_empty(),
+        "the fabric stood behind every honest rate: {:?}",
+        outcome.withheld
     );
     assert_eq!(
         outcome.observed + outcome.rejections.len(),
