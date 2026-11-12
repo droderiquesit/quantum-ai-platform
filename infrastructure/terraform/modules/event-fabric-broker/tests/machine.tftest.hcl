@@ -370,3 +370,31 @@ run "a_c3_broker_shape_is_refused" {
 
   expect_failures = [var.machine_type]
 }
+
+# R12-FABRIC-10026: the journal persists on a Hyperdisk, and Local SSD is
+# cache only. The run above proves a second, non-boot, kept disk exists; it
+# says nothing of what that disk is made of, and a journal on a local SSD
+# vanishes with the host that held it while every other assertion holds.
+run "the_journal_disk_is_a_persistent_hyperdisk" {
+  command = plan
+
+  assert {
+    condition = (
+      startswith(google_compute_instance_template.event_fabric_broker[0].disk[1].disk_type, "hyperdisk-")
+      && google_compute_instance_template.event_fabric_broker[0].disk[1].device_name == "qip-journal"
+    )
+    error_message = "The journal disk the template declares is not a Hyperdisk, so the broker's journal is not on persistent provisioned storage."
+  }
+}
+
+# A standard persistent disk is refused by
+# provisioned_journal_performance_on_a_persistent_disk_type_is_refused above.
+run "a_local_ssd_journal_is_refused" {
+  command = plan
+
+  variables {
+    disk_type = "local-ssd"
+  }
+
+  expect_failures = [var.disk_type]
+}
