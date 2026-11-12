@@ -3207,13 +3207,14 @@
   {
     "id": "R12-LEDGER-8139",
     "status": "PARTIAL",
-    "current": "The edge cell reconciles venue drop-copy against its own order/position state, halts on a break, and writes ReconciliationBreak to P1; nothing compares venue/custody truth with qip-ledgerd balances.",
+    "current": "The edge cell reconciles venue drop-copy against its own order/position state and halts on a break. Since 2026-11-12 (ADR 0442) qip-ledgerd's LedgerStore::reconcile_custody compares the simulated venue's CustodyStatement with the cell's booked fills at the statement's chain position, journals and counts each break, and returns a deterministic whole-cell HaltCommand; an acceptance test carries that halt, signed, on the P0 halt topic through the cell's PolicyDownlink and the next pass is halted. No binary produces the statement or calls the comparison yet.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:239 ReconciliationBreak classified P1",
-      "backend/crates/apps/qip-edge-node/src/pass.rs:77 breaks halt the cell",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:212 break written to spool"
+      "backend/crates/libs/qip-contracts/src/ledger/custody.rs compare, halt_for",
+      "backend/crates/apps/qip-ledgerd/src/store.rs LedgerStore::reconcile_custody",
+      "backend/crates/tests/qip-acceptance/tests/custody_reconciliation.rs a_custody_break_halts_the_cell_through_a_signed_p0_halt_and_an_agreeing_statement_does_not",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:77 breaks halt the cell"
     ],
-    "gap": "Ledger-vs-venue/custody comparison feeding the halt.",
+    "gap": "2026-11-12: production wiring. The node does not publish CustodyStatement on P1, qip-ledgerd's consumer does not call reconcile_custody, and no carrier takes a Broken answer to qip-api's halt signer and broadcast_halt. Cash custody is not compared.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3223,10 +3224,10 @@
       "R12-LEDGER-8134"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test telemetry",
+    "verification": "cargo test -p qip-acceptance --test custody_reconciliation (\"ok. 2 passed; 0 failed\")",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Cell-side break now reaches P1; ledger-side reconciliation still absent."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Cell-side break now reaches P1; ledger-side reconciliation still absent. 2026-11-12 lane t50-08 (ADR 0442): comparator, store method and P0 halt path landed and tested; five mutations fired (halt_for None, trading filter removed, simulated refusal removed, Pending check removed, cash filter removed), each restored with cp+cmp. Kept PARTIAL: no producer or caller in a binary."
   },
   {
     "id": "R12-LEDGER-8140",
