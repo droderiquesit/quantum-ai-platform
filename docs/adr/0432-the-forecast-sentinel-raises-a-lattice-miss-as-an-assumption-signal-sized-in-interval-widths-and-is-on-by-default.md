@@ -83,3 +83,28 @@ So the lattice maintained expected future states and was not a sentinel.
   `forecast_misses_refused`.
 - Proven by `qip-deepbrain/tests/forecast_sentinel.rs`, each test
   mutation-verified.
+
+## What it costs
+
+- One more signal source on the sweep's single attention budget. In a
+  regime break every central horizon of every instrument can miss at once —
+  up to four misses per instrument per cycle — and those compete with NOW
+  surprises and limit warnings for the same activations. The router defers
+  or sheds the excess on the record, so the cost is attention, not silence.
+- The miss queue holds at most 256 entries in the kernel; a sweep that falls
+  further behind loses the oldest and reports how many.
+- The severity scale is this ADR's, not the owner's: a different line would
+  change what wakes, and nothing has measured the right one.
+
+## What would make this wrong
+
+- A measured run in which forecast-miss signals dominate the attention
+  budget while the lattice stays calibrated (scorecards inside their
+  objective): then misses of a tenth of a width are noise and the scale, or
+  the materiality line it is read against, should move.
+- A reflex-side forecaster populating the millisecond row: its misses belong
+  to the cell's own loop, and this sentinel should not be stretched to read
+  them through the centre.
+- A consumer of `Pathway::ReflexModelUpdate` that acts on the model: today
+  the activation is advisory and recorded; anything that retrains on it
+  needs its own decision.
