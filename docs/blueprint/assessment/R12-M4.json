@@ -1602,20 +1602,22 @@
   },
   {
     "id": "R12-ASSET-4071",
-    "status": "PARTIAL",
-    "current": "LifeStage implements the nine stages with only legal edges and tests; it has no caller outside its crate. The kernel tracks PositionLifecycle (Opened/Held/Flagged/Unwinding/Closed) instead.",
+    "status": "COMPLETE",
+    "current": "Every desk position walks LifeStage discover to attribute at the kernel's booking seam (position_life.rs: fills open, resize, exit and flip a life through LifeStage::transition; settlement is scheduled from the venue calendar; LEARN settles due exits and attributes only lives at Settle). Since ADR 0424 (2026-11-12) this happens on the default path: the shipped simulated venue fills immediate_fill_fraction (0.6) of an order on submission, and at the start of every ACT stage the kernel works the remainder of each open sale down to the long held (Platform::work_open_sales, OrderManager::work_sales, Broker::work; SimulatedBroker::work fills it in full, draws nothing from the venue's random stream, and honours a limit). A whole sale therefore reaches flat on the next cycle with no borrow reading, the position reaches Exit, settles on the calendar and is attributed by the LEARN after settlement. A purchase's remainder and a sale's short part are never worked; a halted scope, an autonomy level that does not execute, a withdrawn venue and a non-simulated venue work nothing. Worked fills are booked through the one desk booking path (Platform::book_venue_fills, shared with capture_submission).",
     "evidence": [
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs:15-27 LifeStage",
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)",
-      "backend/crates/runtime/qip-kernel/src/position_life.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::book_desk_fill, register_settlement, stage_learn settle_and_attribute)",
-      "backend/crates/runtime/qip-kernel/tests/position_life.rs an_exited_unsettled_position_is_not_attributed",
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs exit_cannot_reach_attribute_without_settling_first"
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs LifeStage, tests (exit_cannot_reach_attribute_without_settling_first)",
+      "backend/crates/runtime/qip-kernel/src/position_life.rs PositionLives::on_fill, schedule_settlement, settle_and_attribute",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_act -> work_open_sales; book_venue_fills (shared by capture_submission)",
+      "backend/crates/services/qip-execution-engine/src/oms.rs OrderManager::work_sales, WorkedOrder",
+      "backend/crates/services/qip-execution-engine/src/broker.rs Broker::work (default: nothing), SimulatedBroker::work, fill_now",
+      "docs/adr/0424-the-simulated-venue-works-the-remainder-of-a-partial-sale-on-the-next-cycle-and-never-the-remainder-of-a-purchase.md",
+      "backend/crates/runtime/qip-kernel/tests/position_life.rs a_whole_sale_on_the_default_venue_reaches_flat_and_is_attributed_after_settling, an_exited_unsettled_position_is_not_attributed",
+      "backend/crates/services/qip-execution-engine/tests/execution.rs an_open_sale_is_worked_down_to_the_long_held_and_an_open_purchase_is_not, a_halted_scope_works_nothing, working_a_remainder_draws_nothing_from_the_venues_random_stream"
     ],
     "gap": "2026-10-25: skeptic REFUTED on part 2: the kernel walks every desk position discover to attribute through LifeStage::transition and attributes only settled lives, but on the default simulated broker no position reaches Exit (immediate_fill_fraction 0.6 never takes a sale to flat, and a flip needs a borrow reading observe_borrow has no production caller for), so Exit/Settle/Attribute run only in a test; remaining step is a default-path way to exit in full (a fill rule that can reach flat or a production borrow source). 2026-11-12 (wave580 fw-i-01, read, nothing built): confirmed in qip-execution-engine broker.rs SimulatedBroker::submit that each submission fills immediate_fill_fraction (0.6) of the remaining quantity in fixed point, and the remainder is recorded (Action::PartiallyFilled) and never worked, so a sale converges geometrically and at the ninth decimal rounds to a zero fill without reaching flat; the docstring's 'the rest is worked' has no implementation. The remaining design choice is how the remainder is worked (a resting remainder that fills on a later pass, or a residue rule) without inventing a fill rate; not reached in this session.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1623,7 +1625,7 @@
     "verification": "cargo test -p qip-kernel --test position_life; cargo test -p qip-portfolio life_stage",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path. 2026-11-12 lane fw-l-01: option (a) by ADR 0424 — the 2026-10-25 refutation (no position reaches Exit on the default simulated broker) is closed on the default path: the new position_life test uses the shipped SimulationSettings, no observe_borrow, and walks open -> partial sale -> next-cycle working to flat -> Exit -> LEARN before settlement (Exit held) -> LEARN after settlement (Attribute). Mutations, each fired and restored byte-for-byte: work_sales returns before working anything (\"the next cycle did not work the sale's remainder to flat\"); work purchases as well (the book holds 2, same assertion; the unit test's \"a purchase's remainder was worked\"); work the whole remainder past the long (\"a worked sale sold past flat\"); drop the kill-switch check (\"a halted scope's sale was worked\"); draw from the venue's rng in SimulatedBroker::work (\"working moved the venue's random stream\"). observe_borrow keeps no production caller: a borrow source is a data source whose licensing posture qip-data-finder must evaluate first, which is not this lane's to admit."
   },
   {
     "id": "R12-ASSET-4072",
