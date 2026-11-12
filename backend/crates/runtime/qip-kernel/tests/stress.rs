@@ -911,6 +911,142 @@ fn a_paper_book_failing_the_contagion_world_withholds_a_reserve_named_for_it() -
     )
 }
 
+/// R12-RISK-4102, the region axis. Mutation: delete the region-contagion
+/// push in `tail.rs`.
+#[test]
+fn a_paper_book_failing_the_region_contagion_world_withholds_a_reserve_named_for_it() -> Result<()>
+{
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(
+        qip_kernel::tail::REGION_CONTAGION,
+    )
+}
+
+/// R12-RISK-4102, the counterparty axis. Mutation: delete the
+/// counterparty-contagion push in `tail.rs`.
+#[test]
+fn a_paper_book_failing_the_counterparty_contagion_world_withholds_a_reserve_named_for_it()
+-> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(
+        qip_kernel::tail::COUNTERPARTY_CONTAGION,
+    )
+}
+
+/// R12-RISK-4102: the region and counterparty a position is shocked with
+/// come from the platform, not the test. AAA listed in the US, BBB and CCC in
+/// the EU: the cycle's region-contagion world names a region and charges no
+/// position as unattributed, and the counterparty world names the desk's
+/// broker. At the platform's own 20% stress tolerance the region world, on
+/// its own, withholds a reserve named for it in the survival kernel DECIDE
+/// sizes through — the deterministic check runs before any order exists.
+///
+/// Mutation: set `region: None` in `Platform::stress_the_book` — fails at
+/// "the platform handed the region world no region"; set `counterparty:
+/// None` — fails at "named no broker".
+#[test]
+fn the_contagion_worlds_read_each_positions_region_and_counterparty_from_the_platform() -> Result<()>
+{
+    use qip_kernel::survival::{LedgerFigures, SurvivalGovernor};
+
+    let mut universe = Universe::new();
+    // CCC has no history: its worst excursion is the unmeasured charge, and
+    // that is what takes the region world past the tolerance — the shock the
+    // platform has least evidence about is the one it must not call small.
+    for (symbol, region) in [("AAA", "US"), ("BBB", "EU"), ("CCC", "EU")] {
+        universe.insert(
+            FinancialObject::builder(
+                object(symbol),
+                symbol,
+                InstrumentType::CommonStock,
+                fixture_liquidity(),
+            )
+            .venue("XNYS")
+            .geography(region)
+            .sector(Sector::InformationTechnology)
+            .price(dec!("100"))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())?,
+        )?;
+    }
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe, limits())?;
+    platform.observe(observations("AAA", 120, 0.0));
+    platform.observe(observations("BBB", 120, 0.31));
+    buy(&mut platform, "AAA", dec!("30000"), start())?;
+    buy(&mut platform, "BBB", dec!("30000"), start())?;
+    buy(&mut platform, "CCC", dec!("30000"), start())?;
+    let at = start().saturating_add(Duration::from_days(1));
+    platform.run_cycle(at);
+    let stress = platform
+        .stress_report()
+        .expect("premise: an open book with history is stressed")
+        .clone();
+    let named = |name: &str| {
+        stress
+            .tail_worlds
+            .iter()
+            .find(|world| world.scenario == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("the {name} world was not applied"))
+    };
+    let region = named(qip_kernel::tail::REGION_CONTAGION);
+    assert!(
+        region.detail.contains("0 position(s) naming no region")
+            && (region.detail.contains("in US ") || region.detail.contains("in EU ")),
+        "the platform handed the region world no region: {}",
+        region.detail
+    );
+    let counterparty = named(qip_kernel::tail::COUNTERPARTY_CONTAGION);
+    let desk = platform.desk_venue().to_string();
+    assert!(
+        counterparty.detail.starts_with(&format!("{desk} fails"))
+            && counterparty
+                .detail
+                .contains("0 position(s) naming no counterparty"),
+        "the counterparty world named no broker: {}",
+        counterparty.detail
+    );
+
+    // The platform's tolerance, and the region world alone against it.
+    let tolerance = 0.20;
+    assert!(
+        region.loss_fraction > tolerance,
+        "premise: the book fails the region world at {tolerance}; it lost {}",
+        region.loss_fraction
+    );
+    let mut alone = stress.clone();
+    alone.scenarios.clear();
+    alone.adversarial = None;
+    alone.causal.clear();
+    alone
+        .tail_worlds
+        .retain(|world| world.scenario == qip_kernel::tail::REGION_CONTAGION);
+    let figures = LedgerFigures {
+        equity: dec!("10000000"),
+        held: Decimal::ZERO,
+        obligations: Decimal::ZERO,
+        deployable: dec!("10000000"),
+        gross: dec!("8000000"),
+        ..LedgerFigures::default()
+    };
+    let mut governor = SurvivalGovernor::default();
+    let unstressed = governor.size(figures, None, tolerance, &[], at)?;
+    let stressed = governor.size(figures, Some(&alone), tolerance, &[], at)?;
+    let tail = stressed
+        .tail
+        .as_ref()
+        .expect("the region world produced no tail response");
+    assert_eq!(tail.scenario, qip_kernel::tail::REGION_CONTAGION);
+    assert!(!tail.survives(), "the region world withheld nothing");
+    assert!(
+        stressed.released < unstressed.released,
+        "failing the region world released as much capital: {} against {}",
+        stressed.released,
+        unstressed.released
+    );
+    Ok(())
+}
+
 // --- a distribution shift the cycle measured narrows the sizing budget -----
 
 /// A platform that has run one cycle over 300 daily returns each: AAA calm

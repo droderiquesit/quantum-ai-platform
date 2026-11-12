@@ -2376,13 +2376,24 @@
   },
   {
     "id": "R12-RISK-4102",
-    "status": "PARTIAL",
-    "current": "shared_cause aggregates exposure by causal driver; causal stress in SIMULATE. No cross-region contagion model.",
+    "status": "COMPLETE",
+    "current": "Four named exposures, each measured in SIMULATE and read by DECIDE's survival kernel (survival::worst_world over the whole StressReport, sized at STRESS_LOSS_TOLERANCE before any order exists, withholding a stressed-liquidity reserve named for the failing world). Cross-asset contagion: tail::contagion_cascade carries one position's worst retained excursion two hops along absolute return correlation. Region contagion (2026-11-12): tail::region_contagion shocks every position whose country axis names a region at its own worst excursion at once and carries it along correlation into other regions; a position naming no region is charged in every region's shock. Counterparty contagion (2026-11-12): tail::counterparty_contagion fails each counterparty in turn, charging what it held COUNTERPARTY_LOSS_GIVEN_DEFAULT and carrying those instruments' worst excursions along correlation to positions held elsewhere; Platform::stress_the_book hands each TailPosition its country axis and the broker (the COUNTERPARTY_AXIS bucket its fills are charged to). Correlated causal mechanisms: shared_cause aggregates exposure by causal driver under the shipped causal-driver cap, and causal stress through the graph feeds the same worst_world. Every threshold is a figure already in the tree: STRESS_LOSS_TOLERANCE, COUNTERPARTY_LOSS_GIVEN_DEFAULT, UNMEASURED_EXCURSION.",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/tail.rs:894 contagion_cascade",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1045 region_contagion",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1087 counterparty_contagion",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:608 survival_worlds pushes both",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:21063 region and counterparty handed to TailPosition",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:518 worst_world",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:946 the_contagion_worlds_read_each_positions_region_and_counterparty_from_the_platform",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:917 a_paper_book_failing_the_region_contagion_world_withholds_a_reserve_named_for_it",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:927 a_paper_book_failing_the_counterparty_contagion_world_withholds_a_reserve_named_for_it",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1488 a_regional_shock_hits_every_name_in_the_region_and_crosses_regions_only_along_correlation",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1581 a_counterparty_failure_spreads_to_correlated_positions_held_elsewhere",
       "backend/crates/libs/qip-risk/src/shared_cause.rs:1-15",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:1396-1440 StressReport.causal"
+      "backend/crates/libs/qip-risk/src/limits.rs:2102 causal-driver cap"
     ],
-    "gap": "Contagion model across regions/counterparties.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2390,10 +2401,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --lib tail; cargo test -p qip-kernel --test stress contagion; cargo test -p qip-risk --test shared_cause; cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-acceptance --test compliance_proof --test security",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-11-12: the desk book is held at one counterparty (the broker), so in the configured process counterparty-contagion reads exactly as counterparty-failure — the cascade spreads only once positions are held at more than one counterparty, which the unit test drives. The worlds are statistics (f64), as every tail world is; deployable stays false with the rest of the platform."
   },
   {
     "id": "R12-RISK-4103",
