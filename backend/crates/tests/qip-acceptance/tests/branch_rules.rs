@@ -266,3 +266,30 @@ fn the_checker_passes_applied_rulesets_and_fails_each_missing_rule() {
         "main requiring one check fewer than the committed ruleset passed the checker"
     );
 }
+
+#[test]
+fn the_gate_checks_stay_required_on_main_when_the_committed_ruleset_is_edited() {
+    // The checker compares the rules GitHub applies against the committed
+    // ruleset, so it cannot notice the committed ruleset itself losing a
+    // check: drop `agent boundary` from main-integrity.json and the live
+    // rules, once reapplied, agree with it again. Mutation-tested on
+    // 2026-11-12: popping the last required context from the committed file
+    // passed every other test in this suite. These are the gates
+    // `.claude/rules/02-change-management.md` names plus the agent boundary;
+    // a ruleset may require more, never fewer.
+    let required = required_contexts();
+    for gate in [
+        "format",
+        "clippy",
+        "test (acceptance, -p qip-acceptance)",
+        "dependency policy",
+        "secret scan",
+        "infrastructure",
+        "agent boundary",
+    ] {
+        assert!(
+            required.iter().any(|context| context == gate),
+            "{INTEGRITY} no longer requires `{gate}`, so main can be merged without it"
+        );
+    }
+}

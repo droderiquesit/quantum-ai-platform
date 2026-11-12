@@ -2584,16 +2584,17 @@
   },
   {
     "id": "R12-RISK-4111",
-    "status": "PARTIAL",
-    "current": "LEARN feeds the Brier score to the governor (backend/crates/runtime/qip-kernel/src/platform.rs:9183-9187); SurvivalGovernor::size multiplies the opportunity release by ConfidenceSignals::decide (survival.rs:769-776), contraction-only (confidence.rs:124, schedule floor). Platform::issue_capital narrows the grant through governor.grant_decision -> CentralPlane::issue_narrowed, refusing a factor outside (0,1] (platform.rs:7835-7846; central/plane.rs:1955-1975). Kernel tests drive both halves. The grant half never executes in a shipped binary: Platform::issue_capital is reached only from qip-api's capital-grant route, which first calls Principal::authentication_instant, and Principal::presence always returns Unattested (backend/crates/apps/qip-api/src/auth.rs:169-217; routes.rs:1902-1912), so every grant is refused before CentralPlane::issue_narrowed (platform.rs:7835-7846) is asked; no cell ever holds a narrowed grant until ADR 0065/0076's per-person credential exists.",
+    "status": "COMPLETE",
+    "current": "SurvivalGovernor::size releases opportunity capital times ConfidenceSignals::decide's multiplier (backend/crates/runtime/qip-kernel/src/survival.rs:923-926), contraction only; Platform::issue_capital passes the governor's grant narrowing to CentralPlane::issue_narrowed (backend/crates/runtime/qip-kernel/src/platform.rs:10263-10270). Kernel tests drive a decayed calibration through both and see the sizing release and the next grant fall by CALIBRATION_FLOOR. In a shipped binary the grant half is reached only from qip-api's capital-grant route, which refuses every request before it until attested operator presence (ADR 0120) exists.",
     "evidence": [
-      "runtime/qip-kernel/tests/stress.rs (decayed calibration narrows the release by CALIBRATION_FLOOR; multiplier <= 1)",
-      "runtime/qip-kernel/tests/central.rs::decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:7835-7846",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1955-1975",
-      "backend/crates/apps/qip-api/src/auth.rs:169-217"
+      "backend/crates/runtime/qip-kernel/src/survival.rs:923-926 released = opportunity_capital * confidence.multiplier",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10263-10270 issue_capital -> central.issue_narrowed(.., narrowing.multiplier, ..)",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:485 decayed_calibration_shrinks_allocation_through_the_gate (no trigger releases the whole deployable; decayed calibration releases stressed * CALIBRATION_FLOOR; every multiplier <= 1)",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:8066 decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant (grant = full * CALIBRATION_FLOOR, and full * OOD_FLOOR on a shift)",
+      "2026-11-12 lane fw-h-01: both tests ran, 1 passed each. Mutation `.checked_mul(confidence.multiplier)` -> `.checked_mul(Decimal::ONE)` in survival.rs fails the stress test (panicked at stress.rs:573); mutation `narrowing.multiplier` -> `Decimal::ONE` in the issue_narrowed call fails the central test (panicked at central.rs:8092); each restored byte for byte, both pass.",
+      "backend/crates/apps/qip-api/src/auth.rs Principal::presence (Unattested only): the deployed grant route stays unreachable, which is deployable false, not the kernel-test bar"
     ],
-    "gap": "Already decided by ADR 0120: Attested operator presence is decided (ADR 0120, per-person WebAuthn keys); the row's 'write ADR 0121' is stale and the code slice is left.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,

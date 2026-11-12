@@ -14,7 +14,8 @@
 mod common;
 
 use common::{
-    DIGEST_A, DIGEST_B, each_refused, refuses_missing_unknown_and_foreign_version, round_trips,
+    DIGEST_A, DIGEST_B, each_refused, refuses_missing_and_unknown_nested,
+    refuses_missing_unknown_and_foreign_version, round_trips,
 };
 use qip_contracts::action_intent::{
     ActingIdentity, ActionIntent, ActionIntentFields, Disclosure, PolicyDecision, Verdict,
@@ -767,6 +768,7 @@ fn a_symbolic_derivation_round_trips_and_refuses_a_missing_unknown_or_foreign_fi
 {
     round_trips(derivation())?;
     refuses_missing_unknown_and_foreign_version(derivation());
+    refuses_missing_and_unknown_nested(derivation(), "/trace/0");
     let d: SymbolicDerivation = SymbolicDerivation::new(derivation())?;
     assert_eq!(d.trace.len(), 2);
     Ok(())

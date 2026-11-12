@@ -4337,14 +4337,20 @@
   },
   {
     "id": "R12-SEC-10183",
-    "status": "PARTIAL",
-    "current": "AutonomyController::request_change requires an operator identity; no long-lived keys (org policy + tests); prod refused by workflows. Merge protection (branch rules) is not in code.",
+    "status": "COMPLETE",
+    "current": "Autonomy changes take an OperatorIdentity that is fresh (AutonomyController::request_change), minted outside tests only in qip-api's routes from the session; Terraform holds no service-account or HMAC key and the org policy disables key creation; deploy.yml and infra.yml refuse prod on every trigger; main's rulesets are committed (.github/rulesets/main-integrity.json, no bypass actor; main-review.json, code-owner review, admin bypass only through a pull request) and rules.yml fails when the rules GitHub applies drift from them.",
     "evidence": [
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:579 request_change",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2137",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5073"
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:579 request_change; :593 operator.is_fresh refusal",
+      "backend/crates/services/qip-risk-engine/tests/risk_engine.rs:133 a_stale_credential_cannot_authorise_a_change; :84 one_operator_cannot_enable_live_trading_alone",
+      "backend/crates/tests/qip-acceptance/tests/security.rs:1803 every_operator_identity_the_api_builds_names_the_session_and_never_the_request_body",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2161 no_service_account_key_exists_anywhere_in_the_terraform; organization_policy_disables_service_account_key_creation",
+      "backend/crates/tests/qip-acceptance/tests/prod_guard.rs:253 prod_is_refused_on_every_trigger_by_deploy_and_infra",
+      "backend/crates/tests/qip-acceptance/tests/branch_rules.rs:61 main_cannot_be_deleted_force_pushed_or_merged_red_and_nobody_bypasses_that; :121 a_code_owner_reviews_every_change_and_only_an_admin_bypasses_it_and_only_through_a_pr; :211 the_checker_passes_applied_rulesets_and_fails_each_missing_rule; the_gate_checks_stay_required_on_main_when_the_committed_ruleset_is_edited (added 2026-11-12)",
+      "2026-11-12 lane fw-h-01 ran: cargo test -p qip-risk-engine --no-fail-fast (4 binaries ok); qip-acceptance --test security (29 passed), branch_rules (5 passed), prod_guard (3 passed), infrastructure (165 passed), admin_surfaces (6 passed).",
+      "2026-11-12 lane fw-h-01 mutations, each restored byte for byte and nothing under .github committed: a bypass actor in main-integrity.json fails branch_rules.rs:61 (panicked at :69); popping a required context from main-integrity.json failed nothing until the new pinning test, which then fails naming `agent boundary`; `if false &&` before the is_fresh check fails a_stale_credential_cannot_authorise_a_change (panicked at risk_engine.rs:147); a google_service_account_key resource appended to infrastructure/terraform/main.tf fails no_service_account_key_exists_anywhere_in_the_terraform (panicked at :2169); deploy.yml's prod refusal `exit 1` -> `exit 0` fails prod_is_refused_on_every_trigger_by_deploy_and_infra (panicked at prod_guard.rs:332).",
+      "2026-11-12 lane fw-h-01: whether GitHub applies the committed rulesets is what rules.yml checks on GitHub; no run of it was read here"
     ],
-    "gap": "Codified branch protection / merge policy.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
