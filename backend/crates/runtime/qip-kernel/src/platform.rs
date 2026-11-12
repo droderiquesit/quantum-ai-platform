@@ -1004,6 +1004,17 @@ pub struct Platform {
     /// `None` refuses every derivative, because a grant with nobody to read
     /// it against must not admit anything.
     derivative_desk: Option<(String, Jurisdiction)>,
+    /// Every repo in the universe with its own terms, taken at assembly like
+    /// `derivative_types` (ADR 0398). What the financing gate reads an order
+    /// against and what a maturity is settled from.
+    repo_terms: BTreeMap<String, qip_financial::extensions::RepoDetails>,
+    /// The instant of the latest buy fill in each repo the book holds, from
+    /// the same fills the book is the fold of. Interest runs from it: a day
+    /// before the latest purchase is a day part of the cash was not lent.
+    repo_opened: BTreeMap<String, Timestamp>,
+    /// The sequence of the last repo-maturity operation journalled, resumed
+    /// from the log by [`Self::resume_book`].
+    repo_maturity_operations: u64,
     /// The jurisdictions this platform is licensed to execute in, read by
     /// [`Platform::executable_scope`]. `None` applies no licence gate: the
     /// determination is compliance's and a composition root states it through
@@ -5320,6 +5331,33 @@ impl EventBody for CorporateActionBooked {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// A repo the desk lent under, repaid at its maturity (ADR 0398,
+/// R12-COVERAGE-5100): the whole
+/// [`qip_contracts::ledger_operation::LedgerOperation`] the ledger books,
+/// journalled before the book moves and before it is queued. The book is the
+/// fold of this record as it is of [`FillBooked`]: [`Platform::resume_book`]
+/// retires the units at `repurchase_price` and re-queues the operation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RepoMatured {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+    /// Cash repaid per unit, principal and interest together. The book
+    /// retires the units at exactly this, so `units * repurchase_price` is
+    /// the operation's principal plus its interest and a resume that divided
+    /// the totals back could not drift from the ledger by a rounding.
+    pub repurchase_price: Decimal,
+    /// The instant the book is repaid at.
+    pub at: Timestamp,
+}
+
+impl EventBody for RepoMatured {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer of [`RepoMatured`], its own origin so a reader of the other
+/// `LedgerOperationRecorded` producers never meets this body.
+const REPO_MATURITY_ORIGIN: &str = "kernel/repo-maturity";
+
 /// The producer of [`CorporateActionBooked`], its own origin so a reader of
 /// the shared topic never meets this body under another producer's name.
 const CORPORATE_ACTION_LEDGER_ORIGIN: &str = "kernel/corporate-action-ledger";
@@ -5974,6 +6012,17 @@ impl Platform {
                 )
             })
             .collect();
+        let repo_terms: BTreeMap<String, qip_financial::extensions::RepoDetails> = universe
+            .iter()
+            .filter_map(|object| match &object.extension {
+                qip_financial::extensions::Extension::Repo(repo)
+                    if object.instrument_type == InstrumentType::Repo =>
+                {
+                    Some((object.object_id.as_str().to_string(), repo.clone()))
+                }
+                _ => None,
+            })
+            .collect();
         // §17.7's gate between architecturally reachable and actually
         // supported, asked here — before the universe moves into the desk
         // and before a cycle can run — because an instrument in a class this
@@ -6612,6 +6661,9 @@ impl Platform {
             contract_expiries,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
+            repo_terms,
+            repo_opened: BTreeMap::new(),
+            repo_maturity_operations: 0,
             licensed_jurisdictions: None,
             asset_class_registry,
             breadth: crate::breadth::BreadthPlane::default(),
@@ -9532,6 +9584,7 @@ impl Platform {
         enum Entry {
             Fill(FillBooked),
             Adjustment(LotAdjusted),
+            Maturity(Box<RepoMatured>),
         }
         // Collected before anything is applied: the log is read while the
         // book and the aggregate are written, and the aggregate is reached
@@ -9549,6 +9602,17 @@ impl Platform {
                     .body
                     .through_sequence;
                 watermark = Some(watermark.map_or(through, |held| held.max(through)));
+                continue;
+            }
+            if record.event.lineage.producer == REPO_MATURITY_ORIGIN
+                && record.event.topic == RepoMatured::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                entries.push((
+                    record.sequence,
+                    Entry::Maturity(Box::new(frame.decode::<RepoMatured>()?.body)),
+                    record.event.lineage.correlation_id.clone(),
+                ));
                 continue;
             }
             if record.event.lineage.producer != BOOK_ORIGIN {
@@ -9570,7 +9634,7 @@ impl Platform {
         }
         let first_fill = entries.iter().find_map(|(_, entry, _)| match entry {
             Entry::Fill(fill) => Some(fill.at),
-            Entry::Adjustment(_) => None,
+            Entry::Adjustment(_) | Entry::Maturity(_) => None,
         });
         if let Some(opened_at) = first_fill {
             self.capital = TrackedCapital::new(self.config.initial_equity, opened_at);
@@ -9648,6 +9712,20 @@ impl Platform {
                         fill.costs,
                         fill.at,
                     );
+                }
+                Entry::Maturity(matured) => {
+                    self.fold_repo_maturity(&matured).map_err(|why| {
+                        Error::invalid(format!(
+                            "the event log's record {sequence} repays a repo and the book the \
+                             log rebuilt refuses it ({}); the book cannot be resumed from this \
+                             log — archive the log and start a new one",
+                            why.message()
+                        ))
+                    })?;
+                    self.repo_maturity_operations = self
+                        .repo_maturity_operations
+                        .max(matured.operation.sequence);
+                    self.desk_operations.push(matured.operation);
                 }
                 Entry::Adjustment(adjusted) => self
                     .adjust_desk_lot(
@@ -14914,6 +14992,7 @@ impl Platform {
         // because a batch may carry the action and the bar that makes it due in
         // any order, and an adjustment applied mid-batch would see half a tape.
         let adjusted = self.apply_due_corporate_actions(now);
+        self.settle_matured_repos(now);
         let pending_actions = self.corporate_actions_pending.len();
         let instruments = self.price_history.len();
         let prices: usize = self.price_history.values().map(Vec::len).sum();
@@ -24155,6 +24234,10 @@ impl Platform {
     /// refusals, so an order those controls stop before it exists leaves the
     /// position where it was.
     fn submit_released(&mut self, order: Order, to_flat: bool, now: Timestamp) -> Result<()> {
+        // ADR 0398: the one point every submission passes, so a repo order
+        // built through `order_from` meets the same refusal `order_for` gives
+        // before an order exists.
+        self.financing_gate(order.object_id.as_str(), order.side, order.quantity, now)?;
         // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
         // not traded into. Before the pre-trade routing on purpose: the
         // desk's own books disagree with the custodian's about this asset,
@@ -25064,6 +25147,17 @@ impl Platform {
             .apply_fill(object_id, side, price, quantity, costs, at);
         self.aggregate_fill(object_id, moved);
         let after = held(&self.capital);
+        // ADR 0398: a repo's interest runs from the latest purchase of it,
+        // and the purchase is this fill, live and on a resume alike.
+        if self.repo_terms.contains_key(object_id) {
+            if after.is_positive() {
+                if side == Side::Buy {
+                    self.repo_opened.insert(object_id.to_string(), at);
+                }
+            } else {
+                self.repo_opened.remove(object_id);
+            }
+        }
         // The lifecycle register takes the same fill (R12-ASSET-4066), so it
         // cannot miss one the book took. Its refusal (an instrument outside
         // the universe, or priced in a unit other than the book's) does not
@@ -25247,6 +25341,253 @@ impl Platform {
         self.derivative_permissions = permissions;
     }
 
+    /// Replace the treasury's declaration whole (ADR 0388, ADR 0398): the
+    /// reserve floor, the leverage ceilings and the financing permissions a
+    /// person has given, read under the central treasury's own entity and
+    /// jurisdiction as the assembled treasury is.
+    ///
+    /// The one permission registry the platform holds lives in this
+    /// treasury: DECIDE's funding asks it and so does every repo order, so
+    /// there is no second registry for the two to disagree with. Nothing in
+    /// the tree declares one, so a composition root that calls nothing keeps
+    /// the undeclared treasury and every repo order is refused. A
+    /// declaration [`crate::treasury::Treasury::declared`] refuses leaves the
+    /// treasury as it was.
+    pub fn declare_treasury(
+        &mut self,
+        declaration: crate::treasury::TreasuryDeclaration,
+    ) -> Result<()> {
+        self.treasury =
+            crate::treasury::Treasury::declared(CENTRAL_TREASURY, HOME_REGION, declaration)?;
+        Ok(())
+    }
+
+    /// Refuse a repo order this desk may not place (ADR 0398). Not a repo:
+    /// no claim.
+    ///
+    /// In order: no repo permission for the repo's own counterparty in the
+    /// treasury's one registry ([`crate::treasury::Treasury::require_repo`]); a repo whose record says the desk borrows, because the
+    /// simulated venue sells only the lender's claim and a borrowing would
+    /// pledge collateral no venue stated (ADR 0153 decision 3); a rate that
+    /// is not a number or is negative, which the far leg cannot repay; a
+    /// repo already at or past its maturity; and a sale of more units than
+    /// the book holds, which is a borrowing by another name.
+    fn financing_gate(
+        &self,
+        object_id: &str,
+        side: Side,
+        quantity: Decimal,
+        now: Timestamp,
+    ) -> qip_core::error::Result<()> {
+        let Some(repo) = self.repo_terms.get(object_id) else {
+            return Ok(());
+        };
+        self.treasury
+            .require_repo(&repo.counterparty)
+            .map_err(|why| {
+                Error::denied(format!(
+                    "{object_id} is a repo with {}: {} It remains available to research and \
+                     valuation",
+                    repo.counterparty,
+                    why.message()
+                ))
+            })?;
+        if !repo.is_reverse {
+            return Err(Error::denied(format!(
+                "{object_id}'s record says the desk borrows cash against {} (is_reverse is \
+                 false); the simulated venue sells only the lender's claim, and a borrowing \
+                 would pledge collateral no venue has stated (ADR 0153 decision 3, ADR 0398). \
+                 Trade the reverse repo, or value this one in research",
+                repo.collateral_object
+            )));
+        }
+        if !(repo.repo_rate.is_finite() && repo.repo_rate >= 0.0) {
+            return Err(Error::invalid(format!(
+                "{object_id} states a repo rate of {}; the far leg repays principal and \
+                 interest of zero or more, so correct the record before lending under it",
+                repo.repo_rate
+            )));
+        }
+        if now >= repo.maturity {
+            return Err(Error::invalid(format!(
+                "{object_id} matured at {}; a matured repo is repaid, not traded",
+                repo.maturity.to_rfc3339()
+            )));
+        }
+        let held = self
+            .capital
+            .positions
+            .get(object_id)
+            .map_or(Decimal::ZERO, |lot| lot.quantity);
+        if side == Side::Sell && quantity > held {
+            return Err(Error::denied(format!(
+                "selling {quantity} of {object_id} with {held} held would leave the desk short \
+                 the lender's claim, which is borrowing under the repo; sell at most what is \
+                 held"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Repay every repo the book holds whose maturity `now` has reached
+    /// (ADR 0398): the far leg. The near leg is the fill that bought the
+    /// units, so nothing here restates what was lent — the principal is the
+    /// book's own cost of the units it still holds.
+    ///
+    /// A repo that cannot be repaid (its interest does not compute, the
+    /// contract refuses the operation, the log refuses the record) is left
+    /// held and said on the cycle, every cycle, until it can: a matured
+    /// claim silently dropped is cash nobody is owed any more.
+    fn settle_matured_repos(&mut self, now: Timestamp) {
+        let due: Vec<String> = self
+            .repo_terms
+            .iter()
+            .filter(|(id, repo)| {
+                now >= repo.maturity
+                    && self
+                        .capital
+                        .positions
+                        .get(id.as_str())
+                        .is_some_and(|lot| lot.quantity.is_positive())
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for object_id in due {
+            if let Err(error) = self.settle_matured_repo(&object_id, now) {
+                self.capture_problems.push(format!(
+                    "repo {object_id} has matured and was not repaid; the book still holds it \
+                     and the ledger has no far leg: {}",
+                    error.message()
+                ));
+            }
+        }
+    }
+
+    fn settle_matured_repo(&mut self, object_id: &str, now: Timestamp) -> Result<()> {
+        use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind};
+        let (Some(repo), Some(lot)) = (
+            self.repo_terms.get(object_id),
+            self.capital.positions.get(object_id),
+        ) else {
+            return Ok(());
+        };
+        let units = lot.quantity;
+        // Lent from the latest purchase. A book with no purchase on record
+        // (it cannot hold units without one) earns nothing rather than a
+        // term nobody observed.
+        let opened = self
+            .repo_opened
+            .get(object_id)
+            .copied()
+            .unwrap_or(repo.maturity);
+        let interest_per_unit = crate::financing::repo_interest(
+            lot.average_price,
+            repo.repo_rate,
+            opened,
+            repo.maturity,
+        )?;
+        let overflow = || Error::numeric("the repo's repayment overflowed");
+        let repurchase_price = lot
+            .average_price
+            .checked_add(interest_per_unit)
+            .ok_or_else(overflow)?;
+        let principal = units.checked_mul(lot.average_price).ok_or_else(overflow)?;
+        // The interest is what is left of the repayment after the principal,
+        // so the two postings sum to exactly what the book receives.
+        let interest = units
+            .checked_mul(repurchase_price)
+            .and_then(|total| total.checked_sub(principal))
+            .ok_or_else(overflow)?;
+        let chain = self.desk_ledger.chain().to_string();
+        let sequence = self.repo_maturity_operations + 1;
+        let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:repo-maturity:{object_id}"),
+            origin: chain.clone(),
+            sequence,
+            recorded_at: now,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::RepoMaturity {
+                book: Book {
+                    cell: chain,
+                    strategy: DESK_STRATEGY.to_string(),
+                },
+                venue: self.broker.name().to_string(),
+                counterparty: repo.counterparty.clone(),
+                repo: object_id.to_string(),
+                units,
+                cash_unit: crate::desk_ledger::DESK_QUOTE_UNIT.to_string(),
+                principal,
+                interest,
+            },
+        })?;
+        let matured = RepoMatured {
+            operation: operation.clone(),
+            repurchase_price,
+            at: now,
+        };
+        // Journalled first: the book is the fold of the log, and a repayment
+        // the log does not hold is one a restart would take back.
+        self.journal_record(matured.clone(), REPO_MATURITY_ORIGIN, now)?;
+        self.fold_repo_maturity(&matured)?;
+        self.repo_maturity_operations = sequence;
+        self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Move the book for one [`RepoMatured`], live and on a resume alike:
+    /// the units leave at the repurchase price through the path a fill
+    /// takes, so cash, realised P&L, the risk aggregate and the lifecycle
+    /// register all see the same repayment.
+    ///
+    /// Refused when the record's price does not reproduce the operation's
+    /// principal and interest, or when the book does not hold the units:
+    /// either is a log this book is not the fold of.
+    fn fold_repo_maturity(&mut self, matured: &RepoMatured) -> Result<()> {
+        let qip_contracts::ledger_operation::OperationKind::RepoMaturity {
+            venue,
+            repo,
+            units,
+            principal,
+            interest,
+            ..
+        } = &matured.operation.kind
+        else {
+            return Err(Error::invalid(
+                "a repo-maturity record carries an operation of another kind",
+            ));
+        };
+        let repaid = principal.checked_add(*interest);
+        if units.checked_mul(matured.repurchase_price) != repaid || repaid.is_none() {
+            return Err(Error::invalid(format!(
+                "repo {repo} is recorded repaid at {} per unit for {units} units, which is not \
+                 its principal {principal} plus its interest {interest}",
+                matured.repurchase_price
+            )));
+        }
+        let held = self
+            .capital
+            .positions
+            .get(repo.as_str())
+            .map_or(Decimal::ZERO, |lot| lot.quantity);
+        if held != *units {
+            return Err(Error::invalid(format!(
+                "repo {repo} is recorded repaid for {units} units and the book holds {held}"
+            )));
+        }
+        let (repo, venue) = (repo.clone(), venue.clone());
+        self.book_desk_fill(
+            &repo,
+            &venue,
+            Side::Sell,
+            matured.repurchase_price,
+            *units,
+            Decimal::ZERO,
+            matured.at,
+        );
+        Ok(())
+    }
+
     /// Refuse, before an order object exists, a derivative this desk holds no
     /// permission for. Not a derivative, or not in the universe: no claim.
     fn derivative_gate(&self, object_id: &str) -> qip_core::error::Result<()> {
@@ -25278,6 +25619,7 @@ impl Platform {
         now: Timestamp,
     ) -> qip_core::error::Result<Order> {
         self.derivative_gate(object_id.as_str())?;
+        self.financing_gate(object_id.as_str(), side, quantity, now)?;
         Ok(self.order_from(
             object_id,
             side,

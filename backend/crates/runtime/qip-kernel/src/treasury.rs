@@ -175,6 +175,19 @@ impl Treasury {
         reasons
     }
 
+    /// Refuse an order in a repo with `counterparty` unless this treasury's
+    /// one permission registry holds the repo permission for it, under the
+    /// treasury's own entity and jurisdiction (ADR 0398).
+    ///
+    /// The registry is the one [`Self::fund`] hands the planner, so a repo
+    /// order and a financed placement can never read two different answers
+    /// to who the platform may finance with. Undeclared, it refuses every
+    /// counterparty.
+    pub fn require_repo(&self, counterparty: &str) -> Result<()> {
+        self.permissions
+            .require_repo(&self.entity, counterparty, &self.jurisdiction)
+    }
+
     /// Name the source of every requirement, or refuse it whole.
     ///
     /// Three refusals beyond the planner's own, each applied to a whole
