@@ -414,6 +414,7 @@ fn every_asset_class_can_be_represented() {
                 base_currency: Currency::EUR,
                 quote_currency: Currency::USD,
                 settlement_date: None,
+                near_settlement_date: None,
                 forward_points: 0.0,
                 rate_differential: -0.012,
             }),

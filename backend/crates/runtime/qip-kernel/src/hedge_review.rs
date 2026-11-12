@@ -440,13 +440,24 @@ fn exposures_of(state: &RiskState, universe: &Universe) -> Result<HedgeExposures
 ///
 /// An empty answer is returned as empty; saying *why* no policy applies is
 /// the caller's, which knows whether any policy was declared at all.
+///
+/// A covering policy counts as a hedge only where `held` says its hedge
+/// instrument is actually held (2026-11-12). Until then a policy that merely
+/// *covered* the position was reported as the position's hedge, so a book
+/// whose hedge leg was never bought read as hedged — a declaration standing
+/// in for a holding. A covering policy whose instrument is not held is
+/// returned in [`HedgeRelations::unheld`] instead, so the caller can say
+/// which declared hedge is missing. The arm where this position *is* the
+/// hedge needs no check: the caller asks only about held positions.
 pub fn policies_relating_to(
     declarations: &[HedgePolicyDeclaration],
     instrument: &str,
     universe: &Universe,
-) -> Result<Vec<String>> {
+    held: impl Fn(&ObjectId) -> bool,
+) -> Result<HedgeRelations> {
     let record = universe.get(&ObjectId::from_string(instrument));
     let mut related = Vec::new();
+    let mut unheld = Vec::new();
     for policy in declarations {
         if policy.instrument.as_str() == instrument {
             related.push(format!(
@@ -483,16 +494,35 @@ pub fn policies_relating_to(
             }
         };
         if covers {
-            related.push(format!(
+            let described = format!(
                 "{} (hedged with {} on {} {})",
                 policy.name,
                 policy.instrument.as_str(),
                 policy.axis.as_str(),
                 policy.bucket
-            ));
+            );
+            if held(&policy.instrument) {
+                related.push(described);
+            } else {
+                unheld.push(described);
+            }
         }
     }
-    Ok(related)
+    Ok(HedgeRelations {
+        held: related,
+        unheld,
+    })
+}
+
+/// What [`policies_relating_to`] found for one held position: the policies
+/// whose hedge is actually in the book, and those declared over the position
+/// whose hedge instrument is not held.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HedgeRelations {
+    /// Each in words; the position is hedged by, or is the hedge for, it.
+    pub held: Vec<String>,
+    /// Covering policies whose hedge instrument the book does not hold.
+    pub unheld: Vec<String>,
 }
 
 /// The hedge survey, as the log carries it.

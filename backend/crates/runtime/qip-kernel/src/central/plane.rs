@@ -1322,6 +1322,109 @@ impl CentralPlane {
         self.advisory_positions.get(cell)
     }
 
+    /// The signed hedge narrowings of `plan` for `cells` (ADR 0407).
+    ///
+    /// Reads each cell's stated book where it agrees with the settled book,
+    /// and the venues its live envelopes grant; derives the targets by
+    /// [`super::hedge_narrowing::derive`]; and signs each narrowing with the
+    /// envelope issuer, because a cell verifies one under its `envelope`
+    /// key. A cell the centre has no stated book from is not narrowed: the
+    /// centre does not know what it holds.
+    pub fn hedge_narrowings<'a>(
+        &self,
+        plan: &qip_contracts::HedgePlan,
+        planned_at: Timestamp,
+        cells: impl IntoIterator<Item = &'a str>,
+        now: Timestamp,
+    ) -> super::hedge_narrowing::HedgeDistribution {
+        let mut holdings = BTreeMap::new();
+        for cell in cells {
+            let Some(book) = self.advisory_positions.get(cell) else {
+                continue;
+            };
+            // A sum that does not fit is a position nobody can state, so the
+            // instrument is held as disputed rather than read at a clamped
+            // figure: `None` marks it.
+            let add = |sum: Option<Decimal>, quantity: Decimal| {
+                sum.and_then(|sum| sum.checked_add(quantity))
+            };
+            let mut settled: BTreeMap<&str, Option<Decimal>> = BTreeMap::new();
+            for ((owner, _, instrument), lot) in &self.books {
+                if owner == cell {
+                    let entry = settled
+                        .entry(instrument.as_str())
+                        .or_insert(Some(Decimal::ZERO));
+                    *entry = add(*entry, lot.quantity);
+                }
+            }
+            let mut stated: BTreeMap<(String, String), Option<Decimal>> = BTreeMap::new();
+            let mut stated_by_instrument: BTreeMap<&str, Option<Decimal>> = BTreeMap::new();
+            for position in &book.positions {
+                let key = (
+                    position.venue.as_str().to_string(),
+                    position.object_id.as_str().to_string(),
+                );
+                let entry = stated.entry(key).or_insert(Some(Decimal::ZERO));
+                *entry = add(*entry, position.quantity);
+                let total = stated_by_instrument
+                    .entry(position.object_id.as_str())
+                    .or_insert(Some(Decimal::ZERO));
+                *total = add(*total, position.quantity);
+            }
+            let mut disputed: BTreeSet<String> = stated_by_instrument
+                .iter()
+                .filter(|(instrument, quantity)| {
+                    quantity.is_none()
+                        || settled
+                            .get(*instrument)
+                            .copied()
+                            .unwrap_or(Some(Decimal::ZERO))
+                            != **quantity
+                })
+                .map(|(instrument, _)| (*instrument).to_string())
+                .collect();
+            for ((_, instrument), quantity) in &stated {
+                if quantity.is_none() {
+                    disputed.insert(instrument.clone());
+                }
+            }
+            let stated: BTreeMap<(String, String), Decimal> = stated
+                .into_iter()
+                .filter(|((_, instrument), _)| !disputed.contains(instrument))
+                .filter_map(|(key, quantity)| quantity.map(|quantity| (key, quantity)))
+                .collect();
+            let granted_venues = self
+                .envelopes
+                .iter()
+                .filter(|((owner, _), envelope)| owner == cell && envelope.is_live(now))
+                .flat_map(|(_, envelope)| envelope.venues().iter())
+                .map(|venue| venue.as_str().to_string())
+                .collect();
+            holdings.insert(
+                cell.to_string(),
+                super::hedge_narrowing::CellHoldings {
+                    held: stated,
+                    granted_venues,
+                    disputed,
+                },
+            );
+        }
+        let mut distribution = super::hedge_narrowing::derive(plan, planned_at, &holdings, now);
+        let unsigned = std::mem::take(&mut distribution.narrowings);
+        for narrowing in unsigned {
+            let cell = narrowing.cell.clone();
+            match self.issuer.sign_hedge(narrowing) {
+                Ok(signed) => distribution.narrowings.push(signed),
+                Err(error) => distribution.lines.push(format!(
+                    "{}: the narrowing for {cell} was not signed and is not sent: {}",
+                    plan.plan_id,
+                    error.message()
+                )),
+            }
+        }
+        distribution
+    }
+
     /// Where `report`'s stated book disagrees with the centre's settled book
     /// for that cell (ADR 0208), per instrument: the cell's quantity summed
     /// over its venues against the strategies' lots summed over strategies.
