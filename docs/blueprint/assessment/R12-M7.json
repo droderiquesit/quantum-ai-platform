@@ -1781,15 +1781,18 @@
   },
   {
     "id": "R12-CONTRACT-7077",
-    "status": "PARTIAL",
-    "current": "The Cognitive Compiler run by qip-deepbrain's research loop formalises each promoted discovery as a contract SymbolicDerivation.",
+    "status": "COMPLETE",
+    "current": "qip_contracts::symbolic::SymbolicDerivation = Validated<SymbolicDerivationFields> (backend/crates/libs/qip-contracts/src/symbolic.rs:86) carries goal, conclusion, rules (rule, constraint and graph-path ids), evidence, solver and result, violated_assumptions, uncertainty_bp and a trace whose every step cites only declared rules, evidence or earlier steps and ends on the conclusion; every record and every trace step decodes under deny_unknown_fields with no field defaulted. qip-deepbrain's research loop builds one per compiled discovery through the reasoning engine's Cognitive Compiler.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/symbolic.rs:86 type",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:766 a_symbolic_derivation_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:778 a_symbolic_derivation_refuses_each_broken_invariant_including_an_uncheckable_trace",
-      "backend/crates/services/qip-reasoning-engine/src/compiler.rs::formalise"
+      "backend/crates/libs/qip-contracts/src/symbolic.rs:60-83 SymbolicDerivationFields; :48-57 TraceStep; :86 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:767 a_symbolic_derivation_round_trips_and_refuses_a_missing_unknown_or_foreign_field (now also refuses_missing_and_unknown_nested at /trace/0)",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:780 a_symbolic_derivation_refuses_each_broken_invariant_including_an_uncheckable_trace",
+      "backend/crates/libs/qip-contracts/tests/common/mod.rs::refuses_missing_and_unknown_nested (added 2026-11-12)",
+      "backend/crates/services/qip-reasoning-engine/src/compiler.rs:210 formalise -> SymbolicDerivation::new at :254; backend/crates/apps/qip-deepbrain/src/research.rs:4410 self.compiler.compile",
+      "2026-11-12 lane fw-h-01: cargo test -p qip-contracts --test section27_contracts symbolic_derivation: 2 passed. Mutations, each failing :767 and each restored byte for byte: #[serde(default)] on evidence (`refused for another reason, so the field is defaulted`); #[serde(default)] on TraceStep.inference (same, at /trace/0/inference; the top-level helper alone could not see it); deny_unknown_fields removed from TraceStep (`admitted an unknown field at /trace/0`); deny_unknown_fields removed from SymbolicDerivationFields (`admitted an unknown field`).",
+      "2026-11-12 lane fw-h-01 bar: the unit contract. qip-kernel's symbolic_stage.rs:383 still keeps its own richer SymbolicDerivation for the journal and verify(); retiring it into the contract is consolidation beyond this row's bar"
     ],
-    "gap": "Not started. symbolic_stage.rs keeps its own rich SymbolicDerivation (rules, temporal, network, constraint, abduction, intervention parts) and the contract qip_contracts::symbolic::SymbolicDerivation is a trace of premises and steps. Retiring the local struct means a lossless mapping from the parts to a machine-checkable trace, and re-pointing the journal and verify() at it; a one-way export would leave two types, which is what the clause refuses.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
