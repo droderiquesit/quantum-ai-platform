@@ -48,6 +48,14 @@ changes the card's stage, and nine tests assert exact stages.
    `ModelPromotion::stages`, which the central plane signs, so the trial a
    promotion rested on is in the log and an edit to it does not verify.
 
+## What it costs
+
+Every caller of `Platform::promote_model` must record `MIN_TRIAL_ROUNDS`
+trial rounds first, so a pipeline that promotes cannot promote on the day it
+fits. Eight test files that promote through the kernel now stage a paper
+trial in their fixtures. A card serialised before the field existed carries
+no trial and is refused by the kernel until one is recorded.
+
 ## What this does not do
 
 - `ModelRegistry::promote` and `promote_artifact`, called directly, do not
