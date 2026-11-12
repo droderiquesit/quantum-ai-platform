@@ -152,8 +152,8 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ChainView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth,
-    MarketView, ModelsView, PoolReading, RiskView, TradeSide,
+    BookView, ChainView, CompanyView, ComplianceView, Desk, ExecutionRecord, ExecutionView,
+    ForecasterHealth, MarketView, ModelsView, PoolReading, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -509,6 +509,11 @@ pub struct Platform {
     /// reports each call's counts; these are what the Crypto/On-chain
     /// Brain reads across calls.
     chain_reorgs: usize,
+    /// Whether any corporate action has reached `queue_corporate_action`
+    /// since this process started (R12-REASON-3013). Until one has, the
+    /// Company/Fundamental Brain reports corporate events as having no
+    /// source, never as a quiet calendar.
+    corporate_actions_seen: bool,
     chain_deepest_reorg: u32,
     chain_bridges_failed: usize,
     /// The confirmation depth this deployment requires before reading state.
@@ -1199,6 +1204,10 @@ pub struct Platform {
     /// (R12-ASSET-3017), rebuilt before every REASON by
     /// `brief_the_desk_on_chain`.
     chain_view: Upstream<ChainView>,
+    /// The company records the desk's Company/Fundamental Brain reads
+    /// (R12-REASON-3013, ADR 0458), rebuilt before every REASON by
+    /// `brief_the_desk_on_company`.
+    company_view: Upstream<CompanyView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -6359,6 +6368,8 @@ impl Platform {
         desk.models = models.gate(desk.models.required(), desk.models.label());
         let chain_view = Upstream::new(ChainView::default());
         desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
+        let company_view = Upstream::new(CompanyView::default());
+        desk.company = company_view.gate(desk.company.required(), desk.company.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6623,6 +6634,7 @@ impl Platform {
             catalog: Catalog::new(),
             chain: None,
             chain_reorgs: 0,
+            corporate_actions_seen: false,
             chain_deepest_reorg: 0,
             chain_bridges_failed: 0,
             confirmations: Confirmations::exactly(config.chain_confirmations),
@@ -6847,6 +6859,7 @@ impl Platform {
             executions,
             models,
             chain_view,
+            company_view,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -12349,6 +12362,28 @@ impl Platform {
         self.chain_view.read()
     }
 
+    /// Write the corporate actions awaiting their ex-date into the slot the
+    /// desk's Company/Fundamental Brain reads, before the panel is convened
+    /// (R12-REASON-3013, ADR 0458). Guidance and capital structure have no
+    /// ingestion arm in the tree, so both stay empty here and the brain names
+    /// them missing; this writer is where they join once a source is
+    /// recorded.
+    fn brief_the_desk_on_company(&self) {
+        let observed = self.corporate_actions_seen;
+        let actions: Vec<CorporateAction> =
+            self.corporate_actions_pending.values().cloned().collect();
+        self.company_view.update(|view| {
+            view.corporate_actions_observed = observed;
+            view.corporate_actions = actions;
+        });
+    }
+
+    /// The company records the desk's Company/Fundamental Brain reads, as
+    /// REASON last wrote them.
+    pub fn desk_company_view(&self) -> Reading<'_, CompanyView> {
+        self.company_view.read()
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -14800,6 +14835,9 @@ impl Platform {
     /// pending action is the one whose ex-date is nearest and evicting it drops
     /// exactly the adjustment about to be needed.
     fn queue_corporate_action(&mut self, action: CorporateAction) {
+        // Seen before any refusal below: a feed that delivered a malformed
+        // action is still a feed, and the brain's "no source" would be false.
+        self.corporate_actions_seen = true;
         let Some(key) = action.idempotency_key() else {
             self.capture_problems.push(format!(
                 "a corporate action on {} ex {} carries no idempotency key and was not queued for \
@@ -17234,6 +17272,7 @@ impl Platform {
         self.brief_the_desk_on_executions();
         self.brief_the_desk_on_models();
         self.brief_the_desk_on_chain();
+        self.brief_the_desk_on_company();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;

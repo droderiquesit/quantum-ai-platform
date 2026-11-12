@@ -78,6 +78,7 @@ fn a_filled_entry_without_side_quote_unit_or_fee_serialises_exactly_as_before() 
         side: None,
         quote_unit: None,
         fee: None,
+        decision_sequence: None,
     };
     let posted = Decision::Filled {
         order_id: "ord-1".to_string(),
@@ -90,6 +91,7 @@ fn a_filled_entry_without_side_quote_unit_or_fee_serialises_exactly_as_before() 
         side: None,
         quote_unit: None,
         fee: Some("0".to_string()),
+        decision_sequence: None,
     };
     // Premise: a reported fee — even a zero one, which is a venue fact and
     // not an absence — is written, so the absence below is the attribute's
