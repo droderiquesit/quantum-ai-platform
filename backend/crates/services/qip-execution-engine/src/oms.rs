@@ -145,6 +145,20 @@ pub enum RefusalReason {
     /// order is within every per-order limit and only the pattern is not.
     /// Additive on the wire, as [`Self::Infeasible`] was.
     Conduct { venue: String, detail: String },
+    /// The order would trade against a working order of the desk's own on
+    /// the other side of the same instrument at the same venue (R12-GOV-6126,
+    /// ADR 0472): a wash trade, which moves no beneficial ownership and
+    /// prints volume nobody traded. The cell refuses the same pattern under
+    /// `self_trade` at its send seam; until this existed the desk's order
+    /// manager — the one seam a desk order reaches a broker through —
+    /// refused nothing of the kind. Refused, not netted or withdrawn: the
+    /// resting order is the desk's earlier decision and stays its own.
+    /// Additive on the wire, as [`Self::Conduct`] was.
+    SelfTrade {
+        venue: String,
+        resting_order: String,
+        detail: String,
+    },
 }
 
 impl RefusalReason {
@@ -180,6 +194,9 @@ impl RefusalReason {
             Self::VenueRejected { detail } => format!("the venue refused: {detail}"),
             Self::Conduct { venue, detail } => {
                 format!("market conduct refused it at {venue}: {detail}")
+            }
+            Self::SelfTrade { venue, detail, .. } => {
+                format!("market conduct refused it at {venue} as a self-trade: {detail}")
             }
         }
     }
@@ -240,6 +257,7 @@ impl RefusalReason {
             // A conduct refusal is a pattern, not a bound in the limit set.
             Self::Malformed { .. }
             | Self::Conduct { .. }
+            | Self::SelfTrade { .. }
             | Self::Halted { .. }
             | Self::AutonomyTooLow { .. }
             | Self::LiveVenueBelowLiveAutonomy { .. }
@@ -432,6 +450,12 @@ pub struct OrderManager {
     /// is the index the pre-trade check walks instead of every order ever
     /// sent.
     working_axes: BTreeMap<String, BTreeMap<String, String>>,
+    /// The venue each accepted-and-open order is working at, keyed and
+    /// pruned exactly as [`Self::working_axes`] is, so the self-trade check
+    /// (ADR 0472) walks the open orders and never every order ever sent —
+    /// the scaling probe that caught `working_exposure` scanning
+    /// `self.orders` would catch this too.
+    working_venues: BTreeMap<String, String>,
     /// The desk's own place-and-cancel record, per venue, instrument and
     /// side (R12-GOV-6126). Always on, with the cell's default policy: a
     /// conduct check an operator could leave unconfigured would be one the
@@ -466,6 +490,7 @@ impl OrderManager {
             withdrawn_venues: BTreeSet::new(),
             sessions: SessionRecorder::default(),
             working_axes: BTreeMap::new(),
+            working_venues: BTreeMap::new(),
             conduct: ConductWatch::new(ConductPolicy::default()),
             sequence: 0,
         }
@@ -849,6 +874,31 @@ impl OrderManager {
             return result;
         }
 
+        // 6c. Self-trade (R12-GOV-6126, ADR 0472): an order that would trade
+        //     against a working order of the desk's own on the other side of
+        //     this instrument at this venue is a wash trade, refused before
+        //     risk and before any broker — the cell's `self_trade` gate, on
+        //     the desk's seam. Keyed on the broker's name, as 6b is.
+        if let Some(resting) = self.resting_opposite(broker.name(), &order) {
+            let result = refuse(
+                &order,
+                RefusalReason::SelfTrade {
+                    venue: broker.name().to_string(),
+                    resting_order: resting.clone(),
+                    detail: format!(
+                        "order {resting} of the desk's own is working on the other side of {} \
+                         at {}; a {} now would trade with it, so the order is refused until \
+                         that one fills, expires or is cancelled",
+                        order.object_id.as_str(),
+                        broker.name(),
+                        order.side.as_str()
+                    ),
+                },
+            );
+            self.record_refusal(order, at, result.clone());
+            return result;
+        }
+
         // 7. Pre-trade risk, against the state the order would produce.
         if let Some(counterparty) = counterparty {
             axes.insert(
@@ -1014,6 +1064,10 @@ impl OrderManager {
                 if order.state.is_open() {
                     self.working_axes
                         .insert(order.order_id.as_str().to_string(), proposed.axes);
+                    self.working_venues.insert(
+                        order.order_id.as_str().to_string(),
+                        broker.name().to_string(),
+                    );
                 }
                 self.conduct
                     .placed(&conduct_venue, &order.object_id, book_side, at);
@@ -1219,6 +1273,33 @@ impl OrderManager {
     /// checked at.
     /// Also forgets every order that is no longer open, which is what keeps
     /// the index bounded by the open orders.
+    /// The id of a working order of the desk's own that `order` would
+    /// trade against at `venue`: open, same instrument, other side, with
+    /// something left to fill (ADR 0472). The first by id, so the refusal
+    /// names the same resting order on every replay.
+    ///
+    /// Any opposite working order counts, whatever either limit price is.
+    /// A price test would need the venue's matching rules to say whether two
+    /// limits cross, and a guess at them is a wash trade let through on the
+    /// strength of a model nobody checked; the cell refuses on the same
+    /// broad terms (`Cell::would_self_trade`).
+    fn resting_opposite(&mut self, venue: &str, order: &Order) -> Option<String> {
+        let orders = &self.orders;
+        self.working_venues
+            .retain(|id, _| orders.get(id).is_some_and(|order| order.state.is_open()));
+        self.working_venues
+            .iter()
+            .find(|(id, at)| {
+                at.as_str() == venue
+                    && orders.get(id.as_str()).is_some_and(|working| {
+                        working.object_id == order.object_id
+                            && working.side != order.side
+                            && working.remaining_quantity().is_positive()
+                    })
+            })
+            .map(|(id, _)| id.clone())
+    }
+
     fn working_exposure(&mut self) -> Vec<ProposedOrder> {
         // Walks the accepted-and-open index, never `self.orders`: that map
         // holds every order ever sent, and a scan of it per submit made each

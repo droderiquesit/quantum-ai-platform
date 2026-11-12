@@ -834,6 +834,13 @@ fn only_a_judgment_about_the_order_itself_is_sizing_evidence() {
         RefusalReason::VenueRejected {
             detail: "the venue declined the order".to_string(),
         },
+        // ADR 0472: a self-trade refusal is about the desk's own resting
+        // book, not about whether this order was well sized.
+        RefusalReason::SelfTrade {
+            venue: "simulated-venue".to_string(),
+            resting_order: "ord-AAA-0".to_string(),
+            detail: "a buy of the desk's own is working".to_string(),
+        },
     ];
     for refusal in &not_evidence {
         assert!(
@@ -1987,6 +1994,116 @@ fn a_kill_switch_sweep_of_unfilled_orders_is_not_counted_as_the_desks_withdrawal
     assert!(
         result.accepted,
         "a kill switch's sweep convicted the desk of a pattern: {:?}",
+        result.refusal
+    );
+    Ok(())
+}
+
+#[test]
+fn a_desk_order_that_would_trade_against_its_own_working_order_is_refused_before_the_broker()
+-> Result<()> {
+    // R12-GOV-6126, ADR 0472. The cell refuses a net that would cross a
+    // resting order of its own (`self_trade`); the desk's order manager let a
+    // sale go to the venue while a buy of the desk's own rested on the same
+    // instrument there, which is a wash trade the venue would match.
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    let mut venue = RestingBroker {
+        capabilities: simulator(),
+        submitted: 0,
+    };
+    let placed = |index: usize, object: &str, side: Side| {
+        let mut order = order(object, side, "10");
+        order.order_id = OrderId::from_string(format!("ord-{object}-{index}"));
+        order
+    };
+
+    // Premise: a buy rests unfilled at the venue.
+    let result = submit(
+        &mut manager,
+        placed(0, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "premise: the buy was refused: {:?}",
+        result.refusal
+    );
+    assert!(
+        result.fills.is_empty(),
+        "premise: the buy filled and rests nothing"
+    );
+    assert_eq!(venue.submitted, 1);
+
+    // A sale of the same instrument at the same venue is refused, naming the
+    // resting order, and the venue is never asked.
+    let result = submit(
+        &mut manager,
+        placed(1, "AAA", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        !result.accepted,
+        "a sale crossed the desk's own resting buy"
+    );
+    match result.refusal.as_ref() {
+        Some(RefusalReason::SelfTrade {
+            venue: at,
+            resting_order,
+            ..
+        }) => {
+            assert_eq!(at, venue.name());
+            assert_eq!(resting_order, "ord-AAA-0");
+        }
+        other => panic!("expected a self-trade refusal, got {other:?}"),
+    }
+    assert_eq!(venue.submitted, 1, "the refused sale reached the venue");
+
+    // Neither the same side nor another instrument is a self-trade.
+    let result = submit(
+        &mut manager,
+        placed(2, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "a second buy was refused: {:?}",
+        result.refusal
+    );
+    let result = submit(
+        &mut manager,
+        placed(3, "BBB", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "a sale of another instrument was refused: {:?}",
+        result.refusal
+    );
+
+    // Once the desk's buys are withdrawn nothing rests opposite, and the
+    // sale goes: the refusal lasts as long as the resting order and no longer.
+    for index in [0, 2] {
+        manager.cancel(
+            &OrderId::from_string(format!("ord-AAA-{index}")),
+            &mut venue,
+            "withdrawn by the desk",
+            now(),
+        )?;
+    }
+    let result = submit(
+        &mut manager,
+        placed(4, "AAA", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "the sale stayed refused after the buys were withdrawn: {:?}",
         result.refusal
     );
     Ok(())

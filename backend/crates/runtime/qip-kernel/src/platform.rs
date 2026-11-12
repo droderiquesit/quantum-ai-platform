@@ -30142,6 +30142,8 @@ fn gate_of(refusal: &RefusalReason) -> String {
         RefusalReason::VenueRejected { .. } => "venue",
         // The edge charts the same pattern under `conduct_spoofing`.
         RefusalReason::Conduct { .. } => "conduct-spoofing",
+        // The edge charts the same pattern under `self_trade` (ADR 0472).
+        RefusalReason::SelfTrade { .. } => "conduct-self-trade",
     }
     .to_string()
 }
