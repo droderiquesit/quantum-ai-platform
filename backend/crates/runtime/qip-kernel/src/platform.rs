@@ -539,6 +539,12 @@ pub struct Platform {
     /// because a precedent with no outcome is not a precedent, and a memory
     /// that returned one would report "no evidence" as a neighbour.
     pending_episodes: Vec<Episode>,
+    /// The Hedge Brain's latest plan and the instant it was decided, or
+    /// `None` when its latest run planned nothing (ADR 0407). The same fact
+    /// the `HedgePlanned` record journals, held so the policy dispatch can
+    /// derive the cells' narrowings from it; replaced on every run, so a
+    /// plan the brain no longer makes is never derived again.
+    hedge_plan: Option<(qip_contracts::HedgePlan, Timestamp)>,
     /// The precedent recorded beside each hypothesis, most recent last,
     /// bounded by [`PREDICTION_HISTORY`].
     precedents: Vec<HypothesisPrecedent>,
@@ -6649,6 +6655,7 @@ impl Platform {
             position_lives: crate::position_life::PositionLives::default(),
             episodes: EpisodicMemory::default(),
             pending_episodes: Vec::new(),
+            hedge_plan: None,
             precedents: Vec::new(),
             reasoning: ReasoningEngine::new(config.review),
             opportunities: OpportunityEngine::new(
@@ -7519,6 +7526,28 @@ impl Platform {
     /// Journaled produced or not, like the whitelist beside it, because a
     /// memory nothing ever makes knowable is exactly the fact an operator
     /// asking why every cell still pauses has to be able to find.
+    /// The signed hedge narrowings of the Hedge Brain's latest plan for
+    /// `cells` (ADR 0407, R12-CAPITAL-10098), and a line for every part of
+    /// the plan no cell is sent.
+    ///
+    /// Raised here, as the whitelist and the region shares are, so the API
+    /// supplies the configured cells and the instant and nothing else: the
+    /// plan is the brain's and the books are the plane's. Nothing here
+    /// sizes a position or reaches a venue; each narrowing only narrows,
+    /// and a cell may refuse it whole.
+    pub fn issue_hedge_narrowings<'a>(
+        &self,
+        cells: impl IntoIterator<Item = &'a str>,
+        now: Timestamp,
+    ) -> crate::central::hedge_narrowing::HedgeDistribution {
+        match &self.hedge_plan {
+            Some((plan, planned_at)) => {
+                self.central.hedge_narrowings(plan, *planned_at, cells, now)
+            }
+            None => crate::central::hedge_narrowing::HedgeDistribution::default(),
+        }
+    }
+
     pub fn issue_episodic_digest(&mut self, now: Timestamp) -> Result<EpisodicIssue> {
         let issue = EpisodicIssue::derive(self.episodes.episodes(now), self.episodes.len(), now)?;
         let correlation_id = self
@@ -23383,6 +23412,7 @@ impl Platform {
                 at: now,
             })
         };
+        self.hedge_plan = report.plan.clone().map(|plan| (plan, now));
         if let Some(record) = crate::hedge::HedgePlanned::of(&report, self.cycle, now)
             && let Err(error) = self.journal_record(record, "kernel/hedge-brain", now)
         {
