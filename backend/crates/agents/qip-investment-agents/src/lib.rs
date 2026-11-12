@@ -25,6 +25,7 @@ pub mod crypto_brain;
 pub mod desk;
 pub mod execution;
 pub mod fast;
+pub mod fundamental_brain;
 pub mod learning;
 pub mod manifests;
 pub mod poisoning;
