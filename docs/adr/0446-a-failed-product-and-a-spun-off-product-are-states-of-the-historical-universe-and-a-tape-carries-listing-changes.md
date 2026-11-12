@@ -72,6 +72,17 @@ renamings from `Platform::queue_corporate_action`. Two independent checks
   back only to the first bar the process saw; and the deep-brain round test
   pins the snapshot, not a refused delisted name.
 
+## What it costs
+
+- One more corporate-action kind every exhaustive match must name, and an
+  event variant a reader built before this change cannot decode — accepted
+  because every reader is the same binary and old logs hold no such record.
+- A spun entity listed under its `spun_entity` string as both object id and
+  symbol: the action carries no ticker for it, so its symbol in the history
+  is that string until a rename says otherwise.
+- A fifth tape section and a fifth cursor in `TapeFeed`, and every
+  `TapeDocument` literal names `listing_changes`.
+
 ## What would make this wrong
 
 A feed whose failures cannot be told from delistings would make `Failed`
