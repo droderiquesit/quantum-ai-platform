@@ -12,6 +12,9 @@
 //! * symbol eras, so a rename is the same [`ObjectId`] on both sides of it and
 //!   [`UniverseHistory::resolve`] answers by the date asked, which also keeps a
 //!   recycled ticker from resolving to the wrong company;
+//! * a failed product's listing, ended by [`UniverseHistory::fail`] and
+//!   kept with its reason, and a spun-off product's listing from its ex-date
+//!   with the parent it left ([`UniverseHistory::list_spinoff`]);
 //! * venue outages as recorded facts that [`UniverseHistory::outages_overlapping`]
 //!   returns for any window a replay spans.
 //!
@@ -38,6 +41,22 @@ pub struct Listing {
     pub delisted_at: Option<Timestamp>,
     /// In ascending `from` order; the first starts at `listed_from`.
     pub symbols: Vec<SymbolEra>,
+    /// Set by [`UniverseHistory::fail`]: the product did not merely stop
+    /// trading, it failed — a fund wound up, an issuer defaulted, a product
+    /// withdrawn worthless. The listing ends at `delisted_at` like any other,
+    /// and the reason is kept so a backtest over the dates it traded can say
+    /// it held a name that went to nothing rather than one that left the
+    /// universe in good order. A history that dropped failed products, or
+    /// filed them as ordinary delistings, is the survivorship R12-TICK-2090
+    /// forbids in its most flattering form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    /// The instrument this one was spun off from, when it began life as a
+    /// spinoff ([`UniverseHistory::list_spinoff`]). A spun entity that was
+    /// not listed from its ex-date is a member a backtest never sees, and
+    /// the value that left the parent is then value that vanished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spun_off_from: Option<ObjectId>,
 }
 
 impl Listing {
@@ -106,8 +125,41 @@ impl UniverseHistory {
                 listed_from: at,
                 delisted_at: None,
                 symbols: vec![SymbolEra { symbol, from: at }],
+                failure: None,
+                spun_off_from: None,
             },
         );
+        Ok(())
+    }
+
+    /// Record `child` as spun off from `parent` at `at`, listed under
+    /// `symbol` from that instant. Refused when `parent` was not a member at
+    /// `at` — a spinoff from a name that was not trading is a record that
+    /// contradicts the history — and, as [`Self::list`] refuses, when the
+    /// child is already named: a spinoff re-announced to a restarted process
+    /// must not list the child twice, and a caller that wants that idempotent
+    /// asks [`Self::is_named`] first.
+    pub fn list_spinoff(
+        &mut self,
+        parent: &ObjectId,
+        child: ObjectId,
+        symbol: impl Into<String>,
+        at: Timestamp,
+    ) -> Result<()> {
+        if !self.is_member_at(parent, at) {
+            return Err(Error::invalid(format!(
+                "{child} cannot be spun off from {parent} at {at}: {parent} was not listed then"
+            )));
+        }
+        if child == *parent {
+            return Err(Error::invalid(format!(
+                "{child} cannot be spun off from itself; a spun entity is a new object id"
+            )));
+        }
+        self.list(child.clone(), symbol, at)?;
+        if let Some(listing) = self.listings.get_mut(child.as_str()) {
+            listing.spun_off_from = Some(parent.clone());
+        }
         Ok(())
     }
 
@@ -186,6 +238,42 @@ impl UniverseHistory {
         }
         listing.delisted_at = Some(at);
         Ok(())
+    }
+
+    /// Record that `object_id` failed at `at`: the listing ends there, as a
+    /// delisting ends it, and keeps `reason`. Every refusal [`Self::delist`]
+    /// makes applies, so a product cannot fail twice, fail after it was
+    /// delisted, or fail before its latest symbol began; an empty reason is
+    /// refused because a failure nobody can explain is a delisting.
+    pub fn fail(
+        &mut self,
+        object_id: &ObjectId,
+        at: Timestamp,
+        reason: impl Into<String>,
+    ) -> Result<()> {
+        let reason = reason.into();
+        if reason.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "{object_id} failed at {at} for no stated reason; state why, or record a \
+                 delisting"
+            )));
+        }
+        self.delist(object_id, at)?;
+        if let Some(listing) = self.listings.get_mut(object_id.as_str()) {
+            listing.failure = Some(reason);
+        }
+        Ok(())
+    }
+
+    /// Every product that failed, with the instant it failed, in id order —
+    /// kept whatever date is asked, because the question a backtest asks of
+    /// a failure is whether its window held the name, which
+    /// [`Self::members_as_of`] answers for the dates it traded.
+    pub fn failed(&self) -> Vec<&Listing> {
+        self.listings
+            .values()
+            .filter(|listing| listing.failure.is_some())
+            .collect()
     }
 
     /// Open an outage at `venue` from `from` whose end is not yet known:
