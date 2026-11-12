@@ -177,6 +177,7 @@ pub fn outcome_on(
         }),
         quote_unit: Some(DESK_QUOTE_UNIT.to_string()),
         fee: Some(booked.costs.to_string()),
+        decision_sequence: None,
     };
     let (decision, digest) = seal_v2(previous, sequence, booked.at, decision);
     let record = OutcomeRecord {

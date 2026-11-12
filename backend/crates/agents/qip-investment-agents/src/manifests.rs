@@ -51,6 +51,7 @@ pub mod ids {
     pub const POISONING: &str = "poisoning-detector";
     pub const PORTFOLIO_ASSET: &str = "portfolio-asset-brain";
     pub const CRYPTO_ONCHAIN: &str = "crypto-onchain-brain";
+    pub const COMPANY_FUNDAMENTAL: &str = "company-fundamental-brain";
     pub const SELF_EXPLOITATION: &str = "self-exploitation-probe";
     pub const REGIME_BREAK: &str = "regime-break-probe";
     pub const MANIPULATION: &str = "manipulation-probe";
@@ -193,6 +194,31 @@ pub fn crypto_onchain_brain(reviewed_at: Timestamp) -> AgentManifest {
          recorded it reports no data"
             .into(),
         "states no token economics or smart-contract risk: no source in the tree carries either"
+            .into(),
+    ])
+}
+
+/// R12-REASON-3013, ADR 0458: the issuer's statements, earnings, corporate
+/// events, guidance and capital structure. Reference and world-model reads
+/// only; it reaches no book and no market.
+pub fn company_fundamental_brain(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::COMPANY_FUNDAMENTAL,
+        "Company/Fundamental Brain",
+        "reads an instrument's issuer: its reported statements, its figures against consensus, its corporate actions, management's guidance and its capital structure",
+        owners::RESEARCH,
+        reviewed_at,
+        &[],
+    )
+    .with_competencies(vec![
+        "reported figures and their surprise against consensus, point-in-time".into(),
+        "guidance against outcome, net leverage and debt falling due within a year".into(),
+    ])
+    .with_limitations(vec![
+        "guidance and capital structure have no ingestion source in the tree; until one is \
+         recorded both are reported missing"
+            .into(),
+        "states no direction: the consensus surprise already reaches the forecast elsewhere"
             .into(),
     ])
 }
@@ -743,6 +769,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         poisoning_detector(reviewed_at),
         portfolio_asset_brain(reviewed_at),
         crypto_onchain_brain(reviewed_at),
+        company_fundamental_brain(reviewed_at),
         self_exploitation_probe(reviewed_at),
         regime_break_probe(reviewed_at),
         manipulation_probe(reviewed_at),

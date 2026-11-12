@@ -79,6 +79,7 @@ fn fill(order: &str, quantity: u64, price: &str, side: BookSide, simulated: bool
         side: Some(side),
         quote_unit: Some(UNIT.to_string()),
         fee: None,
+        decision_sequence: None,
     }
 }
 

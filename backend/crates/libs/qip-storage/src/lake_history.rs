@@ -40,6 +40,7 @@ use crate::lake::{Entitlement, Lake, Manifest, Partition, RecordClass, SegmentRe
 use crate::lake_codec::SegmentCodec;
 use qip_contracts::market_event::MarketEvent;
 use qip_contracts::message::MarketMessage;
+use qip_contracts::sync::SyncMetadata;
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
 use qip_core::{Duration, Timestamp};
@@ -134,6 +135,15 @@ pub struct RecordedTick {
     /// normalized time or its uncertainty the lake had been written with.
     #[serde(default)]
     pub clock: Option<RecordedClock>,
+    /// The cross-asset and cross-region synchronisation metadata the
+    /// capture path stamped (R12-TICK-2048, ADR 0438), decoded through
+    /// [`SyncMetadata`]'s own refusals. `None` for a line written before
+    /// the typed record existed, or by a path that stamps none. A line that
+    /// names a region and does not decode as the record is counted unparsed
+    /// rather than read without it: an order the clocks cannot support must
+    /// not reach a cross-region reader as a plain tick.
+    #[serde(default)]
+    pub sync: Option<SyncMetadata>,
 }
 
 /// A tick's disciplined clock, as the lake line holds it.
@@ -221,6 +231,12 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     if let Some(event) = value.get("event") {
         let event: MarketEvent = serde_json::from_value(event.clone()).ok()?;
+        let sync = match value.get("instrument") {
+            // The asset key arrived with the typed record; a line carrying
+            // it is held to the record, and a line that fails it is not read.
+            Some(_) => Some(serde_json::from_value::<SyncMetadata>(value.clone()).ok()?),
+            None => None,
+        };
         return Some(RecordedTick {
             message: event.payload().clone(),
             event_time: event.event_time(),
@@ -229,6 +245,7 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
             entitlement: event.entitlement().dataset().to_string(),
             segment: segment.to_string(),
             clock: edge_clock(&value),
+            sync,
         });
     }
     let captured: crate::tick_capture::CapturedMarketEvent = serde_json::from_value(value).ok()?;
@@ -248,6 +265,7 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
             normalized_time: captured.normalized_time,
             uncertainty: captured.uncertainty,
         }),
+        sync: None,
     })
 }
 
