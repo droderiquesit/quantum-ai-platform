@@ -38,8 +38,13 @@ fn start() -> Timestamp {
 
 /// The demo world the node ships with, seeded as the node seeds it.
 fn demo() -> SyntheticEnvironment {
+    demo_at(start())
+}
+
+/// The demo world as the node builds it at `at`.
+fn demo_at(at: Timestamp) -> SyntheticEnvironment {
     SyntheticEnvironment::demo(
-        start(),
+        at,
         EnvironmentConfig {
             seed: PlatformConfig::default().seed,
             ..EnvironmentConfig::default()
@@ -50,7 +55,7 @@ fn demo() -> SyntheticEnvironment {
 /// The bar fixture the kernel's own symbolic suite forms a hypothesis from:
 /// a drift with a nine per cent jump two thirds of the way through, stamped
 /// on the given instrument at its own venue.
-fn bars(object_id: &ObjectId, venue: &str, count: usize) -> Vec<SensedRecord> {
+fn bars(object_id: &ObjectId, venue: &str, count: usize, now: Timestamp) -> Vec<SensedRecord> {
     let mut price = 100.0_f64;
     (0..count)
         .map(|i| {
@@ -58,7 +63,7 @@ fn bars(object_id: &ObjectId, venue: &str, count: usize) -> Vec<SensedRecord> {
             let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
             let open = price;
             price *= 1.0 + noise + jump;
-            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            let at = now.saturating_sub(Duration::from_days((count - i) as i64));
             SensedRecord::Bar(Box::new(Bar {
                 object_id: object_id.clone(),
                 venue: venue.to_string(),
@@ -91,8 +96,17 @@ fn derivation_on(
     subject: &ObjectId,
     venue: &str,
 ) -> Result<SymbolicDerivation> {
+    derivation_at(universe, subject, venue, start())
+}
+
+fn derivation_at(
+    universe: Universe,
+    subject: &ObjectId,
+    venue: &str,
+    now: Timestamp,
+) -> Result<SymbolicDerivation> {
     let config = PlatformConfig::default();
-    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let (context, _clock) = Context::deterministic(now, config.seed);
     let mut platform = Platform::new(
         config,
         context,
@@ -100,8 +114,8 @@ fn derivation_on(
         universe,
         LimitSet::conservative_default(),
     )?;
-    platform.observe(bars(subject, venue, 120));
-    let report = platform.run_cycle(start());
+    platform.observe(bars(subject, venue, 120, now));
+    let report = platform.run_cycle(now);
     // Premise: the cycle formed a hypothesis to derive from.
     assert!(
         !platform.predictions().is_empty(),
@@ -217,4 +231,140 @@ fn the_deep_brains_demo_universe_carries_a_dated_contract_the_contract_rule_read
         terms.expiry
     );
     Ok(())
+}
+
+/// The committed catalogue, read the way `main.rs`'s `load_universe` reads it.
+/// After the catalogue's `as_of`, because the loader refuses a record
+/// ingested before it happened.
+fn node_start() -> Timestamp {
+    Timestamp::from_secs(1_793_000_000)
+}
+
+fn committed_catalogue() -> Result<Universe> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../data/datasets/universe.json");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| Error::io(format!("{}: {error}", path.display())))?;
+    Ok(qip_financial::catalogue::load(&text, node_start())?.universe)
+}
+
+/// The refuted half of R12-REASON-3057: the node's `main.rs` built its
+/// platform over the committed catalogue alone, so on the shipped synthetic
+/// arm the demo future was observed and listed nowhere, and the rule had no
+/// expiry to read. This assembles the platform exactly as `main.rs` now does
+/// on that arm — the committed catalogue through
+/// `reference::platform_universe` with the demo exchange — and proves the
+/// derivation on the future carries the margin.
+#[test]
+fn the_nodes_synthetic_arm_assembles_the_platform_over_the_catalogue_and_the_demo_future_so_the_rule_reads_its_expiry()
+-> Result<()> {
+    let environment = demo_at(node_start());
+    let future = environment
+        .instruments()
+        .iter()
+        .find(|instrument| instrument.contract.is_some())
+        .ok_or_else(|| Error::not_found("the demo environment lists no dated contract"))?;
+    let catalogue = committed_catalogue()?;
+    // Premise: the committed catalogue does not list the future, which is
+    // the defect — merging must be what puts it there.
+    assert!(
+        catalogue.get(&future.object_id).is_none(),
+        "the committed catalogue already lists {}; this test would prove nothing",
+        future.object_id
+    );
+    let catalogue_ids: Vec<ObjectId> = catalogue.ids().collect();
+    assert!(
+        !catalogue_ids.is_empty(),
+        "the committed catalogue is empty"
+    );
+
+    let seed = PlatformConfig::default().seed;
+    let step = EnvironmentConfig::default().step;
+    // The tape and replay arms take the catalogue untouched, origin kept,
+    // and build no demo exchange.
+    for (tape, replay) in [(true, false), (false, true)] {
+        let (untouched, arm) = reference::node_assembly(
+            committed_catalogue()?,
+            tape,
+            replay,
+            seed,
+            step,
+            node_start(),
+        )?;
+        assert!(
+            arm.is_none(),
+            "tape={tape} replay={replay} built a demo exchange"
+        );
+        assert!(untouched.get(&future.object_id).is_none());
+        assert!(
+            untouched.origin().is_some(),
+            "the catalogue arm lost its origin"
+        );
+    }
+
+    // The shipped default: neither a tape nor a replay.
+    let (universe, arm) =
+        reference::node_assembly(catalogue, false, false, seed, step, node_start())?;
+    let arm = arm.ok_or_else(|| Error::not_found("the synthetic arm built no demo exchange"))?;
+    // The exchange the engine is handed lists the same future the platform
+    // now holds, so the bars it emits land on a known instrument.
+    assert!(
+        arm.instruments()
+            .iter()
+            .any(|instrument| instrument.object_id == future.object_id),
+        "the node's demo exchange does not price the future the universe lists"
+    );
+    // Every catalogue record survives, as the catalogue wrote it.
+    let reread = committed_catalogue()?;
+    for id in &catalogue_ids {
+        assert_eq!(
+            universe.get(id),
+            reread.get(id),
+            "the catalogue's record of {id} was replaced by the merge"
+        );
+    }
+    assert_eq!(
+        universe.require(&future.object_id)?.instrument_type,
+        InstrumentType::Future
+    );
+
+    let on_future = derivation_at(universe, &future.object_id, &future.venue, node_start())?;
+    let margin = expiry_margin_days(&on_future);
+    assert!(
+        margin.is_some(),
+        "the future's derivation on the node's assembly carries no expiry_margin_days; its \
+         rule inputs were {:?}",
+        on_future.rules.inputs
+    );
+    Ok(())
+}
+
+/// The binary calls the assembly the suite above drives, hands the platform
+/// the universe it returns, and builds the evolution engine over the same
+/// demo exchange — so the test's arm is the shipped arm and not a copy of it.
+/// A binary cannot be called from a test; this pins the three seams by their
+/// delimited call text, and fails if `main.rs` goes back to the catalogue
+/// alone or to a second demo exchange.
+#[test]
+fn the_deep_brains_main_assembles_its_platform_through_node_assembly_and_one_demo_exchange() {
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("main.rs");
+    let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+    let main = squeeze(&main);
+    for seam in [
+        "let(platform_universe,mutsynthetic_arm)=qip_deepbrain::reference::node_assembly(\
+         catalogue.universe,tape_feed.is_some(),replay_path.is_some(),",
+        "Platform::with_model_provider(platform_config,context,telemetry,platform_universe,",
+        "letenvironment=synthetic_arm.take()",
+        "EvolutionEngine::over_synthetic(evolution_config,environment,",
+    ] {
+        assert!(main.contains(seam), "main.rs no longer carries `{seam}`");
+    }
+    assert_eq!(
+        main.matches("SyntheticEnvironment::demo(").count(),
+        0,
+        "main.rs builds a demo exchange of its own beside node_assembly's"
+    );
 }

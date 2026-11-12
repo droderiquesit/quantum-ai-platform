@@ -321,6 +321,80 @@ fn future_terms(
         })))
 }
 
+/// The universe the node's platform is assembled over: the committed
+/// catalogue, plus — on the synthetic arm only — the demo instruments the
+/// catalogue does not list.
+///
+/// Before this, `main.rs` built the platform over the catalogue alone and
+/// derived the synthetic universe only for the evolution engine, so the
+/// demo's dated future reached `Platform::observe` as bars on an instrument
+/// the platform did not know: the contract rule
+/// (`r70-contract-expires-before-horizon`) had no expiry to read on any
+/// shipped path, and an order on the future was refused as an unknown
+/// instrument rather than by the desk permission that should refuse it
+/// (R12-REASON-3057).
+///
+/// Where the catalogue already holds an id the demo also defines, the
+/// catalogue's record is kept: it is the reviewed record, and a synthetic
+/// listing silently replacing it would size the desk against a figure
+/// nobody reviewed. `None` — the tape and replay arms, which price the
+/// catalogue or nothing — returns the catalogue untouched, origin included.
+/// A merged universe has no catalogue origin (`Universe::insert` drops it),
+/// which is the honest record: its contents are no longer the hashed file's.
+pub fn platform_universe(
+    catalogue: Universe,
+    synthetic_arm: Option<&SyntheticEnvironment>,
+    at: Timestamp,
+) -> Result<Universe> {
+    let Some(environment) = synthetic_arm else {
+        return Ok(catalogue);
+    };
+    let mut universe = catalogue;
+    for object in synthetic_universe(environment, at)?.iter() {
+        if universe.get(&object.object_id).is_none() {
+            universe.insert(object.clone())?;
+        }
+    }
+    Ok(universe)
+}
+
+/// The node's universe and, on the synthetic arm, the demo exchange it was
+/// merged from — the one assembly `main.rs` runs, so a test drives the same
+/// arm choice the binary makes.
+///
+/// The synthetic arm is the one with neither a tape nor a replay; it is the
+/// default every environment ships. The environment's bar interval follows
+/// the step, or a fast cadence closes a bar every sixty cycles and the node
+/// runs blind for hours while looking configured. The returned environment
+/// is the one the evolution engine must be built over, so the universe the
+/// platform holds and the exchange it observes are one list.
+pub fn node_assembly(
+    catalogue: Universe,
+    tape: bool,
+    replay: bool,
+    seed: u64,
+    step: Duration,
+    now: Timestamp,
+) -> Result<(Universe, Option<SyntheticEnvironment>)> {
+    let synthetic_arm = (!tape && !replay).then(|| {
+        SyntheticEnvironment::demo(
+            now,
+            qip_market_ingestion::synthetic::EnvironmentConfig {
+                seed,
+                step,
+                bar_interval: if step < Duration::from_mins(1) {
+                    qip_market::bar::Interval::Second
+                } else {
+                    qip_market::bar::Interval::Minute
+                },
+                ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
+            },
+        )
+    });
+    let universe = platform_universe(catalogue, synthetic_arm.as_ref(), now)?;
+    Ok((universe, synthetic_arm))
+}
+
 #[cfg(test)]
 #[allow(clippy::panic_in_result_fn)]
 mod tests {
