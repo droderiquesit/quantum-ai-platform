@@ -11,12 +11,12 @@ mock_provider "google" {}
 variables {
   project_id           = "test-project"
   environment          = "test"
-  region               = "us-central1"
+  region               = "us-east4"
   enable_cloud_storage = false
   enable_bigquery      = false
   enable_alloydb       = false
   enable_memorystore   = false
-  key_ring_id          = "/projects/test-project/locations/us-central1/keyRings/test"
+  key_ring_id          = "/projects/test-project/locations/us-east4/keyRings/test"
   network_id           = "projects/test-project/global/networks/default"
   labels               = {}
 }
