@@ -53,6 +53,9 @@ qip-quant.workspace = true
 qip-numerics.workspace = true
 qip-lifecycle.workspace = true
 qip-contracts.workspace = true
+# The cross-region aligner (R12-TICK-2048, ADR 0438): the tick desk is where
+# lake lines from more than one cell meet. Workspace-internal, pure logic.
+qip-sequencing.workspace = true
 # The ambient mesh's one door to the agency (R12-AGENCY-7029): promotion, the
 # action guard and a drafting-only outbox. Workspace-internal.
 qip-agency.workspace = true
