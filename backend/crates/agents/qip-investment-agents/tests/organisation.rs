@@ -3184,6 +3184,207 @@ fn the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings
     Ok(())
 }
 
+/// A desk holding only what the three probes below read: `snapshot` over
+/// `universe`, and the given models and executions. Every other view is
+/// empty, so a finding a probe reports comes from the fixture handed to it.
+fn adversary_desk(
+    snapshot: MarketSnapshot,
+    universe: Universe,
+    models: ModelsView,
+    executions: ExecutionView,
+) -> Arc<Desk> {
+    Arc::new(
+        Desk::new(
+            MarketView { snapshot, universe },
+            WorldModel::new(),
+            BookView {
+                portfolio: Portfolio::new(
+                    PortfolioId::from_string("pf-probe"),
+                    "probe",
+                    Currency::USD,
+                    Decimal::from_int(1_000_000),
+                    now(),
+                ),
+                marks: BTreeMap::new(),
+            },
+            RiskView {
+                state: RiskState::default(),
+                limits: LimitSet::conservative_default(),
+            },
+            ComplianceView::default(),
+            ResearchMemory::new(),
+            SearchIndex::new(),
+        )
+        .with_executions(executions)
+        .with_models(models),
+    )
+}
+
+/// The finding `agent` reported when the standard organisation dispatched
+/// over `desk`.
+fn probe_finding(desk: Arc<Desk>, agent: &str) -> Result<qip_agents::finding::AgentFinding> {
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    Ok(report
+        .findings
+        .into_iter()
+        .find(|f| f.agent_id == agent)
+        .expect("premise: the standard organisation runs the probe"))
+}
+
+/// R12-REASON-3023. The regime-break probe *reports* a break, not only that
+/// it compared. The coverage test above runs it on a tape whose windows
+/// agree, so a probe that compared every instrument and then threw away
+/// every break read as working: deleting `breaks.push(..)` in
+/// `RegimeBreakProbe::analyse` survived every test in this crate until
+/// 2026-11-12. Here one instrument's last ten daily returns swing six times
+/// as wide as its prior thirty — a volatility ratio far past the 2.0 the
+/// default thresholds break at — so the probe must report one break.
+///
+/// Mutation, run 2026-11-12: delete the `breaks.push((instrument.to_string(),
+/// comparison));` line — `regime_break_findings` reads 0 where 1 was
+/// expected. Restored byte for byte.
+#[test]
+fn the_regime_break_probe_reports_a_tape_whose_recent_volatility_left_its_prior_band() -> Result<()>
+{
+    let mut universe = Universe::new();
+    universe.insert(equity("LOUD", "100")).unwrap();
+    let mut snapshot = MarketSnapshot::new(now());
+    let mut close = 100.0_f64;
+    for i in 0..41_i64 {
+        let open = close;
+        if i > 0 {
+            let wobble = if i % 2 == 0 { 1.0 } else { -1.0 };
+            let amplitude = if i <= 30 { 0.005 } else { 0.03 };
+            close = open * (1.0 + wobble * amplitude);
+        }
+        snapshot.apply_bar(Bar {
+            object_id: object("LOUD"),
+            venue: "XNYS".to_string(),
+            interval: Interval::Day,
+            open_time: now().saturating_sub(Duration::from_days(41 - i)),
+            open: Decimal::from_f64(open).unwrap(),
+            high: Decimal::from_f64(open.max(close)).unwrap(),
+            low: Decimal::from_f64(open.min(close)).unwrap(),
+            close: Decimal::from_f64(close).unwrap(),
+            volume: dec!("1000000"),
+            trade_count: 5_000,
+            vwap: Decimal::from_f64((open + close) / 2.0),
+            quality: qip_financial::quality::DataQuality::default(),
+        });
+    }
+    let desk = adversary_desk(snapshot, universe, fixture_models(), fixture_executions());
+    let finding = probe_finding(desk, ids::REGIME_BREAK)?;
+    assert_eq!(
+        fact_value(&finding, "instruments_scanned"),
+        Some(1.0),
+        "premise: the tape holds the closes two windows need: {finding:?}"
+    );
+    assert!(
+        fact_value(&finding, "max_volatility_ratio").is_some_and(|ratio| ratio >= 2.0),
+        "premise: the fixture's recent window is a volatility break: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "regime_break_findings"),
+        Some(1.0),
+        "the volatility break is reported: {finding:?}"
+    );
+    Ok(())
+}
+
+/// R12-REASON-3023. The model-failure probe reports each failing model, not
+/// only that it examined the registry: the coverage test above holds one
+/// forecaster in good standing and nothing drifted, so a probe that dropped
+/// every finding passed it. Here one forecaster scores a mean Brier of 0.31,
+/// worse than a coin's 0.25, and one production model is past its drift
+/// threshold, so the probe must report two.
+///
+/// Mutation, run 2026-11-12: in `ModelFailureProbe::analyse`, replace
+/// `probe_models(&models, &self.thresholds)` with an empty `Vec` —
+/// `model_failure_findings` reads 0 where 2 was expected. Restored byte
+/// for byte.
+#[test]
+fn the_model_failure_probe_reports_a_forecaster_worse_than_chance_and_a_drifted_model() -> Result<()>
+{
+    let models = ModelsView {
+        forecasters: vec![ForecasterHealth {
+            name: "detector:momentum".to_string(),
+            mean_brier: Some(0.31),
+            predicted_failure: 0.2,
+        }],
+        drifted: vec!["ridge-ACME@3".to_string()],
+    };
+    let desk = adversary_desk(
+        MarketSnapshot::new(now()),
+        Universe::new(),
+        models,
+        fixture_executions(),
+    );
+    let finding = probe_finding(desk, ids::MODEL_FAILURE)?;
+    assert!(
+        fact_value(&finding, "models_examined").is_some_and(|examined| examined >= 1.0),
+        "premise: the registry was examined: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "model_failure_findings"),
+        Some(2.0),
+        "the forecaster worse than chance and the drifted model are reported: {finding:?}"
+    );
+    Ok(())
+}
+
+/// R12-REASON-3023. The self-exploitation probe reports a flow the market
+/// could be reading, not only that it scanned the fills: the coverage test
+/// above holds a balanced flow, so a probe that dropped every finding passed
+/// it. Here twelve buys of distinct sizes each fill eight basis points above
+/// arrival — every fill adverse — so the probe must report the slippage.
+///
+/// Mutation, run 2026-11-12: in `SelfExploitationProbe::analyse`, replace
+/// `probe_self_exploitation(..)` with an empty `Vec` —
+/// `self_exploitation_findings` reads 0 where 1 was expected. Restored byte
+/// for byte.
+#[test]
+fn the_self_exploitation_probe_reports_fills_that_bled_against_arrival() -> Result<()> {
+    let bled = ExecutionView {
+        executions: (0..12_i64)
+            .map(|n| ExecutionRecord {
+                order_id: format!("ord-bled-{n}"),
+                object_id: object("ACME").as_str().to_string(),
+                side: TradeSide::Buy,
+                quantity: Decimal::from_int(100 + n),
+                arrival_price: dec!("100"),
+                fill_price: dec!("100.08"),
+                placed_at: now().saturating_sub(Duration::from_days(12 - n)),
+                filled_at: now().saturating_sub(Duration::from_days(12 - n)),
+                venue: "XSIM".to_string(),
+            })
+            .collect(),
+    };
+    let desk = adversary_desk(
+        MarketSnapshot::new(now()),
+        Universe::new(),
+        fixture_models(),
+        bled,
+    );
+    let finding = probe_finding(desk, ids::SELF_EXPLOITATION)?;
+    assert_eq!(
+        fact_value(&finding, "fills_scanned"),
+        Some(12.0),
+        "premise: every fill was scanned: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "adverse_fill_share"),
+        Some(1.0),
+        "premise: every fill landed worse than arrival: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "self_exploitation_findings"),
+        Some(1.0),
+        "the adverse slippage is reported: {finding:?}"
+    );
+    Ok(())
+}
+
 /// R12-REASON-3012. The macro analyst reads the world model's geopolitical
 /// claims as well as the macro series, and nobody else does: without it the
 /// organisation has no view of geopolitical exposure at all. On a desk
