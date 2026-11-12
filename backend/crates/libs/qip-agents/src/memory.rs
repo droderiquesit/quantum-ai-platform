@@ -71,6 +71,40 @@ pub struct Procedure {
     pub supporting_episodes: Vec<AgentRunId>,
     /// When it became known. Reads are filtered on this.
     pub learned_at: Timestamp,
+    /// The method as rules an agent can follow (R12-WORLD-3034): for each
+    /// subject the supporting calls were about, the lean that came out
+    /// right. Empty for a procedure recorded as prose steps only, which no
+    /// agent can check itself against.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub rules: Vec<ProcedureRule>,
+}
+
+/// One step of a procedure an agent can execute: on `subject`, lean `lean`,
+/// because `support` of the procedure's correct calls on that subject did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureRule {
+    /// The instrument the calls were about, as the brief names it.
+    pub subject: String,
+    /// The lean that resolved correct: `positive` or `negative`, the
+    /// spelling of [`crate::finding::Direction::as_str`].
+    pub lean: String,
+    /// Correct calls on `subject` that leaned this way. At least one.
+    pub support: usize,
+}
+
+impl Procedure {
+    /// The rule this procedure holds for `subject`, if any.
+    pub fn rule_for(&self, subject: &str) -> Option<&ProcedureRule> {
+        self.rules.iter().find(|rule| rule.subject == subject)
+    }
+}
+
+/// The name an agent's own procedure is kept under in research memory.
+///
+/// One spelling, here, because the kernel writes under it and the agent
+/// reads under it: two spellings would deliver a procedure nobody finds.
+pub fn procedure_name_for(agent_id: &str) -> String {
+    format!("procedure:{agent_id}")
 }
 
 /// One agent's resolved calls in one regime.
@@ -553,7 +587,72 @@ impl ResearchMemory {
             steps,
             supporting_episodes,
             learned_at: at,
+            rules: Vec::new(),
         });
+        Ok(version)
+    }
+
+    /// Record the next version of procedure `name` as a method: `rules` an
+    /// agent can follow, rendered as its steps, under every refusal
+    /// [`Self::record_procedure`] makes. Also refused: no rule, a blank
+    /// subject, a subject named twice, a lean other than `positive` or
+    /// `negative`, or a rule supported by no call. A rule nobody could
+    /// follow is a step written for the record and not for the desk.
+    pub fn record_method(
+        &mut self,
+        name: &str,
+        rules: Vec<ProcedureRule>,
+        supporting_episodes: Vec<AgentRunId>,
+        at: Timestamp,
+    ) -> Result<u32> {
+        if rules.is_empty() {
+            return Err(Error::invalid(format!(
+                "procedure `{}` is a method with no rule",
+                name.trim()
+            )));
+        }
+        let mut subjects: Vec<&str> = Vec::new();
+        for rule in &rules {
+            if rule.subject.trim().is_empty() {
+                return Err(Error::invalid("a procedure rule must name its subject"));
+            }
+            if subjects.contains(&rule.subject.as_str()) {
+                return Err(Error::invalid(format!(
+                    "procedure rule for `{}` is given twice; one subject has one lean",
+                    rule.subject
+                )));
+            }
+            subjects.push(rule.subject.as_str());
+            if rule.lean != "positive" && rule.lean != "negative" {
+                return Err(Error::invalid(format!(
+                    "procedure rule for `{}` leans `{}`; only positive or negative can be followed",
+                    rule.subject, rule.lean
+                )));
+            }
+            if rule.support == 0 {
+                return Err(Error::invalid(format!(
+                    "procedure rule for `{}` is supported by no call",
+                    rule.subject
+                )));
+            }
+        }
+        let steps = rules
+            .iter()
+            .map(|rule| {
+                format!(
+                    "on {}: lean {} ({} correct call(s))",
+                    rule.subject, rule.lean, rule.support
+                )
+            })
+            .collect();
+        let version = self.record_procedure(name, steps, supporting_episodes, at)?;
+        if let Some(latest) = self
+            .procedures
+            .get_mut(name.trim())
+            .and_then(|versions| versions.back_mut())
+        {
+            latest.rules = rules;
+        }
         Ok(version)
     }
 

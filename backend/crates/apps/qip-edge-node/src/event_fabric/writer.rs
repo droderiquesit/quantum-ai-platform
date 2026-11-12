@@ -242,6 +242,11 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::VenueWithdrawn { .. }
         | Decision::CrossedInternally { .. }
         | Decision::ReconciliationBreak { .. } => true,
+        // The venue's report that a fill's cash settled: ADR 0130 decision 2
+        // puts it on the P1 outcomes stream beside the fill it closes, because
+        // the ledger reads P1 and a settlement shed with P2 would leave the
+        // fill's cash in settlement for ever (ADR 0440).
+        Decision::Settled { .. } => true,
         Decision::Ingested { .. }
         | Decision::GapDetected { .. }
         | Decision::FeedSilent { .. }

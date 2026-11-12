@@ -248,12 +248,17 @@
   {
     "id": "R12-LEDGER-5011",
     "status": "PARTIAL",
-    "current": "Settlement enum has exactly one variant, Simulated (backend/crates/libs/qip-contracts/src/ledger.rs:42-44), by design (paper boundary); test settlement_has_no_variant_but_simulated. No pending/settled lifecycle exists. Two production facts about settlement exist and neither is a settlement the ledger could record: the simulated broker books cash at the fill and reports no settlement, and the desk's settlement register (Platform::register_settlement, T+1 from the SettlementBook declared at assembly) holds a calendar projection of when sale proceeds become usable, read by survival sizing and never confirmed by anything.",
+    "current": "The ledger records a simulated settlement lifecycle (ADR 0130, ADR 0440). LedgerEvent::settlement_state reads Immediate, InSettlement or Settled{settlement_date, fills} off every event; Settlement keeps its one variant, Simulated. A fill at a venue named by LedgerStore::with_settlement_cycle_venues posts its cash leg to in_settlement:<cell>/<strategy> (qip_portfolio::ledger::post_in_settlement) and its units to trading at the trade date; Decision::Settled, refused unless simulated, moves every held fill of the order to trading (post_settlement) and deletes the pending/ row in the same batch. LedgerEvent::new refuses an in_settlement posting with no stated stage. No producer emits Decision::Settled, and qip-ledgerd's composition root names no settlement-cycle venue, so in a running process every fill books Immediate, which is true today: the node's simulated venue installs SettlementTerms::instant().",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated only",
-      "backend/crates/libs/qip-contracts/tests/ledger_event.rs:6 settlement_has_no_variant_but_simulated"
+      "backend/crates/libs/qip-contracts/src/ledger.rs SettlementState, Account::InSettlement, LedgerEvent::staged",
+      "backend/crates/libs/qip-contracts/src/reflex.rs Decision::Settled",
+      "backend/crates/libs/qip-portfolio/src/ledger.rs post_in_settlement, PaperSettlement, post_settlement",
+      "backend/crates/apps/qip-ledgerd/src/store.rs with_settlement_cycle_venues, pending_settlement",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs a_sale_at_a_settlement_cycle_venue_holds_its_proceeds_in_settlement_until_the_venue_settles_them (+5 settlement tests)",
+      "backend/crates/libs/qip-contracts/tests/ledger_event.rs an_in_settlement_posting_must_state_its_stage_and_a_stage_must_have_one (+3)",
+      "backend/crates/libs/qip-contracts/tests/ledger_event.rs settlement_has_no_variant_but_simulated (unchanged)"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18) and not started; it spans three crates, so it is larger than the M this row carries. Slices: (1) qip-contracts: an in_settlement Account and a Decision::Settled outcome, both additive with serde defaults so old records decode and no digest moves; (2) qip-ledgerd store.rs: the Decision::Filled arm posts the cash leg to in_settlement:<cell>/<strategy> when the venue has SettlementTerms, to cash when it has none; (3) qip-edge-node gateway.rs: the simulated gateway emits Decision::Settled when its settlement clock passes a fill's date; (4) the test that cash is unavailable before the settlement date. Slice 3 is the only producer of the fact, and without it slice 2 would leave cash pending for ever. Re-graded 2026-10-24, no code changed.",
+    "gap": "2026-11-12 (lane t50-07): the ledger half of ADR 0130 decisions 1-2 is built and mutation-verified (ADR 0440); what remains is the producer and its setting, which must land together (ADR 0440 decision 7). (1) qip-edge-node: the simulated gateway emits Decision::Settled for each fill at a venue with cycle terms when its settlement clock passes the date SettlementTerms::available_at gives; today the node's venue is instant, so a cycle venue must also be configurable there. (2) qip-ledgerd config.rs/lib.rs: a QIP_LEDGER_ setting naming the same venues, passed to with_settlement_cycle_venues. (3) an end-to-end test that a T+2 fill reaches trading cash on the second simulated settlement day. Until (1) exists every deployed fill books Immediate.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -261,10 +266,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
+    "verification": "cargo test -p qip-ledgerd --test store; cargo test -p qip-contracts --test ledger_event",
     "work_item": "",
     "size": "M",
-    "notes": "Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL, no operation added; ADR 0123 'Consequences' says each kind needs a producer that observes the fact, and none does. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant. No producer observes a settlement: the venue settles at the fill and the desk's T+1 register is a projection, so recording 'settled' would be the kernel's clock passing a calendar's estimate, not a reported fact. A lifecycle needs an in-settlement subledger the fill posts into and a settled transition the ledger books, which changes how fills post cash today and is an ADR, not a producer."
+    "notes": "Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL, no operation added; ADR 0123 'Consequences' says each kind needs a producer that observes the fact, and none does. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant. No producer observes a settlement: the venue settles at the fill and the desk's T+1 register is a projection, so recording 'settled' would be the kernel's clock passing a calendar's estimate, not a reported fact. A lifecycle needs an in-settlement subledger the fill posts into and a settled transition the ledger books, which changes how fills post cash today and is an ADR, not a producer. 2026-11-12 lane t50-07: PARTIAL->PARTIAL with the ledger lifecycle built (ADR 0440); thirteen mutations each fired, including dropping the in_settlement cash leg, which LedgerEvent::new refuses as unbalanced."
   },
   {
     "id": "R12-LEDGER-5012",
