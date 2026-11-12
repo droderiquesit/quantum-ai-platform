@@ -2244,3 +2244,83 @@ fn working_a_remainder_draws_nothing_from_the_venues_random_stream() -> Result<(
     assert!(run(false)?.iter().any(|outcome| outcome == "rejected"));
     Ok(())
 }
+
+#[test]
+fn a_purchase_remainder_the_simulated_venue_never_works_does_not_refuse_a_sale_but_a_sale_remainder_refuses_a_buy()
+-> Result<()> {
+    // ADR 0472 against ADR 0424. The simulated venue fills a fraction of an
+    // order on submission and works the rest of a sale, never the rest of a
+    // purchase. A purchase's remainder therefore stays open on the desk and
+    // rests nowhere a sale could trade with it. The first cut of the
+    // self-trade refusal counted it anyway, and every kernel test that bought
+    // and later sold an instrument on the default venue was refused as a
+    // wash trade: the desk could never sell a partly filled purchase.
+    let partial = SimulationSettings::default()
+        .with_rejection_probability(0.0)
+        .and_then(|s| s.with_immediate_fill_fraction(dec!("0.6")))?;
+    let mut venue = SimulatedBroker::new(partial, 3);
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    let placed = |index: usize, object: &str, side: Side| {
+        let mut order = order(object, side, "10");
+        order.order_id = OrderId::from_string(format!("ord-{object}-{index}"));
+        order
+    };
+
+    // Premise: a buy fills part and leaves an open remainder.
+    let result = submit(
+        &mut manager,
+        placed(0, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "premise: the buy was refused: {:?}",
+        result.refusal
+    );
+    let filled: Decimal = result
+        .fills
+        .iter()
+        .fold(Decimal::ZERO, |sum, fill| sum + fill.quantity);
+    assert!(
+        filled.is_positive() && filled < dec!("10"),
+        "premise: the buy should fill part, filled {filled}"
+    );
+    assert!(!venue.works_remainder(Side::Buy), "premise: ADR 0424");
+
+    // The sale goes: the purchase remainder rests nowhere.
+    let result = submit(
+        &mut manager,
+        placed(1, "AAA", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "a sale was refused against a purchase remainder nobody works: {:?}",
+        result.refusal
+    );
+
+    // The sale's own remainder is worked by this venue, so a buy now would
+    // trade with it, and is refused before the venue is asked.
+    let submitted = venue.submitted_count();
+    let result = submit(
+        &mut manager,
+        placed(2, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    match result.refusal.as_ref() {
+        Some(RefusalReason::SelfTrade { resting_order, .. }) => {
+            assert_eq!(resting_order, "ord-AAA-1");
+        }
+        other => panic!("expected a self-trade refusal against the sale, got {other:?}"),
+    }
+    assert_eq!(
+        venue.submitted_count(),
+        submitted,
+        "the refused buy reached the venue"
+    );
+    Ok(())
+}

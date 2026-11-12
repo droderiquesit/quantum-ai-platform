@@ -893,7 +893,7 @@ impl OrderManager {
         //     this instrument at this venue is a wash trade, refused before
         //     risk and before any broker — the cell's `self_trade` gate, on
         //     the desk's seam. Keyed on the broker's name, as 6b is.
-        if let Some(resting) = self.resting_opposite(broker.name(), &order) {
+        if let Some(resting) = self.resting_opposite(&*broker, &order) {
             let result = refuse(
                 &order,
                 RefusalReason::SelfTrade {
@@ -1403,16 +1403,24 @@ impl OrderManager {
     /// Also forgets every order that is no longer open, which is what keeps
     /// the index bounded by the open orders.
     /// The id of a working order of the desk's own that `order` would
-    /// trade against at `venue`: open, same instrument, other side, with
-    /// something left to fill (ADR 0472). The first by id, so the refusal
-    /// names the same resting order on every replay.
+    /// trade against at `broker`: open, same instrument, other side, with
+    /// something left to fill, on a side whose remainder the venue keeps
+    /// working (ADR 0472). The first by id, so the refusal names the same
+    /// resting order on every replay.
+    ///
+    /// The last condition is [`Broker::works_remainder`]. The simulated
+    /// venue never works a purchase's remainder (ADR 0424), so that
+    /// remainder stays open here and rests nowhere. Counted, it refused
+    /// every later sale of the instrument at that venue, and the desk could
+    /// never sell a partly filled purchase.
     ///
     /// Any opposite working order counts, whatever either limit price is.
     /// A price test would need the venue's matching rules to say whether two
     /// limits cross, and a guess at them is a wash trade let through on the
     /// strength of a model nobody checked; the cell refuses on the same
     /// broad terms (`Cell::would_self_trade`).
-    fn resting_opposite(&mut self, venue: &str, order: &Order) -> Option<String> {
+    fn resting_opposite(&mut self, broker: &dyn Broker, order: &Order) -> Option<String> {
+        let venue = broker.name();
         let orders = &self.orders;
         self.working_venues
             .retain(|id, _| orders.get(id).is_some_and(|order| order.state.is_open()));
@@ -1423,6 +1431,7 @@ impl OrderManager {
                     && orders.get(id.as_str()).is_some_and(|working| {
                         working.object_id == order.object_id
                             && working.side != order.side
+                            && broker.works_remainder(working.side)
                             && working.remaining_quantity().is_positive()
                     })
             })

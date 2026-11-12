@@ -28,7 +28,19 @@ ownership, printing volume nobody traded.
    check (6b) and before pre-trade risk and the broker: an order is refused
    when an accepted order of the desk's own is still open at the same venue
    (the broker's name, as every venue fact in the manager is keyed), on the
-   same instrument, on the other side, with quantity left to fill.
+   same instrument, on the other side, with quantity left to fill, **on a
+   side whose remainder the venue keeps working** (`Broker::works_remainder`).
+   Only such a remainder rests where a later order could match it. The port
+   answers `true` by default, which fails closed for a real or unknown
+   venue. `SimulatedBroker` answers `false` for a purchase, because ADR 0424
+   has it work a sale's remainder and never a purchase's.
+
+   The first cut of this record had no such condition. With the integration
+   branch merged, it refused twelve `qip-kernel` integration tests. Each
+   test bought, was left with an open purchase remainder no venue worked,
+   and was then refused its sale as a wash trade, so the desk could never
+   sell a partly filled purchase. The lane had run only `qip-kernel --lib`,
+   and the orchestrator caught it before the merge.
 2. **Any** opposite working order counts, whatever either limit price is.
    Whether two limits cross depends on the venue's matching rules; a price
    test here would be a model of them nobody checked, and a wrong one lets a
@@ -49,6 +61,11 @@ ownership, printing volume nobody traded.
    ever sent, so a long-running desk pays nothing more per submission.
 
 ## What it costs
+
+- The rule trusts each venue's own answer about which remainders it works.
+  A simulated venue that answered `false` wrongly would let a desk order
+  through against a remainder that does rest; the port's `true` default and
+  the ADR 0424 test of the simulator are what guard that.
 
 - The desk cannot rest orders on both sides of one book at one venue. A
   two-sided quote would be refused on its second leg. The desk has no
@@ -85,4 +102,8 @@ the communications check (gap 4). R12-GOV-6126 stays PARTIAL on those.
 a_desk_order_that_would_trade_against_its_own_working_order_is_refused_before_the_broker`,
 mutation-verified twice: disabling step 6c fails it at "a sale crossed the
 desk's own resting buy"; dropping the opposite-side condition fails it at "a
-second buy was refused".
+second buy was refused". `a_purchase_remainder_the_simulated_venue_never_works_does_not_refuse_a_sale_but_a_sale_remainder_refuses_a_buy`
+in the same suite, mutation-verified twice: dropping the works-remainder
+condition fails it at "a sale was refused against a purchase remainder
+nobody works"; making the simulator answer `false` for a sale fails it at
+"expected a self-trade refusal against the sale".
