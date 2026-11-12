@@ -13832,13 +13832,35 @@ fn the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuratio
         "the ledger's Spanner instance does not pin `edition = \"ENTERPRISE_PLUS\"`; a project \
          default is an edition nobody reviewed"
     );
+    // Since ADR 0393 the configuration is read from the placement decided for
+    // the writer's region, so the instance names the map's entry and the map
+    // holds the names. Every name in it must be a multi-region configuration.
+    // Google names a regional configuration `regional-<region>` and a
+    // multi-region one without that prefix (`nam3`, `eur5`, `nam-eur-asea1`);
+    // this said "contains a hyphen" until 2026-11-12, which `nam3` refutes.
     let config = hcl_field(global, "config").expect("the instance names a `config`");
-    let config = config.trim_matches('"');
     assert!(
-        config.contains('-') && !config.starts_with("regional-"),
-        "the ledger's instance config `{config}` is a single region, not a multi-region \
-         configuration; external consistency across regions needs one"
+        config.contains("local.spanner_placement.config"),
+        "the ledger's instance config `{config}` is not the placement ADR 0393 decides for the \
+         writer's region"
     );
+    let placements = block_under(&data, "spanner_placements = {");
+    let configs: Vec<&str> = placements
+        .lines()
+        .filter_map(|line| line.split_once("config = \"")?.1.split_once('"'))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        !configs.is_empty(),
+        "premise: local.spanner_placements names no configuration, so nothing below is checked"
+    );
+    for config in configs {
+        assert!(
+            !config.starts_with("regional-"),
+            "the ledger's placement config `{config}` is a single region, not a multi-region \
+             configuration; external consistency across regions needs one"
+        );
+    }
 }
 
 // --- five networks, each deny-by-default on ingress ---------------------------
