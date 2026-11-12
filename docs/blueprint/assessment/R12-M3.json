@@ -524,7 +524,7 @@
   },
   {
     "id": "R12-REASON-3023",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The Adversarial Brain is six adversaries in Organisation::standard, each rostered under AgentRole::Adversarial and independent review, each challenging and publishing nothing, each reporting Ambiguous rather than Negative so a warning is weighed as context, and each with a Scope that removing it drops from coverage: manipulation (ManipulationProbe since 2026-10-31, over every instrument's book and bars on the desk: a crossed book, depth stacked twenty times the touch behind it within five levels, and volume five times the tape's median on a close inside five basis points; Scope::MarketManipulation), regime breaks (RegimeBreakProbe; Scope::RegimeBreak), model failure (ModelFailureProbe since 2026-10-31, over Desk.models: a forecaster whose mean Brier is at or above a coin's 0.25, one the meta-model puts at 60% or more to fail in the question's regime, and every production model the deep brain last reported past its drift threshold; Scope::ModelFailure), source poisoning (PoisoningDetector; Scope::SourcePoisoning), and strategies that exploit the platform itself (SelfExploitationProbe over Desk.executions; Scope::SelfExploitation), with AdversarialReviewer attacking the hypothesis itself. The kernel feeds the two new facilities before every REASON: executions from its order manager, models from the tournament's open questions (mean Brier, meta-model predicted failure) and its last observe_model_drift report (Platform::brief_the_desk_on_executions / brief_the_desk_on_models in stage_reason), behind Capability::ReadExecutionHistory and the new Capability::ReadModelRegistry, which no research agent holds. Roster: twenty-four.",
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/adversary.rs ManipulationProbe / probe_book / probe_tape, ModelFailureProbe / probe_models, SelfExploitationProbe, RegimeBreakProbe",
@@ -537,7 +537,7 @@
       "backend/crates/agents/qip-investment-agents/src/adversary.rs unit tests: a_layered_or_crossed_book_is_a_manipulation_shape_and_a_plain_one_is_not, volume_on_a_flat_close_is_wash_and_volume_that_moved_the_price_is_not, a_forecaster_worse_than_chance_or_expected_to_fail_and_a_drifted_model_are_findings, and the three earlier probe tests",
       "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings (each arm's findings reach the count the probe reports)"
     ],
-    "gap": "",
+    "gap": "2026-11-12 (orchestrator, independent verification of the 2026-11-12 grade): held PARTIAL. Emits findings for its scope is proven at agent level for manipulation and poisoning only. For regime break, model failure and self-exploitation every cited test asserts a findings count of zero, and the kernel feed tests check only the examined counts. The mutation fixed for manipulation is open for the regime-break probe: deleting the push in RegimeBreakProbe::analyse (adversary.rs) leaves the scope covered and every cited test passing, because coverage checks only that the fact label is present and the unit test calls compare_regimes and is_break, never analyse. Each of the three probes needs a fixture it must report a nonzero finding on, mutation-verified. Earlier: ",
     "implemented": true,
     "tested": true,
     "integrated": true,

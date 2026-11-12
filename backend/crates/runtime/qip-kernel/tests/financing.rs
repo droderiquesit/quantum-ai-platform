@@ -660,3 +660,492 @@ fn an_index_and_a_basket_are_valued_from_their_stated_constituents_and_one_that_
     }
     Ok(())
 }
+
+fn reverse_repo(id: &str, collateral: &str, is_reverse: bool) -> Result<FinancialObject> {
+    repo_at_rate(id, collateral, is_reverse, 0.05)
+}
+
+fn repo_at_rate(
+    id: &str,
+    collateral: &str,
+    is_reverse: bool,
+    repo_rate: f64,
+) -> Result<FinancialObject> {
+    repo_maturing(id, collateral, is_reverse, repo_rate, 30)
+}
+
+fn repo_maturing(
+    id: &str,
+    collateral: &str,
+    is_reverse: bool,
+    repo_rate: f64,
+    days: i64,
+) -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::Repo,
+        liquidity(),
+    )
+    .venue("OTC")
+    .price(dec!("100"))
+    .provenance(provenance())
+    .extension(Extension::Repo(RepoDetails {
+        collateral_object: collateral.to_string(),
+        maturity: start().saturating_add(Duration::from_days(days)),
+        repo_rate,
+        haircut: 0.02,
+        is_reverse,
+        counterparty: "dealer-a".into(),
+    }))
+    .build(start())
+}
+
+fn repo_desk_over(path: &std::path::Path, at: Timestamp) -> Result<Platform> {
+    let mut universe = Universe::new();
+    let mut objects = flat_curve("UST", Currency::USD, 0.05)?;
+    objects.push(reverse_repo("obj-REVERSE", "obj-UST-10Y", true)?);
+    objects.push(reverse_repo("obj-BORROW", "obj-UST-10Y", false)?);
+    objects.push(repo_maturing("obj-LATER", "obj-UST-10Y", true, 0.05, 60)?);
+    objects.push(repo_at_rate("obj-NEGATIVE", "obj-UST-10Y", true, -0.01)?);
+    objects.push(repo_at_rate(
+        "obj-UNNUMBERED",
+        "obj-UST-10Y",
+        true,
+        f64::NAN,
+    )?);
+    for object in objects {
+        universe.insert(object)?;
+    }
+    let config = PlatformConfig::default().with_event_log_file(path);
+    let (context, _clock) = Context::deterministic(at, config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )
+}
+
+/// A desk over a fresh event log of its own, removed when dropped.
+struct RepoDesk {
+    directory: std::path::PathBuf,
+    path: std::path::PathBuf,
+}
+
+impl RepoDesk {
+    fn new(name: &str) -> Self {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-kernel-financing-{name}-{}-{}",
+            std::process::id(),
+            start().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        Self { directory, path }
+    }
+
+    fn open(&self, at: Timestamp) -> Result<Platform> {
+        repo_desk_over(&self.path, at)
+    }
+}
+
+impl Drop for RepoDesk {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Declare the treasury's repo permission for `counterparty`, the only way a
+/// repo order is admitted (ADR 0398). The permission is the treasury's, in
+/// the one registry DECIDE's funding reads too.
+fn permit_repo(platform: &mut Platform, counterparty: &str) -> Result<()> {
+    platform.declare_treasury(qip_kernel::treasury::TreasuryDeclaration {
+        permissions: vec![(
+            qip_treasury::treasury::FinancingFunction::Repo,
+            counterparty.to_owned(),
+        )],
+        ..qip_kernel::treasury::TreasuryDeclaration::default()
+    })
+}
+
+fn repo_order(
+    platform: &mut Platform,
+    id: &str,
+    side: qip_execution_engine::order::Side,
+    at: Timestamp,
+) -> Result<qip_execution_engine::order::Order> {
+    platform.order_for(
+        ObjectId::from_string(id),
+        side,
+        dec!("10"),
+        dec!("100"),
+        "prop-repo",
+        vec!["hyp-repo".to_string()],
+        at,
+    )
+}
+
+fn maturities(platform: &Platform) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+    platform
+        .pending_desk_operations()
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.kind,
+                qip_contracts::ledger_operation::OperationKind::RepoMaturity { .. }
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn lent(platform: &Platform) -> Decimal {
+    platform
+        .orders()
+        .fills()
+        .iter()
+        .map(|fill| fill.quantity * fill.price)
+        .fold(Decimal::ZERO, |sum, notional| sum + notional)
+}
+
+/// R12-COVERAGE-5100, ADR 0398. The first gate built for a repo held a
+/// second permission registry in `Platform`, beside the treasury's, and was
+/// reverted for it: two registries answer "may the platform finance with
+/// this counterparty" twice, and the one an operator did not update answers
+/// wrong. The failures this prevents: a repo order placed while the
+/// treasury holds no repo permission, by either route to the venue; one
+/// placed under a permission for another counterparty; and a gate that
+/// refuses everything, which the last assertion rules out.
+///
+/// Mutations that fired, each restored byte-for-byte: `financing_gate`
+/// dropped from `order_for` ("an undeclared treasury admitted a repo
+/// order"); dropped from `submit_released` ("an order built around the gate
+/// was submitted"); `Treasury::require_repo` answering `Ok(())` (the first
+/// assertion); `FinancingPermissions::require_repo` asking for
+/// `FinancingFunction::BorrowLend` (the first refusal names `BorrowLend`,
+/// not `Repo`).
+#[test]
+fn a_repo_order_is_refused_unless_the_treasury_holds_the_repo_permission_for_its_own_counterparty()
+-> Result<()> {
+    use qip_execution_engine::order::Side;
+    let desk = RepoDesk::new("permission");
+    let mut platform = desk.open(start())?;
+    assert!(
+        platform.treasury().require_repo("dealer-a").is_err(),
+        "premise: the assembled treasury permits nothing"
+    );
+    let refusal = repo_order(&mut platform, "obj-REVERSE", Side::Buy, start())
+        .expect_err("an undeclared treasury admitted a repo order");
+    assert!(
+        refusal.message().contains("Repo is not permitted")
+            && refusal.message().contains("dealer-a"),
+        "{}",
+        refusal.message()
+    );
+    let around = platform.order_from(
+        ObjectId::from_string("obj-REVERSE"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-repo",
+        vec!["hyp-repo".to_string()],
+        start(),
+    );
+    platform
+        .submit_order(around, start())
+        .expect_err("an order built around the gate was submitted");
+
+    permit_repo(&mut platform, "dealer-b")?;
+    let refusal = repo_order(&mut platform, "obj-REVERSE", Side::Buy, start())
+        .expect_err("a permission for another counterparty admitted the order");
+    assert!(
+        refusal.message().contains("dealer-a"),
+        "{}",
+        refusal.message()
+    );
+    assert_eq!(
+        platform.orders().fills().len(),
+        0,
+        "premise: nothing filled"
+    );
+
+    permit_repo(&mut platform, "dealer-a")?;
+    repo_order(&mut platform, "obj-REVERSE", Side::Buy, start())
+        .expect("the permitted counterparty was refused");
+    Ok(())
+}
+
+/// ADR 0398 decision 6. A repo the desk borrows under delivers collateral,
+/// and ADR 0153 decision 3 books a pledge only from a venue that states one;
+/// no simulated venue does. The failure this prevents: a borrowing admitted
+/// because the permission is held, booking cash the desk received against
+/// collateral no ledger operation says left.
+///
+/// Mutation that fired: the `is_reverse` refusal removed ("a borrowing repo
+/// got an order under the permission").
+#[test]
+fn a_repo_the_desk_would_borrow_under_is_refused_even_with_the_permission() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let desk = RepoDesk::new("borrow");
+    let mut platform = desk.open(start())?;
+    permit_repo(&mut platform, "dealer-a")?;
+    repo_order(&mut platform, "obj-REVERSE", Side::Buy, start())
+        .expect("premise: the lending repo with the same counterparty is admitted");
+    let refusal = repo_order(&mut platform, "obj-BORROW", Side::Buy, start())
+        .expect_err("a borrowing repo got an order under the permission");
+    assert!(
+        refusal.message().contains("the desk borrows"),
+        "{}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+/// ADR 0398 decision 6, by another name. Selling the lender's claim the book
+/// does not hold leaves the desk short a repo, which is borrowing cash under
+/// it. The failure this prevents: the borrowing arm reached through a sale.
+///
+/// Mutation that fired: the short refusal removed ("a sale of an unheld
+/// repo got an order").
+#[test]
+fn selling_more_of_a_repo_than_the_book_holds_is_refused_as_a_borrowing() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let desk = RepoDesk::new("short");
+    let mut platform = desk.open(start())?;
+    permit_repo(&mut platform, "dealer-a")?;
+    assert!(
+        !platform.positions_at_cost().contains_key("obj-REVERSE"),
+        "premise: the book holds none"
+    );
+    let refusal = repo_order(&mut platform, "obj-REVERSE", Side::Sell, start())
+        .expect_err("a sale of an unheld repo got an order");
+    assert!(refusal.message().contains("short"), "{}", refusal.message());
+    Ok(())
+}
+
+/// ADR 0398 decision 8. The far leg repays principal and interest of zero or
+/// more; a rate that is negative or not a number cannot be repaid on. The
+/// failure this prevents: a repo lent under a rate its own maturity then
+/// refuses, leaving a claim the book holds and the ledger can never close.
+///
+/// Mutation that fired: the rate refusal removed ("a negative rate got an
+/// order", then the NaN arm).
+#[test]
+fn a_repo_whose_rate_is_negative_or_not_a_number_is_refused_an_order() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let desk = RepoDesk::new("rate");
+    let mut platform = desk.open(start())?;
+    permit_repo(&mut platform, "dealer-a")?;
+    repo_order(&mut platform, "obj-REVERSE", Side::Buy, start())
+        .expect("premise: a repo at a positive rate is admitted");
+    for (id, why) in [
+        ("obj-NEGATIVE", "a negative rate got an order"),
+        ("obj-UNNUMBERED", "a rate that is not a number got an order"),
+    ] {
+        let refusal = repo_order(&mut platform, id, Side::Buy, start()).expect_err(why);
+        assert!(
+            refusal.message().contains("repo rate"),
+            "{id}: {}",
+            refusal.message()
+        );
+    }
+    Ok(())
+}
+
+/// ADR 0398 decision 8. A matured repo is repaid, not traded. The failure
+/// this prevents: cash lent at or after the instant it was due back, which
+/// the far leg would repay at once with no term to earn over.
+///
+/// Mutation that fired: the maturity refusal removed ("a matured repo got
+/// an order").
+#[test]
+fn a_repo_at_or_past_its_maturity_is_refused_an_order() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let maturity = start().saturating_add(Duration::from_days(30));
+    let desk = RepoDesk::new("matured");
+    let mut platform = desk.open(start())?;
+    permit_repo(&mut platform, "dealer-a")?;
+    repo_order(
+        &mut platform,
+        "obj-REVERSE",
+        Side::Buy,
+        maturity.saturating_sub(Duration::from_hours(1)),
+    )
+    .expect("premise: an hour before maturity the repo is admitted");
+    let refusal = repo_order(&mut platform, "obj-REVERSE", Side::Buy, maturity)
+        .expect_err("a matured repo got an order");
+    assert!(
+        refusal.message().contains("matured"),
+        "{}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+/// ADR 0398 decision 2. The near leg is the fill: the cash lent is what the
+/// fill paid and the claim is the unit the book holds. The failures this
+/// prevents: a second operation restating the opening, which is a second
+/// claim about one fact, and a repayment booked before the cash is due.
+///
+/// Mutation that fired: `settle_matured_repos` comparing `now >=
+/// maturity.saturating_sub(two days)` ("repaid before maturity").
+#[test]
+fn a_permitted_reverse_repo_fills_as_its_near_leg_and_nothing_is_repaid_before_maturity()
+-> Result<()> {
+    use qip_execution_engine::order::Side;
+    let maturity = start().saturating_add(Duration::from_days(30));
+    let desk = RepoDesk::new("near");
+    let mut platform = desk.open(start())?;
+    permit_repo(&mut platform, "dealer-a")?;
+    let cash_before = platform.cash();
+    let lend = repo_order(&mut platform, "obj-REVERSE", Side::Buy, start())?;
+    platform.submit_order(lend, start())?;
+    let (held, _) = *platform
+        .positions_at_cost()
+        .get("obj-REVERSE")
+        .expect("the venue did not fill the permitted repo");
+    assert!(held.is_positive(), "the desk does not hold the claim");
+    let lent = lent(&platform);
+    assert!(lent.is_positive(), "premise: the fill lent cash");
+    assert!(
+        platform.cash() <= cash_before - lent,
+        "the cash lent did not leave the book: {} then {}",
+        cash_before,
+        platform.cash()
+    );
+    assert!(maturities(&platform).is_empty(), "the fill was restated");
+
+    platform.run_cycle(maturity.saturating_sub(Duration::from_days(1)));
+    assert!(maturities(&platform).is_empty(), "repaid before maturity");
+    assert!(platform.positions_at_cost().contains_key("obj-REVERSE"));
+    Ok(())
+}
+
+/// ADR 0398 decisions 3 to 5. The far leg repays what the fill lent plus the
+/// interest its own rate earns, once, and a restart neither loses it nor
+/// books it again. The failures this prevents: a matured repo left in the
+/// book; principal restated from anything but the fill; interest that is
+/// not the record's rate over the days lent; the repayment booked twice; a
+/// restart that takes the repayment back, repeats it, or queues no far leg;
+/// and the book's cash disagreeing with the ledger's postings.
+///
+/// Mutations that fired, each restored byte-for-byte: `settle_matured_repos`
+/// dropped from SENSE ("one far leg at maturity"); `repo_interest` answering
+/// zero (the interest assertion); the `Entry::Maturity` fold skipped on
+/// resume ("the restarted book still holds the repaid repo"); the re-queue
+/// on resume dropped ("the restarted process did not re-queue");
+/// `repo_maturity_operations` not resumed ("a far leg after a restart
+/// reused a journalled sequence").
+#[test]
+fn a_held_repo_is_repaid_once_at_maturity_with_principal_and_interest_and_not_again_after_a_restart()
+-> Result<()> {
+    use qip_contracts::ledger_operation::OperationKind;
+    use qip_execution_engine::order::Side;
+    let maturity = start().saturating_add(Duration::from_days(30));
+    let desk = RepoDesk::new("far");
+    let (booked, cash_repaid) = {
+        let mut first = desk.open(start())?;
+        permit_repo(&mut first, "dealer-a")?;
+        let lend = repo_order(&mut first, "obj-REVERSE", Side::Buy, start())?;
+        first.submit_order(lend, start())?;
+        // The near leg of obj-REVERSE is the first fill: what it lent.
+        let lent = lent(&first);
+        // A second repo, maturing after the restart, so the restarted
+        // process must continue the far legs' sequence rather than reuse it.
+        let later = repo_order(&mut first, "obj-LATER", Side::Buy, start())?;
+        first.submit_order(later, start())?;
+        assert!(
+            first.positions_at_cost().contains_key("obj-LATER"),
+            "premise: the second repo filled"
+        );
+        let (held, _) = *first
+            .positions_at_cost()
+            .get("obj-REVERSE")
+            .expect("premise: the venue filled the repo");
+        let fills_before = first.orders().fills().len();
+        let cash_before = first.cash();
+        first.run_cycle(maturity);
+        assert_eq!(
+            first.orders().fills().len(),
+            fills_before,
+            "premise: the maturity cycle filled nothing, so the cash moved is the repayment"
+        );
+        let repaid = maturities(&first);
+        assert_eq!(repaid.len(), 1, "one far leg at maturity: {repaid:?}");
+        let OperationKind::RepoMaturity {
+            counterparty,
+            repo,
+            units,
+            cash_unit,
+            principal,
+            interest,
+            ..
+        } = &repaid[0].kind
+        else {
+            unreachable!("filtered to repo maturities");
+        };
+        assert_eq!((repo.as_str(), *units), ("obj-REVERSE", held));
+        assert_eq!(
+            (counterparty.as_str(), cash_unit.as_str()),
+            ("dealer-a", "USD")
+        );
+        // What was lent is what the fill paid, not a figure restated here.
+        assert_eq!(*principal, lent);
+        // 5% on the 365.25-day year over the whole days the cash was lent,
+        // counted from the fill's own instant and not from the order's.
+        let filled_at = first.orders().fills()[0].at;
+        let days = maturity.since(filled_at).as_millis() / 86_400_000;
+        assert!((29..=30).contains(&days), "premise: about a month, {days}");
+        let expected = lent * dec!("0.05") * Decimal::from_int(days) / dec!("365.25");
+        assert!(
+            (*interest - expected).abs() < dec!("0.0001") && interest.is_positive(),
+            "interest {interest} is not {days} days at 5% on {lent}: {expected}"
+        );
+        assert!(
+            !first.positions_at_cost().contains_key("obj-REVERSE"),
+            "the matured repo is still in the book"
+        );
+        // The book received exactly what the ledger's postings say.
+        assert_eq!(first.cash(), cash_before + *principal + *interest);
+
+        let after = maturity.saturating_add(Duration::from_hours(1));
+        first.run_cycle(after);
+        assert_eq!(maturities(&first), repaid, "the repayment was booked twice");
+        (repaid, first.cash())
+    };
+
+    let later = maturity.saturating_add(Duration::from_hours(2));
+    let mut second = desk.open(later)?;
+    assert_eq!(
+        maturities(&second),
+        booked,
+        "the restarted process did not re-queue the far leg the first journalled"
+    );
+    assert!(
+        !second.positions_at_cost().contains_key("obj-REVERSE"),
+        "the restarted book still holds the repaid repo"
+    );
+    assert_eq!(
+        second.cash(),
+        cash_repaid,
+        "the restart moved the repaid cash"
+    );
+    second.run_cycle(later);
+    assert_eq!(
+        maturities(&second),
+        booked,
+        "the restart repaid the repo again"
+    );
+    second.run_cycle(start().saturating_add(Duration::from_days(60)));
+    let both = maturities(&second);
+    assert_eq!(both.len(), 2, "the later repo was not repaid: {both:?}");
+    assert!(
+        both[1].sequence > both[0].sequence,
+        "a far leg after a restart reused a journalled sequence: {} then {}",
+        both[0].sequence,
+        both[1].sequence
+    );
+    Ok(())
+}

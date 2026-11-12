@@ -309,7 +309,7 @@
   },
   {
     "id": "R12-DATA-2014",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "ConnectorFeed's poll path keeps only the digest; a canary test proves the body reaches no journal, record or digest. Since 2026-10-18 the narrative, REST and alternative-data adapters each have the equivalent proof: a canary in the served body (an article body; a field no decoder reads) crosses the socket and reaches no emitted record, debug or serialised, and nothing the adapter holds. The tick lake's RecordClass has no world-document variant.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:1015 a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll",
@@ -319,7 +319,7 @@
       "backend/crates/apps/qip-fastbrain/src/feed.rs:201 the REST adapter's production construction",
       "backend/crates/libs/qip-storage/tests/lake.rs:28 a_world_source_document_is_refused_by_name_and_the_lake_has_only_two_classes"
     ],
-    "gap": "",
+    "gap": "2026-11-12 (orchestrator, independent verification of the 2026-11-12 grade): held PARTIAL. The bar's clause that the check fails if any durable artefact holds the body is unmet in two ways. (1) On the production poll path raw source bytes reach the durable tick lake: connector_feed.rs passes envelope.raw_payload() to captured_of, connector/evidence.rs copies the bytes into CapturedMarketEvent, and qip-deepbrain main.rs attaches a tick lake; the canary test (connector_feed.rs a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll) builds its feed with no tick lake and so cannot see it. (2) The same poll produces knowledge packs, which the deep brain persists to a BlobStore and which carry a free-text PackBody::Summary, and checked evidence, which drain_evidence hands on; the canary test drains and inspects neither. Earlier: ",
     "implemented": true,
     "tested": true,
     "integrated": true,

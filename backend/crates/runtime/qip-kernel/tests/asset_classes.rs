@@ -478,7 +478,9 @@ fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
         maturity,
         repo_rate: 0.045,
         haircut: 0.02,
-        is_reverse: false,
+        // The desk lends: ADR 0398 refuses an order in a repo whose record
+        // says it borrows, because the venue states no pledge.
+        is_reverse: true,
         counterparty: "cp-1".to_string(),
     }))
     .provenance(Provenance::synthetic("asset-class-test", start()))
@@ -564,6 +566,14 @@ fn a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_
         0,
         "premise: nothing filled"
     );
+    // ADR 0398: a repo order needs the Repo permission for its counterparty.
+    platform.declare_treasury(qip_kernel::treasury::TreasuryDeclaration {
+        permissions: vec![(
+            qip_treasury::treasury::FinancingFunction::Repo,
+            "cp-1".to_owned(),
+        )],
+        ..qip_kernel::treasury::TreasuryDeclaration::default()
+    })?;
     for id in ["obj-REPO-1M", "obj-IDX", "obj-BASKET"] {
         let order = platform.order_for(
             ObjectId::from_string(id),
