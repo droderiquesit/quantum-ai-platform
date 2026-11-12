@@ -556,11 +556,14 @@ pub struct MemoryRegistry {
     /// Entries admitted through [`Self::admit`], by kind (R12-EXPAND-6057).
     admitted: BTreeMap<MemoryKind, usize>,
     /// Entries [`Self::admit`] refused because a declared field was missing
-    /// or out of range. Counted on the registry, so a producer that builds a
-    /// malformed entry is visible here rather than only in its own error.
+    /// or out of range, and entries [`Self::admit_version`] refused for a
+    /// version that did not raise the latest. Counted on the registry, so a
+    /// producer that builds a malformed entry or replays a stale one is
+    /// visible here rather than only in its own error.
     refused: usize,
-    /// The last [`RETAINED_MEMORY_ENTRIES`] admitted entries, oldest first.
-    entries: VecDeque<MemoryEntry>,
+    /// The last [`RETAINED_MEMORY_ENTRIES`] admitted entries, oldest first,
+    /// each with the version of its id it was admitted as.
+    entries: VecDeque<(u32, MemoryEntry)>,
 }
 
 impl MemoryRegistry {
@@ -650,17 +653,107 @@ impl MemoryRegistry {
     /// `[0, 1]`, or no tags. The refusal is counted on the registry as well
     /// as returned, because the producer that built the entry is the party
     /// least likely to read its own error.
+    ///
+    /// Versioned by id (R12-COVERAGE-7170): an id not held is admitted as
+    /// version one, and an id already held is admitted as the next version
+    /// beside the one it follows, which stays readable through
+    /// [`Self::entry_at`]. The failure it prevents: two entries under one id
+    /// were both held with nothing to say which was current, so a reader
+    /// taking the first match and one taking the last read different
+    /// memories under the same name.
     pub fn admit(&mut self, entry: MemoryEntry) -> Result<()> {
         if let Err(error) = entry.validate() {
             self.refused += 1;
             return Err(error);
         }
+        let next = match self.latest_version(&entry.id) {
+            None => 1,
+            Some(latest) => match latest.checked_add(1) {
+                Some(next) => next,
+                None => {
+                    self.refused += 1;
+                    return Err(Error::numeric(format!(
+                        "memory entry `{}` has no version left to take; admit its successor \
+                         under a new id",
+                        entry.id
+                    )));
+                }
+            },
+        };
+        self.hold(next, entry);
+        Ok(())
+    }
+
+    /// Admit `entry` as exactly `version` of its id, for a producer that
+    /// numbers its own revisions (a replayed journal, a distilled abstraction
+    /// rewritten on new evidence).
+    ///
+    /// Refuses everything [`Self::admit`] refuses, a version of zero, and a
+    /// version not above the latest held for the id: a late-arriving old
+    /// revision admitted over a newer one would become the entry a reader
+    /// taking the latest gets, which is the current memory replaced by a
+    /// stale one. The refusal is counted like any other.
+    pub fn admit_version(&mut self, entry: MemoryEntry, version: u32) -> Result<()> {
+        if let Err(error) = entry.validate() {
+            self.refused += 1;
+            return Err(error);
+        }
+        if version == 0 {
+            self.refused += 1;
+            return Err(Error::invalid(format!(
+                "memory entry `{}` was offered as version 0; versions start at 1, so admit it \
+                 through `admit` and let the registry number it",
+                entry.id
+            )));
+        }
+        if let Some(latest) = self.latest_version(&entry.id)
+            && version <= latest
+        {
+            self.refused += 1;
+            return Err(Error::invalid(format!(
+                "memory entry `{}` version {version} is not above the latest held version \
+                 {latest}; admit version {} or higher, or use `admit` to take the next",
+                entry.id,
+                latest.saturating_add(1)
+            )));
+        }
+        self.hold(version, entry);
+        Ok(())
+    }
+
+    /// Count and keep one admitted entry, giving up the oldest held one when
+    /// the working set is full.
+    fn hold(&mut self, version: u32, entry: MemoryEntry) {
         *self.admitted.entry(entry.kind).or_default() += 1;
         if self.entries.len() == RETAINED_MEMORY_ENTRIES {
             self.entries.pop_front();
         }
-        self.entries.push_back(entry);
-        Ok(())
+        self.entries.push_back((version, entry));
+    }
+
+    /// The highest version held for `id`, or `None` when no version of it is
+    /// in the working set.
+    ///
+    /// Read off the held entries rather than a counter per id, because ids
+    /// are minted per resolved call and a counter kept for each would grow
+    /// with the platform's uptime. The consequence, stated rather than
+    /// hidden: once every version of an id has left the working set the
+    /// registry no longer knows the id, and a later entry under it is version
+    /// one again. The event log is the record; this is a working set over it.
+    pub fn latest_version(&self, id: &str) -> Option<u32> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.id == id)
+            .map(|(version, _)| *version)
+            .max()
+    }
+
+    /// The entry admitted as `version` of `id`, while it is still held.
+    pub fn entry_at(&self, id: &str, version: u32) -> Option<&MemoryEntry> {
+        self.entries
+            .iter()
+            .find(|(held, entry)| *held == version && entry.id == id)
+            .map(|(_, entry)| entry)
     }
 
     /// Entries admitted under `kind` since the registry was built.
@@ -675,6 +768,6 @@ impl MemoryRegistry {
 
     /// The retained entries, oldest first.
     pub fn entries(&self) -> impl Iterator<Item = &MemoryEntry> {
-        self.entries.iter()
+        self.entries.iter().map(|(_, entry)| entry)
     }
 }

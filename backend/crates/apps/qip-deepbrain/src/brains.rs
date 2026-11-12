@@ -58,7 +58,18 @@ pub const REQUIRED_SCOPES: [&str; 3] = [
     WORLD_MODEL_ARBITRATION,
 ];
 
-/// Validated brain specs keyed by id.
+/// The id a successor names its parent by: `<brain id>-v<version>`, the form
+/// `BrainSpec::parent_version_id` already carries in the contract's own
+/// tests.
+pub fn version_id(id: &str, version: u32) -> String {
+    format!("{id}-v{version}")
+}
+
+/// Validated brain specs keyed by id, each at the version in force.
+///
+/// A superseded version is not retained here (ADR 0410 decision 2): its
+/// successor's `parent_version_id` names it, and no figure has been given
+/// that would bound a history kept for the life of the node.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BrainRegistry {
     entries: BTreeMap<String, BrainSpec>,
@@ -76,8 +87,8 @@ impl BrainRegistry {
         spec.validate()?;
         if self.entries.contains_key(&spec.id) {
             return Err(Error::invalid(format!(
-                "brain `{}` is registered twice; give the successor a new version under the \
-                 same lineage rather than a second entry",
+                "brain `{}` is registered twice; admit the successor through `succeed`, as \
+                 the next version naming this one as its parent, rather than a second entry",
                 spec.id
             )));
         }
@@ -85,8 +96,62 @@ impl BrainRegistry {
         Ok(())
     }
 
+    /// Admit `spec` as the successor of the version held under its id,
+    /// returning the version now in force (R12-COVERAGE-7170).
+    ///
+    /// The failure it prevents: `register` refused a second spec and told the
+    /// caller to give the successor a new version, and no door admitted one,
+    /// so `version` and `parent_version_id` were fields nothing could move
+    /// and a brain whose tools or authority changed could only be recorded
+    /// by rebuilding the registry without its past.
+    ///
+    /// Refused: a spec that fails its own validation; an id not yet
+    /// registered (a first version is `register`'s); a version that is not
+    /// exactly the held one plus one, which covers a stale version, the held
+    /// version offered again and a skipped one; and a `parent_version_id`
+    /// that does not name the held version, because a successor whose stated
+    /// parent is not what it replaces has a lineage nobody can follow. The
+    /// superseded spec is named by the successor's parent and not kept.
+    pub fn succeed(&mut self, spec: BrainSpec) -> Result<u32> {
+        spec.validate()?;
+        let Some(held) = self.entries.get(&spec.id) else {
+            return Err(Error::not_found(format!(
+                "brain `{}` is not registered; register its first version before a successor",
+                spec.id
+            )));
+        };
+        let Some(next) = held.version.checked_add(1) else {
+            return Err(Error::numeric(format!(
+                "brain `{}` has no version left to take; register its successor under a new id",
+                spec.id
+            )));
+        };
+        if spec.version != next {
+            return Err(Error::invalid(format!(
+                "brain `{}` is held at version {} and the successor offered is version {}; a \
+                 successor is version {next}, so renumber it",
+                spec.id, held.version, spec.version
+            )));
+        }
+        let parent = version_id(&held.id, held.version);
+        if spec.parent_version_id.as_deref() != Some(parent.as_str()) {
+            return Err(Error::invalid(format!(
+                "brain `{}` version {next} names parent {:?} and the version it succeeds is \
+                 `{parent}`; set `parent_version_id` to that",
+                spec.id, spec.parent_version_id
+            )));
+        }
+        self.entries.insert(spec.id.clone(), spec);
+        Ok(next)
+    }
+
     pub fn get(&self, id: &str) -> Option<&BrainSpec> {
         self.entries.get(id)
+    }
+
+    /// The version of brain `id` in force.
+    pub fn latest_version(&self, id: &str) -> Option<u32> {
+        self.entries.get(id).map(|spec| spec.version)
     }
 
     pub fn len(&self) -> usize {

@@ -213,9 +213,49 @@ impl CapabilityPack {
     }
 }
 
+/// One version of a registered tool: the spec as it stood, numbered, with
+/// the evaluation that admitted it (R12-COVERAGE-7170).
+///
+/// The failure it prevents: `promote` widened the scope in place, so the
+/// registry could say what a tool may do now and nothing about what it could
+/// do when a decision used it, or which evaluation widened it. A tool that
+/// left its sandbox yesterday and one that has always been able to read the
+/// same.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolVersion {
+    version: u32,
+    spec: ToolSpec,
+    evaluation: Option<String>,
+}
+
+impl ToolVersion {
+    /// One for the registration, then rising by one at each promotion that
+    /// widened the scope.
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+    /// The tool as it stood at this version.
+    pub const fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+    /// The evaluation the promotion cited. `None` for version one, which is
+    /// the registration: read-only and sandboxed, on no evaluation at all.
+    pub fn evaluation(&self) -> Option<&str> {
+        self.evaluation.as_deref()
+    }
+}
+
+/// Tools by name, each as every version it has held, oldest first.
+///
+/// The registry assigns the version; no door takes one from a caller, so a
+/// stale or repeated version cannot be offered. History is bounded without a
+/// cap of its own: a scope only widens, a version is minted only when it
+/// does, and so a tool holds at most one version per [`ToolPermission`].
 #[derive(Clone, Debug, Default)]
 pub struct ToolRegistry {
-    tools: BTreeMap<String, ToolSpec>,
+    /// Versions per tool name, oldest first, never empty; the last is the
+    /// one in force.
+    tools: BTreeMap<String, Vec<ToolVersion>>,
 }
 
 impl ToolRegistry {
@@ -247,7 +287,17 @@ impl ToolRegistry {
     /// deliberately no parameter to start wider.
     pub fn register(&mut self, name: ToolName, kind: ToolKind) -> Result<&ToolSpec> {
         let spec = self.propose(name, kind)?;
-        Ok(self.tools.entry(spec.name.clone()).or_insert(spec))
+        let versions = self.tools.entry(spec.name.clone()).or_default();
+        // `propose` refused a name already held, so this is the first.
+        versions.push(ToolVersion {
+            version: 1,
+            spec,
+            evaluation: None,
+        });
+        versions
+            .last()
+            .map(ToolVersion::spec)
+            .ok_or_else(|| Error::invalid("a registered tool holds its first version"))
     }
 
     /// The tool registered under `name`.
@@ -258,17 +308,52 @@ impl ToolRegistry {
     /// completion over a fetched page chose resolved a registered tool with
     /// one `as_str`, and whitespace around it was silently forgiven.
     pub fn get(&self, name: &ToolName) -> Option<&ToolSpec> {
-        self.tools.get(name.as_str())
+        self.latest(name.as_str()).map(ToolVersion::spec)
+    }
+
+    fn latest(&self, name: &str) -> Option<&ToolVersion> {
+        self.tools.get(name).and_then(|versions| versions.last())
+    }
+
+    /// The version `name` stands at: one once registered, raised by each
+    /// promotion that widened its scope.
+    pub fn version(&self, name: &ToolName) -> Option<u32> {
+        self.latest(name.as_str()).map(ToolVersion::version)
+    }
+
+    /// The tool as it stood at `version`, with the evaluation that admitted
+    /// it. What a decision that used the tool then is checked against.
+    pub fn at_version(&self, name: &ToolName, version: u32) -> Option<&ToolVersion> {
+        self.history(name)
+            .iter()
+            .find(|held| held.version == version)
+    }
+
+    /// Every version of `name`, oldest first; empty for an unregistered tool.
+    pub fn history(&self, name: &ToolName) -> &[ToolVersion] {
+        self.tools.get(name.as_str()).map_or(&[], Vec::as_slice)
     }
 
     /// Every tool of one kind, in name order.
     pub fn by_kind(&self, kind: ToolKind) -> Vec<&ToolSpec> {
-        self.tools.values().filter(|t| t.kind == kind).collect()
+        self.tools
+            .values()
+            .filter_map(|versions| versions.last())
+            .map(ToolVersion::spec)
+            .filter(|t| t.kind == kind)
+            .collect()
     }
 
     /// Widen a tool's scope through a promotion. `evaluation` must name the
     /// evaluation of the tool's behaviour and data handling; a blank one is
     /// refused, so a grant cannot be made without having looked.
+    ///
+    /// A promotion that widens the scope is recorded as the next version,
+    /// citing `evaluation`, and the version it supersedes stays readable
+    /// through [`Self::at_version`] (R12-COVERAGE-7170). A grant the tool
+    /// already holds changes nothing and mints no version: a version that
+    /// differed from its predecessor only in number would say a scope moved
+    /// when it had not.
     pub fn promote(
         &mut self,
         name: &ToolName,
@@ -280,19 +365,35 @@ impl ToolRegistry {
                 "a scope widens only through a promotion that cites its evaluation; attach the evaluation record",
             ));
         }
-        let tool = self
+        let versions = self
             .tools
             .get_mut(name.as_str())
             .ok_or_else(|| Error::not_found(format!("tool {name} is not registered")))?;
-        tool.scope.insert(grant);
+        let Some(held) = versions.last() else {
+            return Err(Error::not_found(format!("tool {name} is not registered")));
+        };
+        if held.spec.scope.contains(&grant) {
+            return Ok(());
+        }
+        let mut spec = held.spec.clone();
+        spec.scope.insert(grant);
+        let version = held.version.checked_add(1).ok_or_else(|| {
+            Error::numeric(format!(
+                "tool {name} has no version left to take; register its successor under a new name"
+            ))
+        })?;
+        versions.push(ToolVersion {
+            version,
+            spec,
+            evaluation: Some(evaluation.to_string()),
+        });
         Ok(())
     }
 
     /// Refuse any use of a tool outside the scope it holds.
     pub fn authorise(&self, name: &ToolName, permission: ToolPermission) -> Result<()> {
         let tool = self
-            .tools
-            .get(name.as_str())
+            .get(name)
             .ok_or_else(|| Error::not_found(format!("tool {name} is not registered")))?;
         if tool.scope.contains(&permission) {
             Ok(())
