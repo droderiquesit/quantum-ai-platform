@@ -77,7 +77,9 @@ where
         // invalid, and the property named here is that the producer must
         // state the field, not that its default happens to be refused.
         assert!(
-            refusal.to_string().contains(&format!("missing field `{key}`")),
+            refusal
+                .to_string()
+                .contains(&format!("missing field `{key}`")),
             "{} without `{key}` was refused for another reason, so the field is defaulted: {refusal}",
             T::NAME
         );
