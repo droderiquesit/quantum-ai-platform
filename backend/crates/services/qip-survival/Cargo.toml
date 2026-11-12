@@ -1,0 +1,22 @@
+[package]
+name = "qip-survival"
+description = "The survival kernel and the confidence (model-risk) governor: what capital the book withholds before it releases any to alpha, and how far measured model risk narrows that release. Reaches no alpha crate (ADR 0127, ADR 0464)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Libraries, `qip-capital` and `qip-risk` only (ADR 0127 decision 3). A
+# dependency that reaches a crate generating alpha or holding a model fails
+# `qip-acceptance`'s `survival_independence` closure test, which is the
+# property this crate exists to make checkable.
+[dependencies]
+serde.workspace = true
+qip-core.workspace = true
+qip-contracts.workspace = true
+qip-capital.workspace = true
+qip-risk.workspace = true
+
+[lints]
+workspace = true

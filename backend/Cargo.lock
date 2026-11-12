@@ -702,6 +702,7 @@ dependencies = [
  "qip-simulation-engine",
  "qip-strategy",
  "qip-streaming",
+ "qip-survival",
  "qip-training",
  "qip-treasury",
  "qip-twin",
@@ -1056,6 +1057,17 @@ dependencies = [
  "qip-transport",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "qip-survival"
+version = "0.1.0"
+dependencies = [
+ "qip-capital",
+ "qip-contracts",
+ "qip-core",
+ "qip-risk",
+ "serde",
 ]
 
 [[package]]

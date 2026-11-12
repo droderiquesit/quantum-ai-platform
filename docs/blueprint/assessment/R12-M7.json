@@ -4784,12 +4784,13 @@
   {
     "id": "R12-CAPITAL-7204",
     "status": "PARTIAL",
-    "current": "qip-acceptance/tests/survival_independence.rs checks the crate graph: qip-capital, qip-risk and qip-risk-engine reach none of 11 alpha crates, and no alpha crate reaches qip-kernel (:96-138). The kernel's survival.rs, confidence.rs, tail.rs, hedge.rs and qip-risk's hedge_search.rs are checked by source text for the substring `<alpha_crate>::` (:140-200).",
+    "current": "Since 2026-11-12 (ADR 0464) the survival kernel and the confidence (model-risk) governor are services/qip-survival, depending on qip-core, qip-contracts, qip-capital, qip-risk and serde only; the kernel re-exports both and hands them data (StressedWorlds, DistributionReading), never StressReport or FeatureStatisticsReview, whose builders reach qip-strategy/qip-evolution and qip-training. MarketRegime moved to qip-contracts. qip-acceptance/tests/survival_independence.rs reads the graph from cargo metadata: qip-capital, qip-risk, qip-risk-engine and qip-survival reach none of 11 alpha crates; no alpha crate reaches qip-kernel or qip-survival (the permit half: an alpha crate cannot name SurvivalGovernor, SizingBudget or ConfidenceDecision); survival.rs and confidence.rs may not reappear in qip-kernel/src. The Hedge Brain (qip-kernel/src/hedge.rs) and tail.rs are still in the runtime and still checked by source scan.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs:96-138",
-      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs:140-200"
+      "backend/crates/services/qip-survival/src/lib.rs",
+      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs",
+      "docs/adr/0464-the-survival-kernel-and-the-confidence-governor-leave-the-runtime-and-read-stressed-world-losses-as-data.md"
     ],
-    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: move survival.rs, confidence.rs, hedge.rs and StressReport into services/qip-survival and replace survival_independence.rs's source scan with closure.",
+    "gap": "2026-11-12 (t50-19): the Hedge Brain has not left the runtime. qip-kernel/src/hedge.rs reads qip_simulation_engine::scenario::standard_library() and ScenarioResult, and the simulation engine reaches qip-strategy and qip-evolution, so moving hedge.rs to qip-survival needs the scenario library out of the simulation engine first (ADR 0464, Consequences). Until then its independence rests on the source scan the_hedge_brain_imports_no_alpha_component.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4800,7 +4801,7 @@
     "verification": "cargo test -p qip-acceptance --test capital_survival_kernel",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The acceptance test now names the hedge and model-risk modules; the module-level half proves absence of a substring, not independence. ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: The survival kernel, hedge brain and confidence (model-risk) governor live in qip-kernel, which depends on the alpha crates, so their independence rests on a text grep that an aliased import (`use qip_strategy as s;`) or a `crate::` path into a module that wraps an alpha component evades. Hedge and model-risk are not independent crates whose closure can be checked."
+    "notes": "Round-2 independent audit, 2026-10-11: The acceptance test now names the hedge and model-risk modules; the module-level half proves absence of a substring, not independence. ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: The survival kernel, hedge brain and confidence (model-risk) governor live in qip-kernel, which depends on the alpha crates, so their independence rests on a text grep that an aliased import (`use qip_strategy as s;`) or a `crate::` path into a module that wraps an alpha component evades. Hedge and model-risk are not independent crates whose closure can be checked. Lane t50-19, 2026-11-12: survival and confidence extracted to qip-survival (ADR 0464); four mutations fired (alpha dependency in qip-survival, the same as a [dependencies.qip-evolution] table, qip-strategy depending on qip-survival, survival.rs copied back into qip-kernel/src). Graded PARTIAL on the hedge half."
   },
   {
     "id": "R12-RISK-7205",
