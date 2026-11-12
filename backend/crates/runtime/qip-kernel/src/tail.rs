@@ -223,6 +223,18 @@ pub const REGIME_FLIP: &str = "regime-flip";
 /// of the book (R12-RISK-4102).
 pub const CONTAGION_CASCADE: &str = "contagion-cascade";
 
+/// A shock to one region — every held position whose `country` axis names it
+/// takes its own worst retained excursion at once — carried along measured
+/// correlation into the rest of the book (R12-RISK-4102).
+pub const REGION_CONTAGION: &str = "region-contagion";
+
+/// One counterparty fails — every position held there loses
+/// [`COUNTERPARTY_LOSS_GIVEN_DEFAULT`] of its gross — and the forced exit of
+/// what it held carries each such instrument's worst retained excursion
+/// along measured correlation to the positions held elsewhere
+/// (R12-RISK-4102).
+pub const COUNTERPARTY_CONTAGION: &str = "counterparty-contagion";
+
 /// How many times a position's measured daily volatility the regime-flip
 /// world charges: the top of [`SYNTHETIC_AMPLIFICATION`], so the flipped
 /// regime is at least as severe as the harshest world already generated from
@@ -310,6 +322,16 @@ pub struct TailPosition {
     pub notional: f64,
     /// The liquidity ladder's days to exit, where it marked the position.
     pub days_to_liquidate: Option<f64>,
+    /// The region the position's shock is shared with — the instrument's
+    /// `country` exposure axis (R12-RISK-4102). `None` where the reference
+    /// data names none; [`REGION_CONTAGION`] then charges it in every
+    /// region's shock, the strictest reading of a link nobody measured.
+    pub region: Option<String>,
+    /// The counterparty the position is held at — the bucket the
+    /// [`qip_risk::limits::COUNTERPARTY_AXIS`] counter charges its fills to
+    /// (R12-RISK-4102). `None` charges it as held at every counterparty in
+    /// [`COUNTERPARTY_CONTAGION`], for the same reason.
+    pub counterparty: Option<String>,
 }
 
 /// Everything the generated worlds read, from the platform at SIMULATE.
@@ -583,6 +605,8 @@ pub fn survival_worlds(book: &TailBook<'_>, at: Timestamp) -> Vec<TailWorld> {
     ));
 
     out.push(contagion_cascade(book, &held, at));
+    out.push(region_contagion(book, &held, at));
+    out.push(counterparty_contagion(book, &held, at));
 
     // Generated worlds: each position's worst retained excursion, amplified
     // past anything its history holds, by a draw this cycle's seed fixes.
@@ -868,67 +892,14 @@ fn trailing_correlation(a: &[f64], b: &[f64]) -> Option<f64> {
 /// correlation cannot be measured is charged as `1.0`, the strictest link.
 /// The world's loss is the worst origin's. It is a statistic, so `f64`.
 fn contagion_cascade(book: &TailBook<'_>, held: &[&TailPosition], at: Timestamp) -> TailWorld {
-    let rets: Vec<Vec<f64>> = held
-        .iter()
-        .map(|position| {
-            book.price_history
-                .get(&position.object)
-                .map(|prices| returns(prices))
-                .unwrap_or_default()
-        })
-        .collect();
-    let mut unmeasured: BTreeSet<String> = BTreeSet::new();
-    let n = held.len();
-    let mut link = vec![vec![1.0_f64; n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            if i == j {
-                continue;
-            }
-            match trailing_correlation(&rets[i], &rets[j]) {
-                Some(rho) => link[i][j] = rho.abs(),
-                None => {
-                    unmeasured.insert(held[i].object.clone());
-                    unmeasured.insert(held[j].object.clone());
-                }
-            }
-        }
-    }
+    let graph = ContagionGraph::of(book, held);
     let mut worst = 0.0_f64;
     let mut worst_origin = String::new();
     for (origin, position) in held.iter().enumerate() {
-        let seed = book
-            .price_history
-            .get(&position.object)
-            .and_then(|prices| adverse_excursion(prices, position.notional > 0.0))
-            .unwrap_or(UNMEASURED_EXCURSION);
-        let mut shock = vec![0.0_f64; n];
-        shock[origin] = seed;
-        // Two relaxation passes: the origin reaches its neighbours, and they
-        // reach theirs. Each position keeps the larger of what it holds and
-        // what a neighbour transmits, so a second hop never reduces a first.
-        for _ in 0..2 {
-            let carried = shock.clone();
-            for (j, hit) in carried.iter().enumerate() {
-                for k in 0..n {
-                    if k != j {
-                        shock[k] = shock[k].max(hit * link[j][k]);
-                    }
-                }
-            }
-        }
-        let loss: f64 = held
-            .iter()
-            .zip(&shock)
-            .map(|(held, move_)| {
-                let move_ = if held.notional > 0.0 {
-                    move_.min(1.0)
-                } else {
-                    *move_
-                };
-                held.notional.abs() * move_
-            })
-            .sum();
+        let mut shock = vec![0.0_f64; held.len()];
+        shock[origin] = graph.seed[origin];
+        graph.carry(&mut shock);
+        let loss = charged(held, &shock);
         if loss > worst {
             worst = loss;
             worst_origin = position.object.clone();
@@ -939,12 +910,224 @@ fn contagion_cascade(book: &TailBook<'_>, held: &[&TailPosition], at: Timestamp)
         at,
         worst,
         book.equity,
-        unmeasured.into_iter().collect(),
+        graph.unmeasured.into_iter().collect(),
         format!(
             "{worst_origin} takes its worst retained excursion and carries it, scaled by \
              absolute return correlation, two hops through the book against every position; a \
              pair with fewer than {CONTAGION_MIN_SHARED_RETURNS} shared returns is charged as \
              perfectly correlated"
+        ),
+    )
+}
+
+/// The book's correlation graph as every contagion world reads it: each
+/// pair's absolute trailing correlation (`1.0` where it cannot be measured,
+/// the strictest link), and each position's own worst retained excursion
+/// ([`UNMEASURED_EXCURSION`] with no history).
+struct ContagionGraph {
+    link: Vec<Vec<f64>>,
+    seed: Vec<f64>,
+    unmeasured: BTreeSet<String>,
+}
+
+impl ContagionGraph {
+    fn of(book: &TailBook<'_>, held: &[&TailPosition]) -> Self {
+        let rets: Vec<Vec<f64>> = held
+            .iter()
+            .map(|position| {
+                book.price_history
+                    .get(&position.object)
+                    .map(|prices| returns(prices))
+                    .unwrap_or_default()
+            })
+            .collect();
+        let mut unmeasured: BTreeSet<String> = BTreeSet::new();
+        let n = held.len();
+        let mut link = vec![vec![1.0_f64; n]; n];
+        for i in 0..n {
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                match trailing_correlation(&rets[i], &rets[j]) {
+                    Some(rho) => link[i][j] = rho.abs(),
+                    None => {
+                        unmeasured.insert(held[i].object.clone());
+                        unmeasured.insert(held[j].object.clone());
+                    }
+                }
+            }
+        }
+        let seed = held
+            .iter()
+            .map(|position| {
+                book.price_history
+                    .get(&position.object)
+                    .and_then(|prices| adverse_excursion(prices, position.notional > 0.0))
+                    .unwrap_or(UNMEASURED_EXCURSION)
+            })
+            .collect();
+        Self {
+            link,
+            seed,
+            unmeasured,
+        }
+    }
+
+    /// Two relaxation passes: the origin reaches its neighbours, and they
+    /// reach theirs. Each position keeps the larger of what it holds and what
+    /// a neighbour transmits, so a second hop never reduces a first.
+    fn carry(&self, shock: &mut [f64]) {
+        for _ in 0..2 {
+            let carried = shock.to_vec();
+            for (j, hit) in carried.iter().enumerate() {
+                for (k, held) in shock.iter_mut().enumerate() {
+                    if k != j {
+                        *held = held.max(hit * self.link[j][k]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The loss of `shock` charged against every position whichever side it is
+/// on — contagion is the world where hedges stop hedging. A long cannot lose
+/// more than it holds; a short can.
+fn charged(held: &[&TailPosition], shock: &[f64]) -> f64 {
+    held.iter()
+        .zip(shock)
+        .map(|(held, move_)| {
+            let move_ = if held.notional > 0.0 {
+                move_.min(1.0)
+            } else {
+                *move_
+            };
+            held.notional.abs() * move_
+        })
+        .sum()
+}
+
+/// The named buckets of one axis, in order, and which held positions each
+/// shock reaches: the positions naming the bucket and every position naming
+/// none, which is charged in every bucket's shock. A book where no position
+/// names a bucket is one shock over all of it, under `unattributed`.
+fn axis_members<'p>(
+    held: &[&'p TailPosition],
+    bucket: impl Fn(&'p TailPosition) -> Option<&'p String>,
+) -> (BTreeMap<String, Vec<usize>>, Vec<String>) {
+    let unattributed: Vec<usize> = (0..held.len())
+        .filter(|i| bucket(held[*i]).is_none())
+        .collect();
+    let mut members: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, position) in held.iter().enumerate() {
+        if let Some(name) = bucket(position) {
+            members.entry(name.clone()).or_default().push(i);
+        }
+    }
+    for indices in members.values_mut() {
+        indices.extend(unattributed.iter().copied());
+    }
+    if members.is_empty() && !unattributed.is_empty() {
+        members.insert("unattributed".to_string(), unattributed.clone());
+    }
+    let names = unattributed
+        .iter()
+        .map(|i| held[*i].object.clone())
+        .collect();
+    (members, names)
+}
+
+/// [`REGION_CONTAGION`]: every region in turn is the origin. Each position
+/// whose region is the origin takes its own worst retained excursion at once,
+/// and the shock is carried two hops along the correlation graph to every
+/// other position. The world's loss is the worst region's.
+fn region_contagion(book: &TailBook<'_>, held: &[&TailPosition], at: Timestamp) -> TailWorld {
+    let graph = ContagionGraph::of(book, held);
+    let (regions, unattributed) = axis_members(held, |position| position.region.as_ref());
+    let mut worst = 0.0_f64;
+    let mut worst_region = String::new();
+    for (region, members) in &regions {
+        let mut shock = vec![0.0_f64; held.len()];
+        for i in members {
+            shock[*i] = graph.seed[*i];
+        }
+        graph.carry(&mut shock);
+        let loss = charged(held, &shock);
+        if loss > worst {
+            worst = loss;
+            worst_region = region.clone();
+        }
+    }
+    let mut unmeasured: BTreeSet<String> = graph.unmeasured;
+    unmeasured.extend(unattributed.iter().cloned());
+    world(
+        REGION_CONTAGION,
+        at,
+        worst,
+        book.equity,
+        unmeasured.into_iter().collect(),
+        format!(
+            "every position in {worst_region} takes its worst retained excursion at once and \
+             the shock is carried, scaled by absolute return correlation, two hops into the \
+             rest of the book against every position; {} position(s) naming no region charged \
+             in every region's shock",
+            unattributed.len()
+        ),
+    )
+}
+
+/// [`COUNTERPARTY_CONTAGION`]: every counterparty in turn fails. Each
+/// position held there loses [`COUNTERPARTY_LOSS_GIVEN_DEFAULT`] of its gross,
+/// as [`COUNTERPARTY_FAILURE`] charges it, and the forced exit of what it
+/// held carries each such instrument's worst retained excursion two hops
+/// along the correlation graph to the positions held elsewhere. A book held
+/// at one counterparty therefore reads exactly as [`COUNTERPARTY_FAILURE`]:
+/// there is nowhere else for the failure to spread to.
+fn counterparty_contagion(book: &TailBook<'_>, held: &[&TailPosition], at: Timestamp) -> TailWorld {
+    let graph = ContagionGraph::of(book, held);
+    let (counterparties, unattributed) =
+        axis_members(held, |position| position.counterparty.as_ref());
+    let mut worst = 0.0_f64;
+    let mut worst_counterparty = String::new();
+    for (counterparty, members) in &counterparties {
+        let mut shock = vec![0.0_f64; held.len()];
+        for i in members {
+            shock[*i] = graph.seed[*i];
+        }
+        graph.carry(&mut shock);
+        let at_failed: BTreeSet<usize> = members.iter().copied().collect();
+        let loss: f64 = held
+            .iter()
+            .enumerate()
+            .map(|(i, position)| {
+                if at_failed.contains(&i) {
+                    position.notional.abs() * COUNTERPARTY_LOSS_GIVEN_DEFAULT
+                } else {
+                    charged(&[*position], &shock[i..=i])
+                }
+            })
+            .sum();
+        if loss > worst {
+            worst = loss;
+            worst_counterparty = counterparty.clone();
+        }
+    }
+    let mut unmeasured: BTreeSet<String> = graph.unmeasured;
+    unmeasured.extend(unattributed.iter().cloned());
+    world(
+        COUNTERPARTY_CONTAGION,
+        at,
+        worst,
+        book.equity,
+        unmeasured.into_iter().collect(),
+        format!(
+            "{worst_counterparty} fails: what it held loses {:.0}% of gross, and the forced exit \
+             of those instruments carries their worst retained excursions, scaled by absolute \
+             return correlation, two hops to the positions held elsewhere; {} position(s) naming \
+             no counterparty charged as held at every one",
+            COUNTERPARTY_LOSS_GIVEN_DEFAULT * 100.0,
+            unattributed.len()
         ),
     )
 }
@@ -1139,6 +1322,8 @@ mod tests {
             object: object.to_string(),
             notional,
             days_to_liquidate: None,
+            region: None,
+            counterparty: None,
         }
     }
 
@@ -1212,6 +1397,8 @@ mod tests {
             object: object.to_string(),
             notional,
             days_to_liquidate: Some(1.0),
+            region: None,
+            counterparty: None,
         }
     }
 
@@ -1281,6 +1468,189 @@ mod tests {
         );
     }
 
+    fn placed(object: &str, notional: f64, region: &str, counterparty: &str) -> TailPosition {
+        TailPosition {
+            region: Some(region.to_string()),
+            counterparty: Some(counterparty.to_string()),
+            ..held(object, notional)
+        }
+    }
+
+    /// R12-RISK-4102, the region axis. A regional shock hits every position
+    /// in the region at once — two independent names in one region both
+    /// take their excursion, which no single-origin cascade charges — and
+    /// reaches a correlated name in another region along the graph, but not
+    /// an independent one. Mutation: seed only the first member of the
+    /// origin region — fails at "the region's second member was spared";
+    /// drop `graph.carry` from `region_contagion` — fails at "the shock did
+    /// not cross regions".
+    #[test]
+    fn a_regional_shock_hits_every_name_in_the_region_and_crosses_regions_only_along_correlation() {
+        let a = series(100.0, &[0.10, -0.10, 0.10, -0.10, 0.10, -0.10]);
+        let b: Vec<f64> = a.iter().map(|p| p * 0.5).collect();
+        let c = series(100.0, &[0.10, 0.10, -0.10, -0.10, 0.10, 0.10]);
+        let ea = adverse_excursion(&a, true).expect("measurable");
+        let ec = adverse_excursion(&c, true).expect("measurable");
+        assert!(
+            ea > 0.0 && ec > 0.0,
+            "premise: both origins have an excursion"
+        );
+        let rho = trailing_correlation(&returns(&a), &returns(&c)).expect("measurable");
+        assert!(rho.abs() < 1e-9, "premise: A and C independent, got {rho}");
+
+        // A and C independent, both in EU: the regional shock takes both.
+        let history = BTreeMap::from([
+            ("obj-A".to_string(), a.clone()),
+            ("obj-C".to_string(), c.clone()),
+        ]);
+        let one_region = book_of(
+            &[
+                placed("obj-A", 300_000.0, "EU", "broker-1"),
+                placed("obj-C", 300_000.0, "EU", "broker-1"),
+            ],
+            &history,
+            1,
+        );
+        let regional = world(&one_region, REGION_CONTAGION).loss;
+        let cascade = world(&one_region, CONTAGION_CASCADE).loss;
+        assert!(
+            (regional - 300_000.0 * (ea + ec)).abs() < 1e-6,
+            "the region's second member was spared: {regional}"
+        );
+        assert!(
+            regional > cascade,
+            "premise: the region axis charges what correlation alone does not: {regional} vs \
+             {cascade}"
+        );
+
+        // A in EU, B (perfectly correlated) in US: the EU shock crosses.
+        let history = BTreeMap::from([("obj-A".to_string(), a.clone()), ("obj-B".to_string(), b)]);
+        let crossed = world(
+            &book_of(
+                &[
+                    placed("obj-A", 300_000.0, "EU", "broker-1"),
+                    placed("obj-B", 300_000.0, "US", "broker-1"),
+                ],
+                &history,
+                1,
+            ),
+            REGION_CONTAGION,
+        )
+        .loss;
+        assert!(
+            (crossed - 600_000.0 * ea).abs() < 1e-6,
+            "the shock did not cross regions: {crossed}"
+        );
+
+        // A in EU, C (independent) in US: nothing crosses; the worst region
+        // is the one origin's own loss.
+        let apart = world(
+            &book_of(
+                &[
+                    placed("obj-A", 300_000.0, "EU", "broker-1"),
+                    placed("obj-C", 300_000.0, "US", "broker-1"),
+                ],
+                &history_of(&[("obj-A", &a), ("obj-C", &c)]),
+                1,
+            ),
+            REGION_CONTAGION,
+        )
+        .loss;
+        assert!(
+            (apart - 300_000.0 * ea.max(ec)).abs() < 1e-6,
+            "independence carried a regional shock: {apart}"
+        );
+    }
+
+    fn history_of(series: &[(&str, &Vec<f64>)]) -> BTreeMap<String, Vec<f64>> {
+        series
+            .iter()
+            .map(|(name, prices)| (name.to_string(), (*prices).clone()))
+            .collect()
+    }
+
+    /// R12-RISK-4102, the counterparty axis. A failed counterparty loses the
+    /// default share of what it held and the forced exit reaches a
+    /// correlated position held elsewhere; a book at one counterparty reads
+    /// exactly as the counterparty-failure world. Mutation: charge the
+    /// failed counterparty's positions the carried shock instead of the
+    /// default share — fails at "the failed counterparty was charged";
+    /// drop `graph.carry` from `counterparty_contagion` — fails at "the
+    /// failure did not spread".
+    #[test]
+    fn a_counterparty_failure_spreads_to_correlated_positions_held_elsewhere() {
+        let a = series(100.0, &[0.30, -0.30, 0.30, -0.30, 0.30, -0.30]);
+        let b: Vec<f64> = a.iter().map(|p| p * 0.5).collect();
+        let ea = adverse_excursion(&a, true).expect("measurable");
+        let eb = adverse_excursion(&b, true).expect("measurable");
+        assert!(
+            ea > COUNTERPARTY_LOSS_GIVEN_DEFAULT,
+            "premise: the excursion differs from the default share, so the two charges are told \
+             apart: {ea}"
+        );
+        let history = history_of(&[("obj-A", &a), ("obj-B", &b)]);
+        let spread = world(
+            &book_of(
+                &[
+                    placed("obj-A", 300_000.0, "EU", "broker-1"),
+                    placed("obj-B", 300_000.0, "EU", "broker-2"),
+                ],
+                &history,
+                1,
+            ),
+            COUNTERPARTY_CONTAGION,
+        )
+        .loss;
+        // Either broker failing: its own position at the default share, the
+        // other at the carried excursion (A and B move together).
+        let expected = 300_000.0 * COUNTERPARTY_LOSS_GIVEN_DEFAULT + 300_000.0 * ea.max(eb);
+        assert!(
+            (spread - expected).abs() < 1e-6,
+            "the failure did not spread, or the failed counterparty was charged otherwise: \
+             {spread} against {expected}"
+        );
+
+        let one = [
+            placed("obj-A", 300_000.0, "EU", "broker-1"),
+            placed("obj-B", 300_000.0, "EU", "broker-1"),
+        ];
+        let generated = book_of(&one, &history, 1);
+        let cascade = world(&generated, COUNTERPARTY_CONTAGION).loss;
+        assert!(
+            (cascade - 600_000.0 * COUNTERPARTY_LOSS_GIVEN_DEFAULT).abs() < 1e-6,
+            "a book at one counterparty has nowhere for its failure to spread: {cascade}"
+        );
+    }
+
+    /// R12-RISK-4102. A position naming no region is in every region's
+    /// shock. Mutation: drop the `unattributed` extension in `axis_members`
+    /// — fails at "an unattributed position was spared".
+    #[test]
+    fn a_position_naming_no_region_is_charged_in_every_regions_shock() {
+        let a = series(100.0, &[0.10, -0.10, 0.10, -0.10, 0.10, -0.10]);
+        let c = series(100.0, &[0.10, 0.10, -0.10, -0.10, 0.10, 0.10]);
+        let ea = adverse_excursion(&a, true).expect("measurable");
+        let ec = adverse_excursion(&c, true).expect("measurable");
+        let regional = world(
+            &book_of(
+                &[
+                    placed("obj-A", 300_000.0, "EU", "broker-1"),
+                    held("obj-C", 300_000.0),
+                ],
+                &history_of(&[("obj-A", &a), ("obj-C", &c)]),
+                1,
+            ),
+            REGION_CONTAGION,
+        )
+        .clone();
+        assert!(
+            (regional.loss - 300_000.0 * (ea + ec)).abs() < 1e-6,
+            "an unattributed position was spared: {}",
+            regional.loss
+        );
+        assert!(regional.unmeasured.contains(&"obj-C".to_string()));
+    }
+
     /// R12-RISK-4102. A pair that cannot be measured is the strictest link,
     /// never the absent one. Mutation: initialise `link` to `0.0`.
     #[test]
@@ -1323,11 +1693,15 @@ mod tests {
                 object: "obj-A".into(),
                 notional: 500_000.0,
                 days_to_liquidate: Some(1.0),
+                region: None,
+                counterparty: None,
             },
             TailPosition {
                 object: "obj-B".into(),
                 notional: -500_000.0,
                 days_to_liquidate: Some(1.0),
+                region: None,
+                counterparty: None,
             },
         ];
         let inverted = world(&book_of(&pair, &history, 1), CORRELATION_INVERSION).clone();
@@ -1356,6 +1730,8 @@ mod tests {
             object: "obj-AAA".into(),
             notional: 500_000.0,
             days_to_liquidate: Some(1.0),
+            region: None,
+            counterparty: None,
         }];
         let historical = world(
             &worlds(

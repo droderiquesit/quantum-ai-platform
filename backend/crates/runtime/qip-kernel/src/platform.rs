@@ -21239,12 +21239,21 @@ impl Platform {
         // ladder the limits read; a position it did not mark is charged the
         // world's own unmarked figure rather than dropped.
         let days_to_liquidate = self.risk_state().days_to_liquidate;
+        // R12-RISK-4102: the two axes a shock spreads along beyond
+        // correlation. The region is the instrument's own `country` axis, the
+        // one the sector/country caps already read; the counterparty is the
+        // broker, because the desk book is held where its fills came back
+        // from — the bucket `COUNTERPARTY_AXIS` charges them to — and a
+        // position that names neither is charged in every bucket's shock.
+        let counterparty = self.broker.name().to_string();
         let positions: Vec<crate::tail::TailPosition> = book
             .iter()
             .map(|(object, notional)| crate::tail::TailPosition {
                 object: object.clone(),
                 notional: *notional,
                 days_to_liquidate: days_to_liquidate.get(object).copied(),
+                region: self.exposure_axes_for(object).get("country").cloned(),
+                counterparty: Some(counterparty.clone()),
             })
             .collect();
         let tail_book = crate::tail::TailBook {
