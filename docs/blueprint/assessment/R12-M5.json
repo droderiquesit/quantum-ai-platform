@@ -400,16 +400,20 @@
   },
   {
     "id": "R12-LEDGER-5017",
-    "status": "PARTIAL",
-    "current": "Account::Custody and a custody OperationKind post into the global journal; tested per kind.",
+    "status": "COMPLETE",
+    "current": "OperationKind::CustodyMovement posts a balanced pair between Account::Custody and the book's trading account (backend/crates/libs/qip-contracts/src/ledger_operation.rs:481-492); qip-ledgerd's LedgerStore::record_operation journals it into the one double-entry ledger, whose trial balance closes in every unit and refolds and reopens on its own history. No binary yet produces a CustodyMovement from the simulated venue's position statement (ADR 0130).",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:67 Account enum",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger.rs:67 Account enum (Custody)",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs:237 OperationKind::CustodyMovement; :481-492 its postings",
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation",
+      "backend/crates/apps/qip-ledgerd/tests/history.rs:311 an_operation_posts_to_its_subledger_and_the_ledger_reopens_on_its_own_history (custody balance 4 OBJ-ACME at :367-377; trial balance closes in both units at :389-397)",
+      "backend/crates/libs/qip-contracts/tests/ledger_operation.rs every_operation_kind_posts_to_its_own_subledgers_and_closes_in_every_unit",
+      "2026-11-12 lane fw-h-01: cargo test -p qip-ledgerd --no-fail-fast (9 binaries ok; history 7 passed) and qip-contracts --test ledger_operation (9 passed). Mutation routing CustodyMovement to Account::Treasury instead of Account::Custody fails history.rs (panicked at :367) and two ledger_operation.rs tests (panicked at :358 and :436); restored byte for byte, all pass.",
+      "2026-11-12 lane fw-h-01 bar: the unit test the requirement names; the ADR 0130 producer that posts from the simulated custody statement is integration and stays in integrated false"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: CustodyMovement postings from the custody statement, with a subledger and trial-balance test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
