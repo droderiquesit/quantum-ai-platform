@@ -12077,6 +12077,22 @@ impl Platform {
         &self.organisation
     }
 
+    /// Seat a different organisation, for `agent_journal`'s tests, which need
+    /// an agent on the panel that reaches past its manifest. Test-only: the
+    /// replacement still passes `Organisation::new`'s roster validation, but
+    /// a deployment has no reason to swap its panel after assembly.
+    #[cfg(test)]
+    pub(crate) fn replace_organisation(&mut self, organisation: Organisation) {
+        self.organisation = organisation;
+    }
+
+    /// Swap the event log, for `agent_journal`'s fail-closed test, which
+    /// needs a log that refuses every append.
+    #[cfg(test)]
+    pub(crate) fn replace_event_log(&mut self, event_log: EventLog) {
+        self.event_log = event_log;
+    }
+
     /// Re-run the governance review at a given instant.
     ///
     /// Exposed because a long-running platform will eventually be operating on
@@ -17562,6 +17578,44 @@ impl Platform {
                 "{} attempted something its manifest does not grant",
                 violation.agent_id
             ));
+        }
+
+        // ADR 0456 (R12-AMBIENT-9029): every run on the log, whole — the
+        // accesses it was refused as well as the finding it returned —
+        // before any finding from it is synthesised. A run the log refused
+        // is a run whose findings no hypothesis may rest on, because that
+        // hypothesis could not be reproduced from the log; so the stage
+        // stops here, fail-closed, rather than reasoning on evidence it
+        // could not keep. The runs that did reach the log stay there.
+        let mut unjournaled = Vec::new();
+        for run in &report.runs {
+            let body = crate::agent_journal::AgentRunJournal {
+                cycle: self.cycle,
+                record: run.clone(),
+            };
+            if let Err(error) = self.journal_record(body, crate::agent_journal::ORIGIN, now) {
+                unjournaled.push(format!(
+                    "agent run {} could not be journaled: {}",
+                    run.run_id,
+                    error.message()
+                ));
+            }
+        }
+        if !unjournaled.is_empty() {
+            let outcome = StageOutcome::ran(
+                Stage::Reason,
+                report.findings.len(),
+                format!(
+                    "{} finding(s) from {} run(s); {} run(s) unjournaled, so no hypothesis was formed",
+                    report.findings.len(),
+                    report.runs.len(),
+                    unjournaled.len()
+                ),
+            );
+            return problems
+                .into_iter()
+                .chain(unjournaled)
+                .fold(outcome, |acc, problem| acc.with_problem(problem));
         }
 
         // Synthesise. The mechanism comes from the anomaly that produced the
