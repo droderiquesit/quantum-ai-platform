@@ -17900,9 +17900,28 @@ impl Platform {
                 .get(subject.as_str())
                 .and_then(|class| self.asset_class_registry.get(*class))
                 .and_then(|record| match record.settlement() {
+                    // Settlement days on the home jurisdiction's calendar,
+                    // not calendar days (REASON-3055): a Thursday T+2 claim
+                    // settles on the Monday, and a claim due on the Sunday
+                    // is refused as resolving before its trade could
+                    // settle. The calendar is the one the pre-positioning
+                    // planner quotes on, so the two cannot disagree about
+                    // which days settle. Only where no calendar answers is
+                    // the lag the calendar-day count, which is a lower
+                    // bound: it can admit too much, never refuse too much.
                     crate::asset_class_registry::ClassSettlement::Exchange(convention) => Some((
                         convention.as_str().to_string(),
-                        Duration::from_days(i64::from(convention.days())),
+                        self.settlement_book()
+                            .calendar_of(&CapitalRegion::new(HOME_REGION))
+                            .and_then(|calendar| {
+                                calendar
+                                    .after_settlement_days(hypothesis.formed_at, convention.days())
+                                    .ok()
+                            })
+                            .map_or_else(
+                                || Duration::from_days(i64::from(convention.days())),
+                                |settles| settles.since(hypothesis.formed_at),
+                            ),
                     )),
                     crate::asset_class_registry::ClassSettlement::PeriodicStatement => None,
                 }),

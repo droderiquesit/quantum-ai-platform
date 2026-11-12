@@ -2126,3 +2126,38 @@ fn a_demand_forecast_written_before_the_split_existed_still_decodes_without_one(
     assert_eq!(old.interval(), forecast.interval());
     Ok(())
 }
+
+/// R12-REASON-3055: a settlement instant walks settlement days, not calendar
+/// days. The failure this guards: a T+2 trade formed on a Thursday read as
+/// settling on Saturday, so a claim due on Sunday was admitted as resolving
+/// after its trade settled when nothing settles before Monday. The holiday
+/// arm proves a declared closure moves it a further day, and the Saturday arm
+/// that an instant on a closed day starts from the next settlement day.
+/// Mutation: advance `day` by one calendar day per settlement day in
+/// `SettlementCalendar::after_settlement_days` and the Thursday arm reads
+/// Saturday.
+#[test]
+fn a_thursday_t_plus_two_settles_on_monday_and_a_declared_holiday_moves_it_a_day_further()
+-> Result<()> {
+    let calendar = SettlementCalendar::weekday(SettlementConvention::T2)?;
+    // Premise: calendar days alone would land on Saturday.
+    assert!(!calendar.is_settlement_day(thursday().saturating_add(Duration::from_days(2))));
+    assert_eq!(
+        calendar.after_settlement_days(thursday(), 2)?,
+        monday_morning(),
+        "a Thursday T+2 settles on the Monday, at the instant's own time of day"
+    );
+    let closed = calendar.clone().with_holiday(monday_morning());
+    assert_eq!(
+        closed.after_settlement_days(thursday(), 2)?,
+        monday_morning().saturating_add(Duration::from_days(1)),
+        "a declared Monday holiday moves the settlement to Tuesday"
+    );
+    assert_eq!(
+        calendar.after_settlement_days(saturday_noon(), 0)?,
+        Timestamp::from_civil(2024, 3, 11),
+        "an instant on a day nothing settles starts from the next settlement day"
+    );
+    assert_eq!(calendar.after_settlement_days(thursday(), 0)?, thursday());
+    Ok(())
+}

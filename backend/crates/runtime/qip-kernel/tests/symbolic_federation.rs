@@ -1945,3 +1945,45 @@ fn a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_
     );
     Ok(())
 }
+
+/// R12-REASON-3055: the settlement lag the platform hands the timeline is
+/// walked in settlement days on the home jurisdiction's calendar. The failure
+/// this guards: the lag was the convention's count of calendar days, so a
+/// T+1 claim formed on a Friday read as settling on the Saturday and a claim
+/// due over the weekend was admitted as resolving after its trade settled.
+/// The fixture's start is a Thursday; this cycle runs a day later, on the
+/// Friday, so a one-day convention must cross the weekend. Mutation: hand
+/// `Duration::from_days(convention.days())` again in the platform's
+/// settlement member and the lag is one day, not three.
+#[test]
+fn a_friday_claims_settlement_lag_is_walked_in_settlement_days_across_the_weekend() -> Result<()> {
+    let friday = start().saturating_add(Duration::from_days(1));
+    // Premise: the fixture's start is a Thursday (Monday = 0), so this is a
+    // Friday and the next calendar day settles nothing.
+    assert_eq!(start().weekday(), 3, "the fixture start is a Thursday");
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(friday, config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(friday);
+    let derivations = symbolic_stage::replay(&platform)?;
+    let inputs = derivations
+        .first()
+        .and_then(|derivation| derivation.temporal.inputs.clone())
+        .expect("the Friday cycle formed a hypothesis and kept its timeline inputs");
+    let (convention, lag) = inputs
+        .settlement
+        .expect("the platform handed the subject's settlement convention");
+    assert_eq!(
+        inputs.formed_at.weekday(),
+        4,
+        "the claim was formed on the Friday"
+    );
+    assert_eq!(convention, "T+1", "the fixture's common stock settles T+1");
+    assert_eq!(
+        lag,
+        Duration::from_days(3),
+        "a Friday T+1 settles on the Monday, three calendar days on, not on the Saturday"
+    );
+    Ok(())
+}
