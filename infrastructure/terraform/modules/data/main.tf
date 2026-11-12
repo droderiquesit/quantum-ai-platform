@@ -656,7 +656,9 @@ locals {
     # `nam3` is read-write in us-east4 and us-east1 with a witness in
     # us-central1, so a regional loss in Virginia fails the leader over to
     # South Carolina and the book's data stays in the United States.
-    "us-east4" = { config = "nam3", default_leader = "us-east4" }
+    # The leader is `var.spanner_default_leader` (ADR 0394), validated
+    # against nam3's read-write regions and defaulting to us-east4.
+    "us-east4" = { config = "nam3", default_leader = var.spanner_default_leader }
   }
   spanner_placement = lookup(local.spanner_placements, var.region, null)
 }
