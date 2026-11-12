@@ -346,6 +346,12 @@ pub struct ModelCard {
     /// [`ModelRegistry::record_shadow_round`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<ShadowRecord>,
+    /// The simulation or paper trial a candidate ran through before the
+    /// kernel would promote it (ADR 0436, R12-MODEL-4022). Written only by
+    /// [`ModelRegistry::record_trial_round`]. Absent from cards written
+    /// before the field existed, which the kernel's gate refuses as untried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<TrialRecord>,
     /// Whether the platform fitted this model for itself (the deep brain's
     /// learning desk). A self-fitted card reaches production only out of a
     /// completed shadow stage, whichever caller asks: the guard is here in
@@ -464,6 +470,63 @@ pub struct ShadowRecord {
     pub evidence: Vec<String>,
 }
 
+/// Trial rounds a candidate must complete in simulation or paper trading
+/// before the kernel promotes it (ADR 0436, R12-MODEL-4022). The shadow
+/// stage's figure, not a new one: no figure for this was ever stated by the
+/// owner, and three windows after the fit is already this registry's
+/// smallest count that distinguishes a model from one lucky window.
+pub const MIN_TRIAL_ROUNDS: u32 = MIN_SHADOW_ROUNDS;
+
+/// Where a trial round executed. Two arms and no third: a trial is the
+/// platform's own execution target (ADR 0003), and a variant that could
+/// name a live venue does not exist to be chosen, so "validated in
+/// simulation and paper trading" cannot be satisfied by a live run however a
+/// caller labels it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrialVenue {
+    /// Replayed against the market simulator: recorded bars, the twin's
+    /// fill model, no broker.
+    Simulation,
+    /// Run against the simulated broker in the paper-trading cycle.
+    Paper,
+}
+
+impl TrialVenue {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Simulation => "simulation",
+            Self::Paper => "paper",
+        }
+    }
+}
+
+/// A candidate's simulation or paper trial (ADR 0436).
+///
+/// The failure it prevents (R12-MODEL-4022): a training-pipeline candidate
+/// went from its held-out statistics straight to production. Out-of-sample
+/// statistics say how a model predicts; they do not say how its decisions
+/// behave once they meet execution, which is what a trial records. Recorded
+/// beside the card's stage rather than as one, so a candidate keeps the
+/// stage its other gates read while the trial accumulates.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrialRecord {
+    pub since: Timestamp,
+    pub rounds: u32,
+    pub last_round: Timestamp,
+    /// One line per round: the venue and what the round was scored on.
+    pub evidence: Vec<String>,
+    /// Every venue a round ran on, so a reader sees which kind of trial it was.
+    pub venues: BTreeSet<TrialVenue>,
+}
+
+impl TrialRecord {
+    /// Whether the trial has run the rounds promotion requires.
+    pub fn completed(&self) -> bool {
+        self.rounds >= MIN_TRIAL_ROUNDS
+    }
+}
+
 /// Where one feature's values came from (R12-MODEL-4016): enough for a
 /// reviewer to re-derive it and for a promotion to refuse a look-ahead.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -571,6 +634,7 @@ impl ModelCard {
             campaign_id: None,
             code_version: None,
             shadow: None,
+            trial: None,
             self_fitted: false,
             promotion_tests: None,
         }
@@ -1187,6 +1251,63 @@ impl ModelRegistry {
         shadow.last_round = at;
         shadow.evidence.push(evidence.trim().to_string());
         Ok(shadow.rounds_won)
+    }
+
+    /// Record one simulation or paper trial round a candidate completed
+    /// (ADR 0436). Returns the rounds so far. Refused for blank evidence, for
+    /// a card in production or retirement — a trial is what comes before
+    /// acceptance, and a round recorded after it would be read as the
+    /// evidence the acceptance rested on — and for a round not strictly
+    /// after the last: one round counted twice is one round.
+    pub fn record_trial_round(
+        &mut self,
+        reference: &str,
+        venue: TrialVenue,
+        evidence: &str,
+        at: Timestamp,
+    ) -> Result<u32> {
+        if evidence.trim().is_empty() {
+            return Err(Error::invalid(
+                "a trial round names what the candidate was scored on in the trial",
+            ));
+        }
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if matches!(card.stage, ModelStage::Production | ModelStage::Retired) {
+            return Err(Error::denied(format!(
+                "{reference} is in {:?}; a trial round is recorded only for a candidate not yet \
+                 accepted",
+                card.stage
+            )));
+        }
+        let line = format!("{}: {}", venue.as_str(), evidence.trim());
+        match card.trial.as_mut() {
+            None => {
+                card.trial = Some(TrialRecord {
+                    since: at,
+                    rounds: 1,
+                    last_round: at,
+                    evidence: vec![line],
+                    venues: BTreeSet::from([venue]),
+                });
+                Ok(1)
+            }
+            Some(trial) => {
+                if at <= trial.last_round {
+                    return Err(Error::denied(format!(
+                        "{reference}'s last trial round was at {}; a round at {} is not a new one",
+                        trial.last_round.as_secs(),
+                        at.as_secs()
+                    )));
+                }
+                trial.rounds = trial.rounds.saturating_add(1);
+                trial.last_round = at;
+                trial.evidence.push(line);
+                trial.venues.insert(venue);
+                Ok(trial.rounds)
+            }
+        }
     }
 
     /// Promote a model to production, recording when.

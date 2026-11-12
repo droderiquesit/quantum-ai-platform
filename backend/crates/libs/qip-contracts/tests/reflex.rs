@@ -38,6 +38,7 @@ fn a_journal_entry_digest_is_unchanged_by_the_move_to_the_contract_layer() {
         side: None,
         quote_unit: None,
         fee: None,
+        decision_sequence: None,
     };
 
     // Assert the premise before the pinned value: the fixture really is the

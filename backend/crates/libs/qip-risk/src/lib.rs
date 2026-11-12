@@ -36,6 +36,7 @@
 
 pub mod aggregate;
 pub mod factor;
+pub mod gate;
 pub mod hedge;
 pub mod hedge_search;
 pub mod limits;

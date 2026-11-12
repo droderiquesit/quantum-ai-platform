@@ -134,6 +134,7 @@ fn filled(order: &str) -> Decision {
         side: Some(BookSide::Ask),
         quote_unit: Some("GBP".to_string()),
         fee: None,
+        decision_sequence: None,
     }
 }
 

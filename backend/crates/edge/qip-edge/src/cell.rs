@@ -1515,6 +1515,10 @@ struct Working {
     /// behind it but the price is the order R12-GOV-6127 forbids. Set by
     /// `record_sent`, the one place a `Working` enters the set.
     grounds: Vec<String>,
+    /// The sequence of this order's `OrderSent` entry, set by `record_sent`
+    /// from the entry it journals, so each fill can name the decision it
+    /// rests on (ADR 0454) without the ledger rebuilding it by order id.
+    decision_sequence: Option<u64>,
 }
 
 /// How many orders the cell will hold open at once.
@@ -6857,6 +6861,7 @@ impl Cell {
                 net: net_intent.clone(),
                 region_committed,
                 grounds: Vec::new(),
+                decision_sequence: None,
             },
             schedule.equalised(),
             grants,
@@ -7299,23 +7304,32 @@ impl Cell {
         now: Timestamp,
     ) {
         let order = &working.order;
-        self.journal.record(
-            Decision::OrderSent {
-                order_id: order.order_id.clone(),
-                venue: order.venue.as_str().to_string(),
-                quantity: order.quantity.to_string(),
-                simulated: order.simulated,
-                release_at: Some(order.release_at),
-                equalised,
-                grants,
-                grounds: grounds.clone(),
-            },
-            now,
-        );
+        let decision_sequence = self
+            .journal
+            .record(
+                Decision::OrderSent {
+                    order_id: order.order_id.clone(),
+                    venue: order.venue.as_str().to_string(),
+                    quantity: order.quantity.to_string(),
+                    simulated: order.simulated,
+                    release_at: Some(order.release_at),
+                    equalised,
+                    grants,
+                    grounds: grounds.clone(),
+                },
+                now,
+            )
+            .sequence;
         self.metrics.order_placed(&order.venue);
         let order_id = order.order_id.clone();
-        self.working
-            .insert(order_id, Working { grounds, ..working });
+        self.working.insert(
+            order_id,
+            Working {
+                grounds,
+                decision_sequence: Some(decision_sequence),
+                ..working
+            },
+        );
     }
 
     /// The grounds a net intent stands on (R12-GOV-6127): its expected
@@ -8365,6 +8379,7 @@ impl Cell {
             working.order.closed = Some("filled".to_string());
         }
         let shares = working.net.split_fill(execution.quantity);
+        let decision_sequence = working.decision_sequence;
         // The listing's quote currency as the placer states it, read after
         // the venue check above so it is asked about the venue that filled.
         // `None` stays `None`: a price journaled in a currency the cell
@@ -8443,6 +8458,9 @@ impl Cell {
                 // never zero (LEDGER-019); an estimate here would be the
                 // cell inventing a venue fact the ledger then books.
                 fee: None,
+                // The `OrderSent` entry this order went out on, whose
+                // contributors are the shares above (ADR 0454).
+                decision_sequence,
             },
             now,
         );
@@ -10854,6 +10872,7 @@ impl Cell {
                 // a cycle leg over.
                 region_committed: Decimal::ZERO,
                 grounds: Vec::new(),
+                decision_sequence: None,
             },
             schedule.equalised(),
             grants,

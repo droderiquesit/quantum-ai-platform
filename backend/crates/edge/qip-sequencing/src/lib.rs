@@ -43,6 +43,7 @@ pub mod capture;
 pub mod clock;
 pub mod failover;
 pub mod identity;
+pub mod regions;
 pub mod tracker;
 
 pub use align::{Alignment, AsOf, Order, Placed, align, as_of};
@@ -54,6 +55,7 @@ pub use clock::{
 };
 pub use failover::{FailoverEvent, FailoverOutcome, FailoverReconciler, FailoverStats};
 pub use identity::{reset_message, synthetic_id};
+pub use regions::{CrossRegionAligner, MAX_REGION_PARTITIONS, RegionAlignment};
 pub use tracker::{
     GapReason, ReorderPolicy, SequenceEvent, SequenceTracker, SequencedBatch, Sequencer,
     StreamStats, delivery_units,

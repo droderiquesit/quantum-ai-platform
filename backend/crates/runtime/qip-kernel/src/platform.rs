@@ -152,8 +152,8 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ChainView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth,
-    MarketView, ModelsView, PoolReading, RiskView, TradeSide,
+    BookView, ChainView, CompanyView, ComplianceView, Desk, ExecutionRecord, ExecutionView,
+    ForecasterHealth, MarketView, ModelsView, PoolReading, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -509,6 +509,11 @@ pub struct Platform {
     /// reports each call's counts; these are what the Crypto/On-chain
     /// Brain reads across calls.
     chain_reorgs: usize,
+    /// Whether any corporate action has reached `queue_corporate_action`
+    /// since this process started (R12-REASON-3013). Until one has, the
+    /// Company/Fundamental Brain reports corporate events as having no
+    /// source, never as a quiet calendar.
+    corporate_actions_seen: bool,
     chain_deepest_reorg: u32,
     chain_bridges_failed: usize,
     /// The confirmation depth this deployment requires before reading state.
@@ -1199,6 +1204,10 @@ pub struct Platform {
     /// (R12-ASSET-3017), rebuilt before every REASON by
     /// `brief_the_desk_on_chain`.
     chain_view: Upstream<ChainView>,
+    /// The company records the desk's Company/Fundamental Brain reads
+    /// (R12-REASON-3013, ADR 0458), rebuilt before every REASON by
+    /// `brief_the_desk_on_company`.
+    company_view: Upstream<CompanyView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -6359,6 +6368,8 @@ impl Platform {
         desk.models = models.gate(desk.models.required(), desk.models.label());
         let chain_view = Upstream::new(ChainView::default());
         desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
+        let company_view = Upstream::new(CompanyView::default());
+        desk.company = company_view.gate(desk.company.required(), desk.company.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6623,6 +6634,7 @@ impl Platform {
             catalog: Catalog::new(),
             chain: None,
             chain_reorgs: 0,
+            corporate_actions_seen: false,
             chain_deepest_reorg: 0,
             chain_bridges_failed: 0,
             confirmations: Confirmations::exactly(config.chain_confirmations),
@@ -6847,6 +6859,7 @@ impl Platform {
             executions,
             models,
             chain_view,
+            company_view,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -12349,6 +12362,28 @@ impl Platform {
         self.chain_view.read()
     }
 
+    /// Write the corporate actions awaiting their ex-date into the slot the
+    /// desk's Company/Fundamental Brain reads, before the panel is convened
+    /// (R12-REASON-3013, ADR 0458). Guidance and capital structure have no
+    /// ingestion arm in the tree, so both stay empty here and the brain names
+    /// them missing; this writer is where they join once a source is
+    /// recorded.
+    fn brief_the_desk_on_company(&self) {
+        let observed = self.corporate_actions_seen;
+        let actions: Vec<CorporateAction> =
+            self.corporate_actions_pending.values().cloned().collect();
+        self.company_view.update(|view| {
+            view.corporate_actions_observed = observed;
+            view.corporate_actions = actions;
+        });
+    }
+
+    /// The company records the desk's Company/Fundamental Brain reads, as
+    /// REASON last wrote them.
+    pub fn desk_company_view(&self) -> Reading<'_, CompanyView> {
+        self.company_view.read()
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -14800,6 +14835,9 @@ impl Platform {
     /// pending action is the one whose ex-date is nearest and evicting it drops
     /// exactly the adjustment about to be needed.
     fn queue_corporate_action(&mut self, action: CorporateAction) {
+        // Seen before any refusal below: a feed that delivered a malformed
+        // action is still a feed, and the brain's "no source" would be false.
+        self.corporate_actions_seen = true;
         let Some(key) = action.idempotency_key() else {
             self.capture_problems.push(format!(
                 "a corporate action on {} ex {} carries no idempotency key and was not queued for \
@@ -16986,9 +17024,10 @@ impl Platform {
         state: &RiskState,
         now: Timestamp,
     ) -> MonitorAction {
+        let gate = routing.gate();
         self.monitor_routing = Some(routing);
         self.monitor
-            .observe(state, "platform", self.autonomy.level(), now)
+            .observe(&gate, state, "platform", self.autonomy.level(), now)
     }
 
     /// Describe the market this decision is being made in.
@@ -17233,6 +17272,7 @@ impl Platform {
         self.brief_the_desk_on_executions();
         self.brief_the_desk_on_models();
         self.brief_the_desk_on_chain();
+        self.brief_the_desk_on_company();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
             return outcome;
@@ -17562,6 +17602,44 @@ impl Platform {
                 "{} attempted something its manifest does not grant",
                 violation.agent_id
             ));
+        }
+
+        // ADR 0456 (R12-AMBIENT-9029): every run on the log, whole — the
+        // accesses it was refused as well as the finding it returned —
+        // before any finding from it is synthesised. A run the log refused
+        // is a run whose findings no hypothesis may rest on, because that
+        // hypothesis could not be reproduced from the log; so the stage
+        // stops here, fail-closed, rather than reasoning on evidence it
+        // could not keep. The runs that did reach the log stay there.
+        let mut unjournaled = Vec::new();
+        for run in &report.runs {
+            let body = crate::agent_journal::AgentRunJournal {
+                cycle: self.cycle,
+                record: run.clone(),
+            };
+            if let Err(error) = self.journal_record(body, crate::agent_journal::ORIGIN, now) {
+                unjournaled.push(format!(
+                    "agent run {} could not be journaled: {}",
+                    run.run_id,
+                    error.message()
+                ));
+            }
+        }
+        if !unjournaled.is_empty() {
+            let outcome = StageOutcome::ran(
+                Stage::Reason,
+                report.findings.len(),
+                format!(
+                    "{} finding(s) from {} run(s); {} run(s) unjournaled, so no hypothesis was formed",
+                    report.findings.len(),
+                    report.runs.len(),
+                    unjournaled.len()
+                ),
+            );
+            return problems
+                .into_iter()
+                .chain(unjournaled)
+                .fold(outcome, |acc, problem| acc.with_problem(problem));
         }
 
         // Synthesise. The mechanism comes from the anomaly that produced the
@@ -21868,7 +21946,22 @@ impl Platform {
     }
 
     fn stage_act(&mut self, now: Timestamp, correlation: &CorrelationId) -> StageOutcome {
+        // ADR 0424: the remainder of every open sale is worked down to flat
+        // before any new order, so a sale a cycle ago that the venue filled
+        // in part completes here and the position can reach `Exit`. Before
+        // anything this stage submits, so a new order is sized against the
+        // book the worked fills left.
+        let worked = self.work_open_sales(now);
         let outcome = self.stage_act_orders(now, correlation);
+        let outcome = if worked > 0 {
+            let detail = format!(
+                "{}; {worked} open sale(s) worked toward flat",
+                outcome.detail
+            );
+            StageOutcome { detail, ..outcome }
+        } else {
+            outcome
+        };
         // ADR 0079: a region whose every cell has been silent past the
         // operator's window is derived dark, and the transition — in either
         // direction — is put on the record here, in the stage whose
@@ -25074,6 +25167,224 @@ impl Platform {
         }
     }
 
+    /// Work the remainder of every open desk sale down to the long the desk
+    /// holds (ADR 0424), booking what fills through [`Self::book_venue_fills`]
+    /// like any other desk fill. Returns the number of orders that filled.
+    ///
+    /// The fills are captured as `Filled` under the cycle's correlation with
+    /// no placement record: the order was placed, and counted as submitted,
+    /// on the cycle that sent it.
+    fn work_open_sales(&mut self, now: Timestamp) -> usize {
+        let held: BTreeMap<String, Decimal> = self
+            .positions_at_cost()
+            .into_iter()
+            .map(|(instrument, (quantity, _))| (instrument, quantity))
+            .collect();
+        let worked = self
+            .orders
+            .work_sales(self.broker.as_mut(), &self.autonomy, &held, now);
+        if worked.is_empty() {
+            return 0;
+        }
+        let correlation = self.correlation_for(now);
+        for order in &worked {
+            for fill in &order.fills {
+                self.telemetry.metrics.count(
+                    names::ORDERS_FILLED,
+                    labels([("venue", order.venue.as_str())]),
+                );
+                if !fill.simulated {
+                    self.telemetry
+                        .metrics
+                        .count(names::LIVE_FILLS, labels([("venue", order.venue.as_str())]));
+                }
+            }
+            self.book_venue_fills(
+                None,
+                &correlation,
+                &order.order_id,
+                &order.object_id,
+                order.side,
+                order.arrival_price,
+                &VenueId::new(order.venue.clone()),
+                &order.fills,
+                now,
+            );
+        }
+        worked.len()
+    }
+
+    /// Ledger, journal, capture and book each of `fills` for one order:
+    /// the one booking path for a desk fill, shared by a submission's fills
+    /// and a worked remainder's (ADR 0424), so the two cannot be recorded
+    /// differently. `placed` is the decision record a fill is captured
+    /// under — the placement on submission, none for a worked fill, whose
+    /// order was placed on an earlier cycle.
+    #[allow(clippy::too_many_arguments)]
+    fn book_venue_fills(
+        &mut self,
+        placed: Option<&Decision>,
+        correlation: &CorrelationId,
+        order_id: &qip_core::ids::OrderId,
+        object_id: &ObjectId,
+        side: Side,
+        arrival: Decimal,
+        venue: &VenueId,
+        fills: &[qip_execution_engine::order::Fill],
+        now: Timestamp,
+    ) {
+        let venue = venue.clone();
+        let correlation = correlation.clone();
+        for fill in fills {
+            // The ledger record first, and the book only if the record exists.
+            //
+            // The venue has already filled by now, so the order of the two
+            // writes is the only control left. A fill booked into
+            // `self.capital` and then refused by the ledger would leave cash
+            // and position saying one thing and the double-entry ledger
+            // another, with nothing to show which was right. So the record is
+            // made (and checked by the ledger's own posting rules) before any
+            // state moves, and a fill with no record moves nothing: it is
+            // counted, put on the capture problems, and is a break against the
+            // venue for a person — absent from the book and the ledger alike,
+            // which is the one disagreement that is at least the same on both
+            // sides. A fill already on the chain is a replay and is a no-op
+            // here too, so a batch offered twice cannot book twice.
+            let booked = FillBooked {
+                order_id: fill.order_id.to_string(),
+                fill_id: fill.fill_id.to_string(),
+                object_id: object_id.to_string(),
+                venue: venue.to_string(),
+                side,
+                quantity: fill.quantity,
+                price: fill.price,
+                costs: fill.costs,
+                at: fill.at,
+                simulated: fill.simulated,
+            };
+            if fill.order_id != *order_id || fill.venue != venue.as_str() {
+                self.refuse_unledgered_fill(
+                    "mismatch",
+                    &booked,
+                    format!(
+                        "it names order {} at venue {} but arrived in the submission of order \
+                         {} at {}",
+                        fill.order_id, fill.venue, order_id, venue
+                    ),
+                );
+                continue;
+            }
+            match self
+                .desk_ledger
+                .admit(&booked, DESK_STRATEGY, correlation.as_str())
+            {
+                Ok(Admission::Recorded { .. }) => {}
+                Ok(Admission::Duplicate) => continue,
+                // Valid, but nothing has drained the feed and it has no room.
+                // Capacity says nothing about the fill: the venue holds the
+                // position, so the book books it, and the gap is counted and
+                // surfaced. The chain advanced over it, so the record is
+                // re-derivable from the log and nothing is lost; declining the
+                // fill here would make a long-running desk stop booking what the
+                // venue filled.
+                Ok(Admission::Overflowed { sequence }) => {
+                    self.note_unqueued_fill(&booked, sequence);
+                }
+                Err(error) => {
+                    self.refuse_unledgered_fill("refused", &booked, error.message().to_string());
+                    continue;
+                }
+            }
+            // P&L is not realised by opening a position, so the only money that
+            // has moved is what the fill cost. Reporting an opening trade's
+            // gross as profit is the direction that flatters.
+            let slippage = slippage_bps(arrival, fill.price, side);
+            let outcome = RealisedOutcome::realised(now, Decimal::ZERO, fill.costs, fill.quantity)
+                .with_slippage_bps(slippage);
+            self.capture_after(
+                placed,
+                now,
+                &correlation,
+                object_id.clone(),
+                Action::Filled {
+                    order_id: order_id.clone(),
+                    venue: venue.clone(),
+                    quantity: fill.quantity,
+                    price: fill.price,
+                },
+                outcome,
+                format!("filled at {} against an arrival of {arrival}", fill.price),
+            );
+
+            // A fill is capital that had to be at a venue on a date. That is
+            // exactly the observation the demand forecaster is fitted on, and
+            // it is the only source of it the loop actually sees.
+            self.record_capital_demand(
+                CapitalLocation::new(
+                    CapitalRegion::new(HOME_REGION),
+                    Currency::USD,
+                    venue.clone(),
+                ),
+                DemandKind::Cash,
+                fill.at,
+                fill.notional().abs(),
+            );
+            // A fill in an instrument the desk declared as a hedge is hedge
+            // demand as well as cash: the fill itself does not say it was a
+            // hedge, but the declarations name every instrument a hedge may
+            // be struck in, and that is the only statement of intent the
+            // platform holds. Read from the same declarations the DECIDE
+            // survey proposes from, so a hedge cannot be proposed in an
+            // instrument whose fill would not be recognised.
+            if self.is_declared_hedge_instrument(object_id) {
+                self.record_capital_demand(
+                    CapitalLocation::new(
+                        CapitalRegion::new(HOME_REGION),
+                        Currency::USD,
+                        venue.clone(),
+                    ),
+                    DemandKind::Hedge,
+                    fill.at,
+                    fill.notional().abs(),
+                );
+            }
+
+            // And it is capital that moved. This is the edge that makes the
+            // risk state real: the same fills the outcome capture records are
+            // the fills the monitor's equity is built from, so the two can
+            // never tell different stories.
+            //
+            // Journalled first, so the book is the fold of the log and a
+            // restart rebuilds it ([`Self::resume_book`]). A log that will
+            // not take the record does not stop the booking: the venue has
+            // already filled, and a book that left the fill out would read
+            // every limit low by exactly it. What it costs is said out loud
+            // instead — this is the one state a restart cannot rebuild.
+            if let Err(error) =
+                self.journal_record_under(booked, BOOK_ORIGIN, now, correlation.clone())
+            {
+                self.capture_problems.push(format!(
+                    "fill {} on order {} was booked and could not be journalled ({}); the book \
+                     now holds what the event log cannot rebuild and a restart would open \
+                     without it — archive the log to free its capacity before this process \
+                     stops",
+                    fill.fill_id,
+                    order_id,
+                    error.message()
+                ));
+            }
+            self.book_desk_fill(
+                object_id.as_str(),
+                venue.as_str(),
+                side,
+                fill.price,
+                fill.quantity,
+                fill.costs,
+                fill.at,
+            );
+        }
+    }
+
     /// Put one submission on the record, whichever way it went.
     ///
     /// A refusal produces a [`RealisedOutcome::nothing_happened`] rather than
@@ -25309,154 +25620,17 @@ impl Platform {
             "the control path accepted the order and it reached a venue",
         );
 
-        for fill in &result.fills {
-            // The ledger record first, and the book only if the record exists.
-            //
-            // The venue has already filled by now, so the order of the two
-            // writes is the only control left. A fill booked into
-            // `self.capital` and then refused by the ledger would leave cash
-            // and position saying one thing and the double-entry ledger
-            // another, with nothing to show which was right. So the record is
-            // made (and checked by the ledger's own posting rules) before any
-            // state moves, and a fill with no record moves nothing: it is
-            // counted, put on the capture problems, and is a break against the
-            // venue for a person — absent from the book and the ledger alike,
-            // which is the one disagreement that is at least the same on both
-            // sides. A fill already on the chain is a replay and is a no-op
-            // here too, so a batch offered twice cannot book twice.
-            let booked = FillBooked {
-                order_id: fill.order_id.to_string(),
-                fill_id: fill.fill_id.to_string(),
-                object_id: object_id.to_string(),
-                venue: venue.to_string(),
-                side,
-                quantity: fill.quantity,
-                price: fill.price,
-                costs: fill.costs,
-                at: fill.at,
-                simulated: fill.simulated,
-            };
-            if fill.order_id != result.order_id || fill.venue != venue.as_str() {
-                self.refuse_unledgered_fill(
-                    "mismatch",
-                    &booked,
-                    format!(
-                        "it names order {} at venue {} but arrived in the submission of order \
-                         {} at {}",
-                        fill.order_id, fill.venue, result.order_id, venue
-                    ),
-                );
-                continue;
-            }
-            match self
-                .desk_ledger
-                .admit(&booked, DESK_STRATEGY, correlation.as_str())
-            {
-                Ok(Admission::Recorded { .. }) => {}
-                Ok(Admission::Duplicate) => continue,
-                // Valid, but nothing has drained the feed and it has no room.
-                // Capacity says nothing about the fill: the venue holds the
-                // position, so the book books it, and the gap is counted and
-                // surfaced. The chain advanced over it, so the record is
-                // re-derivable from the log and nothing is lost; declining the
-                // fill here would make a long-running desk stop booking what the
-                // venue filled.
-                Ok(Admission::Overflowed { sequence }) => {
-                    self.note_unqueued_fill(&booked, sequence);
-                }
-                Err(error) => {
-                    self.refuse_unledgered_fill("refused", &booked, error.message().to_string());
-                    continue;
-                }
-            }
-            // P&L is not realised by opening a position, so the only money that
-            // has moved is what the fill cost. Reporting an opening trade's
-            // gross as profit is the direction that flatters.
-            let slippage = slippage_bps(arrival, fill.price, side);
-            let outcome = RealisedOutcome::realised(now, Decimal::ZERO, fill.costs, fill.quantity)
-                .with_slippage_bps(slippage);
-            self.capture_after(
-                placed.as_ref(),
-                now,
-                &correlation,
-                object_id.clone(),
-                Action::Filled {
-                    order_id: result.order_id.clone(),
-                    venue: venue.clone(),
-                    quantity: fill.quantity,
-                    price: fill.price,
-                },
-                outcome,
-                format!("filled at {} against an arrival of {arrival}", fill.price),
-            );
-
-            // A fill is capital that had to be at a venue on a date. That is
-            // exactly the observation the demand forecaster is fitted on, and
-            // it is the only source of it the loop actually sees.
-            self.record_capital_demand(
-                CapitalLocation::new(
-                    CapitalRegion::new(HOME_REGION),
-                    Currency::USD,
-                    venue.clone(),
-                ),
-                DemandKind::Cash,
-                fill.at,
-                fill.notional().abs(),
-            );
-            // A fill in an instrument the desk declared as a hedge is hedge
-            // demand as well as cash: the fill itself does not say it was a
-            // hedge, but the declarations name every instrument a hedge may
-            // be struck in, and that is the only statement of intent the
-            // platform holds. Read from the same declarations the DECIDE
-            // survey proposes from, so a hedge cannot be proposed in an
-            // instrument whose fill would not be recognised.
-            if self.is_declared_hedge_instrument(object_id) {
-                self.record_capital_demand(
-                    CapitalLocation::new(
-                        CapitalRegion::new(HOME_REGION),
-                        Currency::USD,
-                        venue.clone(),
-                    ),
-                    DemandKind::Hedge,
-                    fill.at,
-                    fill.notional().abs(),
-                );
-            }
-
-            // And it is capital that moved. This is the edge that makes the
-            // risk state real: the same fills the outcome capture records are
-            // the fills the monitor's equity is built from, so the two can
-            // never tell different stories.
-            //
-            // Journalled first, so the book is the fold of the log and a
-            // restart rebuilds it ([`Self::resume_book`]). A log that will
-            // not take the record does not stop the booking: the venue has
-            // already filled, and a book that left the fill out would read
-            // every limit low by exactly it. What it costs is said out loud
-            // instead — this is the one state a restart cannot rebuild.
-            if let Err(error) =
-                self.journal_record_under(booked, BOOK_ORIGIN, now, correlation.clone())
-            {
-                self.capture_problems.push(format!(
-                    "fill {} on order {} was booked and could not be journalled ({}); the book \
-                     now holds what the event log cannot rebuild and a restart would open \
-                     without it — archive the log to free its capacity before this process \
-                     stops",
-                    fill.fill_id,
-                    result.order_id,
-                    error.message()
-                ));
-            }
-            self.book_desk_fill(
-                object_id.as_str(),
-                venue.as_str(),
-                side,
-                fill.price,
-                fill.quantity,
-                fill.costs,
-                fill.at,
-            );
-        }
+        self.book_venue_fills(
+            placed.as_ref(),
+            &correlation,
+            &result.order_id,
+            object_id,
+            side,
+            arrival,
+            &venue,
+            &result.fills,
+            now,
+        );
 
         // The part of the order the venue did not fill (MODEL-039). The
         // slices above are what traded; what did not trade was recorded
@@ -30501,6 +30675,27 @@ fn mechanism_for(
     }
 }
 
+/// Test-only seams for `agent_journal`'s tests (ADR 0456). Kept in one block
+/// here, after every shipped `impl Platform` method, because
+/// `qip-acceptance`'s `api_boundary` enumerates the platform's mutators by
+/// reading this file up to its first `#[cfg(test)]`: a test seam placed among
+/// the shipped methods hid every mutator after it from that check.
+#[cfg(test)]
+impl Platform {
+    /// Seat a different organisation, for a test that needs an agent on the
+    /// panel that reaches past its manifest. The replacement still passes
+    /// `Organisation::new`'s roster validation.
+    pub(crate) fn replace_organisation(&mut self, organisation: Organisation) {
+        self.organisation = organisation;
+    }
+
+    /// Swap the event log, for the fail-closed test, which needs a log that
+    /// refuses every append.
+    pub(crate) fn replace_event_log(&mut self, event_log: EventLog) {
+        self.event_log = event_log;
+    }
+}
+
 /// The universe the unit-test platforms below trade in: the symbols named, listed.
 ///
 /// `Universe::new()` installs no instrument, and the order manager now refuses
@@ -32045,6 +32240,20 @@ mod decide_tests {
             "{}",
             routing.rationale()
         );
+        // ADR 0430: the routing is not only kept beside the call — the
+        // monitor demanded its gate and wrote its rationale onto the
+        // observation it made. Mutation: record an empty `routed` in
+        // `RiskMonitor::observe`, and this fires.
+        let observed = platform
+            .monitor
+            .observations()
+            .last()
+            .expect("premise: the monitor observed the book");
+        assert_eq!(
+            observed.routed,
+            routing.rationale(),
+            "the monitor's observation does not carry the routing its gate was minted from"
+        );
 
         // Structurally, not only on this cycle: the production half of this
         // file evaluates the monitor at exactly one place, inside the function
@@ -32860,9 +33069,17 @@ mod decide_tests {
             LimitSet::conservative_default().check(&post_trade).breaches
         );
         let level = platform.autonomy.level();
+        let gate = platform
+            .cost_router
+            .determine(
+                "risk monitor limits for the book",
+                platform.book_conditions(),
+            )
+            .expect("the book's limits route deterministically")
+            .gate();
         let action = platform
             .monitor
-            .observe(&post_trade, "platform", level, now);
+            .observe(&gate, &post_trade, "platform", level, now);
         assert_eq!(
             action.as_str(),
             "reduce_only",
