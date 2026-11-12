@@ -564,7 +564,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1014 roll_back_degraded",
       "backend/crates/libs/qip-ai/src/registry.rs:336-361 decision_eligibility"
     ],
-    "gap": "A fill cannot be attributed to a model: FillScore (platform.rs) carries order, venue and instrument and no model reference, and Platform::evaluate_alternatives scores by order id, so there is no counterfactual score keyed by model for roll_back_degraded to read. Holding a degrading model on counterfactual performance needs the order-to-model attribution first (proposal -> model card), a kernel change.",
+    "gap": "A fill cannot be attributed to a model: FillScore (platform.rs) carries order, venue and instrument and no model reference, and Platform::evaluate_alternatives scores by order id, so there is no counterfactual score keyed by model for roll_back_degraded to read. Holding a degrading model on counterfactual performance needs the order-to-model attribution first (proposal -> model card), a kernel change. 2026-11-12 (wave580 fw-e-01): still blocked as stated — no model reference rides proposal, order or FillScore today, so the attribution chain is several kernel seams, and holding a model on counterfactual performance would also need a figure nobody gave (how much counterfactual shortfall, over how many scored fills, retires a model).",
     "implemented": true,
     "tested": true,
     "integrated": true,
