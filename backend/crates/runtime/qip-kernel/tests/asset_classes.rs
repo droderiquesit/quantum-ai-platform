@@ -478,9 +478,7 @@ fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
         maturity,
         repo_rate: 0.045,
         haircut: 0.02,
-        // The desk lends: ADR 0398 refuses an order in a repo whose record
-        // says it borrows, because the venue states no pledge.
-        is_reverse: true,
+        is_reverse: false,
         counterparty: "cp-1".to_string(),
     }))
     .provenance(Provenance::synthetic("asset-class-test", start()))
@@ -566,15 +564,6 @@ fn a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_
         0,
         "premise: nothing filled"
     );
-    // ADR 0398: a repo order needs the Repo permission for its counterparty.
-    let mut financing = qip_capital::treasury::FinancingPermissions::new();
-    financing.permit(
-        qip_capital::treasury::FinancingFunction::Repo,
-        "desk-coverage",
-        "cp-1",
-        "US",
-    );
-    platform.authorise_financing("desk-coverage", "US", financing);
     for id in ["obj-REPO-1M", "obj-IDX", "obj-BASKET"] {
         let order = platform.order_for(
             ObjectId::from_string(id),

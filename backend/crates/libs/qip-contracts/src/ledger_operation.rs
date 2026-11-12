@@ -327,29 +327,6 @@ pub enum OperationKind {
         amount: Decimal,
         phase: Phase,
     },
-    /// A repo the book holds as the cash lender is repaid at its maturity
-    /// (ADR 0398, R12-COVERAGE-5100): the far leg. The near leg is the fill
-    /// that bought the units and is not restated here. `units` of the repo's
-    /// own unit leave the book for the venue they were bought at (Dr venue,
-    /// Cr trading), and the counterparty repays `principal` and `interest`
-    /// in `cash_unit` (Dr trading, Cr venue:`counterparty`), as two postings
-    /// so a reader can tell the money lent from the money earned. Neither
-    /// contra is an accrual: a credit there is read back as cash owed. There
-    /// is no borrowing form of this kind and no phase: a repo the book
-    /// borrows under would pledge collateral, and ADR 0153 decision 3
-    /// declines a pledge no venue stated.
-    RepoMaturity {
-        book: Book,
-        venue: String,
-        counterparty: String,
-        /// The repo instrument's own unit.
-        repo: String,
-        units: Decimal,
-        cash_unit: String,
-        principal: Decimal,
-        /// Zero when the repo's rate or its term is zero; never negative.
-        interest: Decimal,
-    },
     /// A mandate subscribes capital into treasury (Establish: Dr treasury, Cr
     /// mandate) or redeems it (Unwind). R12-LEDGER-5021.
     MandateSubscription {
@@ -633,37 +610,6 @@ impl LedgerOperationFields {
                 *phase,
             )
             .to_vec(),
-            OperationKind::RepoMaturity {
-                book,
-                venue,
-                counterparty,
-                repo,
-                units,
-                cash_unit,
-                principal,
-                interest,
-            } => {
-                let sold_at = Account::Venue {
-                    venue: venue.clone(),
-                };
-                let repaid_by = Account::Venue {
-                    venue: counterparty.clone(),
-                };
-                let mut postings = pair(sold_at, book.trading(), repo, *units, est).to_vec();
-                postings.extend(pair(
-                    book.trading(),
-                    repaid_by.clone(),
-                    cash_unit,
-                    *principal,
-                    est,
-                ));
-                // A posting of nothing is refused by the event, and a repo at
-                // a zero rate earned nothing to post.
-                if interest.is_positive() {
-                    postings.extend(pair(book.trading(), repaid_by, cash_unit, *interest, est));
-                }
-                postings
-            }
             OperationKind::MandateSubscription {
                 mandate,
                 treasury,
@@ -758,38 +704,6 @@ impl Contract for LedgerOperationFields {
             OperationKind::CorporateAction { action, amount, .. } => {
                 named(c, "action", action)?;
                 positive(c, "amount", *amount)?;
-            }
-            OperationKind::RepoMaturity {
-                counterparty,
-                repo,
-                units,
-                cash_unit,
-                principal,
-                interest,
-                ..
-            } => {
-                named(c, "counterparty", counterparty)?;
-                named(c, "repo", repo)?;
-                positive(c, "units", *units)?;
-                positive(c, "principal", *principal)?;
-                if interest.is_negative() {
-                    return refuse(
-                        c,
-                        format!(
-                            "repays repo {repo} with interest of {interest}; a lender is not \
-                             charged for lending, so state the interest as zero or more"
-                        ),
-                    );
-                }
-                if repo == cash_unit {
-                    return refuse(
-                        c,
-                        format!(
-                            "repays repo {repo} in its own unit; the units retired and the \
-                             cash repaid would net into one number"
-                        ),
-                    );
-                }
             }
             OperationKind::CapitalGrantFunded { grant, .. } => {
                 // `GrantMode` has one variant; matching it by name means a
