@@ -333,6 +333,18 @@ pub struct AgentBrief {
     pub horizon: Duration,
     /// Specific sub-questions, when the caller has them.
     pub questions: Vec<String>,
+    /// The regime in force for the brief's subject, as the platform keys it
+    /// (`{market}/{volatility}`, `Platform::regime_context`), when the caller
+    /// knows one (R12-AMBIENT-3024).
+    ///
+    /// Typed and kept apart from `context` for the reason `precedent` is: the
+    /// reviewer's lesson matcher substring-matches `context`, and a lesson
+    /// that `applies_when` a regime would start matching every brief that
+    /// merely named it. `None` where the caller named no regime, which the
+    /// Meta Brain reports as reliability pooled over every regime rather than
+    /// as a regime it guessed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub regime: Option<String>,
 }
 
 impl AgentBrief {
@@ -347,7 +359,14 @@ impl AgentBrief {
             as_of,
             horizon,
             questions: Vec::new(),
+            regime: None,
         }
+    }
+
+    /// Name the regime in force for the brief's subject.
+    pub fn in_regime(mut self, regime: impl Into<String>) -> Self {
+        self.regime = Some(regime.into());
+        self
     }
 
     pub fn with_context(mut self, context: impl Into<String>) -> Self {

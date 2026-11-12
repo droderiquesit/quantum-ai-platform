@@ -23,6 +23,7 @@ fn episode(n: i64, agent: &str) -> Episode {
         evidence: vec![format!("evidence-{n}")],
         conviction: 0.6,
         outcome: None,
+        regime: None,
     }
 }
 
@@ -193,4 +194,46 @@ fn a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_ra
         Some(2)
     );
     assert!(memory.procedure_as_of("earnings-review", now()).is_none());
+}
+
+/// R12-AMBIENT-3024: the record per (agent, regime) the Meta Brain weighs a
+/// panel by. Point-in-time in both instants — an episode that had not
+/// happened, or had not resolved, by `as_of` is not yet a record — and an
+/// episode with no regime is left out rather than filed under a regime
+/// nobody recorded.
+#[test]
+fn the_record_by_regime_counts_only_what_had_resolved_by_then_and_only_under_its_own_regime() {
+    let mut memory = ResearchMemory::new();
+    let tagged = |n: i64, regime: Option<&str>, correct: bool| {
+        let mut e = resolved(n, correct);
+        e.regime = regime.map(str::to_string);
+        e
+    };
+    memory.record_episode(tagged(1, Some("trending/high"), true));
+    memory.record_episode(tagged(2, Some("trending/high"), false));
+    memory.record_episode(tagged(3, Some("calm/low"), true));
+    memory.record_episode(tagged(4, None, true));
+    // Resolved only after the read: not yet a record.
+    let mut late = tagged(5, Some("calm/low"), false);
+    if let Some(outcome) = late.outcome.as_mut() {
+        outcome.resolved_at = now().saturating_add(Duration::from_days(30));
+    }
+    memory.record_episode(late);
+
+    let as_of = now().saturating_add(Duration::from_days(2));
+    let cells = memory.reliability_by_regime(as_of);
+    let key = |regime: &str| ("macro".to_string(), regime.to_string());
+    assert_eq!(cells.len(), 2, "{cells:?}");
+    let trending = cells[&key("trending/high")];
+    assert_eq!((trending.correct, trending.resolved), (1, 2));
+    assert_eq!(trending.hit_rate(), Some(0.5));
+    let calm = cells[&key("calm/low")];
+    assert_eq!(
+        (calm.correct, calm.resolved),
+        (1, 1),
+        "the late resolution leaked in"
+    );
+    // The untagged episode is in no regime's record.
+    let counted: usize = cells.values().map(|record| record.resolved).sum();
+    assert_eq!(counted, 3, "the untagged or late episode was counted");
 }

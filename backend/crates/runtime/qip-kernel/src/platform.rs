@@ -17514,6 +17514,13 @@ impl Platform {
         .with_context(opportunity.historical_context.clone())
         .about_objects(opportunity.affected_objects.clone())
         .about_entities(opportunity.affected_entities.clone());
+        // The regime in force for the instrument the episode will be keyed
+        // on — the same first affected object `recall_precedent` keys on —
+        // so the Meta Brain weighs each specialist by its record in this
+        // regime (R12-AMBIENT-3024). Typed, never written into `context`.
+        if let Some(instrument) = opportunity.affected_objects.first() {
+            brief = brief.in_regime(self.regime_context(instrument.as_str()));
+        }
         // A precedent the brief refuses is a kernel bug — the store already
         // filters to `known_at < now` — so it is reported as a problem and
         // the panel is convened without it, rather than with a precedent
@@ -18756,6 +18763,14 @@ impl Platform {
                     )),
                     agent_id: stance.agent_id.clone(),
                     occurred_at: now,
+                    // The regime the episode was formed in, keyed as
+                    // `regime_context` keys it, so the Meta Brain can say
+                    // which analyst is reliable in which regime
+                    // (R12-AMBIENT-3024) rather than one pooled rate.
+                    regime: Some(format!(
+                        "{}/{}",
+                        episode.regime.market, episode.regime.volatility
+                    )),
                     question: format!(
                         "which way {} would move on a {} claim",
                         episode.instrument, episode.claim.claim
