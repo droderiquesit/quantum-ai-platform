@@ -393,6 +393,11 @@ impl ReputationBook {
         self.models.get(model)
     }
 
+    /// Every model the book holds a record for, in reference order.
+    pub fn models(&self) -> impl Iterator<Item = &ContextualReputation> {
+        self.models.values()
+    }
+
     /// What a model has earned here. A model the book has never heard of reads
     /// as a coin flip, which is the same answer as a model with no observations
     /// here — correctly, because they are the same claim.

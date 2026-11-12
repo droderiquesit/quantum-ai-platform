@@ -32,14 +32,16 @@
 //!
 //! # What this slice does not yet do
 //!
-//! `MarketEvent` keeps its own fields and wire form — the lake and the spool
-//! hold millions of lines of it — and admits through [`Admission::new`] and
-//! [`Admitted::admit`] inside its constructor rather than becoming
-//! `Admitted<MarketMessage>` on the wire. Every `SensedRecord` producer does
-//! not yet build a header; the
-//! kernel admits each record by the times it carries itself, with no
-//! entitlement and no source hash (see `Platform::absorb_records`). Both are
-//! named in R12-TICK-2053's gap.
+//! `MarketEvent` holds its `Admission` as one value (R12-TICK-2053,
+//! 2026-11-12) and decodes its unchanged wire form back through the
+//! refusals, but it is not `Admitted<MarketMessage>`: producers stamp a
+//! payload's capture time and the header's receive time from two clocks,
+//! so [`Admitted::admit`]'s own-times rule would refuse ordinary events.
+//! A `SensedRecord` carries no header of its own; the kernel admits each
+//! record by the times it carries itself, with no entitlement and no source
+//! hash (see `Platform::absorb_records`). `Admission`'s own derived
+//! `Deserialize` re-runs none of [`Admission::new`]'s refusals. All three
+//! are named in R12-TICK-2053's gap.
 
 use crate::governance::Entitlement;
 use qip_core::error::{Error, Result};

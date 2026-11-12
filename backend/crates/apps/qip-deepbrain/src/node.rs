@@ -262,7 +262,7 @@ fn drifted_references(learning: Option<&crate::learning::LearningRound>) -> Vec<
 /// drained sweep followed by a current one that was not due must not
 /// journal the drained round twice.
 fn research_pass(
-    platform: &Platform,
+    platform: &mut Platform,
     mut evolution: Option<&mut crate::evolution::EvolutionEngine>,
     loops: &mut Loops<'_>,
     cycle: u64,
@@ -299,6 +299,14 @@ fn research_pass(
     let Some(mut round) = round else {
         return;
     };
+    // Every tick campaign the sweep concluded is admitted to the platform
+    // it re-measured (R12-MODEL-1198), so the next LEARN folds it into the
+    // microstructure model. Until this the deltas reached the ambient
+    // journal and nothing else: the model the blueprint has LEARN update had
+    // no production writer. A refusal — a venue no registered strategy
+    // trades at, or a delta no newer than the one held — is said, not
+    // swallowed; the delta is still journaled below.
+    outcome.side_failures.extend(round.admit_deltas(platform));
     // Every request the sweep launched goes to the discovery desk as a scout
     // job, in rank order (R12-AMBIENT-9033); the desk's next pass looks for
     // evidence on what the sweep paid to ask about.

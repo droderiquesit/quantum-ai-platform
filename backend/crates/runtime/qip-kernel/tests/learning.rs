@@ -594,6 +594,10 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
     let mut platform = platform()?;
     platform.observe(bars("AAA", 120));
     let first = platform.run_cycle(start());
+    // R12-FINOPS-10139: what each cycle billed the panel's rung, read off
+    // the ledger the cycle charged, to check the spend book against below.
+    let panel = qip_cost_router::IntelligenceTier::MultiAgentReasoning;
+    let mut panel_charges = platform.cycle_ledger().map_or(0, |l| l.count(panel));
     assert!(
         !platform.predictions().is_empty(),
         "premise: a claim was written:\n{}",
@@ -665,6 +669,7 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         .collect();
     platform.observe(swings);
     let second = platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    panel_charges += platform.cycle_ledger().map_or(0, |l| l.count(panel));
     let learn = second.stage(Stage::Learn).expect("learn ran");
     assert!(
         learn.detail.contains("graded"),
@@ -704,6 +709,31 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         learn.detail.contains("1 routing choice(s) scored"),
         "{}",
         learn.detail
+    );
+
+    // R12-FINOPS-10139. The failure this guards: the ledger knew what the
+    // rung cost and the book how often it was right, and no figure divided
+    // one by the other. The join is read back from the running platform.
+    assert!(panel_charges > 0, "premise: the cycles billed the panel");
+    let benefit = platform.model_benefit();
+    let row = benefit
+        .iter()
+        .find(|b| b.model == panel.as_str())
+        .expect("the panel's rung is reported");
+    assert!(row.references.contains(&rung), "{row:?}");
+    assert_eq!(row.spend.charges, panel_charges as u64, "{row:?}");
+    assert_eq!(
+        row.spend.cost,
+        panel.cost() * Decimal::from_int(panel_charges as i64)
+    );
+    assert_eq!(
+        (row.correct, row.observations),
+        (u64::from(record.correct), u64::from(record.observations))
+    );
+    assert_eq!(
+        row.cost_per_correct,
+        (record.correct > 0).then_some(row.spend.cost),
+        "one scored call: the cost per correct call is the whole bill or none"
     );
     Ok(())
 }
@@ -3390,5 +3420,75 @@ fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate(
     );
     // And kept out of the desk's own declined sample, which sizes the desk.
     assert!(platform.declined_scores().is_empty());
+    Ok(())
+}
+
+// --- venue session facts reach the centre typed (R12-TICK-2053) -------------
+
+fn book(symbol: &str, at: Timestamp) -> SensedRecord {
+    use qip_market::book::{BookLevel, OrderBook};
+    let level = |price: &str| BookLevel {
+        price: Decimal::parse(price).unwrap_or_default(),
+        size: dec!("500"),
+        order_count: 2,
+    };
+    SensedRecord::Book(Box::new(OrderBook {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        at,
+        bids: vec![level("99.99")],
+        asks: vec![level("100.01")],
+        sequence: 7,
+    }))
+}
+
+/// A venue's halt reaches the centre as a typed status record, and the next
+/// book from that venue is taken as depth at a halted venue rather than as
+/// continuous trading. Before the status record existed every central book
+/// was filed under `VenueStatus::Open`, a halt included.
+///
+/// Mutation: read `VenueStatus::Open` for the book again in
+/// `Platform::absorb_records` — the halted venue counts as usable
+/// ("a halted venue's book was read as tradable depth").
+#[test]
+fn a_venue_halt_reaches_the_centre_typed_and_the_next_book_is_read_under_it() -> Result<()> {
+    use qip_contracts::venue::VenueStatus;
+    use qip_market_ingestion::session::VenueStatusUpdate;
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+
+    // Premise: an ordinary book is usable depth.
+    assert_eq!(platform.observe(vec![book("AAA", at)]), 1);
+    let map = platform
+        .liquidity()
+        .current_map(&object("AAA"), at)
+        .expect("premise: the book is mapped");
+    assert_eq!(
+        map.usable_venue_count(),
+        1,
+        "premise: an open venue is usable"
+    );
+
+    let halted_at = at.saturating_add(Duration::from_secs(1));
+    let halt = SensedRecord::Status(Box::new(VenueStatusUpdate {
+        object_id: object("AAA"),
+        venue: "XNYS".to_string(),
+        at: halted_at,
+        capture_time: halted_at,
+        sequence: Some(8),
+        status: VenueStatus::Halted,
+    }));
+    let next = halted_at.saturating_add(Duration::from_secs(1));
+    assert_eq!(platform.observe(vec![halt, book("AAA", next)]), 2);
+    let map = platform
+        .liquidity()
+        .current_map(&object("AAA"), next)
+        .expect("the book is mapped");
+    assert_eq!(map.venue_count(), 1);
+    assert_eq!(
+        map.usable_venue_count(),
+        0,
+        "a halted venue's book was read as tradable depth"
+    );
     Ok(())
 }

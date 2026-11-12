@@ -27,53 +27,141 @@ use serde::{Deserialize, Serialize};
 
 /// A decoded market message, admitted onto the platform's own timeline.
 ///
-/// Three timestamps are kept as three fields rather than derived from one
-/// another: `event_time` is the venue's own claim of when the fact became
-/// true, `receive_time` is when this cell's clock saw the message arrive, and
+/// Three timestamps are kept rather than derived from one another:
+/// `event_time` is the venue's own claim of when the fact became true,
+/// `receive_time` is when this cell's clock saw the message arrive, and
 /// `normalized_time` is when the normalisation pipeline finished turning the
 /// wire message into this record. A queue between receipt and normalisation
 /// is ordinary; a type that only kept one of the three would make that queue
 /// invisible.
+///
+/// The three times, the clock's doubt, the source hash and the entitlement
+/// are not this type's own fields: they are its [`Admission`], held as one
+/// value (ADR 0132, R12-TICK-2053). Until 2026-11-12 they were six fields
+/// copied out of an `Admission` the constructor built and threw away, and
+/// `admission()` rebuilt a header from them on every call — two accounts of
+/// one header, the second assembled by hand. Now there is one, and it is the
+/// one the constructor checked.
+///
+/// The wire form is unchanged — the lake and the spool hold millions of
+/// lines of it — and decoding it goes back through the refusals rather than
+/// around them ([`MarketEventWire`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(into = "MarketEventWire", try_from = "MarketEventWire")]
 pub struct MarketEvent {
+    payload: MarketMessage,
+    admission: Admission,
+    /// sha256 of the bytes the venue put on the wire for this message, where
+    /// the producer still holds them. The admission's source hash is over the
+    /// canonical re-encoding of the decoded message, so it cannot answer "is
+    /// this the venue's frame?" — two different wire encodings of one fact
+    /// hash to the same source hash, and a re-encoding bug hides inside it.
+    /// Absent (not zero) on an event whose producer never held the wire
+    /// bytes, and on events recorded before the field existed.
+    native_hash: Option<String>,
+}
+
+/// [`MarketEvent`]'s wire form, field for field and in the order the lake
+/// has always held it.
+///
+/// A derived `Deserialize` on `MarketEvent` admitted any line that parsed:
+/// a payload altered after its hash was taken, a negative uncertainty, an
+/// entitlement that was never granted — every refusal of the one
+/// constructor bypassed by the decoder (the R12-TICK-2053 skeptic, 2026-10-31).
+/// Decoding now re-runs them: the hash is recomputed from the payload and
+/// must match, the uncertainty may not be negative, and the entitlement must
+/// be granted at the event's time.
+///
+/// One refusal is deliberately *not* re-run on decode: an event received
+/// before it happened. A lake line of that shape is the contamination the
+/// replay's knowability exclusion exists to find and count
+/// (`qip-deepbrain`'s `tick_desk`); refusing it at the decoder would turn a
+/// counted leak into an unparsed line, which is a quieter answer to the same
+/// question. The writer refuses it ([`MarketEvent::new`]); the reader
+/// measures it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct MarketEventWire {
     payload: MarketMessage,
     event_time: Timestamp,
     receive_time: Timestamp,
     normalized_time: Timestamp,
-    /// How much slop this cell allows around `event_time`, e.g. from a venue
-    /// clock synchronised only to a documented tolerance. Never negative — a
-    /// negative uncertainty is not a tighter bound than zero, it is the sign
-    /// that a subtraction ran the wrong way.
     uncertainty: Duration,
-    /// sha256 of the canonical JSON of `payload`. Recomputed at construction
-    /// rather than trusted, so this field can never name a hash for a payload
-    /// other than the one it travels with.
     source_hash: String,
-    /// sha256 of the bytes the venue put on the wire for this message, where
-    /// the producer still holds them. `source_hash` is over the canonical
-    /// re-encoding of the decoded message, so it cannot answer "is this the
-    /// venue's frame?" — two different wire encodings of one fact hash to
-    /// the same `source_hash`, and a re-encoding bug hides inside it. Absent
-    /// (not zero) on an event whose producer never held the wire bytes, and
-    /// on events recorded before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_hash: Option<String>,
-    /// The licence this event is admitted under. There is exactly one
-    /// constructor for this type and it refuses an entitlement that is not
-    /// granted at `event_time`, so a `MarketEvent` carrying data this
-    /// platform is not licensed to use cannot be built.
     entitlement: Entitlement,
+}
+
+impl From<MarketEvent> for MarketEventWire {
+    fn from(event: MarketEvent) -> Self {
+        let Admission {
+            event_time,
+            receive_time,
+            normalized_time,
+            uncertainty,
+            source_hash,
+            entitlement,
+        } = event.admission;
+        Self {
+            payload: event.payload,
+            event_time,
+            receive_time,
+            normalized_time,
+            uncertainty,
+            source_hash,
+            native_hash: event.native_hash,
+            entitlement,
+        }
+    }
+}
+
+impl TryFrom<MarketEventWire> for MarketEvent {
+    type Error = Error;
+
+    fn try_from(wire: MarketEventWire) -> Result<Self> {
+        let recomputed = Self::hash_payload(&wire.payload)?;
+        if recomputed != wire.source_hash {
+            return Err(Error::invalid(format!(
+                "a market event line names source hash {} and its payload hashes to \
+                 {recomputed}; the payload was altered after the hash was taken",
+                wire.source_hash
+            )));
+        }
+        if wire.uncertainty.as_nanos() < 0 {
+            return Err(Error::invalid(
+                "a market event line carries a negative uncertainty; a negative value is not a \
+                 tighter bound, it is a subtraction that ran the wrong way",
+            ));
+        }
+        if !wire.entitlement.is_granted(wire.event_time) {
+            return Err(Error::denied(format!(
+                "a market event line under {} carries no entitlement granted at its event \
+                 time; it may not be read back as data this platform was licensed to use",
+                wire.entitlement.dataset()
+            )));
+        }
+        Ok(Self {
+            payload: wire.payload,
+            admission: Admission {
+                event_time: wire.event_time,
+                receive_time: wire.receive_time,
+                normalized_time: wire.normalized_time,
+                uncertainty: wire.uncertainty,
+                source_hash: wire.source_hash,
+                entitlement: wire.entitlement,
+            },
+            native_hash: wire.native_hash,
+        })
+    }
 }
 
 impl MarketEvent {
     /// Build a market event, recomputing the source hash from `payload` and
     /// refusing anything that does not hold together.
     ///
-    /// Order of checks: uncertainty's sign is a property of the value handed
-    /// in and is cheapest to reject first; the entitlement is checked before
-    /// the hash is recomputed so an unlicensed payload is refused for the
-    /// reason that actually matters rather than for an incidental hash
-    /// mismatch a caller might "fix" by copying in the recomputed value.
+    /// The hash is checked first so an altered payload is refused for that
+    /// reason; the admission refusals (uncertainty, entitlement, order) are
+    /// [`Admission::new`]'s, the one place they are written.
     pub fn new(
         payload: MarketMessage,
         event_time: Timestamp,
@@ -91,12 +179,6 @@ impl MarketEvent {
                  {recomputed}; the payload was altered after the hash was taken"
             )));
         }
-        // ADR 0132 decision 1: the point-in-time refusals live in the one
-        // admission constructor, so an event received before it happened is
-        // refused here by the same line that refuses it for every other
-        // sensed record. The fields stay this type's own: the lake and the
-        // spool hold its wire form, and the header is derived from them by
-        // `admission` rather than stored twice.
         let admission = Admission::new(
             event_time,
             receive_time,
@@ -105,37 +187,22 @@ impl MarketEvent {
             recomputed,
             entitlement,
         )?;
-        // Not yet `Admitted::admit(payload, admission)`: producers across the
+        // Not `Admitted::admit(payload, admission)`: producers across the
         // tree stamp a payload's `capture_time` and the header's receive
-        // time from two clocks (the venue's line and the node's receipt),
-        // and the deep brain's leak-exclusion test needs a tick received
-        // before it happened to exist on the lake to be excluded from. The
-        // own-times rule is enforced by `Admitted::admit` for callers that
-        // build the wrapper, and is R12-TICK-2053's named remaining step.
+        // time from two clocks (the venue's line and the node's receipt), so
+        // the own-times rule would refuse ordinary events. Named in
+        // R12-TICK-2053's gap.
         Ok(Self {
             payload,
-            event_time: admission.event_time(),
-            receive_time: admission.receive_time(),
-            normalized_time: admission.normalized_time(),
-            uncertainty: admission.uncertainty(),
-            source_hash: admission.source_hash().to_string(),
+            admission,
             native_hash: None,
-            entitlement: admission.entitlement().clone(),
         })
     }
 
     /// The admission header this event was admitted under (ADR 0132): the
-    /// three times, the uncertainty, the source hash and the entitlement, as
-    /// one value a centre record can be compared with.
-    pub fn admission(&self) -> Admission {
-        Admission {
-            event_time: self.event_time,
-            receive_time: self.receive_time,
-            normalized_time: self.normalized_time,
-            uncertainty: self.uncertainty,
-            source_hash: self.source_hash.clone(),
-            entitlement: self.entitlement.clone(),
-        }
+    /// one the constructor, or the decoder, checked — held, not rebuilt.
+    pub fn admission(&self) -> &Admission {
+        &self.admission
     }
 
     /// Record the venue's own bytes for this message, hashing them here so a
@@ -169,27 +236,27 @@ impl MarketEvent {
     }
 
     pub const fn event_time(&self) -> Timestamp {
-        self.event_time
+        self.admission.event_time
     }
 
     pub const fn receive_time(&self) -> Timestamp {
-        self.receive_time
+        self.admission.receive_time
     }
 
     pub const fn normalized_time(&self) -> Timestamp {
-        self.normalized_time
+        self.admission.normalized_time
     }
 
     pub const fn uncertainty(&self) -> Duration {
-        self.uncertainty
+        self.admission.uncertainty
     }
 
     pub fn source_hash(&self) -> &str {
-        &self.source_hash
+        &self.admission.source_hash
     }
 
     pub fn entitlement(&self) -> &Entitlement {
-        &self.entitlement
+        &self.admission.entitlement
     }
 
     /// The number of messages missing between `previous` and `self` on the

@@ -870,6 +870,25 @@ fn a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta() {
     let concluded: Vec<String> = second.deltas.iter().map(|d| d.delta_id.clone()).collect();
     assert_eq!(journaled, concluded, "every delta is journaled");
 
+    // R12-MODEL-1198: the node hands the concluded deltas to its platform.
+    // No registered strategy trades at XSIM here, so each is refused by
+    // name and said, not swallowed. Mutation: make `admit_deltas` return an
+    // empty list — fails at "a refusal was swallowed".
+    let mut admitting = self::platform();
+    let refused = second.admit_deltas(&mut admitting);
+    assert_eq!(
+        refused.len(),
+        second.deltas.len(),
+        "a refusal was swallowed: {refused:?}"
+    );
+    assert!(
+        refused
+            .iter()
+            .all(|line| line.contains("no registered strategy trades at XSIM")),
+        "refused for another reason: {refused:?}"
+    );
+    assert!(admitting.microstructure_model().venues().is_empty());
+
     let third = loop_
         .sweep_over(
             &platform,

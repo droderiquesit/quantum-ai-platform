@@ -649,10 +649,15 @@ pub struct Platform {
     /// instant of the re-promotion that released it. Resumed with the holds.
     replay_divergence_windows: BTreeMap<StrategyId, Timestamp>,
     /// The latest concluded microstructure delta per venue, re-admitted
-    /// through its contract (ADR 0226). Read only by the release of a
-    /// replay-divergence hold, which it may keep and never lift.
+    /// through its contract (ADR 0226). Read by the release of a
+    /// replay-divergence hold, which it may keep and never lift, and folded
+    /// once each into [`Self::microstructure_model`] in LEARN.
     microstructure_deltas:
         BTreeMap<(String, String), qip_contracts::microstructure_delta::MicrostructureDelta>,
+    /// The tick/microstructure model the deltas update (R12-MODEL-1198):
+    /// per-venue fill-probability, slippage and impact estimates, the left
+    /// fold of its own journal records and resumed from them.
+    microstructure_model: crate::microstructure_model::MicrostructureModel,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -1068,6 +1073,10 @@ pub struct Platform {
     cost_engine: CostEngine,
     /// The rungs the most recent cycle actually used.
     cycle_ledger: Option<ComputeLedger>,
+    /// Every cycle ledger's model-rung charges, accumulated where the
+    /// ledger is billed, so [`Self::model_benefit`] divides what each rung
+    /// cost by what it got right (R12-FINOPS-10139).
+    model_spend: qip_cost_router::SpendBook,
     /// Compute charged since assembly. Monotone.
     compute_spend: Decimal,
     /// Data licences the platform has read from. Empty until sources register.
@@ -1320,6 +1329,14 @@ pub struct Platform {
     /// Quoted spread history per instrument, in basis points — the series the
     /// liquidity-deterioration detector reads. A statistic, so `f64`.
     spread_history: BTreeMap<String, Vec<f64>>,
+    /// The last trading state each venue stated for each instrument, from
+    /// [`SensedRecord::Status`] (R12-TICK-2053), keyed `(instrument,
+    /// venue)`. A book's depth observation is taken under this status
+    /// rather than under an assumed `Open`: until a venue's status reached
+    /// the centre as a typed record, every central book was filed as
+    /// continuous trading, including one published during a halt. Bounded
+    /// by [`VENUE_STATUS_BOUND`]; a new key past it is refused and reported.
+    venue_status: BTreeMap<(String, String), VenueStatus>,
     /// Named surprise series — fundamentals against consensus, keyed
     /// `entity:metric` — the series the observation detector reads.
     observation_history: BTreeMap<String, Vec<f64>>,
@@ -6575,6 +6592,7 @@ impl Platform {
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
+        let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -6648,6 +6666,7 @@ impl Platform {
             replay_divergence_holds: replay_divergence_resumed.0,
             replay_divergence_windows: replay_divergence_resumed.1,
             microstructure_deltas: BTreeMap::new(),
+            microstructure_model: microstructure_model_resumed,
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -6720,6 +6739,7 @@ impl Platform {
             exposure_axes,
             liquidity_reference,
             cycle_ledger: None,
+            model_spend: qip_cost_router::SpendBook::new(),
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
             capture_problems: Vec::new(),
@@ -6818,6 +6838,7 @@ impl Platform {
             claim_scores: qip_evolution::scoring::Scoreboard::strategies(),
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
+            venue_status: BTreeMap::new(),
             observation_history: BTreeMap::new(),
             world,
             market,
@@ -13448,11 +13469,42 @@ impl Platform {
                             spread.to_f64() / mid.to_f64() * 10_000.0,
                         );
                     }
-                    let observation =
-                        DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, VenueStatus::Open);
+                    // The venue's own last stated status where it stated
+                    // one; a venue that never has is read as quoting
+                    // continuously, as a quote is below.
+                    let status = self
+                        .venue_status
+                        .get(&(book.object_id.as_str().to_string(), book.venue.clone()))
+                        .copied()
+                        .unwrap_or(VenueStatus::Open);
+                    let observation = DepthObservation::from_book(&book, BOOK_DEPTH_LEVELS, status);
                     self.absorb_depth(observation, book.at);
                     self.market
                         .update(|market| market.snapshot.apply_book(*book));
+                    absorbed += 1;
+                }
+                SensedRecord::Status(update) => {
+                    let key = (update.object_id.as_str().to_string(), update.venue.clone());
+                    if self.venue_status.len() >= VENUE_STATUS_BOUND
+                        && !self.venue_status.contains_key(&key)
+                    {
+                        self.capture_problems.push(format!(
+                            "a status for {} at {} was refused: {VENUE_STATUS_BOUND} instrument \
+                             and venue pairs are already tracked",
+                            key.0, key.1
+                        ));
+                        continue;
+                    }
+                    self.ensure_world_object(update.object_id.as_str(), update.at);
+                    self.venue_status.insert(key, update.status);
+                    absorbed += 1;
+                }
+                // An auction's imbalance and a book reset are logged with
+                // their lineage on receipt (`observe_with_lineage`) and reach
+                // no central series yet: the centre holds no auction book,
+                // and its books are snapshots a reset does not invalidate —
+                // the next published book replaces the last.
+                SensedRecord::Auction(_) | SensedRecord::Reset(_) => {
                     absorbed += 1;
                 }
                 SensedRecord::News(item) => {
@@ -14602,6 +14654,7 @@ impl Platform {
             self.compute_spend.to_f64(),
         );
 
+        self.model_spend.absorb(&ledger);
         self.cycle_ledger = Some(ledger);
         problems
     }
@@ -21186,12 +21239,21 @@ impl Platform {
         // ladder the limits read; a position it did not mark is charged the
         // world's own unmarked figure rather than dropped.
         let days_to_liquidate = self.risk_state().days_to_liquidate;
+        // R12-RISK-4102: the two axes a shock spreads along beyond
+        // correlation. The region is the instrument's own `country` axis, the
+        // one the sector/country caps already read; the counterparty is the
+        // broker, because the desk book is held where its fills came back
+        // from — the bucket `COUNTERPARTY_AXIS` charges them to — and a
+        // position that names neither is charged in every bucket's shock.
+        let counterparty = self.broker.name().to_string();
         let positions: Vec<crate::tail::TailPosition> = book
             .iter()
             .map(|(object, notional)| crate::tail::TailPosition {
                 object: object.clone(),
                 notional: *notional,
                 days_to_liquidate: days_to_liquidate.get(object).copied(),
+                region: self.exposure_axes_for(object).get("country").cloned(),
+                counterparty: Some(counterparty.clone()),
             })
             .collect();
         let tail_book = crate::tail::TailBook {
@@ -22817,6 +22879,17 @@ impl Platform {
         // this cycle's errors are read, and beside `review_sizing` rather than
         // inside it because that narrows an instrument on the desk and this
         // narrows a strategy's grant at the centre. It withdraws no venue.
+        // R12-MODEL-1198: the cells' concluded residuals update the
+        // tick/microstructure model, after `score_filled` like the twin's own
+        // calibration. Narrowing-only reader: the misfit-venue cap.
+        let (reviewed, problems) = self.learn_microstructure(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         let (reviewed, problems) = self.review_replay_divergence(now);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
@@ -24269,6 +24342,16 @@ impl Platform {
     /// [`qip_risk::limits::VENUE_TWIN_MISFIT_AXIS`] (R12-RES-7104). The
     /// buckets are the counterparty axis's own running gross, so the cap
     /// reads what the book carries there and not a second count.
+    /// Whether `venue` is charged to the misfit-venue cap: its twin is
+    /// persistently wrong ([`Self::twin_misfit`]), or the microstructure
+    /// model the cells' residuals update says its execution model is wrong
+    /// by as much (R12-MODEL-1198,
+    /// [`crate::microstructure_model::MicrostructureModel::misfit`]). Either
+    /// reading narrows; neither can widen what the other charged.
+    pub fn venue_misfit(&self, venue: &str) -> bool {
+        self.twin_misfit(venue) || self.microstructure_model.misfit(venue).is_some()
+    }
+
     fn with_twin_misfit(&self, state: RiskState) -> RiskState {
         let mut state = state;
         let misfit: BTreeMap<String, Decimal> = state
@@ -24276,7 +24359,7 @@ impl Platform {
             .get(qip_risk::limits::COUNTERPARTY_AXIS)
             .into_iter()
             .flatten()
-            .filter(|(venue, _)| self.twin_misfit(venue))
+            .filter(|(venue, _)| self.venue_misfit(venue))
             .map(|(venue, gross)| (venue.clone(), *gross))
             .collect();
         if !misfit.is_empty() {
@@ -24666,9 +24749,10 @@ impl Platform {
         // the breach was discovered — if the aggregate had carried a bucket
         // at all — only by the monitor, one cycle late.
         let mut axes = self.exposure_axes_for(object_id.as_str());
-        // An order to a venue whose twin is misfit is charged to the misfit
-        // axis too, so the cap sees it before the order exists.
-        if self.twin_misfit(self.broker.name()) {
+        // An order to a venue whose twin, or whose microstructure model, is
+        // misfit is charged to the misfit axis too, so the cap sees it before
+        // the order exists.
+        if self.venue_misfit(self.broker.name()) {
             axes.insert(
                 qip_risk::limits::VENUE_TWIN_MISFIT_AXIS.to_string(),
                 self.broker.name().to_string(),
@@ -28019,6 +28103,79 @@ impl Platform {
             .get(&(venue.to_string(), cell.to_string()))
     }
 
+    /// The tick/microstructure model LEARN updates from the cells' concluded
+    /// deltas (R12-MODEL-1198). See [`crate::microstructure_model`].
+    pub fn microstructure_model(&self) -> &crate::microstructure_model::MicrostructureModel {
+        &self.microstructure_model
+    }
+
+    /// The LEARN pass for R12-MODEL-1198: fold every held delta newer than
+    /// its (venue, cell) pair's last fold into the microstructure model, in
+    /// pair order, journaling each fold before the model moves — so the
+    /// model the platform reads is the model [`crate::microstructure_model::resume`]
+    /// rebuilds from the log, and a fold that could not be journaled is a
+    /// fold that did not happen and is retried next cycle.
+    fn learn_microstructure(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        use crate::microstructure_model::{MICROSTRUCTURE_MODEL_ORIGIN, MicrostructureFold};
+        let mut problems = Vec::new();
+        let pending: Vec<MicrostructureFold> = self
+            .microstructure_deltas
+            .iter()
+            .filter(|((venue, cell), delta)| {
+                self.microstructure_model
+                    .is_unfolded(venue, cell, delta.window_end)
+            })
+            .map(|(_, delta)| MicrostructureFold::of(delta, now))
+            .collect();
+        let mut folded = 0usize;
+        for fold in pending {
+            let next = match self.microstructure_model.folded(&fold) {
+                Ok(next) => next,
+                Err(error) => {
+                    problems.push(format!(
+                        "microstructure model: delta {} for {} from {} was not folded: {}",
+                        fold.delta_id,
+                        fold.venue,
+                        fold.cell,
+                        error.message()
+                    ));
+                    continue;
+                }
+            };
+            let label = format!("{} for {} from {}", fold.delta_id, fold.venue, fold.cell);
+            if let Err(error) = self.journal_record(fold, MICROSTRUCTURE_MODEL_ORIGIN, now) {
+                problems.push(format!(
+                    "microstructure model: delta {label} was not folded because the fold could \
+                     not be journaled: {}",
+                    error.message()
+                ));
+                continue;
+            }
+            self.microstructure_model = next;
+            folded += 1;
+        }
+        let misfit: Vec<String> = self
+            .microstructure_model
+            .venues()
+            .keys()
+            .filter_map(|venue| self.microstructure_model.misfit(venue))
+            .collect();
+        if folded == 0 && misfit.is_empty() {
+            return (None, problems);
+        }
+        let mut summary = format!(
+            "microstructure model: {folded} delta(s) folded, {} venue(s) modelled",
+            self.microstructure_model.venues().len()
+        );
+        if !misfit.is_empty() {
+            summary.push_str(&format!(
+                "; charged to the misfit-venue cap: {}",
+                misfit.join("; ")
+            ));
+        }
+        (Some(summary), problems)
+    }
+
     /// The LEARN pass for R12-RES-7104: release every hold a re-promotion
     /// has answered, then hold every registered strategy whose venue the
     /// twin now diverges from. Each change is journaled before the state
@@ -29921,6 +30078,19 @@ impl Platform {
         self.cycle_ledger.as_ref()
     }
 
+    /// Each model rung's billed cost and latency over the correct calls the
+    /// routing reputation credits it with (R12-FINOPS-10139): the benefit
+    /// per dollar and per second the router had no figure for. Joined on
+    /// the rung, every version summed; see `qip_cost_router::benefit`.
+    pub fn model_benefit(&self) -> Vec<qip_cost_router::ModelBenefit> {
+        self.model_spend.report(&self.routing_reputation)
+    }
+
+    /// The accumulated spend [`Self::model_benefit`] reads.
+    pub fn model_spend(&self) -> &qip_cost_router::SpendBook {
+        &self.model_spend
+    }
+
     /// What the most recent cycle cost. Zero before the first cycle.
     pub fn last_cycle_cost(&self) -> Decimal {
         self.cycle_ledger
@@ -30094,6 +30264,11 @@ fn push_bounded_bars(series: &mut Vec<Bar>, bar: Bar) {
         series.drain(..series.len() - SERIES_HISTORY);
     }
 }
+
+/// The most `(instrument, venue)` pairs [`Platform`]'s venue-status table
+/// holds. Several times any universe this build runs; a feed naming more is
+/// refused rather than grown into.
+const VENUE_STATUS_BOUND: usize = 4096;
 
 /// The desk's bar series length at which the snapshot is rebuilt from the
 /// platform's own bounded history.

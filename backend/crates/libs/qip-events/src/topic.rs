@@ -68,6 +68,12 @@ pub enum Topic {
     MarketQuote,
     MarketTrade,
     MarketOrderBook,
+    /// A venue's session facts for one instrument: a trading-state change,
+    /// an auction's indicative price and imbalance, and a book reset
+    /// (R12-TICK-2053). Typed records each, on one topic because they are
+    /// one stream a router reads in order — a status change, then the
+    /// auction it opened, then the reset that ends a broken book.
+    MarketSession,
     MarketBar,
     MarketCorporateAction,
     FundamentalUpdated,
@@ -330,11 +336,12 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 92] = [
+    pub const ALL: [Self; 93] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
         Self::MarketOrderBook,
+        Self::MarketSession,
         Self::MarketBar,
         Self::MarketCorporateAction,
         Self::FundamentalUpdated,
@@ -433,6 +440,7 @@ impl Topic {
             Self::MarketQuote => "market.quote",
             Self::MarketTrade => "market.trade",
             Self::MarketOrderBook => "market.orderbook",
+            Self::MarketSession => "market.session",
             Self::MarketBar => "market.bar",
             Self::MarketCorporateAction => "market.corporate_action",
             Self::FundamentalUpdated => "fundamental.updated",
@@ -535,6 +543,7 @@ impl Topic {
             | Self::MarketQuote
             | Self::MarketTrade
             | Self::MarketOrderBook
+            | Self::MarketSession
             | Self::MarketBar
             | Self::MarketCorporateAction
             | Self::FundamentalUpdated
@@ -662,7 +671,9 @@ impl Topic {
         match self {
             // Raw ticks, book deltas, quote updates: a bounded ring, then
             // gone. The next one arrives in milliseconds.
-            Self::MarketTick | Self::MarketQuote | Self::MarketOrderBook => {
+            // A session fact is the book's own state change and is replaced
+            // by the next one the venue sends.
+            Self::MarketTick | Self::MarketQuote | Self::MarketOrderBook | Self::MarketSession => {
                 RetentionClass::Transient
             }
             // A bar is the fallback series' business: three years behind

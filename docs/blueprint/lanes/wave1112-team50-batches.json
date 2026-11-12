@@ -1,0 +1,1582 @@
+{
+  "title": "wave580 team-of-fifty batches, 2026-11-12",
+  "owner_directive": "2026-11-12: \"complete all the blueprint 50 team members\"",
+  "note": "Triage notes come from read-only agents that ran no tests (workflows wf_cfaf617b-af7 and wf_c50344c6-967). They are leads to verify, not findings. Each batch is graded only on its own lane's tests and mutations, and every COMPLETE grade is re-checked by an independent skeptic before it is pushed (decision 32).",
+  "next_adr_after": 522,
+  "batches": [
+    {
+      "batch": "t50-01",
+      "branch": "ccr-116bbb27-osu8n8-t50-01",
+      "adr_numbers": [
+        428,
+        429
+      ],
+      "rows": [
+        {
+          "id": "R12-CONTRACT-7072",
+          "file": "R12-M7.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Contract bar first. backend/crates/libs/qip-contracts/src/market_state.rs:38 derives a plain Deserialize, so it skips the refusals in new() at :55. Route it through #[serde(try_from)] to a raw struct that calls new()'s checks. Add tests in tests/market_state.rs: a missing field is refused on deserialise, an inverted interval is refused on deserialise, and a round-trip keeps every field. The file has none of these today. Mutation-verify each test.",
+            "Owner ruling, decision 14 (ADR_THEN_IMPLEMENT): claim an ADR number in docs/adr/README.md. The ADR amends ADR 0151 decision 2 so that MarketStatePack rides in the pass's FeatureDigest on reflex.feature_digested (ADR 0132), replacing the FeatureSnapshot that was never built.",
+            "Producer: in qip-edge-node event_fabric/drain.rs, build one MarketStatePack per pass over the MarketEvents the pass applied. Skip the pass when it applied none. Carry the pack in the FeatureDigest. Test: a sequence gap yields an integrity flag at the receiving end.",
+            "Consumer: in the tick desk's fusion.rs (qip-deepbrain, off while QIP_DEEPBRAIN_TICK_EVERY is unset), a flagged instrument's input weight is removed and never raised. Add a test that fails if the weight is raised, mutation-verified."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-contracts --test market_state",
+            "qip-edge-node drain/pass tests (new)",
+            "qip-deepbrain fusion tests (new)"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-02",
+      "branch": "ccr-116bbb27-osu8n8-t50-02",
+      "adr_numbers": [
+        430,
+        431
+      ],
+      "rows": [
+        {
+          "id": "R12-RISK-3022",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Move the survival waterfall's limit checks (backend/crates/runtime/qip-kernel/src/survival.rs, 1557 lines) out of qip-kernel into a new model-free crate, as ADR 0127 decided (docs/adr/0127-*). This is the qip-survival extraction shared with R12-CAPITAL-7204.",
+            "Move the other kernel-side gates into that crate, or make each take a DeterministicRouting witness from Router::determine (qip-cost-router/src/router.rs:485): MinLiquidity at Platform::submit_order, sign-off and release gating, and the kill-switch path beyond monitor.enforce.",
+            "Add the new crate to SAFETY_CRITICAL in backend/crates/tests/qip-acceptance/tests/architecture.rs:395. Then mutation-verify no_safety_critical_engine_can_reach_a_language_model by adding qip-ai to the new crate's Cargo.toml.",
+            "Make the monitor_routing witness constrain RiskMonitor::observe through its signature. Today it is only stored as a record. Add a test that fails if the witness is dropped."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-acceptance --test architecture",
+            "cargo test -p qip-acceptance --test order_placement_paths",
+            "cargo test -p qip-kernel --test pretrade_determinism",
+            "cargo test -p qip-cost-router --test determine",
+            "cargo test -p qip-kernel decide_tests::every_limit_evaluation_takes_a_deterministic_routing_witness"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-03",
+      "branch": "ccr-116bbb27-osu8n8-t50-03",
+      "adr_numbers": [
+        432,
+        433
+      ],
+      "rows": [
+        {
+          "id": "R12-AMBIENT-3066",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Build a multi-horizon forecast sentinel in the ambient mesh. Today only qip-capital-fabric/src/forecast.rs:324 (capital demand, one horizon per forecast) and per-signal `horizon` in qip-contracts/src/ambient.rs:81,123 exist. Nothing keeps expected future states on a ladder from milliseconds to years.",
+            "Emit its deviations as AmbientSignal (qip-contracts/src/ambient.rs:72). Route them through AttentionRouter (:497) from the deep brain's ambient loop (qip-deepbrain/src/ambient_agency.rs:394 `route`). This makes the sentinel run in the production composition root, not only in tests.",
+            "Add an acceptance test in qip-acceptance/tests/ambient_attention.rs. It must show the sentinel's signals reaching the router, and that disabling the sentinel removes them. Mutation-verify the test.",
+            "Bar says 'runs in production'. Proof needs a deployed qip-deepbrain, and nothing is deployed. In-repo wiring can close everything except that proof."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-acceptance --test ambient_attention",
+            "cargo test -p qip-contracts --test ambient",
+            "cargo test -p qip-capital-fabric",
+            "cargo test -p qip-deepbrain"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-04",
+      "branch": "ccr-116bbb27-osu8n8-t50-04",
+      "adr_numbers": [
+        434,
+        435
+      ],
+      "rows": [
+        {
+          "id": "R12-AMBIENT-3069",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Build an opportunity-sentinel module, e.g. backend/crates/apps/qip-deepbrain/src/sentinels.rs or a pure lib in qip-opportunity-engine. It must detect precursors, not finished anomalies, for five kinds: cross-asset, cross-region, event, physical-product and multi-leg. Today the only producers are detector.rs:992, which finds anomalies, and research.rs:709, which raises a MissedOpportunity gap after the fact.",
+            "Emit each precursor as an AmbientSignal with SignalClass::Opportunity (qip-contracts/src/ambient.rs:72). Feed it to the AttentionRouter::route call in the deep brain's research sweep (ambient.rs:563, research.rs:55). Add a config switch in qip-deepbrain main that turns the sentinel on or off.",
+            "Add tests in backend/crates/apps/qip-deepbrain/tests/research.rs, next to the Opportunity assertion at :1693. Test 1: a seeded precursor for each kind reaches an AttentionEvent. Test 2: with the sentinel disabled, no Opportunity signal from it appears. Test 3: a dislocation that is already a full signal is not counted as a precursor. Mutation-verify each test.",
+            "The bar says the sentinel 'runs in production', and no deep brain is shown deployed. Mark deployable/e2e as needing a deployment that this repo cannot give. Report that half as not met, separate from the in-repo work."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-deepbrain --test research",
+            "cargo test -p qip-deepbrain --test ambient_journal",
+            "cargo test -p qip-contracts --test ambient",
+            "cargo test -p qip-kernel"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-05",
+      "branch": "ccr-116bbb27-osu8n8-t50-05",
+      "adr_numbers": [
+        436,
+        437
+      ],
+      "rows": [
+        {
+          "id": "R12-MODEL-4022",
+          "file": "R12-M4.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "backend/crates/runtime/qip-kernel/src/model_serving.rs:1146: make ModelProducer::TrainingPipeline (and QuantumInformed, :1157) push require_completed_shadow (:322) like SelfFitted (:1148), so promote_model (:1112) refuses with no recorded trial.",
+            "Rework the ~21 kernel and qip-api tests promoting TrainingPipeline fixtures so each drives MIN_SHADOW_ROUNDS (qip-ai/src/registry.rs:447) won shadow rounds first; nine that assert exact card stages or the shadow refusal need per-test rewrites.",
+            "Make the trial a simulation/paper trial: shadow rounds score rmse on later bars (qip-deepbrain/src/learning.rs:1570-1770); score them on twin-priced paper fills instead, or record a separate paper-trial record the gate reads.",
+            "Add an integration test: TrainingPipeline candidate with no completed paper/shadow trial is refused by promote_model, passes after trial; mutation-verify by deleting the new require_completed_shadow arm."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --no-fail-fast",
+            "cargo test -p qip-api --no-fail-fast",
+            "cargo test -p qip-deepbrain --no-fail-fast",
+            "cargo test -p qip-ai --no-fail-fast"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-06",
+      "branch": "ccr-116bbb27-osu8n8-t50-06",
+      "adr_numbers": [
+        438,
+        439
+      ],
+      "rows": [
+        {
+          "id": "R12-TICK-2048",
+          "file": "R12-M2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a typed sync record in backend/crates/libs/qip-contracts (for example a SyncMetadata struct beside MarketEvent, market_event.rs:37-60, holding region, cell, clock_source, uncertainty, instrument/asset key), carried on CapturedMarketEvent, to replace the untyped serde_json cross_partition built in drain.rs:1075-1100.",
+            "Make LakeSink::align_across (backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:863, bounded by MAX_ALIGNED_PARTITIONS :709) emit that typed record, and key cross-asset alignment across instruments as well as venue partitions.",
+            "Build a cross-region alignment seam where captured records from more than one cell meet (the centre, qip-kernel central/plane.rs ingest path), using qip-sequencing::align (align.rs:51-120) across regions, with a bounded working set.",
+            "Add tests that fail when the typed record is absent or a region/asset field is dropped (extend qip-edge-node/tests/lake_clock.rs and a qip-kernel cross-region test), mutation-verified; a capture path is already committed in startup.sh.tftpl:236 (QIP_VENUE_FEED=simulated), but no node is deployed, so a deployed capture is out of scope for the inspection bar."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-edge-node --test lake_clock",
+            "cargo test -p qip-edge-node --test decision_loop",
+            "cargo test -p qip-sequencing --test align"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-07",
+      "branch": "ccr-116bbb27-osu8n8-t50-07",
+      "adr_numbers": [
+        440,
+        441
+      ],
+      "rows": [
+        {
+          "id": "R12-LEDGER-5011",
+          "file": "R12-M5.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "qip-contracts: add an in_settlement Account variant and a Decision::Settled outcome in backend/crates/libs/qip-contracts/src/reflex.rs:40 (enum Decision) and ledger.rs Account. Both additive with serde defaults, so old records decode and no digest moves. Settlement at ledger.rs:42-44 stays single-variant per the paper boundary.",
+            "qip-ledgerd store.rs:925: the Decision::Filled arm posts the cash leg to in_settlement:<cell>/<strategy> when the venue has SettlementTerms (qip-edge/src/settlement.rs) and to cash when it has none. Add a Settled arm that moves in_settlement to cash.",
+            "qip-edge-node gateway.rs: the simulated gateway emits Decision::Settled when its settlement clock passes a fill's settlement date. This is the only producer; without it cash stays pending for ever.",
+            "Tests in qip-ledgerd/tests/store.rs: state readable from ledger events after apply, cash unavailable before the settlement date, one test per state. Mutation: drop the in_settlement posting and the balance check must fail. Keep ledger_event.rs:6 settlement_has_no_variant_but_simulated."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-ledgerd --test store",
+            "cargo test -p qip-contracts --test ledger_event",
+            "cargo test -p qip-edge-node --test pass",
+            "cargo test -p qip-edge --test settlement"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-08",
+      "branch": "ccr-116bbb27-osu8n8-t50-08",
+      "adr_numbers": [
+        442,
+        443
+      ],
+      "rows": [
+        {
+          "id": "R12-LEDGER-8139",
+          "file": "R12-G1.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Build a ledger-vs-venue/custody comparator: read qip-ledgerd balances (backend/crates/apps/qip-ledgerd/src/store.rs:1129 balances, :1381 balance) against venue custody/drop-copy positions (qip-edge/src/custody.rs CustodyStatement carries only as_of, no holdings; qip-edge/src/dropcopy.rs:276 reconcile compares fills to cell state, not ledger). Needs a holdings-bearing statement type; custody.rs:28 notes R12-LEDGER-10185 statement not landed.",
+            "Decide where it runs without breaking ADR 0008 (cells decide alone): likely in qip-ledgerd or qip-kernel central plane, emitting a ReconciliationBreak-class P0/P1 fabric event (mirror qip-edge-node/src/event_fabric/writer.rs:239 classification).",
+            "Feed the discrepancy to the cell as a deterministic narrow/halt (policy frame or a new halt source beside kill_switch/policy/polled/journal in qip-edge/src/telemetry.rs), reusing the break-halts-cell path at qip-edge-node/src/pass.rs:77.",
+            "Integration test: injected ledger/venue break emits fabric event and halts/narrows the cell; mutation-verify by removing the trip (e.g. new test beside qip-edge-node/tests/event_fabric_outbox.rs:212)."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-edge --test telemetry",
+            "cargo test -p qip-edge-node --test event_fabric_outbox",
+            "cargo test -p qip-ledgerd"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-09",
+      "branch": "ccr-116bbb27-osu8n8-t50-09",
+      "adr_numbers": [
+        444,
+        445
+      ],
+      "rows": [
+        {
+          "id": "R12-WORLD-3034",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Make an agent consume AgentBrief.procedures (backend/crates/libs/qip-agents/src/finding.rs:323, with_procedures :369): today only platform.rs:17363-17375 fills it and nothing reads it, so add a reuse path whose output changes with the procedure, plus a test that fails if the procedure is dropped.",
+            "Replace past-call steps in distil_procedure (backend/crates/runtime/qip-kernel/src/platform.rs:3130) with followable method steps the consuming agent executes.",
+            "Store strategy templates, data adapters, playbooks and remediation patterns in qip_agents::memory::ResearchMemory (backend/crates/libs/qip-agents/src/memory.rs), or write an ADR declining the kinds not built; claim the ADR number in the index first.",
+            "Replace the write_research_memory seeding in decide_tests::an_analysts_distilled_procedure_is_retrieved_at_its_next_convening (platform.rs:~30907-31026) with a test that drives LEARN then REASON end to end; add a supersede path for MAX_PROCEDURES; mutation-verify each new test."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-agents --test memory a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version",
+            "cargo test -p qip-kernel --lib decide_tests::an_analysts_distilled_procedure_is_retrieved_at_its_next_convening"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-10",
+      "branch": "ccr-116bbb27-osu8n8-t50-10",
+      "adr_numbers": [
+        446,
+        447
+      ],
+      "rows": [
+        {
+          "id": "R12-TICK-2090",
+          "file": "R12-M2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a failed-product state and spinoff listing to qip-financial history.rs (UniverseHistory has list/backdate_listing/rename/delist/open_outage/record_outage at :84-:253, no failed/spinoff arm), with members_as_of (:273) keeping failed products for the dates they existed",
+            "Production writers: teach the tape/feed parser (qip-market-ingestion tape.rs, today CashDividend only) to emit Delisting/Renamed so Platform::queue_corporate_action is reached off tests, and route VenueStatus halts and cell halts (platform.rs ingest_cell_report / CentralPlane::record_halt) into universe_history.open_outage beside the two existing callers at platform.rs:6832 and :28420",
+            "Rebuild UniverseHistory from the event log at resume in Platform::new so a logged withdrawal opens its outage at its logged instant, not at assembly; test in qip-kernel/tests/learning.rs",
+            "Add a deep-brain round test (qip-deepbrain/tests/universe_history.rs) over a recorded delisting asserting a candidate's backtest refused the delisted name, and mutation-verify each new test"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-financial --test history",
+            "cargo test -p qip-simulation-engine --test universe_history --test simulation",
+            "cargo test -p qip-kernel --test position_record --test learning",
+            "cargo test -p qip-deepbrain --test universe_history"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-11",
+      "branch": "ccr-116bbb27-osu8n8-t50-11",
+      "adr_numbers": [
+        448,
+        449
+      ],
+      "rows": [
+        {
+          "id": "R12-MODEL-7210",
+          "file": "R12-M7.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Widen DeltaRefusal at backend/crates/edge/qip-edge/src/mesh.rs:183 and its mirror backend/crates/services/qip-mesh/src/delta.rs:93 to carry the refused intent (instrument, side, size) as serde-default optional fields; populate them at Cell::refuse and the direct-recording seams (shared with R12-MESH-5068)",
+            "In qip-kernel platform.rs ingest_cell_report, queue edge refusals that carry an intent into the declined set that score_declined (platform.rs:27074) scores, alongside the desk refusals capture_submission (platform.rs:24644) already queues",
+            "Add a consumer of the desk outcome records DeskShipper ships (backend/crates/runtime/qip-desk-ship/src/lib.rs, qip-fastbrain/src/node.rs) that feeds them back into learning (calibration/counterfactual scoring via stage_learn platform.rs:22128), or record why the in-process LEARN path already covers them",
+            "Add mutation-verified tests in backend/crates/runtime/qip-kernel/tests/learning.rs: an edge refusal is scored as a counterfactual, and a shipped desk outcome reaches a learner"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --test learning",
+            "cargo test -p qip-edge --test telemetry",
+            "cargo test -p qip-fastbrain --test outcome_lake",
+            "cargo test -p qip-acceptance --test vertical_slice_ship"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-12",
+      "branch": "ccr-116bbb27-osu8n8-t50-12",
+      "adr_numbers": [
+        450,
+        451
+      ],
+      "rows": [
+        {
+          "id": "R12-TICK-2080",
+          "file": "R12-M2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Rework the fit in qip-twin/src/calibration.rs:138 observe_with_participation and platform.rs:27479 score_filled. Feed the twin's charged cost minus reality's cost, not mark minus fill. Fit in the twin's own impact units: sqrt(qty / 20-bar mean volume) times sigma/sigma_ref. fill_participation is at platform.rs:27856.",
+            "Bound the slope in calibration.rs:204 cost_model. Refuse any slope that would push cost past MAX_TRADE_COST_BPS, so the venue never goes Unpriceable without further calibration. Make twin_misfit (platform.rs:23919) read the slope as well as bias_bps.",
+            "Add a queue term to the twin's CostModel and an acknowledgement-timing output to the in-repo simulated venue. Then calibrate both from telemetry; capture.rs:267 with_latency is the existing seam. The bar names queue and latency models, and today neither has a calibration input.",
+            "Add a kernel test in qip-kernel/tests/learning.rs: on the default tape the impact coefficient (and the latency and queue parameters) converge to the simulator's true values. Mutation-verify it: freeze the parameters and confirm the test fails."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-twin --test futures",
+            "cargo test -p qip-kernel --test learning",
+            "cargo test -p qip-acceptance --test valuation_seam"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-13",
+      "branch": "ccr-116bbb27-osu8n8-t50-13",
+      "adr_numbers": [
+        452,
+        453
+      ],
+      "rows": [
+        {
+          "id": "R12-CICD-9116",
+          "file": "R12-G2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "infrastructure/terraform/modules/cloudrun/main.tf: add a traffic block (tagged canary revision, percent split variable, refuse out-of-range percent) plus a previous-promoted-digest input; nothing exists now (grep finds only traffic_class at main.tf:133).",
+            ".github/workflows/deploy.yml (deploy job, after the :395-422 boundary step): add canary steps - deploy with --no-traffic and tag, shift N%, SLO gate that queries the pushed Cloud Monitoring series (ADR 0121, not 0122 as the row cites), then promote or roll back with gcloud run services update-traffic to the previous promoted digest (ADR 0115).",
+            "infrastructure/gitops/envs/*/kustomization.yaml and argocd overlays: express the canary/promotion as a Kargo Stage/verification so the promotion drives it (ADR 0114 Amendment 1), recording the previous digest for one-action rollback.",
+            "backend/crates/tests/qip-acceptance/tests/ (new suite, e.g. cloud_run_canary.rs): assert the workflow has the canary, SLO-gate and rollback steps, the gate fails closed on a missing series, and Terraform rollback names a digest not a tag; mutation-verify each."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-acceptance --test terraform_contract",
+            "cargo test -p qip-acceptance --test gitops",
+            "cargo test -p qip-acceptance --test cloud_run_canary (new)"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-14",
+      "branch": "ccr-116bbb27-osu8n8-t50-14",
+      "adr_numbers": [
+        454,
+        455
+      ],
+      "rows": [
+        {
+          "id": "R12-CONTRACT-7069",
+          "file": "R12-M7.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Claim and write the ADR in docs/adr/README.md that the owner ruled on 2026-10-31 (decision 14, ADR_THEN_IMPLEMENT). It must decide how intent and decision ids are minted, or make Attribution a per-contributor list matching NetIntent's shares, and state what owner means. No such ADR exists yet: the register currently ends at 0407.",
+            "Add intent and decision ids (or a per-contributor attribution list) to Decision::Filled in backend/crates/libs/qip-contracts/src/reflex.rs:199. Record them at backend/crates/edge/qip-edge/src/cell.rs:8425. This is a journal chain-version change.",
+            "Carry the attribution and an owner (strategy mapped to mandate in the central plane) on PaperFill in backend/crates/libs/qip-portfolio/src/ledger.rs:51. qip_portfolio::ledger::post must emit LedgerEvent::with_owner and with_attribution.",
+            "Add LedgerEvent schema 2 in backend/crates/libs/qip-contracts/src/ledger.rs: refuse a missing owner or attribution, decode schema-1 events as legacy and never rewrite them, and refuse an unattributed fill at qip-ledgerd's posting seam. Add mutation-verified tests in tests/ledger_event.rs and qip-ledgerd for: missing field refused, schema 1 decodes as legacy, full round-trip."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-contracts --test ledger_event --test ledger_operation",
+            "cargo test -p qip-portfolio",
+            "cargo test -p qip-edge",
+            "cargo test -p qip-ledgerd"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-15",
+      "branch": "ccr-116bbb27-osu8n8-t50-15",
+      "adr_numbers": [
+        456,
+        457
+      ],
+      "rows": [
+        {
+          "id": "R12-AMBIENT-9029",
+          "file": "R12-G2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Grant enforcement already exists: AgentContext::authorise at libs/qip-agents/src/runtime.rs:333, ToolRegistry::authorise at libs/qip-agents/src/tools.rs:394, and tests/explicit_grants.rs:39. What is missing is a journaled record of each run. Add a journal event that persists every AgentRunRecord (runtime.rs:211), including findings and denied AccessRecords. Today runtime/qip-kernel/src/platform.rs:17463-17510 only counts runs and denials in metrics and problem strings.",
+            "Add an integration test that dispatches an agent through the kernel and replays the journal. It must find the agent's output, and the grant-denied attempt must appear as a journaled denial. Mutation-verify it by dropping the journal write.",
+            "Design and build a Fabric task/result interface for specialist agents: a task topic plus a result envelope, consumed by qip-investment-agents chief.rs dispatch. No such type exists in the tree; grep finds only acceptance-suite mentions in event_fabric_core_path_exclusions.rs.",
+            "Add knowledge-API and controlled-tool invocation seams for research agents, with tests. Multimodal reasoning is named in the requirement text and absent from the tree; scope it or record it as explicitly deferred."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-agents --test explicit_grants",
+            "cargo test -p qip-acceptance --test architecture an_agent_that_holds_a_language_model_cannot_touch_the_market",
+            "cargo test -p qip-investment-agents --test organisation"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-16",
+      "branch": "ccr-116bbb27-osu8n8-t50-16",
+      "adr_numbers": [
+        458,
+        459
+      ],
+      "rows": [
+        {
+          "id": "R12-REASON-3013",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a Company/Fundamental brain agent (new struct beside EquityAnalyst, qip-investment-agents/src/analysts.rs:260) that reads the fundamental features Platform::define_fundamental_features defines (qip-kernel/src/platform.rs:13795) and absorb_fundamental/surprise (platform.rs:13484-13496), covering statements, earnings surprise, corporate events. Today EquityAnalyst reads only price bars (analysts.rs:313-336) and CreditAnalyst reads only credit_spread_bps.",
+            "Model management guidance and capital structure: add typed records (guidance vs actual, leverage/maturity ladder) in qip-financial (credit.rs/intelligence.rs) plus feature names the agent reads; refuse when absent rather than defaulting.",
+            "Add a Scope::CompanyFundamental (or per-subscope arms) to qip-investment-agents/src/coverage.rs:34 and a manifest in manifests; register the agent in the production organisation builder.",
+            "Tests in tests/organisation.rs: brain is constructed in production organisation and emits findings per scope with observed provenance; removing it drops its scopes from coverage; mutation-verify each. Fix stale evidence citation platform.rs:9305 (now call_funding_demand, not surprise series)."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-investment-agents --test organisation",
+            "cargo test -p qip-kernel"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-17",
+      "branch": "ccr-116bbb27-osu8n8-t50-17",
+      "adr_numbers": [
+        460,
+        461
+      ],
+      "rows": [
+        {
+          "id": "R12-OBS-1172",
+          "file": "R12-M1.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Deployment verification: Platform::release_decision (runtime/qip-kernel/src/platform.rs:12023, blueprint_objectives.rs:450) has no composition-root caller, only runtime/qip-kernel/tests/self_observation.rs:71. Expose it from qip-api routes or a qip-cli verb and wire it as a step in .github/workflows/deploy.yml. Add a test that refuses a release while the error budget is burnt.",
+            "Autonomous test loops: grep finds no code for this scope item. Design it, for example a deepbrain loop that re-runs golden/critical_paths checks (qip-observability/src/golden.rs, critical_paths.rs) and records pass or fail. Reach it from qip-deepbrain main.rs and give it a named, mutation-verified test.",
+            "Incident triage: build_timeline is reached from apps/qip-deepbrain/src/operations.rs:1073, but nothing ranks or classifies the incident. Add a triage step (severity plus owning entity from EntityGraph) and test that a misranked incident fails.",
+            "Write the per-scope-item map that the inspection bar needs. It must cover self-observation (EntityGraph at operations.rs:740), SLOs (slo.rs, acceptance tests/slo.rs), anomaly detection (self_watch.rs:71, operations.rs:959) and runbook remediation (Remediator at operations.rs:745). Each item names its composition-root path and its test."
+          ],
+          "triage_tests": [
+            "backend/crates/tests/qip-acceptance/tests/slo.rs",
+            "backend/crates/libs/qip-observability/tests/aiops.rs",
+            "backend/crates/runtime/qip-kernel/tests/self_observation.rs",
+            "backend/crates/apps/qip-deepbrain/tests/research.rs"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-18",
+      "branch": "ccr-116bbb27-osu8n8-t50-18",
+      "adr_numbers": [
+        462,
+        463
+      ],
+      "rows": [
+        {
+          "id": "R12-RISK-1162",
+          "file": "R12-M1.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Design and implement operational risk (process, venue or infra failure exposure) as a risk type in backend/crates/libs/qip-risk/src (nothing found: grep -rli 'operational.risk' finds no .rs file), wired into qip-kernel platform.rs risk_state",
+            "Design and implement systemic risk (cross-region or crowding contagion, possibly built on shared_cause.rs) in qip-risk, reached from qip-kernel, with a test that fires",
+            "Confirm that model risk (qip-compliance/src/model_risk.rs), data risk (qip-financial/src/quality.rs) and post-trade risk (qip-execution-engine/src/oms.rs, edge/qip-edge/src/risk_gate.rs) are reached from a composition root, and give each a named test",
+            "Add a qip-acceptance inspection suite that maps all 12 scope items to a symbol and a named test, failing when an item is missing; mutation-verify it"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-risk",
+            "cargo test -p qip-risk-engine",
+            "cargo test -p qip-compliance --test compliance_plane",
+            "cargo test -p qip-kernel the_expected_shortfall_limit_can_actually_fire"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-19",
+      "branch": "ccr-116bbb27-osu8n8-t50-19",
+      "adr_numbers": [
+        464,
+        465
+      ],
+      "rows": [
+        {
+          "id": "R12-CAPITAL-7204",
+          "file": "R12-M7.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Create backend/crates/services/qip-survival (it does not exist yet). Move qip-kernel/src/survival.rs (1557 lines), confidence.rs (919) and hedge.rs (1434) into it. The design is settled by ADR 0127, so this is work, not a blocker.",
+            "Cut the kernel-internal couplings first: StressReport (survival.rs:98, hedge.rs:43 import crate::platform::StressReport, which is built on crate::tail::TailWorld), the impl CapitalObligations for crate::cross_margin::CrossMarginReview (survival.rs:379), and confidence.rs:308 taking crate::feature_statistics::FeatureStatisticsReview. Each needs a trait or contract type in libs, or must move with the code.",
+            "Replace the source-text scan in qip-acceptance/tests/survival_independence.rs:140-200 with a Cargo closure check on qip-survival, the same graph walk as :96-138. Add a check that no alpha crate can construct the survival permit/decision type, for example private constructors with a closure or compile-boundary test.",
+            "Mutation-verify the new tests: add an alpha dependency to qip-survival and confirm the closure test fails. Add an alpha-side construction path and confirm the permit test fails. Then run the full workspace gates."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-acceptance --test survival_independence",
+            "cargo test -p qip-acceptance --test capital_survival_kernel",
+            "cargo test --workspace --no-fail-fast"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-20",
+      "branch": "ccr-116bbb27-osu8n8-t50-20",
+      "adr_numbers": [
+        466,
+        467
+      ],
+      "rows": [
+        {
+          "id": "R12-AMBIENT-3024",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a Meta Brain manifest to the roster in agents/qip-investment-agents/src/manifests.rs. Its scope must cover attention allocation, per-regime reliability and disagreement resolution. Today the file has no meta manifest; only a meta-model forecaster text sits at :276-296.",
+            "Add a second dispatch phase in agents/qip-investment-agents/src/chief.rs Organisation::dispatch (:342). It runs after the panel when report.is_contested() (:98) and hands the meta agent the panel's findings. Today each agent sees only the brief.",
+            "Feed the meta agent per-regime reliability from SelfModel (services/qip-learning-engine/src/self_model.rs:337) or from the desk's ResearchMemory. Recheck runtime/qip-kernel/src/platform.rs:6278: it now wraps ResearchMemory in Upstream::new, while :6328 still passes a bare ResearchMemory::new(). Construct the agent in the production organisation.",
+            "Write tests in agents/qip-investment-agents/tests/organisation.rs. One test asserts the meta brain emits findings on a contested panel. One asserts that removing it drops its scope from coverage. Mutation-verify both."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-investment-agents --test organisation",
+            "cargo test -p qip-kernel"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-21",
+      "branch": "ccr-116bbb27-osu8n8-t50-21",
+      "adr_numbers": [
+        468,
+        469
+      ],
+      "rows": [
+        {
+          "id": "R12-ASSET-3019",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Extend the BookView the kernel writes in brief_the_desk_on_book (qip-kernel/src/platform.rs:12232, desk_book_view :12333) so it carries each held position's horizon (position_register.rs:156-220) and declared hedges (position_register.rs:80-115, Declared<Vec<String>>), with 'undeclared' kept apart from 'none'.",
+            "Make PortfolioAssetAnalyst::analyse (qip-investment-agents/src/portfolio_brain.rs:43-98) report horizon findings (positions past or near horizon, positions with no horizon) and hedge findings (hedged, unhedged, undeclared), plus a factor/causal-driver allocation finding. That needs a design decision on which kernel source is the driver attribution, for example hypothesis or world-model drivers keyed per position.",
+            "Confirm divestment is non-zero on the default cycle: begin_deliberate_close (platform.rs:24765, called at :24643) now calls Portfolio::begin_unwind (:24781). Add a kernel test that runs a deliberate close on the default path and shows positions_unwinding > 0 in the brain's finding.",
+            "Add an organisation or position_record test for each new metric and mutation-verify each one, for example by dropping the hedge or horizon field from BookView."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-investment-agents --test organisation",
+            "cargo test -p qip-kernel --test position_record"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-22",
+      "branch": "ccr-116bbb27-osu8n8-t50-22",
+      "adr_numbers": [
+        470,
+        471
+      ],
+      "rows": [
+        {
+          "id": "R12-WORLD-3049",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a venue dependency graph to CounterpartyView (federation_stage.rs:335). Draw its edges from qip-contracts/src/venue.rs:53-68 (Custodian kind) and the settlement terms in qip-edge/src/settlement.rs, so custodians, bridges and settlement dependencies become graph nodes.",
+            "Feed the graph in Platform::counterparty_views (platform.rs). Propagate refusal shares along the edges as a contagion-path proposition, reusing the link logic in tail.rs:224-238 (CONTAGION_CASCADE). Bridges need a modelled venue kind if none exists.",
+            "Fix the resolver limits named in the gap at federation_stage.rs:1675ff. Count by stamp, not by ingest order. Snapshot the entries counted in `already` so eviction cannot falsify the count. Exclude refusals stamped at the forecast instant by the forecasting cycle's own DECIDE.",
+            "Add tests, each mutation-verified, for custodian, settlement and bridge coverage and for contagion propagation. Extend the population check in tests/symbolic_federation.rs so each scope part fails when its part is absent."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --lib federation",
+            "cargo test -p qip-kernel --lib the_counterparty_views_count_only",
+            "cargo test -p qip-kernel --test symbolic_federation",
+            "cargo test -p qip-kernel --lib tail"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-23",
+      "branch": "ccr-116bbb27-osu8n8-t50-23",
+      "adr_numbers": [
+        472,
+        473
+      ],
+      "rows": [
+        {
+          "id": "R12-GOV-6126",
+          "file": "R12-M6.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Give OrderManager::cancel (qip-execution-engine/src/oms.rs:1062) a production caller via the kernel desk ledger (runtime/qip-kernel/src/desk_ledger.rs:1204 wraps inner.cancel), so the desk spoofing watch on a shipped binary sees withdrawals; add a kernel-level test that fires it",
+            "Add a desk wash/self-trade refusal in OrderManager::submit beside step 6b (oms.rs:831), mirroring the edge self-trade refusal (qip-edge/src/cell.rs:5517), with a mutation-verified test",
+            "Add order-pattern detectors for marking the close, momentum ignition and quote stuffing to ConductWatch (qip-execution-engine/src/conduct.rs), each refusing before the broker/adapter, each with a test that fails when the detector is skipped",
+            "Replace bare substring matching in PreActionGate check 6 (qip-contracts/src/action.rs:528, :607-617) and wire it or qip-agency check_market_conduct (conduct_brain.rs:223) into a production path before any adapter, with delimited-token tests"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-execution-engine --test execution a_desk_order_after_repeated_unfilled_withdrawals_on_one_book_side_is_refused_before_the_broker",
+            "cargo test -p qip-execution-engine --test execution a_kill_switch_sweep_of_unfilled_orders_is_not_counted_as_the_desks_withdrawals",
+            "cargo test -p qip-edge --test pricing a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
+            "cargo test -p qip-edge repeated_unfilled_requotes_on_one_side_of_a_book_refuse_the_next_replacement_before_risk",
+            "cargo test -p qip-contracts -p qip-agency"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-24",
+      "branch": "ccr-116bbb27-osu8n8-t50-24",
+      "adr_numbers": [
+        474,
+        475
+      ],
+      "rows": [
+        {
+          "id": "R12-EVID-1200",
+          "file": "R12-M1.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Make Platform::observe (backend/crates/runtime/qip-kernel/src/platform.rs:13285) unreachable for world-source records except through Platform::admit_world_records (evidence_intake.rs), by crate-private visibility or an admission token. Migrate the many app callers: qip-deepbrain node.rs, evolution.rs, research.rs, learning.rs, now.rs, tick_desk.rs, succession.rs, ambient_agency.rs; qip-api stream.rs; qip-cli demo/mod.rs.",
+            "Give the fast brain's Live REST arm, the qip-deepbrain evolution.rs vendor-replay adapter and the qip-cli demo REST/narrative/alt-data adapters claims through the seam, or refuse them by type. Make a claim of None fail closed, not pass unchecked.",
+            "Carry withheld record ids and reasons in Released, StepOutcome (qip-fastbrain node.rs) and SenseSummary (qip-api routes.rs POST /cycle). Today they carry only counts; ConnectorArm already keeps ids and reasons. Assert the named refusal in truth_loop.rs:682.",
+            "Build the global-scout stage ahead of evidence (the ADR 0144 scout job is unbuilt) or record its decline in an ADR. Wire one connector on a committed default config path, with a test proving the gate acts on it."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --test evidence_intake",
+            "cargo test -p qip-fastbrain --test registrations",
+            "cargo test -p qip-api --test feed",
+            "cargo test -p qip-acceptance --test truth_loop"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-25",
+      "branch": "ccr-116bbb27-osu8n8-t50-25",
+      "adr_numbers": [
+        476,
+        477
+      ],
+      "rows": [
+        {
+          "id": "R12-RISK-4094",
+          "file": "R12-M4.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a risk-discovery field to CycleReport (backend/crates/runtime/qip-kernel/src/cycle.rs:112): crowded names (AggregateExposure::crowded, qip-capital/src/exposure.rs:201) and shared causal-driver/factor buckets from shared_cause::observe (platform.rs:24142), filled every cycle and logged as an event so it replays.",
+            "Extend central.rs::a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_the_book_leans_on (qip-kernel/tests/central.rs:8227) to assert on CycleReport itself; mutate the new fill to empty and confirm it fails.",
+            "Build the AI/scenario advisory half: a Risk Brain advisor (via qip-cost-router model rung, Determinism::Required kept on the gate) emitting hidden/emerging-risk advice into the report, never feeding the deterministic limit check; test that advice cannot veto or admit an order.",
+            "Show the causal-driver bucket blocking, or document why the 0.5 temporal-precedence confidence cap keeps it advisory, with a test on shared_cause driven past cap."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --test central a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_the_book_leans_on",
+            "cargo test -p qip-risk --test shared_cause",
+            "cargo test -p qip-capital exposure"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-26",
+      "branch": "ccr-116bbb27-osu8n8-t50-26",
+      "adr_numbers": [
+        478,
+        479
+      ],
+      "rows": [
+        {
+          "id": "R12-AMBIENT-1180",
+          "file": "R12-M1.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add always-on forecast and path-simulation detectors that emit AmbientSignal (qip-contracts/src/ambient.rs:72) on a Trigger::Schedule. Today the only producers are event-triggered: deepbrain now.rs:88 (now-surprise), research.rs:3055, :4636 and :4712. Reuse qip-contracts/src/forecast.rs ForecastFields (:237) instead of a new contract.",
+            "Add weak-signal and precursor detectors as their own named triggers. Each needs a deterministic threshold and must refuse unmeasurable input rather than clamp it.",
+            "Wire every new detector into the deepbrain loop beside the AmbientJournal/AmbientAgency setup at qip-deepbrain/src/main.rs:962-978, so AttentionRouter (ambient.rs:497) routes their signals without a prompt.",
+            "For each scope item, write a deepbrain test that drives the scheduled pass and asserts an AttentionEvent with the originating model named. Mutation-verify each test. Assumption-monitoring coverage also needs confirming."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-contracts --test section27_contracts",
+            "cargo test -p qip-deepbrain",
+            "cargo test -p qip-agency"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-27",
+      "branch": "ccr-116bbb27-osu8n8-t50-27",
+      "adr_numbers": [
+        480,
+        481
+      ],
+      "rows": [
+        {
+          "id": "R12-MODEL-7022",
+          "file": "R12-M7.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a microstructure trainer in qip-kernel/qip-ai. It fits a fill-probability or impact model from cell fills and qip-contracts/src/microstructure_delta.rs records. Its output must be a DistilledModel registered in qip-ai/src/registry.rs. None exists today: platform.rs:3137 distil_procedure is the only distil path and has no microstructure purpose.",
+            "Send that output through the existing promotion and model_serving.rs:1548 model_manifest path. It must be held behind the signed-pack gate at model_trust.rs:64 admit_model_packs.",
+            "Add a qip-kernel test like release_packs.rs:167. A trained microstructure model must reach the manifest only when a verified ModelPack names its digest. It must be withheld when the pack is unsigned or missing.",
+            "Add an edge integration test in qip-edge/tests/model_manifest.rs:227. The cell must evaluate the trained microstructure model, and must refuse it when no pack covers it. Mutation-verify both tests."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-edge --test model_manifest",
+            "cargo test -p qip-kernel --test release_packs",
+            "cargo test -p qip-ai --test registry"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-28",
+      "branch": "ccr-116bbb27-osu8n8-t50-28",
+      "adr_numbers": [
+        482,
+        483
+      ],
+      "rows": [
+        {
+          "id": "R12-EXPAND-6050",
+          "file": "R12-M6.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a write seam that applies an installed fill-bias correction to the paper fill model. The deep brain holds only &Platform (apps/qip-deepbrain/src/research.rs:4258 calls run_fill_bias_campaign, then only counts installations). The seam must go through qip-kernel Platform into the simulated broker or twin fill path, and must be recorded in the event log so a replay reproduces it.",
+            "Make the paper window score fills produced under the correction, not the platform's own pre-existing fills. Today run_fill_bias_campaign (services/qip-expansion/src/executor.rs:372) partitions existing residuals, and Installation (executor.rs:311, built at :487) is only a record. Withdrawal must also remove the correction from the live paper model.",
+            "Add tests in apps/qip-deepbrain/tests/expansion_rows.rs and qip-kernel tests asserting that paper fills differ by the installed correction and revert after withdrawal. Mutation-verify each test by skipping the apply call.",
+            "Run the skeptic and independent review round that was parked, then re-grade the row in docs/blueprint/assessment/R12-M6.json."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-expansion --test loop --test executor",
+            "cargo test -p qip-deepbrain --test expansion_rows",
+            "qip-expansion/tests/loop.rs::shadow_is_scored_before_paper_and_a_paper_stage_recorded_first_is_refused",
+            "qip-expansion/tests/loop.rs::a_campaign_whose_paper_window_overlaps_its_shadow_window_is_refused"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-29",
+      "branch": "ccr-116bbb27-osu8n8-t50-29",
+      "adr_numbers": [
+        484,
+        485
+      ],
+      "rows": [
+        {
+          "id": "R12-RES-7097",
+          "file": "R12-M7.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Gap (3): propagate a quarantine and a stale retirement to beliefs already held. Platform::assess_sources (qip-kernel/src/platform.rs:26134-26181) calls only WorldModel::quarantine_source and mark_source_stale. Extend it to re-score or invalidate hypotheses in qip-reasoning-engine (src/hypothesis.rs, src/engine.rs) and episodic-memory entries whose evidence cites the source.",
+            "Add a kernel integration test in qip-kernel/tests/source_lifecycle.rs. It forms a hypothesis or belief from the source's facts, then quarantines the source. It asserts the held hypothesis is invalidated, and that a stale retirement downweights it to STALE_SOURCE_CONFIDENCE. Mutation-verify it by no-oping the new re-score call.",
+            "Gap (1): source assessment runs on the default path only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH is set (qip-deepbrain/src/main.rs:1595-1619). terraform.tfvars:518 leaves it commented out in every environment. Run assess_sources over the sources the deep brain already holds, with or without a candidate catalogue, so a quarantine reaches a shipped binary without a figure from the owner. Add a qip-deepbrain test with the variable unset.",
+            "Re-run the source_lifecycle and contradictions suites, record the mutations in R12-M7.json notes, and set integrated true."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --test source_lifecycle",
+            "cargo test -p qip-world-model --test contradictions",
+            "cargo test -p qip-reasoning-engine",
+            "cargo test -p qip-deepbrain"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-30",
+      "branch": "ccr-116bbb27-osu8n8-t50-30",
+      "adr_numbers": [
+        486,
+        487
+      ],
+      "rows": [
+        {
+          "id": "R12-EXPAND-6023",
+          "file": "R12-M6.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Tools: change ToolRegistry::promote (backend/crates/libs/qip-agents/src/tools.rs:357) so it resolves a stored, passing evaluation record held in the registry or a store, instead of taking a free string (only blank is refused at :363). Rewire qip-deepbrain/src/language.rs:241, which passes the self-attested met.attested.",
+            "Research: make ResearchRegistry::record and record_version (qip-agents/src/research.rs:161, :307) refuse concluded Null/Supported verdicts that carry no experiment_ref, so the experiment-citing method is the only door. Keep Open verdicts on the plain path and move the kernel's production callers to match.",
+            "Memory: ResearchMemory::promote (qip-agents/src/memory.rs:411) only counts supporting_episodes. Make it resolve each one against held episodes, and align the run ids the kernel's LEARN cites with the analyst episodes' ids in qip-kernel platform.rs. The ontology candidate from sweep 6029 must cite an evaluation, not a gap.",
+            "Add tests in qip-agents/tests/expansion_registries.rs: an unresolved tool evaluation is refused, a concluded verdict with no experiment ref is refused, and a dangling episode citation is refused. Mutation-verify each one, then run the skeptic round the row notes say never ran."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-agents --test expansion_registries",
+            "cargo test -p qip-ai --test registry",
+            "cargo test -p qip-kernel --test models",
+            "cargo test -p qip-deepbrain"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-31",
+      "branch": "ccr-116bbb27-osu8n8-t50-31",
+      "adr_numbers": [
+        488,
+        489
+      ],
+      "rows": [
+        {
+          "id": "R12-WORLD-3025",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a World Model Arbitration specialist to the production organisation: a manifest in agents/qip-investment-agents/src/manifests.rs:722 roster(), plus an agent module (modelled on crypto_brain.rs) that runs qip_world_model Federation (services/qip-world-model/src/federation.rs:362) and emits AgentFinding for branch/merge/abstain/request-more-data with the preserved disagreement",
+            "Add a Scope::WorldModelArbitration arm in agents/qip-investment-agents/src/coverage.rs:34 with is_evidenced_in tied to the arbitration finding, and make the chief/desk coverage refuse when it is missing",
+            "Replace the hand-written arbitration_spec (apps/qip-deepbrain/src/brains.rs:296, calibration 0.0) with the roster-derived spec via organisation_spec, carrying calibration computed from the federation's resolved forecasts, and tie it to the FederationReview journaled by runtime/qip-kernel/src/federation_stage.rs:1388 / platform.rs:16065",
+            "Apply the same registry/coverage check in qip-fastbrain and qip-api composition roots; add tests: removing the specialist drops world-model-arbitration from coverage and its findings, mutation-verified"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-investment-agents --test organisation",
+            "cargo test -p qip-deepbrain --test brains",
+            "cargo test -p qip-world-model --test federation",
+            "cargo test -p qip-kernel --test symbolic_federation"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-32",
+      "branch": "ccr-116bbb27-osu8n8-t50-32",
+      "adr_numbers": [
+        490,
+        491
+      ],
+      "rows": [
+        {
+          "id": "R12-LEDGER-10114",
+          "file": "R12-G3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Post non-fill decisions in ledgerd: backend/crates/apps/qip-ledgerd/src/store.rs:924-930 matches only Decision::Filled; add booking or a memo posting for Decision::Hedged (libs/qip-contracts/src/reflex.rs:221) and for intents/OrderSent, each with a test proving balances move.",
+            "Introduce cycle-level identity on P1 records so ledgerd can group a multi-region cycle's intents/fills/hedges/outcomes; ledgerd src has no cycle_id today.",
+            "Build replay of missed/failed cycles from the journal (spool/consumer, apps/qip-ledgerd/src/consumer.rs) with a test that drops a cycle and proves replay evaluates it.",
+            "Extend tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs to drive node -> spool/broker -> ledgerd for a two-region cycle with a hedge, asserting P1 contents and ledger balances; mutation-verify each."
+          ],
+          "triage_tests": [
+            "--test vertical_slice_cell_ledger",
+            "-p qip-ledgerd",
+            "-p qip-edge --test arbitrage",
+            "-p qip-edge --test cross_region"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-33",
+      "branch": "ccr-116bbb27-osu8n8-t50-33",
+      "adr_numbers": [
+        492,
+        493
+      ],
+      "rows": [
+        {
+          "id": "R12-RISK-4095",
+          "file": "R12-M4.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add per-instrument sensitivities (delta/gamma/vega, reuse qip-financial/src/risk_profile.rs:14-53 aggregation) to catalogue records and carry them into the kernel risk aggregate so BookGreeks gamma/vega stop being None",
+            "Compute a book-level basis figure from hedge pairs in the aggregate (today basis_volatility is only a per-candidate input, qip-risk/src/hedge_search.rs:194,550)",
+            "Add LimitKind arms (e.g. MaxBookGamma/MaxBookVega/MaxBasisExposure) in qip-risk/src/limits.rs beside :149-165, fed from those measurements via RiskState, or record a deterministic finding where no limit applies",
+            "Write kernel integration tests in qip-kernel/src/platform.rs proving each new limit fires (MaxExpectedShortfall pattern) and mutation-verify them"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-risk",
+            "cargo test -p qip-kernel the_expected_shortfall_limit_can_actually_fire",
+            "cargo test -p qip-acceptance --test compliance_proof",
+            "cargo test -p qip-acceptance --test security"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-34",
+      "branch": "ccr-116bbb27-osu8n8-t50-34",
+      "adr_numbers": [
+        494,
+        495
+      ],
+      "rows": [
+        {
+          "id": "R12-LEDGER-10185",
+          "file": "R12-G3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a paper-only custody_statement record to the P1 outcome stream contract, beside Decision::Filled, carrying a simulated flag. ledgerd matches Filled at backend/crates/apps/qip-ledgerd/src/store.rs:925. ADR 0130 decisions 4 and 6 (docs/adr/0130-*.md:74-91).",
+            "In qip-edge-node, make the simulated gateway publish its PositionSnapshots periodically as a custody_statement. Source: qip_brokers::ledger::positions at backend/crates/services/qip-brokers/src/ledger.rs:209. Extend tests/gateway.rs:215.",
+            "In qip-ledgerd store.rs, post venue-held units to custody:<venue> as OperationKind::CustodyMovement (qip-contracts/src/ledger_operation.rs:237). Compare each statement with the trading balances. Journal a disagreement as a break and count it under a bounded direction label in telemetry.rs, never adjust. Refuse a live statement.",
+            "Add a seeded-break test to qip-ledgerd/tests/store.rs beside :720: an agreeing statement records no break, a seeded divergence records one with the right direction, and a live statement is refused. Mutation-verify each test."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-ledgerd --test store",
+            "cargo test -p qip-edge-node --test gateway",
+            "cargo test -p qip-contracts --test ledger_operation"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-35",
+      "branch": "ccr-116bbb27-osu8n8-t50-35",
+      "adr_numbers": [
+        496,
+        497
+      ],
+      "rows": [
+        {
+          "id": "R12-MODEL-4008",
+          "file": "R12-M4.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Row's gap is partly stale: impact now refits. platform.rs:27817-27822 passes fill_participation into FillCalibration::observe_with_participation (calibration.rs:138-187, impact_slope_bps). This is proven by futures.rs:507 after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficient_moves_toward_the_observed_fills. Update the row text to match.",
+            "Bar half 'fill-error distribution narrows' has no test. No narrow/dispersion test exists in qip-twin or qip-kernel/tests. Add a test in qip-kernel/tests/learning.rs: run cycles with biased fills, then assert that the VENUE_FILL_ERROR_BPS spread (mean |error|) after calibration is below the spread before it. Mutation: zero the learning rate in FillCalibration::new (calibration.rs:105).",
+            "Missing model terms: latency, queue position and opportunity decay are absent from the twin CostModel. Fill probability is not calibrated either. Latency needs the simulated venue to timestamp acknowledgements. Add each term to the qip-twin CostModel, and extend VenueCalibration (calibration.rs:62) and cost_model with a fit per term, each with its own moves-toward test.",
+            "Historical replay calibration has no caller. Add a replay path that feeds recorded fills from the event log into FillCalibration, for example a Platform or qip-twin replay function. Add a test showing that a replayed history changes twin output."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-twin --test futures",
+            "cargo test -p qip-kernel --test learning"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-36",
+      "branch": "ccr-116bbb27-osu8n8-t50-36",
+      "adr_numbers": [
+        498,
+        499
+      ],
+      "rows": [
+        {
+          "id": "R12-WORLD-3078",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Implement a neural state-space estimator for EstimatorKind::Neural (now.rs:881). It has no implementation today. Build it in-tree as a small deterministic recurrent or linear-recurrent model, with no new crate. Add a contribution test and mutation-verify it.",
+            "Add a symbolic estimator that proposes estimates. Today constraints only veto. Add a Symbolic variant beside the enum at now.rs:873, implement its propose, and add a unit test for two estimators disagreeing on one variable.",
+            "Give CausalFilter (now.rs:1086) edges that carry a fitted coefficient and its lag, restricted to return, replacing the Granger partial R2 strength. Then register it in NowBrain::standard (now.rs:1360) without biasing promoted beliefs. The skeptic objection must be answered.",
+            "Add a full-cycle test in qip-kernel/tests/now_lattice.rs that shows the causal, neural and symbolic candidates in the fused set with ModelDisagreement journaled."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-world-model --test now_brain",
+            "cargo test -p qip-kernel --test now_lattice",
+            "qip-kernel platform::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-37",
+      "branch": "ccr-116bbb27-osu8n8-t50-37",
+      "adr_numbers": [
+        500,
+        501
+      ],
+      "rows": [
+        {
+          "id": "R12-AMBIENT-10175",
+          "file": "R12-G3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Build real specialist instantiation: today InstantiateSpecialist (services/qip-expansion/src/plan.rs:35,53,89) is only a plan step with no executor, and the deep-brain roster is a static, reviewed manifest (apps/qip-deepbrain/src/roster.rs:88 manifests::roster). Design and implement a governed path that turns an accepted proposal into a roster member, gated on calibration >= MIN_EVALUATED (research.rs:115,2548).",
+            "Derive signal urgency from the launch deadline, not from emission: emit at apps/qip-deepbrain/src/research.rs:3069 calls urgency_bp(now, now+ttl, ttl), which always returns the floor. Use the deadline that admit (research.rs:3123) ranks against, and make a production reader consume AmbientSignal::urgency_bp, or the field moves nothing.",
+            "Add phase_16_exit.rs tests for the two undriven deliverables (gap noted at tests/qip-acceptance/tests/phase_16_exit.rs:7-13). One test: a sweep whose gap carries economic value launches an information request on the cheapest_viable product rank (research.rs:769), with info_launched > 0. The other: a calibrated fixture (>= MIN_EVALUATED evaluations) whose specialist proposal puts a specialist on the roster.",
+            "Mutation-verify each new test: break cheapest_viable ranking, the instantiation step and the deadline-derived urgency in turn, and confirm each test fails for that reason."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-acceptance --test phase_16_exit",
+            "cargo test -p qip-acceptance --test ambient_attention",
+            "cargo test -p qip-deepbrain --lib a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero",
+            "cargo test -p qip-deepbrain --test research",
+            "cargo test -p qip-expansion --test meta"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-38",
+      "branch": "ccr-116bbb27-osu8n8-t50-38",
+      "adr_numbers": [
+        502,
+        503
+      ],
+      "rows": [
+        {
+          "id": "R12-MESH-5042",
+          "file": "R12-M5.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Claim and write the ADR the owner ruling (owner-decisions-2026-10-31.md:410, ADR_THEN_IMPLEMENT) titles, 'Discovery proposes and the operator permits'. No ADR exists in docs/adr yet. Claim its number in the index first.",
+            "Add a signed, operator-signed market reference (market to from/to instruments) as a new PolicyItem and Slot beside cycle_whitelist in qip-contracts/src/policy.rs:110,1067,1129,1156,1304. Cover digest, freshness and codec. Have the centre issue it near plane.rs:1123 cycle_whitelist_for.",
+            "Build the graph over every venue book from the market reference in ArbitrageDesk::scan (qip-edge/src/arbitrage.rs:343). Add a ScanReport arm that reports discovered non-whitelisted cycles and never sends on them. Thread it through ArbitrageInstaller (qip-edge-node/src/arbitrage.rs:439) and main.rs:620.",
+            "Add mutation-verified tests to qip-edge-node/tests/arbitrage.rs (whitelisted test at :313 already exists). Test 1: a discovered cycle outside the whitelist is reported and sends nothing. Test 2: with the whitelist edges dropped, no opportunity is found. The bar's 'distributed opportunities' half needs cross-node scanning over the peer mesh (qip-peer-link, ADR 0116). That is separate in-repo work, or owner scoping is needed to drop it."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-edge-node --test arbitrage",
+            "cargo test -p qip-edge --test arbitrage",
+            "cargo test -p qip-contracts",
+            "cargo test -p qip-acceptance --test mesh_lane"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-39",
+      "branch": "ccr-116bbb27-osu8n8-t50-39",
+      "adr_numbers": [
+        504,
+        505
+      ],
+      "rows": [
+        {
+          "id": "R12-OBS-9156",
+          "file": "R12-G2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Claim and write the ADR the owner ruled for (decision 14, ADR_THEN_IMPLEMENT) in docs/adr/README.md: 'A spent error budget refuses promotion of its own plane only...'. No such row exists yet (grep for 'spent error budget' in docs/adr finds nothing).",
+            "Add a read-only per-plane release-standing route to the ROUTES table in backend/crates/apps/qip-api/src/routes.rs:101+ (none exists today). It serves Platform::release_decision (qip-kernel/src/platform.rs:12023, which calls blueprint_objectives.rs:450) and refuses when the standing is unreadable. Add an api_boundary/acceptance test, mutation-verified.",
+            "Feed the blueprint objectives that are still unfed (gap says 2 of 15 are fed; see backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs and tests/blueprint_objectives.rs). Without them a spent budget on most planes cannot refuse anything, because an unfed objective never blocks.",
+            "Add a Kargo promotion task beside verify-paper-ceiling in infrastructure/gitops/kargo/base/stages.yaml:153 and papertask.yaml:40. It reads the plane's standing and refuses on a spent or unreadable standing. Pin it with a qip-acceptance gitops test asserting the plane is refused only for itself. Real proof against a deployed qip-api waits on a deployment and is out of scope for COMPLETE-in-tree."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --test self_observation",
+            "cargo test -p qip-kernel --test blueprint_objectives",
+            "cargo test -p qip-acceptance --test slo",
+            "cargo test -p qip-acceptance --test api_boundary",
+            "cargo test -p qip-acceptance --test gitops"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-40",
+      "branch": "ccr-116bbb27-osu8n8-t50-40",
+      "adr_numbers": [
+        506,
+        507
+      ],
+      "rows": [
+        {
+          "id": "R12-WORLD-3084",
+          "file": "R12-M3.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a ReflexForecast contract (fill probability, queue movement, adverse selection, executable edge, issued at the MicrosecondsMs horizon, LocalReflexOnly) as a new module in backend/crates/libs/qip-contracts/src/ next to reflex.rs, matching ADR 0133. grep finds no ReflexForecast anywhere in the tree today.",
+            "Add reflex/microstructure ModelFamily variants to the MicrosecondsMs row so it is served by the named model families. Today Population::standard (backend/crates/services/qip-world-model/src/lattice.rs:379) seats only generic price members, and admit (lattice.rs:329) checks just the target.",
+            "Build a node-side issuer in qip-edge / qip-edge-node that calls the microsecond row from the reflex lane. No reflex-lane caller of issue() (lattice.rs:552) exists, so the 'promoted only to Local Reflex' outputs reach no consumer.",
+            "Write and mutation-verify a calibration test for the node issuer, plus a test proving that nothing central reads a ReflexForecast. The existing admission test (forecast_lattice.rs:70) and the central-lane refusal test stay as they are."
+          ],
+          "triage_tests": [
+            "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission",
+            "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::the_central_lane_may_not_issue_a_microsecond_forecast",
+            "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-41",
+      "branch": "ccr-116bbb27-osu8n8-t50-41",
+      "adr_numbers": [
+        508,
+        509
+      ],
+      "rows": [
+        {
+          "id": "R12-EVID-2034",
+          "file": "R12-M2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add committed issuer registry file plus loader with refusal tests (ADR 0139 decision 1), alongside the BundleVerifier::from_file pattern at backend/crates/libs/qip-transport/src/trust.rs:41-54; generalise verification from ArtefactClass to registry issuers, P-256 and Ed25519 via ring (already admitted, ADR 0110)",
+            "Replace AuthenticitySignal::SignatureVerified { signer: String } at backend/crates/libs/qip-evidence/src/evidence.rs:462 with a VerifiedSignature token (private fields, built only by the verifier, digest-bound)",
+            "Change the always-refuse arm at backend/crates/libs/qip-evidence/src/fabric.rs:307-316 to credit a token whose digest matches the fetched document, refuse otherwise; also check TlsVerified against registry domains (decision 4)",
+            "Have qip-market-ingestion/src/connector/evidence.rs (~:184-187) verify detached signatures and attach the token; add qip-world-model/tests/evidence_fabric.rs test that a verified-hash registered-issuer claim outranks an unsigned copy in belief_weight, mutation-verified (current test at :407 asserts refusal and must be reworked)"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-world-model --test evidence_fabric",
+            "cargo test -p qip-evidence",
+            "cargo test -p qip-transport",
+            "cargo test -p qip-market-ingestion"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-42",
+      "branch": "ccr-116bbb27-osu8n8-t50-42",
+      "adr_numbers": [
+        510,
+        511
+      ],
+      "rows": [
+        {
+          "id": "R12-EVID-2033",
+          "file": "R12-M2.json",
+          "triage_class": "LARGE",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Finish R12-EVID-1200: give each admitted world record a stable EvidenceId (via Platform::admit_world_records). Then carry it into qip-world-model ManifestRef (now.rs:268), which today names in-process manifests such as kernel/bar-history and cycle-N.",
+            "Finish R12-EVID-2032: production caller of EvidenceFabric::rebuild so graph links survive restart (dependency row, PARTIAL).",
+            "Add a Belief node/edge kind (NowVariable/thesis -> Claim) in ProvenanceGraph (qip-evidence/src/fabric.rs:59-150). Write it where the world model feeds NOW, beside evidence_intake.rs:103-150.",
+            "Add a production reader that walks belief -> sources_of (fabric.rs:126) to document hashes. Add an integration test asserting every source hash is reached, then mutation-verify it by dropping one edge."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-evidence",
+            "cargo test -p qip-kernel --test evidence_intake",
+            "new qip-acceptance integration test: belief walk reaches every source document hash"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-43",
+      "branch": "ccr-116bbb27-osu8n8-t50-43",
+      "adr_numbers": [
+        512,
+        513
+      ],
+      "rows": [
+        {
+          "id": "R12-ASSET-1160",
+          "file": "R12-M1.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a qip-kernel tests/position_record.rs test: a zero-target sell on a long whose venue-asset is wallet-halted (wallet_halt_for, platform.rs:24631) is refused and the position stays Held. This proves begin_deliberate_close (platform.rs:24643, defined :24765) runs only after the refusals. Mutation-verify it by moving the begin_deliberate_close call above the wallet-halt check.",
+            "Decide whether divestment needs the position to reach Closed. If it does, make the residual sub-lot long close on the default cycle: the simulated broker's immediate 0.6 fill is floored to lots, so the last lot never fills. Fix it either by sizing the final exit leg to the whole remaining long, or by moving the position to Closed when the remainder is below one lot. Cover it with a run_cycle test over N cycles that asserts Closed.",
+            "The borrow-refusal case (short_without_borrow, platform.rs:24634) cannot trigger on a long-to-flat sell. State that in the test comment instead of writing a vacuous test.",
+            "Re-run the scope_inspections.rs::every_asset_management_scope_item_names_a_seam_and_a_test_that_still_exist inspection (fn at :532, divestment entry at :509) and cite the new test there."
+          ],
+          "triage_tests": [
+            "qip-kernel --test position_record",
+            "qip-acceptance --test scope_inspections",
+            "a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_a_gain_moves_the_position_to_unwinding_although_the_sized_sell_is_below_the_long",
+            "selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-EXPAND-6067",
+          "file": "R12-M6.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Rework BeliefWatch::feed (backend/crates/apps/qip-deepbrain/src/research.rs:228-273) to count consecutive against-resolutions per subject rather than sweeps. The owner ruling and ADR 0346 say 'PERSIST_SWEEPS consecutive resolutions'. Today several resolutions in one sweep count once, and a subject resolved less often than the sweep cadence never persists. Fix the observation text at :255 to match.",
+            "Stop one untrusted review from disabling the detector. federation_stage::replay is all-or-nothing at research.rs:2269-2279. Skip or report the single refused review and keep feeding the rest, without resetting runs.",
+            "Add a test in backend/crates/apps/qip-deepbrain/tests/research.rs that drives ResearchLoop::sweep_over (research.rs:2181) over a platform whose journal holds federation reviews resolving against the forecast. Assert exactly one desk-queued item tagged belief-discrepancy names the subject. Mutation-verify it by dropping the self.beliefs.feed extension at :2275-2277.",
+            "Add a test where resolutions on a subject span sweeps irregularly and where one review is refused. Mutation-verify both against the new counting, and update the R12-M6.json gap text."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-deepbrain --test research a_persistent_belief_discrepancy_queues_exactly_one_item_naming_its_origin",
+            "cargo test -p qip-deepbrain --test research the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_the_watch",
+            "cargo test -p qip-expansion --test loop a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-MODEL-4021",
+          "file": "R12-M4.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Recalibrate PerturbationPolicy in backend/crates/services/qip-training/src/adversarial.rs:26-65 (default max_fragile_share 0.1 at :54): add a per-feature or single-split fragile share so a single dominant central split (about 6% fragile rows) is refused. Replace the unit test at :309-314 that now asserts such a stump passes.",
+            "Add a deep-brain promote-stage test beside learning.rs:3951 that fits a real boosted-stumps teacher with one dominant mid-data split and asserts promote_candidate (learning.rs:1393, attack at :1474) refuses it under PerturbationPolicy::default(). Mutation-verify it.",
+            "Make the suite structural: add a proof type (e.g. AdversarialClearance) minted only by qip_training::adversarial::attack. Require it in Platform::promote_model / promote_model_from (backend/crates/runtime/qip-kernel/src/model_serving.rs:1111, :1135). Alternatively run attack inside promote_model_from given the holdout.",
+            "Thread the proof through every caller: qip-kernel tests (promotion_tests, serving, promotion_durability, regime_boundary, model_tournament, release_packs), qip-acceptance arch_033_quantum_path, qip-api tests/mesh.rs. Document that joint-feature fragility stays out of scope, or add a joint (diagonal) perturbation."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-training --lib adversarial",
+            "cargo test -p qip-deepbrain --lib a_candidate_that_fails_the_adversarial_perturbation_suite_is_not_promoted",
+            "cargo test -p qip-kernel --test promotion_tests --test serving --test promotion_durability --test model_tournament",
+            "cargo test -p qip-acceptance --test arch_033_quantum_path"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-EXPAND-6044",
+          "file": "R12-M6.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add the reverse-direction contradiction in theory_revision.rs revise_theory (backend/crates/runtime/qip-kernel/src/theory_revision.rs:127). Today it reads only credited-but-vetoed. It should also emit a TheoryDelta when the pack found a thesis eligible and the grader failed it. That needs eligible-rule notes recorded beside note_symbolic_veto (:107) in the symbolic arm of stage_reason.",
+            "Add a kernel test that reaches the veto under the shipped 0.50 review floor, not valuation_seam.rs's 0.10 fixture. Extend backend/crates/runtime/qip-kernel/tests/theory_revision.rs:191 or add a sibling test. Mutation-verify it by deleting the revise_theory call at platform.rs:23408.",
+            "Decide whether ConstraintPack is in scope and record the decision in the register. No ConstraintPack type exists anywhere in backend/crates. The bar reads 'RulePack / ConstraintPack / TheoryDelta', and TheoryDelta already satisfies its produced/validated/lineage/deletion clause. If ConstraintPack is wanted, add it to qip_contracts::expansion with validate/decode and a producer.",
+            "Have the owner rule on 'validated patterns become rules/relations/invariants'. ADR 0125 keeps symbolic_stage::rule_pack fixed by design. Mark that clause as refused-by-ADR in R12-M6.json instead of leaving it as an open gap."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --test theory_revision",
+            "cargo test -p qip-deepbrain --test theory_revision",
+            "cargo test -p qip-expansion --test loop",
+            "cargo test -p qip-contracts --test expansion"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-44",
+      "branch": "ccr-116bbb27-osu8n8-t50-44",
+      "adr_numbers": [
+        514,
+        515
+      ],
+      "rows": [
+        {
+          "id": "R12-ASSET-3018",
+          "file": "R12-M3.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "The row's stated blocker is out of date. platform.rs:1169 and :1176 already hold risk and book as Upstream<RiskView> and Upstream<BookView>. Remaining step 1: add a PrivateMarketsView in agents/qip-investment-agents/src/desk.rs, modelled on ChainView (desk.rs:159, :221, :272), holding commitments, capital calls, illiquid marks and fund lifecycle stage.",
+            "In runtime/qip-kernel/src/platform.rs, add an Upstream<PrivateMarketsView> next to chain_view (:1192). Gate it at assembly the same way (:6343-6344). Feed it from private_forecasts, which private_forecast reads at :19054, and from capital-call handling, mirroring the chain_view.update at :12314.",
+            "Add Scope::PrivateMarkets to agents/qip-investment-agents/src/coverage.rs (:53, :94, :112, :141). Write a PrivateMarketsAnalyst module modelled on crypto_brain.rs (124 lines), add its manifest in manifests.rs, and register it in standard_agents in chief.rs:442. It must report an unobserved commitment as no data, not as an empty schedule.",
+            "In tests/organisation.rs, add tests modelled on :2670 and :2695: the brain is constructed in the production organisation, it emits findings for its scope, removing it drops private_markets from coverage, and it reports no data when no facility is fed. Mutation-verify each test."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-investment-agents --test organisation",
+            "cargo test -p qip-kernel --test capital_calls"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-EVENT-3015",
+          "file": "R12-M3.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add an EventMarketsView (event probabilities, scenario/outcome distributions, fair values, plain values so no qip-prediction dep) plus `pub events: Gated<EventMarketsView>` on Desk in agents/qip-investment-agents/src/desk.rs:199, following the ChainView pattern",
+            "Kernel: hold `events_view: Upstream<EventMarketsView>` beside chain_view (runtime/qip-kernel/src/platform.rs:1192, gated at :6343-6344, update like :12314) and write it from EventMarketsDiscovered/EventMarketsSimulated in runtime/qip-kernel/src/event_markets.rs:135,177 during DISCOVER/SIMULATE",
+            "Implement EventPredictionAnalyst agent (new module or analysts.rs) reading desk.events, emitting findings for event probabilities, scenario trees, information arrival, contract valuation, Deferred/missing_inputs when the view is empty; construct it in standard_agents (agents/qip-investment-agents/src/chief.rs:442, append at end to keep run-id sequence) using manifests::event_prediction_analyst (manifests.rs:486)",
+            "Tests: organisation.rs test that standard_agents builds ids::EVENT and it emits a finding from a fed view, coverage test that removing it drops its scope; kernel test that a cycle feeds the view; mutation-verify each"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-investment-agents --test organisation",
+            "cargo test -p qip-kernel event_markets",
+            "cargo test -p qip-investment-agents coverage"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-REASON-3026",
+          "file": "R12-M3.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Define a trait seam in qip-investment-agents (e.g. src/symbolic.rs: SymbolicReasoner returning derivations/constraints) so the crate keeps qip-reasoning-engine dev-only, as the anchor requires (qip-acceptance/tests/architecture.rs:1831-1845, Cargo.toml [dev-dependencies]).",
+            "Add a SymbolicReasoningBrain agent plus manifest and a new coverage::Scope variant; take an Option<Arc<dyn SymbolicReasoner>> in chief.rs:442 standard_agents and push it into the vec.",
+            "Implement the trait in qip-kernel over symbolic_stage.rs / Platform::reason_symbolically (platform.rs:18040), and pass it in where the production organisation is built (update kernel.rs:476 test caller too).",
+            "Add organisation.rs test removing_the_symbolic_brain_drops_its_scope_from_coverage, following scopes_with_and_without (organisation.rs:2332), and mutation-verify it."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-investment-agents --test organisation",
+            "cargo test -p qip-kernel --test kernel",
+            "cargo test -p qip-acceptance --test architecture"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-WORLD-9035",
+          "file": "R12-G2.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Store the records: journal the FamilyBranches from Platform::world_branches_by_family (platform.rs:14142) as an event-log record each time tend_futures (platform.rs:13972) changes the tree. Add a test that replays the log and rebuilds the same WorldBranch set.",
+            "Fix FutureTree::observe (qip-twin/src/futures.rs:758). Score each branch once against the move over its own horizon (TreeConfig.horizon, :363), not the cumulative move on every bar. Add a test that fails when overlapping moves are scored as independent.",
+            "Evict pruned branches so splits can go on at the max_branches bound (futures.rs:817). Record a problem when live mass underflows to zero, and regrow the tree. Add tests that mutation-verify both.",
+            "Add a kernel test that grows a tree from the default feed without injected bar_history or market_events, then mutation-verify it."
+          ],
+          "triage_tests": [
+            "qip-twin --test futures (live_branch_weights_sum_to_one_within_each_family_after_pruning)",
+            "qip-kernel platform::the_cycle_grows_a_future_tree_partitioned_by_event_class_and_the_next_bars_prune_it"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-45",
+      "branch": "ccr-116bbb27-osu8n8-t50-45",
+      "adr_numbers": [
+        516,
+        517
+      ],
+      "rows": [
+        {
+          "id": "R12-REASON-3063",
+          "file": "R12-M3.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a loader in qip-edge (crates/edge/qip-edge/src/cell.rs) or qip-kernel that calls SignedReflexPackage::load (qip-contracts/src/reflex_package.rs:251) against the model-pack trust entries and refuses an unsigned or expired package",
+            "Evaluate loaded rules via ReflexPackage::evaluate (reflex_package.rs:302) on the cell pass and apply the bounded add_bps to the named input, journaling the rule id",
+            "Install a PackageSigner in qip-deepbrain main.rs:869-905 (REASON-10099/7203), using a test key fixture for tests; a production key is deployment, not in-repo",
+            "Add a cross-seam acceptance test: research.rs:3325 compile -> sign -> cell load -> pass output moves by the rule; mutate evaluate/Condition::Equals and confirm it fails"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-reasoning-engine --test compiler",
+            "cargo test -p qip-deepbrain --test research_market",
+            "cargo test -p qip-edge --test model_manifest"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-TICK-9006",
+          "file": "R12-G2.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a shipped subcommand that replays a lake manifest. Put it on qip-edge-node beside `replay`/`replay-manifests` in apps/qip-edge-node/src/main.rs:182-186, or on qip-cli, which would need qip-edge-node's lib. Open a durable lake with qip_storage::blob::FileBlobStore (libs/qip-storage/src/blob.rs:133) and qip_storage::lake (lake.rs:232 new, :474 materialize).",
+            "Feed the materialized ticks through ReplayFeed (apps/qip-edge-node/src/feed.rs:657) into run_replay_pass (apps/qip-edge-node/src/pass.rs:378). Compare the WorkReports, journal and chain tail against the recorded session. Exit with EX_DIVERGED (main.rs:123) on any mismatch, as replay_command (main.rs:630) does.",
+            "Add a binary-level test: write a FileBlobStore lake to a tempdir, run the subcommand, assert it reproduces, and assert a tampered tick diverges. Mutation-verify it, for example by skipping a tick in the subcommand. Use apps/qip-edge-node/tests/lake_replay.rs:369-377 as the pattern.",
+            "Correct the row's stale evidence (qip-cli replay is a hash-chain verifier). Cite the existing refusal of a candidate set without a no-action baseline (services/qip-agency/src/plan.rs:244-260) as the second half of the bar."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-edge-node --test lake_replay",
+            "cargo test -p qip-agency",
+            "cargo test -p qip-simulation-engine --test simulation",
+            "cargo test -p qip-acceptance --test tick_replay"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-MODEL-4006",
+          "file": "R12-M4.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add an Ensemble type in backend/crates/services/qip-training/src (beside local.rs/conformal.rs) that holds the ridge and stump members with weights and predicts a weighted blend. Today only selection exists: choose_class at qip-deepbrain/src/learning.rs:267.",
+            "Derive the member weights from the Scoreboard per regime (board.score(class, regime), learning.rs:268-274), keyed by Platform::regime_context. Register the ensemble card instead of a single winning class.",
+            "Calibrate ConformalInterval::calibrate (conformal.rs) on the blend's holdout errors, not the single teacher's, and record it on the registered ensemble card (the ConformalInterval block in learning.rs near :141 use).",
+            "Add the integration test the bar names: a registered ensemble reports a calibrated interval, and a regime switch on the board changes the member weights or selection. Mutation-verify it by pinning the weights so they ignore the regime."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-training --test training conformal",
+            "cargo test -p qip-deepbrain --lib a_registered_card_records_a_calibrated",
+            "new: qip-deepbrain learning test for an ensemble whose member selection changes when the regime switches"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-TICK-9038",
+          "file": "R12-G2.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a beyond-history generator: a scaled historical shock with its scale recorded, beside StressTester::adversarial_sequence (qip-simulation-engine/src/scenario.rs:779), which today stays inside the library's plausibility envelope. Wire it into the kernel stress stage; grep finds no adversarial_sequence call in qip-kernel/src.",
+            "Raise a breach as qip_learning_engine::feedback::LessonCandidate (feedback.rs:68) with the scenario digest as evidence. Run it through PromotionBar::assess (feedback.rs:131) and journal only the promoted ones, per ADR 0182 decision 1.",
+            "Add a kernel test: a restart rebuilds promoted lessons from the journal, holds no scenario, and journals no rejected candidate. Mutation-verify it by journaling the scenario and by skipping assess.",
+            "Add a qip-simulation-engine unit test: a generated scenario's shock exceeds the library's historical maximum and records its scale. Mutation-verify it by clamping the scale to 1."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-simulation-engine --test scenario_construction",
+            "cargo test -p qip-learning-engine",
+            "cargo test -p qip-kernel"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-EXPAND-6033",
+          "file": "R12-M6.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Conditional test: give the kernel fixture in platform.rs simulate_tests (around :34073) a causal graph. Assert both signs of a driver's shock journal SyntheticGenerator::Conditional (push at :21343). Mutation-verify by deleting that push.",
+            "MonteCarlo producer for the probe: journal a SyntheticEpisode with generator MonteCarlo and the cycle seed for the capacity probe's seeded with_agents/MarketSimulator run (platform.rs:20938). Reuse SYNTHETIC_EPISODE_ORIGIN (:2187) and the journal loop near :20840.",
+            "MonteCarlo producer for the tail worlds: emit a MonteCarlo episode with a seed for the two tail worlds drawn beyond history. Carry the seed in a structured field, not only in the free-text detail. This uses expansion.rs:1332-1376, the seed field that has no writer yet.",
+            "Counterfactuals: decide whether LEARN's twin scores (score_declined :27413, score_filled :27578) should produce an episode such as Replay, or record why they are excluded under ADR 0149. Then test each new producer and mutation-verify it."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --lib every_scenario_simulate_runs",
+            "cargo test -p qip-kernel --lib simulate_tests",
+            "cargo test -p qip-contracts expansion"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-46",
+      "branch": "ccr-116bbb27-osu8n8-t50-46",
+      "adr_numbers": [
+        518,
+        519
+      ],
+      "rows": [
+        {
+          "id": "R12-ARCH-1191",
+          "file": "R12-M1.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Add a Lane 2 slot (liquidity maps + VenueExecutionQuality) to PolicyPayload at backend/crates/libs/qip-contracts/src/policy.rs:1044, filled from Platform::tactical_refresh (qip-kernel/src/platform.rs:28155), so maps and quality reach cells via the PolicyFrame (qip-mesh/src/spine.rs:533)",
+            "Have qip-edge Cell read the slot only to narrow (never widen) sizing, with a qip-edge test plus mutation that a stale or absent slot changes nothing",
+            "Extend the_central_cycle_refreshes_execution_quality_and_liquidity_maps_every_minute (platform.rs:31566) or add a sibling to assert portfolio/risk and deployable_capital (platform.rs:19314) are refreshed on the same minute cadence, as the bar names, and mutation-verify it",
+            "Leave the dedicated Lane 2 threshold (reuses replay-divergence threshold) and the observability.md qip_venue_fill_error_bps sentence (protected .claude path) to the owner; neither is in the bar text, so they do not block COMPLETE"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel the_central_cycle_refreshes_execution_quality_and_liquidity_maps_every_minute",
+            "cargo test -p qip-kernel tactical_lane",
+            "cargo test -p qip-kernel --test valuation_seam",
+            "cargo test -p qip-acceptance --test paper_boundary",
+            "cargo test -p qip-acceptance --test compliance_proof"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-GCP-8106",
+          "file": "R12-G1.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Extract qip-deepbrain composition from src/main.rs (config struct ~:173 load_central_horizons, Platform::with_model_provider :285, trust::harden_central :367, survival policy) into a pub library fn in src/lib.rs taking parsed config, no std::env; main calls it, keeping start-up order config->ports->trust->serve",
+            "Add backend/crates/apps/qip-deepbrain/tests/risk_brain.rs: build platform via that fn, seed a held book, run a cycle through SIMULATE, assert stress report scenarios non-empty and a central policy envelope (CentralPlane payload) is produced and signed",
+            "Mutation-verify: drop the stress stage / envelope build in the extracted fn, confirm test fails, restore",
+            "Update R12-G1.json row tested/e2e and evidence"
+          ],
+          "triage_tests": [
+            "cargo test -p qip-deepbrain --test risk_brain",
+            "cargo test -p qip-deepbrain --no-fail-fast"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-SEC-9065",
+          "file": "R12-G2.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Replace the `RawEvent.body: serde_json::Value` field at backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:60 with an Untrusted form. Route about 25 reads across about 8 connector files (connectors/*.rs, adapter.rs, depth.rs, narrative.rs) through a validator per connector.",
+            "Give the persisted RobotsFetch::Served body (probe.rs:93 holds Untrusted<String>) a retained, validated form for ProbeEvidence's serialised catalogue shape in qip-data-finder. Do not persist raw fetched text.",
+            "Extend qip-acceptance untrusted_content.rs so it fails when a serde_json::Value or String body leaves a fetching crate unvalidated. Mutation-verify the new test.",
+            "Gap (1) needs no production caller of complete_over_untrusted, because the hosted model is declined. Record in the row that the bar is 'no code path', and that the type plus the dependency-graph test already holds it."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-acceptance --test untrusted_content",
+            "cargo test -p qip-core --doc",
+            "cargo test -p qip-agents --test untrusted_completion",
+            "cargo test -p qip-market-ingestion",
+            "cargo test -p qip-data-finder"
+          ],
+          "triage_confidence": "medium"
+        }
+      ]
+    },
+    {
+      "batch": "t50-47",
+      "branch": "ccr-116bbb27-osu8n8-t50-47",
+      "adr_numbers": [
+        520,
+        521
+      ],
+      "rows": [
+        {
+          "id": "R12-CICD-8031",
+          "file": "R12-G1.json",
+          "triage_class": "MEDIUM",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Write docs/blueprint/lanes/l6-cicd-8031-secrets-fixtures-protected.patch. It is still absent. It removes ':(exclude)*/tests/*' at scripts/check-secrets.sh:55-57 from EXCLUDE_PATHS for both the tree scan (:141) and the history scan (:109).",
+            "In the same patch, add a protected fixture list, e.g. scripts/secrets-fixtures.txt, with one line per fixture: path plus exact matched text. Make check-secrets.sh skip a match only when both path and text match. This follows the 2026-10-31 owner ruling (owner-decisions-2026-10-31.md:848, decision 14): no marker and no directory exclusion. List the 7 current fake fixtures.",
+            "Add tests to backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs. Test 1: a key planted under some tests/ dir fails both the tree and --history scans. Test 2: a listed path with different text still fails. Test 3: listed path plus listed text passes. Mutation-verify each one by restoring the */tests/* exclude.",
+            "Have the orchestrator apply the patch to protected scripts/check-*, which the owner has already authorised. Then run ./scripts/check-secrets.sh and, after git fetch --unshallow, ./scripts/check-secrets.sh --history to show no real key gets through."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-acceptance --test pipeline_scripts",
+            "cargo test -p qip-acceptance --test security",
+            "./scripts/check-secrets.sh",
+            "./scripts/check-secrets.sh --history"
+          ],
+          "triage_confidence": "medium"
+        },
+        {
+          "id": "R12-REASON-1138",
+          "file": "R12-M1.json",
+          "triage_class": "REFUTED",
+          "triage_blocker": "",
+          "triage_remaining": [
+            "Skeptic refuted COMPLETE on 2026-11-12 (round 37); read the dated gap in the row. (1) Add a cycle-and-journal test where the production rule pack fires at least one rule, the non-empty proof trace is journaled, and replay_recorded accepts it (symbolic_federation.rs fixture currently fires no rule). (2) Either couple the proof trace to a model output (a fact derived from a named model prediction, with a test naming that coupling) or record by ADR why the requirement reading excludes it; a bar that names something the code does not do stays PARTIAL."
+          ],
+          "triage_tests": [
+            "cargo test -p qip-kernel --test symbolic_federation",
+            "cargo test -p qip-reasoning-engine"
+          ],
+          "triage_confidence": "high"
+        }
+      ]
+    }
+  ]
+}

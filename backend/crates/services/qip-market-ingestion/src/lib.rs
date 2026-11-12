@@ -66,6 +66,7 @@ pub mod narrative;
 pub mod replay;
 pub mod rest;
 pub mod service;
+pub mod session;
 pub mod synthetic;
 pub mod tape;
 

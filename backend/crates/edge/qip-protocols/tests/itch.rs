@@ -480,3 +480,74 @@ fn decoding_the_same_capture_twice_produces_identical_messages() {
         decoder().decode(&bytes, at()).expect("decodes")
     );
 }
+
+/// A Net Order Imbalance Indicator: type, locate, tracking, timestamp,
+/// paired shares (8), imbalance shares (8), direction, stock, far, near and
+/// current reference price (4 each), cross type and price variation.
+fn imbalance(stock: &str, paired: u64, unpaired: u64, direction: u8, reference: u32) -> Vec<u8> {
+    let mut out = header(b'I', 300);
+    put(&mut out, 8, paired);
+    put(&mut out, 8, unpaired);
+    out.push(direction);
+    put_stock(&mut out, stock);
+    put(&mut out, 4, 0); // far price
+    put(&mut out, 4, 0); // near price
+    put(&mut out, 4, u64::from(reference));
+    out.push(b'O'); // opening cross
+    out.push(b' ');
+    assert_eq!(out.len(), 50, "premise: a NOII is fifty bytes");
+    out
+}
+
+/// R12-TICK-2053: every event kind decodes to its typed variant, and an
+/// auction is one. The imbalance indicator was stepped over as carrying no
+/// market fact, so the only trace of an auction the platform received was
+/// the cross print that ended it.
+///
+/// Mutation: delete the `b'I'` arm in `src/itch.rs` — the message falls to
+/// the `NoMarketFact` skip and no message decodes ("an imbalance indicator
+/// decodes to an auction update"). Mutation: map `b'B'` to `BookSide::Ask` —
+/// the side assertion fails.
+#[test]
+fn an_imbalance_indicator_decodes_to_an_auction_update_rather_than_a_skip() {
+    let mut decoder = decoder();
+    let messages = decoder
+        .decode(&imbalance("AAPL", 12_000, 3_500, b'B', 1_002_500), at())
+        .expect("decodes");
+    assert_eq!(
+        messages.len(),
+        1,
+        "an imbalance indicator decodes to an auction update"
+    );
+    let MessageBody::AuctionUpdate {
+        indicative_price,
+        paired,
+        imbalance: unpaired,
+        imbalance_side,
+    } = &messages[0].body
+    else {
+        panic!("expected an auction update, got {:?}", messages[0].body);
+    };
+    assert_eq!(
+        *indicative_price,
+        Some(Decimal::parse("100.25").expect("literal"))
+    );
+    assert_eq!(*paired, Decimal::from_int(12_000));
+    assert_eq!(*unpaired, Decimal::from_int(3_500));
+    assert_eq!(*imbalance_side, Some(BookSide::Bid));
+    assert!(decoder.diagnostics().recent_skips.is_empty());
+
+    // No imbalance and no reference price yet: neither a side nor a price is
+    // invented for it.
+    let messages = decoder
+        .decode(&imbalance("AAPL", 12_000, 0, b'N', 0), at())
+        .expect("decodes");
+    assert!(matches!(
+        messages[0].body,
+        MessageBody::AuctionUpdate {
+            indicative_price: None,
+            imbalance_side: None,
+            ..
+        }
+    ));
+}
