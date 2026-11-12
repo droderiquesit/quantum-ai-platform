@@ -784,6 +784,31 @@ fn simple_rate(credit: &CreditRegister, currency: Currency, days: u32) -> Result
     fraction((1.0 / discount - 1.0) / years, "simple rate off the curve")
 }
 
+/// Interest on `principal` lent at `repo_rate` from `opened` to `maturity`
+/// (ADR 0398): `principal × repo_rate × days / 365.25`, the convention
+/// [`value_repo`] accrues on, over the whole days the cash was lent. Zero
+/// when less than a whole day separates the two. The far leg of a repo is
+/// repaid on this; it is money, so the rate crosses from `f64` here and is
+/// refused when it is not a number.
+pub(crate) fn repo_interest(
+    principal: Decimal,
+    repo_rate: f64,
+    opened: Timestamp,
+    maturity: Timestamp,
+) -> Result<Decimal> {
+    let Some(days) = whole_days(opened, maturity) else {
+        return Ok(Decimal::ZERO);
+    };
+    let overflow = || Error::numeric("the repo's interest arithmetic overflowed");
+    let year_fraction = Decimal::from_int(i64::from(quarter_days(days)?))
+        .checked_div(Decimal::from_int(i64::from(QUARTER_DAYS_PER_YEAR)))
+        .ok_or_else(overflow)?;
+    principal
+        .checked_mul(fraction(repo_rate, "repo rate")?)
+        .and_then(|annual| annual.checked_mul(year_fraction))
+        .ok_or_else(overflow)
+}
+
 /// Value one repo per unit of its collateral, from its own terms.
 ///
 /// `cash = collateral price × (1 − haircut)`, and

@@ -319,7 +319,7 @@
       "backend/crates/apps/qip-fastbrain/src/feed.rs:201 the REST adapter's production construction",
       "backend/crates/libs/qip-storage/tests/lake.rs:28 a_world_source_document_is_refused_by_name_and_the_lake_has_only_two_classes"
     ],
-    "gap": "The REST adapter runs in qip-fastbrain; the narrative and alternative-data adapters are constructed by no binary (only qip-cli's demo), so their proof stands at the adapter's record boundary and no deployed journal downstream of them exists to check.",
+    "gap": "2026-11-12 (orchestrator, independent verification of the 2026-11-12 grade): held PARTIAL. The bar's clause that the check fails if any durable artefact holds the body is unmet in two ways. (1) On the production poll path raw source bytes reach the durable tick lake: connector_feed.rs passes envelope.raw_payload() to captured_of, connector/evidence.rs copies the bytes into CapturedMarketEvent, and qip-deepbrain main.rs attaches a tick lake; the canary test (connector_feed.rs a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll) builds its feed with no tick lake and so cannot see it. (2) The same poll produces knowledge packs, which the deep brain persists to a BlobStore and which carry a free-text PackBody::Summary, and checked evidence, which drain_evidence hands on; the canary test drains and inspects neither. Earlier: ",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -330,7 +330,7 @@
     "verification": "cargo test -p qip-market-ingestion --lib connector_feed && cargo test -p qip-market-ingestion --test narrative_feed --test rest_feed --test alternative_data a_canary",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L23: mutations fired - news headline built from headline plus wire body; whole REST body written into the trade's trade_id; whole alternative-data body written into the reading's metric: each failed 'a record carried the body'."
+    "notes": "2026-10-18 lane L23: mutations fired - news headline built from headline plus wire body; whole REST body written into the trade's trade_id; whole alternative-data body written into the reading's metric: each failed 'a record carried the body'. 2026-11-12 session fw-d-01, which wrote none of these adapters, verified the bar. The unit check is met. connector_feed lib: 10 passed. The three adapter canaries passed, one each. Mutations, each restored by cp+cmp, each test passing afterwards: (1) in FetchDigest::of, append the body to the digest's locator; the ConnectorFeed canary fails with 'the digest retained the body'. The same body written into the digest's cursor or etag survived, because the runtime overwrites both through with_cursor and with_etag, so locator is the field that reaches the digest. (2) In the REST adapter, write the whole body into every trade's trade_id; the rest_feed canary fails with 'a record carried the body'. The journal stores only the ledger and the checkpoint (StreamJournal::write), and the digest is taken from the report before the journal records it, so the journal has no channel to the body. The former gap moves here, because it concerns deployment and not the bar: the narrative and alternative-data adapters are constructed by no binary (only qip-cli's demo), so their proof stands at the adapter's record boundary. deployable stays false."
   },
   {
     "id": "R12-DATA-2015",
