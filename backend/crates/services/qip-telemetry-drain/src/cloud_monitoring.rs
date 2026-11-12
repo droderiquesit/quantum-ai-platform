@@ -825,7 +825,10 @@ mod tests {
                 .starts_with("qip-dev-api-0a1b2c3d4e5f-"),
             "the stable revision's series must not match the canary's prefix"
         );
-        assert!(reads(REVISION_VARIABLE), "the composition roots must pass the revision through");
+        assert!(
+            reads(REVISION_VARIABLE),
+            "the composition roots must pass the revision through"
+        );
     }
 
     #[test]
@@ -838,7 +841,13 @@ mod tests {
 
     #[test]
     fn a_malformed_revision_stops_the_process_rather_than_filing_series_under_no_revision() {
-        for bad in ["Qip-dev-api-00001", "qip_dev_api", "1qip", "qip-dev-", "qip dev"] {
+        for bad in [
+            "Qip-dev-api-00001",
+            "qip_dev_api",
+            "1qip",
+            "qip-dev-",
+            "qip dev",
+        ] {
             let error = configured(Some(bad)).unwrap_err().to_string();
             assert!(error.contains(REVISION_VARIABLE), "{bad}: {error}");
         }
