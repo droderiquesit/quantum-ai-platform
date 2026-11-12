@@ -1482,6 +1482,10 @@ pub struct Platform {
     /// of which has no admissible plan is refused before it holds capital,
     /// so nothing reaches ACT without one.
     position_exit_plans: BTreeMap<String, qip_financial::position_record::ExitPlan>,
+    /// The horizon records this cycle's construction sized and DECIDE has not
+    /// yet journalled. Bounded by one proposal's legs: cleared at each
+    /// construction and drained by `Self::journal_horizons`.
+    unjournalled_horizons: Vec<PositionHorizonRecorded>,
     /// The platform's own decision latency, SENSE through ACT, one sample per
     /// cycle on the injected clock and the most recent
     /// [`DECISION_LATENCY_SAMPLES`] kept (R12-TICK-2074). The capacity probe
@@ -6824,6 +6828,7 @@ impl Platform {
             position_mandates: BTreeMap::new(),
             position_horizons: BTreeMap::new(),
             position_exit_plans: BTreeMap::new(),
+            unjournalled_horizons: Vec::new(),
             decision_latencies: std::collections::VecDeque::new(),
             position_bookings: BTreeMap::new(),
         };
@@ -19554,9 +19559,11 @@ impl Platform {
         // written only now that the proposal's capital is held: a refused
         // hold returned above, and a target the platform never committed
         // capital to is not the target of anything it holds.
-        // Journalled before the in-memory records move, and a record the log
-        // refuses releases the hold and refuses the proposal: a thesis held in
-        // memory and absent from the log is the one a restart forgets.
+        // Queued here and journalled by DECIDE beside the decision's versions,
+        // under the same fail-closed veto (`Self::journal_horizons`): a thesis
+        // held in memory and absent from the log is the one a restart forgets,
+        // and the proposal it belongs to is not acted on.
+        self.unjournalled_horizons.clear();
         for leg in &outcome.proposal.legs {
             let Some((hypothesis, horizon)) = self.justified_hypotheses.horizon(&leg.hypotheses)
             else {
@@ -19568,14 +19575,7 @@ impl Platform {
                 horizon,
                 sized_at: now,
             };
-            if let Err(error) = self.journal_record(record, POSITION_HORIZON_ORIGIN, now) {
-                if notional.is_positive() {
-                    let _ = self
-                        .reservations
-                        .release(outcome.proposal.proposal_id.as_str(), now);
-                }
-                return Err(error);
-            }
+            self.unjournalled_horizons.push(record);
         }
         self.position_exit_plans.extend(exit_plans);
         let mandate = self.user_ledger.desk().as_str().to_string();
@@ -21461,11 +21461,24 @@ impl Platform {
         // proposal this stage pushed is now vetoed by the decision record
         // itself, so ACT has nothing of this cycle's to sign, and the capital
         // it held goes back to free at once rather than at the hold's expiry.
-        if let Err(error) = crate::decision_record::journal(self, now) {
-            outcome = outcome.with_problem(format!(
-                "the decision versions were not journaled, so this DECIDE cannot be \
-                 reproduced: {error}"
-            ));
+        let recorded = match crate::decision_record::journal(self, now) {
+            Ok(_) => self.journal_horizons(now),
+            Err(error) => {
+                outcome = outcome.with_problem(format!(
+                    "the decision versions were not journaled, so this DECIDE cannot be \
+                     reproduced: {error}"
+                ));
+                Err(error)
+            }
+        };
+        if let Err(error) = recorded {
+            if !self.unjournalled_horizons.is_empty() {
+                outcome = outcome.with_problem(format!(
+                    "the thesis horizons this DECIDE sized were not journaled, so a restart \
+                     could not state them: {error}"
+                ));
+            }
+            self.forget_unjournalled_horizons();
             for problem in self.withhold_unrecorded_decision(now, &error) {
                 outcome = outcome.with_problem(problem);
             }
@@ -21507,6 +21520,32 @@ impl Platform {
     /// it held. Returns the problems met doing so. A proposal with no legs is
     /// vetoed as well — it is cheap, and "this cycle decided nothing" is
     /// still a decision the log could not attribute.
+    /// Journal the [`PositionHorizonRecorded`] records this cycle's
+    /// construction queued (R12-ASSET-4067, R12-ASSET-4069), stopping at the
+    /// first the log refuses. Called only once the decision's versions are on
+    /// the record, so a horizon is never journalled for a proposal DECIDE
+    /// then vetoes as unreproducible. On a refusal the caller vetoes the
+    /// proposal as it does an unrecorded decision, and the queue is left for
+    /// [`Self::forget_unjournalled_horizons`].
+    fn journal_horizons(&mut self, now: Timestamp) -> Result<()> {
+        while let Some(record) = self.unjournalled_horizons.first().cloned() {
+            self.journal_record(record, POSITION_HORIZON_ORIGIN, now)?;
+            self.unjournalled_horizons.remove(0);
+        }
+        Ok(())
+    }
+
+    /// Drop what construction recorded in memory for every leg whose horizon
+    /// did not reach the log. Removed rather than kept: the proposal they came
+    /// from is vetoed, and a horizon held only in memory would state a thesis
+    /// for this process that the next one cannot.
+    fn forget_unjournalled_horizons(&mut self) {
+        for record in std::mem::take(&mut self.unjournalled_horizons) {
+            self.position_horizons.remove(&record.object_id);
+            self.position_exit_plans.remove(&record.object_id);
+        }
+    }
+
     fn withhold_unrecorded_decision(&mut self, now: Timestamp, error: &Error) -> Vec<String> {
         let mut problems = Vec::new();
         let Some(proposal) = self.proposals.last_mut() else {
