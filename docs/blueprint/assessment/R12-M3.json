@@ -1263,15 +1263,18 @@
   {
     "id": "R12-REASON-3054",
     "status": "PARTIAL",
-    "current": "The lifecycle judge runs on the hypothesis status lifecycle in the cycle; no knowledge-graph/ontology reasoning over financial or physical lifecycles is reached.",
+    "current": "The cycle's REASON stage closes every formed hypothesis, its anomaly and its subject as a typed knowledge graph: qip-reasoning-engine's Ontology (classes in an is-a hierarchy, relations with domain/range, inverse and transitivity) infers the closure with a derivation per fact, and symbolic_stage::derive_under journals the asserted facts and the closure on the SymbolicDerivation; verify re-closes the asserted facts and refuses an edited closure. The subject's financial lifecycle (a dated contract live through, or expiring before, the claim's deadline) and its physical typing (commodity and real_asset beneath physical_asset) are facts of the graph.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:336 hypothesis_lifecycle",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:82 the_fabric_admits_exactly_the_sequences_a_lifecycle_allows_and_names_the_first_break"
+      "backend/crates/services/qip-reasoning-engine/src/ontology.rs Ontology::infer (is-a, domain/range typing, inverse, transitive; Derivation per fact; BTreeMap storage)",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs platform_knowledge_graph, knowledge_facts, KnowledgeDerivation, verify (knowledge graph is not reproducible)",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs instance_typing_is_closed_under_is_a_exactly_as_reachability_in_the_hierarchy_says",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs a_transitive_relation_closes_to_reachability_and_its_inverse_mirrors_every_pair",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs a_relation_is_typed_against_the_closed_hierarchy_and_an_untyped_end_is_named_not_retyped",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_journaled_derivation_carries_its_subject_as_a_closed_knowledge_graph_and_replay_refuses_an_edited_closure",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs tests::a_dated_contract_that_expires_before_the_deadline_is_entailed_to_be_outlived_by_the_claim",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:336 hypothesis_lifecycle"
     ],
-    "gap": "KG/ontology reasoning over entities and financial/physical lifecycles in production.",
+    "gap": "2026-11-12 (lane fw-j-01): the knowledge graph is journaled and replay-checked in every cycle but is advisory: no rule, veto or sizing input reads KnowledgeDerivation::outlived_by_claim or any other entailment yet, so the ontology informs the record and not the decision. The physical lifecycle is a typing only (commodity/real_asset beneath physical_asset): no delivery-state source (notices, warehouse or shipping status) is ingested, so there is no physical stage to assert. The vocabulary is seeded in code (platform_knowledge_graph v1), not loaded from a governed ontology store.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1279,10 +1282,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoners; cargo test -p qip-kernel --test symbolic_federation; cargo test -p qip-kernel --lib symbolic_stage",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Lifecycle wired, for hypotheses only."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Lifecycle wired, for hypotheses only. Lane fw-j-01 2026-11-12: added qip-reasoning-engine ontology.rs and the kernel's knowledge-graph part of the symbolic derivation; 9 mutations fired (is-a, transitivity, inverse, typing, undeclared inverse, verify skip, dropped grounding, physical class, expiry boundary). Kept PARTIAL: the entailments are recorded, not acted on, and the physical lifecycle has no state data."
   },
   {
     "id": "R12-REASON-3055",
