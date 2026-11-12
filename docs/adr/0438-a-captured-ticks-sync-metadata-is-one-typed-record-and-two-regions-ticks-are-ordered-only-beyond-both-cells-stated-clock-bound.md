@@ -75,6 +75,19 @@ both were real:
   process captures yet. The committed capture path is the drain, behind
   `QIP_VENUE_FEED=simulated` in the execution node's template.
 
+## What it costs
+
+- Every lake line carries two more fields (`venue`, `instrument`), and the
+  drain keeps them for each partition's latest tick in its bounded working
+  set.
+- The lake reader decodes and validates the record on every line it reads.
+  A record that fails is one fewer tick a replay sees, and it is counted.
+- The deep brain links `qip-sequencing`, a workspace-internal edge library
+  with no I/O, so the cross-cell rule and the in-cell rule run the same
+  `align`.
+- Until someone states a measured bound, the desk learns no cross-region
+  reaction. That is the intended cost of not inventing the figure.
+
 ## What would make this wrong
 
 A measured inter-cell clock bound that varies by cell would make one shared
