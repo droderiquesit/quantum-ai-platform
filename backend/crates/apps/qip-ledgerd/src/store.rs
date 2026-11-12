@@ -93,8 +93,10 @@
 
 use crate::backend::{LedgerBackend, LedgerBatch, LocalBackend};
 use crate::telemetry::LedgerTelemetry;
+use qip_contracts::ledger::custody::{self, CustodyBreak, CustodyStatement};
 use qip_contracts::ledger::{Account, Direction, LedgerEvent, LedgerObligations};
 use qip_contracts::ledger_operation::{LedgerOperation, OperationKind, Phase};
+use qip_contracts::policy::HaltCommand;
 use qip_contracts::reflex::{ChainSpan, Decision, OutcomeRecord};
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, hmac_sha256, to_hex};
@@ -127,6 +129,10 @@ const PREFIX_JOURNAL: &str = "journal/";
 const PREFIX_WATERMARK: &str = "watermark/";
 const PREFIX_OPERATION: &str = "operation/";
 const PREFIX_LOT: &str = "lot/";
+/// `custody/<cell>/<venue>`: the chain position of the last custody
+/// statement compared for that cell at that venue, so a statement at or
+/// behind it is answered as stale and never journals its break twice.
+const PREFIX_CUSTODY: &str = "custody/";
 const KEY_PROBE: &str = "meta/probe";
 
 /// How many key ranges a monotonic key family is spread over
@@ -295,6 +301,34 @@ pub struct JournalNote {
     pub event: String,
     pub detail: String,
     pub operator_action: String,
+}
+
+/// What [`LedgerStore::reconcile_custody`] concluded about one statement.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CustodyReconciliation {
+    /// The ledger has not yet applied the cell's chain up to the statement's
+    /// position, so the fills the venue counted are not all booked. Not a
+    /// break, and not compared: compare again once the ledger catches up.
+    Pending,
+    /// A statement at or behind one already compared for this cell and
+    /// venue. Nothing is journaled again.
+    Stale,
+    /// The ledger and the venue hold the same units.
+    Agrees,
+    /// They disagree. Each break was journaled and counted; `halt` is the
+    /// deterministic, unsigned whole-cell halt (ADR 0442) for the centre to
+    /// sign under its halt key and publish on the P0 control stream.
+    Broken {
+        breaks: Vec<CustodyBreak>,
+        halt: HaltCommand,
+    },
+}
+
+/// The last statement compared for a cell at a venue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct CustodyMark {
+    session: u64,
+    sequence: u64,
 }
 
 /// A cell's chain position: the last sequence applied and its digest.
@@ -1231,6 +1265,118 @@ impl LedgerStore {
         self.store.commit(batch)?;
         self.record_parked_keys()?;
         Ok(park.offset)
+    }
+
+    /// Compare the simulated venue's custody statement with what this ledger
+    /// booked for the cell (ADR 0130 decision 4, ADR 0442, R12-LEDGER-8139).
+    ///
+    /// The ledger side is the cell's booked fills at or before the
+    /// statement's `(session, sequence)`, summed over every
+    /// `trading:<cell>/<strategy>` leg, per unit — the chain the cell
+    /// shipped, and nothing booked after the venue took its statement.
+    /// Operations (ADR 0123) are not counted: they move units between the
+    /// platform's own accounts and not to or from the venue.
+    ///
+    /// Refuses a statement not marked simulated (ADR 0130 decision 6).
+    /// Answers [`CustodyReconciliation::Pending`] while the ledger's tail for
+    /// the cell is behind the statement, because a fill still in flight on
+    /// P1 is not a break; and [`CustodyReconciliation::Stale`] for a
+    /// statement at or behind the last one compared. A break is journaled as
+    /// a `custody_break` note and counted by direction, never adjusted: the
+    /// ledger's balances are not touched.
+    pub fn reconcile_custody(&self, statement: &CustodyStatement) -> Result<CustodyReconciliation> {
+        if !statement.simulated {
+            return Err(Error::denied(format!(
+                "a custody statement from {} for {} is not marked simulated; this platform \
+                 reconciles paper custody only (ADR 0130 decision 6) and compares nothing",
+                statement.venue, statement.cell
+            )));
+        }
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let mark_key = format!("{PREFIX_CUSTODY}{}/{}", statement.cell, statement.venue);
+        if let Some(mark) = self.read::<CustodyMark>(&mark_key)?
+            && statement.is_at_or_before(mark.session, mark.sequence)
+        {
+            return Ok(CustodyReconciliation::Stale);
+        }
+        let Some(tail) = self.tail(&statement.cell)? else {
+            return Ok(CustodyReconciliation::Pending);
+        };
+        if !statement.is_at_or_before(tail.session, tail.sequence) {
+            return Ok(CustodyReconciliation::Pending);
+        }
+
+        let mut ledger: BTreeMap<String, Decimal> = BTreeMap::new();
+        for event in self.fill_events()? {
+            let source = event.source();
+            if source.cell != statement.cell
+                || !(source.session, source.journal_sequence)
+                    .le(&(statement.session, statement.sequence))
+            {
+                continue;
+            }
+            for posting in event.postings() {
+                if !matches!(&posting.account, Account::Trading { cell, .. } if *cell == statement.cell)
+                {
+                    continue;
+                }
+                let entry = ledger.entry(posting.unit.clone()).or_insert(Decimal::ZERO);
+                let moved = match posting.direction {
+                    Direction::Debit => entry.checked_add(posting.amount),
+                    Direction::Credit => entry.checked_sub(posting.amount),
+                };
+                *entry = moved.ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the ledger's {} holding for {} would overflow while reconciling \
+                         custody; nothing was compared",
+                        posting.unit, statement.cell
+                    ))
+                })?;
+            }
+        }
+
+        let breaks = custody::compare(&ledger, statement);
+        let mut batch = LedgerBatch::new().put_as(
+            mark_key,
+            &CustodyMark {
+                session: statement.session,
+                sequence: statement.sequence,
+            },
+        )?;
+        for found in &breaks {
+            batch = self.note(
+                batch,
+                JournalNote {
+                    cell: statement.cell.clone(),
+                    partition: format!("custody:{}", statement.venue),
+                    offset: statement.sequence,
+                    event: "custody_break".to_string(),
+                    detail: format!(
+                        "{}: the ledger books {} and {} states {} ({}) at session {} \
+                         sequence {}",
+                        found.unit,
+                        found.ledger,
+                        statement.venue,
+                        found.venue,
+                        found.direction.as_str(),
+                        statement.session,
+                        statement.sequence
+                    ),
+                    operator_action: "the cell is halted; find which side is wrong, and \
+                                      release by a policy payload issued after the halt once \
+                                      a later statement agrees"
+                        .to_string(),
+                },
+            )?;
+        }
+        self.store.commit(batch)?;
+        for found in &breaks {
+            self.telemetry.custody_break(found.direction.as_str());
+        }
+        Ok(match custody::halt_for(statement, &breaks) {
+            Some(halt) => CustodyReconciliation::Broken { breaks, halt },
+            None => CustodyReconciliation::Agrees,
+        })
     }
 
     // --- decisions --------------------------------------------------------
