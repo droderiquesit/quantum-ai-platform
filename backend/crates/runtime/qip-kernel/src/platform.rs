@@ -24212,10 +24212,26 @@ impl Platform {
         // here rather than at a stage because this is the one state both the
         // pre-trade veto and the monitor read. See `crate::shared_cause` for
         // why the per-family level has no producer and no shipped cap.
-        let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
+        //
+        // The systemic level (R12-RISK-1162) is charged from the same
+        // attribution, across the region each held record names.
+        let regions: BTreeMap<String, String> = state
+            .position_notionals
+            .keys()
+            .filter_map(|instrument| {
+                self.exposure_axes_for(instrument)
+                    .remove("country")
+                    .map(|region| (instrument.clone(), region))
+            })
+            .collect();
+        let state = crate::shared_cause::observe(&self.world, &self.price_history, &regions, state);
         let state = self.with_margin_and_funding(state, figures);
         let state = self.with_custody_exposure(state);
         let state = self.with_twin_misfit(state);
+        // Operational risk (R12-RISK-1162): the gross stranded at each venue
+        // this platform has withdrawn for failing its order path, charged
+        // from the counterparty axis the line above also reads.
+        let state = qip_risk::operational::with_operational_failure(state, &self.withdrawn_venues);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -32532,6 +32548,213 @@ mod decide_tests {
             blocks(&state, CUSTODIAN_LIMIT),
             "0.70 of equity at one custodian did not block against the 0.60 cap: {:?}",
             LimitSet::conservative_default().check(&state).breaches
+        );
+    }
+
+    /// The names the shipped set gives R12-RISK-1162's two caps, compared for
+    /// equality for the reason [`CAUSAL_DRIVER_LIMIT`] gives.
+    const OPERATIONAL_LIMIT: &str = "operational-failure-venue-gross";
+    const SYSTEMIC_LIMIT: &str = "systemic-contagion";
+
+    #[test]
+    fn gross_stranded_at_a_venue_the_platform_withdrew_blocks_through_risk_state() {
+        // R12-RISK-1162, operational risk. A withdrawal stops new orders
+        // reaching a venue whose order path failed; the gross already there
+        // stays exposed to that failure. Four positions of 750,000 traded at
+        // one venue are 0.30 of a ten-million book: 0.075 each against the
+        // 0.10 position cap, so nothing else in the shipped set objects.
+        let mut platform = shared_cause_platform();
+        let mut at_venue = BTreeMap::new();
+        at_venue.insert(
+            qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+            "venue-failing".to_string(),
+        );
+        for index in 0..4 {
+            platform
+                .aggregates
+                .apply_fill(
+                    DESK_STRATEGY,
+                    &format!("STRANDED-{index}"),
+                    &at_venue,
+                    Decimal::from_int(750_000),
+                )
+                .expect("aggregated");
+        }
+        // Premise: the venue is healthy, so the axis is absent and the cap is
+        // silent — the block below is the withdrawal's doing.
+        let healthy = platform.risk_state();
+        assert!(
+            !healthy
+                .axis_exposures
+                .contains_key(qip_risk::OPERATIONAL_FAILURE_AXIS)
+        );
+        assert!(!breaches(&healthy, OPERATIONAL_LIMIT));
+        assert!(
+            LimitSet::conservative_default()
+                .check(&healthy)
+                .blocking()
+                .is_empty(),
+            "premise: the healthy book blocks on nothing: {:?}",
+            LimitSet::conservative_default().check(&healthy).breaches
+        );
+
+        platform
+            .withdrawn_venues
+            .insert("venue-failing".to_string());
+        let state = platform.risk_state();
+        assert_eq!(
+            state.axis_exposures[qip_risk::OPERATIONAL_FAILURE_AXIS]["venue-failing"],
+            Decimal::from_int(3_000_000)
+        );
+        assert!(
+            blocks(&state, OPERATIONAL_LIMIT),
+            "0.30 of equity stranded at a withdrawn venue did not block against 0.25: {:?}",
+            LimitSet::conservative_default().check(&state).breaches
+        );
+        // And the veto reaches an order in a different name entirely.
+        let checker = PreTradeChecker::new(LimitSet::conservative_default());
+        let order = qip_risk_engine::pretrade::ProposedOrder {
+            object_id: qip_core::ids::ObjectId::from_string("ELSEWHERE"),
+            quantity: Decimal::from_int(1),
+            reference_price: Decimal::from_int(100),
+            axes: BTreeMap::new(),
+            scope: DESK_STRATEGY.to_string(),
+        };
+        let result = checker
+            .check(&order, &state, Timestamp::from_secs(1_760_000_000))
+            .expect("a well-formed order is checked rather than refused as malformed");
+        let qip_risk_engine::pretrade::PreTradeDecision::Rejected { reasons } = &result.decision
+        else {
+            panic!(
+                "new risk elsewhere was admitted while 0.30 of equity sat at a withdrawn \
+                 venue: {}",
+                result.decision.describe()
+            );
+        };
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.starts_with(&format!("{OPERATIONAL_LIMIT}: "))),
+            "rejected, but not for the stranded gross: {reasons:?}"
+        );
+    }
+
+    /// A universe whose records name the region the systemic level reads.
+    fn regional_universe(listings: &[(&str, &str)]) -> Universe {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut universe = Universe::new();
+        for (symbol, country) in listings.iter().copied() {
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        qip_core::ObjectId::from_string(symbol),
+                        symbol,
+                        InstrumentType::CommonStock,
+                        LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                    )
+                    .venue("XNAS")
+                    .sector(Sector::Financials)
+                    .geography(country)
+                    .price(Decimal::from_int(100))
+                    .provenance(Provenance::synthetic("test", now))
+                    .build(now)
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+        }
+        universe
+    }
+
+    /// Five positions of 800,000 (0.08 each, 0.40 together) all downstream of
+    /// one claimed cause, in the regions `listings` names.
+    fn one_driver_book(listings: &[(&str, &str)]) -> RiskState {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(10_000_000));
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            regional_universe(listings),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        for (symbol, _) in listings {
+            platform
+                .aggregates
+                .apply_fill(
+                    DESK_STRATEGY,
+                    symbol,
+                    &BTreeMap::new(),
+                    Decimal::from_int(800_000),
+                )
+                .expect("aggregated");
+            platform
+                .world
+                .update(|world| {
+                    world.claim_causal(
+                        qip_world_model::causal::CausalEdge::new(
+                            "funding-stress",
+                            *symbol,
+                            qip_world_model::causal::Mechanism::DiscountRate,
+                            1.0,
+                            Duration::from_days(1),
+                            Timestamp::from_secs(1_760_000_000),
+                        )
+                        .expect("a strength in [0, 1] is admitted")
+                        .with_confidence(1.0)
+                        .expect("a confidence in [0, 1] is admitted"),
+                    )
+                })
+                .expect("an edge naming both ends is admitted");
+        }
+        platform.risk_state()
+    }
+
+    #[test]
+    fn one_causal_driver_reaching_two_regions_blocks_through_risk_state_and_one_region_does_not() {
+        // R12-RISK-1162, systemic risk. 0.40 of equity behind one mechanism
+        // sits inside the causal-driver cap's 0.50 (and below its 0.425
+        // warning), so that cap admits both books below. Only the regional
+        // span tells them apart.
+        let local = one_driver_book(&[
+            ("US-A", "US"),
+            ("US-B", "US"),
+            ("US-C", "US"),
+            ("US-D", "US"),
+            ("US-E", "US"),
+        ]);
+        assert!(
+            !breaches(&local, CAUSAL_DRIVER_LIMIT),
+            "premise: the driver cap admits 0.40"
+        );
+        assert!(
+            local.axis_exposures[qip_risk::SYSTEMIC_CONTAGION_AXIS].is_empty(),
+            "a mechanism confined to one region is measured and not systemic"
+        );
+        assert!(!breaches(&local, SYSTEMIC_LIMIT));
+
+        let crossing = one_driver_book(&[
+            ("US-A", "US"),
+            ("US-B", "US"),
+            ("US-C", "US"),
+            ("DE-A", "DE"),
+            ("DE-B", "DE"),
+        ]);
+        assert!(!breaches(&crossing, CAUSAL_DRIVER_LIMIT));
+        assert!(!breaches(&crossing, "country-concentration"));
+        assert_eq!(
+            crossing.axis_exposures[qip_risk::SYSTEMIC_CONTAGION_AXIS]["funding-stress"],
+            Decimal::from_int(4_000_000)
+        );
+        assert!(
+            blocks(&crossing, SYSTEMIC_LIMIT),
+            "0.40 of equity behind one cross-border mechanism did not block against 0.35: {:?}",
+            LimitSet::conservative_default().check(&crossing).breaches
         );
     }
 
