@@ -897,6 +897,15 @@ fn run() -> Result<()> {
         qip_deepbrain::research::ResearchConfig::from_lookup(&|name| std::env::var(name).ok())
             .map_err(configuration)?;
     println!(
+        "  opportunity sentinels: {} ({})",
+        if research_config.opportunity_sentinel {
+            "on"
+        } else {
+            "off"
+        },
+        qip_deepbrain::research::OPPORTUNITY_SENTINEL_VARIABLE
+    );
+    println!(
         "  research:         {}",
         if research_config.every_cycles == 0 {
             "disabled (QIP_DEEPBRAIN_RESEARCH_EVERY=0)".to_string()

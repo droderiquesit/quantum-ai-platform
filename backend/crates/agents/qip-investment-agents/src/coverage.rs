@@ -80,11 +80,23 @@ pub enum Scope {
     /// rather than a capital specialist, because a second agent reading the
     /// same `RiskState` would be a correlated second finding from one origin.
     CapitalPosition,
+    /// The issuer's reported financial statements (R12-REASON-3013).
+    FinancialStatements,
+    /// The issuer's reported figures against consensus (R12-REASON-3013).
+    Earnings,
+    /// Corporate actions announced on the instrument (R12-REASON-3013).
+    CorporateEvents,
+    /// Management's own guidance and how the company did against it
+    /// (R12-REASON-3013).
+    ManagementGuidance,
+    /// The issuer's debt, cash, leverage and maturity ladder
+    /// (R12-REASON-3013).
+    CapitalStructure,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 14] = [
+    pub const ALL: [Scope; 19] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -99,6 +111,11 @@ impl Scope {
         Scope::GeopoliticalRisk,
         Scope::SupplyChain,
         Scope::CapitalPosition,
+        Scope::FinancialStatements,
+        Scope::Earnings,
+        Scope::CorporateEvents,
+        Scope::ManagementGuidance,
+        Scope::CapitalStructure,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -117,6 +134,11 @@ impl Scope {
             Self::GeopoliticalRisk => "geopolitical_risk",
             Self::SupplyChain => "supply_chain",
             Self::CapitalPosition => "capital_position",
+            Self::FinancialStatements => "financial_statements",
+            Self::Earnings => "earnings",
+            Self::CorporateEvents => "corporate_events",
+            Self::ManagementGuidance => "management_guidance",
+            Self::CapitalStructure => "capital_structure",
         }
     }
 
@@ -159,6 +181,11 @@ impl Scope {
                 "margin_utilisation",
                 "survival_gross_ceiling",
             ],
+            Self::FinancialStatements => &["statement_metrics_reported"],
+            Self::Earnings => &["earnings_surprise"],
+            Self::CorporateEvents => &["corporate_actions_pending"],
+            Self::ManagementGuidance => &["guidance_gap", "guidance_outstanding"],
+            Self::CapitalStructure => &["net_debt", "net_leverage", "debt_due_within_year"],
         }
     }
 

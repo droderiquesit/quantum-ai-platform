@@ -157,3 +157,75 @@ fn a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_ref
         "a pipeline-trained card is governed elsewhere"
     );
 }
+
+/// ADR 0436 (R12-MODEL-4022): a trial round is evidence only if it is new,
+/// says what it was scored on, and comes before acceptance. Each refusal
+/// below leaves the trial as it was; the admitted rounds count up and name
+/// both venues, so the door is not one that refuses everything.
+///
+/// Mutation: drop the blank-evidence refusal in `record_trial_round` — the
+/// blank round is admitted and the first `is_err` assertion fails. Mutation:
+/// compare `at < trial.last_round` instead of `<=` — the repeated round is
+/// admitted and the third assertion fails. Mutation: drop the stage refusal —
+/// the production card's round is admitted and the last assertion fails.
+#[test]
+fn a_trial_round_is_refused_when_blank_repeated_or_recorded_after_acceptance() {
+    use qip_ai::registry::{MIN_TRIAL_ROUNDS, TrialVenue};
+    let mut card = eligible(ModelClass::Generic);
+    card.stage = ModelStage::Validation;
+    let reference = card.reference();
+    let mut registry = ModelRegistry::new();
+    assert!(
+        registry.register(card).is_ok(),
+        "premise: the card registers"
+    );
+    let at = |secs: i64| now().saturating_add(qip_core::Duration::from_secs(secs));
+
+    assert!(
+        registry
+            .record_trial_round(&reference, TrialVenue::Paper, "  ", at(1))
+            .is_err()
+    );
+    assert_eq!(
+        registry.record_trial_round(&reference, TrialVenue::Paper, "paper fills", at(1)),
+        Ok(1)
+    );
+    assert!(
+        registry
+            .record_trial_round(&reference, TrialVenue::Paper, "the same instant", at(1))
+            .is_err(),
+        "a round at the same instant counted twice"
+    );
+    for round in 2..=i64::from(MIN_TRIAL_ROUNDS) {
+        assert!(
+            registry
+                .record_trial_round(&reference, TrialVenue::Simulation, "replayed", at(round))
+                .is_ok()
+        );
+    }
+    let trial = registry
+        .get(&reference)
+        .and_then(|card| card.trial.clone())
+        .expect("the trial is on the card");
+    assert!(trial.completed(), "{trial:?}");
+    assert_eq!(trial.rounds, MIN_TRIAL_ROUNDS);
+    assert_eq!(trial.venues.len(), 2, "{trial:?}");
+    assert_eq!(
+        registry.get(&reference).map(|card| card.stage),
+        Some(ModelStage::Validation),
+        "a trial round moved the card's stage"
+    );
+
+    let accepted = eligible(ModelClass::Generic);
+    let accepted_reference = format!("{}-accepted", accepted.name);
+    let mut accepted = accepted;
+    accepted.name = accepted_reference.clone();
+    let accepted_reference = accepted.reference();
+    assert!(registry.register(accepted).is_ok(), "premise: registers");
+    assert!(
+        registry
+            .record_trial_round(&accepted_reference, TrialVenue::Paper, "late", at(100))
+            .is_err(),
+        "a round recorded after acceptance was admitted"
+    );
+}

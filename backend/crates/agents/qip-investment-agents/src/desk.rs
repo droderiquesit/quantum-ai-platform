@@ -225,6 +225,26 @@ pub struct ChainView {
     pub pools: Vec<PoolReading>,
 }
 
+/// The company records the Company/Fundamental Brain reads beside the
+/// world model's reported fundamentals (R12-REASON-3013, ADR 0458): the
+/// corporate actions the kernel holds awaiting their ex-date, and management
+/// guidance and capital structures by issuer.
+///
+/// `corporate_actions_observed` is false until the kernel has been handed any
+/// corporate action at all, so an empty list on a platform no corporate-action
+/// feed reaches is reported as no source rather than as a quiet calendar.
+/// Guidance and capital structure have no ingestion arm in the tree, so on
+/// every deployed binary today both lists are empty and the brain names them
+/// missing.
+#[derive(Debug, Default)]
+pub struct CompanyView {
+    pub corporate_actions_observed: bool,
+    /// Announced actions awaiting their ex-date, as the kernel holds them.
+    pub corporate_actions: Vec<qip_market::corporate_action::CorporateAction>,
+    pub guidance: Vec<qip_financial::company::ManagementGuidance>,
+    pub capital_structures: Vec<qip_financial::company::CapitalStructure>,
+}
+
 /// Trading restrictions by object id.
 ///
 /// Deterministic data rather than a model's reading of a policy document:
@@ -272,6 +292,11 @@ pub struct Desk {
     /// feeds every REASON, and a test hands one in through
     /// [`Desk::with_chain`].
     pub chain: Gated<ChainView>,
+    /// Corporate actions, guidance and capital structure (R12-REASON-3013).
+    /// Empty from [`Desk::new`]; the kernel re-points this gate at the slot
+    /// it feeds every REASON, and a test hands one in through
+    /// [`Desk::with_company`].
+    pub company: Gated<CompanyView>,
 }
 
 impl Desk {
@@ -317,7 +342,21 @@ impl Desk {
                 Capability::ReadMarketData,
                 "chain-state",
             ),
+            // Corporate actions, guidance and balance sheets describe
+            // instruments and issuers: reference data, nothing of the book.
+            company: Gated::new(
+                CompanyView::default(),
+                Capability::ReadReferenceData,
+                "company-reference",
+            ),
         }
+    }
+
+    /// The desk with `company` behind the company-reference gate, under the
+    /// capability and label [`Desk::new`] chose for it.
+    pub fn with_company(mut self, company: CompanyView) -> Self {
+        self.company = Gated::new(company, self.company.required(), self.company.label());
+        self
     }
 
     /// The desk with `chain` behind the chain-state gate, under the

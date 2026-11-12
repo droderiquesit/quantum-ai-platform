@@ -26,9 +26,10 @@
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub mod custody;
 mod obligations;
 
 pub use obligations::LedgerObligations;
@@ -346,6 +347,25 @@ pub struct SourceEvent {
     pub order_id: String,
 }
 
+/// The schema an event is booked under (ADR 0454).
+///
+/// Schema 1 is every event written before ADR 0454: owner and attribution
+/// optional. Schema 2 is a fill event that states both, and decoding one
+/// that lacks either is refused. Schema 1 events stay readable and are never
+/// rewritten — one is encoded without a `schema` field, exactly as it was
+/// stored, so the digests that cover it do not move.
+pub const LEGACY_SCHEMA: u32 = 1;
+/// See [`LEGACY_SCHEMA`].
+pub const ATTRIBUTED_SCHEMA: u32 = 2;
+
+fn legacy_schema() -> u32 {
+    LEGACY_SCHEMA
+}
+
+fn is_legacy_schema(schema: &u32) -> bool {
+    *schema == LEGACY_SCHEMA
+}
+
 /// One immutable, balanced, simulated economic event (CONTRACT-016).
 ///
 /// The only constructor is [`LedgerEvent::new`], and deserialisation is
@@ -353,6 +373,10 @@ pub struct SourceEvent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "LedgerEventWire")]
 pub struct LedgerEvent {
+    /// Absent from the encoding at [`LEGACY_SCHEMA`], so an event written
+    /// before ADR 0454 re-encodes byte for byte as it was stored.
+    #[serde(default = "legacy_schema", skip_serializing_if = "is_legacy_schema")]
+    schema: u32,
     source: SourceEvent,
     settlement: Settlement,
     fee: FeeReport,
@@ -366,16 +390,28 @@ pub struct LedgerEvent {
     attribution: Option<Attribution>,
 }
 
-/// The links from a booked fill back to the decision that caused it, beyond
-/// the journal entry [`SourceEvent`] places it on (R12-CONTRACT-7069). Every
-/// link is named: a chain with a blank link reads as complete and cannot be
-/// followed.
+/// The links from a booked fill back to the decision that sent its order
+/// and the intents that decision netted (R12-CONTRACT-7069, ADR 0454).
+///
+/// The fill itself is the [`SourceEvent`]: its cell, session, journal entry
+/// and digest. From there the chain names the order, the cell's
+/// `OrderSent` entry that sent it — the decision, by its sequence on the
+/// same session's chain — and one contributor per strategy whose intent
+/// the order netted, with that strategy's share of the fill. A contributor's
+/// intent has no id of its own to mint: it is identified by the decision it
+/// was netted into and the strategy that stated it, which
+/// [`LedgerEvent::intent_ids`] renders. One fill rests on every intent its
+/// order netted, so a single intent id would have picked one of them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Attribution {
-    pub fill_id: String,
     pub order_id: String,
-    pub intent_id: String,
-    pub decision_id: String,
+    /// The sequence of the cell's `OrderSent` entry for `order_id`, on the
+    /// journal of the session the source event names.
+    pub decision_sequence: u64,
+    /// Strategy to its share of the fill. A `BTreeMap` so the chain reads in
+    /// one order on every run.
+    pub contributors: BTreeMap<String, Decimal>,
 }
 
 /// The deserialised shape, so an event read from a store or a stream meets
@@ -384,6 +420,8 @@ pub struct Attribution {
 /// and for none it read.
 #[derive(Deserialize)]
 struct LedgerEventWire {
+    #[serde(default = "legacy_schema")]
+    schema: u32,
     source: SourceEvent,
     settlement: Settlement,
     fee: FeeReport,
@@ -398,16 +436,35 @@ impl TryFrom<LedgerEventWire> for LedgerEvent {
     type Error = Error;
 
     fn try_from(wire: LedgerEventWire) -> Result<Self> {
-        let mut event = Self::new(wire.source, wire.settlement, wire.fee, wire.postings)?;
-        // An event written before ownership existed has neither; one that
-        // states either meets the same refusals as one built in code.
-        if let Some(owner) = wire.owner {
-            event = event.with_owner(owner)?;
+        let event = Self::new(wire.source, wire.settlement, wire.fee, wire.postings)?;
+        match wire.schema {
+            // An event written before ownership existed has neither; one that
+            // states either meets the same refusals as one built in code. It
+            // stays schema 1: decoding never upgrades a stored event.
+            LEGACY_SCHEMA => {
+                let mut event = event;
+                if let Some(owner) = wire.owner {
+                    event = event.with_owner(owner)?;
+                }
+                if let Some(attribution) = wire.attribution {
+                    event = event.with_attribution(attribution)?;
+                }
+                Ok(event)
+            }
+            ATTRIBUTED_SCHEMA => {
+                let (Some(owner), Some(attribution)) = (wire.owner, wire.attribution) else {
+                    return Err(Error::invalid(
+                        "a schema 2 ledger event must state its owner and its attribution \
+                         chain; one that lacks either is refused rather than read as legacy",
+                    ));
+                };
+                event.attributed(owner, attribution)
+            }
+            other => Err(Error::invalid(format!(
+                "ledger event schema {other} is not one this reader knows; it reads schema \
+                 {LEGACY_SCHEMA} and {ATTRIBUTED_SCHEMA} and refuses rather than guessing"
+            ))),
         }
-        if let Some(attribution) = wire.attribution {
-            event = event.with_attribution(attribution)?;
-        }
-        Ok(event)
     }
 }
 
@@ -562,6 +619,7 @@ impl LedgerEvent {
         }
 
         Ok(Self {
+            schema: LEGACY_SCHEMA,
             source,
             settlement,
             fee,
@@ -571,7 +629,9 @@ impl LedgerEvent {
         })
     }
 
-    /// State whose capital this event moved: a desk or mandate id. Refused
+    /// State whose capital this event moved: the book that is a party to it —
+    /// a treasury, a mandate, or for a fill the cell whose trading book it
+    /// moved (ADR 0454 decision 2). Refused
     /// when blank — an owner that reads as stated and names nobody is worse
     /// than none — or when it holds a `:` or `/`, which would make an
     /// owner-qualified account render ambiguously like any account name.
@@ -588,14 +648,13 @@ impl LedgerEvent {
     }
 
     /// State the chain from the booked fill back to the decision. Refused when
-    /// any link is blank, and when its order is not the order the source event
-    /// names: two claims about the same order will disagree, and the louder
-    /// one will be wrong.
+    /// the order is blank or is not the order the source event names (two
+    /// claims about the same order will disagree, and the louder one will be
+    /// wrong); when the decision does not precede the fill on the session's
+    /// chain, since an order is sent before it fills; and when no contributor
+    /// is named, or one is blank or holds a share that is not positive.
     pub fn with_attribution(mut self, attribution: Attribution) -> Result<Self> {
-        refuse_unnamed("attribution fill id", &attribution.fill_id)?;
         refuse_unnamed("attribution order id", &attribution.order_id)?;
-        refuse_unnamed("attribution intent id", &attribution.intent_id)?;
-        refuse_unnamed("attribution decision id", &attribution.decision_id)?;
         if attribution.order_id != self.source.order_id {
             return Err(Error::invalid(format!(
                 "the attribution chain names order `{}` but the source event names `{}`; \
@@ -603,8 +662,101 @@ impl LedgerEvent {
                 attribution.order_id, self.source.order_id
             )));
         }
+        if attribution.decision_sequence >= self.source.journal_sequence {
+            return Err(Error::invalid(format!(
+                "the attribution chain cites decision entry {} for a fill at entry {}; the \
+                 order was sent before it filled, so its decision precedes the fill",
+                attribution.decision_sequence, self.source.journal_sequence
+            )));
+        }
+        if attribution.contributors.is_empty() {
+            return Err(Error::invalid(
+                "the attribution chain names no contributor; a fill rests on at least one \
+                 strategy's intent",
+            ));
+        }
+        for (strategy, share) in &attribution.contributors {
+            refuse_unnamed("attribution contributor", strategy)?;
+            if !share.is_positive() {
+                return Err(Error::invalid(format!(
+                    "contributor `{strategy}` holds a share of {share}; a share of a fill is \
+                     positive or the contributor is not part of it"
+                )));
+            }
+        }
         self.attribution = Some(attribution);
         Ok(self)
+    }
+
+    /// Book this event at [`ATTRIBUTED_SCHEMA`]: a fill stating the cell whose
+    /// trading book it moved as its owner, and its full attribution chain.
+    ///
+    /// Beyond [`Self::with_owner`] and [`Self::with_attribution`], refused when
+    /// the postings name no trading book, when a trading book belongs to
+    /// another cell than the owner, and when the strategies the postings book
+    /// to are not exactly the attribution's contributors — a fill booked to a
+    /// strategy the chain does not name, or a contributor the postings never
+    /// booked, is a chain that does not describe the event it is on.
+    pub fn attributed(self, owner: impl Into<String>, attribution: Attribution) -> Result<Self> {
+        let mut event = self.with_owner(owner)?.with_attribution(attribution)?;
+        let owner = event.owner.as_deref().unwrap_or_default();
+        let mut booked = BTreeSet::new();
+        for posting in &event.postings {
+            if let Account::Trading { cell, strategy } = &posting.account {
+                if cell != owner {
+                    return Err(Error::invalid(format!(
+                        "the event is owned by `{owner}` but posts to {}; a fill moves the \
+                         book of the cell that sent its order and no other",
+                        posting.account
+                    )));
+                }
+                booked.insert(strategy.as_str());
+            }
+        }
+        if booked.is_empty() {
+            return Err(Error::invalid(
+                "a schema 2 event posts to no trading book; only a fill is booked at schema 2",
+            ));
+        }
+        let named: BTreeSet<&str> = event
+            .attribution
+            .as_ref()
+            .map(|a| a.contributors.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        if booked != named {
+            return Err(Error::invalid(format!(
+                "the postings book strategies {booked:?} but the attribution chain names \
+                 {named:?}; the chain must describe the event it is on"
+            )));
+        }
+        event.schema = ATTRIBUTED_SCHEMA;
+        Ok(event)
+    }
+
+    /// The schema this event was booked under: [`LEGACY_SCHEMA`] or
+    /// [`ATTRIBUTED_SCHEMA`].
+    pub fn schema(&self) -> u32 {
+        self.schema
+    }
+
+    /// Each contributor's intent, identified by the decision it was netted
+    /// into and the strategy that stated it:
+    /// `<cell>/<session>/<decision sequence>/<strategy>`. Empty when no
+    /// chain is stated.
+    pub fn intent_ids(&self) -> Vec<String> {
+        let Some(attribution) = &self.attribution else {
+            return Vec::new();
+        };
+        attribution
+            .contributors
+            .keys()
+            .map(|strategy| {
+                format!(
+                    "{}/{}/{}/{strategy}",
+                    self.source.cell, self.source.session, attribution.decision_sequence
+                )
+            })
+            .collect()
     }
 
     /// Whose capital this event moved, when it was stated.

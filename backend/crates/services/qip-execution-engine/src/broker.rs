@@ -61,6 +61,17 @@ pub trait Broker: Send + Sync + fmt::Debug {
     /// Cancel a working order.
     fn cancel(&mut self, order: &Order, at: Timestamp) -> Result<()>;
 
+    /// Work up to `quantity` of the unfilled remainder of an order this venue
+    /// already accepted, returning the fills that produced (ADR 0424).
+    ///
+    /// The default works nothing: a real venue works an order on its own
+    /// clock and reports the fills its own way, and a port method that
+    /// filled on its behalf would invent prints the venue never made. Only a
+    /// simulated venue, whose working is a model, overrides it.
+    fn work(&mut self, _order: &Order, _quantity: Decimal, _at: Timestamp) -> Result<Vec<Fill>> {
+        Ok(Vec::new())
+    }
+
     /// What a deployment would need to make this usable. Empty when available.
     fn requirement(&self) -> String {
         String::new()
@@ -454,6 +465,59 @@ impl SimulatedBroker {
         }
     }
 
+    /// Fill `quantity` of `order` now: price it against the venue, charge
+    /// commission, tally the fees, and mint the fill. Shared by
+    /// [`Broker::submit`]'s immediate fraction and [`Broker::work`]'s
+    /// remainder so the two cannot price, charge or stamp a fill
+    /// differently.
+    fn fill_now(&mut self, order: &Order, quantity: Decimal, at: Timestamp) -> Result<Vec<Fill>> {
+        if quantity <= Decimal::ZERO {
+            return Ok(Vec::new());
+        }
+        let price = Self::ledger_exact_price(order, quantity, self.fill_price(order, quantity)?)?;
+        // Commission used to be `Decimal::from_f64(...).unwrap_or(Decimal::ZERO)`,
+        // so a computation that failed booked a free trade. Free is the most
+        // favourable answer there is, and a simulator that fails favourably
+        // flatters every strategy measured against it.
+        let Some(costs) = quantity
+            .checked_mul(price)
+            .and_then(|notional| notional.checked_mul(self.settings.commission_rate))
+        else {
+            return Err(Error::numeric(format!(
+                "commission on {quantity} at {price} overflowed for order {}; the fill is too large to price and must not be booked without its cost",
+                order.order_id.as_str()
+            )));
+        };
+
+        // The measured half of §34.4's fee check: what was actually billed,
+        // and the notional it was billed on. Accumulated rather than derived
+        // from the settings, so the figure the ladder reads comes from the
+        // fills that happened. On overflow the tally becomes `None` — the
+        // venue stops claiming to itemise — rather than saturating, because a
+        // fee total short by an unknown amount reads as a cheap venue. It
+        // never refuses the fill: a diagnostic must not decide whether an
+        // order trades.
+        let notional = quantity.checked_mul(price);
+        self.fees_charged = self.fees_charged.and_then(|total| total.checked_add(costs));
+        self.notional_filled = self
+            .notional_filled
+            .and_then(|total| notional.and_then(|n| total.checked_add(n)));
+
+        self.sequence += 1;
+        Ok(vec![Fill {
+            fill_id: FillId::from_string(format!("fill-{}", self.sequence)),
+            order_id: order.order_id.clone(),
+            at: at.saturating_add(self.settings.latency),
+            quantity,
+            price,
+            costs,
+            venue: self.name().to_string(),
+            // The bit that keeps a paper fill from ever being mistaken for a
+            // real one.
+            simulated: true,
+        }])
+    }
+
     /// The price this order would fill at.
     ///
     /// Uses the book where one is available — sweeping real depth is the
@@ -704,58 +768,44 @@ impl Broker for SimulatedBroker {
             };
             quantity
         };
-        if quantity <= Decimal::ZERO {
-            return Ok(Vec::new());
-        }
-
-        let price = Self::ledger_exact_price(order, quantity, self.fill_price(order, quantity)?)?;
-        // Commission used to be `Decimal::from_f64(...).unwrap_or(Decimal::ZERO)`,
-        // so a computation that failed booked a free trade. Free is the most
-        // favourable answer there is, and a simulator that fails favourably
-        // flatters every strategy measured against it.
-        let Some(costs) = quantity
-            .checked_mul(price)
-            .and_then(|notional| notional.checked_mul(self.settings.commission_rate))
-        else {
-            return Err(Error::numeric(format!(
-                "commission on {quantity} at {price} overflowed for order {}; the fill is too large to price and must not be booked without its cost",
-                order.order_id.as_str()
-            )));
-        };
-
-        // The measured half of §34.4's fee check: what was actually billed,
-        // and the notional it was billed on. Accumulated rather than derived
-        // from the settings, so the figure the ladder reads comes from the
-        // fills that happened. On overflow the tally becomes `None` — the
-        // venue stops claiming to itemise — rather than saturating, because a
-        // fee total short by an unknown amount reads as a cheap venue. It
-        // never refuses the fill: a diagnostic must not decide whether an
-        // order trades.
-        let notional = quantity.checked_mul(price);
-        self.fees_charged = self.fees_charged.and_then(|total| total.checked_add(costs));
-        self.notional_filled = self
-            .notional_filled
-            .and_then(|total| notional.and_then(|n| total.checked_add(n)));
-
-        self.sequence += 1;
-        Ok(vec![Fill {
-            fill_id: FillId::from_string(format!("fill-{}", self.sequence)),
-            order_id: order.order_id.clone(),
-            at: at.saturating_add(self.settings.latency),
-            quantity,
-            price,
-            costs,
-            venue: self.name().to_string(),
-            // The bit that keeps a paper fill from ever being mistaken for a
-            // real one.
-            simulated: true,
-        }])
+        self.fill_now(order, quantity, at)
     }
 
     fn cancel(&mut self, _order: &Order, _at: Timestamp) -> Result<()> {
         Ok(())
     }
 
+    /// The rest of an accepted order, worked (ADR 0424): up to `quantity` of
+    /// what remains fills in full at this venue's price for that quantity
+    /// now, if a limit order's limit is still reached.
+    ///
+    /// No rejection is drawn. The order was accepted when it was submitted,
+    /// and a second draw would both invent a refusal the venue never made
+    /// and shift every later submission's draw, so the same orders would
+    /// stop filling the same way on a replay.
+    fn work(&mut self, order: &Order, quantity: Decimal, at: Timestamp) -> Result<Vec<Fill>> {
+        if quantity.is_negative() {
+            return Err(Error::invalid(format!(
+                "asked to work {quantity} of order {}; a quantity to work cannot be negative",
+                order.order_id.as_str()
+            )));
+        }
+        let quantity = quantity.min(order.remaining_quantity());
+        if quantity <= Decimal::ZERO {
+            return Ok(Vec::new());
+        }
+        if let OrderType::Limit { price } = order.order_type {
+            let market = self.fill_price(order, quantity)?;
+            let reached = match order.side {
+                Side::Buy => market <= price,
+                Side::Sell => market >= price,
+            };
+            if !reached {
+                return Ok(Vec::new());
+            }
+        }
+        self.fill_now(order, quantity, at)
+    }
     /// What this venue declares, and the three facts it can honestly claim to
     /// have observed.
     ///

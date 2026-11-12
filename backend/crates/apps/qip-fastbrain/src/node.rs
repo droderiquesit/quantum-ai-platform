@@ -66,8 +66,11 @@ pub struct StepOutcome {
     pub report: CycleReport,
     pub observed: usize,
     /// Records the connector released whose claim the world fabric would
-    /// not stand behind, so not observed (R12-EVID-1200).
-    pub withheld: usize,
+    /// not stand behind, so not observed (R12-EVID-1200): each claim named
+    /// with the fabric's reason, and each one of [`Self::problems`]. Until
+    /// 2026-11-12 this was a count, so the step refused a record to nobody
+    /// by name.
+    pub withheld: Vec<qip_kernel::evidence_intake::WithheldRecord>,
     pub rejections: Vec<String>,
     /// Measured on a monotonic clock, so a wall-clock adjustment mid-cycle
     /// cannot invent or erase a breach.
@@ -86,6 +89,11 @@ impl StepOutcome {
             .map(|(stage, problem)| format!("{}: {problem}", stage.as_str()))
             .collect();
         problems.extend(self.rejections.iter().cloned());
+        problems.extend(
+            self.withheld
+                .iter()
+                .map(|record| format!("withheld from observation: {}", record.describe())),
+        );
         if self.over_budget {
             problems.push(format!(
                 "the cycle took {}us, beyond the fast-path ceiling",
@@ -953,5 +961,39 @@ mod tests {
                 "{stop:?} has no readable reason attached"
             );
         }
+    }
+
+    /// R12-EVID-1200, "refused by name", on the fast brain's own report: a
+    /// record the world fabric withheld is one of the step's problems, named
+    /// by its claim with the fabric's reason — the line an operator reads
+    /// for the step. Until 2026-11-12 the step carried a count and refused
+    /// the record to nobody by name. Mutation: drop the `withheld` extend in
+    /// `StepOutcome::problems` — the named line is missing and the test
+    /// fails.
+    #[test]
+    fn a_record_the_world_fabric_withheld_is_one_of_the_steps_problems_by_name() {
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock);
+        let report = platform.run_cycle(start());
+        let outcome = StepOutcome {
+            report,
+            observed: 1,
+            withheld: vec![qip_kernel::evidence_intake::WithheldRecord {
+                claim: "ecb-eurusd-1".to_string(),
+                reason: "held inadmissible by the world fabric: it was ingested before its \
+                         source published it"
+                    .to_string(),
+            }],
+            rejections: Vec::new(),
+            elapsed: Duration::ZERO,
+            over_budget: false,
+        };
+        let problems = outcome.problems();
+        assert!(
+            problems.iter().any(|problem| problem
+                == "withheld from observation: `ecb-eurusd-1`: held inadmissible by the world \
+                    fabric: it was ingested before its source published it"),
+            "the withheld claim is not named among the step's problems: {problems:?}"
+        );
     }
 }

@@ -3018,6 +3018,21 @@ mod tests {
         Ok(())
     }
 
+    /// A completed paper trial (ADR 0436): what `Platform::promote_model`
+    /// requires of a training-pipeline candidate, staged for the tests here
+    /// that promote through it rather than through the desk's own shadow.
+    fn tried(registry: &mut ModelRegistry, reference: &str) -> Result<()> {
+        for round in 1..=i64::from(qip_ai::registry::MIN_TRIAL_ROUNDS) {
+            registry.record_trial_round(
+                reference,
+                qip_ai::registry::TrialVenue::Paper,
+                "staged by the test",
+                at().saturating_add(qip_core::Duration::from_secs(round)),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Drive the candidate `desk` holds through its shadow stage
     /// (R12-EXPAND-6070): the first call enters shadow, and each round fits
     /// the same learnable series extended by `SHADOW_STEP` bars per round, a
@@ -3350,6 +3365,7 @@ mod tests {
         )?;
         let later = at().saturating_add(qip_core::Duration::from_mins(1));
         completed_shadow(&mut desk.registry, &second_reference)?;
+        tried(&mut desk.registry, &second_reference)?;
         tested(&mut desk, &second_artifact)?;
         platform.promote_model(
             &mut desk.registry,
@@ -3869,6 +3885,7 @@ mod tests {
         )?;
         let promoted_at = at().saturating_add(qip_core::Duration::from_mins(10));
         completed_shadow(&mut desk.registry, &second)?;
+        tried(&mut desk.registry, &second)?;
         tested(&mut desk, &second_artifact)?;
         platform.promote_model(
             &mut desk.registry,
@@ -4315,6 +4332,7 @@ mod tests {
                         .teacher,
                 )?;
                 completed_shadow(&mut desk.registry, &reference)?;
+                tried(&mut desk.registry, &reference)?;
                 tested(desk, &artifact)?;
                 Ok((reference, artifact))
             };
