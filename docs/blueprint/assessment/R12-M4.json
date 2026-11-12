@@ -486,13 +486,16 @@
   {
     "id": "R12-MODEL-4022",
     "status": "PARTIAL",
-    "current": "Strategies climb HoldoutGate -> PaperGate -> ShadowGate -> PilotGate -> ScaledGate in qip-lifecycle; models are promoted on holdout evaluation only.",
+    "current": "ADR 0436: Platform::promote_model_from refuses a TrainingPipeline or QuantumInformed candidate whose card has no simulation or paper trial, fewer than MIN_TRIAL_ROUNDS rounds, or a last round dated after the promotion (require_completed_trial), before anything changes; the trial's stage line is signed onto the ModelPromotion record. The trial is ModelCard::trial (qip-ai TrialRecord), written only by ModelRegistry::record_trial_round on a two-arm TrialVenue {Simulation, Paper} with no arm that can name a live venue. SelfFitted keeps its shadow gate.",
     "evidence": [
-      "backend/crates/services/qip-lifecycle/src/gates.rs:130 HoldoutGate",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs require_completed_trial",
+      "backend/crates/libs/qip-ai/src/registry.rs TrialRecord, TrialVenue, ModelRegistry::record_trial_round",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs a_training_pipeline_candidate_that_skipped_its_paper_trial_is_refused_and_one_tried_is_eligible",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs a_quantum_informed_candidate_that_beat_its_baseline_is_refused_without_a_paper_trial",
+      "backend/crates/libs/qip-ai/tests/registry.rs a_trial_round_is_refused_when_blank_repeated_or_recorded_after_acceptance",
+      "docs/adr/0436-a-training-pipeline-or-quantum-informed-candidate-is-promoted-only-after-a-recorded-simulation-or-paper-trial.md"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): the gap above is stale. ModelStage::Shadow with MIN_SHADOW_ROUNDS = 3 exists, and the deep brain's own candidates (ModelProducer::SelfFitted) cannot be promoted without it (require_completed_shadow). Open: ModelProducer::TrainingPipeline, the producer Platform::promote_model uses, skips the shadow stage. Requiring it was tried and reverted unpushed: 21 kernel and qip-api tests promote TrainingPipeline fixtures, and nine of them assert exact card stages or exercise the shadow refusal itself, so each needs reworking rather than a shared helper. Shadow rounds also score rmse on later bars, not twin-priced paper fills, so whether the shadow is 'simulation and paper trading' stands under bar part 4.",
+    "gap": "2026-11-12 (lane t50-05): the kernel's promotion now refuses an untried TrainingPipeline or QuantumInformed candidate (ADR 0436, mutation-verified). Open: (1) ModelRegistry::promote and promote_artifact called directly do not read the trial, so a card can reach decision eligibility without one by that door; moving the gate into the registry touches about eighty call sites. (2) Nothing in production records a trial round, and a round's evidence is the caller's sentence: tying each round to simulated fills the event log holds is bar part 4. (3) SelfFitted candidates pass on the shadow stage, which scores rmse on later bars rather than paper fills.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -500,7 +503,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test serving (19 passed) and cargo test -p qip-ai --test registry (4 passed), 2026-11-12; seven mutations each failed the named test at its asserting line",
     "work_item": "",
     "size": "M",
     "notes": "2026-10-18 lane L06: not implemented; requiring a trial record nothing produces would stop every promotion. Left PARTIAL with the corrected gap."
