@@ -1015,3 +1015,56 @@ fn a_claim_whose_statement_is_a_document_body_is_refused_before_it_can_be_journa
     );
     assert_eq!(fabric.len(), 1, "only the one-line claim is held");
 }
+
+/// R12-EVID-2031: `EvidenceRecord::new` refuses a claim without a source,
+/// an extraction method or a licence, but every field is public and the
+/// record derives `Deserialize`, so a record blanked after construction or
+/// decoded from a log line never passes through `new`. `EvidenceFabric::admit`
+/// is the backstop the world model's intake actually reaches
+/// (`WorldModel::absorb_evidence`), and until 2026-11-12 no test noticed when
+/// it was removed — a claim with no licence would have been weighed. Each
+/// field blanked in turn, on a record built and then edited and on one
+/// decoded from JSON, is refused and leaves the fabric empty; the intact
+/// record is admitted first. Mutation: drop `!record.is_complete() ||` from
+/// `admit`'s guard — every blanked record is held and the first `is_err`
+/// fails.
+#[test]
+fn a_claim_that_bypassed_the_constructor_without_its_provenance_is_refused_by_the_fabric() {
+    let intact = || claim("p", "https://ecb.example", "EURUSD 1.10", "1.10", 0);
+    let mut admitted = EvidenceFabric::default();
+    admitted
+        .admit(intact(), Some(HASH_A), at(10))
+        .expect("premise: the intact claim is admitted");
+    assert!(admitted.get("p").is_some(), "premise: it is held");
+
+    for field in ["source_identity", "extraction_method", "license"] {
+        let mut edited = intact();
+        match field {
+            "source_identity" => edited.source_identity = " ".to_string(),
+            "extraction_method" => edited.extraction_method = String::new(),
+            _ => edited.license = "\t".to_string(),
+        }
+        let mut value = serde_json::to_value(intact()).unwrap();
+        value[field] = serde_json::Value::String(String::new());
+        let decoded: EvidenceRecord = serde_json::from_value(value).unwrap();
+        for (how, record) in [("edited", edited), ("decoded", decoded)] {
+            let mut fabric = EvidenceFabric::default();
+            let refused = fabric.admit(record, Some(HASH_A), at(10));
+            assert!(
+                refused.is_err(),
+                "a {how} claim with a blank {field} was admitted"
+            );
+            assert!(
+                refused
+                    .unwrap_err()
+                    .message()
+                    .contains("has incomplete provenance"),
+                "a {how} claim with a blank {field} was refused for another reason"
+            );
+            assert!(
+                fabric.get("p").is_none() && fabric.is_empty(),
+                "a {how} claim with a blank {field} is held"
+            );
+        }
+    }
+}
