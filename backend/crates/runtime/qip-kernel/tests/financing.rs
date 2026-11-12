@@ -701,10 +701,10 @@ fn repo_desk_over(path: &std::path::Path, at: Timestamp) -> Result<Platform> {
     )
 }
 
-fn repo_permissions(counterparty: &str) -> qip_treasury::treasury::FinancingPermissions {
-    let mut permissions = qip_treasury::treasury::FinancingPermissions::new();
+fn repo_permissions(counterparty: &str) -> qip_capital::treasury::FinancingPermissions {
+    let mut permissions = qip_capital::treasury::FinancingPermissions::new();
     permissions.permit(
-        qip_treasury::treasury::FinancingFunction::Repo,
+        qip_capital::treasury::FinancingFunction::Repo,
         "desk-a",
         counterparty,
         "US",

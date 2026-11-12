@@ -1005,7 +1005,7 @@ pub struct Platform {
     /// Who may finance with which counterparty (R12-COVERAGE-5100). Empty at
     /// assembly, so every repo order is refused until a composition root
     /// records a permission.
-    financing_permissions: qip_treasury::treasury::FinancingPermissions,
+    financing_permissions: qip_capital::treasury::FinancingPermissions,
     /// The entity and jurisdiction the financing permissions are read
     /// against. `None` refuses every repo: neither is stated anywhere in the
     /// tree, and a permission with nobody to read it against admits nothing.
@@ -6664,7 +6664,7 @@ impl Platform {
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
             repo_terms,
-            financing_permissions: qip_treasury::treasury::FinancingPermissions::new(),
+            financing_permissions: qip_capital::treasury::FinancingPermissions::new(),
             financing_desk: None,
             repo_opened: BTreeMap::new(),
             repo_maturity_operations: 0,
@@ -25330,7 +25330,7 @@ impl Platform {
         &mut self,
         entity: &str,
         jurisdiction: &str,
-        permissions: qip_treasury::treasury::FinancingPermissions,
+        permissions: qip_capital::treasury::FinancingPermissions,
     ) {
         self.financing_desk = Some((entity.to_string(), jurisdiction.to_string()));
         self.financing_permissions = permissions;
@@ -25365,7 +25365,7 @@ impl Platform {
             )));
         };
         self.financing_permissions.require(
-            qip_treasury::treasury::FinancingFunction::Repo,
+            qip_capital::treasury::FinancingFunction::Repo,
             entity,
             &repo.counterparty,
             jurisdiction,
