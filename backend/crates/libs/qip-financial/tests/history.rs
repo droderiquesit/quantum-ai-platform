@@ -199,3 +199,91 @@ fn a_listing_moves_back_to_earlier_evidence_and_never_forward() -> Result<()> {
     );
     Ok(())
 }
+
+/// R12-TICK-2090, ADR 0446: a failed product stays in the universe for the
+/// dates it traded, and is told apart from one delisted in good order. A
+/// history that dropped it, or filed it as a plain delisting, flatters every
+/// backtest whose window held it. Mutations: make `fail` skip the `delist`
+/// call (the failed product is still a member after it failed), and make it
+/// skip setting `failure` (the failed product reads as an ordinary
+/// delisting and `failed()` is empty).
+#[test]
+fn a_failed_product_stays_a_member_for_the_dates_it_traded_and_is_known_to_have_failed()
+-> Result<()> {
+    let mut h = history()?;
+    h.list(id("obj-fund"), "FUND", day(0))?;
+    assert!(
+        h.failed().is_empty(),
+        "the premise: an ordinary delisting is not a failure"
+    );
+    assert!(
+        h.fail(&id("obj-fund"), day(40), " ").is_err(),
+        "a failure nobody can explain is a delisting"
+    );
+    h.fail(&id("obj-fund"), day(40), "the fund was wound up")?;
+
+    assert!(
+        h.is_member_at(&id("obj-fund"), day(39)),
+        "a failed product must be a member on a date it traded"
+    );
+    assert!(
+        !h.is_member_at(&id("obj-fund"), day(40)),
+        "a failed product is not a member from the instant it failed"
+    );
+    let failed = h.failed();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].object_id, id("obj-fund"));
+    assert_eq!(failed[0].failure.as_deref(), Some("the fund was wound up"));
+    assert_eq!(failed[0].delisted_at, Some(day(40)));
+    assert!(
+        h.fail(&id("obj-fund"), day(41), "again").is_err(),
+        "a product fails once"
+    );
+    assert!(
+        h.fail(&id("obj-failed"), day(60), "after the delisting")
+            .is_err(),
+        "a delisted product cannot fail afterwards"
+    );
+    Ok(())
+}
+
+/// R12-TICK-2090, ADR 0446: a spun-off product joins the universe at its
+/// ex-date with the parent it left, and not before. Mutations: make
+/// `list_spinoff` skip the parent membership check (a spinoff from a
+/// delisted parent is admitted), and skip recording `spun_off_from` (the
+/// child's parent reads as none).
+#[test]
+fn a_spun_off_product_is_listed_from_its_ex_date_with_its_parent() -> Result<()> {
+    let mut h = history()?;
+    h.list_spinoff(&id("obj-alive"), id("obj-spun"), "SPUN", day(20))?;
+    assert!(
+        !h.is_member_at(&id("obj-spun"), day(19)),
+        "a spun entity did not exist before its ex-date"
+    );
+    assert!(h.is_member_at(&id("obj-spun"), day(20)));
+    assert_eq!(
+        h.listing(&id("obj-spun"))
+            .and_then(|listing| listing.spun_off_from.clone()),
+        Some(id("obj-alive"))
+    );
+    assert_eq!(
+        h.resolve("SPUN", day(20)),
+        Some(&id("obj-spun")),
+        "the spun entity answers to its symbol from its ex-date"
+    );
+    assert!(
+        h.list_spinoff(&id("obj-failed"), id("obj-ghost"), "GHST", day(60))
+            .is_err(),
+        "a spinoff from a name delisted by then contradicts the history"
+    );
+    assert!(
+        !h.is_named(&id("obj-ghost")),
+        "a refused spinoff lists nothing"
+    );
+    assert!(
+        h.list_spinoff(&id("obj-alive"), id("obj-spun"), "SPUN", day(25))
+            .is_err(),
+        "a spun entity is listed once"
+    );
+    Ok(())
+}

@@ -21,7 +21,7 @@
 //! read from, and its value is a projection of that record rather than a
 //! number the author typed in beside it.
 
-use qip_agents::finding::{AgentFinding, Direction, NumericFact, NumericProvenance};
+use qip_agents::finding::{AgentBrief, AgentFinding, Direction, NumericFact, NumericProvenance};
 use qip_agents::runtime::AgentContext;
 use qip_core::Decimal;
 use qip_core::error::Result;
@@ -152,6 +152,22 @@ impl FindingBuilder {
     pub fn build(self) -> Result<AgentFinding> {
         self.finding.validate()?;
         Ok(self.finding)
+    }
+
+    /// Build after following the agent's own procedure from `brief`
+    /// (R12-WORLD-3034): the finding records the check, and a call that
+    /// departs from the procedure says so as a caveat. Conviction and
+    /// direction are untouched — the agent's arithmetic made the call, and
+    /// the procedure is the record it is held against, not an input to it.
+    pub fn build_against(mut self, brief: &AgentBrief) -> Result<AgentFinding> {
+        let check = brief.check_procedure(&self.finding.agent_id, self.finding.direction);
+        if let Some(check) = &check
+            && !check.followed
+        {
+            self.finding.caveats.push(check.departure());
+        }
+        self.finding.procedure = check;
+        self.build()
     }
 }
 

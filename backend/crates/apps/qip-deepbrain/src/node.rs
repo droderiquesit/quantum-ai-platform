@@ -2272,6 +2272,7 @@ mod tests {
             macro_releases: Vec::new(),
             alternative_data: Vec::new(),
             dividend_declarations: Vec::new(),
+            listing_changes: Vec::new(),
         })
         .expect("the tape loads");
         assert_eq!(tape.periods(), 3, "the premise: three knowable instants");
