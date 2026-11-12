@@ -1448,3 +1448,101 @@ fn a_model_validated_only_in_a_calm_regime_is_not_ranked_for_a_stressed_decision
     );
     Ok(())
 }
+
+/// R12-FINOPS-10139. The failure this guards: the ledger knew what each rung
+/// cost and the reputation book how often it was right, and nothing divided
+/// one by the other, so no figure said what a correct call cost. The
+/// expected figures are computed here from the tier's own price list, not by
+/// the code under test.
+#[test]
+fn the_spend_book_joins_billed_cost_and_latency_to_each_rungs_record_per_correct_call() -> Result<()>
+{
+    use qip_cost_router::{ComputeLedger, ModelTier, SpendBook};
+    let router = Router::default();
+    let Routing::Judged(judged) = router.select(&context(
+        dec!("100000"),
+        Duration::from_hours(1),
+        0.55,
+        Determinism::NotRequired,
+    ))?
+    else {
+        panic!("premise: a tolerated estimate is judged");
+    };
+    let mut book = ReputationBook::new();
+    let build7 = judged.judgement(ModelTier::MultiAgentReasoning, "build-7")?;
+    let build8 = judged.judgement(ModelTier::MultiAgentReasoning, "build-8")?;
+    let tiny = judged.judgement(ModelTier::TinyModel, "build-7")?;
+    for correct in [true, true, true, false] {
+        book.observe(&build7, correct);
+    }
+    book.observe(&build8, true);
+    book.observe(&tiny, false);
+    book.observe(&tiny, false);
+
+    let mut first = ComputeLedger::new("cycle 1", Budget::research_default())?;
+    first.charge(IntelligenceTier::MultiAgentReasoning)?;
+    first.charge(IntelligenceTier::DeterministicCode)?;
+    let mut second = ComputeLedger::new("cycle 2", Budget::research_default())?;
+    second.charge(IntelligenceTier::MultiAgentReasoning)?;
+    second.charge(IntelligenceTier::StatisticalModel)?;
+    let mut spend = SpendBook::new();
+    spend.absorb(&first);
+    spend.absorb(&second);
+    assert_eq!(spend.ledgers(), 2);
+
+    let report = spend.report(&book);
+    let models: Vec<&str> = report.iter().map(|b| b.model.as_str()).collect();
+    // Deterministic code has no reputation to divide by and is not a rung.
+    assert_eq!(
+        models,
+        ["multi_agent_reasoning", "statistical_model", "tiny_model"]
+    );
+
+    let panel = &report[0];
+    let price = IntelligenceTier::MultiAgentReasoning.cost();
+    let wait = IntelligenceTier::MultiAgentReasoning.latency();
+    assert_eq!(panel.spend.charges, 2);
+    assert_eq!(panel.spend.cost, price + price);
+    assert_eq!((panel.correct, panel.observations), (4, 5));
+    assert_eq!(panel.hit_rate_bp, Some(8_000));
+    assert_eq!(
+        panel
+            .references
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "multi_agent_reasoning@build-7",
+            "multi_agent_reasoning@build-8"
+        ]
+    );
+    // Two charges over four correct calls: half a charge per correct call.
+    assert_eq!(
+        panel.cost_per_correct,
+        (price + price).checked_div(Decimal::from_int(4))
+    );
+    assert_eq!(
+        panel.latency_per_correct,
+        Some(Duration::from_nanos(wait.as_nanos() * 2 / 4))
+    );
+
+    // Billed and never scored: no ratio, not zero.
+    let statistical = &report[1];
+    assert_eq!(statistical.spend.charges, 1);
+    assert_eq!(
+        (statistical.observations, statistical.hit_rate_bp),
+        (0, None)
+    );
+    assert_eq!(statistical.cost_per_correct, None);
+
+    // Scored and never billed in these books: reported, with zero spend.
+    let small = &report[2];
+    assert_eq!(small.spend.charges, 0);
+    assert_eq!((small.correct, small.observations), (0, 2));
+    assert_eq!(small.hit_rate_bp, Some(0));
+    assert_eq!(
+        (small.cost_per_correct, small.latency_per_correct),
+        (None, None)
+    );
+    Ok(())
+}

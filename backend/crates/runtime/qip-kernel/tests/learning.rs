@@ -594,6 +594,10 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
     let mut platform = platform()?;
     platform.observe(bars("AAA", 120));
     let first = platform.run_cycle(start());
+    // R12-FINOPS-10139: what each cycle billed the panel's rung, read off
+    // the ledger the cycle charged, to check the spend book against below.
+    let panel = qip_cost_router::IntelligenceTier::MultiAgentReasoning;
+    let mut panel_charges = platform.cycle_ledger().map_or(0, |l| l.count(panel));
     assert!(
         !platform.predictions().is_empty(),
         "premise: a claim was written:\n{}",
@@ -665,6 +669,7 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         .collect();
     platform.observe(swings);
     let second = platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    panel_charges += platform.cycle_ledger().map_or(0, |l| l.count(panel));
     let learn = second.stage(Stage::Learn).expect("learn ran");
     assert!(
         learn.detail.contains("graded"),
@@ -704,6 +709,31 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         learn.detail.contains("1 routing choice(s) scored"),
         "{}",
         learn.detail
+    );
+
+    // R12-FINOPS-10139. The failure this guards: the ledger knew what the
+    // rung cost and the book how often it was right, and no figure divided
+    // one by the other. The join is read back from the running platform.
+    assert!(panel_charges > 0, "premise: the cycles billed the panel");
+    let benefit = platform.model_benefit();
+    let row = benefit
+        .iter()
+        .find(|b| b.model == panel.as_str())
+        .expect("the panel's rung is reported");
+    assert!(row.references.contains(&rung), "{row:?}");
+    assert_eq!(row.spend.charges, panel_charges as u64, "{row:?}");
+    assert_eq!(
+        row.spend.cost,
+        panel.cost() * Decimal::from_int(panel_charges as i64)
+    );
+    assert_eq!(
+        (row.correct, row.observations),
+        (u64::from(record.correct), u64::from(record.observations))
+    );
+    assert_eq!(
+        row.cost_per_correct,
+        (record.correct > 0).then_some(row.spend.cost),
+        "one scored call: the cost per correct call is the whole bill or none"
     );
     Ok(())
 }

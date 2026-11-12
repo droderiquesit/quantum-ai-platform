@@ -1073,6 +1073,10 @@ pub struct Platform {
     cost_engine: CostEngine,
     /// The rungs the most recent cycle actually used.
     cycle_ledger: Option<ComputeLedger>,
+    /// Every cycle ledger's model-rung charges, accumulated where the
+    /// ledger is billed, so [`Self::model_benefit`] divides what each rung
+    /// cost by what it got right (R12-FINOPS-10139).
+    model_spend: qip_cost_router::SpendBook,
     /// Compute charged since assembly. Monotone.
     compute_spend: Decimal,
     /// Data licences the platform has read from. Empty until sources register.
@@ -6735,6 +6739,7 @@ impl Platform {
             exposure_axes,
             liquidity_reference,
             cycle_ledger: None,
+            model_spend: qip_cost_router::SpendBook::new(),
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
             capture_problems: Vec::new(),
@@ -14649,6 +14654,7 @@ impl Platform {
             self.compute_spend.to_f64(),
         );
 
+        self.model_spend.absorb(&ledger);
         self.cycle_ledger = Some(ledger);
         problems
     }
@@ -30061,6 +30067,19 @@ impl Platform {
     /// What the most recent cycle consumed, rung by rung.
     pub fn cycle_ledger(&self) -> Option<&ComputeLedger> {
         self.cycle_ledger.as_ref()
+    }
+
+    /// Each model rung's billed cost and latency over the correct calls the
+    /// routing reputation credits it with (R12-FINOPS-10139): the benefit
+    /// per dollar and per second the router had no figure for. Joined on
+    /// the rung, every version summed; see `qip_cost_router::benefit`.
+    pub fn model_benefit(&self) -> Vec<qip_cost_router::ModelBenefit> {
+        self.model_spend.report(&self.routing_reputation)
+    }
+
+    /// The accumulated spend [`Self::model_benefit`] reads.
+    pub fn model_spend(&self) -> &qip_cost_router::SpendBook {
+        &self.model_spend
     }
 
     /// What the most recent cycle cost. Zero before the first cycle.
