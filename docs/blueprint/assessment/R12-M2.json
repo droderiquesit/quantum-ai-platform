@@ -720,31 +720,31 @@
   {
     "id": "R12-EVID-2031",
     "status": "PARTIAL",
-    "current": "Every connector-admitted record gets an EvidenceRecord (source identity, timestamps, location, extraction method, authenticity signal, licence, confidence) built by evidence_of (connector/evidence.rs:150-196); EvidenceRecord::new refuses blank source, method, licence or statement (qip-evidence/src/evidence.rs:62-118); an event whose evidence cannot be formed or is on an impossible timeline is quarantined (connector/runtime.rs:918-970). The evidence is now forwarded into the world model's fabric by Platform::absorb_evidence (evidence_intake.rs:103-150) from qip-fastbrain node.rs:137 and qip-deepbrain connectors.rs:365. But the record still enters the world model via platform.observe(batch.accepted) (fastbrain node.rs:138) independently of whether the world fabric admitted its evidence (refusals are only counted, evidence_intake.rs:140-147), the observed facts carry no link to their evidence id, and non-connector feeds (synthetic, replay, tape, live) forward no evidence at all (fastbrain feed.rs:580-588).",
+    "current": "Every connector-admitted record gets an EvidenceRecord (source identity, timestamps, location, extraction method, authenticity signals, licence, confidence) built by the connector's evidence stage; EvidenceRecord::new refuses a blank source, extraction method, licence or statement, and since 2026-11-12 a test holds EvidenceFabric::admit's is_complete backstop, which refuses the same record when it was edited after construction or decoded from JSON and so never passed through new. The connector arm hands each accepted record with the claim id it rests on (FeedSource::poll, Batch::claims), and Platform::admit_world_records (qip-kernel/src/evidence_intake.rs) absorbs the poll's evidence into the world fabric first and releases to observe only the records whose claim the fabric did not withhold (refused, inadmissible or spoofed). All three composition roots go through it: qip-fastbrain node.rs, qip-deepbrain connectors.rs and qip-api routes.rs. Records from the synthetic, replay, tape and live (REST vendor) arms carry claim None and are observed with no EvidenceRecord.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:150-196",
-      "backend/crates/libs/qip-evidence/src/evidence.rs:62-118",
-      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:918-970",
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:103-150",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:137-138",
-      "backend/crates/apps/qip-fastbrain/src/feed.rs:580-588",
-      "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
-      "qip-evidence/src/evidence.rs::tests::an_evidence_record_refuses_empty_license"
+      "backend/crates/libs/qip-evidence/src/evidence.rs EvidenceRecord::new and is_complete",
+      "backend/crates/libs/qip-evidence/src/fabric.rs EvidenceFabric::admit (the is_complete refusal)",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs::a_claim_that_bypassed_the_constructor_without_its_provenance_is_refused_by_the_fabric",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs Platform::admit_world_records, absorb_evidence, EvidenceIntake::release",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::the_world_record_seam_releases_only_what_the_fabric_stood_behind",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs FeedSource::poll (claim None for Synthetic, Replay, Tape, Live) and node.rs admit_world_records",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs and backend/crates/apps/qip-api/src/routes.rs admit_world_records",
+      "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document"
     ],
-    "gap": "Unchanged on 2026-10-24 (lane T8-RESIDUAL), graded LARGE_SPLITTABLE. The slices, in order: (1) qip-market-ingestion: ConnectorFeed::poll returns each accepted record with the evidence id minted in connector/runtime.rs; (2) qip-kernel: Platform::absorb_evidence reports which ids the world fabric admitted; (3) qip-fastbrain node.rs and qip-deepbrain connectors.rs gate observe on that set; (4) give a world-model fact its evidence id; (5) non-connector feeds (synthetic, replay, tape, live) forward evidence at all (fastbrain feed.rs). None is started: slice 1 changes a public return type in two apps and the kernel's intake together.",
+    "gap": "2026-11-12 (lane fw-m-01), replacing the 2026-10-24 slice list, whose slices 1-3 have landed (claim ids returned with each connector record, the fabric's withheld set, and observe gated on it in all three roots through admit_world_records). Two clauses of the bar remain unmet. (a) 'every ingested world claim is wrapped; fails if a claim reaches the world model without one': admit_world_records passes a record with claim None straight to observe, and the fast brain's Live arm (RestMarketDataAdapter, a vendor's bars) produces only None, so a vendor's assertion about a price reaches the world model with no EvidenceRecord; synthetic, replay and tape records do the same. Closing needs a decision, recorded in an ADR, on what an unclaimed record is — either the Live arm mints evidence like the connector arm, or an ADR states that a venue/vendor market-data bar is an observation and not an extracted claim, and a test then refuses any arm outside that named set reaching observe with None. The second reading withdraws a clause by ADR, so under bar part 4 it would still need the owner. (b) A world-model fact carries no link to the evidence it rests on: EvidenceIntake::release drops the claim id, so a sensed record observed into the world model cannot be traced back to its EvidenceRecord from the world model alone (old slice 4). Neither was built in this lane: (a) is a product decision on market-data provenance and (b) changes observe's input type across the three roots.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-DATA-2012"
     ],
     "blocked_by": "",
-    "verification": "an integration test that a narrative poll produces EvidenceRecords",
+    "verification": "cargo test -p qip-kernel --test evidence_intake (14 passed); cargo test -p qip-market-ingestion --test evidence_stage (10 passed); cargo test -p qip-fastbrain --test registrations (7 passed); cargo test -p qip-acceptance --test runtime_reachability (8 passed); cargo test -p qip-evidence --lib (24 passed); cargo test -p qip-world-model --test evidence_fabric (22 passed). Mutation-verified 2026-11-12, each restored byte-for-byte: admit_world_records' `Some(id) => intake.release(..)` arm replaced by `vec![record]` fails the_world_record_seam_releases_only_what_the_fabric_stood_behind; `if false &&` on each of new's source_identity, extraction_method and license refusals fails its own evidence::tests refusal test; dropping `!record.is_complete() ||` from EvidenceFabric::admit fails the new fabric test ('a edited claim with a blank source_identity was admitted') and nothing else in qip-evidence or qip-world-model, which is why the test was added; dropping the licence term from is_complete fails it too.",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change."
+    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change. 2026-11-12 lane fw-m-01: gap rewritten (slices 1-3 landed; the remaining clauses are the unclaimed record and the fact-to-evidence link); added the fabric-backstop test, since removing the is_complete refusal failed no test anywhere. Left PARTIAL."
   },
   {
     "id": "R12-EVID-2032",
