@@ -16986,9 +16986,10 @@ impl Platform {
         state: &RiskState,
         now: Timestamp,
     ) -> MonitorAction {
+        let gate = routing.gate();
         self.monitor_routing = Some(routing);
         self.monitor
-            .observe(state, "platform", self.autonomy.level(), now)
+            .observe(&gate, state, "platform", self.autonomy.level(), now)
     }
 
     /// Describe the market this decision is being made in.
@@ -32125,6 +32126,20 @@ mod decide_tests {
             "{}",
             routing.rationale()
         );
+        // ADR 0430: the routing is not only kept beside the call — the
+        // monitor demanded its gate and wrote its rationale onto the
+        // observation it made. Mutation: record an empty `routed` in
+        // `RiskMonitor::observe`, and this fires.
+        let observed = platform
+            .monitor
+            .observations()
+            .last()
+            .expect("premise: the monitor observed the book");
+        assert_eq!(
+            observed.routed,
+            routing.rationale(),
+            "the monitor's observation does not carry the routing its gate was minted from"
+        );
 
         // Structurally, not only on this cycle: the production half of this
         // file evaluates the monitor at exactly one place, inside the function
@@ -32733,9 +32748,17 @@ mod decide_tests {
             LimitSet::conservative_default().check(&post_trade).breaches
         );
         let level = platform.autonomy.level();
+        let gate = platform
+            .cost_router
+            .determine(
+                "risk monitor limits for the book",
+                platform.book_conditions(),
+            )
+            .expect("the book's limits route deterministically")
+            .gate();
         let action = platform
             .monitor
-            .observe(&post_trade, "platform", level, now);
+            .observe(&gate, &post_trade, "platform", level, now);
         assert_eq!(
             action.as_str(),
             "reduce_only",

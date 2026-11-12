@@ -378,6 +378,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-financial",
+ "qip-risk",
  "serde",
  "serde_json",
 ]

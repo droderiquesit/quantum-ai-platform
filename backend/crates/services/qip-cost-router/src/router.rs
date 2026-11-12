@@ -181,6 +181,20 @@ impl DeterministicRouting {
     pub fn cost(&self) -> Decimal {
         self.charge.cost
     }
+
+    /// The model-free witness a hard-limit evaluation demands (ADR 0430).
+    ///
+    /// `qip_risk_engine::monitor::RiskMonitor::observe` takes a
+    /// [`qip_risk::gate::DeterministicGate`], and the risk engine cannot name
+    /// this type without acquiring this crate's edge to `qip-ai`. So the
+    /// router mints the gate here, from the routing's own rationale, and this
+    /// is the only production call of its constructor — which
+    /// `qip-acceptance`'s `only_the_cost_router_mints_a_deterministic_gate`
+    /// enforces. Minted on demand rather than stored, because the gate is
+    /// deliberately neither `Clone` nor `Deserialize` and this type is both.
+    pub fn gate(&self) -> qip_risk::gate::DeterministicGate {
+        qip_risk::gate::DeterministicGate::minted_by_router_determination(self.rationale.clone())
+    }
 }
 
 /// A decision that tolerated an estimate, and where on the ladder it landed.
