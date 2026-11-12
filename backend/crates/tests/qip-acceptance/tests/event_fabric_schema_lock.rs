@@ -151,6 +151,21 @@ fn feature_digest_sample() -> qip_contracts::replay::FeatureDigest {
         applied_from_ns: 1_760_000_000_000_000_000,
         applied_to_ns: 1_760_000_000_000_000_400,
         applied_digest: "applied-digest-abc".to_string(),
+        // ADR 0428: the pack carried with a flag, so the lock sees the
+        // nested `integrity` element's shape rather than an empty array.
+        // Built through the pack's own validating decoder; its fields are
+        // private to `qip-contracts`.
+        market_state: Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "book",
+                "from": qip_core::Timestamp::from_secs(1_760_000_000),
+                "to": qip_core::Timestamp::from_secs(1_760_000_001),
+                "horizon": qip_core::Duration::from_secs(1),
+                "feature_lineage": ["reflex.market_event.applied@applied-digest-abc"],
+                "integrity": [{"sequence_gap": {"stream": "XNYS/itch-a/0", "missing": 2}}],
+            }))
+            .expect("the market state pack fixture decodes"),
+        ),
     }
 }
 
