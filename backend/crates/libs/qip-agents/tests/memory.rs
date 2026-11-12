@@ -236,6 +236,7 @@ fn the_record_by_regime_counts_only_what_had_resolved_by_then_and_only_under_its
     // The untagged episode is in no regime's record.
     let counted: usize = cells.values().map(|record| record.resolved).sum();
     assert_eq!(counted, 3, "the untagged or late episode was counted");
+}
 
 /// R12-WORLD-3034: a procedure recorded as a method carries rules an agent
 /// can execute, and a brief checks a call against its agent's own rule for
@@ -265,6 +266,7 @@ fn a_brief_checks_a_call_against_its_agents_own_procedure_rule() {
                 conclusion: "positive".to_string(),
                 evidence: vec!["subject:obj-ACME".to_string()],
                 conviction: 0.6,
+                regime: None,
                 outcome: Some(qip_agents::memory::EpisodeOutcome {
                     resolved_at: Timestamp::from_secs(2_000 + i),
                     correct: true,
