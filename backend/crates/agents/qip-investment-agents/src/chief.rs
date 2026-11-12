@@ -554,6 +554,10 @@ pub fn standard_agents(
         )),
         Arc::new(crypto_brain::CryptoOnChainAnalyst::new(
             manifests::crypto_onchain_brain(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(crate::fundamental_brain::CompanyFundamentalAnalyst::new(
+            manifests::company_fundamental_brain(reviewed_at),
             desk,
         )),
     ]

@@ -203,6 +203,7 @@ fn journal_entry_sample() -> JournalEntry {
             side: Some(BookSide::Ask),
             quote_unit: Some("USD".to_string()),
             fee: Some("0.50".to_string()),
+            decision_sequence: None,
         },
         digest: "digest-1".to_string(),
         version: ChainVersion::V2,

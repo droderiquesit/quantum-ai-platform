@@ -720,31 +720,31 @@
   {
     "id": "R12-EVID-2031",
     "status": "PARTIAL",
-    "current": "Every connector-admitted record gets an EvidenceRecord (source identity, timestamps, location, extraction method, authenticity signal, licence, confidence) built by evidence_of (connector/evidence.rs:150-196); EvidenceRecord::new refuses blank source, method, licence or statement (qip-evidence/src/evidence.rs:62-118); an event whose evidence cannot be formed or is on an impossible timeline is quarantined (connector/runtime.rs:918-970). The evidence is now forwarded into the world model's fabric by Platform::absorb_evidence (evidence_intake.rs:103-150) from qip-fastbrain node.rs:137 and qip-deepbrain connectors.rs:365. But the record still enters the world model via platform.observe(batch.accepted) (fastbrain node.rs:138) independently of whether the world fabric admitted its evidence (refusals are only counted, evidence_intake.rs:140-147), the observed facts carry no link to their evidence id, and non-connector feeds (synthetic, replay, tape, live) forward no evidence at all (fastbrain feed.rs:580-588).",
+    "current": "Every connector-admitted record gets an EvidenceRecord (source identity, timestamps, location, extraction method, authenticity signals, licence, confidence) built by the connector's evidence stage; EvidenceRecord::new refuses a blank source, extraction method, licence or statement, and since 2026-11-12 a test holds EvidenceFabric::admit's is_complete backstop, which refuses the same record when it was edited after construction or decoded from JSON and so never passed through new. The connector arm hands each accepted record with the claim id it rests on (FeedSource::poll, Batch::claims), and Platform::admit_world_records (qip-kernel/src/evidence_intake.rs) absorbs the poll's evidence into the world fabric first and releases to observe only the records whose claim the fabric did not withhold (refused, inadmissible or spoofed). All three composition roots go through it: qip-fastbrain node.rs, qip-deepbrain connectors.rs and qip-api routes.rs. Records from the synthetic, replay, tape and live (REST vendor) arms carry claim None and are observed with no EvidenceRecord.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:150-196",
-      "backend/crates/libs/qip-evidence/src/evidence.rs:62-118",
-      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:918-970",
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:103-150",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:137-138",
-      "backend/crates/apps/qip-fastbrain/src/feed.rs:580-588",
-      "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
-      "qip-evidence/src/evidence.rs::tests::an_evidence_record_refuses_empty_license"
+      "backend/crates/libs/qip-evidence/src/evidence.rs EvidenceRecord::new and is_complete",
+      "backend/crates/libs/qip-evidence/src/fabric.rs EvidenceFabric::admit (the is_complete refusal)",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs::a_claim_that_bypassed_the_constructor_without_its_provenance_is_refused_by_the_fabric",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs Platform::admit_world_records, absorb_evidence, EvidenceIntake::release",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::the_world_record_seam_releases_only_what_the_fabric_stood_behind",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs FeedSource::poll (claim None for Synthetic, Replay, Tape, Live) and node.rs admit_world_records",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs and backend/crates/apps/qip-api/src/routes.rs admit_world_records",
+      "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document"
     ],
-    "gap": "Unchanged on 2026-10-24 (lane T8-RESIDUAL), graded LARGE_SPLITTABLE. The slices, in order: (1) qip-market-ingestion: ConnectorFeed::poll returns each accepted record with the evidence id minted in connector/runtime.rs; (2) qip-kernel: Platform::absorb_evidence reports which ids the world fabric admitted; (3) qip-fastbrain node.rs and qip-deepbrain connectors.rs gate observe on that set; (4) give a world-model fact its evidence id; (5) non-connector feeds (synthetic, replay, tape, live) forward evidence at all (fastbrain feed.rs). None is started: slice 1 changes a public return type in two apps and the kernel's intake together.",
+    "gap": "2026-11-12 (lane fw-m-01), replacing the 2026-10-24 slice list, whose slices 1-3 have landed (claim ids returned with each connector record, the fabric's withheld set, and observe gated on it in all three roots through admit_world_records). Two clauses of the bar remain unmet. (a) 'every ingested world claim is wrapped; fails if a claim reaches the world model without one': admit_world_records passes a record with claim None straight to observe, and the fast brain's Live arm (RestMarketDataAdapter, a vendor's bars) produces only None, so a vendor's assertion about a price reaches the world model with no EvidenceRecord; synthetic, replay and tape records do the same. Closing needs a decision, recorded in an ADR, on what an unclaimed record is — either the Live arm mints evidence like the connector arm, or an ADR states that a venue/vendor market-data bar is an observation and not an extracted claim, and a test then refuses any arm outside that named set reaching observe with None. The second reading withdraws a clause by ADR, so under bar part 4 it would still need the owner. (b) A world-model fact carries no link to the evidence it rests on: EvidenceIntake::release drops the claim id, so a sensed record observed into the world model cannot be traced back to its EvidenceRecord from the world model alone (old slice 4). Neither was built in this lane: (a) is a product decision on market-data provenance and (b) changes observe's input type across the three roots.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-DATA-2012"
     ],
     "blocked_by": "",
-    "verification": "an integration test that a narrative poll produces EvidenceRecords",
+    "verification": "cargo test -p qip-kernel --test evidence_intake (14 passed); cargo test -p qip-market-ingestion --test evidence_stage (10 passed); cargo test -p qip-fastbrain --test registrations (7 passed); cargo test -p qip-acceptance --test runtime_reachability (8 passed); cargo test -p qip-evidence --lib (24 passed); cargo test -p qip-world-model --test evidence_fabric (22 passed). Mutation-verified 2026-11-12, each restored byte-for-byte: admit_world_records' `Some(id) => intake.release(..)` arm replaced by `vec![record]` fails the_world_record_seam_releases_only_what_the_fabric_stood_behind; `if false &&` on each of new's source_identity, extraction_method and license refusals fails its own evidence::tests refusal test; dropping `!record.is_complete() ||` from EvidenceFabric::admit fails the new fabric test ('a edited claim with a blank source_identity was admitted') and nothing else in qip-evidence or qip-world-model, which is why the test was added; dropping the licence term from is_complete fails it too.",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change."
+    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change. 2026-11-12 lane fw-m-01: gap rewritten (slices 1-3 landed; the remaining clauses are the unclaimed record and the fact-to-evidence link); added the fabric-backstop test, since removing the is_complete refusal failed no test anywhere. Left PARTIAL."
   },
   {
     "id": "R12-EVID-2032",
@@ -1157,27 +1157,33 @@
   },
   {
     "id": "R12-TICK-2048",
-    "status": "PARTIAL",
-    "current": "MarketEvent carries event, receive and normalized time plus clock uncertainty; qip-sequencing::align orders events only beyond combined uncertainty. Since 2026-10-18 align runs on a production path inside CaptureStream on the edge node's drain (backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs LakeSink::deliver), and each lake line carries arrival_order against the previous tick of the same venue feed partition ('before', 'after' or 'unordered').",
+    "status": "COMPLETE",
+    "current": "Every lake line the edge node's drain writes carries qip_contracts::sync::SyncMetadata (ADR 0438): region, cell, ClockSource, asset key (venue, feed, partition, instrument) and the typed cross-partition alignment, decoded back through its refusals onto qip_storage::lake_history::RecordedTick::sync; a line whose stamp claims an order its lag and doubt do not support is counted unparsed. Where lines from every cell meet, the deep brain's tick desk relates ticks across cells with qip_sequencing::CrossRegionAligner, widened by the stated cell clock bound (QIP_DEEPBRAIN_TICK_CELL_CLOCK_BOUND_NS), and withholds cross-region order when no bound is stated.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/market_event.rs:37-56",
-      "backend/crates/edge/qip-sequencing/src/align.rs:51-120",
-      "backend/crates/edge/qip-sequencing/tests/align.rs:90",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs (LakeSink::align_across)",
-      "backend/crates/apps/qip-edge-node/tests/lake_clock.rs"
+      "backend/crates/libs/qip-contracts/src/sync.rs (SyncMetadata, PartitionAlignment::validate)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs (LakeSink::align_across, tick_line)",
+      "backend/crates/libs/qip-storage/src/lake_history.rs (decode_line, RecordedTick::sync)",
+      "backend/crates/edge/qip-sequencing/src/regions.rs (CrossRegionAligner)",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs (cross_region_summary, CELL_CLOCK_BOUND_VARIABLE)",
+      "backend/crates/libs/qip-contracts/tests/sync_metadata.rs",
+      "backend/crates/edge/qip-sequencing/tests/regions.rs",
+      "backend/crates/apps/qip-edge-node/tests/lake_clock.rs",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs (the_desk_relates_two_regions_ticks_only_beyond_the_stated_cell_clock_bound)",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl (QIP_VENUE_FEED=simulated, the committed capture path)",
+      "docs/adr/0438-a-captured-ticks-sync-metadata-is-one-typed-record-and-two-regions-ticks-are-ordered-only-beyond-both-cells-stated-clock-bound.md"
     ],
-    "gap": "2026-10-25: skeptic REFUTED: the cross-partition stamp is untyped JSON on lake lines, relates partitions within one cell only (no cross-region record), and runs only behind QIP_VENUE_FEED=simulated, which no committed environment renders; remaining step is a typed sync record on the captured event with real cross-region alignment on a default or committed-enabled capture path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test lake_clock",
+    "verification": "cargo test -p qip-contracts --test sync_metadata; cargo test -p qip-sequencing --test regions; cargo test -p qip-edge-node --test lake_clock; cargo test -p qip-deepbrain --test tick_desk",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached. 2026-10-25: 367f8451 stamps region, cell, clock_source and cross_partition (bounded at MAX_ALIGNED_PARTITIONS) on every lake line; three mutations in the commit. Skeptic (code-reviewer) REFUTED, and found a live defect: the spool floors instants to the millisecond, so two ticks a microsecond apart on 50 us clocks were stamped 'before'; fixed in the following commit by widening each side by half the spool quantum. 2026-10-25: 68d92f3b fixes the skeptic's sub-millisecond false order (SPOOL_TRUNCATION_HALF_WIDTH); test ticks_the_spool_floored_to_different_milliseconds_are_not_ordered_by_the_floor; mutation (drop the widening) fails both alignment tests. Row handed to L3b 2026-10-25."
+    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached. 2026-10-25: 367f8451 stamps region, cell, clock_source and cross_partition (bounded at MAX_ALIGNED_PARTITIONS) on every lake line; three mutations in the commit. Skeptic (code-reviewer) REFUTED, and found a live defect: the spool floors instants to the millisecond, so two ticks a microsecond apart on 50 us clocks were stamped 'before'; fixed in the following commit by widening each side by half the spool quantum. 2026-10-25: 68d92f3b fixes the skeptic's sub-millisecond false order (SPOOL_TRUNCATION_HALF_WIDTH); test ticks_the_spool_floored_to_different_milliseconds_are_not_ordered_by_the_floor; mutation (drop the widening) fails both alignment tests. Row handed to L3b 2026-10-25. 2026-11-12 lane t50-06: answers the 2026-10-25 refutation. Typed record (ADR 0438) replaces the untyped stamp; reader decodes it; cross-region seam built at the tick desk. Eight mutations, each restored byte-for-byte and re-run green: order check skipped in PartitionAlignment::validate (sync_metadata and lake_clock forged-line tests fail); decode_line sets sync None (lake_clock two_regions test fails); cell bound dropped from CrossRegionAligner::relate (regions and tick_desk tests fail); drain returns empty alignments (lake_clock two_venues fails); desk defaults the bound to zero (tick_desk 'ordered on a bound nobody stated'); same-cell filter dropped (regions fails); region nameable check skipped and Unplaced/Aligned agreement skipped (sync_metadata fails). Limits, not bar gaps: cross-region order is withheld until an operator states a measured cell clock bound (no figure exists, none invented); no execution node is deployed, so the capture path is committed (startup template) but not running anywhere."
   },
   {
     "id": "R12-TICK-2049",

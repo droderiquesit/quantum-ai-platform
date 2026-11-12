@@ -59,6 +59,7 @@ pub mod replay;
 pub mod routing;
 pub mod schema;
 pub mod signal;
+pub mod sync;
 pub mod time;
 pub mod trust;
 pub mod venue;
