@@ -73,7 +73,7 @@ all.
    one origin, the reason ADR 0147 decision 8 gives for the capital
    position.
 
-## Consequences
+## What it costs
 
 - The organisation is twenty-six agents and the roster twenty-seven.
 - Applied corporate actions are kept by the kernel as keys only, so the brain
