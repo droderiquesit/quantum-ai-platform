@@ -1987,3 +1987,58 @@ fn a_friday_claims_settlement_lag_is_walked_in_settlement_days_across_the_weeken
     );
     Ok(())
 }
+
+#[test]
+fn a_journaled_derivation_carries_its_subject_as_a_closed_knowledge_graph_and_replay_refuses_an_edited_closure()
+-> Result<()> {
+    // R12-REASON-3054. The failure this guards: the cycle typed a subject
+    // against a list of names and could not say what followed from the
+    // type — that an equity is an instrument, that a hypothesis about an
+    // anomaly on it rests on it. Every fact below is one the cycle inferred
+    // rather than asserted, read back from the journal.
+    use qip_reasoning_engine::ontology::{Derivation, Fact};
+    let (platform, derivation) = journaled_derivation()?;
+    let knowledge = derivation
+        .knowledge
+        .as_ref()
+        .expect("the cycle journals a knowledge-graph part");
+    let Step::Derived(inference) = &knowledge.inference else {
+        panic!(
+            "the knowledge graph refused the cycle's facts: {:?}",
+            knowledge.inference
+        );
+    };
+    assert!(inference.is_consistent(), "{:?}", inference.violations);
+    let hypothesis = format!("hypothesis:{}", derivation.hypothesis_id);
+    let instrument = format!("instrument:{}", derivation.subject);
+    // Premise: neither fact is asserted, so holding them is inference.
+    let typed = Fact::instance(&instrument, "instrument");
+    let grounded = Fact::related(&hypothesis, "grounded_in", &instrument);
+    let inverse = Fact::related(&instrument, "concerned_by", &hypothesis);
+    for fact in [&typed, &grounded, &inverse] {
+        assert!(!knowledge.asserted.contains(fact), "{fact:?} was asserted");
+    }
+    assert!(matches!(
+        inference.derivation(&typed),
+        Some(Derivation::IsA { .. })
+    ));
+    assert!(matches!(
+        inference.derivation(&grounded),
+        Some(Derivation::Transitive { .. })
+    ));
+    assert!(matches!(
+        inference.derivation(&inverse),
+        Some(Derivation::Inverse { .. })
+    ));
+    // An equity is not a dated contract, so no claim outlives it.
+    assert!(!knowledge.outlived_by_claim(&derivation.hypothesis_id, &derivation.subject));
+
+    let mut edited = derivation.clone();
+    if let Some(k) = edited.knowledge.as_mut()
+        && let Step::Derived(i) = &mut k.inference
+    {
+        i.facts.retain(|(f, _)| f != &grounded);
+    }
+    assert_refused_for(&platform, &edited, "knowledge graph");
+    Ok(())
+}
