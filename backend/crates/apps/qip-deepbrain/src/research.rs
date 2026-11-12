@@ -550,6 +550,12 @@ pub struct ResearchConfig {
     /// raises a capital-preparation signal per recommended movement
     /// (R12-AMBIENT-3072). On by default; a sweep with it off raises none.
     pub capital_sentinel: bool,
+    /// Whether the sweep reads the forecast lattice's misses — resolutions
+    /// whose outcome fell outside the interval the lattice held at that
+    /// horizon — and raises one assumption signal per material miss
+    /// (R12-AMBIENT-3066). On by default; [`FORECAST_SENTINEL_VARIABLE`]
+    /// set to `off` turns it off, and a sweep with it off raises none.
+    pub forecast_sentinel: bool,
     /// Whether the sweep runs the opportunity sentinels (R12-AMBIENT-3069,
     /// ADR 0434): sub-threshold detector statistics rising toward a
     /// dislocation become research-task signals before the anomaly fires.
@@ -572,6 +578,10 @@ pub struct ResearchConfig {
     pub attention_held_capacity: usize,
 }
 
+/// The variable switching the forecast sentinel (R12-AMBIENT-3066): `on` or
+/// `off`, on when unset. Anything else is refused at start-up, because a
+/// typo that silently left the sentinel on (or off) is a switch nobody holds.
+pub const FORECAST_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_FORECAST_SENTINEL";
 /// The variable switching the opportunity sentinels: `on` or `off`.
 pub const OPPORTUNITY_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_OPPORTUNITY_SENTINEL";
 
@@ -626,6 +636,7 @@ impl Default for ResearchConfig {
             qpu_per_sweep: Decimal::ZERO,
             agent_budgets: BTreeMap::new(),
             capital_sentinel: true,
+            forecast_sentinel: true,
             opportunity_sentinel: true,
             capital_horizon: CAPITAL_HORIZON,
             attention_budget_per_hour: 256,
@@ -656,6 +667,17 @@ impl ResearchConfig {
                          activations per hour; a zero budget would hold every signal forever"
                     ))
                 })?;
+        }
+        if let Some(raw) = lookup(FORECAST_SENTINEL_VARIABLE) {
+            config.forecast_sentinel = match raw.trim() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(Error::invalid(format!(
+                        "{FORECAST_SENTINEL_VARIABLE} is {raw:?}; say on or off, or unset it for on"
+                    )));
+                }
+            };
         }
         if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_JURISDICTION") {
             if raw.trim().is_empty() {
@@ -905,6 +927,13 @@ pub struct ResearchRound {
     /// had already dropped because this loop fell behind.
     pub now_surprises: usize,
     pub now_surprises_lost: u64,
+    /// Forecast-lattice misses read this sweep (R12-AMBIENT-3066), how many
+    /// the kernel's queue had already dropped because this loop fell
+    /// behind, and the misses refused as unsizeable (a degenerate interval
+    /// or a non-finite figure), each with why.
+    pub forecast_misses: usize,
+    pub forecast_misses_lost: u64,
+    pub forecast_misses_refused: Vec<String>,
     /// Specialists a NOW surprise woke, by specialist (AMBIENT-3079).
     pub now_wakes: BTreeMap<&'static str, usize>,
     /// Claims the world fabric held when the sweep scanned it.
@@ -1630,6 +1659,9 @@ pub struct ResearchLoop {
     pending_capital: BTreeMap<String, CapitalAdvice>,
     /// The kernel NOW queue's sequence number this loop has read through.
     surprises_seen: u64,
+    /// The forecast lattice's miss sequence number this loop has read
+    /// through (R12-AMBIENT-3066).
+    misses_seen: u64,
     /// Reconciliation-break records already read off the log, in log order
     /// (R12-EXPAND-6066), so each halt is raised once.
     breaks_seen: usize,
@@ -1889,6 +1921,7 @@ impl ResearchLoop {
             pending_wakes: BTreeMap::new(),
             pending_capital: BTreeMap::new(),
             surprises_seen: 0,
+            misses_seen: 0,
             breaks_seen: 0,
             issued: 0,
             fills_read: 0,
@@ -2753,6 +2786,29 @@ impl ResearchLoop {
             }
         }
         self.surprises_seen = newest;
+        // The forecast sentinel (R12-AMBIENT-3066): every forecast the
+        // lattice resolved outside the interval it held is reality departing
+        // from an expected future state at that horizon, raised as an
+        // assumption signal — the model that expected otherwise is the
+        // assumption — and routed like everything else. Off, the queue is
+        // read through and nothing is raised, so turning it back on does not
+        // replay a backlog as if it were fresh.
+        let (misses, newest, lost) = platform.lattice().misses_since(self.misses_seen);
+        if self.config.forecast_sentinel {
+            round.forecast_misses = misses.len();
+            round.forecast_misses_lost = lost;
+            for miss in misses {
+                match forecast_miss_signal(miss, now, self.config.signal_ttl, &mut self.issued) {
+                    Ok(signal) => routable.push((None, signal)),
+                    Err(error) => round.forecast_misses_refused.push(format!(
+                        "{}: {}",
+                        miss.forecast_id,
+                        error.message()
+                    )),
+                }
+            }
+        }
+        self.misses_seen = newest;
         // The pre-limit sentinel (R12-AMBIENT-3070): a limit the book is
         // approaching — inside it, past its warning threshold — is a risk
         // review raised now, while a smaller order still fixes it, rather
@@ -4740,6 +4796,71 @@ pub fn limit_approach_signals(
         out.push((signal, utilisation));
     }
     Ok(out)
+}
+
+/// The assumption signal one forecast-lattice miss is (R12-AMBIENT-3066).
+///
+/// Sized by how far outside its own 80% interval the outcome landed, in
+/// widths of that interval: an outcome a whole interval past the bound is the
+/// top of the scale, one a tenth past is the router's materiality line. A
+/// calibrated lattice misses its interval one time in five by construction,
+/// and most of those misses are near the bound, so the size rather than the
+/// miss is what makes a signal worth a review. An interval that is not a
+/// positive finite width, or an outcome that is not finite, is refused rather
+/// than sized: a miss against nothing measurable is not a finding.
+pub fn forecast_miss_signal(
+    miss: &qip_kernel::lattice_stage::ForecastMiss,
+    now: Timestamp,
+    ttl: Duration,
+    issued: &mut u64,
+) -> Result<AmbientSignal> {
+    let [lower, median, upper] = miss.quantiles;
+    let width = upper - lower;
+    if !(width.is_finite() && width > 0.0 && median.is_finite() && miss.outcome.is_finite()) {
+        return Err(Error::numeric(format!(
+            "forecast {} has an interval of width {width} or an outcome {}; nothing to size a \
+             miss against",
+            miss.forecast_id, miss.outcome
+        )));
+    }
+    let outside = if miss.outcome > upper {
+        miss.outcome - upper
+    } else if miss.outcome < lower {
+        lower - miss.outcome
+    } else {
+        return Err(Error::invalid(format!(
+            "forecast {} resolved inside its interval; that is not a miss",
+            miss.forecast_id
+        )));
+    };
+    // Statistic to integer: interval widths to basis points, the scale's top
+    // at one whole width past the bound.
+    let severity = ((outside / width) * 10_000.0).round().min(10_000.0) as u32;
+    let decimal = |value: f64| {
+        Decimal::from_f64(value)
+            .ok_or_else(|| Error::numeric("a forecast figure has no decimal form"))
+    };
+    let horizon = miss.horizon.as_str();
+    *issued += 1;
+    AmbientSignal::new(
+        format!("ambient-{issued}"),
+        SignalClass::Assumption,
+        format!("forecast:{}:{horizon}", miss.subject),
+        severity,
+        Trigger::Event("forecast_miss".to_string()),
+        now,
+        Detection {
+            observed_deviation: decimal(miss.outcome)?,
+            expected_baseline: decimal(median)?,
+            horizon: miss.horizon.representative(),
+            novelty_bp: severity,
+            affected_entities: vec![miss.subject.clone()],
+            urgency_bp: severity,
+            wake_targets: vec![Pathway::ReflexModelUpdate],
+            evidence_ids: vec![miss.forecast_id.clone(), format!("horizon:{horizon}")],
+            expiry: now.saturating_add(ttl),
+        },
+    )
 }
 
 /// The research-task signal one precursor is (R12-AMBIENT-3069, ADR 0434).
