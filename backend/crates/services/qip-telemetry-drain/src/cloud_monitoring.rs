@@ -91,6 +91,15 @@ pub const ENDPOINT_VARIABLE: &str = "QIP_METRICS_EXPORT_ENDPOINT";
 pub const LOCATION_VARIABLE: &str = "QIP_METRICS_EXPORT_LOCATION";
 /// Seconds between pushes. Unset takes [`DEFAULT_INTERVAL`].
 pub const INTERVAL_VARIABLE: &str = "QIP_METRICS_EXPORT_INTERVAL_SECS";
+/// The Cloud Run revision this process belongs to, which Cloud Run sets on
+/// every container it starts. It leads the `generic_task` task id
+/// ([`CloudMonitoringConfig::task_id`]) so that a canary's series can be told
+/// from the stable revision's while both take traffic (ADR 0452): without it
+/// the SLO gate reads both revisions as one service and a canary failing
+/// half its requests reads as a service failing a tenth of them. It is
+/// optional because a process outside Cloud Run has no revision, and that
+/// process is never canaried by traffic.
+pub const REVISION_VARIABLE: &str = "K_REVISION";
 
 /// ADR 0121's interval.
 pub const DEFAULT_INTERVAL: StdDuration = StdDuration::from_secs(60);
@@ -196,6 +205,7 @@ pub struct CloudMonitoringConfig {
     location: String,
     endpoint: Endpoint,
     interval: StdDuration,
+    revision: Option<String>,
 }
 
 impl CloudMonitoringConfig {
@@ -213,8 +223,51 @@ impl CloudMonitoringConfig {
             lookup(ENDPOINT_VARIABLE).as_deref(),
             lookup(LOCATION_VARIABLE).as_deref(),
             lookup(INTERVAL_VARIABLE).as_deref(),
-        )
+        )?
+        .with_revision(lookup(REVISION_VARIABLE).as_deref())
         .map(Some)
+    }
+
+    /// The configuration with the Cloud Run revision its series are filed
+    /// under. Blank or absent is no revision. A value that is not a Cloud Run
+    /// revision name (lowercase letters, digits and hyphens, at most 63, a
+    /// letter first) is refused rather than dropped: the SLO gate selects the
+    /// canary's series by this prefix, so a revision silently left off is a
+    /// canary whose series the gate finds none of — and the gate fails
+    /// closed on that, which would read as a bad release rather than a
+    /// misnamed one.
+    pub fn with_revision(mut self, revision: Option<&str>) -> Result<Self> {
+        let revision = revision.map(str::trim).filter(|value| !value.is_empty());
+        if let Some(value) = revision {
+            let well_formed = value.len() <= 63
+                && value.starts_with(|c: char| c.is_ascii_lowercase())
+                && !value.ends_with('-')
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !well_formed {
+                return Err(Error::invalid(format!(
+                    "configuration: {REVISION_VARIABLE} is {value:?}, which is not a Cloud Run \
+                     revision name (a lowercase letter first, then lowercase letters, digits and \
+                     hyphens, at most 63, not ending in a hyphen). Cloud Run sets it; outside \
+                     Cloud Run leave it unset"
+                )));
+            }
+        }
+        self.revision = revision.map(str::to_string);
+        Ok(self)
+    }
+
+    /// The `generic_task` task id of the process with this id, started at
+    /// `start_millis`: the revision first when there is one, so a filter on
+    /// `resource.labels.task_id` by the revision's name selects exactly that
+    /// revision's replicas, then the process id and start time, which make
+    /// it unique among replicas and new on a restart.
+    pub fn task_id(&self, process_id: u32, start_millis: i64) -> String {
+        match &self.revision {
+            Some(revision) => format!("{revision}-{process_id}-{start_millis}"),
+            None => format!("{process_id}-{start_millis}"),
+        }
     }
 
     /// The parse behind [`Self::read`].
@@ -287,6 +340,7 @@ impl CloudMonitoringConfig {
             location,
             endpoint,
             interval,
+            revision: None,
         })
     }
 
@@ -644,7 +698,7 @@ pub fn spawn_push(
     let start = clock.now();
     let task = config.task(
         telemetry.metrics.service(),
-        &format!("{}-{}", std::process::id(), start.as_millis()),
+        &config.task_id(std::process::id(), start.as_millis()),
     );
     let shutdown = Arc::new(AtomicBool::new(false));
     let thread_shutdown = shutdown.clone();
@@ -693,7 +747,7 @@ pub const ROOTS_VARIABLE: &str = qip_transport::cas::GOOGLE_TLS_ROOTS_VARIABLE;
 /// Whether `name` is a variable this exporter reads, for the lookup a
 /// composition root hands [`start`].
 pub fn reads(name: &str) -> bool {
-    VARIABLES.contains(&name) || name == ROOTS_VARIABLE
+    VARIABLES.contains(&name) || name == ROOTS_VARIABLE || name == REVISION_VARIABLE
 }
 
 /// Read the configuration, build the client and start the thread: the whole
@@ -738,6 +792,59 @@ pub fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configured(revision: Option<&'static str>) -> Result<Option<CloudMonitoringConfig>> {
+        CloudMonitoringConfig::read(&move |name| match name {
+            PROJECT_VARIABLE => Some("algorik-qip-dev".into()),
+            ENDPOINT_VARIABLE => Some("http://127.0.0.1:9106".into()),
+            LOCATION_VARIABLE => Some("us-east4".into()),
+            REVISION_VARIABLE => revision.map(str::to_string),
+            _ => None,
+        })
+    }
+
+    // ADR 0452: the SLO gate selects a canary's series by
+    // `starts_with(resource.labels.task_id, "<revision>-")`. A task id that
+    // did not lead with the revision would give the gate nothing to select,
+    // and the gate fails closed on nothing — every canary would roll back.
+    #[test]
+    fn a_cloud_run_revision_leads_the_task_id_so_a_canary_series_is_selectable_by_revision() {
+        let config = configured(Some("qip-dev-api-0a1b2c3d4e5f"))
+            .unwrap()
+            .expect("the project is set");
+        assert_eq!(
+            config.task_id(1, 1_700_000_000_000),
+            "qip-dev-api-0a1b2c3d4e5f-1-1700000000000"
+        );
+        let stable = configured(Some("qip-dev-api-ffeeddccbbaa"))
+            .unwrap()
+            .expect("the project is set");
+        assert!(
+            !stable
+                .task_id(1, 1_700_000_000_000)
+                .starts_with("qip-dev-api-0a1b2c3d4e5f-"),
+            "the stable revision's series must not match the canary's prefix"
+        );
+        assert!(reads(REVISION_VARIABLE), "the composition roots must pass the revision through");
+    }
+
+    #[test]
+    fn a_process_outside_cloud_run_keeps_the_process_and_start_task_id() {
+        for revision in [None, Some("  ")] {
+            let config = configured(revision).unwrap().expect("the project is set");
+            assert_eq!(config.task_id(42, 7), "42-7");
+        }
+    }
+
+    #[test]
+    fn a_malformed_revision_stops_the_process_rather_than_filing_series_under_no_revision() {
+        for bad in ["Qip-dev-api-00001", "qip_dev_api", "1qip", "qip-dev-", "qip dev"] {
+            let error = configured(Some(bad)).unwrap_err().to_string();
+            assert!(error.contains(REVISION_VARIABLE), "{bad}: {error}");
+        }
+        let too_long: &'static str = Box::leak("q".repeat(64).into_boxed_str());
+        assert!(configured(Some(too_long)).is_err());
+    }
 
     #[test]
     fn an_unset_or_blank_project_is_no_exporter_rather_than_a_refusal() {
