@@ -52,6 +52,11 @@ impl LedgerTelemetry {
             "commits refused because they would unbalance a ledger partition",
         );
         m.describe(
+            names::LEDGER_CUSTODY_BREAKS,
+            "custody reconciliation breaks between the venue's statement and the ledger, by \
+             direction; each one halts the cell (ADR 0442)",
+        );
+        m.describe(
             names::LEDGER_LAG,
             "unapplied records in a partition, by partition",
         );
@@ -119,6 +124,15 @@ impl LedgerTelemetry {
     pub fn live_fill_refused(&self) {
         let labels = Labels::new();
         self.metrics.count(names::LEDGER_LIVE_FILL_REFUSED, labels);
+    }
+
+    /// One instrument on which a custody statement and the ledger disagree.
+    /// `direction` is `CustodyDirection::as_str`, an enum: bounded.
+    pub fn custody_break(&self, direction: &'static str) {
+        self.metrics.count(
+            names::LEDGER_CUSTODY_BREAKS,
+            labels([("direction", direction)]),
+        );
     }
 
     /// A commit was refused because it would unbalance a ledger partition.
