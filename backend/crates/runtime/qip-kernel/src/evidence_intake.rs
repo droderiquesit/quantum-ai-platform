@@ -52,8 +52,9 @@ use qip_core::error::{Error, Result};
 use qip_events::{EventBody, Topic};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::metrics::labels;
+use qip_world_model::TemporalConsistency;
 use qip_world_model::causal::CausalEdge;
-use qip_world_model::fabric::{ClaimKey, JournaledClaim, KeyOutcome};
+use qip_world_model::fabric::{ClaimKey, EvidenceVerdict, JournaledClaim, KeyOutcome};
 use qip_world_model::graph::Node;
 pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
@@ -258,11 +259,89 @@ pub struct EvidenceIntake {
     pub journal_refused: usize,
     /// The first [`REFUSALS_RETAINED`] refusal reasons.
     pub refusals: Vec<String>,
-    /// Ids of the claims in this batch the world fabric would not stand
-    /// behind: refused, held inadmissible, or judged spoofed (R12-EVID-1200).
-    /// Bounded by the batch, which the feed bounds. [`Self::release`] drops
-    /// the records these name, so a claim the world refused is not observed.
-    pub withheld: BTreeSet<String>,
+    /// The claims in this batch the world fabric would not stand behind —
+    /// refused, held inadmissible, or judged spoofed — each id with the
+    /// reason (R12-EVID-1200). Bounded by the batch, which the feed bounds.
+    /// [`Self::release`] drops the records these name, so a claim the world
+    /// refused is not observed. A reason rather than a bare id since
+    /// 2026-11-12: until then a withheld record was refused to nobody by
+    /// name, and an operator reading a count of one could not say which
+    /// claim the world had refused or why.
+    pub withheld: BTreeMap<String, String>,
+}
+
+/// One record [`Platform::admit_world_records`] kept from `observe`: the
+/// claim it rested on and why the world fabric would not stand behind it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WithheldRecord {
+    /// The connector's claim id.
+    pub claim: String,
+    /// The fabric's reason, as an operator would read it.
+    pub reason: String,
+}
+
+impl WithheldRecord {
+    /// `claim: reason`, for a report line.
+    pub fn describe(&self) -> String {
+        format!("`{}`: {}", self.claim, self.reason)
+    }
+}
+
+/// The temporal verdict in an operator's words, naming the instants that
+/// disagree so the refusal can be checked against the source.
+fn describe_timeline(temporal: &TemporalConsistency) -> String {
+    match temporal {
+        TemporalConsistency::Consistent => "the timeline is consistent".to_string(),
+        TemporalConsistency::PostdatesSource {
+            claimed_at,
+            published_at,
+        } => format!(
+            "the claimed event at {} postdates its source's publication at {}",
+            claimed_at.to_rfc3339(),
+            published_at.to_rfc3339()
+        ),
+        TemporalConsistency::ContradictsPriorState {
+            prior_id,
+            prior_timestamp,
+        } => format!(
+            "it contradicts `{prior_id}`, known since {}",
+            prior_timestamp.to_rfc3339()
+        ),
+        TemporalConsistency::ViolatesEventOrdering { cause_id, cause_at } => format!(
+            "it precedes its named cause `{cause_id}` at {}",
+            cause_at.to_rfc3339()
+        ),
+        TemporalConsistency::ViolatesPhysicalTimeline {
+            published_at,
+            ingested_at,
+        } => format!(
+            "it was ingested at {} before its source published it at {}",
+            ingested_at.to_rfc3339(),
+            published_at.to_rfc3339()
+        ),
+        TemporalConsistency::Unverifiable => "its timeline could not be checked".to_string(),
+    }
+}
+
+/// Why the fabric withheld an admitted claim: the impossible timeline that
+/// made it inadmissible, or the identity signal that made it spoofed.
+fn withheld_reason(verdict: &EvidenceVerdict) -> String {
+    let mut reasons = Vec::new();
+    if !verdict.admissible {
+        reasons.push(format!(
+            "held inadmissible by the world fabric: {}",
+            describe_timeline(&verdict.temporal)
+        ));
+    }
+    if verdict.authenticity.spoofed {
+        let signals = if verdict.authenticity.refused.is_empty() {
+            "a signal contradicted the claim's identity".to_string()
+        } else {
+            verdict.authenticity.refused.join("; ")
+        };
+        reasons.push(format!("judged spoofed by the world fabric: {signals}"));
+    }
+    reasons.join("; ")
 }
 
 impl EvidenceIntake {
@@ -276,7 +355,7 @@ impl EvidenceIntake {
     pub fn release<T>(&self, items: Vec<(T, String)>) -> Vec<T> {
         items
             .into_iter()
-            .filter(|(_, id)| !self.withheld.contains(id))
+            .filter(|(_, id)| !self.withheld.contains_key(id))
             .map(|(item, _)| item)
             .collect()
     }
@@ -301,8 +380,10 @@ pub struct Released<T> {
     /// The records whose claim the world fabric stood behind, and every
     /// record that rests on no claim, in the order offered.
     pub records: Vec<T>,
-    /// Records offered whose claim the fabric withheld.
-    pub withheld: usize,
+    /// Records offered whose claim the fabric withheld, in the order
+    /// offered, each named by its claim with the fabric's reason — so the
+    /// refusal reaches whoever reads the root's report, not only a count.
+    pub withheld: Vec<WithheldRecord>,
     /// What the poll's evidence did to the fabric.
     pub intake: EvidenceIntake,
 }
@@ -326,17 +407,20 @@ impl Platform {
         now: Timestamp,
     ) -> Released<T> {
         let intake = self.absorb_evidence(evidence, now);
-        let offered = items.len();
-        let records: Vec<T> = items
-            .into_iter()
-            .flat_map(|(record, claim)| match claim {
-                Some(id) => intake.release(vec![(record, id)]),
-                None => vec![record],
-            })
-            .collect();
+        let mut records = Vec::with_capacity(items.len());
+        let mut withheld = Vec::new();
+        for (record, claim) in items {
+            match claim.and_then(|id| intake.withheld.get(&id).map(|reason| (id, reason))) {
+                Some((claim, reason)) => withheld.push(WithheldRecord {
+                    claim,
+                    reason: reason.clone(),
+                }),
+                None => records.push(record),
+            }
+        }
         Released {
-            withheld: offered - records.len(),
             records,
+            withheld,
             intake,
         }
     }
@@ -405,7 +489,9 @@ impl Platform {
                             }
                         }
                         if !verdict.admissible || verdict.authenticity.spoofed {
-                            intake.withheld.insert(id.clone());
+                            intake
+                                .withheld
+                                .insert(id.clone(), withheld_reason(&verdict));
                         }
                         let label = if !verdict.admissible {
                             intake.inadmissible += 1;
@@ -422,7 +508,10 @@ impl Platform {
                     }
                     Err(error) => {
                         intake.refused += 1;
-                        intake.withheld.insert(id.clone());
+                        intake.withheld.insert(
+                            id.clone(),
+                            format!("refused by the world fabric: {}", error.message()),
+                        );
                         if intake.refusals.len() < REFUSALS_RETAINED {
                             intake.refusals.push(format!("`{id}`: {}", error.message()));
                         }
