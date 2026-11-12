@@ -669,6 +669,18 @@ pub struct Platform {
     /// so the oldest *is* evicted here (see the constant for why that is
     /// right here and wrong for the two queues above).
     feasibility_refusals: Vec<FeasibilityRefusal>,
+    /// Evidence refusals recorded per venue per cycle, for the counterparty
+    /// member's resolver (R12-WORLD-3049). Written only beside the window in
+    /// [`Self::record_feasibility_refusal`] and never read by anything that
+    /// withdraws a venue: a tally, not evidence. Kept apart from the window
+    /// because the window evicts, and an eviction is not a refusal that
+    /// failed to happen. Bounded to the cycles a forecast can still wait on.
+    counterparty_arrivals: BTreeMap<String, BTreeMap<u64, u32>>,
+    /// Roles an operator declared for counterparties (R12-WORLD-3049).
+    counterparty_roles: BTreeMap<String, crate::federation_stage::CounterpartyRole>,
+    /// Dependencies an operator declared between counterparties: dependent,
+    /// provider, kind.
+    counterparty_edges: BTreeSet<(String, String, crate::federation_stage::DependencyKind)>,
     /// Venues withdrawn on feasibility evidence — blueprint §12.3's fourth
     /// row, ADR 0062. The one writer is [`Self::withdraw_venue`], reached
     /// from [`Self::review_venues`] after the `venue.withdrawn` record is
@@ -6680,6 +6692,9 @@ impl Platform {
             microstructure_deltas: BTreeMap::new(),
             microstructure_model: microstructure_model_resumed,
             feasibility_refusals: Vec::new(),
+            counterparty_arrivals: BTreeMap::new(),
+            counterparty_roles: BTreeMap::new(),
+            counterparty_edges: BTreeSet::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
             routing_terms: declared_shelf.terms,
@@ -16122,9 +16137,121 @@ impl Platform {
     /// is one two operators signed away; neither is the venue refusing, and
     /// counting them inflated a withdrawn or reinstated venue's forecast and
     /// resolved its proposition on refusals that were not its own.
+    /// Declare the part `name` plays in the counterparty network
+    /// (R12-WORLD-3049). A declared role outranks every derived one. Refuses
+    /// an empty name, and a declaration past [`COUNTERPARTY_MAX_VENUES`]
+    /// counterparties, which the member could not forecast for anyway.
+    ///
+    /// [`COUNTERPARTY_MAX_VENUES`]: crate::federation_stage::COUNTERPARTY_MAX_VENUES
+    pub fn declare_counterparty(
+        &mut self,
+        name: &str,
+        role: crate::federation_stage::CounterpartyRole,
+    ) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(Error::invalid(
+                "a counterparty with an empty name cannot be told from any other; name it",
+            ));
+        }
+        if !self.counterparty_roles.contains_key(name)
+            && self.counterparty_roles.len() >= crate::federation_stage::COUNTERPARTY_MAX_VENUES
+        {
+            return Err(Error::invalid(format!(
+                "{} counterparties are already declared, the most the counterparty member \
+                 forecasts for; withdraw one before declaring `{name}`",
+                crate::federation_stage::COUNTERPARTY_MAX_VENUES
+            )));
+        }
+        self.counterparty_roles.insert(name.to_string(), role);
+        Ok(())
+    }
+
+    /// Declare that `dependent` depends on `on` (R12-WORLD-3049): the edge
+    /// contagion is carried along. Refuses an empty name, a counterparty
+    /// depending on itself — a loop carries no cause and would read as one —
+    /// and more than four edges per forecastable counterparty.
+    pub fn declare_counterparty_dependency(
+        &mut self,
+        dependent: &str,
+        on: &str,
+        kind: crate::federation_stage::DependencyKind,
+    ) -> Result<()> {
+        if dependent.trim().is_empty() || on.trim().is_empty() {
+            return Err(Error::invalid(
+                "a dependency names both counterparties; an empty name is neither",
+            ));
+        }
+        if dependent == on {
+            return Err(Error::invalid(format!(
+                "`{dependent}` cannot depend on itself; name the provider it depends on"
+            )));
+        }
+        let bound = 4 * crate::federation_stage::COUNTERPARTY_MAX_VENUES;
+        let edge = (dependent.to_string(), on.to_string(), kind);
+        if !self.counterparty_edges.contains(&edge) && self.counterparty_edges.len() >= bound {
+            return Err(Error::invalid(format!(
+                "{bound} counterparty dependencies are already declared; withdraw one first"
+            )));
+        }
+        self.counterparty_edges.insert(edge);
+        Ok(())
+    }
+
+    /// The counterparty graph the member reads (R12-WORLD-3049), one view per
+    /// node in name order. Nodes: the desk broker, every venue holding
+    /// Evidence in the window or recorded recently, every declared
+    /// counterparty, every venue or custodian a positive holdings statement
+    /// names, and, for a venue with chain settlement terms, the chain its
+    /// proceeds settle on and the bridge they cross if one is declared.
+    /// Edges: the declared ones, the broker's custody dependency on each
+    /// holder of the book's assets, and each chain-settled venue's settlement
+    /// and bridge dependencies. Every derived edge comes from a fact the
+    /// platform already holds; none is inferred from a name.
     fn counterparty_views(&self) -> Vec<crate::federation_stage::CounterpartyView> {
+        use crate::federation_stage::{CounterpartyDependency, CounterpartyRole, DependencyKind};
+        let broker = self.broker.name().to_string();
+        let mut roles: BTreeMap<String, CounterpartyRole> = BTreeMap::new();
+        let mut edges: BTreeMap<String, BTreeSet<CounterpartyDependency>> = BTreeMap::new();
+        let mut edge = |from: &str, on: &str, kind: DependencyKind| {
+            edges
+                .entry(from.to_string())
+                .or_default()
+                .insert(CounterpartyDependency {
+                    on: on.to_string(),
+                    kind,
+                });
+        };
+        for (key, observation) in &self.holdings_observed {
+            let holder = key.venue.as_str();
+            if observation.observed.is_positive() && holder != broker {
+                roles.insert(holder.to_string(), CounterpartyRole::Custodian);
+                edge(&broker, holder, DependencyKind::Custody);
+            }
+        }
+        for (venue, terms) in &self.chain_settlement {
+            roles.entry(venue.clone()).or_default();
+            let chain = format!("settlement:{venue}");
+            roles.insert(chain.clone(), CounterpartyRole::SettlementAgent);
+            edge(venue, &chain, DependencyKind::Settlement);
+            if terms.bridged() {
+                let bridge = format!("bridge:{venue}");
+                roles.insert(bridge.clone(), CounterpartyRole::Bridge);
+                edge(venue, &bridge, DependencyKind::Bridge);
+            }
+        }
+        for (from, on, kind) in &self.counterparty_edges {
+            edge(from, on, *kind);
+            roles.entry(from.clone()).or_default();
+            roles.entry(on.clone()).or_default();
+        }
+        roles.insert(broker.clone(), CounterpartyRole::Broker);
+        for (name, role) in &self.counterparty_roles {
+            roles.insert(name.clone(), *role);
+        }
         let mut by_venue: BTreeMap<String, Vec<Timestamp>> = BTreeMap::new();
-        by_venue.insert(self.broker.name().to_string(), Vec::new());
+        for name in roles.keys().chain(self.counterparty_arrivals.keys()) {
+            by_venue.entry(name.clone()).or_default();
+        }
         let evidence: Vec<&FeasibilityRefusal> = self
             .feasibility_refusals
             .iter()
@@ -16146,6 +16273,16 @@ impl Platform {
                     } else {
                         refused_at.len() as f64 / total as f64
                     },
+                    role: roles.get(&venue).copied().unwrap_or_default(),
+                    depends_on: edges
+                        .get(&venue)
+                        .map(|set| set.iter().cloned().collect())
+                        .unwrap_or_default(),
+                    recorded_by_cycle: self
+                        .counterparty_arrivals
+                        .get(&venue)
+                        .cloned()
+                        .unwrap_or_default(),
                     venue,
                     refused_at,
                 },
@@ -28618,6 +28755,18 @@ impl Platform {
             names::FEASIBILITY_REFUSALS,
             labels([("venue", venue), ("constraint", constraint)]),
         );
+        if standing == RefusalStanding::Evidence {
+            let floor = self
+                .cycle
+                .saturating_sub(crate::federation_stage::FEDERATION_PENDING_CYCLES + 1);
+            let tally = self
+                .counterparty_arrivals
+                .entry(venue.to_string())
+                .or_default();
+            tally.retain(|cycle, _| *cycle >= floor);
+            let count = tally.entry(self.cycle).or_insert(0);
+            *count = count.saturating_add(1);
+        }
         if self.feasibility_refusals.len() >= FEASIBILITY_WINDOW {
             // **Nothing that cannot withdraw a venue may displace something
             // that can.** An echo and a pardoned refusal are both denominator
@@ -31475,6 +31624,174 @@ mod decide_tests {
             "{views:?}"
         );
         assert!((of("YVENUE").share - 2.0 / 3.0).abs() < 1e-12, "{views:?}");
+    }
+
+    /// R12-WORLD-3049: the counterparty graph is built from facts the
+    /// platform holds. A positive holdings statement makes its holder a
+    /// custodian the broker depends on for custody; a venue's chain
+    /// settlement terms make its chain a settlement dependency and its
+    /// declared bridge a bridge dependency; a declared role and edge are
+    /// carried; and a declaration naming no provider, or itself, is refused.
+    ///
+    /// Mutations: derive no custody edge; drop the bridge node; drop the
+    /// settlement node; ignore declared edges; accept a self-dependency.
+    #[test]
+    fn the_counterparty_graph_names_custodians_bridges_and_settlement_dependencies() {
+        use crate::federation_stage::{CounterpartyDependency, CounterpartyRole, DependencyKind};
+        use qip_chain::{Confirmations, FeeBps};
+        let mut platform = small_book_platform();
+        platform
+            .observe_statement(
+                VenueId::new("custodian-a"),
+                "USD",
+                Decimal::from_int(1_000),
+                Decimal::from_int(1),
+                Timestamp::from_secs(1_760_000_000),
+            )
+            .expect("a cash statement is accepted");
+        let bridge = crate::chain_settlement::DeclaredBridge::declare(
+            Duration::from_mins(10),
+            FeeBps::new(30).expect("30bp is a fee"),
+        )
+        .expect("a positive delay is a bridge");
+        platform.declare_chain_settlement(
+            "XCHAIN",
+            crate::chain_settlement::ChainSettlementTerms::declare(
+                Confirmations::exactly(12),
+                Duration::from_secs(12),
+                Some(bridge),
+            )
+            .expect("twelve blocks of twelve seconds are terms"),
+        );
+        platform
+            .declare_counterparty("ccp-a", CounterpartyRole::SettlementAgent)
+            .expect("a named role is accepted");
+        platform
+            .declare_counterparty_dependency("XVENUE", "ccp-a", DependencyKind::Settlement)
+            .expect("a named edge is accepted");
+        assert!(
+            platform
+                .declare_counterparty_dependency("XVENUE", "XVENUE", DependencyKind::Settlement)
+                .is_err()
+        );
+        assert!(
+            platform
+                .declare_counterparty_dependency("XVENUE", " ", DependencyKind::Settlement)
+                .is_err()
+        );
+        assert!(
+            platform
+                .declare_counterparty("", CounterpartyRole::Bridge)
+                .is_err()
+        );
+
+        let views = platform.counterparty_views();
+        let of = |name: &str| {
+            views
+                .iter()
+                .find(|v| v.venue == name)
+                .unwrap_or_else(|| panic!("no view of {name}: {views:?}"))
+        };
+        let dep = |on: &str, kind| CounterpartyDependency {
+            on: on.to_string(),
+            kind,
+        };
+        let broker = platform.broker.name().to_string();
+        assert_eq!(of(&broker).role, CounterpartyRole::Broker);
+        assert!(
+            of(&broker)
+                .depends_on
+                .contains(&dep("custodian-a", DependencyKind::Custody)),
+            "{views:?}"
+        );
+        assert_eq!(of("custodian-a").role, CounterpartyRole::Custodian);
+        assert_eq!(
+            of("XCHAIN").depends_on,
+            vec![
+                dep("bridge:XCHAIN", DependencyKind::Bridge),
+                dep("settlement:XCHAIN", DependencyKind::Settlement),
+            ]
+        );
+        assert_eq!(of("bridge:XCHAIN").role, CounterpartyRole::Bridge);
+        assert_eq!(
+            of("settlement:XCHAIN").role,
+            CounterpartyRole::SettlementAgent
+        );
+        assert_eq!(
+            of("XVENUE").depends_on,
+            vec![dep("ccp-a", DependencyKind::Settlement)]
+        );
+        assert_eq!(of("ccp-a").role, CounterpartyRole::SettlementAgent);
+        assert!(
+            crate::federation_stage::counterparty_roles_unmodelled(&views).is_empty(),
+            "{views:?}"
+        );
+    }
+
+    /// R12-WORLD-3049, the resolver limits the 2026-10-31 skeptic named: the
+    /// counterparty member resolves on what each cycle *recorded*, so an
+    /// eviction from the full window cannot falsify the count, a cell report
+    /// stamped long before its ingestion is counted in the cycle that
+    /// recorded it, and only Evidence is counted.
+    ///
+    /// Mutations: tally every standing; tally under the refusal's stamp
+    /// rather than the recording cycle; drop the tally when the window is
+    /// full.
+    #[test]
+    fn the_counterparty_tally_counts_by_recording_cycle_and_survives_eviction() {
+        use crate::venue_review::{FEASIBILITY_WINDOW, FeasibilitySeam, RefusalStanding};
+        let mut platform = small_book_platform();
+        let early = Timestamp::from_secs(1_000);
+        platform.cycle = 4;
+        for _ in 0..FEASIBILITY_WINDOW {
+            platform.record_feasibility_refusal(
+                "XFLOOD",
+                "feasibility_lot_size",
+                FeasibilitySeam::Edge,
+                Some("cell-a"),
+                early,
+                RefusalStanding::Evidence,
+            );
+        }
+        platform.record_feasibility_refusal(
+            "XECHO",
+            "feasibility_withdrawn_venue",
+            FeasibilitySeam::Edge,
+            Some("cell-a"),
+            early,
+            RefusalStanding::Echo,
+        );
+        platform.cycle = 5;
+        // Stamped at the epoch's dawn, recorded in cycle 5; the window is
+        // full, so it evicts one of cycle 4's entries as it is seated.
+        platform.record_feasibility_refusal(
+            "XLATE",
+            "feasibility_lot_size",
+            FeasibilitySeam::Edge,
+            Some("cell-b"),
+            early,
+            RefusalStanding::Evidence,
+        );
+        // Premise: the window is full and evicted a cycle-4 entry.
+        assert_eq!(platform.feasibility_refusals.len(), FEASIBILITY_WINDOW);
+        let views = platform.counterparty_views();
+        let of = |name: &str| views.iter().find(|v| v.venue == name);
+        let flood = of("XFLOOD").expect("the flooding venue is a node");
+        assert_eq!(flood.refused_at.len(), FEASIBILITY_WINDOW - 1);
+        assert_eq!(
+            flood.recorded_by_cycle.get(&4).copied(),
+            Some(u32::try_from(FEASIBILITY_WINDOW).expect("the window fits u32")),
+            "an eviction falsified the cycle's count"
+        );
+        assert_eq!(
+            of("XLATE").map(|v| v.recorded_by_cycle.clone()),
+            Some(BTreeMap::from([(5, 1)])),
+            "a late-ingested report was not counted in the cycle that recorded it"
+        );
+        assert!(
+            of("XECHO").is_none_or(|v| v.recorded_by_cycle.is_empty()),
+            "an echo was counted as a refusal"
+        );
     }
 
     /// R12-QUANT-4018: a promotion restored from the log passes the workload
