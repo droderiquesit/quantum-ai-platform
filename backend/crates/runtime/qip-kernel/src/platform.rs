@@ -14837,12 +14837,35 @@ impl Platform {
         // — end the listing; `CorporateAction::is_terminal` is the one
         // place that says which kinds those are, so a kind added there ends
         // a listing here without a second list to keep in step.
+        // A failure is terminal too, and is matched first so it ends the
+        // listing *as a failure*: filed as an ordinary delisting, a product
+        // that went to nothing would read in the history as one that left in
+        // good order (ADR 0446). A spinoff lists its spun entity from the
+        // ex-date, beside the parent, unless the history already names it —
+        // a spun entity the catalogue assembled is listed already, and a
+        // re-fed tape must not list it twice.
         let membership = match &action.kind {
             CorporateActionKind::Renamed { new_symbol } => Some(self.universe_history.rename(
                 &action.object_id,
                 new_symbol.clone(),
                 action.ex_date,
             )),
+            CorporateActionKind::Failed { reason } => Some(self.universe_history.fail(
+                &action.object_id,
+                action.ex_date,
+                reason.clone(),
+            )),
+            CorporateActionKind::Spinoff { spun_entity, .. } => {
+                let child = ObjectId::from_string(spun_entity.as_str());
+                (!self.universe_history.is_named(&child)).then(|| {
+                    self.universe_history.list_spinoff(
+                        &action.object_id,
+                        child,
+                        spun_entity.clone(),
+                        action.ex_date,
+                    )
+                })
+            }
             _ if action.is_terminal() => Some(
                 self.universe_history
                     .delist(&action.object_id, action.ex_date),
@@ -30323,6 +30346,7 @@ fn corporate_action_class(kind: &CorporateActionKind) -> &'static str {
         CorporateActionKind::Merger { .. } => "corporate_action/merger",
         CorporateActionKind::Spinoff { .. } => "corporate_action/spinoff",
         CorporateActionKind::Delisting { .. } => "corporate_action/delisting",
+        CorporateActionKind::Failed { .. } => "corporate_action/failed",
         CorporateActionKind::Renamed { .. } => "corporate_action/renamed",
     }
 }

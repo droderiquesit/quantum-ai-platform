@@ -3154,6 +3154,83 @@ fn a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_
     Ok(())
 }
 
+/// R12-TICK-2090, ADR 0446: a failure on the tape ends the name's listing
+/// *as a failure*, kept for the dates it traded, and a spinoff lists its
+/// spun entity from the ex-date with the parent it left. Re-fed, neither is
+/// recorded twice. Mutations: drop the `Failed` arm in
+/// `queue_corporate_action` (the failure is filed as a plain delisting via
+/// `is_terminal`, and `failed()` is empty); drop the `Spinoff` arm (the spun
+/// entity is never listed).
+#[test]
+fn a_failure_on_the_tape_is_kept_as_a_failure_and_a_spinoff_lists_its_spun_entity() -> Result<()> {
+    let mut platform = platform()?;
+    let ex = start().saturating_add(Duration::from_days(3));
+    let actions = || {
+        vec![
+            SensedRecord::CorporateAction(Box::new(CorporateAction {
+                object_id: object("BBB"),
+                ex_date: ex,
+                record_date: None,
+                payment_date: None,
+                kind: CorporateActionKind::Failed {
+                    reason: "the fund was wound up".to_string(),
+                },
+                announced_at: start(),
+            })),
+            SensedRecord::CorporateAction(Box::new(CorporateAction {
+                object_id: object("AAA"),
+                ex_date: ex,
+                record_date: None,
+                payment_date: None,
+                kind: CorporateActionKind::Spinoff {
+                    spun_entity: "obj-CCC".to_string(),
+                    value_fraction: 0.2,
+                },
+                announced_at: start(),
+            })),
+        ]
+    };
+    assert!(
+        platform.universe_history().failed().is_empty(),
+        "the premise: nothing has failed"
+    );
+    assert_eq!(platform.observe(actions()), 2, "the premise: both absorbed");
+
+    let failed = platform.universe_history().failed();
+    assert_eq!(
+        failed.len(),
+        1,
+        "the failure was not kept as one: {failed:?}"
+    );
+    assert_eq!(failed[0].object_id.as_str(), "obj-BBB");
+    assert_eq!(failed[0].delisted_at, Some(ex));
+    assert_eq!(
+        members_as_of(&platform, ex.saturating_sub(Duration::from_secs(1))),
+        vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        "a failed product is a member on the dates it traded, and the spun entity is not yet"
+    );
+    assert_eq!(
+        members_as_of(&platform, ex),
+        vec!["obj-AAA".to_string(), "obj-CCC".to_string()],
+        "from the ex-date the failed name is gone and the spun entity is listed"
+    );
+    assert_eq!(
+        platform
+            .universe_history()
+            .listing(&ObjectId::from_string("obj-CCC"))
+            .and_then(|listing| listing.spun_off_from.clone())
+            .map(|parent| parent.as_str().to_string()),
+        Some("obj-AAA".to_string())
+    );
+
+    // Re-fed: the idempotency key drops both, and nothing is listed or
+    // failed twice.
+    let _ = platform.observe(actions());
+    assert_eq!(platform.universe_history().failed().len(), 1);
+    assert_eq!(members_as_of(&platform, ex).len(), 2);
+    Ok(())
+}
+
 // --- the fill's participation reaches the twin's calibration (R12-TICK-2080)
 
 /// R12-TICK-2080: the LEARN stage hands the twin's calibration each scored
