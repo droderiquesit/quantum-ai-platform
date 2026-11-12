@@ -455,4 +455,17 @@ impl FinancingPermissions {
             )))
         }
     }
+
+    /// Gate an order in a repo instrument (ADR 0398, R12-COVERAGE-5100).
+    ///
+    /// The kernel places a repo order and draws on no financing source to do
+    /// it: lending cash under a reverse repo spends the desk's own book. It
+    /// still needs the regulated permission, and the function is named here,
+    /// beside the registry, so that no seam outside the two files that own
+    /// the gate spells a financing function (R12-GOV-4077). A repo the desk
+    /// would borrow under is a financing source and goes through
+    /// [`crate::funding::plan_funding`] instead; nothing builds one today.
+    pub fn require_repo(&self, entity: &str, counterparty: &str, jurisdiction: &str) -> Result<()> {
+        self.require(FinancingFunction::Repo, entity, counterparty, jurisdiction)
+    }
 }
