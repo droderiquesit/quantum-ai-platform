@@ -930,7 +930,7 @@
       "qip-storage/tests/lake.rs::raw_bytes_are_kept_only_where_the_entitlement_permits_and_the_hash_is_kept_either_way",
       "qip-deepbrain/src/connectors.rs::tests::a_tick_lake_retention_list_admits_only_what_it_names"
     ],
-    "gap": "Carry raw venue bytes (or at least their hash) from the connector into CapturedMarketEvent so the hash-only rule is exercised in production; condition retention of the platform's own records on legal/policy obligations rather than a constant; rights per venue rather than per licensing class; a deployment that sets the retention variable (none does).",
+    "gap": "2026-11-12 fix-c-01: the connector half of the first item is settled by ADR 0416: captured_of carries the payload's hash and never its bytes (connector/evidence.rs captured_of), so every connector capture is hash-only in production and the deep brain refuses `canonical+raw`; raw bytes reach the lake only from the platform's own simulated depth (ADR 0181). The current text's 'raw: None and raw_sha256: None' describes the path before 2026-10-11. What remains is unchanged: retention of the platform's own records conditioned on legal and policy obligations rather than a constant; rights per venue rather than per licensing class; a deployment that sets the retention variable. Earlier: Carry raw venue bytes (or at least their hash) from the connector into CapturedMarketEvent so the hash-only rule is exercised in production; condition retention of the platform's own records on legal/policy obligations rather than a constant; rights per venue rather than per licensing class; a deployment that sets the retention variable (none does).",
     "implemented": true,
     "tested": true,
     "integrated": true,

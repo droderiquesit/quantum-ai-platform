@@ -402,6 +402,15 @@ pub fn evidence_of(
 /// this path set the raw bytes and their hash to `None` for every event, so
 /// the lake held canonical records whose source bytes nobody could ever
 /// re-derive or check (R12-DATA-1039).
+///
+/// Only the payload's hash is carried, never its bytes (ADR 0416). A
+/// connector's payload is external content, which is discarded once it is
+/// extracted (R12-DATA-2014); the lake is durable, so a raw slot filled here
+/// would keep the source's body however its licence reads. Until 2026-11-12
+/// the bytes were carried, and a lake granted `canonical+raw` sealed a
+/// fetched ticker object whole. The hash keeps what R12-DATA-1039 asks of the
+/// connector path: the record can be checked against what the source sent.
+/// Raw bytes reach the lake only from the platform's own feed (ADR 0181).
 pub fn captured_of(
     record: &SensedRecord,
     source_id: &str,
@@ -446,7 +455,7 @@ pub fn captured_of(
         entitlement: entitlement.to_string(),
         canonical: serde_json::to_value(record)?,
         raw_sha256: raw.map(|payload| payload.sha256.clone()),
-        raw: raw.and_then(|payload| payload.bytes.clone()),
+        raw: None,
     };
     captured.validate()?;
     Ok(Some(captured))
