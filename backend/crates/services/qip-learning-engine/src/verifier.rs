@@ -395,6 +395,14 @@ fn evidence_balance(evidence: &[EvidenceItem]) -> (f64, f64) {
 /// The directional critics share one argument with the sign flipped: argue
 /// the side opposite the claim, from the panel and the evidence.
 fn directional_attack(dossier: &PredictionDossier, side: f64, name: &str) -> CriticVerdict {
+    // An undirected claim (a regime shift) has no side to argue the opposite
+    // of; reading the panel's lean against it would refute a claim that never
+    // said which way.
+    if dossier.direction == 0.0 {
+        return abstained(format!(
+            "the claim names no direction, so there is no {name} case to argue against it"
+        ));
+    }
     if dossier.direction * side > 0.0 {
         return survived(format!(
             "the claim is already {name}; the {name} critic attacks the opposite claim"
