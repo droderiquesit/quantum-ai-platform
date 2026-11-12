@@ -434,6 +434,7 @@ dependencies = [
  "qip-reasoning-engine",
  "qip-risk",
  "qip-risk-engine",
+ "qip-sequencing",
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",

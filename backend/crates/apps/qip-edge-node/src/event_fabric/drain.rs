@@ -67,6 +67,9 @@ use crate::event_fabric::telemetry::OutboxTelemetry;
 use crate::event_fabric::writer::{market_event, stream_of};
 use qip_contracts::captured_event::CapturedMarketEvent;
 use qip_contracts::market_event::MarketEvent;
+use qip_contracts::sync::{
+    AssetKey, ClockSource, CrossPartition, PartitionAlignment, SyncMetadata, SyncOrder,
+};
 use qip_core::Clock;
 use qip_core::error::{Error, Result};
 use qip_edge::fencing::Fence;
@@ -706,7 +709,7 @@ pub fn parse_retention(text: Option<&str>) -> Result<BTreeMap<String, RetentionR
 /// never aligned against more than this many and the sink's memory does not
 /// grow with the session. A dropped partition is left out of later lines'
 /// stamps. It is not reported with a stale position as if it were current.
-pub const MAX_ALIGNED_PARTITIONS: usize = 256;
+pub const MAX_ALIGNED_PARTITIONS: usize = qip_contracts::sync::MAX_SYNC_ALIGNMENTS;
 
 /// Half the resolution a `Timestamp` keeps across the spool. A tick reaches
 /// [`LakeSink`] as RFC 3339 at millisecond resolution, so each instant it
@@ -722,10 +725,12 @@ const SPOOL_TRUNCATION_HALF_WIDTH: qip_core::time::Duration =
 
 /// The last tick [`LakeSink`] wrote for one partition, placed on the
 /// reference timeline.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct LatestTick {
     placed: Placed,
     sequence: u64,
+    venue: String,
+    instrument: String,
 }
 
 /// Delivers the market events in P2 batches to the tick lake, one sealed
@@ -862,35 +867,42 @@ impl LakeSink {
     /// nothing, and it does not become its partition's latest.
     fn align_across(
         &mut self,
-        partition: String,
+        asset: &AssetKey,
         sequence: u64,
         placed: &Result<Placed>,
-    ) -> serde_json::Value {
+    ) -> CrossPartition {
         let placed = match placed {
             Ok(placed) => *placed,
-            Err(error) => return serde_json::json!({ "refused": error.message() }),
+            Err(error) => {
+                return CrossPartition::Refused {
+                    refused: error.message().to_string(),
+                };
+            }
         };
-        let others: Vec<serde_json::Value> = self
+        let partition = asset.path();
+        let others: Vec<PartitionAlignment> = self
             .latest
             .iter()
             .filter(|(other, _)| **other != partition)
             .map(|(other, latest)| {
                 let alignment = align(&latest.placed, &placed);
-                serde_json::json!({
-                    "partition": other,
-                    "sequence": latest.sequence,
+                PartitionAlignment {
+                    partition: other.clone(),
+                    venue: latest.venue.clone(),
+                    instrument: latest.instrument.clone(),
+                    sequence: latest.sequence,
                     // The other partition's tick relative to this one:
                     // `before` means it happened first by more than both
                     // clocks' error.
-                    "order_of_other": match alignment.order {
-                        Order::Before => "before",
-                        Order::After => "after",
-                        Order::Unordered => "unordered",
+                    order_of_other: match alignment.order {
+                        Order::Before => SyncOrder::Before,
+                        Order::After => SyncOrder::After,
+                        Order::Unordered => SyncOrder::Unordered,
                     },
-                    "lag_ns": alignment.lag.as_nanos(),
-                    "lag_uncertainty_ns": alignment.lag_uncertainty.as_nanos(),
-                    "other_known_at_arrival": alignment.first_known_when_second_arrived,
-                })
+                    lag_ns: alignment.lag.as_nanos(),
+                    lag_uncertainty_ns: alignment.lag_uncertainty.as_nanos(),
+                    other_known_at_arrival: alignment.first_known_when_second_arrived,
+                }
             })
             .collect();
         if !self.latest.contains_key(&partition) && self.latest.len() >= MAX_ALIGNED_PARTITIONS {
@@ -910,9 +922,16 @@ impl LakeSink {
                 self.latest.remove(&oldest);
             }
         }
-        self.latest
-            .insert(partition, LatestTick { placed, sequence });
-        serde_json::Value::Array(others)
+        self.latest.insert(
+            partition,
+            LatestTick {
+                placed,
+                sequence,
+                venue: asset.venue.clone(),
+                instrument: asset.instrument.clone(),
+            },
+        );
+        CrossPartition::Aligned(others)
     }
 }
 
@@ -974,23 +993,25 @@ impl Sink for LakeSink {
                 ))),
             };
             let origin = tick.origin();
-            let partition = format!(
-                "{}/{}/{}/{}",
-                origin.venue,
-                origin.feed,
-                origin.partition,
-                tick.payload().object_id
-            );
-            let cross = self.align_across(partition, origin.sequence, &placed);
-            let line = tick_line(
-                &tick,
-                &captured,
-                Provenance {
-                    region: &self.region,
-                    cell: &self.cell,
-                },
+            let asset = AssetKey {
+                venue: origin.venue.as_str().to_string(),
+                feed: origin.feed.clone(),
+                partition: origin.partition,
+                instrument: tick.payload().object_id.as_str().to_string(),
+            };
+            let cross = self.align_across(&asset, origin.sequence, &placed);
+            // Typed and validated before it is written (ADR 0438): a stamp
+            // the record refuses is a defect in this sink, and returning it
+            // fails the batch loudly rather than sealing an order the clocks
+            // never supported.
+            let sync = SyncMetadata::new(
+                self.region.as_str(),
+                self.cell.as_str(),
+                clock_source(&captured),
+                asset,
                 cross,
             )?;
+            let line = tick_line(&tick, &captured, &sync)?;
             let key = (
                 tick.origin().venue.as_str().to_string(),
                 tick.event_time().to_date_string(),
@@ -1070,15 +1091,17 @@ impl Sink for LakeSink {
 /// same two ticks.
 ///
 /// And the synchronisation metadata a cross-venue, cross-instrument or
-/// cross-region reader needs (R12-TICK-2048): the region and cell that
-/// captured the tick, the clock its normalized instant was taken from
-/// ([`clock_source`]), and `cross_partition`, the tick aligned against the
-/// latest tick of every other partition ([`LakeSink`]'s `align_across`).
+/// cross-region reader needs (R12-TICK-2048, ADR 0438), as one typed
+/// [`SyncMetadata`] whose fields sit at the top level of the line: the
+/// region and cell that captured the tick, the clock its normalized instant
+/// was taken from ([`clock_source`]), the asset key (venue, feed, partition,
+/// instrument), and `cross_partition`, the tick aligned against the latest
+/// tick of every other partition ([`LakeSink`]'s `align_across`). The lake
+/// reader decodes the same record back through its refusals.
 fn tick_line(
     tick: &MarketEvent,
     captured: &Result<CapturedMarketEvent>,
-    provenance: Provenance<'_>,
-    cross_partition: serde_json::Value,
+    sync: &SyncMetadata,
 ) -> Result<String> {
     let origin = tick.origin();
     let clock = match captured {
@@ -1090,27 +1113,28 @@ fn tick_line(
         }),
         Err(error) => serde_json::json!({ "refused": error.message() }),
     };
-    let value = serde_json::json!({
-        "exchange_time_ns": tick.event_time().as_nanos(),
-        "capture_time_ns": tick.receive_time().as_nanos(),
-        "clock": clock,
-        "clock_source": clock_source(captured),
-        "region": provenance.region,
-        "cell": provenance.cell,
-        "cross_partition": cross_partition,
-        "feed": origin.feed,
-        "partition": origin.partition,
-        "sequence": origin.sequence,
-        "event": serde_json::to_value(tick)?,
-    });
+    let mut value = serde_json::to_value(sync)?;
+    let Some(fields) = value.as_object_mut() else {
+        return Err(Error::invalid(
+            "sync metadata did not serialise as an object; a lake line cannot carry it",
+        ));
+    };
+    for (key, field) in [
+        (
+            "exchange_time_ns",
+            serde_json::json!(tick.event_time().as_nanos()),
+        ),
+        (
+            "capture_time_ns",
+            serde_json::json!(tick.receive_time().as_nanos()),
+        ),
+        ("clock", clock),
+        ("sequence", serde_json::json!(origin.sequence)),
+        ("event", serde_json::to_value(tick)?),
+    ] {
+        fields.insert(key.to_string(), field);
+    }
     Ok(qip_core::canonical::canonical_json(&value))
-}
-
-/// Who captured a tick, as [`tick_line`] stamps it.
-#[derive(Clone, Copy, Debug)]
-struct Provenance<'a> {
-    region: &'a str,
-    cell: &'a str,
 }
 
 /// Which clock a lake line's normalized instant and uncertainty come from
@@ -1129,7 +1153,7 @@ struct Provenance<'a> {
 /// clocks. A reader that pooled a venue's self-stated figure with a measured
 /// estimate would weight an unmeasured clock as though someone had measured
 /// it.
-fn clock_source(captured: &Result<CapturedMarketEvent>) -> &'static str {
+fn clock_source(captured: &Result<CapturedMarketEvent>) -> ClockSource {
     match captured {
         Ok(captured)
             if captured
@@ -1137,9 +1161,9 @@ fn clock_source(captured: &Result<CapturedMarketEvent>) -> &'static str {
                 .iter()
                 .any(|correction| correction.kind == "offset_estimate") =>
         {
-            "offset_estimate"
+            ClockSource::OffsetEstimate
         }
-        Ok(_) => "venue_stated",
-        Err(_) => "unplaced",
+        Ok(_) => ClockSource::VenueStated,
+        Err(_) => ClockSource::Unplaced,
     }
 }

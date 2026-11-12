@@ -2369,6 +2369,15 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "QIP_DEEPBRAIN_TICK_MEASURE_CODEC",
         THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
     ),
+    // ADR 0438: the bound each capturing cell's clock holds against the
+    // reference. No figure for it has been stated, so no deployment sets
+    // one; unset, the tick desk computes no cross-region order and says so
+    // in `cross_region_withheld`, rather than ordering on an assumed bound.
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_CELL_CLOCK_BOUND_NS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
     // Round 2's node-local settings, each read by `qip-edge-node` and set by
     // no `node.env`. No execution node is deployed (`execution_nodes = {}`
     // in every environment), so each is argued on what its absence does.
