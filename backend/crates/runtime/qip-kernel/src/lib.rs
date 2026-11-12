@@ -33,6 +33,7 @@
 
 pub mod adaptive_cadence;
 pub mod adversary_review;
+pub mod agent_journal;
 pub mod asset_class_registry;
 pub mod attribution;
 pub mod blueprint_objectives;

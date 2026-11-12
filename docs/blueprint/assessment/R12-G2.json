@@ -705,14 +705,16 @@
   {
     "id": "R12-AMBIENT-9029",
     "status": "PARTIAL",
-    "current": "Agents with explicit capability grants and tool registries (qip-agents), investment agents run in the kernel; agents holding a language model cannot reach the market. Tasks are not Fabric topics; no multimodal reasoning.",
+    "current": "Agents with explicit capability grants and tool registries (qip-agents); investment agents run in the kernel; agents holding a language model cannot reach the market. Since ADR 0456 every agent run the REASON stage dispatches is journaled whole on agent.run_completed (findings and denied accesses included), and a run the log refused stops the stage forming a hypothesis. Tasks are not Fabric topics; no knowledge-API seam; no multimodal reasoning.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/capability.rs",
       "backend/crates/libs/qip-agents/tests/explicit_grants.rs",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:503 an_agent_that_holds_a_language_model_cannot_touch_the_market",
-      "backend/crates/agents/qip-investment-agents/src"
+      "backend/crates/agents/qip-investment-agents/src",
+      "backend/crates/runtime/qip-kernel/src/agent_journal.rs",
+      "docs/adr/0456-every-agent-run-the-reason-stage-dispatches-is-journaled-whole-before-any-finding-from-it-is-synthesised.md"
     ],
-    "gap": "Fabric task interface; knowledge APIs.",
+    "gap": "Gap dated 2026-11-12: the verification bar (only granted tools; outputs journaled) is met through the kernel by ADR 0456 and mutation-verified tests. Remaining from the requirement text: a Fabric task/result interface for specialist agents, a knowledge-API seam for research agents, and multimodal reasoning (absent from the tree).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -720,7 +722,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test explicit_grants",
+    "verification": "cargo test -p qip-agents --test explicit_grants && cargo test -p qip-kernel --lib agent_journal",
     "work_item": "",
     "size": "L",
     "notes": ""

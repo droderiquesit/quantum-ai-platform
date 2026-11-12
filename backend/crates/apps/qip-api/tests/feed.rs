@@ -352,7 +352,7 @@ fn the_tape_arm_observes_each_periods_records_into_the_platform_before_the_cycle
     // The response says what SENSE did, in the cycle's own body, so a caller
     // that ran a cycle can tell an observed period from an empty one.
     assert!(
-        text.contains(r#""sense":{"source":"tape:observe","at":"2025-01-06T21:15:00.000Z","released":2,"withheld":0,"observed":2,"rejected":0"#),
+        text.contains(r#""sense":{"source":"tape:observe","at":"2025-01-06T21:15:00.000Z","released":2,"withheld":0,"withheld_claims":[],"observed":2,"rejected":0"#),
         "the cycle body does not report what was sensed: {text}"
     );
     assert!(
@@ -608,7 +608,9 @@ fn a_connector_whose_licensing_posture_is_not_evaluated_is_refused_before_any_so
     let text = body(&response);
     assert!(
         text.contains(r#""sense":{"source":"frankfurter-ecb-reference-rates","at":"#)
-            && text.contains(r#""released":3,"withheld":0,"observed":3,"rejected":0"#),
+            && text.contains(
+                r#""released":3,"withheld":0,"withheld_claims":[],"observed":3,"rejected":0"#
+            ),
         "the cycle did not observe the three currencies the rate table carries: {text}"
     );
     assert!(server.served() > probed, "the cycle polled nothing");

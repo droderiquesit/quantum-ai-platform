@@ -3031,8 +3031,12 @@ struct SenseSummary {
     source: String,
     at: Timestamp,
     released: usize,
-    /// Of `released`, records whose claim the world fabric withheld.
-    withheld: usize,
+    /// Of `released`, records whose claim the world fabric withheld, each
+    /// named by its claim with the fabric's reason (R12-EVID-1200). The
+    /// body carries the count under `withheld`, as before, and the names
+    /// under `withheld_claims`: until 2026-11-12 it carried only the count,
+    /// so a refused record was refused to nobody by name.
+    withheld: Vec<qip_kernel::evidence_intake::WithheldRecord>,
     observed: usize,
     rejections: Vec<String>,
 }
@@ -3085,11 +3089,21 @@ fn cycle_report(
     let sense = sensed
         .map(|sensed| {
             format!(
-                r#","sense":{{"source":{},"at":{},"released":{},"withheld":{},"observed":{},"rejected":{},"rejections":[{}]}}"#,
+                r#","sense":{{"source":{},"at":{},"released":{},"withheld":{},"withheld_claims":[{}],"observed":{},"rejected":{},"rejections":[{}]}}"#,
                 json::string(&sensed.source),
                 json::string(&sensed.at.to_rfc3339()),
                 sensed.released,
-                sensed.withheld,
+                sensed.withheld.len(),
+                sensed
+                    .withheld
+                    .iter()
+                    .map(|record| format!(
+                        r#"{{"claim":{},"reason":{}}}"#,
+                        json::string(&record.claim),
+                        json::string(&record.reason)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
                 sensed.observed,
                 sensed.rejections.len(),
                 sensed
@@ -4272,5 +4286,37 @@ mod tests {
             health.contains("application/json"),
             "an ordinary route stopped being JSON: {health}"
         );
+    }
+
+    /// R12-EVID-1200, "refused by name", on `POST /cycle`'s body: each
+    /// record the world fabric withheld is named under `withheld_claims`
+    /// with the fabric's reason, beside the count `withheld` already
+    /// carried. Until 2026-11-12 the body carried only the count. Mutation:
+    /// render `withheld_claims` empty — the claim and reason are missing
+    /// and the test fails.
+    #[test]
+    fn the_cycle_body_names_each_withheld_claim_with_the_fabrics_reason() -> Result<()> {
+        let mut platform = platform()?;
+        let report = platform.run_cycle(start());
+        let sensed = SenseSummary {
+            source: "connector:ecb".to_string(),
+            at: start(),
+            released: 2,
+            withheld: vec![qip_kernel::evidence_intake::WithheldRecord {
+                claim: "ecb-eurusd-1".to_string(),
+                reason: "judged spoofed by the world fabric: \"tls\" names another host"
+                    .to_string(),
+            }],
+            observed: 1,
+            rejections: Vec::new(),
+        };
+        let body = cycle_report(&report, None, None, Some(&sensed));
+        assert!(
+            body.contains(
+                r#""withheld":1,"withheld_claims":[{"claim":"ecb-eurusd-1","reason":"judged spoofed by the world fabric: \"tls\" names another host"}],"observed":1"#
+            ),
+            "the body does not name the withheld claim and its reason: {body}"
+        );
+        Ok(())
     }
 }
