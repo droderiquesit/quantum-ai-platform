@@ -400,6 +400,66 @@ impl ItchDecoder {
                     captured_at,
                 ));
             }
+            b'I' => {
+                // Net Order Imbalance Indicator: the auction's paired and
+                // unpaired shares and the price the cross would print at now.
+                // Until R12-TICK-2053 this was stepped over as carrying no
+                // market fact, so an opening or closing auction reached the
+                // platform only as the cross print that ended it — the
+                // imbalance a desk sizes against before the cross never
+                // arrived at all.
+                let paired = reader.uint(11, 8)?;
+                let imbalance = reader.uint(19, 8)?;
+                let direction = reader.u8_at(27)?;
+                let symbol = reader.ascii(28, 8)?;
+                let reference = reader.fixed(44, PRICE_WIDTH, false, PRICE_EXPONENT)?;
+                let Some(partition) = self.instruments.resolve(&symbol) else {
+                    self.skip(
+                        SkipReason::UnmappedInstrument { symbol },
+                        offset,
+                        captured_at,
+                    );
+                    return Ok(());
+                };
+                // `B`/`S` name the side holding the surplus; `N` is no
+                // imbalance and `O` is too few orders to compute one. Neither
+                // of the last two is a side, and inventing one would tell a
+                // router which way the auction leans when the venue said it
+                // does not know.
+                let imbalance_side = match direction {
+                    b'B' => Some(BookSide::Bid),
+                    b'S' => Some(BookSide::Ask),
+                    b'N' | b'O' => None,
+                    other => {
+                        self.skip(
+                            SkipReason::Malformed {
+                                detail: format!(
+                                    "unknown imbalance direction `{}`",
+                                    char::from(other)
+                                ),
+                            },
+                            offset,
+                            captured_at,
+                        );
+                        return Ok(());
+                    }
+                };
+                // A zero reference price is the venue saying no indicative
+                // price exists yet, not that the auction would cross at zero.
+                let indicative_price = (!reference.is_zero()).then_some(reference);
+                out.push(build_message(
+                    self.identity.origin(partition, sequence),
+                    0,
+                    MessageBody::AuctionUpdate {
+                        indicative_price,
+                        paired: shares_to_decimal(paired),
+                        imbalance: shares_to_decimal(imbalance),
+                        imbalance_side,
+                    },
+                    venue_time,
+                    captured_at,
+                ));
+            }
             other => {
                 self.skip(
                     SkipReason::NoMarketFact {

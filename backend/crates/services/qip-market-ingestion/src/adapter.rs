@@ -152,6 +152,12 @@ pub enum SensedRecord {
     Quote(Quote),
     Trade(Trade),
     Book(Box<OrderBook>),
+    /// A venue trading-state change (R12-TICK-2053, [`crate::session`]).
+    Status(Box<crate::session::VenueStatusUpdate>),
+    /// An auction's indicative price and imbalance.
+    Auction(Box<crate::session::AuctionIndication>),
+    /// The end of a book's lifecycle: discard and rebuild.
+    Reset(Box<crate::session::BookReset>),
     Bar(Box<Bar>),
     CorporateAction(Box<CorporateAction>),
     News(Box<NewsItem>),
@@ -187,6 +193,18 @@ impl qip_contracts::admission::Admissible for SensedRecord {
                 event_time: Some(book.at),
                 receive_time: None,
             },
+            Self::Status(status) => OwnTimes {
+                event_time: Some(status.at),
+                receive_time: Some(status.capture_time),
+            },
+            Self::Auction(auction) => OwnTimes {
+                event_time: Some(auction.at),
+                receive_time: Some(auction.capture_time),
+            },
+            Self::Reset(reset) => OwnTimes {
+                event_time: Some(reset.at),
+                receive_time: Some(reset.capture_time),
+            },
             Self::Bar(bar) => OwnTimes {
                 event_time: Some(bar.close_time()),
                 receive_time: None,
@@ -219,6 +237,7 @@ impl SensedRecord {
             Self::Quote(_) => Topic::MarketQuote,
             Self::Trade(_) => Topic::MarketTrade,
             Self::Book(_) => Topic::MarketOrderBook,
+            Self::Status(_) | Self::Auction(_) | Self::Reset(_) => Topic::MarketSession,
             Self::Bar(_) => Topic::MarketBar,
             Self::CorporateAction(_) => Topic::MarketCorporateAction,
             Self::News(_) => Topic::NewsReceived,
@@ -236,6 +255,9 @@ impl SensedRecord {
             Self::Quote(q) => q.at,
             Self::Trade(t) => t.at,
             Self::Book(b) => b.at,
+            Self::Status(s) => s.at,
+            Self::Auction(a) => a.at,
+            Self::Reset(r) => r.at,
             Self::Bar(b) => b.close_time(),
             Self::CorporateAction(a) => a.ex_date,
             Self::News(n) => n.published_at,
@@ -264,6 +286,9 @@ impl SensedRecord {
             Self::Quote(q) => Some(q.object_id.as_str()),
             Self::Trade(t) => Some(t.object_id.as_str()),
             Self::Book(b) => Some(b.object_id.as_str()),
+            Self::Status(s) => Some(s.object_id.as_str()),
+            Self::Auction(a) => Some(a.object_id.as_str()),
+            Self::Reset(r) => Some(r.object_id.as_str()),
             Self::Bar(b) => Some(b.object_id.as_str()),
             Self::CorporateAction(a) => Some(a.object_id.as_str()),
             Self::News(_) => None,
@@ -281,6 +306,9 @@ impl SensedRecord {
             Self::Quote(q) => q.object_id.to_string(),
             Self::Trade(t) => t.object_id.to_string(),
             Self::Book(b) => b.object_id.to_string(),
+            Self::Status(s) => s.object_id.to_string(),
+            Self::Auction(a) => a.object_id.to_string(),
+            Self::Reset(r) => r.object_id.to_string(),
             Self::Bar(b) => b.object_id.to_string(),
             Self::CorporateAction(a) => a.object_id.to_string(),
             Self::News(n) => n.item_id.clone(),
@@ -366,7 +394,41 @@ impl SensedRecord {
                 ));
                 issues
             }
+            Self::Status(s) => {
+                issues.extend(s.validate());
+                issues
+            }
+            Self::Auction(a) => {
+                issues.extend(a.validate());
+                issues
+            }
+            Self::Reset(r) => {
+                issues.extend(r.validate());
+                issues
+            }
             Self::CorporateAction(_) | Self::ReferenceData(_) => issues,
+        }
+    }
+
+    /// The [`Topic::MarketSession`] body for a session record; `None` for
+    /// every other kind.
+    pub fn session_record(&self) -> Option<crate::session::SessionRecord> {
+        use crate::session::SessionRecord;
+        match self {
+            Self::Status(s) => Some(SessionRecord::Status((**s).clone())),
+            Self::Auction(a) => Some(SessionRecord::Auction((**a).clone())),
+            Self::Reset(r) => Some(SessionRecord::Reset((**r).clone())),
+            Self::Tick(_)
+            | Self::Quote(_)
+            | Self::Trade(_)
+            | Self::Book(_)
+            | Self::Bar(_)
+            | Self::CorporateAction(_)
+            | Self::News(_)
+            | Self::Fundamental(_)
+            | Self::Macro(_)
+            | Self::AlternativeData(_)
+            | Self::ReferenceData(_) => None,
         }
     }
 
@@ -383,6 +445,12 @@ impl SensedRecord {
             Self::Quote(q) => bus.publish(context, lineage, at, q.clone()).map(|_| ()),
             Self::Trade(t) => bus.publish(context, lineage, at, t.clone()).map(|_| ()),
             Self::Book(b) => bus.publish(context, lineage, at, (**b).clone()).map(|_| ()),
+            Self::Status(_) | Self::Auction(_) | Self::Reset(_) => {
+                let body = self.session_record().ok_or_else(|| {
+                    qip_core::error::Error::invalid("a session record lost its kind")
+                })?;
+                bus.publish(context, lineage, at, body).map(|_| ())
+            }
             Self::Bar(b) => bus.publish(context, lineage, at, (**b).clone()).map(|_| ()),
             Self::CorporateAction(a) => {
                 bus.publish(context, lineage, at, (**a).clone()).map(|_| ())
@@ -404,11 +472,12 @@ impl SensedRecord {
     /// record is. `a_sensed_record_round_trips_through_its_event_and_a_foreign_topic_is_refused`
     /// pins the two: every topic listed here must reach a decoder in
     /// `from_event`, never its refusal arm.
-    pub const TOPICS: [Topic; 11] = [
+    pub const TOPICS: [Topic; 12] = [
         Topic::MarketTick,
         Topic::MarketQuote,
         Topic::MarketTrade,
         Topic::MarketOrderBook,
+        Topic::MarketSession,
         Topic::MarketBar,
         Topic::MarketCorporateAction,
         Topic::NewsReceived,
@@ -430,6 +499,10 @@ impl SensedRecord {
             Topic::MarketQuote => Self::Quote(event.decode::<Quote>()?.body),
             Topic::MarketTrade => Self::Trade(event.decode::<Trade>()?.body),
             Topic::MarketOrderBook => Self::Book(Box::new(event.decode::<OrderBook>()?.body)),
+            Topic::MarketSession => event
+                .decode::<crate::session::SessionRecord>()?
+                .body
+                .into_sensed(),
             Topic::MarketBar => Self::Bar(Box::new(event.decode::<Bar>()?.body)),
             Topic::MarketCorporateAction => {
                 Self::CorporateAction(Box::new(event.decode::<CorporateAction>()?.body))
@@ -474,6 +547,12 @@ impl SensedRecord {
             Self::Trade(t) => Envelope::new(event_id, at, recorded_at, lineage, t.clone()).erase(),
             Self::Book(b) => {
                 Envelope::new(event_id, at, recorded_at, lineage, (**b).clone()).erase()
+            }
+            Self::Status(_) | Self::Auction(_) | Self::Reset(_) => {
+                let body = self.session_record().ok_or_else(|| {
+                    qip_core::error::Error::invalid("a session record lost its kind")
+                })?;
+                Envelope::new(event_id, at, recorded_at, lineage, body).erase()
             }
             Self::Bar(b) => {
                 Envelope::new(event_id, at, recorded_at, lineage, (**b).clone()).erase()
