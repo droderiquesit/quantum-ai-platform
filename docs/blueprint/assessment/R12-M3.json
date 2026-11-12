@@ -1565,11 +1565,15 @@
   {
     "id": "R12-AMBIENT-3066",
     "status": "PARTIAL",
-    "current": "Per-thesis horizons; capital demand forecaster; no continuous multi-horizon forecasts.",
+    "current": "The kernel's forecast lattice holds a calibrated forecast per instrument at the four central horizons (seconds-minutes to quarters-years) every cycle; LatticeStage keeps each resolution outside its own 80% interval as a ForecastMiss, and qip-deepbrain's ResearchLoop sweep raises each as an assumption signal sized in interval widths past the bound and routes it through the shared AttentionRouter to a reflex-model update (ADR 0432). On by default from main.rs's ResearchConfig::from_lookup; QIP_DEEPBRAIN_FORECAST_SENTINEL=off raises none.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/forecast.rs:324"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs ForecastMiss, LatticeStage::misses_since",
+      "backend/crates/apps/qip-deepbrain/src/research.rs forecast_miss_signal and the forecast-sentinel read in ResearchLoop::sweep",
+      "backend/crates/apps/qip-deepbrain/tests/forecast_sentinel.rs a_forecast_reality_resolves_outside_its_interval_reaches_the_attention_router",
+      "backend/crates/apps/qip-deepbrain/tests/forecast_sentinel.rs with_the_sentinel_off_the_same_miss_raises_no_signal",
+      "docs/adr/0432-the-forecast-sentinel-raises-a-lattice-miss-as-an-assumption-signal-sized-in-interval-widths-and-is-on-by-default.md"
     ],
-    "gap": "No continuous multi-horizon forecast population.",
+    "gap": "2026-11-12: the millisecond row is the reflex lane's and no reflex-side forecaster populates it, so the sentinel covers seconds to years, not milliseconds; and no qip-deepbrain is deployed, so 'runs in production' is met in the composition root, not a deployment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1577,10 +1581,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test forecast_sentinel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-11-12 t50-03: five mutations each failed the suite for its own reason and were restored by cmp — dropping the sweep's routing of a miss (no day-ahead signal routed), recording a miss when covered (premise: no miss), ignoring the switch (signal raised with it off), defaulting the switch off (default assertion), sizing from the median (6000 bp not 1000). PARTIAL on the millisecond row and the deployment proof (ADR 0432)."
   },
   {
     "id": "R12-AMBIENT-3067",
