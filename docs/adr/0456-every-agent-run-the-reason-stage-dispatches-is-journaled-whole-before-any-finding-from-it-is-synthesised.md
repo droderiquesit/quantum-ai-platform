@@ -76,10 +76,18 @@ APIs and multimodal reasoning. None is built here:
 
 R12-AMBIENT-9029 therefore stays PARTIAL.
 
+## What it costs
+
+- One record per agent run per convened cycle on the log, carrying the
+  brief and the finding, so a convened cycle writes as many frames as the
+  roster ran. The roster is fixed by committed manifests, so the growth is
+  bounded by the roster and the cycle cadence, not by input volume.
+- A log that refuses an append now stops REASON forming a hypothesis that
+  cycle. Before, the panel's output still reached synthesis. That is a
+  cycle with no thesis rather than a thesis with no record, chosen on
+  purpose (principle 3, fail closed).
+
 ## Consequences
 
-- The log grows by one record per agent run per convened cycle. The panel's
-  size is the roster's, so the growth is bounded by the roster and the cycle
-  cadence.
 - A replay can now answer which specialist said what, under which manifest,
   and what it was refused, without the process that ran it.

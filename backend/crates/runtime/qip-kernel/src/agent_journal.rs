@@ -310,7 +310,7 @@ mod tests {
 
         let mut platform = platform();
         platform.observe(tape());
-        let dir = std::env::temp_dir().join(format!(
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
             "qip-kernel-agent-journal-refused-{}",
             std::process::id()
         ));
