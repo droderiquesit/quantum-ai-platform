@@ -1107,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn an_action_intent_of_a_class_requiring_capital_authority_is_admitted_once_the_signed_authority_is_supplied()
+    fn an_action_intent_of_a_class_requiring_capital_authority_is_admitted_once_capital_authority_is_supplied()
      {
         let scope = ExecutableScope::new(vec!["instrument_a".into()]);
         let intent =
