@@ -107,6 +107,7 @@ fn tape_file(name: &str, instruments: &[&str], days: i64) -> (std::path::PathBuf
         macro_releases: Vec::new(),
         alternative_data: Vec::new(),
         dividend_declarations: Vec::new(),
+        listing_changes: Vec::new(),
     };
     let directory =
         std::env::temp_dir().join(format!("qip-api-feed-{name}-{}", std::process::id()));

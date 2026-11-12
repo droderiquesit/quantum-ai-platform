@@ -194,3 +194,111 @@ fn a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_ra
     );
     assert!(memory.procedure_as_of("earnings-review", now()).is_none());
 }
+
+/// R12-WORLD-3034: a procedure recorded as a method carries rules an agent
+/// can execute, and a brief checks a call against its agent's own rule for
+/// the brief's subject: followed when the call leans the rule's way, not
+/// followed otherwise, and no check where the brief names no such procedure
+/// or the rule is for another subject. A rule nobody could follow is refused.
+///
+/// Mutations (2026-11-12, t50-09): `followed: true` unconditionally in
+/// `AgentBrief::check_procedure` (the opposing call reads as followed);
+/// skipping the `rules` assignment in `record_method` (the stored procedure
+/// holds no rule, so nothing is checked); admitting a lean other than
+/// positive or negative (the `neutral` rule is recorded).
+#[test]
+fn a_brief_checks_a_call_against_its_agents_own_procedure_rule() {
+    use qip_agents::finding::{AgentBrief, Direction};
+    use qip_agents::memory::{ProcedureRule, procedure_name_for};
+    let mut memory = ResearchMemory::new();
+    let at = Timestamp::from_secs(1_000_000);
+    let runs: Vec<AgentRunId> = (0..3)
+        .map(|i| {
+            let run_id = AgentRunId::from_string(format!("run-{i}"));
+            memory.record_episode(Episode {
+                run_id: run_id.clone(),
+                agent_id: "equity-analyst".to_string(),
+                occurred_at: Timestamp::from_secs(1_000 + i),
+                question: "which way".to_string(),
+                conclusion: "positive".to_string(),
+                evidence: vec!["subject:obj-ACME".to_string()],
+                conviction: 0.6,
+                outcome: Some(qip_agents::memory::EpisodeOutcome {
+                    resolved_at: Timestamp::from_secs(2_000 + i),
+                    correct: true,
+                    realised_bps: Some(30.0),
+                    explanation: "it moved".to_string(),
+                }),
+            });
+            run_id
+        })
+        .collect();
+    let name = procedure_name_for("equity-analyst");
+    let rule = |subject: &str, lean: &str| ProcedureRule {
+        subject: subject.to_string(),
+        lean: lean.to_string(),
+        support: 3,
+    };
+    for bad in [
+        vec![],
+        vec![rule(" ", "positive")],
+        vec![rule("obj-ACME", "neutral")],
+        vec![rule("obj-ACME", "positive"), rule("obj-ACME", "negative")],
+        vec![ProcedureRule {
+            support: 0,
+            ..rule("obj-ACME", "positive")
+        }],
+    ] {
+        assert!(
+            memory
+                .record_method(&name, bad.clone(), runs.clone(), at)
+                .is_err(),
+            "an unfollowable method was recorded: {bad:?}"
+        );
+    }
+    assert!(
+        memory.procedure_as_of(&name, at).is_none(),
+        "premise: nothing recorded"
+    );
+    assert_eq!(
+        memory
+            .record_method(&name, vec![rule("obj-ACME", "positive")], runs, at)
+            .unwrap(),
+        1
+    );
+    let procedure = memory.procedure_as_of(&name, at).cloned().unwrap();
+    assert_eq!(procedure.rules, vec![rule("obj-ACME", "positive")]);
+    assert_eq!(
+        procedure.steps,
+        vec!["on obj-ACME: lean positive (3 correct call(s))"]
+    );
+
+    let brief = |subject: &str| {
+        AgentBrief::new("q", at, Duration::from_days(1))
+            .about_objects(vec![qip_core::ObjectId::from_string(subject)])
+            .with_procedures(vec![procedure.clone()])
+    };
+    let followed = brief("obj-ACME")
+        .check_procedure("equity-analyst", Direction::Positive)
+        .unwrap();
+    assert!(followed.followed, "{followed:?}");
+    let departed = brief("obj-ACME")
+        .check_procedure("equity-analyst", Direction::Negative)
+        .unwrap();
+    assert!(!departed.followed, "{departed:?}");
+    assert_eq!(
+        departed.departure(),
+        "departs from procedure:equity-analyst v1: its correct calls on obj-ACME leaned \
+         positive, this one leans negative"
+    );
+    assert!(
+        brief("obj-ACME")
+            .check_procedure("macro-analyst", Direction::Positive)
+            .is_none()
+    );
+    assert!(
+        brief("obj-OTHER")
+            .check_procedure("equity-analyst", Direction::Positive)
+            .is_none()
+    );
+}

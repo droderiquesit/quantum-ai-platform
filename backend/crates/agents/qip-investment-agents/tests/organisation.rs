@@ -3807,3 +3807,83 @@ fn removing_the_commodities_analyst_drops_supply_chain_from_coverage() -> Result
     assert!(!without.contains(&Scope::SupplyChain), "{without:?}");
     Ok(())
 }
+
+/// R12-WORLD-3034: an analyst executes its own procedure. Briefed with a
+/// procedure whose rule for the brief's subject leans another way than the
+/// analyst's present call, the equity analyst's finding records the check as
+/// not followed and states the departure as a caveat. Direction and
+/// conviction are exactly what the analyst's arithmetic gave with no
+/// procedure at all, because a procedure is the record a call is held
+/// against and never an input that pulls the call toward past success. A
+/// procedure for another agent, or with no rule for the subject, gives no
+/// check. The followed arm is `qip-agents`'
+/// `a_brief_checks_a_call_against_its_agents_own_procedure_rule`.
+///
+/// Mutations (2026-11-12, t50-09): `build` in place of `build_against` in
+/// `EquityAnalyst::analyse` (no check on the finding); dropping the caveat
+/// push in `build_against` (no departure stated).
+#[test]
+fn an_analyst_checks_its_call_against_its_own_procedure_and_states_a_departure() -> Result<()> {
+    use qip_agents::finding::Direction;
+    use qip_agents::memory::{Procedure, ProcedureRule, procedure_name_for};
+    let analyst = "equity-analyst";
+    let equity_finding = |brief: &AgentBrief| -> Result<qip_agents::finding::AgentFinding> {
+        let mut org = organisation(populated_desk())?;
+        let report = org.dispatch(brief, now(), &lineage());
+        Ok(report
+            .findings
+            .into_iter()
+            .find(|f| f.agent_id == analyst)
+            .expect("the equity analyst answered"))
+    };
+    let bare = equity_finding(&brief())?;
+    assert!(bare.procedure.is_none(), "premise: no procedure, no check");
+    let present = bare.direction;
+    let other = if present == Direction::Positive {
+        "negative"
+    } else {
+        "positive"
+    };
+    let procedure = |owner: &str, subject: &str| Procedure {
+        name: procedure_name_for(owner),
+        version: 2,
+        steps: vec![format!("on {subject}: lean {other} (3 correct call(s))")],
+        supporting_episodes: Vec::new(),
+        learned_at: now(),
+        rules: vec![ProcedureRule {
+            subject: subject.to_string(),
+            lean: other.to_string(),
+            support: 3,
+        }],
+    };
+
+    let departed = equity_finding(&brief().with_procedures(vec![procedure(analyst, "obj-ACME")]))?;
+    let check = departed
+        .procedure
+        .clone()
+        .expect("the analyst checked its procedure");
+    assert_eq!(check.name, procedure_name_for(analyst));
+    assert_eq!(check.version, 2);
+    assert_eq!(check.subject, "obj-ACME");
+    assert_eq!(check.procedure_lean, other);
+    assert_eq!(check.present_lean, present.as_str());
+    assert!(!check.followed, "{check:?}");
+    assert!(
+        departed.caveats.contains(&check.departure()),
+        "no departure stated: {:?}",
+        departed.caveats
+    );
+    assert_eq!(departed.direction, bare.direction);
+    assert_eq!(departed.conviction.to_bits(), bare.conviction.to_bits());
+
+    for (owner, subject) in [("macro-analyst", "obj-ACME"), (analyst, "obj-OTHER")] {
+        let unchecked = equity_finding(&brief().with_procedures(vec![procedure(owner, subject)]))?;
+        assert!(
+            unchecked.procedure.is_none(),
+            "a procedure of {owner} on {subject} was checked: {:?}",
+            unchecked.procedure
+        );
+        assert_eq!(unchecked.caveats, bare.caveats);
+    }
+    Ok(())
+}
