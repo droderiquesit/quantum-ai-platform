@@ -269,11 +269,24 @@ fn run() -> Result<()> {
     // model is: the in-tree provider serves the four forms this platform
     // trains and nothing else, and the kernel's own constructor holds one
     // that serves nothing, so a platform a test builds promotes no model.
+    // The synthetic arm's demo exchange, built before the platform so the
+    // platform is assembled over the instruments it prices (R12-REASON-3057):
+    // the demo's dated future was observed on every cycle and listed in no
+    // universe the platform held, so the contract rule had nothing to read.
+    // The same environment becomes the evolution engine's adapter below.
+    let (platform_universe, mut synthetic_arm) = qip_deepbrain::reference::node_assembly(
+        catalogue.universe,
+        tape_feed.is_some(),
+        replay_path.is_some(),
+        platform_config.seed,
+        config.cycle_interval,
+        clock.now(),
+    )?;
     let mut platform = Platform::with_model_provider(
         platform_config,
         context,
         telemetry,
-        catalogue.universe,
+        platform_universe,
         limits,
         language_model.chain.clone(),
         Box::new(qip_training::serve::InTreeProvider),
@@ -597,29 +610,23 @@ fn run() -> Result<()> {
             }
         }
         (None, None) => {
-            // The bar interval must match the step, or a fast cadence
-            // closes a bar every sixty cycles and the node runs blind for
-            // hours while looking configured — the trap the fast brain's
-            // feed documents, walked into here once before this comment.
-            let synthetic = qip_market_ingestion::synthetic::EnvironmentConfig {
-                seed: platform.config().seed,
-                step: config.cycle_interval,
-                bar_interval: if config.cycle_interval < qip_core::Duration::from_mins(1) {
-                    qip_market::bar::Interval::Second
-                } else {
-                    qip_market::bar::Interval::Minute
-                },
-                ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
-            };
             // One instrument list for prices and reference data alike, with
             // provenance and licensing stamped synthetic. Deriving the
             // universe from the environment rather than declaring a second
             // one is what keeps the two from drifting — a listing the
             // exchange does not price, or a price the universe does not
-            // list, would each turn the loop quietly off again.
+            // list, would each turn the loop quietly off again. The
+            // environment is the one the platform's universe was merged
+            // from above, so the two cannot disagree either.
+            let environment = synthetic_arm.take().ok_or_else(|| {
+                Error::invalid(
+                    "the synthetic arm's environment was not built before the platform; this is \
+                     an assembly defect, refusing to start on a second, different demo exchange",
+                )
+            })?;
             qip_deepbrain::evolution::EvolutionEngine::over_synthetic(
                 evolution_config,
-                qip_market_ingestion::synthetic::SyntheticEnvironment::demo(clock.now(), synthetic),
+                environment,
                 platform.config().seed,
                 clock.now(),
             )?
