@@ -1604,18 +1604,27 @@ fn a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_o
     Ok(())
 }
 
-/// R12-TICK-2080: the twin is recalibrated from the fills it mispriced, and
-/// the calibration is what its next pricing on that venue uses.
+/// R12-TICK-2080, ADR 0450: the twin is recalibrated from what its cost
+/// model charges for the venue's fill against what the venue actually cost —
+/// not from the gap between the twin's mark and the fill.
 ///
-/// Mutation: delete the `fill_calibration.observe` call in `score_filled` —
-/// the venue holds no calibration. Mutation: price with
-/// `CostModel::liquid_equity()` again instead of the calibrated model — the
-/// spread assertion still passes here, so the observation count and bias
-/// are the guard on the first half and `qip-twin`'s
-/// `after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills`
-/// on the second.
+/// The tape opens the bar the twin enters on at 90 against an arrival of
+/// 100, so the twin's *mark* is ten percent off the fill. That is a price
+/// error, and it is charted on `qip_venue_fill_error_bps`; it is not a cost
+/// error, and a calibration that fitted it charged a thousand basis points of
+/// spread the venue never took. The quiet tape has no volatility, so the
+/// twin charges no impact and the error is the spread term alone: the base
+/// model's commission and half-spread against the venue's slippage from its
+/// arrival price and the fees it billed, worked here from the order
+/// manager's own fills.
+///
+/// Mutation: feed `trade_error_bps` (mark against fill) to the calibration
+/// instead of the cost error — the bias is two hundred basis points and the
+/// hand-worked figure disagrees. Mutation: delete the `observe_cost` call in
+/// `score_filled` — the venue holds no calibration.
 #[test]
-fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill() -> Result<()> {
+fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_venues_cost()
+-> Result<()> {
     let mut platform = platform()?;
     let mut tape = quiet_bars("AAA", 90);
     let last = tape.pop().expect("ninety bars");
@@ -1625,7 +1634,7 @@ fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill
     };
     tape.push(bar("AAA", last_at, 90.0, 90.0));
     platform.observe(tape);
-    fill_one(&mut platform, "prop-filled", start())?;
+    let order_id = fill_one(&mut platform, "prop-filled", start())?;
     assert!(
         platform
             .fill_calibration()
@@ -1635,26 +1644,58 @@ fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill
     );
     platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
     platform.run_cycle(start().saturating_add(Duration::from_days(3)));
-    let error = platform.fill_scores()[0]
+    let mark_error = platform.fill_scores()[0]
         .trade_error_bps
         .expect("the fill was priced");
+    assert!(
+        mark_error < -500.0,
+        "premise: the twin's mark is far from the fill, {mark_error} bps"
+    );
+
+    let fills: Vec<_> = platform
+        .orders()
+        .fills()
+        .into_iter()
+        .filter(|fill| fill.order_id == order_id)
+        .collect();
+    assert!(
+        !fills.is_empty(),
+        "premise: the order manager holds the fill"
+    );
+    let notional: f64 = fills
+        .iter()
+        .map(|fill| fill.quantity.to_f64() * fill.price.to_f64())
+        .sum();
+    let paid: f64 = fills.iter().map(|fill| fill.costs.to_f64()).sum();
+    let arrival = platform
+        .orders()
+        .order(&order_id)
+        .expect("the order manager holds the order")
+        .arrival_price
+        .to_f64();
+    let slippage = (fills[0].price.to_f64() - arrival) / arrival * 10_000.0;
+    let reality = slippage + paid / notional * 10_000.0;
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let charged = base.commission_bps + base.half_spread_bps + base.tax_bps;
     let calibration = platform
         .fill_calibration()
         .venue("simulated-venue")
         .expect("the priced fill calibrated its venue");
     assert_eq!(calibration.observations, 1);
     assert!(
-        (calibration.bias_bps - 0.2 * error).abs() < 1e-9,
-        "one fifth of the way to the observed error {error}: {}",
+        (calibration.bias_bps - 0.2 * (charged - reality)).abs() < 1e-6,
+        "one fifth of the way to the cost error {} (charged {charged}, venue {reality}): {}",
+        charged - reality,
         calibration.bias_bps
     );
-    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
     let calibrated = platform
         .fill_calibration()
         .cost_model(&base, "simulated-venue");
     assert!(
-        calibrated.half_spread_bps > base.half_spread_bps,
-        "a twin that filled better than the venue now pays a wider spread there"
+        calibrated.half_spread_bps > base.half_spread_bps
+            && calibrated.half_spread_bps < base.half_spread_bps + 1.0,
+        "the venue costs slightly more than the twin charged, so the spread widens a little: {}",
+        calibrated.half_spread_bps
     );
     Ok(())
 }
@@ -2921,6 +2962,45 @@ fn the_same_book_at_a_venue_the_twin_has_not_mispriced_is_admitted() -> Result<(
     Ok(())
 }
 
+/// R12-RES-7104 read through R12-TICK-2080 (ADR 0450): a twin wrong only
+/// about size — no spread error, every basis point of it in the impact
+/// slope — is a misfit twin, and narrows the venue like one. Before ADR 0450
+/// `twin_misfit` read `bias_bps` alone and this twin passed as right.
+///
+/// Mutation: make `twin_misfit` read `calibration.bias_bps.abs()` instead of
+/// `correction_bps()` — the premise holds and the misfit assertion fails.
+#[test]
+fn a_twin_wrong_only_about_size_is_a_misfit_twin() -> Result<()> {
+    let mut platform = platform_under_the_misfit_cap()?;
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let units = [0.5_f64, 1.0, 1.5, 2.0];
+    for round in 0..12 {
+        let unit = units[round % units.len()];
+        platform.fill_calibration_mut().observe_cost(
+            MISFIT_VENUE,
+            &base,
+            -100.0 * unit,
+            Some(unit),
+        )?;
+    }
+    let calibration = platform
+        .fill_calibration()
+        .venue(MISFIT_VENUE)
+        .expect("calibrated")
+        .clone();
+    assert!(
+        calibration.bias_bps.abs() < qip_kernel::platform::TWIN_MISFIT_BIAS_BPS,
+        "premise: the spread alone does not read as misfit, {}",
+        calibration.bias_bps
+    );
+    assert!(
+        platform.twin_misfit(MISFIT_VENUE),
+        "a twin wrong by {} bps at the venue's own size was not read as misfit",
+        calibration.correction_bps()
+    );
+    Ok(())
+}
+
 // --- R12-RISK-4096: a short with no known borrow is refused ----------------
 
 fn sell(platform: &mut Platform, quantity: Decimal, tag: &str, at: Timestamp) -> Result<()> {
@@ -3340,41 +3420,108 @@ fn a_failure_on_the_tape_is_kept_as_a_failure_and_a_spinoff_lists_its_spun_entit
 
 // --- the fill's participation reaches the twin's calibration (R12-TICK-2080)
 
-/// R12-TICK-2080: the LEARN stage hands the twin's calibration each scored
-/// fill's participation in its bar's volume beside the fill error, so the
-/// twin can tell an impact misfit from a spread misfit; without it every
-/// error was charged to the spread. Mutation: pass `None` for the
-/// participation in `score_filled` — the calibration counts no fill with a
-/// size and the assertion fails.
-#[test]
-fn a_scored_fill_reaches_the_twins_calibration_with_its_participation() -> Result<()> {
-    let mut platform = platform()?;
-    let mut tape = quiet_bars("AAA", 90);
-    let last = tape.pop().expect("ninety bars");
-    let last_at = match &last {
-        SensedRecord::Bar(bar) => bar.open_time,
-        _ => unreachable!("quiet_bars produces bars"),
-    };
-    tape.push(bar("AAA", last_at, 90.0, 90.0));
-    platform.observe(tape);
-    fill_one(&mut platform, "prop-participation", start())?;
-    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
-    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+/// A tape that moves: each day's bar opens at 100 and closes 1.26 percent
+/// away, alternately up and down, on `volume` shares, so the twin's
+/// liquidity estimate has a volatility near the cost model's reference and
+/// a mean volume an order of a few hundred shares is a real share of.
+fn volatile_bars(symbol: &str, count: usize, volume: Decimal) -> Vec<SensedRecord> {
+    (0..count)
+        .map(|i| {
+            let step = if i % 2 == 0 { 1.0126 } else { 1.0 / 1.0126 };
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            match bar(symbol, at, 100.0, 100.0 * step) {
+                SensedRecord::Bar(mut bar) => {
+                    bar.volume = volume;
+                    SensedRecord::Bar(bar)
+                }
+                _ => unreachable!("bar produces a bar"),
+            }
+        })
+        .collect()
+}
 
-    let scores = platform.fill_scores();
-    assert_eq!(scores.len(), 1, "premise: the fill was priced");
+/// R12-TICK-2080's bar, on the platform's own simulated venue: after fills
+/// whose cost the twin gets systematically wrong, the twin's spread and
+/// impact parameters converge on what the venue actually charges.
+///
+/// The desk's venue charges a three basis-point half-spread and one of
+/// commission, and no impact at all — the kernel supplies it no liquidity
+/// statistics, so its square-root term is zero (`SimulatedBroker::fill_price`).
+/// The twin's base model charges a 2.5 bp half-spread, one of commission and
+/// a 40 bp impact coefficient. Sixteen fills of four sizes on a tape with a
+/// volatility near the reference must therefore move the twin to a 3 bp
+/// half-spread and an impact coefficient near zero: the simulator's true
+/// values, reached from the twin's own impact units.
+///
+/// Mutation: make `observe_cost` return before updating anything (freeze
+/// the parameters) — the coefficient stays at 40 and the spread at 2.5.
+/// Mutation: fit the slope on `sqrt(participation)` without the volatility
+/// scale — at this tape's scale the fit still lands, so the guard on the
+/// unit is `qip-simulation-engine`'s
+/// `the_impact_unit_times_the_coefficient_is_the_impact_the_model_charges`.
+#[test]
+fn after_fills_with_systematic_cost_error_the_twins_spread_and_impact_converge_on_the_venues_true_values()
+-> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = volatile_bars("AAA", 90, dec!("10000"));
+    platform.observe(std::mem::take(&mut tape));
+    let sizes = [dec!("100"), dec!("300"), dec!("600"), dec!("1000")];
+    let mut submitted = 0;
+    for round in 0..4 {
+        for (n, quantity) in sizes.iter().enumerate() {
+            let fills_before = platform.orders().fills().len();
+            let order = platform.order_from(
+                object("AAA"),
+                Side::Buy,
+                *quantity,
+                dec!("100"),
+                &format!("prop-converge-{round}-{n}"),
+                vec![format!("hyp-converge-{round}-{n}")],
+                start(),
+            );
+            platform.submit_order(order, start())?;
+            if platform.orders().fills().len() > fills_before {
+                submitted += 1;
+            }
+        }
+    }
     assert!(
-        scores[0].trade_error_bps.is_some(),
-        "premise: the twin priced an entry to compare the fill with"
+        submitted >= 12,
+        "premise: the venue filled the sizes, {submitted}"
     );
-    let venue = platform
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    let scoring_time = start().saturating_add(Duration::from_days(3));
+    for _ in 0..4 {
+        platform.run_cycle(scoring_time);
+    }
+    let venue = platform.desk_venue().to_string();
+    let calibration = platform
         .fill_calibration()
-        .venue(&scores[0].venue)
-        .expect("the venue was calibrated from the fill");
-    assert_eq!(venue.observations, 1);
+        .venue(&venue)
+        .expect("the scored fills calibrated the venue")
+        .clone();
     assert_eq!(
-        venue.participation_observations, 1,
-        "the fill reached the calibration without its participation"
+        calibration.participation_observations, calibration.observations,
+        "every fill reached the calibration with its impact unit"
+    );
+    assert!(
+        calibration.observations >= 12,
+        "premise: the fills were scored, {}",
+        calibration.observations
+    );
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let calibrated = platform.fill_calibration().cost_model(&base, &venue);
+    assert!(
+        calibrated.impact_coefficient_bps < 2.0,
+        "the impact coefficient did not converge on the venue's zero: {} -> {}",
+        base.impact_coefficient_bps,
+        calibrated.impact_coefficient_bps
+    );
+    assert!(
+        (calibrated.half_spread_bps - 3.0).abs() < 0.2,
+        "the half-spread did not converge on the venue's 3 bp: {} -> {}",
+        base.half_spread_bps,
+        calibrated.half_spread_bps
     );
     Ok(())
 }

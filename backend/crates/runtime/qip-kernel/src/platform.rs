@@ -24525,9 +24525,12 @@ impl Platform {
         self.fill_calibration
             .venue(venue)
             .is_some_and(|calibration| {
+                // `correction_bps` is the larger of the spread and the
+                // impact correction (R12-TICK-2080): reading `bias_bps`
+                // alone let a size-dependent misfit hide in the slope.
+                let correction = calibration.correction_bps();
                 calibration.observations >= TWIN_MISFIT_MIN_OBSERVATIONS
-                    && (calibration.bias_bps.is_nan()
-                        || calibration.bias_bps.abs() >= TWIN_MISFIT_BIAS_BPS)
+                    && (correction.is_nan() || correction >= TWIN_MISFIT_BIAS_BPS)
             })
     }
 
@@ -28166,19 +28169,36 @@ impl Platform {
                             error_bps,
                             Histogram::signed_basis_points,
                         );
-                        // R12-TICK-2080: the fill's share of the bar it filled
-                        // in, so the calibration can split the error between
-                        // spread and impact. Unknown — no order on the desk, no
-                        // bar covering the fill, a bar with no volume — leaves
-                        // the spread to take the whole error, as before, rather
-                        // than a participation nobody measured.
-                        let participation = self.fill_participation(&order_id, &path);
-                        if let Err(error) = self.fill_calibration.observe_with_participation(
+                    }
+                    // R12-TICK-2080, ADR 0450: the twin's charged cost for
+                    // the venue's own fill, under the uncalibrated model and
+                    // in the twin's own impact units, against what the venue
+                    // actually cost. Not the entry error charted above: that
+                    // is the venue's slippage from the twin's mark, which no
+                    // improvement in the twin's cost model can shrink, and
+                    // fitting it charged every cost twice. A cell's fill has
+                    // no arrival price, and is measured from the twin's mark
+                    // until its report carries one (`fill_cost_error`).
+                    let base = CostModel::liquid_equity();
+                    if let Some((error_bps, unit)) =
+                        self.fill_cost_error(&order_id, &path, trade, &base)
+                    {
+                        match self.fill_calibration.observe_cost(
                             path.venue.as_str(),
+                            &base,
                             error_bps,
-                            participation,
+                            unit,
                         ) {
-                            problems.push(format!("fill calibration: {}", error.message()));
+                            Ok(observed) if observed.refused => problems.push(format!(
+                                "fill calibration: the correction fitted at {} would carry the \
+                                 twin's spread or impact past the platform's cost ceiling, so \
+                                 the previous one is kept",
+                                path.venue.as_str()
+                            )),
+                            Ok(_) => {}
+                            Err(error) => {
+                                problems.push(format!("fill calibration: {}", error.message()))
+                            }
                         }
                     }
                     scored += 1;
@@ -28616,42 +28636,87 @@ impl Platform {
         self.tactical = Some(refresh);
     }
 
-    /// The share of its bar's volume a scored fill took (R12-TICK-2080): the
-    /// quantity the desk's order filled, or the cell's reported fill
-    /// quantity, over the volume of the held bar whose session covers the
-    /// decision instant. `None` when any of the three is unknown, so the
-    /// calibration charges the error to the spread alone rather than to a
-    /// size nobody measured. Money to statistic at the one place it happens
-    /// for this path: a participation is a ratio of two quantities.
-    fn fill_participation(&self, order_id: &OrderId, path: &FilledPath) -> Option<f64> {
-        let quantity = match &path.cell {
-            Some(origin) => origin.quantity,
-            None => self
-                .orders
-                .order(order_id)?
-                .fills
-                .iter()
-                .try_fold(Decimal::ZERO, |sum, fill| sum.checked_add(fill.quantity))?,
+    /// The twin's charged cost for a scored desk fill under `base`, less
+    /// what the venue actually cost, in basis points of notional, with the
+    /// fill's impact unit in the twin's terms (R12-TICK-2080, ADR 0450).
+    ///
+    /// Reality's cost is the venue's slippage from the order's arrival
+    /// price plus the fees it billed over the notional it filled. The
+    /// twin's is `base` pricing the quantity the venue filled at the twin's
+    /// own entry mark, against the liquidity the twin priced its trade arm
+    /// with — so the size is the venue's and the volume and volatility are
+    /// the twin's, which is the only pairing in which the impact term means
+    /// the same thing on both sides. A cell's fill is measured from the
+    /// twin's mark instead, for want of an arrival price (see the arm).
+    /// `None` when a desk fill has no order or arrival price, there is no
+    /// traded arm, or `base` refuses the size; the unit is `None` when the twin's volatility scales impact
+    /// to nothing, so the error is charged to the spread alone. Money
+    /// crosses to statistics here and is never booked.
+    fn fill_cost_error(
+        &self,
+        order_id: &OrderId,
+        path: &FilledPath,
+        trade: Option<&qip_twin::counterfactual::Counterfactual>,
+        base: &CostModel,
+    ) -> Option<(f64, Option<f64>)> {
+        let outcome = &trade?.counterfactual_outcome;
+        let SimulatedFill::Filled { entry_price, .. } = outcome.fill() else {
+            return None;
         };
-        if quantity <= Decimal::ZERO {
+        let liquidity = outcome.entry_liquidity()?;
+        let (filled, reality_bps) = match &path.cell {
+            // A cell's report carries neither the arrival price its order
+            // was sent at nor the fees the venue billed, so its cost is
+            // measured from the twin's own mark with no fees: the price
+            // error and the cost error cannot be told apart on a cell fill
+            // until the report carries both (ADR 0450, "What remains").
+            // Kept rather than dropped because R12-RES-7104's hold at a
+            // cell's venue reads that venue's calibration.
+            Some(origin) => {
+                let slippage =
+                    signed_bps(path.fill_price.to_f64(), entry_price.to_f64(), path.side)?;
+                (origin.quantity, slippage)
+            }
+            None => {
+                let order = self.orders.order(order_id)?;
+                let arrival = order.arrival_price;
+                if !arrival.is_positive() {
+                    return None;
+                }
+                let filled = order
+                    .fills
+                    .iter()
+                    .try_fold(Decimal::ZERO, |sum, fill| sum.checked_add(fill.quantity))?;
+                let notional: f64 = order
+                    .fills
+                    .iter()
+                    .map(|fill| fill.quantity.to_f64() * fill.price.to_f64())
+                    .sum();
+                let paid: f64 = order.fills.iter().map(|fill| fill.costs.to_f64()).sum();
+                if !(notional.is_finite() && notional > 0.0) {
+                    return None;
+                }
+                let slippage = signed_bps(path.fill_price.to_f64(), arrival.to_f64(), path.side)?;
+                (filled, slippage + paid / notional * 10_000.0)
+            }
+        };
+        if filled <= Decimal::ZERO {
             return None;
         }
-        let bars = self.bar_history.get(path.object_id.as_str())?;
-        let bar = bars
-            .iter()
-            .find(|bar| bar.open_time <= path.decided_at && path.decided_at < bar.close_time())
-            .or_else(|| {
-                bars.iter()
-                    .rev()
-                    .find(|bar| bar.close_time() <= path.decided_at)
-            })?;
-        if bar.volume <= Decimal::ZERO {
-            return None;
-        }
-        let participation = quantity.to_f64() / bar.volume.to_f64();
-        (0.0..=1.0)
-            .contains(&participation)
-            .then_some(participation)
+        let charged = base
+            .cost_of(
+                filled,
+                *entry_price,
+                liquidity.daily_volume_f64,
+                liquidity.daily_volatility_f64,
+            )
+            .ok()?;
+        let error_bps = charged.total_bps() - reality_bps;
+        let unit = base.impact_unit(
+            filled.to_f64() / liquidity.daily_volume_f64,
+            liquidity.daily_volatility_f64,
+        );
+        error_bps.is_finite().then_some((error_bps, unit))
     }
 
     /// The twin's per-venue fill calibration, as the scored fills have moved
