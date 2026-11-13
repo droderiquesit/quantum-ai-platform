@@ -2592,15 +2592,18 @@
   {
     "id": "R12-RES-7109",
     "status": "PARTIAL",
-    "current": "ToolRegistry::revoke refuses the next action and audits it. ToolRegistry::reauthorise(tool, operator) is now the only way back: it is refused for a blank operator, an unregistered tool, or a tool not revoked, and it records who restored the tool. ActionGuard::reauthorise passes it through. AmbientIntake::revoke drops every draft held for a retry, returning each as Intake::Abandoned, so a later reauthorisation cannot send work authorised before the stop.",
+    "current": "ToolRegistry::revoke refuses the next action and audits it; ToolRegistry::reauthorise(tool, operator) is the only way back and refuses a blank operator, an unregistered tool and a tool not revoked. Since ADR 0534 (2026-11-13) the shipped path qip agency shadow journals the withdrawal: the first pass under a policy revoking a tool writes AgencyRecord::ToolRevoked ahead of its tool decisions, journal::resume folds every ToolRevoked/ToolReauthorised into Resumed::standing, and Session::open re-revokes every journal-held tool before reading the policy, so deleting a name from revoked_tools readmits nothing. Only an AgencyPolicy::reauthorisations entry {tool, operator, reason} restores the tool, through ActionGuard::reauthorise; a blank operator, a blank reason, or a policy revoking and reauthorising one tool stops the binary; an accepted entry is journaled once as AgencyRecord::ToolReauthorised beside the pass's tool decisions.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:477 is_revoked, :489 reauthorise, :510 reauthorised_by",
-      "backend/crates/services/qip-agency/src/guard.rs:295 ActionGuard::reauthorise",
-      "backend/crates/services/qip-agency/src/ambient_intake.rs:408 revoke drains the retry queue, :424 reauthorise",
-      "backend/crates/libs/qip-contracts/tests/action.rs:202 a_revoked_tool_stays_refused_until_a_named_operator_reauthorises_it",
-      "backend/crates/services/qip-agency/tests/ambient_intake.rs:573 revoking_the_drafting_tool_drops_every_held_draft_and_only_a_named_operator_restores_it"
+      "backend/crates/libs/qip-contracts/src/action.rs:591 is_revoked, reauthorise, reauthorised_by",
+      "backend/crates/services/qip-agency/src/guard.rs:558 ActionGuard::reauthorise",
+      "backend/crates/services/qip-agency/src/journal.rs AgencyRecord::ToolRevoked / ToolReauthorised, StandingChange, Resumed::standing (grep -n 'ToolRevoked\\|StandingChange' backend/crates/services/qip-agency/src/journal.rs)",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::apply_standing (grep -n 'fn apply_standing' backend/crates/apps/qip-cli/src/agency.rs)",
+      "backend/crates/apps/qip-cli/tests/agency.rs::deleting_a_revocation_from_the_policy_readmits_nothing_and_only_a_named_reauthorisation_restores_the_tool",
+      "backend/crates/apps/qip-cli/tests/agency.rs::a_tool_the_operator_revokes_is_refused_on_the_next_pass_and_the_refusal_is_journaled",
+      "backend/crates/services/qip-agency/tests/ambient_intake.rs:573 revoking_the_drafting_tool_drops_every_held_draft_and_only_a_named_operator_restores_it",
+      "docs/adr/0534-a-revoked-agency-tool-stays-revoked-from-the-journal-and-only-a-named-reauthorisation-restores-it.md"
     ],
-    "gap": "No production seam calls reauthorise or AmbientIntake::revoke. The deployed revocation is qip-cli agency.rs:281, which re-applies policy.revoked_tools at start, so deleting an entry from that list readmits the tool on the next start with no named operator and no attested identity. Closing the row needs that path to require a reauthorisation record carrying an authenticated operator (AutonomyController-style), journaled beside the guard's decisions. Credential rotation is Secret Manager work outside the crate.",
+    "gap": "The reauthorisation's operator is a name the policy's author writes; nothing in qip-cli authenticates it (ADR 0534 'What this leaves open'). OperatorIdentity is built only in qip-api's authentication middleware, and the two ways to authenticate the CLI path both need what this lane cannot give: a fifth ADR 0110 artefact class with an HSM key infrastructure/terraform/artefact-signing.tf does not create, or a qip-api route that can reach the agency journal. AmbientIntake::revoke still has no production caller. A revocation is journaled only with a pass, so a start that revokes and runs no pass leaves nothing on the journal. Credential rotation is Secret Manager work outside the crate. No process deploys qip agency shadow.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2608,10 +2611,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-contracts --test action && cargo test -p qip-agency --test ambient_intake",
+    "verification": "cd backend && cargo test -p qip-cli --test agency && cargo test -p qip-agency --test journal && cargo test -p qip-contracts --test action && cargo test -p qip-agency --test ambient_intake",
     "work_item": "",
     "size": "M",
-    "notes": "Narrowed 2026-10-18 (lane L12). Mutations: dropping the blank-operator refusal in reauthorise failed the contracts test (the tool was no longer revoked); mapping revoke over retry.iter().cloned() instead of draining it failed the intake test (pending() stayed 1). Both restored and passing. Kept PARTIAL: the stop and the re-authorisation exist in the library, but they do not run on a deployed path."
+    "notes": "Narrowed 2026-10-18 (lane L12). Mutations: dropping the blank-operator refusal in reauthorise failed the contracts test (the tool was no longer revoked); mapping revoke over retry.iter().cloned() instead of draining it failed the intake test (pending() stayed 1). Both restored and passing. Kept PARTIAL: the stop and the re-authorisation exist in the library, but they do not run on a deployed path. 2026-11-13 (wave580 t5-04, ADR 0534): revocation journaled and sticky on the shipped CLI path; readmission only by a named, reasoned, journaled reauthorisation. Mutations: skipping the re-revoke of journal-held tools let the pass after the deleted line be shadowed (exit 0, test fails at 'deleting the policy line readmitted the tool'); dropping the verbatim-repeat skip refused the repeated policy ('tool quoter is not revoked'). Both restored byte-for-byte and passing. Kept PARTIAL: the operator is named, not authenticated."
   },
   {
     "id": "R12-RES-7110",
