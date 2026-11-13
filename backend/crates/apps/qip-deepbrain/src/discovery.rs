@@ -386,6 +386,8 @@ impl DiscoveryDesk {
             catalogued: Vec::new(),
             catalogue_problems: Vec::new(),
             entries: Vec::new(),
+            claims_invalidated: Vec::new(),
+            claims_downweighted: Vec::new(),
         };
         for entry in order {
             let candidates = vec![entry.candidate.clone()];
@@ -405,6 +407,15 @@ impl DiscoveryDesk {
             merged.decisions.extend(assessment.decisions);
             merged.catalogued.extend(assessment.catalogued);
             merged.entries.extend(assessment.entries);
+            // What each entry's pass did to the claims already made on the
+            // source it moved (R12-RES-7097), merged like every other half
+            // of the pass so the caller reads one assessment.
+            merged
+                .claims_invalidated
+                .extend(assessment.claims_invalidated);
+            merged
+                .claims_downweighted
+                .extend(assessment.claims_downweighted);
             merged
                 .catalogue_problems
                 .extend(assessment.catalogue_problems);

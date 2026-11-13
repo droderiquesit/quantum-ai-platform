@@ -3097,12 +3097,34 @@ pub struct RecordedPrediction {
     /// gradeable, because its confidence was never written down.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub claim: Option<ThesisClaim>,
+    /// The sources the claim stood on (R12-RES-7097): the origins of the
+    /// hypothesis's evidence, and the sources whose facts about the subject
+    /// the world model held when the claim was made. Recorded at the claim
+    /// rather than looked up later, because a quarantine retracts the
+    /// source's facts before anything asks what stood on them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub sources: BTreeSet<String>,
+    /// Why this claim was withdrawn, where it was. A withdrawn claim is
+    /// never scored: the platform's calibration is what it believes about
+    /// its own confidence, and grading a claim whose evidence has been
+    /// quarantined would teach it from a source it has stopped believing.
+    /// Kept on the record rather than deleted — what was claimed, and why it
+    /// was dropped, is the audit trail.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub withdrawn: Option<String>,
 }
 
 impl RecordedPrediction {
     /// Whether this prediction is still waiting for its horizon.
     pub fn is_open(&self) -> bool {
         self.verdict.is_none()
+    }
+
+    /// Whether any of the sources the claim stood on is `source`. Exact
+    /// equality on the identifier, never a substring: `feed-a` must not
+    /// withdraw a claim that stood on `feed-ab`.
+    pub fn cites(&self, source: &str) -> bool {
+        self.sources.contains(source)
     }
 
     /// Whether the claim was resolved and held.
@@ -3459,6 +3481,19 @@ pub struct SourceAssessment {
     /// finder. A registration the registry does not hold under its id is a
     /// catalogue problem, not a silent gap.
     pub entries: Vec<SourceRegistryView>,
+    /// Hypotheses whose open claim this pass withdrew because a source it
+    /// stood on was quarantined (R12-RES-7097). The world model's retraction
+    /// narrows only what is read afterwards; a claim the platform had
+    /// already made on the poisoned source's word would otherwise go on to
+    /// be graded, and the platform would calibrate its own confidence
+    /// against evidence it has stopped believing.
+    pub claims_invalidated: Vec<String>,
+    /// Hypotheses whose open claim this pass held at
+    /// `qip_world_model::world::STALE_SOURCE_CONFIDENCE` of its confidence
+    /// because a source it stood on was retired. A retirement is not a
+    /// finding that the evidence was false, so the claim stands — held less
+    /// firmly, the same rule the world model applies to the source's facts.
+    pub claims_downweighted: Vec<String>,
 }
 
 /// One Source Registry entry as a running path read it
@@ -20702,6 +20737,25 @@ impl Platform {
         Ok(Some(outcome))
     }
 
+    /// The sources whose facts about `subject` the world model believes now
+    /// (R12-RES-7097).
+    ///
+    /// Read where a thesis is queued rather than where one is withdrawn: by
+    /// the time a source is quarantined its facts have already been
+    /// retracted, so asking the graph then would name nobody and every
+    /// queued thesis would survive a poisoning that had just emptied the
+    /// ground under it.
+    fn graph_sources_for(&self, subject: &str, now: Timestamp) -> BTreeSet<String> {
+        self.world
+            .read()
+            .graph()
+            .facts_at(now, now)
+            .iter()
+            .filter(|fact| fact.relationship.from == subject || fact.relationship.to == subject)
+            .map(|fact| fact.relationship.source.clone())
+            .collect()
+    }
+
     /// Write a hypothesis down as something a source can later contradict.
     ///
     /// The criterion is written against the same series the detector measured,
@@ -20802,6 +20856,20 @@ impl Platform {
             verdict: None,
             scored_at: None,
             claim: Some(claim),
+            // What the claim stood on, so a source quarantined after it was
+            // made can find it. The subject's graph sources are read here
+            // for the same reason the claim's confidence is written here:
+            // after a quarantine the facts are retracted and the question
+            // can no longer be asked.
+            sources: reasoned
+                .hypothesis
+                .evidence
+                .origins()
+                .into_iter()
+                .map(str::to_string)
+                .chain(self.graph_sources_for(&anomaly.subject, now))
+                .collect(),
+            withdrawn: None,
         });
         Ok(true)
     }
@@ -26508,6 +26576,8 @@ impl Platform {
         // `source_lifecycle` for why a move the log does not hold must not
         // be reported as a pass.
         self.journal_source_transitions(&decisions, now)?;
+        let mut claims_invalidated = Vec::new();
+        let mut claims_downweighted = Vec::new();
         // A source policy stopped is a dataset the mesh must stop offering.
         // The catalogue is the one answer to "may this be read", and a
         // quarantine that reached the finder's registry and not the
@@ -26528,15 +26598,42 @@ impl Platform {
             // staleness said nothing false — so it leaves them standing, but
             // held less firmly: a stale source's beliefs are downweighted
             // rather than kept at the confidence a fresh one earned.
+            //
+            // What the graph no longer believes must not survive in a belief
+            // already formed from it: a thesis REASON queued before the
+            // quarantine is withdrawn from DECIDE's queue, and one queued
+            // before a retirement is held at the stale fraction of its
+            // conviction. Without this the retraction narrowed only reads
+            // made afterwards, and the next DECIDE sized the poisoned
+            // source's thesis at full conviction.
             if transition.action == LifecycleAction::Quarantined {
                 let source = transition.source_id.clone();
                 self.world
                     .update(|world| world.quarantine_source(&source, now));
+                for prediction in &mut self.predictions {
+                    if prediction.is_open() && prediction.cites(&source) {
+                        prediction.withdrawn = Some(format!(
+                            "source `{source}` quarantined: the claim stood on evidence the                              platform no longer believes"
+                        ));
+                        claims_invalidated.push(prediction.hypothesis.clone());
+                    }
+                }
             }
             if transition.action == LifecycleAction::Retired {
                 let source = transition.source_id.clone();
                 self.world
                     .update(|world| world.mark_source_stale(&source, now))?;
+                for prediction in &mut self.predictions {
+                    if !prediction.is_open() || prediction.withdrawn.is_some() {
+                        continue;
+                    }
+                    if prediction.cites(&source)
+                        && let Some(claim) = prediction.claim.as_mut()
+                    {
+                        claim.confidence *= qip_world_model::world::STALE_SOURCE_CONFIDENCE;
+                        claims_downweighted.push(prediction.hypothesis.clone());
+                    }
+                }
             }
             if matches!(
                 transition.action,
@@ -26638,6 +26735,8 @@ impl Platform {
             catalogued,
             catalogue_problems,
             entries,
+            claims_invalidated,
+            claims_downweighted,
         })
     }
 
@@ -26805,7 +26904,14 @@ impl Platform {
     ) -> Vec<(String, Verdict)> {
         let mut scored = Vec::new();
         for prediction in &mut self.predictions {
-            if !prediction.is_open() || prediction.proposition.resolves_at > now {
+            // A withdrawn claim is passed over rather than settled: its
+            // evidence was quarantined, and scoring it would calibrate the
+            // platform's confidence against a source it stopped believing
+            // (R12-RES-7097).
+            if !prediction.is_open()
+                || prediction.withdrawn.is_some()
+                || prediction.proposition.resolves_at > now
+            {
                 continue;
             }
             let verdict = prediction.proposition.criteria.evaluate(observations);
@@ -30869,6 +30975,7 @@ mod justification {
             }
         }
 
+        /// Record the evidence origins the thesis stood on.
         pub(super) fn thesis(&self) -> &ApprovedThesis {
             &self.thesis
         }
@@ -35260,6 +35367,8 @@ mod retention_tests {
                 verdict: None,
                 scored_at: None,
                 claim: None,
+                sources: BTreeSet::new(),
+                withdrawn: None,
             });
         }
 
