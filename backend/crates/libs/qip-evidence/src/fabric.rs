@@ -41,6 +41,7 @@ use crate::evidence::{
     AuthenticitySignal, EvidenceRecord, GeographicConsistency, META_ATTRIBUTE, META_VALUE,
     TemporalConsistency,
 };
+use crate::signature::{IssuerRegistry, TokenOrigin};
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,26 @@ pub const RESOLVING_AUTHENTICITY: f64 = 0.6;
 /// the claimant did not write; two such origins reach the resolving bar
 /// from the unsigned floor, one does not.
 pub const CORROBORATION_CREDIT: f64 = 0.2;
+
+/// What a document vouched for by a channel independent of its source earns:
+/// a SHA-256 pinned by an independent channel, or a detached signature that
+/// verified under a key this repository committed (ADR 0508 decision 3). One
+/// figure for both, and not a new one: it was the pinned-hash credit before
+/// the signature arm existed, and a registered issuer's signature is the
+/// same kind of fact — something other than the source vouches for exactly
+/// these bytes — so ranking it above or below a pin would be a figure
+/// nobody measured.
+pub const INDEPENDENTLY_VOUCHED_CREDIT: f64 = 0.3;
+
+/// What an identity registered with a trusted registry earns, and what a TLS
+/// domain the committed issuer registry lists earns on top of the host match
+/// (ADR 0508 decision 4): the issuer registry is a registry this deployment
+/// trusts, so a listing in it is an identity registration and is credited as
+/// one.
+pub const REGISTERED_IDENTITY_CREDIT: f64 = 0.25;
+
+/// What a TLS domain that is the source's own host earns.
+pub const TLS_HOST_CREDIT: f64 = 0.2;
 /// Independent corroborating origins credited at most. A third agreeing
 /// venue says nothing about authenticity the second did not, and an
 /// uncapped credit would let a crowd of admitted sources outvote a pinned
@@ -201,7 +222,9 @@ fn host_of(identity: &str) -> Option<String> {
 ///
 /// `document_hash` is the SHA-256 the ingestion path took over the fetched
 /// body; `registries` the identity registries this deployment trusts;
-/// `pinned` the document hashes an independent channel vouched for.
+/// `pinned` the document hashes an independent channel vouched for;
+/// `issuers` the committed issuer registry, read only to list a TLS domain
+/// (a signature arrives already verified, as a token, ADR 0139).
 ///
 /// **Nothing here credits a comparison of the claim with itself.** A hash
 /// signal naming the fetched body, checked against the hash of that same
@@ -216,6 +239,7 @@ pub fn assess_authenticity(
     document_hash: Option<&str>,
     registries: &BTreeSet<String>,
     pinned: &BTreeSet<String>,
+    issuers: &IssuerRegistry,
 ) -> Authenticity {
     let mut score = UNSIGNED_AUTHENTICITY;
     let mut credited = Vec::new();
@@ -237,7 +261,7 @@ pub fn assess_authenticity(
                         && hash == document
                         && pinned.contains(hash) =>
                 {
-                    score += 0.3;
+                    score += INDEPENDENTLY_VOUCHED_CREDIT;
                     credited.push(format!(
                         "sha256 {} matches the fetched document and a hash pinned by an \
                              independent channel",
@@ -269,8 +293,19 @@ pub fn assess_authenticity(
                     if host == domain.to_ascii_lowercase()
                         || host.ends_with(&format!(".{}", domain.to_ascii_lowercase())) =>
                 {
-                    score += 0.2;
+                    score += TLS_HOST_CREDIT;
                     credited.push(format!("tls domain {domain} is the source's host"));
+                    // ADR 0139 decision 4: full weight only when the committed
+                    // registry also lists the domain. A lookalike domain the
+                    // source happens to sit on keeps the host credit alone.
+                    if let Some(issuer) = issuers.issuer_for_domain(domain) {
+                        score += REGISTERED_IDENTITY_CREDIT;
+                        credited.push(format!(
+                            "tls domain {domain} is listed for issuer {} in the committed issuer \
+                             registry",
+                            issuer.issuer
+                        ));
+                    }
                 }
                 Some(host) => {
                     spoofed = true;
@@ -284,7 +319,7 @@ pub fn assess_authenticity(
             },
             AuthenticitySignal::IdentityRegistered { registry } => {
                 if registries.contains(registry) {
-                    score += 0.25;
+                    score += REGISTERED_IDENTITY_CREDIT;
                     credited.push(format!("identity registered with {registry}"));
                 } else {
                     refused.push(format!(
@@ -304,17 +339,47 @@ pub fn assess_authenticity(
                     ));
                 }
             }
-            // The signal carries a signer's name and no signature bytes, so
-            // there is nothing here to verify: it is the claim saying that
-            // somebody once checked something. The platform does verify
-            // ECDSA P-256 (`qip_transport::trust`, ADR 0110), but over its
-            // own artefact classes under its own trust bundle; no source in
-            // the catalogue serves a signature over its documents, and
-            // crediting this signal would be believing the claim's own word.
-            AuthenticitySignal::SignatureVerified { signer } => refused.push(format!(
-                "signature by {signer} asserted and not verifiable: the signal carries no \
-                 signature this fabric can check"
-            )),
+            // ADR 0139 decision 3. The token is the verifier's; the fabric
+            // never checks a signature, it reads whether one was checked. A
+            // token decoded from bytes is the claim's own word that a check
+            // happened, which is what the bare signer name used to be, and is
+            // refused for the same reason. A verified token over bytes that
+            // are not this record's document is spoofing: the signature is
+            // real and is about something else.
+            AuthenticitySignal::SignatureVerified { token } => {
+                match (token.origin(), document_hash) {
+                    (TokenOrigin::Decoded, _) => refused.push(format!(
+                        "signature by {} under key {} asserted and not verified here: a token \
+                     decoded from bytes is a claim that a check happened, not a check",
+                        token.issuer(),
+                        token.key_id()
+                    )),
+                    (_, Some(document)) if token.digest() == document => {
+                        score += INDEPENDENTLY_VOUCHED_CREDIT;
+                        credited.push(format!(
+                        "signature by registered issuer {} under key {} verified over sha256 {}",
+                        token.issuer(),
+                        token.key_id(),
+                        short(token.digest())
+                    ));
+                    }
+                    (_, Some(_)) => {
+                        spoofed = true;
+                        refused.push(format!(
+                            "signature by {} verified over sha256 {}, which is not the fetched \
+                         document",
+                            token.issuer(),
+                            short(token.digest())
+                        ));
+                    }
+                    (_, None) => refused.push(format!(
+                        "signature by {} names sha256 {} and the fabric holds no document to \
+                     compare it with",
+                        token.issuer(),
+                        short(token.digest())
+                    )),
+                }
+            }
         }
     }
     Authenticity {
@@ -590,6 +655,9 @@ pub struct EvidenceFabric {
     /// published checksum, a hash a second fetch path agreed on. The only
     /// way a hash signal earns authenticity.
     pinned: BTreeSet<String>,
+    /// The committed issuer registry (ADR 0139). Read only to list a TLS
+    /// domain; the fabric verifies no signature against it.
+    issuers: IssuerRegistry,
     held: VecDeque<HeldEvidence>,
     graph: ProvenanceGraph,
     contests: BTreeMap<ClaimKey, Contest>,
@@ -606,6 +674,7 @@ impl Default for EvidenceFabric {
             source_capacity: DEFAULT_SOURCE_CAPACITY,
             registries: BTreeSet::new(),
             pinned: BTreeSet::new(),
+            issuers: IssuerRegistry::empty(),
             held: VecDeque::new(),
             graph: ProvenanceGraph::default(),
             contests: BTreeMap::new(),
@@ -712,8 +781,19 @@ impl EvidenceFabric {
                  holds claims, and replaying onto them would corroborate the journal with itself",
             ));
         }
-        for claim in claims {
+        for mut claim in claims {
             let id = claim.record.id.clone();
+            // The journal is the platform's own hash-chained log, and every
+            // token in it was a verified one when its claim was admitted:
+            // only `verify_detached` makes a token `admit` credits. Decoding
+            // forgets that, so replay restores it here — the one door that
+            // does — or the rebuilt fabric would weigh the same claim lower
+            // than the fabric that journaled it (ADR 0508 decision 2).
+            for signal in &mut claim.record.authenticity_signals {
+                if let AuthenticitySignal::SignatureVerified { token } = signal {
+                    *token = token.clone().journaled();
+                }
+            }
             self.admit(
                 claim.record,
                 claim.document_hash.as_deref(),
@@ -728,6 +808,15 @@ impl EvidenceFabric {
             })?;
         }
         Ok(self)
+    }
+
+    /// Hold the committed issuer registry, so a TLS domain it lists is
+    /// credited as a registered identity (ADR 0139 decision 4). A fabric
+    /// rebuilt from a journal must be given the same registry as the one
+    /// that wrote it, like its trusted registries and pins.
+    pub fn trusting_issuers(mut self, issuers: IssuerRegistry) -> Self {
+        self.issuers = issuers;
+        self
     }
 
     /// Trust `registry` as an identity registry for authenticity.
@@ -831,8 +920,13 @@ impl EvidenceFabric {
         }
         let temporal = record.check_temporal_consistency(self.held.iter().map(|h| &h.record));
         let geographic = record.check_geographic_consistency(self.held.iter().map(|h| &h.record));
-        let mut authenticity =
-            assess_authenticity(&record, document_hash, &self.registries, &self.pinned);
+        let mut authenticity = assess_authenticity(
+            &record,
+            document_hash,
+            &self.registries,
+            &self.pinned,
+            &self.issuers,
+        );
         let admissible = !matches!(
             temporal,
             TemporalConsistency::ViolatesPhysicalTimeline { .. }

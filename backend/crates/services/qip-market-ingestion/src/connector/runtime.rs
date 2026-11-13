@@ -35,11 +35,12 @@ use super::heartbeat::{FeedHeartbeat, Liveness};
 use super::manifest::SourceManifest;
 use super::quarantine::{Quarantine, QuarantineReason};
 use super::ratelimit::{Admission, RateLimiter};
-use super::transport::{ContentDigest, SourceResponse, SourceTransport};
+use super::transport::{ContentDigest, DetachedSignature, SourceResponse, SourceTransport};
 use super::validate::SchemaGuard;
 use crate::adapter::SensedRecord;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
+use qip_evidence::signature::{IssuerRegistry, VerifiedSignature, verify_detached};
 use qip_evidence::{ClaimKey, EvidenceFabric, KnowledgeDelta};
 use qip_financial::quality::DataQuality;
 use qip_transport::{Sleeper, ThreadSleeper};
@@ -73,6 +74,11 @@ pub struct RuntimeConfig {
     /// capacity; a composition root polling several sources hands each the
     /// same one so a contradiction *between* sources is seen.
     pub evidence: Option<Arc<Mutex<EvidenceFabric>>>,
+    /// The committed issuer registry a served detached signature is checked
+    /// against (ADR 0139). `None` is the empty registry: no signature is
+    /// credited and every source scores as it did before the registry
+    /// existed (decision 5).
+    pub issuers: Option<Arc<IssuerRegistry>>,
 }
 
 impl std::fmt::Debug for RuntimeConfig {
@@ -93,6 +99,7 @@ impl Default for RuntimeConfig {
             quarantine_capacity: 256,
             sleeper: Arc::new(ThreadSleeper),
             evidence: None,
+            issuers: None,
         }
     }
 }
@@ -113,6 +120,13 @@ impl RuntimeConfig {
     /// Check this runtime's evidence against `fabric`, shared with others.
     pub fn with_evidence_fabric(mut self, fabric: Arc<Mutex<EvidenceFabric>>) -> Self {
         self.evidence = Some(fabric);
+        self
+    }
+
+    /// Check served detached signatures against `issuers`, the registry a
+    /// composition root read from the committed file.
+    pub fn with_issuer_registry(mut self, issuers: Arc<IssuerRegistry>) -> Self {
+        self.issuers = Some(issuers);
         self
     }
 
@@ -188,6 +202,15 @@ pub struct PollReport {
     /// fabric's spoofing and synthetic-content detectors can only find a
     /// pattern in claims they are shown (R12-EVID-2039).
     pub refused_evidence: Vec<CheckedEvidence>,
+    /// Why a detached signature the source served over this poll's body was
+    /// not attached to its claims: no registered key, a key for another
+    /// source, an expired key, a signature that does not verify, or bytes
+    /// that are not the document the claims cite. `None` when no signature
+    /// was served or it verified. A refusal is not a quarantine — the claims
+    /// still go up unsigned and score as unsigned — but it is a fact an
+    /// operator must be able to see, because a source whose signatures stop
+    /// verifying has rotated a key or been tampered with.
+    pub signature_refusal: Option<String>,
     /// What this poll changed in what the fabric believes.
     pub knowledge_delta: KnowledgeDelta,
     /// The delta as a knowledge pack, when it changed anything.
@@ -214,6 +237,7 @@ impl PollReport {
             unreferenced: false,
             evidence: Vec::new(),
             refused_evidence: Vec::new(),
+            signature_refusal: None,
             knowledge_delta: KnowledgeDelta::default(),
             knowledge_pack: None,
             knowledge_footprint: None,
@@ -293,6 +317,11 @@ pub struct ConnectorRuntime {
     connected: bool,
     evidence: Arc<Mutex<EvidenceFabric>>,
     lineage: ParserLineage,
+    issuers: Arc<IssuerRegistry>,
+    /// The token for the body being admitted, verified once per poll and
+    /// attached to every claim extracted from that body. Cleared when the
+    /// poll's admission loop ends, so a token never outlives its document.
+    poll_signature: Option<VerifiedSignature>,
 }
 
 impl ConnectorRuntime {
@@ -321,6 +350,10 @@ impl ConnectorRuntime {
                 .evidence
                 .unwrap_or_else(|| Arc::new(Mutex::new(EvidenceFabric::default()))),
             lineage,
+            issuers: config
+                .issuers
+                .unwrap_or_else(|| Arc::new(IssuerRegistry::empty())),
+            poll_signature: None,
         })
     }
 
@@ -714,6 +747,12 @@ impl ConnectorRuntime {
         // ledger; two SHA-256 passes over one bounded body is the price of
         // keeping the digest an observation that cannot gate the poll.
         let body_hash = response.body.sha256_hex();
+        self.poll_signature = self.verify_signature(
+            response.detached_signature.as_ref(),
+            &body_hash,
+            at,
+            &mut report,
+        );
         let version_before = self.evidence.lock().map_or(0, |fabric| fabric.version());
         let mut cursor_newest: Option<Timestamp> = None;
         let mut subjects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -740,6 +779,7 @@ impl ConnectorRuntime {
                 });
             }
         }
+        self.poll_signature = None;
 
         // The digest of exactly what arrived, taken here and nowhere else:
         // this is the only seam holding the raw body, the locator it was
@@ -825,6 +865,47 @@ impl ConnectorRuntime {
     /// served; it is consumed here at the point the mapping used to be made,
     /// after knowability and dedup, so a withheld or duplicate event's
     /// mapping failure is still nobody's quarantine.
+    /// Verify the detached signature served with this poll's body, once,
+    /// against the committed issuer registry (ADR 0139 decision 2: in the
+    /// connector, never in the fabric). Returns the token to attach to every
+    /// claim from the body, or records why none is attached.
+    ///
+    /// A token over bytes that are not `body_hash` — the document every claim
+    /// cites — is not attached: the scrub rewrote the body after the
+    /// signature was taken, and the fabric would read the mismatch as the
+    /// source forging, when it is this platform redacting.
+    fn verify_signature(
+        &self,
+        served: Option<&DetachedSignature>,
+        body_hash: &str,
+        at: Timestamp,
+        report: &mut PollReport,
+    ) -> Option<VerifiedSignature> {
+        let served = served?;
+        match verify_detached(
+            &self.issuers,
+            &self.manifest.source_id,
+            &served.key_id,
+            &served.signed,
+            &served.signature,
+            at,
+        ) {
+            Ok(token) if token.digest() == body_hash => Some(token),
+            Ok(_) => {
+                report.signature_refusal = Some(
+                    "the signature verified over the body as it arrived, and the body the claims \
+                     cite was rewritten by the credential scrub after it; nothing is attached"
+                        .to_string(),
+                );
+                None
+            }
+            Err(error) => {
+                report.signature_refusal = Some(error.message().to_string());
+                None
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn admit(
         &mut self,
@@ -1010,6 +1091,7 @@ impl ConnectorRuntime {
             cause,
             confidence,
             location,
+            self.poll_signature.as_ref(),
         )
         .map_err(|error| format!("evidence could not be formed: {}", error.message()))?;
         if let Some(held) = fabric.get(&evidence.id) {

@@ -458,8 +458,14 @@ pub enum AuthenticitySignal {
     TlsVerified { domain: String },
     /// Content hash matches expected value.
     HashVerified { algorithm: String, hash: String },
-    /// Cryptographic signature verified.
-    SignatureVerified { signer: String },
+    /// A detached signature verified against the committed issuer registry
+    /// (ADR 0139). It carries the verifier's token rather than a signer's
+    /// name: the name alone was the claim's own word, and the fabric refused
+    /// it for that reason until the verifier existed. A token decoded from
+    /// bytes is recorded and never credited (ADR 0508).
+    SignatureVerified {
+        token: crate::signature::VerifiedSignature,
+    },
     /// Source identity matches known registry.
     IdentityRegistered { registry: String },
     /// Release is from official channel.

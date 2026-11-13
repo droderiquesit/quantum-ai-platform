@@ -12,6 +12,7 @@
 
 pub mod evidence;
 pub mod fabric;
+pub mod signature;
 
 pub use evidence::{
     AuthenticitySignal, EvidenceRecord, GeoPoint, GeographicConsistency, TemporalConsistency,
@@ -20,3 +21,4 @@ pub use fabric::{
     Authenticity, ClaimKey, Contest, EvidenceFabric, EvidenceVerdict, JournaledClaim, KeyOutcome,
     KnowledgeDelta, ProvenanceEdge, ProvenanceGraph, ProvenanceNode, SourceHistory,
 };
+pub use signature::{IssuerRegistry, SignatureAlgorithm, VerifiedSignature, verify_detached};

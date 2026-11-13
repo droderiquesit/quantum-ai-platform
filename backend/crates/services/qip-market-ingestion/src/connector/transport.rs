@@ -130,6 +130,58 @@ pub struct SourceResponse {
     /// otherwise make an honest body read as altered. `None` where the
     /// source declared no SHA-256 (R12-EVID-2034).
     pub content_digest: Option<ContentDigest>,
+    /// A detached signature the source sent over this body
+    /// ([`DETACHED_SIGNATURE_HEADER`]), with the bytes as they arrived —
+    /// before any scrub, because a signature checked after a rewrite would
+    /// call an honest issuer a forger. Unverified here: the runtime checks it
+    /// against the committed issuer registry (ADR 0139, ADR 0508), and a
+    /// signature with no registered key earns nothing.
+    pub detached_signature: Option<DetachedSignature>,
+}
+
+/// The header a source serves its detached signature in (ADR 0508 decision
+/// 5): a structured-field dictionary in the shape RFC 9421's `Signature`
+/// header uses, `keyid="<registry key id>", sig=:<base64 signature>:`. The
+/// key id names a key in the committed registry; it selects, it never
+/// supplies, a key.
+pub const DETACHED_SIGNATURE_HEADER: &str = "detached-signature";
+
+/// A detached signature as served, not yet verified.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetachedSignature {
+    pub key_id: String,
+    pub signature: Vec<u8>,
+    /// The body bytes as they arrived, which the signature is over.
+    pub signed: Vec<u8>,
+}
+
+impl DetachedSignature {
+    /// Parse a [`DETACHED_SIGNATURE_HEADER`] value over `body`. `None` for a
+    /// value that does not name both a key id and a base64 signature: a
+    /// malformed signature is no signature, never a guessed one.
+    pub fn parse(header: &str, body: &[u8]) -> Option<Self> {
+        let mut key_id = None;
+        let mut signature = None;
+        for member in header.split(',') {
+            let (name, value) = member.trim().split_once('=')?;
+            match name.trim() {
+                "keyid" => {
+                    let id = value.trim().strip_prefix('"')?.strip_suffix('"')?;
+                    (!id.is_empty()).then(|| key_id = Some(id.to_string()))?;
+                }
+                "sig" => {
+                    let encoded = value.trim().strip_prefix(':')?.strip_suffix(':')?;
+                    signature = Some(qip_transport::kms::decode_base64(encoded).ok()?);
+                }
+                _ => {}
+            }
+        }
+        Some(Self {
+            key_id: key_id?,
+            signature: signature.filter(|s| !s.is_empty())?,
+            signed: body.to_vec(),
+        })
+    }
 }
 
 /// A body digest the source declared, and whether the body matched it.
@@ -186,7 +238,29 @@ impl SourceResponse {
             retry_after: None,
             etag: None,
             content_digest: None,
+            detached_signature: None,
         }
+    }
+
+    /// The source sent `signature` under registry key `key_id` over
+    /// `signed`, the bytes as they arrived, as a test's script or the
+    /// emulator's fixture serves one. The bytes are the caller's to state
+    /// because the body is [`Untrusted`] and has no exit for its content;
+    /// a fixture that states other bytes than its body is a fixture whose
+    /// signature will not match the document, which is a case worth testing.
+    pub fn with_detached_signature(
+        mut self,
+        key_id: impl Into<String>,
+        signature: impl Into<Vec<u8>>,
+        signed: impl Into<Vec<u8>>,
+    ) -> Self {
+        let signed = signed.into();
+        self.detached_signature = Some(DetachedSignature {
+            key_id: key_id.into(),
+            signature: signature.into(),
+            signed,
+        });
+        self
     }
 
     /// The source declared `declared` (hex SHA-256) for this body.
@@ -470,6 +544,9 @@ impl SourceTransport for HttpSourceTransport {
             .or_else(|| response.header("digest"))
             .and_then(ContentDigest::declared_sha256)
             .map(|declared| ContentDigest::check(declared, &response.body));
+        let detached_signature = response
+            .header(DETACHED_SIGNATURE_HEADER)
+            .and_then(|value| DetachedSignature::parse(value, &response.body));
         let body = response
             .body_as_str()
             .map_err(Error::from)
@@ -490,6 +567,7 @@ impl SourceTransport for HttpSourceTransport {
                 .filter(|tag| !tag.is_empty())
                 .map(str::to_string),
             content_digest,
+            detached_signature,
         })
     }
 }
@@ -510,6 +588,38 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::ContentDigest;
+    use super::DetachedSignature;
+
+    /// A signature header misread would select a key the source named
+    /// wrongly, or verify bytes nobody signed. A value missing either member,
+    /// with an empty key id, or with a signature that is not base64 is no
+    /// signature. Mutation: let a missing `keyid` default to an empty id —
+    /// the first malformed case parses and the assertion on it fails.
+    #[test]
+    fn a_detached_signature_header_is_read_only_when_it_names_a_key_and_a_signature() {
+        let parsed = DetachedSignature::parse(r#"keyid="ts-1", sig=:AQID:"#, b"body");
+        assert_eq!(
+            parsed,
+            Some(DetachedSignature {
+                key_id: "ts-1".to_string(),
+                signature: vec![1, 2, 3],
+                signed: b"body".to_vec(),
+            })
+        );
+        for malformed in [
+            "sig=:AQID:",
+            r#"keyid="ts-1""#,
+            r#"keyid="", sig=:AQID:"#,
+            r#"keyid="ts-1", sig=:not base64!:"#,
+            r#"keyid=ts-1, sig=:AQID:"#,
+        ] {
+            assert_eq!(
+                DetachedSignature::parse(malformed, b"body"),
+                None,
+                "{malformed} was read as a signature"
+            );
+        }
+    }
 
     /// SHA-256 of the empty body, as RFC 9530 and RFC 3230 each write it.
     const EMPTY_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

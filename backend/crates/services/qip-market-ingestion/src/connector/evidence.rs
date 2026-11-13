@@ -39,7 +39,7 @@ use qip_contracts::governance::Usage;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_evidence::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
-use qip_evidence::{AuthenticitySignal, EvidenceRecord, EvidenceVerdict};
+use qip_evidence::{AuthenticitySignal, EvidenceRecord, EvidenceVerdict, VerifiedSignature};
 use qip_financial::quality::LicensingClass;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -324,6 +324,7 @@ pub fn evidence_of(
     cause: Option<String>,
     confidence: f64,
     location: Option<String>,
+    signature: Option<&VerifiedSignature>,
 ) -> Result<EvidenceRecord> {
     let topic = record.topic();
     let subject = record.subject_id().map(str::to_string);
@@ -368,6 +369,14 @@ pub fn evidence_of(
         evidence = evidence.with_authenticity_signal(AuthenticitySignal::HashVerified {
             algorithm: "sha256".into(),
             hash: digest.declared.clone(),
+        });
+    }
+    // Verified by the runtime against the committed issuer registry, over
+    // the body this record was extracted from (ADR 0139). Only a token the
+    // verifier made is credited by the fabric.
+    if let Some(token) = signature {
+        evidence = evidence.with_authenticity_signal(AuthenticitySignal::SignatureVerified {
+            token: token.clone(),
         });
     }
     if let Some((stream, sequence)) = feed_sequence {

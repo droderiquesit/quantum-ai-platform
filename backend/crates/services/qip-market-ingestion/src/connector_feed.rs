@@ -134,6 +134,28 @@ pub fn shipped_topics(source_id: &str) -> Result<Vec<Topic>> {
     Ok(vec![topic_for(source_id)?])
 }
 
+/// The committed issuer registry (ADR 0139 decision 1, ADR 0508 decision 1),
+/// as reviewed: `issuer-registry.json` beside this crate's manifest, embedded
+/// at build so the binary carries exactly the registry its commit holds and
+/// no deployment setting can widen it. No key is ever fetched from a source.
+pub const COMMITTED_ISSUER_REGISTRY: &str = include_str!("../issuer-registry.json");
+
+/// [`COMMITTED_ISSUER_REGISTRY`], admitted as of `at`. Every connector feed
+/// installs it, so a source the registry lists is verified on every path a
+/// deployment takes. A registry that does not admit — a key expired since it
+/// was committed among them — stops the feed from opening and names the
+/// key: scoring that issuer as unsigned without saying so would be a quiet
+/// downgrade nobody chose.
+pub fn committed_issuer_registry(at: Timestamp) -> Result<qip_evidence::IssuerRegistry> {
+    qip_evidence::IssuerRegistry::from_json(COMMITTED_ISSUER_REGISTRY, at).map_err(|error| {
+        Error::invalid(format!(
+            "the committed issuer registry (qip-market-ingestion/issuer-registry.json) is not \
+             admissible: {}",
+            error.message()
+        ))
+    })
+}
+
 /// The licensing class a named source's shipped manifest declares.
 ///
 /// For the gate that must run *before* the source is opened: the caller
@@ -294,7 +316,11 @@ impl ConnectorFeed {
             expected_latency: manifest.poll_interval(),
             production_requirement: None,
         };
-        let mut runtime = ConnectorRuntime::new(manifest, RuntimeConfig::seeded(seed))?;
+        let issuers = std::sync::Arc::new(committed_issuer_registry(at)?);
+        let mut runtime = ConnectorRuntime::new(
+            manifest,
+            RuntimeConfig::seeded(seed).with_issuer_registry(issuers),
+        )?;
         let mut boxed = connector;
         let mut transport = transport;
         runtime.connect(boxed.as_mut(), transport.as_mut(), at)?;
