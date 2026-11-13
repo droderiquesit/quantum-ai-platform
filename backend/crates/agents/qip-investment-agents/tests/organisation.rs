@@ -4257,7 +4257,10 @@ fn removing_the_world_model_arbitration_brain_drops_world_model_arbitration_from
         fact_value(finding, "arbitrations_request_more_data"),
         Some(1.0)
     );
-    assert_eq!(fact_value(finding, "arbitrations_not_reproduced"), Some(0.0));
+    assert_eq!(
+        fact_value(finding, "arbitrations_not_reproduced"),
+        Some(0.0)
+    );
     assert_eq!(fact_value(finding, "disagreeing_views_kept"), Some(8.0));
     assert_eq!(fact_value(finding, "widest_disagreement_spread"), Some(0.6));
     assert_eq!(fact_value(finding, "members_calibrated"), Some(2.0));
@@ -4372,7 +4375,10 @@ fn the_world_model_arbitration_brain_decides_from_the_preserved_views_and_names_
     let finding = arbitration_finding(&report);
     assert_eq!(fact_value(finding, "arbitrations_branch"), Some(1.0));
     assert_eq!(fact_value(finding, "arbitrations_merge"), Some(1.0));
-    assert_eq!(fact_value(finding, "arbitrations_not_reproduced"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "arbitrations_not_reproduced"),
+        Some(1.0)
+    );
     assert_eq!(finding.status, FindingStatus::Partial, "{}", finding.claim);
     assert!(
         finding
