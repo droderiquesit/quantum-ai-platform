@@ -72,6 +72,20 @@ pub trait Broker: Send + Sync + fmt::Debug {
         Ok(Vec::new())
     }
 
+    /// Whether this venue keeps working the unfilled remainder of an
+    /// accepted order on `side` — whether that remainder rests where a later
+    /// order could match it (ADR 0472).
+    ///
+    /// The desk's self-trade check reads this so it refuses an order only
+    /// against a remainder the venue could trade it with. The default is
+    /// `true`, because a real venue rests a limit order's remainder until it
+    /// fills, expires or is cancelled, and an unknown venue is assumed to:
+    /// answering `false` wrongly lets a wash trade through, and answering
+    /// `true` wrongly only refuses an order.
+    fn works_remainder(&self, _side: Side) -> bool {
+        true
+    }
+
     /// What a deployment would need to make this usable. Empty when available.
     fn requirement(&self) -> String {
         String::new()
@@ -773,6 +787,16 @@ impl Broker for SimulatedBroker {
 
     fn cancel(&mut self, _order: &Order, _at: Timestamp) -> Result<()> {
         Ok(())
+    }
+
+    /// ADR 0424: this venue works the remainder of a sale and never the
+    /// remainder of a purchase, so an open purchase remainder rests nowhere
+    /// and no later sale can trade with it (ADR 0472). A sale's remainder is
+    /// worked only down to the desk's long, but it is answered `true` for
+    /// the whole: refusing a buy against the part nobody works costs a
+    /// refusal, and the reverse would cost a wash trade.
+    fn works_remainder(&self, side: Side) -> bool {
+        matches!(side, Side::Sell)
     }
 
     /// The rest of an accepted order, worked (ADR 0424): up to `quantity` of
