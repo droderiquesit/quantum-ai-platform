@@ -1149,15 +1149,19 @@
   },
   {
     "id": "R12-WORLD-3049",
-    "status": "PARTIAL",
-    "current": "Federation member network.counterparty.global (domain counterparty/network) forecasts counterparty:<venue>:refuses-next-pass on every shipped cycle for the desk broker and every venue the feasibility window names, from the venue's share of the window's Evidence refusals (echoes and pardoned entries excluded); the next pass resolves it on Evidence refusals stamped at or after the forecast beyond those already held then. It only reads the window (record_feasibility_refusal stays its one writer) and reaches no decision: narrowings_of reads instrument propositions only. counterparty/network is in REQUIRED_FAMILIES.",
+    "status": "COMPLETE",
+    "current": "Federation member network.counterparty.global (domain counterparty/network, in REQUIRED_FAMILIES) forecasts counterparty:<venue>:refuses-next-pass for every node of a counterparty dependency graph (ADR 0470). Nodes carry a role (broker, exchange, custodian, bridge, settlement_agent) and edges a kind (execution, custody, settlement, bridge). Platform::counterparty_views derives them from held facts: the desk broker; a custodian, with a broker custody edge, for every positive holdings statement; settlement:<venue> and bridge:<venue> from chain settlement terms (ADR 0396). Operators add named roles and edges through declare_counterparty and declare_counterparty_dependency, which refuse empty names, self-edges and out-of-bound counts. contagion_paths walks dependencies breadth-first, at most 3 hops with a visited set, and carries share x 0.5^hops. The forecast is 0.05 + 0.85(1-(1-share)(1-pressure)). The review journals the paths (contagion) and names each role no counterparty held (counterparty_unmodelled). Resolution reads a per-cycle tally of Evidence refusals that record_feasibility_refusal keeps beside the window: a cycle-N forecast resolves at N+2 on cycle N+1's records. This excludes the forecasting cycle's own DECIDE, counts late-ingested reports in the cycle that recorded them, and cannot be falsified by eviction. Nothing that withdraws a venue reads the tally.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::COUNTERPARTY, CounterpartyView, Pending::Counterparty",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::a_venue_whose_refusals_rose_gives_the_counterparty_member_a_view_resolved_next_pass (mutants: share term dropped, `already` ignored, member unfed, family dropped; all killed)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::counterparty_views, the_counterparty_views_count_only_a_venues_own_refusals_and_always_name_the_desk_broker (mutant: every standing counted, killed)",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs (counterparty member never silent on the platform cycle; mutant counterparties: Vec::new() killed)"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::CounterpartyRole, DependencyKind, contagion_paths, contagion_pressure, counterparty_roles_unmodelled, Pending::Counterparty",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::a_custodian_refusing_carries_contagion_to_the_broker_that_depends_on_it (mutants: pressure dropped, no path recorded, hop-independent transmission, visited set removed, every role reported modelled; all killed)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::a_venue_whose_refusals_rose_gives_the_counterparty_member_a_view_resolved_next_pass (mutants: share dropped, forecasting cycle's own records resolve, resolve while next cycle current; all killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::the_counterparty_graph_names_custodians_bridges_and_settlement_dependencies (mutants: no custody edge, no bridge node, no settlement edge, declared edges ignored, self edge accepted; all killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::the_counterparty_tally_counts_by_recording_cycle_and_survives_eviction (mutants: every standing tallied, tally dropped when window full, tally not keyed by recording cycle; all killed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::the_counterparty_views_count_only_a_venues_own_refusals_and_always_name_the_desk_broker",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::the_counterparty_review_names_each_network_role_no_counterparty_held (per-part population check on the platform's journaled review; mutants: declared roles ignored, views unfed; killed)",
+      "docs/adr/0470-the-counterparty-member-models-the-venue-network-as-a-dependency-graph-and-resolves-on-refusals-recorded-in-the-next-cycle.md"
     ],
-    "gap": "Skeptic 2026-10-31 PARTIAL: brokers and exchanges are covered; bridges, custodians, settlement dependencies and contagion paths are not, because the member has no dependency graph between venues and is a per-venue rate prior, so bar part 4 fails. Resolver limits: a cell report stamped before the forecast but ingested after it is never counted; when the window is full, echo and pardoned arrivals are unseated and eviction (insertion order) can remove entries counted in `already`, each resolving false; and refusals from the forecasting cycle's own DECIDE, stamped at the forecast instant, resolve the next-pass proposition.",
+    "gap": "Not a bar part, recorded 2026-11-12: the derived settlement:<venue> and bridge:<venue> nodes never hold refusals. They carry pressure only once an operator declares a named provider that orders reach. Declarations are not journaled; the review journals the paths they produced. No deployment declares a graph.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1165,10 +1169,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --lib federation; cargo test -p qip-kernel --lib the_counterparty_views_count_only; cargo test -p qip-kernel --test symbolic_federation",
+    "verification": "cargo test -p qip-kernel --lib federation; cargo test -p qip-kernel --lib counterparty; cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-31 L4-quant: built (ba96cd00), then echoes and pardoned entries excluded on the skeptic's finding; skeptic verdict PARTIAL."
+    "notes": "2026-10-31 L4-quant: built (ba96cd00), then echoes and pardoned entries excluded on the skeptic's finding; skeptic verdict PARTIAL. 2026-11-12 t50-22: dependency graph, contagion paths, per-role population check and cycle-tagged resolver (ADR 0470); graded COMPLETE, for skeptic re-check."
   },
   {
     "id": "R12-WORLD-3050",
