@@ -190,6 +190,19 @@
         "kind": "binary",
         "type": "FeatureDigest",
         "role": "decodes",
+        "migrated": true
+      }
+    ]
+  },
+  {
+    "topic": "reflex.feature_digested",
+    "version": 2,
+    "consumers": [
+      {
+        "name": "qip-edge-node",
+        "kind": "binary",
+        "type": "FeatureDigest",
+        "role": "decodes",
         "migrated": false
       }
     ]
