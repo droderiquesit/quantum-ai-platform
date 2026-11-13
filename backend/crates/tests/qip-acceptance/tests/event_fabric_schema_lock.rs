@@ -151,6 +151,21 @@ fn feature_digest_sample() -> qip_contracts::replay::FeatureDigest {
         applied_from_ns: 1_760_000_000_000_000_000,
         applied_to_ns: 1_760_000_000_000_000_400,
         applied_digest: "applied-digest-abc".to_string(),
+        // ADR 0428: the pack carried with a flag, so the lock sees the
+        // nested `integrity` element's shape rather than an empty array.
+        // Built through the pack's own validating decoder; its fields are
+        // private to `qip-contracts`.
+        market_state: Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "book",
+                "from": qip_core::Timestamp::from_secs(1_760_000_000),
+                "to": qip_core::Timestamp::from_secs(1_760_000_001),
+                "horizon": qip_core::Duration::from_secs(1),
+                "feature_lineage": ["reflex.market_event.applied@applied-digest-abc"],
+                "integrity": [{"sequence_gap": {"stream": "XNYS/itch-a/0", "missing": 2}}],
+            }))
+            .expect("the market state pack fixture decodes"),
+        ),
     }
 }
 
@@ -1064,8 +1079,10 @@ fn names_qualified(text: &str, module: &str, ty: &str) -> bool {
 /// it is listed under, and every workspace crate whose source names a bound
 /// body (as `module::Type`, or in a `module::{..}` import) other than the
 /// crate that defines it is inventoried for that topic. It also holds each
-/// surveyed `(topic, version)` to a lock row and each lock row to a survey,
-/// which is what lets `ConsumerInventory::retire` mean something at head.
+/// lock row to a survey, and each surveyed `(topic, version)` to a lock row
+/// unless the survey is the record of a retirement (a later version is
+/// locked and nobody still decodes this one), which is what lets
+/// `ConsumerInventory::retire` mean something at head.
 ///
 /// A crate that reaches a body by an alias or a re-export is invisible here,
 /// which is why this is a floor under the reviewed list and not a
@@ -1098,14 +1115,43 @@ fn the_consumer_inventory_names_every_crate_that_names_a_bound_body_and_every_ro
             row.version
         );
     }
+    // A survey with no lock row is admitted in exactly one state: the record
+    // of a retirement. The lock holds a later version of the topic and no
+    // listed consumer still decodes this one. That is the state
+    // `schema_gate::judge` demands of the head while the base still locks the
+    // old version (`ConsumerInventory::retire`), and the gate test above
+    // builds it on purpose ("passes once the consumer row is migrated").
+    // Until 2026-11-13 this loop refused it, so the first version a topic
+    // ever left behind (`reflex.feature_digested` v1, ADR 0428) could satisfy
+    // the gate or this check and never both: CI's schema gate failed on the
+    // merge of ADR 0428 with "v1 has no consumer inventory". Every other
+    // survey without a lock row is still refused: one whose topic holds no
+    // later version, and one a consumer still decodes.
     for entry in &inventory {
+        if lock
+            .iter()
+            .any(|r| r.topic == entry.topic && r.version == entry.version)
+        {
+            continue;
+        }
+        let superseded = lock
+            .iter()
+            .any(|r| r.topic == entry.topic && r.version > entry.version);
+        let still_read: Vec<&str> = entry
+            .consumers
+            .iter()
+            .filter(|c| c.role == qip_events::retirement::ConsumerRole::Decodes && !c.migrated)
+            .map(|c| c.name.as_str())
+            .collect();
         assert!(
-            lock.iter()
-                .any(|r| r.topic == entry.topic && r.version == entry.version),
-            "consumers.lock.json surveys {} version {} which the lock does not hold; drop the \
-             survey once the version is retired",
+            superseded && still_read.is_empty(),
+            "consumers.lock.json surveys {} version {} which the lock does not hold. That is \
+             only the record of a retirement: the lock must hold a later version of the topic \
+             (it {}) and no consumer may still decode this one (still decoding: {:?})",
             entry.topic,
-            entry.version
+            entry.version,
+            if superseded { "does" } else { "does not" },
+            still_read
         );
     }
 
