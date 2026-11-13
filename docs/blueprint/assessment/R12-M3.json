@@ -425,19 +425,21 @@
   },
   {
     "id": "R12-ASSET-3019",
-    "status": "PARTIAL",
-    "current": "PortfolioConstruction agent in production; horizons and hedges handled in kernel.",
+    "status": "COMPLETE",
+    "current": "PortfolioAssetAnalyst in standard_agents reads the book and its purpose the kernel writes every REASON: mandates, horizons, exposures, hedges, divestment and factor/causal-driver allocation (ADR 0468).",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/construction.rs:75 PortfolioConstruction reads approved_conviction from the feature store and reports no data without it",
-      "grep -rn '\"approved_conviction\"' over runtime, apps and services finds no writer outside tests",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed",
-      "backend/crates/agents/qip-investment-agents/src/portfolio_brain.rs (PortfolioAssetAnalyst)",
+      "backend/crates/agents/qip-investment-agents/src/portfolio_brain.rs (PortfolioAssetAnalyst: horizon, hedge, driver and factor facts)",
+      "backend/crates/agents/qip-investment-agents/src/desk.rs (BookPurpose, HeldHorizon, HedgeStanding)",
       "backend/crates/agents/qip-investment-agents/src/coverage.rs (Scope::PortfolioAsset)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs (brief_the_desk_on_book, desk_book_view)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (brief_the_desk_on_book, book_purpose, desk_book_view)",
       "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_portfolio_asset_brain_drops_portfolio_asset_from_coverage",
-      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close"
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_portfolio_asset_brain_reports_horizons_hedges_and_driver_allocation",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_portfolio_asset_brain_counts_a_position_being_divested",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs the_desk_reads_each_held_positions_horizon_and_hedge_standing",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs selling_the_whole_long_unwinds_the_position_and_a_trim_leaves_it_held",
+      "docs/adr/0468-the-portfolio-asset-brain-allocates-the-book-to-causal-drivers-by-sizing-hypothesis-and-to-factors-by-catalogue-loadings.md"
     ],
-    "gap": "2026-10-30: skeptic REFUTED on part 4: the Portfolio/Asset Brain runs in the standard organisation on the default cycle and reads the held book the kernel now writes into the desk every REASON, covering mandates (positions flagged with none) and exposure, but it states no horizon, hedge or factor/causal-driver allocation, and its divestment count is always zero because nothing on a shipped path calls Portfolio::begin_unwind; remaining step is findings for those three from the kernel's position records and a default-path unwind seam.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -448,7 +450,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed. 2026-10-30: the desk's book slot is an Upstream the kernel writes from the position lifecycle register and latest closes every REASON (it had been the empty assembly portfolio for the life of the process); a new PortfolioAssetAnalyst in standard_agents reports positions held, flagged without mandate, unwinding, unmarked and gross exposure over equity; Scope::PortfolioAsset. Mutations: drop brief_the_desk_on_book (kernel test fails); count Held for Flagged (organisation test fails). Roster and documented agent count move to twenty-one. Skeptic (code-reviewer) REFUTED as in the gap."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed. 2026-10-30: the desk's book slot is an Upstream the kernel writes from the position lifecycle register and latest closes every REASON (it had been the empty assembly portfolio for the life of the process); a new PortfolioAssetAnalyst in standard_agents reports positions held, flagged without mandate, unwinding, unmarked and gross exposure over equity; Scope::PortfolioAsset. Mutations: drop brief_the_desk_on_book (kernel test fails); count Held for Flagged (organisation test fails). Roster and documented agent count move to twenty-one. Skeptic (code-reviewer) REFUTED as in the gap. 2026-11-12 (lane t50-21): the desk's book slot gains BookPurpose, written by Platform::book_purpose from position_horizons, PositionMandate::sized_at, position_obligations and Portfolio::exposures; the brain reports horizons (without, age unknown, past, nearest remaining fraction), hedges (hedged, unhedged, undeclared kept apart), causal-driver allocation by sizing hypothesis (ADR 0468) and factor exposure over equity, and its unwinding count is proven non-zero on a divested position. The default-path unwind seam (begin_deliberate_close in submit_order) predates this lane and is proven by position_record's unwind tests. Mutations, each fired and restored byte-for-byte: past-horizon `>` to `<`; Hedged counted as unhedged; unattributed gross dropped; Unwinding filter to Held; drop view.purpose assignment; drop hedge insert; drop factor assignment; drop PortfolioAssetAnalyst from standard_agents. No threshold for 'near' a horizon is set: none was stated."
   },
   {
     "id": "R12-CAPITAL-3020",
