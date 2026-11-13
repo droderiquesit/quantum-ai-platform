@@ -28,6 +28,7 @@ spec:
   binaryAuthorization:
     useDefault: true
   template:
+    revision: qip-dev-api-abf392d2925a
     serviceAccountRef:
       external: qip-api-dev@algorik-qip-dev.iam.gserviceaccount.com
     vpcAccess:
@@ -245,6 +246,18 @@ spec:
           mode: 292
           versionRef:
             external: latest
+  # Two targets always, and their order is the contract Kargo's promotion
+  # reads (kargo/base/promotiontask.yaml, ADR 0452): index 0 is the revision
+  # serving the stable share, index 1 the `standby` — the canary while one
+  # runs, the previous promoted digest's revision otherwise, at 0%, kept so
+  # that a return to it is a traffic change and not a new revision. Each
+  # revision is named `qip-<env>-api-<first twelve hex of its digest>`.
   traffic:
-  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
+  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
+    revision: qip-dev-api-abf392d2925a
     percent: 100
+    tag: stable
+  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
+    revision: qip-dev-api-abf392d2925a
+    percent: 0
+    tag: standby

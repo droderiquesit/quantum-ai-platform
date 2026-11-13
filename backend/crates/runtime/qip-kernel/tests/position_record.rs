@@ -727,6 +727,104 @@ fn the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close() -> Resu
     Ok(())
 }
 
+/// R12-ASSET-3019 (ADR 0468): the desk's book slot carries what the held
+/// position is held *for* — the hypothesis and horizon `construct_from`
+/// recorded, the sizing instant beside its mandate, and the hedge standing
+/// the register states — so the Portfolio/Asset Brain reads the register's
+/// facts on the default cycle. With no hedge policy declared the position
+/// is stated *unhedged*, with the reason, and never left undeclared.
+///
+/// Mutations: drop `view.purpose = purpose;` from `brief_the_desk_on_book`
+/// — the slot keeps the empty purpose it was assembled with and the horizon
+/// assertion fails; drop the hedge insert in `book_purpose` — the standing
+/// reads `None`; drop the factor assignment — no factor allocation arrives.
+#[test]
+fn the_desk_reads_each_held_positions_horizon_and_hedge_standing() -> Result<()> {
+    use qip_investment_agents::desk::HedgeStanding;
+    let aaa = object("AAA");
+    // AAA loads 1.2 on one catalogue factor, so the factor allocation has
+    // something to carry; the shared fixture states none.
+    let mut loaded = listed("AAA")?;
+    loaded
+        .risk
+        .factor_exposures
+        .loadings
+        .insert("equity_market".to_string(), 1.2);
+    let mut universe = Universe::new();
+    universe.insert(loaded)?;
+    let config = config().with_event_log_file(log_path("desk-book-purpose"));
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        leverage_only(),
+    )?;
+    platform.observe(tape("AAA"));
+    let first = platform.run_cycle(start());
+    assert!(first.traversed_every_stage(), "{}", first.summarise());
+    let (hypothesis, horizon) = {
+        let holding = platform.position_holding(aaa.as_str(), start());
+        let holding = holding.map_err(|e| {
+            qip_core::error::Error::invalid(format!(
+                "premise: the cycle sized obj-AAA on a hypothesis with a horizon: {}",
+                e.message()
+            ))
+        })?;
+        (holding.hypothesis().to_string(), holding.horizon())
+    };
+    let second = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(second.traversed_every_stage(), "{}", second.summarise());
+    let view = platform.desk_book_view();
+    let held = view
+        .purpose
+        .horizons
+        .get(aaa.as_str())
+        .unwrap_or_else(|| panic!("no horizon reached the desk: {:?}", view.purpose));
+    assert_eq!(
+        held.hypothesis, hypothesis,
+        "the driver is the sizing hypothesis"
+    );
+    assert_eq!(held.horizon, horizon);
+    assert!(
+        held.sized_at.is_some(),
+        "the sizing instant beside the mandate reached the desk"
+    );
+    match view.purpose.hedges.get(aaa.as_str()) {
+        Some(HedgeStanding::Unhedged { reason }) => assert!(
+            reason.contains("no hedge policy is declared"),
+            "the reason is the register's: {reason}"
+        ),
+        other => panic!("obj-AAA's hedge standing was not stated as unhedged: {other:?}"),
+    }
+    assert!(view.purpose.hedges_refused.is_none());
+    assert!(view.purpose.factors_refused.is_none());
+    let factor = view
+        .purpose
+        .factor_exposure
+        .get("equity_market")
+        .copied()
+        .unwrap_or_else(|| panic!("no factor allocation reached the desk: {:?}", view.purpose));
+    let quantity = view
+        .portfolio
+        .positions()
+        .find(|position| position.object_id == aaa)
+        .map(|position| position.quantity())
+        .expect("premise: the desk's book holds obj-AAA");
+    let mark = view
+        .marks
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: marked");
+    assert_eq!(
+        factor,
+        dec!("1.2") * quantity * mark,
+        "the factor exposure is the loading times the marked position"
+    );
+    Ok(())
+}
+
 /// R12-TICK-2090: the kernel keeps every instrument it has seen trade in a
 /// universe history, and a delisting dates the end of its membership
 /// without removing it — so a date before the delisting still finds the
