@@ -2169,3 +2169,30 @@ variable "secondary_region" {
     error_message = "secondary_region equals region; a secondary repository in the primary's region is lost with it. Name another region, or leave it null."
   }
 }
+
+variable "desk_risk_tolerance" {
+  description = <<-EOT
+    The desk mandate's risk tolerance, a decimal fraction from 0 to 1, as a
+    string (ADR 0405). Every maximum in the operator's limit set is in force
+    at this fraction of its ceiling; every minimum stays where the operator
+    put it. It can only narrow.
+
+    Null by default, which sets no QIP_DESK_RISK_TOLERANCE on any workload:
+    the binaries then run at a tolerance of one, the operator's limits exactly
+    as written. The figure is a person's to give; none is committed here.
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    # Refused at plan time as well as at start-up. The binary stops on a value
+    # outside the range, so an environment applied with one would be a
+    # platform that does not start; the plan is the cheaper place to learn it.
+    condition = var.desk_risk_tolerance == null ? true : (
+      can(tonumber(var.desk_risk_tolerance)) &&
+      try(tonumber(var.desk_risk_tolerance) >= 0, false) &&
+      try(tonumber(var.desk_risk_tolerance) <= 1, false)
+    )
+    error_message = "desk_risk_tolerance must be a decimal fraction from 0 to 1 written as a string, such as \"0.5\" (divide a percentage by 100), or null to run the operator's limits exactly as written."
+  }
+}

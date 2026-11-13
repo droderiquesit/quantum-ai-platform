@@ -43,7 +43,7 @@ use crate::central::{
 };
 use crate::config::PlatformConfig;
 use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
-use crate::cycle::{CycleReport, Stage, StageOutcome};
+use crate::cycle::{CycleReport, RiskDiscovery, Stage, StageOutcome};
 use crate::desk_ledger::{Admission, DeskLedgerFeed, DeskOutcome};
 use crate::family_review::{
     FAMILY_FINDING_PROPOSED, FAMILY_FINDING_WITHDRAWN, FamilyAllocationReview, FamilyMember,
@@ -664,6 +664,12 @@ pub struct Platform {
     /// per-venue fill-probability, slippage and impact estimates, the left
     /// fold of its own journal records and resumed from them.
     microstructure_model: crate::microstructure_model::MicrostructureModel,
+    /// The fill-bias corrections a research campaign installed into the paper
+    /// fill model (R12-EXPAND-6050): per venue, the signed basis points
+    /// subtracted from the twin's predicted entry when its paper fills are
+    /// scored. The left fold of its own install/withdraw journal records,
+    /// resumed from them, so a replay reproduces the installed set.
+    fill_bias_installations: crate::fill_bias_installation::InstalledFillBiases,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -801,6 +807,10 @@ pub struct Platform {
     /// read twice: a cycle that reaches no construction journals nothing
     /// rather than the last cycle's comparison.
     cycle_solver_routing: Option<SolverRoutingJournal>,
+    /// The last cycle's risk discovery, kept so the next one can say what
+    /// emerged since (R12-RISK-4094). Advice only: nothing that decides reads
+    /// it.
+    last_risk_discovery: Option<RiskDiscovery>,
     /// The latest DECIDE solve, kept for the next UNDERSTAND to state in the
     /// quantum contract (R12-QUANT-4063).
     pending_routing: Option<(u64, qip_optimization_engine::RoutingDecision)>,
@@ -2273,6 +2283,39 @@ fn scenario_input_digest(
 }
 
 impl StressReport {
+    /// Every world this stress priced, as the data the survival kernel reads
+    /// (ADR 0464): the library, the adversarial sequence, every causal driver
+    /// and the generated tail worlds — every number SIMULATE computed, and not
+    /// a curated subset of them. Not the advisory worlds, which are reported
+    /// and not applied. `qip-survival` cannot name this report, which is built
+    /// from `qip-simulation-engine`'s types and so reaches alpha.
+    pub fn worlds(&self) -> qip_survival::survival::StressedWorlds {
+        use qip_survival::survival::WorldLoss;
+        let library = self.scenarios.iter().map(|r| WorldLoss {
+            scenario: r.scenario.clone(),
+            loss_fraction: r.loss_fraction,
+        });
+        let adversarial = self.adversarial.iter().map(|sequence| WorldLoss {
+            scenario: ADVERSARIAL_SCENARIO_NAME.to_string(),
+            loss_fraction: sequence.result.loss_fraction,
+        });
+        let causal = self.causal.iter().map(|r| WorldLoss {
+            scenario: r.scenario.clone(),
+            loss_fraction: r.loss_fraction,
+        });
+        let tail = self.tail_worlds.iter().map(|w| WorldLoss {
+            scenario: w.scenario.clone(),
+            loss_fraction: w.loss_fraction,
+        });
+        qip_survival::survival::StressedWorlds {
+            worlds: library
+                .chain(adversarial)
+                .chain(causal)
+                .chain(tail)
+                .collect(),
+        }
+    }
+
     /// `report` carrying `advisory` as reported-only worlds, with the reserve
     /// they would demand if applied: the report with them moved into
     /// `tail_worlds`, priced by the same `survival::tail_response` the
@@ -2286,11 +2329,14 @@ impl StressReport {
         if !advisory.is_empty() {
             let mut applied = report.clone();
             applied.tail_worlds.extend(advisory.iter().cloned());
-            report.advisory_reserve =
-                crate::survival::tail_response(Some(&applied), equity, STRESS_LOSS_TOLERANCE)
-                    .ok()
-                    .flatten()
-                    .map(|response| response.reserve);
+            report.advisory_reserve = crate::survival::tail_response(
+                Some(&applied.worlds()),
+                equity,
+                STRESS_LOSS_TOLERANCE,
+            )
+            .ok()
+            .flatten()
+            .map(|response| response.reserve);
         }
         report.advisory_worlds = advisory;
         report
@@ -3733,6 +3779,12 @@ pub struct CycleJournalEntry {
     /// name it. A non-zero count means the join above is incomplete.
     #[serde(skip_serializing_if = "is_zero", default)]
     pub sensed_unlisted: u64,
+    /// The cycle's risk discovery as its report carried it (R12-RISK-4094),
+    /// so crowding and the shared-cause levels an operator read can be
+    /// reproduced from the log alone. Absent on a journal written before the
+    /// field existed, which is why it is defaulted rather than required.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub risk_discovery: Option<crate::cycle::RiskDiscovery>,
 }
 
 /// The most records one journal entry names as having fed its cycle.
@@ -6677,6 +6729,7 @@ impl Platform {
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
+        let fill_bias_installations_resumed = crate::fill_bias_installation::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -6752,6 +6805,7 @@ impl Platform {
             replay_divergence_windows: replay_divergence_resumed.1,
             microstructure_deltas: BTreeMap::new(),
             microstructure_model: microstructure_model_resumed,
+            fill_bias_installations: fill_bias_installations_resumed,
             feasibility_refusals: Vec::new(),
             counterparty_arrivals: BTreeMap::new(),
             counterparty_roles: BTreeMap::new(),
@@ -6778,6 +6832,7 @@ impl Platform {
             cycle_family_structure: None,
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
+            last_risk_discovery: None,
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
@@ -12907,7 +12962,7 @@ impl Platform {
     /// [`StressReport::advisory_reserve`] for the reserve they would demand.
     pub fn applied_stress_reserve(&self) -> Result<Option<Decimal>> {
         Ok(crate::survival::tail_response(
-            self.stress.as_ref(),
+            self.stress.as_ref().map(StressReport::worlds).as_ref(),
             self.equity(),
             STRESS_LOSS_TOLERANCE,
         )?
@@ -13215,9 +13270,12 @@ impl Platform {
             .deployable_capital(now)
             .and_then(|free| self.survival_figures(free, now));
         if let Ok(figures) = figures {
-            let _lowered_on_refusal =
-                self.governor
-                    .seed(figures, self.stress.as_ref(), STRESS_LOSS_TOLERANCE, now);
+            let _lowered_on_refusal = self.governor.seed(
+                figures,
+                self.stress.as_ref().map(StressReport::worlds).as_ref(),
+                STRESS_LOSS_TOLERANCE,
+                now,
+            );
         }
     }
 
@@ -14507,6 +14565,7 @@ impl Platform {
             .fold(Duration::ZERO, |total, outcome| total + outcome.elapsed);
         self.observe_decision_latency(decided_in);
 
+        let risk_discovery = self.discover_risk();
         let mut report = CycleReport {
             cycle: self.cycle,
             correlation_id,
@@ -14515,6 +14574,7 @@ impl Platform {
             stages,
             events_logged: self.event_log.len(),
             halted: self.autonomy.kill_switch().is_globally_tripped(),
+            risk_discovery,
         };
 
         if let Some(slowest) = report.stages.iter().map(|o| o.elapsed).max() {
@@ -14665,7 +14725,42 @@ impl Platform {
             stages,
             events_logged: self.event_log.len(),
             halted: self.autonomy.kill_switch().is_globally_tripped(),
+            // Nothing ran, so nothing was measured: `None` on both levels,
+            // which reads as "not measured" and not as "measured and clean".
+            risk_discovery: RiskDiscovery::default(),
         }
+    }
+
+    /// The Risk Brain's discovery pass for the cycle that just ran
+    /// (R12-RISK-4094): crowded names across cells from the central plane's
+    /// aggregate, and the factor and causal-driver levels from the risk state
+    /// the pre-trade veto reads, compared against the cycle before.
+    ///
+    /// Read-only over both sources. The state is recomputed from the same
+    /// aggregates rather than cached from a stage, so the report describes the
+    /// book as the cycle left it, which is the book the next order is checked
+    /// against.
+    fn discover_risk(&mut self) -> RiskDiscovery {
+        let state = self.risk_state_from(self.risk_figures());
+        let crowded = self
+            .central
+            .exposure()
+            .crowded(self.central.config().minimum_cells_for_crowding);
+        let discovery = RiskDiscovery {
+            crowded,
+            factor: state
+                .axis_exposures
+                .get(qip_risk::shared_cause::FACTOR_AXIS)
+                .cloned(),
+            causal_drivers: state
+                .axis_exposures
+                .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
+                .cloned(),
+            emerging: Vec::new(),
+        }
+        .with_emerging_since(self.last_risk_discovery.as_ref());
+        self.last_risk_discovery = Some(discovery.clone());
+        discovery
     }
 
     /// Close one stage off: time it on the injected clock and keep it.
@@ -14914,6 +15009,7 @@ impl Platform {
             // that never saw it.
             sensed: std::mem::take(&mut self.sensed_pending),
             sensed_unlisted: std::mem::take(&mut self.sensed_unlisted),
+            risk_discovery: Some(report.risk_discovery.clone()),
         };
 
         let facts = EventFacts::derived(
@@ -15629,7 +15725,7 @@ impl Platform {
         // DECIDE (`crate::confidence`). Nothing here drops a feed.
         self.governor
             .signals_mut()
-            .observe_distribution(&statistics);
+            .observe_distribution(&statistics.distribution_reading());
         let statistics_detail = if statistics.has_findings() {
             format!("; {}", statistics.describe())
         } else {
@@ -17803,6 +17899,13 @@ impl Platform {
         .with_context(opportunity.historical_context.clone())
         .about_objects(opportunity.affected_objects.clone())
         .about_entities(opportunity.affected_entities.clone());
+        // The regime in force for the instrument the episode will be keyed
+        // on — the same first affected object `recall_precedent` keys on —
+        // so the Meta Brain weighs each specialist by its record in this
+        // regime (R12-AMBIENT-3024). Typed, never written into `context`.
+        if let Some(instrument) = opportunity.affected_objects.first() {
+            brief = brief.in_regime(self.regime_context(instrument.as_str()));
+        }
         // A precedent the brief refuses is a kernel bug — the store already
         // filters to `known_at < now` — so it is reported as a problem and
         // the panel is convened without it, rather than with a precedent
@@ -19081,6 +19184,14 @@ impl Platform {
                     )),
                     agent_id: stance.agent_id.clone(),
                     occurred_at: now,
+                    // The regime the episode was formed in, keyed as
+                    // `regime_context` keys it, so the Meta Brain can say
+                    // which analyst is reliable in which regime
+                    // (R12-AMBIENT-3024) rather than one pooled rate.
+                    regime: Some(format!(
+                        "{}/{}",
+                        episode.regime.market, episode.regime.volatility
+                    )),
                     question: format!(
                         "which way {} would move on a {} claim",
                         episode.instrument, episode.claim.claim
@@ -19934,7 +20045,7 @@ impl Platform {
         let figures = self.survival_figures(free, now)?;
         let sizing = self.governor.size(
             figures,
-            self.stress.as_ref(),
+            self.stress.as_ref().map(StressReport::worlds).as_ref(),
             STRESS_LOSS_TOLERANCE,
             &views,
             now,
@@ -28401,12 +28512,12 @@ impl Platform {
                     let realised_outcome_bps = outcomes.map(|(_, realised)| realised);
                     let outcome_error_bps =
                         outcomes.map(|(predicted, realised)| predicted - realised);
-                    let trade_error_bps = trade
+                    let raw_trade_error_bps = trade
                         .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
                         .and_then(|simulated| {
                             fill_error_bps(simulated, path.fill_price, path.side)
                         });
-                    if let Some(error_bps) = trade_error_bps {
+                    if let Some(error_bps) = raw_trade_error_bps {
                         self.telemetry.metrics.observe_with(
                             names::VENUE_FILL_ERROR_BPS,
                             labels([("venue", path.venue.as_str())]),
@@ -28445,6 +28556,21 @@ impl Platform {
                             }
                         }
                     }
+                    // R12-EXPAND-6050: the fill-bias correction a research
+                    // campaign installed for this venue is applied to the
+                    // residual the fill score carries — the paper fill the next
+                    // campaign reads, so the paper window's fills are produced
+                    // under the correction and revert to raw the cycle after it
+                    // is withdrawn. It subtracts the fitted bias from the twin's
+                    // prediction, which in the signed-bps residual is
+                    // `raw - bias`. The twin's own fill calibration above keeps
+                    // the *raw* error on purpose: that path (R12-TICK-2080) is
+                    // where the correction's own bias was measured, and folding
+                    // the correction back into it would count the same bias
+                    // twice.
+                    let trade_error_bps = raw_trade_error_bps.map(|raw| {
+                        raw - self.installed_fill_bias(path.venue.as_str()).unwrap_or(0.0)
+                    });
                     scored += 1;
                     self.fill_scores.push(FillScore {
                         order_id,
@@ -28629,6 +28755,94 @@ impl Platform {
         }
         self.microstructure_deltas.insert(key, delta);
         Ok(true)
+    }
+
+    /// Install a fill-bias correction into the paper fill model for its venue
+    /// (R12-EXPAND-6050), journaling it **before** the state moves so a replay
+    /// reproduces the installed correction from the log alone. A non-finite
+    /// bias corrects nothing and is refused; a venue no registered strategy
+    /// trades is refused like a microstructure delta for one — fail closed
+    /// rather than correcting fills nobody produces. `Ok(true)` installed (or
+    /// replaced an earlier correction for the venue); the paper fills scored
+    /// at the venue from here are scored under the correction, and the next
+    /// campaign reads the corrected residuals.
+    pub fn install_fill_bias(
+        &mut self,
+        venue: &str,
+        bias_bps: f64,
+        campaign: &str,
+        now: Timestamp,
+    ) -> Result<bool> {
+        if !bias_bps.is_finite() {
+            return Err(Error::invalid(format!(
+                "a fill-bias correction at {venue} is {bias_bps}; a non-finite bias corrects \
+                 nothing and is refused"
+            )));
+        }
+        if !self
+            .central
+            .factory()
+            .candidates()
+            .any(|candidate| candidate.venue().as_str() == venue)
+        {
+            return Err(Error::denied(format!(
+                "no registered strategy trades at {venue}; a fill-bias correction for it would \
+                 score fills nobody produces and is refused"
+            )));
+        }
+        let record = crate::fill_bias_installation::FillBiasInstallationRecord {
+            venue: venue.to_string(),
+            bias_bps,
+            campaign: campaign.to_string(),
+            installed: true,
+            at: now,
+        };
+        self.journal_record(
+            record.clone(),
+            crate::fill_bias_installation::FILL_BIAS_INSTALLATION_ORIGIN,
+            now,
+        )?;
+        self.fill_bias_installations.apply(&record);
+        Ok(true)
+    }
+
+    /// Withdraw an installed fill-bias correction (R12-EXPAND-6050): a
+    /// campaign whose paper window refused the correction removes it from the
+    /// live paper model, so the venue's later paper fills are scored raw
+    /// again. `Ok(false)` is a venue with no installed correction — the right
+    /// reading of a refusal no earlier sweep's install stood behind.
+    /// `Ok(true)` withdrew one, after journaling the withdrawal so the revert
+    /// replays from the log.
+    pub fn withdraw_fill_bias(&mut self, venue: &str, now: Timestamp) -> Result<bool> {
+        let Some(installed) = self.fill_bias_installations.get(venue).cloned() else {
+            return Ok(false);
+        };
+        let record = crate::fill_bias_installation::FillBiasInstallationRecord {
+            venue: venue.to_string(),
+            bias_bps: installed.bias_bps,
+            campaign: installed.campaign,
+            installed: false,
+            at: now,
+        };
+        self.journal_record(
+            record.clone(),
+            crate::fill_bias_installation::FILL_BIAS_INSTALLATION_ORIGIN,
+            now,
+        )?;
+        self.fill_bias_installations.apply(&record);
+        Ok(true)
+    }
+
+    /// The basis points the installed fill-bias correction subtracts from the
+    /// twin's predicted entry at `venue`, if one is installed (R12-EXPAND-6050).
+    pub fn installed_fill_bias(&self, venue: &str) -> Option<f64> {
+        self.fill_bias_installations.bias_bps(venue)
+    }
+
+    /// The paper fill model's installed fill-bias corrections, for a reader
+    /// that walks the installed set rather than one venue (R12-EXPAND-6050).
+    pub fn installed_fill_biases(&self) -> &crate::fill_bias_installation::InstalledFillBiases {
+        &self.fill_bias_installations
     }
 
     /// The latest concluded microstructure delta for `venue` from `cell`.
