@@ -82,6 +82,33 @@ promotion step asking about `edges` would have read a green light for ever.
   refuses any drift between them. A new central objective on a new plane
   needs a third invocation and an edit to that constant.
 
+## What it costs
+
+- Every promotion out of `paper` is refused until a qip-api address and a
+  Monitor credential are configured. While the control plane is suspended
+  this stops nothing that runs. Once the plane is up, it is a release that
+  waits on a person.
+- A third freight plane, or a renamed one, takes edits in two places: the
+  Stage and `FREIGHT_PLANES`. The suite catches drift between them, but
+  someone still has to make both edits.
+- One more authenticated read surface on qip-api. It is read-only, and it
+  answers about budgets, not positions.
+- An unobserved plane still answers 200. The body says it rests on
+  nothing, but the step does not refuse on that.
+
+## What would make this wrong
+
+- If the freight split per binary, `kernel` and `portfolio` would no longer
+  be the planes of one bundle. Each would then need its own Stage chain, or
+  a spent `kernel` budget would hold back a binary the objective never
+  measured.
+- If Kargo's `http` step left a status outside both expressions to retry,
+  or if `secret()` did not resolve as written, the step would not fail
+  closed the way decision 3 says. The first live promotion settles both
+  questions.
+- If the owner rules that "unobserved" must refuse, decision 4 would be
+  reversed.
+
 ## What remains (R12-OBS-9156 stays PARTIAL, 2026-11-13)
 
 - **Most budgets cannot be spent yet.** Only `reconciliation-breaks-zero-unexplained`
