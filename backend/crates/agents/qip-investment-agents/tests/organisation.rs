@@ -421,6 +421,31 @@ fn desk_holding_an_unmandated_position() -> Arc<Desk> {
 }
 
 fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Desk> {
+    desk_with_purpose(
+        claims,
+        if holding {
+            Held::Flagged
+        } else {
+            Held::Nothing
+        },
+        qip_investment_agents::desk::BookPurpose::default(),
+    )
+}
+
+/// What the fixture book holds: nothing, ACME flagged for want of a mandate
+/// (R12-ASSET-4066), or ACME being divested (R12-ASSET-1160).
+#[derive(Clone, Copy, PartialEq)]
+enum Held {
+    Nothing,
+    Flagged,
+    Unwinding,
+}
+
+fn desk_with_purpose(
+    claims: Vec<qip_world_model::CausalEdge>,
+    holding: Held,
+    purpose: qip_investment_agents::desk::BookPurpose,
+) -> Arc<Desk> {
     let mut universe = Universe::new();
     universe.insert(equity("ACME", "100")).unwrap();
     universe.insert(commodity("WTI", "80")).unwrap();
@@ -572,7 +597,7 @@ fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Des
                         dec!("10000000"),
                         now(),
                     );
-                    if holding {
+                    if holding != Held::Nothing {
                         let acme = equity("ACME", "100");
                         portfolio
                             .apply_fill(
@@ -584,11 +609,17 @@ fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Des
                                 None,
                             )
                             .unwrap();
+                        // The lifecycle table has no `Held -> Unwinding`
+                        // edge: a deliberate close is flagged first.
                         portfolio.flag_position(&object("ACME")).unwrap();
+                        if holding == Held::Unwinding {
+                            portfolio.begin_unwind(&object("ACME")).unwrap();
+                        }
                     }
                     portfolio
                 },
                 marks: BTreeMap::from([(object("ACME").as_str().to_string(), dec!("100"))]),
+                purpose,
             },
             RiskView {
                 state: RiskState::default(),
@@ -1096,6 +1127,7 @@ fn the_credit_analyst_refuses_to_assume_a_duration_it_does_not_have() -> Result<
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1164,6 +1196,7 @@ fn the_alternative_data_analyst_will_not_use_an_unlicensed_dataset() -> Result<(
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1258,6 +1291,7 @@ fn compliance_blocks_a_restricted_name_with_full_conviction() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1386,6 +1420,7 @@ fn the_construction_agent_respects_its_concentration_cap() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1525,6 +1560,7 @@ fn the_learning_agent_cannot_score_an_unresolved_episode() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1593,6 +1629,7 @@ fn the_learning_agent_reports_the_sample_size_behind_each_hit_rate() -> Result<(
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1943,6 +1980,7 @@ fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView { state, limits },
         ComplianceView::default(),
@@ -2615,6 +2653,160 @@ fn removing_the_portfolio_asset_brain_drops_portfolio_asset_from_coverage() -> R
     let (with, without) = scopes_with_and_without(desk, &brief(), ids::PORTFOLIO_ASSET)?;
     assert!(with.contains(&Scope::PortfolioAsset), "{with:?}");
     assert!(!without.contains(&Scope::PortfolioAsset), "{without:?}");
+    Ok(())
+}
+
+/// R12-ASSET-3019's remaining scope: horizons, hedges and the factor and
+/// causal-driver allocation (ADR 0468). The register's purpose record for
+/// the one held position — ACME, 1,000 at 100, sized twenty days ago on a
+/// ten-day hypothesis, hedged by one held policy, loading 1.2 on a market
+/// factor — must reach the chief as figures checked against the fixture,
+/// and a book whose purpose nobody stated must read as *undeclared* and
+/// *unattributed*, never as unhedged or as allocated.
+///
+/// Mutations (each fired, see the lane report): compare `elapsed < span`
+/// for past-horizon — the count reads zero; file `Hedged` under the
+/// unhedged count — hedged reads zero; drop the `purpose` assignment in
+/// the kernel's `brief_the_desk_on_book` — covered by the kernel test.
+#[test]
+fn the_portfolio_asset_brain_reports_horizons_hedges_and_driver_allocation() -> Result<()> {
+    use qip_investment_agents::desk::{BookPurpose, HedgeStanding, HeldHorizon};
+    let acme = object("ACME").as_str().to_string();
+    let declared = |hedge: Option<HedgeStanding>| {
+        let mut purpose = BookPurpose::default();
+        purpose.horizons.insert(
+            acme.clone(),
+            HeldHorizon {
+                hypothesis: "hyp-acme-margin".to_string(),
+                horizon: Duration::from_days(10),
+                sized_at: Some(now().saturating_sub(Duration::from_days(20))),
+            },
+        );
+        if let Some(hedge) = hedge {
+            purpose.hedges.insert(acme.clone(), hedge);
+        }
+        purpose
+            .factor_exposure
+            .insert("equity_market".to_string(), dec!("120000"));
+        purpose
+    };
+    let finding_for = |purpose: BookPurpose| -> Result<qip_agents::finding::AgentFinding> {
+        let mut org = organisation(desk_with_purpose(Vec::new(), Held::Flagged, purpose))?;
+        let report = org.dispatch(&brief(), now(), &lineage());
+        Ok(report
+            .findings
+            .iter()
+            .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+            .expect("premise: the Portfolio/Asset Brain reported on the held book")
+            .clone())
+    };
+
+    let hedged = finding_for(declared(Some(HedgeStanding::Hedged(vec![
+        "policy-equity-overlay".to_string(),
+    ]))))?;
+    assert_eq!(fact_value(&hedged, "positions_held"), Some(1.0), "premise");
+    assert_eq!(fact_value(&hedged, "positions_without_horizon"), Some(0.0));
+    assert_eq!(
+        fact_value(&hedged, "positions_horizon_age_unknown"),
+        Some(0.0)
+    );
+    assert_eq!(
+        fact_value(&hedged, "positions_past_horizon"),
+        Some(1.0),
+        "twenty days held on a ten-day horizon is past it"
+    );
+    let remaining =
+        fact_value(&hedged, "nearest_horizon_remaining_fraction").expect("a dated horizon");
+    assert!(
+        (remaining + 1.0).abs() < 1e-9,
+        "ten days past a ten-day horizon leaves -1 of it, not {remaining}"
+    );
+    assert_eq!(fact_value(&hedged, "positions_hedged"), Some(1.0));
+    assert_eq!(fact_value(&hedged, "positions_unhedged"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "positions_hedge_undeclared"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "causal_drivers_allocated"), Some(1.0));
+    assert_eq!(
+        fact_value(&hedged, "largest_causal_driver_gross_share"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&hedged, "unattributed_gross_share"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "factors_loaded"), Some(1.0));
+    let factor = fact_value(&hedged, "largest_factor_exposure_ratio").expect("equity is positive");
+    assert!(
+        (factor - 0.012).abs() < 1e-3,
+        "120,000 of factor exposure against about ten million of equity is not {factor}"
+    );
+
+    let unhedged = finding_for(declared(Some(HedgeStanding::Unhedged {
+        reason: "no hedge policy is declared for this deployment".to_string(),
+    })))?;
+    assert_eq!(fact_value(&unhedged, "positions_hedged"), Some(0.0));
+    assert_eq!(fact_value(&unhedged, "positions_unhedged"), Some(1.0));
+    assert_eq!(
+        fact_value(&unhedged, "positions_hedge_undeclared"),
+        Some(0.0)
+    );
+
+    let undeclared = finding_for(BookPurpose::default())?;
+    assert_eq!(
+        fact_value(&undeclared, "positions_held"),
+        Some(1.0),
+        "premise"
+    );
+    assert_eq!(
+        fact_value(&undeclared, "positions_hedge_undeclared"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&undeclared, "positions_unhedged"), Some(0.0));
+    assert_eq!(
+        fact_value(&undeclared, "positions_without_horizon"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&undeclared, "positions_past_horizon"), Some(0.0));
+    assert_eq!(
+        fact_value(&undeclared, "causal_drivers_allocated"),
+        Some(0.0)
+    );
+    assert_eq!(
+        fact_value(&undeclared, "unattributed_gross_share"),
+        Some(1.0),
+        "a position sized on no recorded hypothesis is unattributed, not allocated"
+    );
+    assert!(
+        fact_value(&undeclared, "nearest_horizon_remaining_fraction").is_none(),
+        "no horizon is on record, so none can be near"
+    );
+    assert!(fact_value(&undeclared, "largest_factor_exposure_ratio").is_none());
+    Ok(())
+}
+
+/// R12-ASSET-3019's divestment clause: a position the register marked
+/// unwinding (R12-ASSET-1160, `Platform::begin_deliberate_close` on every
+/// desk order that sells the whole long) is counted as divested, and not
+/// as flagged. The existing coverage test only ever saw zero here, which a
+/// brain that never counted would also report.
+///
+/// Mutation: count `Held` instead of `Unwinding` — the count reads zero.
+#[test]
+fn the_portfolio_asset_brain_counts_a_position_being_divested() -> Result<()> {
+    let desk = desk_with_purpose(
+        Vec::new(),
+        Held::Unwinding,
+        qip_investment_agents::desk::BookPurpose::default(),
+    );
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+        .expect("premise: the brain reported on the held book");
+    assert_eq!(fact_value(finding, "positions_held"), Some(1.0), "premise");
+    assert_eq!(fact_value(finding, "positions_unwinding"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "positions_flagged_without_mandate"),
+        Some(0.0)
+    );
     Ok(())
 }
 
@@ -3384,6 +3576,7 @@ fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> R
                     now(),
                 ),
                 marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),
@@ -3467,6 +3660,7 @@ fn the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings
                     now(),
                 ),
                 marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),
@@ -3521,6 +3715,7 @@ fn adversary_desk(
                     now(),
                 ),
                 marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),

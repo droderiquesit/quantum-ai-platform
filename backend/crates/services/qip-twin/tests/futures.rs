@@ -500,7 +500,7 @@ fn a_scenario_world_yields_a_portfolio_outcome_distribution_whose_weights_sum_to
 /// spread where it was; fills with no participation beside them move the
 /// spread alone, as before.
 ///
-/// Mutation: make `observe_with_participation` ignore the participation and
+/// Mutation: make `observe_cost` ignore the impact unit and
 /// update the bias alone — the impact coefficient never moves and the first
 /// assertion fails.
 #[test]
@@ -514,7 +514,7 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
     for round in 0..40 {
         let participation = participations[round % participations.len()];
         let error_bps = -20.0 * participation.sqrt();
-        calibration.observe_with_participation("XLON", error_bps, Some(participation))?;
+        calibration.observe_cost("XLON", &base, error_bps, Some(participation.sqrt()))?;
     }
     let calibrated = calibration.cost_model(&base, "XLON");
     assert!(
@@ -536,7 +536,7 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
     // Without participation the slope is untouched and the spread moves.
     let mut blind = FillCalibration::default();
     for _ in 0..20 {
-        blind.observe_with_participation("XLON", -12.0, None)?;
+        blind.observe_cost("XLON", &base, -12.0, None)?;
     }
     let venue = blind.venue("XLON").expect("calibrated");
     assert_eq!(venue.impact_slope_bps, 0.0);
@@ -545,9 +545,9 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
 
     assert!(
         calibration
-            .observe_with_participation("XLON", -1.0, Some(1.5))
+            .observe_cost("XLON", &base, -1.0, Some(-0.1))
             .is_err(),
-        "a fill that took more than the bar traded is refused"
+        "a negative impact unit is refused"
     );
 
     // Fills that are one size for the twin's purposes — a share against bars
@@ -556,9 +556,9 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
     // the identifiability floor two such fills fitted a slope of thousands of
     // basis points per unit root and the twin's impact term left the earth.
     let mut one_size = FillCalibration::default();
-    one_size.observe_with_participation("XLON", -30.0, Some(1.0e-6))?;
-    one_size.observe_with_participation("XLON", 25.0, Some(2.0e-6))?;
-    one_size.observe_with_participation("XLON", -40.0, Some(1.5e-6))?;
+    one_size.observe_cost("XLON", &base, -30.0, Some((1.0e-6_f64).sqrt()))?;
+    one_size.observe_cost("XLON", &base, 25.0, Some((2.0e-6_f64).sqrt()))?;
+    one_size.observe_cost("XLON", &base, -40.0, Some((1.5e-6_f64).sqrt()))?;
     let venue = one_size.venue("XLON").expect("calibrated");
     assert_eq!(venue.participation_observations, 3);
     assert_eq!(
@@ -574,11 +574,106 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
     Ok(())
 }
 
+/// R12-TICK-2080, ADR 0450: a fitted impact slope that would carry the base
+/// coefficient to the platform's cost ceiling is refused, not adopted and
+/// not clamped. Adopted, it would leave the venue `Unpriceable`, and an
+/// unpriceable trade is never scored, so the venue could never be
+/// calibrated back: an earlier version had no bound and did exactly that.
+///
+/// Mutation: drop the `< MAX_TRADE_COST_BPS` arm of the slope's adoption
+/// test in `observe_cost` — the wild slope is adopted and the corrected
+/// coefficient passes the ceiling. Mutation: drop the same arm of the
+/// bias's — the half-spread passes it and the venue no longer prices.
+#[test]
+fn an_impact_slope_that_would_price_past_the_cost_ceiling_is_refused_and_the_old_slope_kept()
+-> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut calibration = FillCalibration::default();
+    // A sane size law first: the twin overcharges 30 bps per impact unit.
+    let units = [0.1_f64, 0.2, 0.3, 0.4];
+    for round in 0..20 {
+        let unit = units[round % units.len()];
+        let observed = calibration.observe_cost("XLON", &base, 30.0 * unit, Some(unit))?;
+        assert!(!observed.refused, "premise: a sane slope is adopted");
+    }
+    let sane = calibration
+        .venue("XLON")
+        .expect("calibrated")
+        .impact_slope_bps;
+    assert!(
+        (sane - 30.0).abs() < 1e-6,
+        "premise: the fit found 30: {sane}"
+    );
+
+    // Then fills that state a size law costing more than the notional.
+    let mut refused = 0;
+    for round in 0..20 {
+        let unit = units[round % units.len()];
+        let observed = calibration.observe_cost("XLON", &base, -50_000.0 * unit, Some(unit))?;
+        refused += usize::from(observed.refused);
+    }
+    let venue = calibration.venue("XLON").expect("calibrated");
+    let corrected = calibration.cost_model(&base, "XLON").impact_coefficient_bps;
+    assert!(
+        corrected < qip_financial::costs::MAX_TRADE_COST_BPS,
+        "the corrected coefficient {corrected} passed the cost ceiling"
+    );
+    assert!(refused > 0, "no slope was refused");
+    assert_eq!(venue.refusals, refused as u64);
+    assert!(
+        calibration
+            .cost_model(&base, "XLON")
+            .pricing_at(qip_simulation_engine::costs::reference_daily_volatility())
+            .is_ok(),
+        "the venue still prices at the reference volatility"
+    );
+    Ok(())
+}
+
+/// R12-RES-7104 read through R12-TICK-2080: the correction the kernel's
+/// misfit test reads includes the impact slope at the venue's own size, so
+/// a twin that is wrong only about size is not read as right.
+///
+/// Mutation: make `correction_bps` return `bias_bps.abs()` — the size-only
+/// misfit reads as zero and the assertion fails.
+#[test]
+fn a_twin_wrong_only_about_size_reports_a_correction_at_the_venues_own_size() -> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut calibration = FillCalibration::default();
+    let units = [0.2_f64, 0.4, 0.6, 0.8];
+    for round in 0..40 {
+        let unit = units[round % units.len()];
+        calibration.observe_cost("XLON", &base, -50.0 * unit, Some(unit))?;
+    }
+    let venue = calibration.venue("XLON").expect("calibrated");
+    assert!(
+        venue.bias_bps.abs() < 1.0,
+        "premise: no spread error, {}",
+        venue.bias_bps
+    );
+    let mean_unit = venue.sizes.root / venue.sizes.weight;
+    let expected = 50.0 * mean_unit;
+    assert!(
+        (venue.correction_bps() - expected).abs() < 1.0,
+        "the correction {} is not the slope at the mean unit {expected}",
+        venue.correction_bps()
+    );
+    Ok(())
+}
+
 /// What the twin charges to enter at `participation` under `model`, in basis
-/// points: its half-spread plus its square-root impact at the reference
-/// volatility. The figure the fill error compares against reality's.
-fn entry_cost_bps(model: &CostModel, participation: f64) -> Result<f64> {
-    Ok(model.half_spread_bps + model.impact_bps(participation, reference_daily_volatility())?)
+/// points: its half-spread plus its impact coefficient times the fill's
+/// impact unit. The figure the cost error compares against reality's.
+fn entry_cost_bps(model: &CostModel, participation: f64) -> f64 {
+    model.half_spread_bps + model.impact_coefficient_bps * unit(participation)
+}
+
+/// The impact unit of a fill at `participation` at the reference
+/// volatility: what the base's impact coefficient is multiplied by.
+fn unit(participation: f64) -> f64 {
+    CostModel::liquid_equity()
+        .impact_unit(participation, reference_daily_volatility())
+        .expect("a finite participation has a unit")
 }
 
 /// A venue that charges nine basis points more spread and twenty-five more
@@ -595,24 +690,25 @@ fn reality() -> CostModel {
 const NOISE_BPS: [f64; 7] = [1.5, -2.0, 0.5, -1.0, 2.0, -0.5, 1.0];
 const SIZES: [f64; 5] = [0.01, 0.04, 0.09, 0.16, 0.25];
 
-/// The `index`th fill at the venue: its participation and the twin's signed
-/// error against it under `twin` (negative: the twin filled better).
-fn fill(twin: &CostModel, index: usize) -> Result<(f64, f64)> {
+/// The `index`th fill at the venue: its impact unit and the twin's signed
+/// cost error against it under `twin` (negative: the twin is cheaper).
+fn fill(twin: &CostModel, index: usize) -> (f64, f64) {
     let participation = SIZES[index % SIZES.len()];
-    let real = entry_cost_bps(&reality(), participation)? + NOISE_BPS[index % NOISE_BPS.len()];
-    Ok((participation, entry_cost_bps(twin, participation)? - real))
+    let real = entry_cost_bps(&reality(), participation) + NOISE_BPS[index % NOISE_BPS.len()];
+    (
+        unit(participation),
+        entry_cost_bps(twin, participation) - real,
+    )
 }
 
 /// The root mean square and the mean absolute value of the twin's errors on
 /// the held-out fills: the width of its fill-error distribution about zero.
-fn spread_of(twin: &CostModel, held_out: std::ops::Range<usize>) -> Result<(f64, f64)> {
-    let errors: Vec<f64> = held_out
-        .map(|index| fill(twin, index).map(|(_, error)| error))
-        .collect::<Result<_>>()?;
+fn spread_of(twin: &CostModel, held_out: std::ops::Range<usize>) -> (f64, f64) {
+    let errors: Vec<f64> = held_out.map(|index| fill(twin, index).1).collect();
     let count = errors.len() as f64;
     let rms = (errors.iter().map(|error| error * error).sum::<f64>() / count).sqrt();
     let mean_abs = errors.iter().map(|error| error.abs()).sum::<f64>() / count;
-    Ok((rms, mean_abs))
+    (rms, mean_abs)
 }
 
 /// R12-MODEL-4008: the bar's second half — "the calibrated twin's
@@ -635,15 +731,15 @@ fn a_calibrated_twins_fill_error_distribution_narrows_on_fills_it_never_saw() ->
     let base = CostModel::liquid_equity();
     let mut calibration = FillCalibration::default();
     for index in 0..60 {
-        // The error is measured against the uncalibrated twin, as the
-        // kernel's is: its entry price is not moved by the calibration.
-        let (participation, error_bps) = fill(&base, index)?;
-        calibration.observe_with_participation("XLON", error_bps, Some(participation))?;
+        // Measured against the uncalibrated twin, as the kernel measures it
+        // (ADR 0450): a stationary target.
+        let (unit, error_bps) = fill(&base, index);
+        calibration.observe_cost("XLON", &base, error_bps, Some(unit))?;
     }
     let calibrated = calibration.cost_model(&base, "XLON");
 
-    let (before_rms, before_abs) = spread_of(&base, 100..140)?;
-    let (after_rms, after_abs) = spread_of(&calibrated, 100..140)?;
+    let (before_rms, before_abs) = spread_of(&base, 100..140);
+    let (after_rms, after_abs) = spread_of(&calibrated, 100..140);
     // Premise: the uncalibrated twin is visibly wrong, well beyond the noise.
     assert!(
         before_rms > 10.0,
@@ -665,7 +761,7 @@ fn a_calibrated_twins_fill_error_distribution_narrows_on_fills_it_never_saw() ->
 }
 
 /// R12-MODEL-4008: calibration "to historical replay". A twin rebuilt from
-/// the recorded fills is the twin the live loop held after the same fills —
+/// recorded fills is the twin the live loop held after the same fills —
 /// exactly, because replay absorbs each record by the live rule — and its
 /// output differs from the uncalibrated twin's, which is the recalibration
 /// the bar asks a test to show changing twin output.
@@ -685,26 +781,27 @@ fn a_twin_refitted_from_a_recorded_history_is_the_twin_the_live_loop_held_and_pr
     let mut live = FillCalibration::default();
     let mut history = Vec::new();
     for index in 0..40 {
-        let (participation, error_bps) = fill(&base, index)?;
-        live.observe_with_participation("XLON", error_bps, Some(participation))?;
+        let (unit, error_bps) = fill(&base, index);
+        live.observe_cost("XLON", &base, error_bps, Some(unit))?;
         history.push(RecordedFill {
             venue: "XLON".to_string(),
             error_bps,
-            participation: Some(participation),
+            impact_unit: Some(unit),
         });
     }
     // A venue recorded without sizes refits its spread alone.
     for _ in 0..10 {
-        live.observe("XPAR", -6.0)?;
+        live.observe_cost("XPAR", &base, -6.0, None)?;
         history.push(RecordedFill {
             venue: "XPAR".to_string(),
             error_bps: -6.0,
-            participation: None,
+            impact_unit: None,
         });
     }
 
     let replayed = FillCalibration::from_history(
         qip_twin::calibration::DEFAULT_LEARNING_RATE,
+        &base,
         history.clone(),
     )?;
     assert_ne!(
@@ -724,14 +821,14 @@ fn a_twin_refitted_from_a_recorded_history_is_the_twin_the_live_loop_held_and_pr
         RecordedFill {
             venue: "XLON".to_string(),
             error_bps: f64::NAN,
-            participation: Some(0.04),
+            impact_unit: Some(0.2),
         },
     );
     let mut target = FillCalibration::default();
     target.observe("XLON", -3.0)?;
     let snapshot = target.clone();
     let refused = target
-        .replay(bad)
+        .replay(&base, bad)
         .expect_err("a NaN in the record is refused");
     assert_eq!(
         target, snapshot,

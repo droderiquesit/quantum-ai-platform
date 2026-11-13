@@ -1,0 +1,157 @@
+# The SLO gate a qip-api canary must pass (ADR 0452, R12-CICD-9116).
+#
+# An Argo CD PostSync hook, like prove-serving.yaml beside it, and for the
+# same reason: a failed hook fails the sync, a failed sync fails the Kargo
+# promotion's argocd-update, and a failed promotion leaves the freight
+# unverified in this stage, so the next stage is offered nothing. It runs a
+# wave after prove-serving, so it judges a revision already proven to serve
+# the digest it was promoted.
+#
+# What it judges: the revision Cloud Run routes the `standby` tag's share to,
+# when that share is above zero — the canary. Nothing else. With no canary
+# taking traffic it says so and passes, because a completion or a rollback
+# moves traffic to a revision that already served, and there is nothing new
+# to soak.
+#
+# How: after a soak of SOAK_SECONDS it reads the canary revision's own
+# `qip_service_requests_total` and `qip_service_errors_total` from Cloud
+# Monitoring — the series qip-api pushes itself (ADR 0121), filed under a
+# task id that begins with the revision's name (REVISION_VARIABLE in
+# qip-telemetry-drain's cloud_monitoring.rs) — and fails unless the canary
+# served at least one request and its availability is at least AVAILABILITY,
+# the 0.99 `service_objectives()` declares for SERVICE_ERROR_OBJECTIVE in
+# qip-observability's critical_paths.rs. It fails closed: no series, no
+# request, an unreadable answer and an error from the API all fail the sync.
+# An unmeasured canary is a refusal, never a pass.
+#
+# Failing is not rolling back. The rollback is one action by a person:
+# promote the previous freight to this stage (kargo/base/promotiontask.yaml),
+# which routes 100% back to the previous digest's revision, still at 0%
+# under `standby`. No controller and no agent moves traffic on its own.
+#
+# Unproven against a live control plane, which is suspended (ADR 0093);
+# qip-acceptance's cloud_run_canary suite pins the text.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qip-slo-gate
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      serviceAccountName: qip-prove-serving
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: gate
+        image: google-cloud-cli
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess, sys, time, urllib.parse, urllib.request
+
+          PROJECT = "unprovisioned"
+          REGION = "europe-west2"
+          SERVICE = "qip-prod-api"
+          SOAK_SECONDS = 600
+          AVAILABILITY = 0.99
+          REQUESTS = "custom.googleapis.com/qip/qip_service_requests_total"
+          ERRORS = "custom.googleapis.com/qip/qip_service_errors_total"
+
+          service = json.loads(subprocess.check_output(
+              ["gcloud", "run", "services", "describe", SERVICE,
+               "--project", PROJECT, "--region", REGION, "--format=json"]))
+          canary = [target for target in service.get("status", {}).get("traffic", []) or []
+                    if target.get("tag") == "standby" and int(target.get("percent") or 0) > 0]
+          if not canary:
+              print("{}: no canary takes traffic, so there is nothing new to soak".format(SERVICE))
+              sys.exit(0)
+          revision = canary[0].get("revisionName")
+          if not revision:
+              sys.exit("{}: the standby share names no revision; a canary that cannot be "
+                       "named cannot be judged, and is refused".format(SERVICE))
+          print("{}: soaking canary {} for {}s".format(SERVICE, revision, SOAK_SECONDS))
+          sys.stdout.flush()
+          time.sleep(SOAK_SECONDS)
+
+          token = subprocess.check_output(
+              ["gcloud", "auth", "print-access-token"]).decode().strip()
+          end = time.time()
+
+          def increase(metric):
+              """The sum, over the canary's own series, of the increase in the soak."""
+              query = urllib.parse.urlencode({
+                  "filter": ('metric.type = "{}" AND resource.type = "generic_task" AND '
+                             'resource.labels.job = "qip-api" AND '
+                             'resource.labels.task_id = starts_with("{}-")').format(metric, revision),
+                  "interval.startTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(end - SOAK_SECONDS)),
+                  "interval.endTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(end)),
+                  "aggregation.alignmentPeriod": "{}s".format(SOAK_SECONDS),
+                  "aggregation.perSeriesAligner": "ALIGN_DELTA",
+              })
+              request = urllib.request.Request(
+                  "https://monitoring.googleapis.com/v3/projects/{}/timeSeries?{}".format(PROJECT, query),
+                  headers={"Authorization": "Bearer " + token})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  body = json.loads(response.read())
+              series = body.get("timeSeries") or []
+              total = 0.0
+              for one in series:
+                  for point in one.get("points") or []:
+                      value = point.get("value") or {}
+                      total += float(value.get("int64Value") or value.get("doubleValue") or 0)
+              return len(series), total
+
+          try:
+              request_series, requests = increase(REQUESTS)
+              _, errors = increase(ERRORS)
+          except Exception as error:
+              sys.exit("{}: the canary's series could not be read ({}); an unreadable gate "
+                       "is a refusal. Roll back by promoting the previous freight.".format(SERVICE, error))
+          if request_series == 0 or requests <= 0:
+              sys.exit("{}: canary {} pushed no request series in the soak; an unmeasured "
+                       "canary is refused. Roll back by promoting the previous freight.".format(SERVICE, revision))
+          availability = 1.0 - errors / requests
+          if availability < AVAILABILITY:
+              sys.exit("{}: canary {} served {:.0f} requests at availability {:.4f}, below {}; "
+                       "refused. Roll back by promoting the previous freight.".format(
+                           SERVICE, revision, requests, availability, AVAILABILITY))
+          print("{}: canary {} served {:.0f} requests at availability {:.4f}; it may be "
+                "completed by promoting its freight again".format(SERVICE, revision, requests, availability))
+          PY
+        env:
+        - name: CLOUDSDK_CONFIG
+          value: /tmp/gcloud
+        - name: HOME
+          value: /tmp
+        volumeMounts:
+        - name: scratch
+          mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+      volumes:
+      - name: scratch
+        emptyDir: {}

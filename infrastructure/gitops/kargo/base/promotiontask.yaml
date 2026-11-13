@@ -41,6 +41,12 @@ spec:
     # Application lives on another environment's control plane.
     - name: argocdApplication
       value: ""
+    # The share of qip-api's requests a new digest's revision takes while its
+    # SLO gate runs (ADR 0452). A design value of this record, not an owner
+    # figure: small enough that a canary failing every request costs a tenth
+    # of the service, large enough that a soak sees requests at all.
+    - name: canaryPercent
+      value: "10"
   steps:
     - uses: fail
       if: ${{ vars.registry == "" || vars.warehouseRegistry == "" }}
@@ -69,6 +75,107 @@ spec:
           - image: qip-deepbrain
             newName: ${{ vars.registry }}/qip-deepbrain
             digest: ${{ imageFrom(vars.warehouseRegistry + "/qip-deepbrain").Digest }}
+    # ── The qip-api canary (ADR 0452, R12-CICD-9116) ──────────────────────
+    #
+    # qip-api is the one promoted service a traffic split can canary: it
+    # scales from zero on requests, so two revisions each serve a share of
+    # requests and neither runs anything the other also runs. The fast and
+    # deep brains are min = max = 1 singletons running a loop, and a split
+    # would run two loops; they keep the digest swap above and nothing else.
+    #
+    # The state is the manifest, nothing beside it. `envs/<env>/api.yaml`
+    # always carries two traffic targets: index 0 tagged `stable`, index 1
+    # tagged `standby`. Each revision is named from its own image digest,
+    # `qip-<env>-api-<first twelve hex>`, so the name of the previous
+    # promoted digest's revision is known without asking Cloud Run, and a
+    # return to that digest names a revision that already exists — Cloud Run
+    # routes to it without creating, pulling or starting anything new. Three
+    # cases, decided by the incoming revision's name `next`:
+    #
+    #   next == standby   complete or roll back to it: 100% to `next`, the
+    #                     old stable kept at 0% under `standby`.
+    #   next == stable    roll a canary back (or re-assert): 100% stable,
+    #                     the canary kept at 0% under `standby`.
+    #   otherwise         a new digest: 100-canaryPercent to stable,
+    #                     canaryPercent to `next` under `standby`.
+    #
+    # So rollback to the previous digest is one action in every state —
+    # `kargo promote --stage <env> --freight <the previous freight>` — and
+    # so is completing a canary whose SLO gate passed (re-promote its
+    # freight). The gate is envs/<env>/slo-gate.yaml, an Argo CD PostSync
+    # hook that fails the sync, and so this promotion's argocd-update, when
+    # the canary revision's own pushed series breach the objective or are
+    # absent. An environment whose stable target names no revision yet
+    # (`TO-PIN`, never promoted into) takes its first promotion at 100%: there
+    # is nothing to split with, and that first promotion is not a canary.
+    #
+    # Unproven against a live Kargo, like papertask.yaml: the control plane
+    # is suspended (ADR 0093). The expressions are parsed and pinned by
+    # qip-acceptance's cloud_run_canary suite and have never been evaluated
+    # by a controller.
+    - uses: yaml-parse
+      as: api_traffic
+      config:
+        path: ./repo/infrastructure/gitops/envs/${{ ctx.stage }}/api.yaml
+        outputs:
+          - name: stable
+            fromExpression: spec.traffic[0].revision ?? ""
+          - name: standby
+            fromExpression: spec.traffic[1].revision ?? ""
+    - uses: fail
+      if: ${{ int(vars.canaryPercent) < 1 || int(vars.canaryPercent) > 50 }}
+      config:
+        message: canaryPercent is outside 1 to 50; a canary is a minority share of requests, and a value outside that range is refused rather than clamped (ADR 0452).
+    - uses: yaml-update
+      as: api_complete
+      if: ${{ task.outputs.api_traffic.standby == "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] && task.outputs.api_traffic.stable != task.outputs.api_traffic.standby }}
+      config:
+        path: ./repo/infrastructure/gitops/envs/${{ ctx.stage }}/api.yaml
+        updates:
+          - key: spec.template.revision
+            value: ${{ task.outputs.api_traffic.standby }}
+          - key: spec.traffic.0.revision
+            value: ${{ task.outputs.api_traffic.standby }}
+          - key: spec.traffic.0.percent
+            value: ${{ 100 }}
+          - key: spec.traffic.1.revision
+            value: ${{ task.outputs.api_traffic.stable }}
+          - key: spec.traffic.1.percent
+            value: ${{ 0 }}
+    - uses: yaml-update
+      as: api_hold
+      if: ${{ task.outputs.api_traffic.stable == "" || task.outputs.api_traffic.stable == "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] }}
+      config:
+        path: ./repo/infrastructure/gitops/envs/${{ ctx.stage }}/api.yaml
+        updates:
+          - key: spec.template.revision
+            value: ${{ "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] }}
+          - key: spec.traffic.0.type
+            value: TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
+          - key: spec.traffic.0.revision
+            value: ${{ "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] }}
+          - key: spec.traffic.0.percent
+            value: ${{ 100 }}
+          - key: spec.traffic.1.type
+            value: TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
+          - key: spec.traffic.1.revision
+            value: '${{ task.outputs.api_traffic.standby == "" ? "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] : task.outputs.api_traffic.standby }}'
+          - key: spec.traffic.1.percent
+            value: ${{ 0 }}
+    - uses: yaml-update
+      as: api_canary
+      if: ${{ task.outputs.api_traffic.stable != "" && task.outputs.api_traffic.stable != "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] && task.outputs.api_traffic.standby != "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] }}
+      config:
+        path: ./repo/infrastructure/gitops/envs/${{ ctx.stage }}/api.yaml
+        updates:
+          - key: spec.template.revision
+            value: ${{ "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] }}
+          - key: spec.traffic.0.percent
+            value: ${{ 100 - int(vars.canaryPercent) }}
+          - key: spec.traffic.1.revision
+            value: ${{ "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] }}
+          - key: spec.traffic.1.percent
+            value: ${{ int(vars.canaryPercent) }}
     - uses: git-commit
       as: commit
       config:

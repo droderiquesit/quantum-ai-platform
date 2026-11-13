@@ -94,9 +94,15 @@ const SMALLEST_OFFERED_WEIGHT: f64 = 1e-6;
 /// Takes and returns the state rather than lending it, so that the exposure
 /// this computes cannot be built and then dropped — a level computed and
 /// ignored is worse than an absent one, because it reads as a control.
+///
+/// `regions` names the region each held instrument's record carries — the
+/// `country` axis the country cap reads — and feeds the systemic level
+/// (R12-RISK-1162, `qip_risk::systemic`), which is charged from this same
+/// exposure after the causal-driver level so the two read one attribution.
 pub(crate) fn observe(
     world: &Upstream<WorldModel>,
     tape: &BTreeMap<String, Vec<f64>>,
+    regions: &BTreeMap<String, String>,
     state: RiskState,
 ) -> RiskState {
     let held: BTreeSet<String> = state.position_notionals.keys().cloned().collect();
@@ -104,7 +110,8 @@ pub(crate) fn observe(
         let reading = world.read();
         exposure_of(reading.causal(), tape, &held)
     };
-    exposure.apply(state)
+    let state = exposure.apply(state);
+    qip_risk::systemic::with_systemic_contagion(state, &exposure, regions)
 }
 
 /// What the two fed levels find, or a refusal of every level.

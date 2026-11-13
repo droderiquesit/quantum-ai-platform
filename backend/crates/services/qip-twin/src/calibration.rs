@@ -17,11 +17,20 @@
 //! negative half-spread is a venue that pays the platform to cross, which
 //! no evidence here can establish.
 //!
+//! Since ADR 0450 the observation is the twin's *charged cost* under the
+//! uncalibrated model against what the venue actually cost, split into a
+//! spread term and an impact term fitted in the twin's own impact units —
+//! see [`FillCalibration::observe_cost`] for why each of those replaced
+//! what came before. Queue position and acknowledgement latency are not
+//! calibrated here: the simulated venue reports neither, and the twin's
+//! cost model has no term for either (ADR 0450, "What remains").
+//!
 //! Under ADR 0003 the "live telemetry" is the platform's own paper fills.
 //! The calibration is no less a calibration for that; it is a calibration to
 //! the simulator the platform actually trades against.
 
 use qip_core::error::{Error, Result};
+use qip_financial::costs::MAX_TRADE_COST_BPS;
 use qip_simulation_engine::costs::CostModel;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -32,8 +41,8 @@ use std::collections::BTreeMap;
 pub const DEFAULT_LEARNING_RATE: f64 = 0.2;
 
 /// The exponentially weighted sufficient statistics of a venue's sized
-/// fills — weight, `sqrt(participation)`, its square, the error and their
-/// product — from which the impact slope is a closed-form least-squares
+/// fills — weight, the impact unit (`root`, named for the square root of
+/// participation it carries), its square, the error and their product — from which the impact slope is a closed-form least-squares
 /// fit (R12-TICK-2080). Kept rather than the slope alone so the fit is
 /// re-derived from every fill it rests on; a slope stepped toward each fill
 /// took a thousand fills to reach a size law two fills can state.
@@ -46,9 +55,10 @@ pub struct SizeStatistics {
     pub root_error: f64,
 }
 
-/// The weighted variance of `sqrt(participation)` below which the sized
-/// fills are, for the twin's purposes, one size: a standard deviation of
-/// root participation under five percent of a bar. Below it the slope is
+/// The weighted variance of the impact unit below which the sized fills
+/// are, for the twin's purposes, one size: a standard deviation of the unit
+/// under five hundredths (at the reference volatility, root participation
+/// under five percent). Below it the slope is
 /// leverage on noise rather than a size law — one-share fills on bars of
 /// slightly different volume differ in root by a ten-thousandth, and a few
 /// basis points of spread noise across that gap fitted as a slope of a
@@ -64,22 +74,60 @@ pub struct VenueCalibration {
     /// kernel's sign: negative means the twin filled better than reality.
     pub bias_bps: f64,
     pub observations: u64,
-    /// The part of the fill error that grows with the square root of the
-    /// fill's participation in the bar's volume, in basis points per unit of
-    /// `sqrt(participation)` (R12-TICK-2080): the twin's impact coefficient
-    /// error, signed as `bias_bps` is. Zero until a fill arrives with its
-    /// participation; a fill without one moves the bias alone, because an
-    /// error with no size beside it cannot be split between spread and
-    /// impact without guessing.
+    /// The part of the cost error that grows with the twin's impact unit
+    /// (`CostModel::impact_unit`: volatility over the reference times the
+    /// square root of participation in the window's mean volume), in basis
+    /// points per unit (R12-TICK-2080) — the unit the impact coefficient is
+    /// quoted in, so this is the coefficient's error, signed as `bias_bps`
+    /// is. Zero until a fill arrives with its unit; a fill without one moves
+    /// the bias alone, because an error with no size beside it cannot be
+    /// split between spread and impact without guessing.
     #[serde(default)]
     pub impact_slope_bps: f64,
-    /// Fills observed with their participation, the only ones that can move
+    /// Fills observed with their impact unit, the only ones that can move
     /// `impact_slope_bps`.
     #[serde(default)]
     pub participation_observations: u64,
     /// The sized fills' statistics the slope is fitted from.
     #[serde(default)]
     pub sizes: SizeStatistics,
+    /// Observations at which a fitted slope or a moved bias was refused
+    /// because it would have carried the base impact coefficient or
+    /// half-spread to `MAX_TRADE_COST_BPS` or past it.
+    #[serde(default)]
+    pub refusals: u64,
+}
+
+impl VenueCalibration {
+    /// How far the calibration has had to move the twin at this venue, in
+    /// basis points of notional: the larger of the spread correction and
+    /// the impact correction at the venue's own mean impact unit
+    /// (R12-RES-7104, R12-TICK-2080). Read by the kernel's misfit test.
+    /// The two are not netted: a twin twenty basis points too cheap on
+    /// spread and twenty too dear on impact is wrong twice, not right once,
+    /// and a misfit read from `bias_bps` alone let a size-dependent misfit
+    /// hide in the slope. NaN propagates, so a poisoned fit reads as misfit.
+    pub fn correction_bps(&self) -> f64 {
+        let impact = if self.sizes.weight > 0.0 {
+            self.impact_slope_bps * self.sizes.root / self.sizes.weight
+        } else {
+            0.0
+        };
+        if self.bias_bps.is_nan() || impact.is_nan() {
+            return f64::NAN;
+        }
+        self.bias_bps.abs().max(impact.abs())
+    }
+}
+
+/// What one observation did to a venue's calibration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Observed {
+    /// The venue's calibration after the observation.
+    pub calibration: VenueCalibration,
+    /// Whether a fitted slope or a moved bias was refused at this
+    /// observation.
+    pub refused: bool,
 }
 
 /// Per-venue fill calibration for the counterfactual twin.
@@ -115,119 +163,164 @@ impl FillCalibration {
         })
     }
 
-    /// Absorb one observed error for `venue`. Refuses a non-finite error
-    /// rather than letting one NaN poison the venue's bias for ever.
-    pub fn observe(&mut self, venue: &str, error_bps: f64) -> Result<&VenueCalibration> {
-        self.observe_with_participation(venue, error_bps, None)
+    /// Absorb one observed error for `venue` with no size beside it: the
+    /// whole error is charged to the spread, because an error with no size
+    /// cannot be split between spread and impact without guessing. Refuses
+    /// a non-finite error rather than letting one NaN poison the venue's
+    /// bias for ever.
+    pub fn observe(&mut self, venue: &str, error_bps: f64) -> Result<VenueCalibration> {
+        self.observe_cost(venue, &CostModel::frictionless(), error_bps, None)
+            .map(|observed| observed.calibration)
     }
 
-    /// Observe one fill's signed error with the fill's participation in the
-    /// bar's volume, when the caller knows it (R12-TICK-2080).
+    /// Observe one fill as the twin's **charged cost against reality's**,
+    /// in the twin's own impact units (R12-TICK-2080).
     ///
-    /// The error is modelled as `bias + slope * sqrt(participation)`, the
-    /// square-root law the twin prices impact by. The slope is the
-    /// exponentially weighted least-squares fit of the error on
-    /// `sqrt(participation)` over the sized fills, held still while every
-    /// sized fill is one size; the bias is the exponentially weighted mean
-    /// of what the size law leaves over. With no participation the residual
-    /// is the whole error and the slope is left alone: an error with no size
-    /// beside it cannot be split between spread and impact. A
-    /// participation outside `[0, 1]` or not a number is refused, like the
-    /// error: a fill that took more than the bar traded is not a fill the
-    /// twin can learn a size law from.
-    pub fn observe_with_participation(
+    /// `error_bps` is what `base` — the uncalibrated cost model, the one
+    /// [`Self::cost_model`] is handed — charges for the venue's own fill, at
+    /// the venue's own size and against the liquidity the twin priced with,
+    /// less what the venue actually cost (its slippage from the order's
+    /// arrival price plus the fees it billed), both in basis points of
+    /// notional. Negative means the twin is cheaper than reality, as every
+    /// error here is signed. `impact_unit` is
+    /// [`CostModel::impact_unit`] at that size and liquidity: the factor
+    /// `base`'s impact coefficient was multiplied by.
+    ///
+    /// Two choices make the fit close on the venue rather than chase itself,
+    /// and each replaces a version that did not:
+    ///
+    /// * **Charged cost, not mark against fill.** The first version fed the
+    ///   twin's printed entry price against the fill. That is the venue's
+    ///   slippage, and it does not shrink as the twin's model improves, so
+    ///   a base already near the venue had the slippage added on top of it
+    ///   — every cost charged twice — and the fit never closed.
+    /// * **Against `base`, not against the calibrated model.** An error
+    ///   measured against the model the calibration itself produced is a
+    ///   moving target; one measured against `base` is stationary, so the
+    ///   fitted law is `base − reality` and [`Self::cost_model`]'s
+    ///   subtraction lands on reality.
+    ///
+    /// The error is modelled as `bias + slope * impact_unit`. The slope is
+    /// the exponentially weighted least-squares slope over the sized fills,
+    /// held still while every sized fill is one size
+    /// ([`SIZE_VARIANCE_FLOOR`]); the bias is the exponentially weighted
+    /// mean of what the size law leaves over. A fitted slope that would
+    /// carry `base`'s impact coefficient to [`MAX_TRADE_COST_BPS`] or past
+    /// it is **refused** — the venue keeps its previous slope — and so is a
+    /// bias that would carry `base`'s half-spread there; each refusal is
+    /// counted on [`VenueCalibration::refusals`] and reported on the
+    /// returned [`Observed`]. Adopting it would leave the
+    /// venue `Unpriceable`, and an unpriceable trade is never scored, so the
+    /// venue would never be calibrated again: a correction that ends
+    /// correction.
+    ///
+    /// Refuses an error or unit that is not a finite number, and a negative
+    /// unit, rather than let one poison the venue's fit for ever.
+    pub fn observe_cost(
         &mut self,
         venue: &str,
+        base: &CostModel,
         error_bps: f64,
-        participation: Option<f64>,
-    ) -> Result<&VenueCalibration> {
-        check_observation(venue, error_bps, participation)?;
+        impact_unit: Option<f64>,
+    ) -> Result<Observed> {
+        check_observation(venue, error_bps, impact_unit)?;
         let rate = self.learning_rate;
         let entry = self.venues.entry(venue.to_string()).or_default();
-        match participation {
-            Some(participation) => {
-                // The size law is fitted, not stepped toward: the slope is
-                // the exponentially weighted least-squares slope of the error
-                // on sqrt(participation) over the sized fills, and so is
-                // exact after two fills of different size on a clean error
-                // and never wanders where a gradient step would. The bias
-                // then absorbs what the size law leaves over, so the two
-                // never double-charge one error. One size alone cannot
-                // separate spread from impact, and the slope holds still
-                // until a second size arrives rather than guess from one.
-                let root = participation.sqrt();
+        let mut refused = false;
+        let residual = match impact_unit {
+            Some(unit) => {
                 let forget = 1.0 - rate;
                 let sizes = &mut entry.sizes;
                 sizes.weight = sizes.weight * forget + 1.0;
-                sizes.root = sizes.root * forget + root;
-                sizes.root_squared = sizes.root_squared * forget + root * root;
+                sizes.root = sizes.root * forget + unit;
+                sizes.root_squared = sizes.root_squared * forget + unit * unit;
                 sizes.error = sizes.error * forget + error_bps;
-                sizes.root_error = sizes.root_error * forget + root * error_bps;
-                let mean_root = sizes.root / sizes.weight;
-                let variance = sizes.root_squared / sizes.weight - mean_root * mean_root;
+                sizes.root_error = sizes.root_error * forget + unit * error_bps;
+                let mean_unit = sizes.root / sizes.weight;
+                let variance = sizes.root_squared / sizes.weight - mean_unit * mean_unit;
                 if variance > SIZE_VARIANCE_FLOOR {
                     let covariance =
-                        sizes.root_error / sizes.weight - mean_root * (sizes.error / sizes.weight);
-                    entry.impact_slope_bps = covariance / variance;
+                        sizes.root_error / sizes.weight - mean_unit * (sizes.error / sizes.weight);
+                    let slope = covariance / variance;
+                    if slope.is_finite() && base.impact_coefficient_bps - slope < MAX_TRADE_COST_BPS
+                    {
+                        entry.impact_slope_bps = slope;
+                    } else {
+                        refused = true;
+                    }
                 }
-                let spread_residual = error_bps - entry.impact_slope_bps * root;
-                entry.bias_bps += rate * (spread_residual - entry.bias_bps);
+                let spread_residual = error_bps - entry.impact_slope_bps * unit;
                 entry.participation_observations += 1;
+                spread_residual
             }
-            None => {
-                entry.bias_bps += rate * (error_bps - entry.bias_bps);
-            }
+            None => error_bps,
+        };
+        // The spread is held to the same ceiling as the impact term, for the
+        // same reason: a half-spread past it is a venue that never prices
+        // again, so a bias that would carry it there is refused and the
+        // previous bias kept.
+        let bias = entry.bias_bps + rate * (residual - entry.bias_bps);
+        if bias.is_finite() && base.half_spread_bps - bias < MAX_TRADE_COST_BPS {
+            entry.bias_bps = bias;
+        } else {
+            refused = true;
+        }
+        if refused {
+            entry.refusals += 1;
         }
         entry.observations += 1;
-        Ok(entry)
+        Ok(Observed {
+            calibration: entry.clone(),
+            refused,
+        })
     }
 
-    /// Refit the twin from a recorded history of fills, oldest first
-    /// (R12-MODEL-4008): the calibration a restarted platform, or a research
-    /// desk asking what the twin would have learned, rebuilds from the event
-    /// log rather than from whatever happened to be in memory.
+    /// Refit the twin from a recorded history of fills, oldest first, against
+    /// the same uncalibrated `base` the live observations were measured
+    /// against (R12-MODEL-4008): the calibration a restarted platform, or a
+    /// research desk asking what the twin would have learned from a window,
+    /// rebuilds from a record rather than from whatever was in memory.
     ///
     /// Every record is checked before any is absorbed, so a history with one
     /// unreadable record refuses whole and leaves the calibration exactly as
     /// it was. Absorbing the readable prefix and stopping would leave a twin
     /// fitted to an arbitrary cut of the record, one no replay of the same
-    /// log could tell apart from a complete one. The refusal names the
-    /// record's position so the caller can find it in the log.
+    /// record could tell apart from a complete one. The refusal names the
+    /// record's position so the caller can find it.
     ///
-    /// Each record is absorbed exactly as [`Self::observe_with_participation`]
-    /// absorbs a live fill, so replaying the fills a running platform saw
-    /// yields the calibration that platform held: one rule, not two that can
-    /// drift apart. Returns how many fills were absorbed.
-    pub fn replay<I>(&mut self, history: I) -> Result<usize>
+    /// Each record is absorbed exactly as [`Self::observe_cost`] absorbs a
+    /// live fill, ceiling refusals included, so replaying the fills a
+    /// running platform saw yields the calibration that platform held: one
+    /// rule, not two that can drift apart. Returns how many fills were
+    /// absorbed; a correction the ceiling refused is counted on the venue's
+    /// [`VenueCalibration::refusals`] as it is live.
+    pub fn replay<I>(&mut self, base: &CostModel, history: I) -> Result<usize>
     where
         I: IntoIterator<Item = RecordedFill>,
     {
         let history: Vec<RecordedFill> = history.into_iter().collect();
         for (position, fill) in history.iter().enumerate() {
-            check_observation(&fill.venue, fill.error_bps, fill.participation).map_err(
-                |error| {
-                    Error::invalid(format!(
-                        "recorded fill {position} of {} cannot be replayed, and none was \
-                         absorbed: {}",
-                        history.len(),
-                        error.message()
-                    ))
-                },
-            )?;
+            check_observation(&fill.venue, fill.error_bps, fill.impact_unit).map_err(|error| {
+                Error::invalid(format!(
+                    "recorded fill {position} of {} cannot be replayed, and none was absorbed: {}",
+                    history.len(),
+                    error.message()
+                ))
+            })?;
         }
         for fill in &history {
-            self.observe_with_participation(&fill.venue, fill.error_bps, fill.participation)?;
+            self.observe_cost(&fill.venue, base, fill.error_bps, fill.impact_unit)?;
         }
         Ok(history.len())
     }
 
     /// A calibration at `learning_rate` fitted from `history` alone.
-    pub fn from_history<I>(learning_rate: f64, history: I) -> Result<Self>
+    pub fn from_history<I>(learning_rate: f64, base: &CostModel, history: I) -> Result<Self>
     where
         I: IntoIterator<Item = RecordedFill>,
     {
         let mut calibration = Self::new(learning_rate)?;
-        calibration.replay(history)?;
+        calibration.replay(base, history)?;
         Ok(calibration)
     }
 
@@ -253,43 +346,37 @@ impl FillCalibration {
     }
 }
 
-/// One fill as the event log recorded it, in the terms the calibration
-/// learns from (R12-MODEL-4008): the venue it filled at, the twin's signed
-/// entry error against it in basis points as the kernel's
-/// `FillScore::trade_error_bps` records it, negative meaning the twin filled
-/// better than reality, and the fill's share of its bar's volume where the
-/// record carries one.
+/// One fill as a record holds it, in the terms [`FillCalibration::observe_cost`]
+/// learns from (R12-MODEL-4008): the venue, the uncalibrated twin's charged
+/// cost for the venue's fill less what the venue actually cost in basis
+/// points (negative: the twin is cheaper than reality), and the fill's
+/// impact unit where the record carries one.
 ///
-/// The error is read as an error against the *uncalibrated* twin, as
-/// [`FillCalibration::observe_with_participation`] reads a live one. That is
-/// what the kernel measures: its error compares the twin's entry *price*
-/// with the venue's, and the calibrated half-spread is charged as a cost
-/// beside that price rather than moving it — eight fills on one tape scored
-/// an identical error while the venue's bias moved by thousands of basis
-/// points. Treating it as a residual of the calibrated twin instead was
-/// tried on 2026-11-13 and made the bias integrate without bound.
+/// **Not** the kernel's `FillScore::trade_error_bps`, which is the entry
+/// price error ADR 0450 stopped fitting because it charged every cost twice.
+/// The cycle journal does not yet carry this quantity (ADR 0496).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordedFill {
     pub venue: String,
     pub error_bps: f64,
     #[serde(default)]
-    pub participation: Option<f64>,
+    pub impact_unit: Option<f64>,
 }
 
 /// The one check a live fill and a replayed fill both pass, so the two
 /// cannot disagree about what the twin may learn from.
-fn check_observation(venue: &str, error_bps: f64, participation: Option<f64>) -> Result<()> {
+fn check_observation(venue: &str, error_bps: f64, impact_unit: Option<f64>) -> Result<()> {
     if !error_bps.is_finite() {
         return Err(Error::invalid(format!(
             "a fill error of {error_bps} bps on {venue} is not a number the twin can learn from"
         )));
     }
-    if let Some(participation) = participation
-        && !(0.0..=1.0).contains(&participation)
+    if let Some(unit) = impact_unit
+        && !(unit.is_finite() && unit >= 0.0)
     {
         return Err(Error::invalid(format!(
-            "a fill participation of {participation} on {venue} is not a fraction of the \
-             bar's volume; the twin cannot learn a size law from it"
+            "an impact unit of {unit} on {venue} is not a size the twin prices impact at; \
+             the twin cannot learn a size law from it"
         )));
     }
     Ok(())

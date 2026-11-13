@@ -296,9 +296,9 @@
   },
   {
     "topic": "reflex.feature_digested",
-    "version": 1,
+    "version": 2,
     "type_name": "qip_contracts::replay::FeatureDigest",
-    "schema_id": "df66747175125964760998a58d082203615269bdca70115b077ea9f7d82b8470",
+    "schema_id": "c85b7eb5d2a61d492209587681a1717838d6dab516f51cc5d0e57ac5b5f147a7",
     "shape": {
       "Object": {
         "applied": "Number",
@@ -324,6 +324,29 @@
               },
               "subject": "String"
             }
+          }
+        },
+        "market_state": {
+          "Object": {
+            "feature_lineage": {
+              "Array": "String"
+            },
+            "from": "String",
+            "horizon": "Number",
+            "integrity": {
+              "Array": {
+                "Object": {
+                  "sequence_gap": {
+                    "Object": {
+                      "missing": "Number",
+                      "stream": "String"
+                    }
+                  }
+                }
+              }
+            },
+            "kind": "String",
+            "to": "String"
           }
         },
         "now_ns": "Number",
