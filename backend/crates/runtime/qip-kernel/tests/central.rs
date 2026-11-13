@@ -8317,7 +8317,64 @@ fn a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_t
         "the causal-driver level should read measured and empty before the cycle"
     );
 
-    platform.run_cycle(start());
+    let report = platform.run_cycle(start());
+
+    // The cycle's own report carries both surfaces (the gap this row kept
+    // open until 2026-11-12: they were real and reached no report).
+    let discovery = &report.risk_discovery;
+    assert!(
+        discovery
+            .crowded
+            .iter()
+            .any(|crowd| crowd.instrument == INSTRUMENT && crowd.cells.len() == 3),
+        "the cycle report names no crowded {INSTRUMENT}: {:?}",
+        discovery.crowded
+    );
+    assert!(
+        discovery.factor.as_ref().is_some_and(|f| !f.is_empty()),
+        "the cycle report carries no measured factor level: {:?}",
+        discovery.factor
+    );
+    assert!(
+        discovery
+            .causal_drivers
+            .as_ref()
+            .is_some_and(|d| d.contains_key(&format!("obj-{DRIVER}"))),
+        "the cycle report names no causal driver: {:?}",
+        discovery.causal_drivers
+    );
+    // First cycle: everything found is new, so both the crowded name and the
+    // driver are reported as emerging, with no previous figure.
+    let emerged = |d: &qip_kernel::cycle::RiskDiscovery, axis: &str, bucket: &str| {
+        d.emerging
+            .iter()
+            .any(|e| e.axis == axis && e.bucket == bucket && e.previous.is_none())
+    };
+    assert!(
+        emerged(discovery, "crowded", INSTRUMENT),
+        "{:?}",
+        discovery.emerging
+    );
+    assert!(
+        emerged(
+            discovery,
+            qip_risk::shared_cause::CAUSAL_DRIVER_AXIS,
+            &format!("obj-{DRIVER}")
+        ),
+        "{:?}",
+        discovery.emerging
+    );
+    // And it replays: the journal entry sealed for this cycle carries the
+    // same discovery the report did.
+    let entry = platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .last()
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled an entry"))?
+        .decode::<qip_kernel::platform::CycleJournalEntry>()?
+        .body;
+    assert_eq!(entry.risk_discovery.as_ref(), Some(discovery));
 
     // The same pass, the second surface: the state the cycle's veto reads
     // carries the factor level, populated, and the shipped set blocks on it.
@@ -8353,6 +8410,27 @@ fn a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_t
             .iter()
             .any(|breach| breach.limit_name == "factor-concentration"),
         "a book loading on the market at about six times did not block under the shipped factor cap: {factor:?}"
+    );
+
+    // A second cycle over an unchanged book: the crowding is still reported,
+    // and is no longer emerging, because its gross did not grow.
+    let again = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(
+        again
+            .risk_discovery
+            .crowded
+            .iter()
+            .any(|crowd| crowd.instrument == INSTRUMENT),
+        "the second cycle stopped reporting the crowded name"
+    );
+    assert!(
+        !again
+            .risk_discovery
+            .emerging
+            .iter()
+            .any(|e| e.axis == "crowded" && e.bucket == INSTRUMENT),
+        "an unchanged crowded name was reported as emerging: {:?}",
+        again.risk_discovery.emerging
     );
     Ok(())
 }

@@ -353,6 +353,87 @@ mod tests {
         );
     }
 
+    /// R12-RISK-4094's third gap, closed 2026-11-12: the causal-driver cap
+    /// fires on edges no stronger than temporal-precedence discovery may ever
+    /// produce, and admits a book that stays under it.
+    ///
+    /// The worry the register recorded was that the 0.5 confidence ceiling
+    /// on a discovered edge kept the driver bucket permanently under the
+    /// shipped 0.50 cap, so the limit could not fire on anything the platform
+    /// found for itself — the `MaxExpectedShortfall` shape. It can: the cap is
+    /// a share of *equity*, the transmission a share of each *position*, and a
+    /// book whose gross runs past equity downstream of one driver crosses it
+    /// with every edge at the ceiling.
+    #[test]
+    fn the_causal_driver_cap_fires_on_edges_held_at_the_temporal_precedence_ceiling() {
+        use qip_core::Decimal;
+        use qip_risk::limits::LimitSet;
+        use qip_world_model::granger::TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING;
+
+        let mut graph = CausalGraph::new();
+        for effect in ["AAA", "BBB", "CCC"] {
+            graph.add(
+                CausalEdge::new(
+                    "rates",
+                    effect,
+                    Mechanism::DiscountRate,
+                    1.0,
+                    Duration::from_days(1),
+                    at(),
+                )
+                .expect("a strength in [0, 1] is admitted")
+                .with_confidence(TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING)
+                .expect("the ceiling is a confidence in [0, 1]"),
+            );
+        }
+        let book = |names: &[&str]| RiskState {
+            equity: Decimal::from_int(1_000_000),
+            cash: Decimal::from_int(1_000_000),
+            gross_exposure: Decimal::from_int(400_000 * names.len() as i64),
+            position_notionals: names
+                .iter()
+                .map(|name| ((*name).to_string(), Decimal::from_int(400_000)))
+                .collect(),
+            ..RiskState::default()
+        };
+        let blocks_on_driver = |names: &[&str]| {
+            let state = exposure_of(&graph, &BTreeMap::new(), &held(names)).apply(book(names));
+            let bucket = state
+                .axis_exposures
+                .get(CAUSAL_DRIVER_AXIS)
+                .and_then(|buckets| buckets.get("rates"))
+                .copied();
+            let blocked = LimitSet::conservative_default()
+                .check(&state)
+                .blocking()
+                .iter()
+                .any(|breach| breach.limit_name == "causal-driver-concentration");
+            (bucket, blocked)
+        };
+
+        // Three names at 0.4 of equity each, every edge at the ceiling: the
+        // driver carries 0.6 of equity, and the shipped cap is 0.5.
+        let (bucket, blocked) = blocks_on_driver(&["AAA", "BBB", "CCC"]);
+        assert_eq!(
+            bucket,
+            Some(Decimal::from_int(600_000)),
+            "premise: the bucket is the ceiling's share of the three positions"
+        );
+        assert!(
+            blocked,
+            "a driver carrying 0.6 of equity did not block under the 0.5 cap"
+        );
+
+        // The half that tells a working gate from one that refuses
+        // everything: two of the same names, 0.4 of equity, are admitted.
+        let (bucket, blocked) = blocks_on_driver(&["AAA", "BBB"]);
+        assert_eq!(bucket, Some(Decimal::from_int(400_000)));
+        assert!(
+            !blocked,
+            "a driver carrying 0.4 of equity blocked under a 0.5 cap"
+        );
+    }
+
     #[test]
     fn a_causal_edge_below_the_offered_floor_is_left_out_without_refusing_the_level() {
         // The other half of the split, and the reason the two conditions are
