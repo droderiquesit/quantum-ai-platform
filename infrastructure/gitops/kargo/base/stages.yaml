@@ -145,6 +145,11 @@ spec:
       vars:
         - name: warehouseRegistry
           value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+        # The qip-api the freight ran under before `paper`, as the control
+        # plane reaches it. Empty until one is served there, and empty
+        # refuses (releasetask.yaml, ADR 0504).
+        - name: releaseStandingURL
+          value: ""
       steps:
         # The automated check, first: a promotion that fails here has
         # recorded nothing, so `stage` is offered nothing. See
@@ -152,6 +157,29 @@ spec:
         - task:
             name: verify-paper-ceiling
           as: verify
+        # ADR 0504: the freight's own planes, asked one at a time, and
+        # only those. `qip-images` carries qip-api, qip-fastbrain and
+        # qip-deepbrain -- the central plane, whose §49.1 objectives are
+        # declared on `kernel` and `portfolio`. `edge`, `edge-node` and
+        # `strategy` are the cell's planes; no Kargo freight carries
+        # qip-edge-node, so a spent `edge` budget refuses nothing here,
+        # which is "that plane only". See releasetask.yaml.
+        - task:
+            name: verify-release-standing
+          as: standing_kernel
+          vars:
+            - name: plane
+              value: kernel
+            - name: releaseStandingURL
+              value: ${{ vars.releaseStandingURL }}
+        - task:
+            name: verify-release-standing
+          as: standing_portfolio
+          vars:
+            - name: plane
+              value: portfolio
+            - name: releaseStandingURL
+              value: ${{ vars.releaseStandingURL }}
         - task:
             name: record-gate
           as: record

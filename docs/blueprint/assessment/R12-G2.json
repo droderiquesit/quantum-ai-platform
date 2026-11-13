@@ -3656,24 +3656,26 @@
   {
     "id": "R12-OBS-9156",
     "status": "PARTIAL",
-    "current": "SLOs declared in code (slo.rs, tested); aiops::release_gate refuses a release per plane (tested via Platform::release_decision); no workflow consults it.",
+    "current": "SLOs declared in code (slo.rs). Platform::release_standing answers per plane and refuses an undeclared plane. qip-api serves it read-only at GET /api/v1/release/:plane (200 proceed, 409 spent, 404 undeclared). Kargo's paper Stage runs PromotionTask verify-release-standing for kernel and portfolio, the planes qip-images carries, between verify-paper-ceiling and record-gate, and refuses on any answer but exactly 200 (ADR 0504).",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:203-436",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs:67,149",
-      "backend/crates/runtime/qip-kernel/tests/self_observation.rs:68"
+      "backend/crates/apps/qip-api/tests/release_routes.rs",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs (the_paper_stage_refuses_a_spent_or_unreadable_release_standing_for_its_own_planes_only)",
+      "backend/crates/runtime/qip-kernel/tests/self_observation.rs:68",
+      "infrastructure/gitops/kargo/base/releasetask.yaml",
+      "docs/adr/0504-a-spent-error-budget-refuses-promotion-of-its-own-plane-only.md"
     ],
-    "gap": "Wire to promotion: Platform::release_decision (platform.rs:9457) is tested but no process serves its objective snapshot (apps/qip-api/src/routes.rs has no objective route), only 2 of 15 blueprint objectives are fed (blueprint_objectives.rs), and the promotion step is in .github/workflows/deploy.yml, a protected path a lane does not edit.",
+    "gap": "2026-11-13 (t50-39): only 2 of 15 section 49.1 objectives are fed (reconciliation on kernel, netting on edge), so the portfolio check can never refuse. No live Kargo has evaluated the http step or secret('qip-release-standing'). releaseStandingURL is empty, so every promotion out of paper is refused until it is set. The cell planes (edge, edge-node) have no gated release because qip-edge-node is not Kargo freight.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test self_observation",
+    "verification": "cargo test -p qip-api --test release_routes; cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: a qip-cli release-gate reading a snapshot nothing serves would be a gate that never blocks (an objective nothing fed never blocks, by design). Needs, in order: an API route serving the ObjectiveLedger snapshot, a qip-cli release-gate subcommand reading it, then the deploy.yml step (protected; patch for the owner). Kept PARTIAL. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A spent budget refuses promotion of that plane and no other. The check runs at the Kargo promotion out of a stage, where ADR 0036 puts promotion, beside the paper-ceiling step. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A spent error budget refuses promotion of its own plane only: qip-api serves each plane's release standing read-only, the Kargo promotion out of a stage reads it, and a standing that cannot be read refuses.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Lane L24 2026-10-18 re-graded: a qip-cli release-gate reading a snapshot nothing serves would be a gate that never blocks (an objective nothing fed never blocks, by design). Needs, in order: an API route serving the ObjectiveLedger snapshot, a qip-cli release-gate subcommand reading it, then the deploy.yml step (protected; patch for the owner). Kept PARTIAL. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): A spent budget refuses promotion of that plane and no other. The check runs at the Kargo promotion out of a stage, where ADR 0036 puts promotion, beside the paper-ceiling step. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: A spent error budget refuses promotion of its own plane only: qip-api serves each plane's release standing read-only, the Kargo promotion out of a stage reads it, and a standing that cannot be read refuses.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). Lane t50-39 2026-11-13: ADR 0504 written and implemented in-tree (route + Kargo task + tests, mutation-verified); kept PARTIAL for the gap above."
   },
   {
     "id": "R12-OBS-9157",

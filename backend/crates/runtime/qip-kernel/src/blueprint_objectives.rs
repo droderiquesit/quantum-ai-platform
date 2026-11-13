@@ -455,6 +455,81 @@ pub fn release_decision(
     qip_observability::aiops::release_gate(plane, &page_worthy_statuses(ledger, now))
 }
 
+/// One plane's release standing, as a promotion out of a stage reads it
+/// (ADR 0504, R12-OBS-9156).
+///
+/// The decision alone is not enough to hand a promotion. `Proceed` on a plane
+/// none of whose objectives this process observed is a gate with nothing to
+/// act on, not a plane in good health, and a reader shown only the decision
+/// cannot tell the two apart. So the count of objectives the decision rests
+/// on travels with it, in its own field, never summed with the unobserved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseStanding {
+    /// The plane the standing is for — one §49.1 declares an objective on.
+    pub plane: String,
+    /// What [`release_decision`] answered for this plane.
+    pub decision: qip_observability::aiops::ReleaseDecision,
+    /// This plane's objectives resting on an observation in their window.
+    pub observed: usize,
+    /// This plane's objectives resting on none: quiet, unfed or unclassified.
+    pub unobserved: usize,
+}
+
+/// Every plane §49.1 declares an objective on, read from `blueprint_slos` so
+/// the set has one owner.
+pub fn release_planes() -> std::collections::BTreeSet<String> {
+    blueprint_slos()
+        .into_iter()
+        .map(|slo| slo.service)
+        .collect()
+}
+
+/// `plane`'s release standing, refusing a plane §49.1 declares nothing on.
+///
+/// The refusal is the point of this function rather than a nicety.
+/// `aiops::release_gate` filters statuses by plane and answers `Proceed` when
+/// none match, which is right for a declared plane nothing has spent — and
+/// is also what it answers for a misspelled one. A promotion step that asked
+/// about `edge-nodes` would read `Proceed` forever, whatever `edge-node`'s
+/// budget held: a gate that cannot fire for the caller holding it. Refusing
+/// the name makes the typo a stopped promotion instead.
+pub fn release_standing(
+    ledger: &ObjectiveLedger,
+    plane: &str,
+    now: Timestamp,
+) -> qip_core::error::Result<ReleaseStanding> {
+    if !release_planes().contains(plane) {
+        return Err(qip_core::error::Error::invalid(format!(
+            "no §49.1 objective is declared on plane `{plane}`, so it has no release \
+             standing; ask for one of: {}",
+            release_planes().into_iter().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    let on_plane: std::collections::BTreeSet<String> = blueprint_slos()
+        .into_iter()
+        .filter(|slo| slo.service == plane)
+        .map(|slo| slo.name)
+        .collect();
+    let review = assess(ledger, now);
+    let (observed, unobserved) = review
+        .standings
+        .iter()
+        .filter(|(name, _)| on_plane.contains(name))
+        .fold((0, 0), |(seen, unseen), (_, standing)| {
+            if standing.is_observed() {
+                (seen + 1, unseen)
+            } else {
+                (seen, unseen + 1)
+            }
+        });
+    Ok(ReleaseStanding {
+        plane: plane.to_string(),
+        decision: release_decision(ledger, plane, now),
+        observed,
+        unobserved,
+    })
+}
+
 fn page_worthy_statuses(ledger: &ObjectiveLedger, now: Timestamp) -> Vec<SloStatus> {
     assess(ledger, now)
         .standings
