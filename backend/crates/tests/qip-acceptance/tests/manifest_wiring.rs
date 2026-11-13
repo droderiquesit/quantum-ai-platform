@@ -2120,6 +2120,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-edge-node",
+        "QIP_VENUE_SETTLEMENT",
+        A_SETTLEMENT_CYCLE_MOVES_WITH_THE_LEDGERS_SETTING,
+    ),
+    (
+        "qip-edge-node",
         "QIP_VENUE_QUOTE_LIMITS",
         A_VENUES_LIMITS_ARE_THE_VENUES_NOT_AN_ENVIRONMENTS,
     ),
@@ -2500,6 +2505,17 @@ const NO_PRODUCER_STATES_THE_ACCEPTABLE_BUILDS_YET: &str = "Unset because the \
      fixes is consumer, then producer, then the unit that writes the identity \
      file. Set earlier, nothing narrows; unset, the cell reports no \
      `deployment` halt series at all rather than a zero.";
+
+/// The simulated venue's settlement calendar (ADR 0530).
+const A_SETTLEMENT_CYCLE_MOVES_WITH_THE_LEDGERS_SETTING: &str = "Unset because \
+     unset is `instant`, which is what the in-process venue was before it had a \
+     settlement clock and what every deployed node's venue is. A cycle set here \
+     alone would have the node report `Settled` records for fills the ledger \
+     booked at the fill, and the first one parks the cell (ADR 0440 decision \
+     5); it is set together with `qip-ledgerd`'s \
+     `QIP_LEDGER_SETTLEMENT_CYCLE_VENUES` naming the same venue, by a change \
+     that states both, and a catalogue default for one of the two would be \
+     the drift ADR 0530 names.";
 
 /// The node replay's control archive (ADR 0100 §8, SLICE-39).
 const THE_REPLAY_ARCHIVE_IS_NAMED_BY_THE_OPERATOR_WHO_REPLAYS: &str = "Unset because \

@@ -28,7 +28,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
-use qip_contracts::ledger::{Account, Direction, LedgerEvent, Settlement};
+use qip_contracts::ledger::{Account, Direction, LedgerEvent, Settlement, SettlementState};
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::reflex::{Decision as Recorded, OutcomeRecord};
@@ -42,6 +42,7 @@ use qip_edge::cell::{CellConfig, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::{Journal, Mirror, MirrorBatch, ship};
 use qip_edge::policy::VerifiedPolicy;
+use qip_edge::settlement::{SettlementConvention, SettlementTerms};
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::event_fabric::mirror::FabricMirror;
 use qip_edge_node::event_fabric::pressure::{PressureGauge, Thresholds};
@@ -160,15 +161,27 @@ fn node(
     grant: VerifiedEnvelope,
     funded: bool,
 ) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
+    node_settling(grant, funded, SettlementTerms::instant())
+}
+
+/// [`node`], with the venue settling on `terms` (ADR 0530): installed on
+/// the gateway before anything is seeded, and stated to the cell from the
+/// gateway, the way `qip-edge-node`'s `main` does it.
+fn node_settling(
+    grant: VerifiedEnvelope,
+    funded: bool,
+    terms: SettlementTerms,
+) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
     let mut gateway = permitting_to_seed(SimulatedGateway::new(venue(), 7, t(0))?, &[&object()])?;
+    gateway.install_settlement_terms(terms)?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
     let feed = SimulatedFeed::new(venue());
-    feed.attach(&mut node.cell)?;
+    feed.attach_settling(&mut node.cell, gateway.settlement_terms())?;
     let (compiled, program) = firing_strategy()?;
     let named = grant.signature().to_string();
     node.cell
@@ -788,6 +801,222 @@ fn the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once() -> Re
     }
     assert_eq!(store.balances()?, balances);
     assert_eq!(store.refold()?, balances);
+    Ok(())
+}
+
+// --- settlement on a cycle: T+2 to cash (R12-LEDGER-1197, ADR 0530) --------------
+
+/// Any outcome of a pass: after the grant expires a pass may refuse or halt,
+/// and the venue's reports are confirmed on every arm (`run_pass`).
+fn any_pass(
+    node: &mut NodeAssembly,
+    gateway: &mut SimulatedGateway,
+    feed: &mut SimulatedFeed,
+    now: Timestamp,
+) -> Result<()> {
+    run_pass(
+        &mut node.cell,
+        gateway,
+        feed,
+        None,
+        &mut PassStats::default(),
+        now,
+    )?;
+    Ok(())
+}
+
+fn settled_entries(node: &NodeAssembly) -> Vec<Recorded> {
+    node.cell
+        .journal()
+        .entries()
+        .iter()
+        .map(|entry| entry.decision.clone())
+        .filter(|decision| matches!(decision, Recorded::Settled { .. }))
+        .collect()
+}
+
+/// The end-to-end bar of R12-LEDGER-1197: a simulated fill at a T+2 venue,
+/// from the cell's pass through the spool to the production `LedgerStore`,
+/// holds its cash in settlement on the trade date and through the next
+/// settlement day, and reaches the book's cash on the second settlement day
+/// and not a pass before.
+///
+/// The failure this prevents is the one ADR 0130 was written for: the
+/// ledger calling a T+2 venue's cash spendable at the fill while the cell's
+/// settlement gate says it is not — or, once the ledger held it (ADR 0440),
+/// holding it for ever because nothing in a running node ever reported the
+/// settlement. Trade date Thursday 2025-10-09 08:53 UTC, inside the 16:00
+/// cut-off, so T+2 on the weekday calendar is Monday 09:00 UTC: the weekend
+/// in between is the other thing this proves, since a clock counting
+/// calendar days would settle on Saturday.
+///
+/// Mutation verified (ADR 0530): `settle_due`'s `settlement_date <= now`
+/// made `true` settles on the Friday pass and fails "settled before its
+/// second settlement day"; `Cell::confirm_execution_reports` with its
+/// `settlements()` loop removed journals nothing and fails "the venue's
+/// settlement never reached the journal"; recording fills in the
+/// gateway's `execution_reports` removed leaves nothing unsettled and fails
+/// the `unsettled_count` premise.
+#[test]
+fn a_t_plus_two_simulated_fill_reaches_the_books_cash_on_the_second_settlement_day_and_not_before()
+-> Result<()> {
+    let terms = SettlementTerms::weekday(SettlementConvention::T2)?;
+    let (mut node, mut gateway, mut feed) = node_settling(
+        grant_with(dec!("1000000"), dec!("100000"), dec!("50000"))?,
+        true,
+        terms.clone(),
+    )?;
+    assert_eq!(
+        t(0).weekday(),
+        3,
+        "premise: the trade date is a Thursday (Monday is 0)"
+    );
+    let report = one_pass(&mut node, &mut gateway, &mut feed, t(10))?;
+    assert_eq!(
+        report.fills.len(),
+        1,
+        "premise: the paper venue filled: {:?}",
+        report.refusals
+    );
+    let fill = report.fills[0].clone();
+    assert_eq!(
+        gateway.unsettled_count(),
+        1,
+        "premise: the venue holds the fill in settlement"
+    );
+    let monday_nine = t(0)
+        .start_of_day()
+        .saturating_add(Duration::from_secs(4 * 86_400 + 9 * 3_600));
+    assert_eq!(terms.available_at(t(10))?, monday_nine);
+
+    // Friday, the first settlement day, and Monday a second before 09:00:
+    // nothing settles.
+    for before in [
+        t(0).start_of_day()
+            .saturating_add(Duration::from_secs(86_400 + 12 * 3_600)),
+        monday_nine.saturating_add(Duration::from_secs(-1)),
+    ] {
+        any_pass(&mut node, &mut gateway, &mut feed, before)?;
+        assert!(
+            settled_entries(&node).is_empty(),
+            "settled before its second settlement day, at {}",
+            before.to_rfc3339()
+        );
+    }
+    any_pass(&mut node, &mut gateway, &mut feed, monday_nine)?;
+    let settled = settled_entries(&node);
+    assert_eq!(
+        settled,
+        vec![Recorded::Settled {
+            order_id: fill.order_id.clone(),
+            venue: VENUE.to_string(),
+            settlement_date: monday_nine,
+            simulated: true,
+        }],
+        "the venue's settlement never reached the journal"
+    );
+    assert_eq!(
+        gateway.unsettled_count(),
+        0,
+        "a settled order is still held"
+    );
+    any_pass(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        monday_nine.saturating_add(Duration::from_secs(60)),
+    )?;
+    assert_eq!(settled_entries(&node).len(), 1, "an order settled twice");
+
+    // The spool, in order, into the real store told that this venue settles
+    // on a cycle.
+    let mut fabric = fabric("settle-t2");
+    node.cell.flush(&mut fabric.mirror, monday_nine)?;
+    fabric.drain();
+    let p1_topics = [
+        RecordKind::OutcomeRecorded.binding().topic,
+        RecordKind::ChainSpan.binding().topic,
+    ];
+    let records: Vec<P1Record> = fabric
+        .records()
+        .into_iter()
+        .filter(|record| p1_topics.contains(&record.event.topic))
+        .map(|record| {
+            if record.event.topic == RecordKind::OutcomeRecorded.binding().topic {
+                P1Record::Outcome(Box::new(
+                    serde_json::from_value(record.event.payload.clone()).expect("an outcome"),
+                ))
+            } else {
+                P1Record::Span(writer::chain_span(&record.event).expect("a span"))
+            }
+        })
+        .collect();
+    let dir = scratch("settle-t2-ledger");
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(t(0)));
+    let store = LedgerStore::open(
+        &dir,
+        qip_storage::EngineConfig::new(clock),
+        LedgerTelemetry::new(Arc::new(Metrics::new("qip-ledgerd"))),
+    )?
+    .with_settlement_cycle_venues([VENUE.to_string()])?;
+    let trading = Account::Trading {
+        cell: CELL.to_string(),
+        strategy: STRATEGY.to_string(),
+    };
+    let in_settlement = Account::InSettlement {
+        cell: CELL.to_string(),
+        strategy: STRATEGY.to_string(),
+    };
+    let cost = fill.quantity * fill.price;
+    let mut reached_settlement = false;
+    for (offset, record) in records.iter().enumerate() {
+        let is_settlement = matches!(
+            record,
+            P1Record::Outcome(o) if matches!(o.entry.decision, Recorded::Settled { .. })
+        );
+        if is_settlement {
+            // Everything before the venue's settlement is booked: the
+            // position moved at the trade date and the cash did not.
+            reached_settlement = true;
+            assert_eq!(
+                store.balance(&trading, object().as_str())?,
+                fill.quantity,
+                "premise: the fill was booked at the trade date"
+            );
+            assert_eq!(
+                store.balance(&trading, "USD")?,
+                Decimal::ZERO,
+                "a T+2 purchase's cash left the book at the trade date"
+            );
+            assert_eq!(store.balance(&in_settlement, "USD")?, -cost);
+        }
+        store.apply(&Delivery {
+            partition: "p0".to_string(),
+            offset: offset as u64,
+            record_hash: qip_core::sha256_hex(&serde_json::to_vec(record).expect("serialises")),
+            record: record.clone(),
+        })?;
+    }
+    assert!(reached_settlement, "the Settled record is not on P1");
+    assert_eq!(
+        store.balance(&trading, "USD")?,
+        -cost,
+        "the settlement did not move the cash to the book"
+    );
+    assert_eq!(store.balance(&in_settlement, "USD")?, Decimal::ZERO);
+    let last = store
+        .fill_events()?
+        .pop()
+        .expect("the settlement was booked");
+    assert!(
+        matches!(
+            last.settlement_state(),
+            SettlementState::Settled { settlement_date, .. } if settlement_date == monday_nine
+        ),
+        "{:?}",
+        last.settlement_state()
+    );
+    assert!(store.trial_balance()?.values().all(|t| t.is_zero()));
     Ok(())
 }
 
