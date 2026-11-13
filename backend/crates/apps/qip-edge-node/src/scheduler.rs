@@ -67,6 +67,7 @@ use crate::event_fabric::writer::PassInputs;
 use crate::feed::{SIMULATED_FEED, SimulatedFeed};
 use crate::gateway::NodeGateway;
 use crate::health::HealthSnapshot;
+use crate::market_state::market_state_of;
 use crate::mesh::{MAX_INBOUND_CAPACITY, MeshHealth, MeshInbound, MeshWorker, apply_inbound};
 use crate::pass::{DetachedSink, PassLog, PassMeter, PassOutcome, PassStats, run_pass};
 use crate::reprice::Requoter;
@@ -304,6 +305,9 @@ pub struct DecisionLoop {
     last_plan: Option<String>,
     refused_flushes: u64,
     turns: u64,
+    /// The instant of the last pass that wrote a feature digest: the start
+    /// of the next pass's market-state interval (ADR 0428 decision 3).
+    last_digest_at: Option<Timestamp>,
 }
 
 /// Log lines the decision loop holds for the stderr writer thread. Sixteen
@@ -375,6 +379,7 @@ impl DecisionLoop {
             last_plan: None,
             refused_flushes: 0,
             turns: 0,
+            last_digest_at: None,
         })
     }
 
@@ -562,7 +567,10 @@ impl DecisionLoop {
             let marker = self.marker(now, &readings, pressure, &applied)?;
             // ADR 0132 decision 4: on a turn that ran a pass, one digest of
             // what it sized against, with the ticks counted — never shipped.
-            let digest = fed.map(|fed| self.feature_digest(&marker, fed.messages, &applied));
+            let digest = fed.map(|fed| self.feature_digest(&marker, now, fed.messages, &applied));
+            if digest.is_some() {
+                self.last_digest_at = Some(now);
+            }
             // A recorder that cannot hand off — the writer has gone — is
             // reported and the turn goes on to the flush: returning here
             // would also skip the flush and the health publication, and the
@@ -812,6 +820,7 @@ impl DecisionLoop {
     fn feature_digest(
         &self,
         marker: &PassMarker,
+        now: Timestamp,
         ticks: usize,
         applied: &[MarketEvent],
     ) -> FeatureDigest {
@@ -837,6 +846,22 @@ impl DecisionLoop {
             hashes.push_str(event.source_hash());
             hashes.push('\n');
         }
+        let applied_digest = sha256_hex(hashes.as_bytes());
+        // ADR 0428: the pack over exactly the events this digest counts. A
+        // refusal ships no pack, which the consumer reads as unattested
+        // rather than clean (decision 4); it is logged, not swallowed.
+        let market_state = match market_state_of(self.last_digest_at, now, applied, &applied_digest)
+        {
+            Ok(pack) => pack,
+            Err(refusal) => {
+                eprintln!(
+                    "qip-edge-node: pass {} ships no market state pack: {}",
+                    marker.pass,
+                    refusal.message()
+                );
+                None
+            }
+        };
         FeatureDigest {
             cell: marker.cell.clone(),
             session: marker.session.clone(),
@@ -858,7 +883,8 @@ impl DecisionLoop {
                 .map(|event| event.event_time().as_nanos())
                 .max()
                 .unwrap_or(0),
-            applied_digest: sha256_hex(hashes.as_bytes()),
+            applied_digest,
+            market_state,
         }
     }
 

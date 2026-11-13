@@ -35,7 +35,13 @@ pub enum IntegrityFlag {
 }
 
 /// A time-bounded reconstructed market state.
+///
+/// Decoding goes back through the shape refusals of [`MarketStatePack::new`]
+/// ([`MarketStatePackWire`]); a derived `Deserialize` admitted an inverted
+/// interval, a zero horizon or a blank lineage from any line that parsed,
+/// so a pack refused at construction could still arrive from another brain.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(into = "MarketStatePackWire", try_from = "MarketStatePackWire")]
 pub struct MarketStatePack {
     kind: StateKind,
     from: Timestamp,
@@ -47,7 +53,108 @@ pub struct MarketStatePack {
     integrity: Vec<IntegrityFlag>,
 }
 
+/// [`MarketStatePack`]'s wire form, field for field.
+///
+/// Every field is required: none carries `#[serde(default)]`, so a line
+/// missing one is refused by the decoder rather than filled with a value
+/// nobody stated — an absent `integrity` read as `[]` would be a clean tape
+/// claimed by omission.
+///
+/// What decode can and cannot re-check. The interval, the horizon and the
+/// lineage are re-run through the same checks as [`MarketStatePack::new`]
+/// ([`MarketStatePack::check_shape`]). The integrity flags cannot be
+/// recomputed — the events they were derived from do not travel with the
+/// pack — so decode refuses only a flag that could not have been computed:
+/// a gap of zero messages, or one on a blank stream. A producer that drops a
+/// flag before encoding is not caught here; the carrier's provenance is
+/// what answers that, and this type does not pretend otherwise.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarketStatePackWire {
+    kind: StateKind,
+    from: Timestamp,
+    to: Timestamp,
+    horizon: Duration,
+    feature_lineage: Vec<String>,
+    integrity: Vec<IntegrityFlag>,
+}
+
+impl From<MarketStatePack> for MarketStatePackWire {
+    fn from(pack: MarketStatePack) -> Self {
+        let MarketStatePack {
+            kind,
+            from,
+            to,
+            horizon,
+            feature_lineage,
+            integrity,
+        } = pack;
+        Self {
+            kind,
+            from,
+            to,
+            horizon,
+            feature_lineage,
+            integrity,
+        }
+    }
+}
+
+impl TryFrom<MarketStatePackWire> for MarketStatePack {
+    type Error = Error;
+
+    fn try_from(wire: MarketStatePackWire) -> Result<Self> {
+        Self::check_shape(wire.from, wire.to, wire.horizon, &wire.feature_lineage)?;
+        for flag in &wire.integrity {
+            let IntegrityFlag::SequenceGap { stream, missing } = flag;
+            if *missing == 0 || stream.trim().is_empty() {
+                return Err(Error::invalid(
+                    "a market state pack line carries a sequence-gap flag of zero messages or \
+                     on a blank stream; no gap check computes either, so the line was not \
+                     written by MarketStatePack::new",
+                ));
+            }
+        }
+        Ok(Self {
+            kind: wire.kind,
+            from: wire.from,
+            to: wire.to,
+            horizon: wire.horizon,
+            feature_lineage: wire.feature_lineage,
+            integrity: wire.integrity,
+        })
+    }
+}
+
 impl MarketStatePack {
+    /// The refusals a pack's own fields must pass, shared by the
+    /// constructor and the decoder so the two cannot drift apart.
+    fn check_shape(
+        from: Timestamp,
+        to: Timestamp,
+        horizon: Duration,
+        feature_lineage: &[String],
+    ) -> Result<()> {
+        if to <= from {
+            return Err(Error::invalid(
+                "a market state pack needs `from` strictly before `to`; give the interval it \
+                 was reconstructed over",
+            ));
+        }
+        if horizon.as_nanos() <= 0 {
+            return Err(Error::invalid(
+                "a market state pack needs a positive horizon; state how long it stays valid",
+            ));
+        }
+        if feature_lineage.is_empty() || feature_lineage.iter().any(|l| l.trim().is_empty()) {
+            return Err(Error::invalid(
+                "a market state pack needs a non-blank feature lineage naming what it was \
+                 derived from",
+            ));
+        }
+        Ok(())
+    }
+
     /// Build a pack over `events`, in tape order. Refuses an empty `events`
     /// list, an empty or inverted interval, a non-positive horizon, an empty or blank lineage, and an
     /// event outside the interval — a pack that quietly included events from
@@ -60,28 +167,12 @@ impl MarketStatePack {
         feature_lineage: Vec<String>,
         events: &[MarketEvent],
     ) -> Result<Self> {
-        if to <= from {
-            return Err(Error::invalid(
-                "a market state pack needs `from` strictly before `to`; give the interval it \
-                 was reconstructed over",
-            ));
-        }
-        if horizon.as_nanos() <= 0 {
-            return Err(Error::invalid(
-                "a market state pack needs a positive horizon; state how long it stays valid",
-            ));
-        }
+        Self::check_shape(from, to, horizon, &feature_lineage)?;
         if events.is_empty() {
             return Err(Error::invalid(
                 "a market state pack needs at least one event; an interval with no drained \
                  events records no tape, and a pack over none would report a clean tape nobody \
                  read (ADR 0151 decision 2)",
-            ));
-        }
-        if feature_lineage.is_empty() || feature_lineage.iter().any(|l| l.trim().is_empty()) {
-            return Err(Error::invalid(
-                "a market state pack needs a non-blank feature lineage naming what it was \
-                 derived from",
             ));
         }
         let mut last: BTreeMap<String, &MarketEvent> = BTreeMap::new();

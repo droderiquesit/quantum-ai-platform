@@ -2806,3 +2806,165 @@ fn a_woken_specialist_is_queued_at_the_urgency_its_surprise_stated_not_the_floor
         );
     }
 }
+
+// --- R12-OBS-1172: triage and the autonomous test loop ----------------------
+
+/// A contained shift with nothing trading-facing in its window is minor and
+/// is the deep brain's own, and the journalled record carries the same
+/// triage the round reported. Mutation: pass `false` for `contained` in
+/// `open_incident` — the severity reads `major` and the first assertion
+/// fires. Mutation: write `triage: None` into the record — the last fires.
+#[test]
+fn a_contained_shift_with_nothing_trading_facing_is_minor_and_owned_by_the_deep_brain() {
+    use qip_observability::aiops::Severity;
+    let platform = platform();
+    let journal = RemediationJournal::open(None, Arc::new(ManualClock::new(start())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ops =
+        Operations::journalled(start(), journal.clone()).unwrap_or_else(|e| panic!("{e}"));
+    let incidents = drive_levels(&platform, &mut ops, &[10.0, 1_000.0]);
+    assert_eq!(incidents.len(), 1, "premise: one shift: {incidents:?}");
+    let incident = &incidents[0];
+    assert!(incident.remediation.is_ok(), "premise: the runbook ran");
+    assert_eq!(
+        incident.triage.severity,
+        Severity::Minor,
+        "{:?}",
+        incident.triage
+    );
+    assert_eq!(
+        incident.triage.owner,
+        EntityKey::new("deployment", "qip-deepbrain")
+    );
+    let records = journal.incidents().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].triage.as_ref(), Some(&incident.triage));
+    let counted = platform.telemetry().metrics.snapshot().counter(
+        names::AIOPS_INCIDENTS_TRIAGED,
+        &labels([("severity", "minor")]),
+    );
+    assert_eq!(counted, 1);
+}
+
+/// A venue filling far from the twin inside the incident's window makes the
+/// incident critical and that venue its owner; a venue filling within the
+/// residual threshold is not implicated at all. Mutation: make
+/// `is_abnormal` accept every `fill_error_bps` — the quiet venue is
+/// implicated and the last assertion fires. Mutation: drop the
+/// trading-behaviour arm of `triage`'s severity — it reads `minor`.
+#[test]
+fn a_venue_misbehaving_in_the_window_makes_the_incident_critical_and_owns_it() {
+    use qip_observability::aiops::Severity;
+    let platform = platform();
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    let loud = 4.0 * qip_deepbrain::operations::VENUE_BEHAVIOUR_BPS;
+    let quiet = 0.5 * qip_deepbrain::operations::VENUE_BEHAVIOUR_BPS;
+    ops.observe_fills(
+        &[
+            ("XLON".to_string(), loud, start()),
+            ("XNYS".to_string(), quiet, start()),
+        ],
+        start(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let incidents = drive_levels(&platform, &mut ops, &[10.0, 1_000.0]);
+    assert_eq!(incidents.len(), 1, "premise: one shift: {incidents:?}");
+    let triage = &incidents[0].triage;
+    assert_eq!(triage.severity, Severity::Critical, "{triage:?}");
+    assert_eq!(triage.owner, EntityKey::new("venue", "XLON"));
+    assert!(
+        triage
+            .implicated
+            .iter()
+            .all(|i| i.entity != EntityKey::new("venue", "XNYS")),
+        "a fill inside the threshold implicates nothing: {triage:?}"
+    );
+}
+
+/// The autonomous test loop re-runs the drafted fixture every detector half:
+/// it waits for samples, says the shift is still running while the level
+/// stays up, and says it cleared once the level is back at the pre-shift
+/// baseline; and a fixture replayed against a journal that is not its own
+/// no longer reproduces. Mutation: in `check_fixture`, take the baseline
+/// from the window's *last* half instead of the half from the shift's start
+/// — the shifted level is compared with itself, `still_shifted` reads
+/// `cleared` and the second assertion fires. Mutation: make the replay
+/// check accept any result — the foreign-journal assertion fires.
+#[test]
+fn the_test_loop_re_runs_each_fixture_and_reports_whether_its_shift_has_cleared() {
+    use qip_deepbrain::operations::{FixtureOutcome, OperationsDraft, SHIFT_HALF, check_fixture};
+    let platform = platform();
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    let mut first = None;
+    let mut outcomes = Vec::new();
+    // Twelve at 10 ms, twenty-four at 1000 ms, twenty-four back at 10 ms.
+    for i in 0..60i64 {
+        let level = if (12..36).contains(&i) { 1_000.0 } else { 10.0 };
+        let at = start().saturating_add(Duration::from_secs(i));
+        let round = ops
+            .observe(&platform, &facts(at, level + (i % 2) as f64, &[]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        if let Some(incident) = round.incident {
+            first.get_or_insert(incident.id);
+        }
+        let id = first.clone();
+        if let (Some(id), Some(checks)) = (id, round.fixture_checks)
+            && let Some(check) = checks.iter().find(|c| c.incident == id)
+        {
+            outcomes.push((i, check.outcome));
+        }
+    }
+    let id = first.unwrap_or_else(|| panic!("premise: the shift opened an incident"));
+    assert!(
+        outcomes
+            .iter()
+            .any(|(_, o)| *o == FixtureOutcome::AwaitingSamples)
+            || outcomes
+                .first()
+                .is_some_and(|(_, o)| *o == FixtureOutcome::StillShifted),
+        "premise: the loop ran on the fixture: {outcomes:?}"
+    );
+    assert!(
+        outcomes
+            .iter()
+            .any(|(i, o)| *i < 36 && *o == FixtureOutcome::StillShifted),
+        "the level is still up after the fixture's window: {outcomes:?}"
+    );
+    assert_eq!(
+        outcomes.last().map(|(_, o)| *o),
+        Some(FixtureOutcome::Cleared),
+        "the level is back at baseline: {outcomes:?}"
+    );
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, o)| *o != FixtureOutcome::NoLongerReproduces),
+        "{outcomes:?}"
+    );
+    let counted = |outcome: &str| {
+        platform
+            .telemetry()
+            .metrics
+            .snapshot()
+            .counter(names::AIOPS_FIXTURE_CHECKS, &labels([("outcome", outcome)]))
+    };
+    assert!(counted("cleared") >= 1 && counted("still_shifted") >= 1);
+    assert_eq!(SHIFT_HALF, 6, "premise: the loop runs every six iterations");
+
+    let fixture = ops
+        .book()
+        .drafts()
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_iter()
+        .find_map(|d| match d.draft {
+            OperationsDraft::Fixture(f) if f.incident == id => Some(f),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("premise: the fixture was drafted"));
+    let foreign = RemediationJournal::open(None, Arc::new(ManualClock::new(start())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        check_fixture(&foreign, &fixture).unwrap_or_else(|e| panic!("{e}")),
+        FixtureOutcome::NoLongerReproduces
+    );
+}

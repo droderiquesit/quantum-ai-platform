@@ -17,6 +17,7 @@ resources:
 - deepbrain.yaml
 - invokers.yaml
 - prove-serving.yaml
+- slo-gate.yaml
 #
 # The three platform images come from the one build registry, `qip-dev`,
 # not from stage's own: `deploy.yml` builds each commit once and Kargo
