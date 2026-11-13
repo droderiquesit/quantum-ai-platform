@@ -8103,7 +8103,8 @@ fn decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant() 
             bytes: 0,
             cycle: 1,
             at: start(),
-        },
+        }
+        .distribution_reading(),
     );
     let (shrunk, _) = issue_through_the_platform(&mut shifted, &id)?;
     assert_eq!(shrunk, full * OOD_FLOOR);
@@ -8317,7 +8318,64 @@ fn a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_t
         "the causal-driver level should read measured and empty before the cycle"
     );
 
-    platform.run_cycle(start());
+    let report = platform.run_cycle(start());
+
+    // The cycle's own report carries both surfaces (the gap this row kept
+    // open until 2026-11-12: they were real and reached no report).
+    let discovery = &report.risk_discovery;
+    assert!(
+        discovery
+            .crowded
+            .iter()
+            .any(|crowd| crowd.instrument == INSTRUMENT && crowd.cells.len() == 3),
+        "the cycle report names no crowded {INSTRUMENT}: {:?}",
+        discovery.crowded
+    );
+    assert!(
+        discovery.factor.as_ref().is_some_and(|f| !f.is_empty()),
+        "the cycle report carries no measured factor level: {:?}",
+        discovery.factor
+    );
+    assert!(
+        discovery
+            .causal_drivers
+            .as_ref()
+            .is_some_and(|d| d.contains_key(&format!("obj-{DRIVER}"))),
+        "the cycle report names no causal driver: {:?}",
+        discovery.causal_drivers
+    );
+    // First cycle: everything found is new, so both the crowded name and the
+    // driver are reported as emerging, with no previous figure.
+    let emerged = |d: &qip_kernel::cycle::RiskDiscovery, axis: &str, bucket: &str| {
+        d.emerging
+            .iter()
+            .any(|e| e.axis == axis && e.bucket == bucket && e.previous.is_none())
+    };
+    assert!(
+        emerged(discovery, "crowded", INSTRUMENT),
+        "{:?}",
+        discovery.emerging
+    );
+    assert!(
+        emerged(
+            discovery,
+            qip_risk::shared_cause::CAUSAL_DRIVER_AXIS,
+            &format!("obj-{DRIVER}")
+        ),
+        "{:?}",
+        discovery.emerging
+    );
+    // And it replays: the journal entry sealed for this cycle carries the
+    // same discovery the report did.
+    let entry = platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .last()
+        .ok_or_else(|| qip_core::Error::not_found("the cycle journalled an entry"))?
+        .decode::<qip_kernel::platform::CycleJournalEntry>()?
+        .body;
+    assert_eq!(entry.risk_discovery.as_ref(), Some(discovery));
 
     // The same pass, the second surface: the state the cycle's veto reads
     // carries the factor level, populated, and the shipped set blocks on it.
@@ -8353,6 +8411,27 @@ fn a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_t
             .iter()
             .any(|breach| breach.limit_name == "factor-concentration"),
         "a book loading on the market at about six times did not block under the shipped factor cap: {factor:?}"
+    );
+
+    // A second cycle over an unchanged book: the crowding is still reported,
+    // and is no longer emerging, because its gross did not grow.
+    let again = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(
+        again
+            .risk_discovery
+            .crowded
+            .iter()
+            .any(|crowd| crowd.instrument == INSTRUMENT),
+        "the second cycle stopped reporting the crowded name"
+    );
+    assert!(
+        !again
+            .risk_discovery
+            .emerging
+            .iter()
+            .any(|e| e.axis == "crowded" && e.bucket == INSTRUMENT),
+        "an unchanged crowded name was reported as emerging: {:?}",
+        again.risk_discovery.emerging
     );
     Ok(())
 }
@@ -9592,6 +9671,95 @@ fn a_strategy_trading_at_a_cell_venue_whose_twin_misprices_its_fills_is_held() -
         platform.fill_scores().len(),
         12,
         "a replayed cell report's fills were scored again"
+    );
+    Ok(())
+}
+
+/// R12-EXPAND-6050: a fill-bias correction installed in the paper fill model
+/// shifts the venue's scored paper fills by the fitted bias, and withdrawing it
+/// reverts them. Three platforms run the identical twelve cell fills at
+/// [`VENUE`]: one with no correction (the baseline), one with a correction
+/// installed before scoring, and one that installs then withdraws the
+/// correction before scoring. The installed run's residuals are the baseline
+/// minus the bias; the install-then-withdraw run's are the baseline again,
+/// proving the withdrawal removed the correction from the live model. Both
+/// install and withdraw are journaled, so the installed set the third run reads
+/// is the left fold of its own log records.
+///
+/// This is the act the row was missing: before it the installation was a record
+/// on a campaign result and the platform's paper fills were scored raw, so
+/// "installed in the paper fill model" named the instant a window opened rather
+/// than a correction the model applied.
+///
+/// Mutation A: delete the `raw - self.installed_fill_bias(..)` map in
+/// `Platform::score_filled` — the installed run equals the baseline and the
+/// "shifted by the bias" assertion fails. Mutation B: make the
+/// `installed == false` arm of `InstalledFillBiases::apply` a no-op — the
+/// install-then-withdraw run stays shifted and the "reverted" assertion fails.
+#[test]
+fn a_fill_bias_correction_installed_in_the_paper_model_shifts_the_scored_fills_and_a_withdrawal_reverts_them()
+-> Result<()> {
+    const BIAS: f64 = 10.0;
+    let scored_errors = |install: bool, withdraw: bool| -> Result<Vec<f64>> {
+        let mut platform = platform()?;
+        let trader = StrategyId::new("fill-bias-trader");
+        register_at_venue(platform.central_mut(), &trader, CELL, venue())?;
+        walk_to(platform.central_mut(), &trader, GateStage::Pilot)?;
+        if install {
+            assert!(
+                platform.install_fill_bias(VENUE, BIAS, "fill bias at XNYS", start())?,
+                "premise: the correction installed"
+            );
+            assert_eq!(platform.installed_fill_bias(VENUE), Some(BIAS));
+        }
+        if withdraw {
+            assert!(
+                platform.withdraw_fill_bias(VENUE, start())?,
+                "premise: the correction withdrew"
+            );
+            assert_eq!(
+                platform.installed_fill_bias(VENUE),
+                None,
+                "the withdrawal left the correction in force"
+            );
+        }
+        platform.observe(tape_before_the_fills(90.0));
+        let report = twelve_cell_fills(&StrategyId::new("fill-bias-source"), &venue());
+        settle_and_score_cell_fills(&mut platform, report)?;
+        let mut errors: Vec<f64> = platform
+            .fill_scores()
+            .iter()
+            .filter_map(|score| score.trade_error_bps)
+            .collect();
+        errors.sort_by(f64::total_cmp);
+        Ok(errors)
+    };
+
+    let baseline = scored_errors(false, false)?;
+    assert_eq!(
+        baseline.len(),
+        12,
+        "premise: the twelve paper fills were scored on the raw run"
+    );
+
+    let installed = scored_errors(true, false)?;
+    assert_eq!(
+        installed.len(),
+        baseline.len(),
+        "the installed correction changed how many fills scored"
+    );
+    for (corrected, raw) in installed.iter().zip(&baseline) {
+        assert!(
+            (corrected - (raw - BIAS)).abs() < 1e-9,
+            "a paper fill was not scored under the installed correction: {corrected} is not \
+             {raw} - {BIAS}"
+        );
+    }
+
+    let reverted = scored_errors(true, true)?;
+    assert_eq!(
+        reverted, baseline,
+        "the withdrawal did not revert the paper fills to the raw residual"
     );
     Ok(())
 }

@@ -107,6 +107,21 @@ pub fn procedure_name_for(agent_id: &str) -> String {
     format!("procedure:{agent_id}")
 }
 
+/// One agent's resolved calls in one regime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegimeRecord {
+    pub correct: usize,
+    pub resolved: usize,
+}
+
+impl RegimeRecord {
+    /// The fraction right, or `None` when nothing has resolved: no record is
+    /// no record, never an even chance.
+    pub fn hit_rate(&self) -> Option<f64> {
+        (self.resolved > 0).then(|| self.correct as f64 / self.resolved as f64)
+    }
+}
+
 /// Episodes [`ResearchMemory::new`] holds before giving up the oldest.
 pub const DEFAULT_EPISODE_CAPACITY: usize = 4_096;
 
@@ -128,6 +143,13 @@ pub struct Episode {
     /// Set once the outcome is known — the join point for learning.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outcome: Option<EpisodeOutcome>,
+    /// The regime in force when the work happened, as the platform keys it
+    /// (`{market}/{volatility}`), when the writer knew one (R12-AMBIENT-3024).
+    /// What [`ResearchMemory::reliability_by_regime`] groups on: an agent
+    /// right in a calm tape and wrong in a stressed one has two records, and
+    /// one pooled hit rate would describe neither.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub regime: Option<String>,
 }
 
 /// What actually happened after an episode.
@@ -429,6 +451,36 @@ impl ResearchMemory {
             .into_iter()
             .filter(|e| e.outcome.as_ref().is_some_and(|o| o.resolved_at <= as_of))
             .collect()
+    }
+
+    /// Every agent's resolved record per regime, as known at `as_of`
+    /// (R12-AMBIENT-3024): `(agent, regime)` to [`RegimeRecord`].
+    ///
+    /// Only episodes that carry a regime, had resolved by `as_of` and had
+    /// happened by then are counted. An episode with no regime is left out
+    /// rather than filed under a regime nobody recorded; [`Self::hit_rate`]
+    /// still counts it in the pooled figure.
+    pub fn reliability_by_regime(
+        &self,
+        as_of: Timestamp,
+    ) -> BTreeMap<(String, String), RegimeRecord> {
+        let mut records: BTreeMap<(String, String), RegimeRecord> = BTreeMap::new();
+        for episode in &self.episodes {
+            let (Some(regime), Some(outcome)) = (&episode.regime, &episode.outcome) else {
+                continue;
+            };
+            if episode.occurred_at > as_of || outcome.resolved_at > as_of {
+                continue;
+            }
+            let record = records
+                .entry((episode.agent_id.clone(), regime.clone()))
+                .or_default();
+            record.resolved += 1;
+            if outcome.correct {
+                record.correct += 1;
+            }
+        }
+        records
     }
 
     /// An agent's hit rate over episodes resolved at or before `as_of`.

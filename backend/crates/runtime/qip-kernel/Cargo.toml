@@ -28,6 +28,7 @@ qip-observability.workspace = true
 qip-contracts.workspace = true
 qip-lifecycle.workspace = true
 qip-capital.workspace = true
+qip-survival.workspace = true
 # ADR 0388: the kernel is where the treasury and the capital brain meet.
 qip-treasury.workspace = true
 qip-compliance.workspace = true

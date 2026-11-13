@@ -867,6 +867,7 @@ fn episode(n: u64, correct: bool, at: Timestamp) -> Episode {
         conclusion: "yes".to_string(),
         evidence: vec!["doc-1".to_string()],
         conviction: 0.7,
+        regime: None,
         outcome: Some(EpisodeOutcome {
             resolved_at: at.saturating_add(Duration::from_days(30)),
             correct,
