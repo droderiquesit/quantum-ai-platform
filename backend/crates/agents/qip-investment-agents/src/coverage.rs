@@ -92,6 +92,17 @@ pub enum Scope {
     /// The issuer's debt, cash, leverage and maturity ladder
     /// (R12-REASON-3013).
     CapitalStructure,
+    /// Where research attention goes: the specialists measured in the regime
+    /// in force, weighted by their record there (R12-AMBIENT-3024).
+    AttentionAllocation,
+    /// Which specialists are reliable in which regime, from resolved calls
+    /// (R12-AMBIENT-3024).
+    RegimeReliability,
+    /// A contested panel resolved by its authors' records in the regime
+    /// (R12-AMBIENT-3024). Evidenced only where the panel was contested and
+    /// some dissenting author had a record: an uncontested panel has no
+    /// disagreement to resolve.
+    DisagreementResolution,
     /// The world model federation's arbitration of its competing members:
     /// branch, merge, abstain or request more data, with the disagreement
     /// kept (R12-WORLD-3025).
@@ -100,7 +111,7 @@ pub enum Scope {
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 20] = [
+    pub const ALL: [Scope; 23] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -120,6 +131,9 @@ impl Scope {
         Scope::CorporateEvents,
         Scope::ManagementGuidance,
         Scope::CapitalStructure,
+        Scope::AttentionAllocation,
+        Scope::RegimeReliability,
+        Scope::DisagreementResolution,
         Scope::WorldModelArbitration,
     ];
 
@@ -144,6 +158,9 @@ impl Scope {
             Self::CorporateEvents => "corporate_events",
             Self::ManagementGuidance => "management_guidance",
             Self::CapitalStructure => "capital_structure",
+            Self::AttentionAllocation => "attention_allocation",
+            Self::RegimeReliability => "regime_reliability",
+            Self::DisagreementResolution => "disagreement_resolution",
             Self::WorldModelArbitration => "world_model_arbitration",
         }
     }
@@ -192,6 +209,9 @@ impl Scope {
             Self::CorporateEvents => &["corporate_actions_pending"],
             Self::ManagementGuidance => &["guidance_gap", "guidance_outstanding"],
             Self::CapitalStructure => &["net_debt", "net_leverage", "debt_due_within_year"],
+            Self::AttentionAllocation => &["attention_allocated"],
+            Self::RegimeReliability => &["regime_reliability_cells"],
+            Self::DisagreementResolution => &["reliability_weighted_balance"],
             Self::WorldModelArbitration => &["arbitrations_decided"],
         }
     }

@@ -159,7 +159,7 @@ spec:
           - key: spec.traffic.1.type
             value: TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
           - key: spec.traffic.1.revision
-            value: ${{ task.outputs.api_traffic.standby == "" ? "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] : task.outputs.api_traffic.standby }}
+            value: '${{ task.outputs.api_traffic.standby == "" ? "qip-" + ctx.stage + "-api-" + imageFrom(vars.warehouseRegistry + "/qip-api").Digest[7:19] : task.outputs.api_traffic.standby }}'
           - key: spec.traffic.1.percent
             value: ${{ 0 }}
     - uses: yaml-update

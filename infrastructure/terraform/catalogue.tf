@@ -40,6 +40,17 @@
 #     The day there is, it is a `RunJob` manifest beside the services and an
 #     identity from the same module.
 
+# ADR 0405: QIP_DESK_RISK_TOLERANCE reaches the three roots that assemble a
+# platform (qip-api, qip-fastbrain, qip-deepbrain) only when the environment
+# states a tolerance. Null sets nothing, and an unset variable is a tolerance
+# of one in the binary: the operator's limit set in force exactly as written.
+# A value here can only narrow; the binary refuses anything outside [0, 1].
+locals {
+  desk_risk_tolerance_env = var.desk_risk_tolerance == null ? {} : {
+    QIP_DESK_RISK_TOLERANCE = var.desk_risk_tolerance
+  }
+}
+
 locals {
   # The listener every workload with a proxy reaches Google APIs through.
   # Read from the proxy module so the port is written once, in the bootstrap.
@@ -324,6 +335,9 @@ locals {
         module.secrets.console_service_account_email == null ? "" : "serviceAccount:${module.secrets.console_service_account_email}",
       ])
       env = merge(
+        # ADR 0405: the desk mandate's risk tolerance, when the environment
+        # states one. Absent, the binary runs the operator's limits exactly.
+        local.desk_risk_tolerance_env,
         {
           QIP_API_ADDRESS    = "0.0.0.0:8080"
           QIP_STORAGE_TARGET = var.storage_target
@@ -498,6 +512,9 @@ locals {
       # policy queries are recorded here.
       metrics_collector = true
       env = merge(
+        # ADR 0405: the desk mandate's risk tolerance, when the environment
+        # states one. Absent, the binary runs the operator's limits exactly.
+        local.desk_risk_tolerance_env,
         {
           QIP_FASTBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
           QIP_STORAGE_TARGET           = var.storage_target
@@ -600,6 +617,9 @@ locals {
       # fast brain records from its own cycle.
       metrics_collector = true
       env = merge(
+        # ADR 0405: the desk mandate's risk tolerance, when the environment
+        # states one. Absent, the binary runs the operator's limits exactly.
+        local.desk_risk_tolerance_env,
         {
           QIP_DEEPBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
           QIP_STORAGE_TARGET           = var.storage_target

@@ -81,6 +81,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-chain | 1 | signed chain records over qip-transport; bounded round trips |
 | qip-fabricd | 1 | the in-tree fabric daemon; journal appends acknowledged locally |
 | qip-capital | 2 | capital placement and per-user ledger; limits checked before an order exists |
+| qip-survival | 2 | the survival kernel and the confidence governor: capital withheld before any is released to alpha, and the grant contraction measured model risk demands (ADR 0464) |
 | qip-capital-fabric | 2 | wallet against ledger reconciliation; a break is recorded, never absorbed |
 | qip-treasury | 2 | the Treasury Bank's books: reserve floor, leverage ceiling, internal funding and financing permission; a use past the floor or a function without a permission is refused before anything is promised |
 | qip-opportunity-engine | 2 | opportunity valuation over bounded inputs |

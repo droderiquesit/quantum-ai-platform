@@ -89,8 +89,9 @@ removing the entry stopped nothing but start-up.
   desk,
   `understand_briefs_the_desk_from_the_federation_review_it_journals_and_the_arbitration_brain_reports_it`
   (qip-kernel `tests/symbolic_federation.rs`).
-- The roster is twenty-eight agents and the standard organisation
-  twenty-seven dispatched agents (the chief is on the roster and dispatches).
+- The roster gains one agent and the standard organisation one dispatched
+  agent; recount with `the_declared_organisation_passes_its_own_governance`
+  rather than quoting a figure, because parallel lanes add specialists.
 
 ## What it costs
 
@@ -102,8 +103,8 @@ removing the entry stopped nothing but start-up.
   writer is one call, placed before the review is moved into the log, so the
   slot can only hold what is journaled — but it is a second place the review
   lives in memory, replaced wholesale each pass.
-- The roster grows to twenty-eight and every count of it in the documents
-  moves with it.
+- The roster grows by one (to twenty-nine beside the Meta Brain, which
+  landed the same day) and every count of it in the documents moves with it.
 - The deep brain loses the entry that named the kernel's `FederationStage`
   as a tool. A reader of the registry now sees an organisation agent whose
   tools are capability grants; where the arbitration actually runs is

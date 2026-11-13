@@ -140,6 +140,26 @@ impl EventBody for FeatureStatisticsReview {
 }
 
 impl FeatureStatisticsReview {
+    /// What the confidence governor reads of this review, as data: each
+    /// shift's index and floor, and the quantised feeds. The review itself is
+    /// built on `qip-training`'s estimators, which `qip-survival` must not
+    /// reach (ADR 0464), so the governor is handed the two numbers per shift
+    /// it scores and nothing else.
+    pub fn distribution_reading(&self) -> qip_survival::confidence::DistributionReading {
+        qip_survival::confidence::DistributionReading {
+            shifted: self
+                .shifted
+                .iter()
+                .map(|shift| qip_survival::confidence::ShiftReading {
+                    object_id: shift.object_id.clone(),
+                    population_stability_index: shift.drift.population_stability_index,
+                    floor: shift.drift.floor,
+                })
+                .collect(),
+            quantised: self.quantised.clone(),
+        }
+    }
+
     /// One line for the cycle's detail.
     ///
     /// Counts rather than names in the ordinary case, and names only the
