@@ -2,6 +2,10 @@
 //! itself, promotes it to the local reflex only, and its forecasts are
 //! calibrated against what the cell then observed.
 
+// In a test the assertion is the deliverable; the workspace denies
+// `panic_in_result_fn` for production code, where it would be a bug.
+#![allow(clippy::panic_in_result_fn)]
+
 use qip_contracts::forecast::{Calibration, OutcomeDistribution};
 use qip_contracts::reflex_forecast::{ReflexPromotion, ReflexTarget};
 use qip_contracts::venue::VenueId;

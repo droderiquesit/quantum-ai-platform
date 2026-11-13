@@ -1,6 +1,10 @@
 //! R12-WORLD-3084 / ADR 0506: the reflex forecast contract — the
 //! microsecond row's output, promoted to the local reflex and nothing else.
 
+// In a test the assertion is the deliverable; the workspace denies
+// `panic_in_result_fn` for production code, where it would be a bug.
+#![allow(clippy::panic_in_result_fn)]
+
 use qip_contracts::forecast::{Calibration, OutcomeDistribution, OutcomeMass, QuantilePoint};
 use qip_contracts::reflex_forecast::{
     MAX_REFLEX_HORIZON_US, NOT_OCCURRED, OCCURRED, ReflexForecast, ReflexForecastFields,
