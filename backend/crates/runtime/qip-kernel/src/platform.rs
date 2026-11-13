@@ -43,7 +43,7 @@ use crate::central::{
 };
 use crate::config::PlatformConfig;
 use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
-use crate::cycle::{CycleReport, Stage, StageOutcome};
+use crate::cycle::{CycleReport, RiskDiscovery, Stage, StageOutcome};
 use crate::desk_ledger::{Admission, DeskLedgerFeed, DeskOutcome};
 use crate::family_review::{
     FAMILY_FINDING_PROPOSED, FAMILY_FINDING_WITHDRAWN, FamilyAllocationReview, FamilyMember,
@@ -801,6 +801,10 @@ pub struct Platform {
     /// read twice: a cycle that reaches no construction journals nothing
     /// rather than the last cycle's comparison.
     cycle_solver_routing: Option<SolverRoutingJournal>,
+    /// The last cycle's risk discovery, kept so the next one can say what
+    /// emerged since (R12-RISK-4094). Advice only: nothing that decides reads
+    /// it.
+    last_risk_discovery: Option<RiskDiscovery>,
     /// The latest DECIDE solve, kept for the next UNDERSTAND to state in the
     /// quantum contract (R12-QUANT-4063).
     pending_routing: Option<(u64, qip_optimization_engine::RoutingDecision)>,
@@ -3733,6 +3737,12 @@ pub struct CycleJournalEntry {
     /// name it. A non-zero count means the join above is incomplete.
     #[serde(skip_serializing_if = "is_zero", default)]
     pub sensed_unlisted: u64,
+    /// The cycle's risk discovery as its report carried it (R12-RISK-4094),
+    /// so crowding and the shared-cause levels an operator read can be
+    /// reproduced from the log alone. Absent on a journal written before the
+    /// field existed, which is why it is defaulted rather than required.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub risk_discovery: Option<crate::cycle::RiskDiscovery>,
 }
 
 /// The most records one journal entry names as having fed its cycle.
@@ -6778,6 +6788,7 @@ impl Platform {
             cycle_family_structure: None,
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
+            last_risk_discovery: None,
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
@@ -14507,6 +14518,7 @@ impl Platform {
             .fold(Duration::ZERO, |total, outcome| total + outcome.elapsed);
         self.observe_decision_latency(decided_in);
 
+        let risk_discovery = self.discover_risk();
         let mut report = CycleReport {
             cycle: self.cycle,
             correlation_id,
@@ -14515,6 +14527,7 @@ impl Platform {
             stages,
             events_logged: self.event_log.len(),
             halted: self.autonomy.kill_switch().is_globally_tripped(),
+            risk_discovery,
         };
 
         if let Some(slowest) = report.stages.iter().map(|o| o.elapsed).max() {
@@ -14665,7 +14678,42 @@ impl Platform {
             stages,
             events_logged: self.event_log.len(),
             halted: self.autonomy.kill_switch().is_globally_tripped(),
+            // Nothing ran, so nothing was measured: `None` on both levels,
+            // which reads as "not measured" and not as "measured and clean".
+            risk_discovery: RiskDiscovery::default(),
         }
+    }
+
+    /// The Risk Brain's discovery pass for the cycle that just ran
+    /// (R12-RISK-4094): crowded names across cells from the central plane's
+    /// aggregate, and the factor and causal-driver levels from the risk state
+    /// the pre-trade veto reads, compared against the cycle before.
+    ///
+    /// Read-only over both sources. The state is recomputed from the same
+    /// aggregates rather than cached from a stage, so the report describes the
+    /// book as the cycle left it, which is the book the next order is checked
+    /// against.
+    fn discover_risk(&mut self) -> RiskDiscovery {
+        let state = self.risk_state_from(self.risk_figures());
+        let crowded = self
+            .central
+            .exposure()
+            .crowded(self.central.config().minimum_cells_for_crowding);
+        let discovery = RiskDiscovery {
+            crowded,
+            factor: state
+                .axis_exposures
+                .get(qip_risk::shared_cause::FACTOR_AXIS)
+                .cloned(),
+            causal_drivers: state
+                .axis_exposures
+                .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
+                .cloned(),
+            emerging: Vec::new(),
+        }
+        .with_emerging_since(self.last_risk_discovery.as_ref());
+        self.last_risk_discovery = Some(discovery.clone());
+        discovery
     }
 
     /// Close one stage off: time it on the injected clock and keep it.
@@ -14914,6 +14962,7 @@ impl Platform {
             // that never saw it.
             sensed: std::mem::take(&mut self.sensed_pending),
             sensed_unlisted: std::mem::take(&mut self.sensed_unlisted),
+            risk_discovery: Some(report.risk_discovery.clone()),
         };
 
         let facts = EventFacts::derived(
