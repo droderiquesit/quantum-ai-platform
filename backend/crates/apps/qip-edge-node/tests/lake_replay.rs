@@ -255,10 +255,18 @@ struct Run {
     /// chosen for each signal and the candidates it was chosen from.
     journal: Vec<String>,
     journal_digest: String,
+    /// Every message the cell's decoder normalized the feed's bytes into,
+    /// in pass and decode order.
+    normalized: Vec<MarketMessage>,
 }
 
 impl Run {
-    fn of(cell: &Cell, decisions: Vec<String>, orders: usize) -> Self {
+    fn of(
+        cell: &Cell,
+        decisions: Vec<String>,
+        orders: usize,
+        normalized: Vec<MarketMessage>,
+    ) -> Self {
         let entries = cell.journal().entries();
         Self {
             decisions,
@@ -278,6 +286,7 @@ impl Run {
                 .last()
                 .map(|entry| entry.digest.clone())
                 .unwrap_or_default(),
+            normalized,
         }
     }
 }
@@ -301,6 +310,7 @@ fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
     let mut decisions = Vec::new();
     let mut orders = 0usize;
     let mut sealed = 0usize;
+    let mut normalized = Vec::new();
     for second in PASSES {
         seed(&mut gateway, second)?;
         let outcome = run_pass(
@@ -315,6 +325,7 @@ fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
             orders += report.orders.len();
         }
         decisions.push(decided(&outcome));
+        normalized.extend(feed.take_normalized());
         let applied = feed.take_captured();
         if !applied.is_empty() {
             sealed += applied.len();
@@ -325,7 +336,7 @@ fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
             )?;
         }
     }
-    Ok((Run::of(&cell, decisions, orders), sealed))
+    Ok((Run::of(&cell, decisions, orders, normalized), sealed))
 }
 
 /// Every tick `lake` retains, read back through `qip_storage::lake_history`
@@ -371,6 +382,7 @@ fn replayed_session(history: &BTreeMap<Timestamp, Vec<MarketMessage>>) -> Result
     let mut stats = PassStats::default();
     let mut decisions = Vec::new();
     let mut orders = 0usize;
+    let mut normalized = Vec::new();
     for second in PASSES {
         seed(&mut gateway, second)?;
         let ticks = history.get(&t(second)).map_or(&[][..], Vec::as_slice);
@@ -387,8 +399,9 @@ fn replayed_session(history: &BTreeMap<Timestamp, Vec<MarketMessage>>) -> Result
             orders += report.orders.len();
         }
         decisions.push(decided(&outcome));
+        normalized.extend(feed.take_normalized());
     }
-    Ok(Run::of(&cell, decisions, orders))
+    Ok(Run::of(&cell, decisions, orders, normalized))
 }
 
 /// R12-TICK-9006: replaying retained lake history through a fresh cell
@@ -454,6 +467,83 @@ fn replaying_retained_lake_history_through_a_fresh_cell_yields_the_same_decision
         replay.journal_digest, original.journal_digest,
         "the replayed cell's hash-chained journal is not the original's"
     );
+    Ok(())
+}
+
+/// R12-TICK-1201: the tick lake seals the events the cell normalized, and a
+/// replay from the lake reproduces them field for field.
+///
+/// The failure it prevents, found by an independent review on 2026-10-25:
+/// the lake sealed the publisher's messages, so the record the desk replays
+/// from was what the venue meant to say, and nothing proved it was what the
+/// cell read. A book rebuilt from the lake can match the cell's book and
+/// still not be the cell's events — a status, an order count or a stamp the
+/// decoder normalized differently leaves the book alone. So three sequences
+/// are compared whole, every field of every message: what the original
+/// cell's decoder produced from the bytes, what the lake retains, and what a
+/// fresh cell's decoder produces from the lake's lines.
+///
+/// Mutation: in `SimulatedFeed::capture` (src/feed.rs), stamp the payload's
+/// receive instant one nanosecond late (`now.saturating_add(1ns)`) — the
+/// capture check refuses every line, the lake retains nothing and the first
+/// premise fails. Mutation: drop the check (`Ok(event) =>` without the
+/// equality) and have `capture` write `order_count: Some(1)` on a level —
+/// the lake retains the publisher's message and the lake-against-cell
+/// comparison fails at message 0. (Dropping the check with the late stamp
+/// instead does not fire: the lake re-derives a line's receive instant from
+/// the event header, so that stamp is not a field the lake keeps.) Mutation: in
+/// `ReplayFeed::publish`, decode the frame at `now + 1ns` — the replay's
+/// normalized events differ from the original's in `capture_time`.
+#[test]
+fn the_lake_seals_the_events_the_cell_normalized_and_replay_from_it_reproduces_them_field_for_field()
+-> Result<()> {
+    let lake = Arc::new(MemoryBlobStore::new());
+    let (original, sealed) = original_session(&lake)?;
+    assert!(
+        sealed > 10,
+        "premise: the passes sealed ticks ({sealed}), so equal sequences are not two empty ones"
+    );
+    assert_eq!(
+        original.normalized.len(),
+        sealed,
+        "every message the cell normalized was sealed, and nothing else was"
+    );
+
+    let (history, retained) = retained_history(lake.as_ref())?;
+    assert_eq!(
+        retained, sealed,
+        "premise: the lake retains every sealed tick"
+    );
+    // The lake's order: by pass, and within a pass by the feed's sequence,
+    // which is the order the cell decoded the frame in.
+    let mut from_lake: Vec<MarketMessage> = Vec::new();
+    for ticks in history.values() {
+        let mut ticks = ticks.clone();
+        ticks.sort_by_key(|tick| tick.origin.sequence);
+        from_lake.extend(ticks);
+    }
+    assert_eq!(from_lake.len(), original.normalized.len());
+    for (index, (kept, read)) in from_lake.iter().zip(&original.normalized).enumerate() {
+        assert_eq!(
+            kept, read,
+            "message {index}: the lake retains an event the cell did not normalize"
+        );
+    }
+
+    let replay = replayed_session(&history)?;
+    assert_eq!(replay.normalized.len(), original.normalized.len());
+    for (index, (replayed, read)) in replay
+        .normalized
+        .iter()
+        .zip(&original.normalized)
+        .enumerate()
+    {
+        assert_eq!(
+            replayed, read,
+            "message {index}: the replay from the lake normalized an event the original cell \
+             did not"
+        );
+    }
     Ok(())
 }
 

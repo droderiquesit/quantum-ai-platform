@@ -4741,8 +4741,8 @@
   },
   {
     "id": "R12-TICK-1201",
-    "status": "PARTIAL",
-    "current": "Capture/normalize/reconstruct/replay proven in acceptance; lake sealing exists but no composition root writes market segments.",
+    "status": "COMPLETE",
+    "current": "Captured bytes become normalized events, books and sealed lake segments, and a replay from the lake reproduces the normalized events field for field. The cell decodes each frame through its own decoder (Cell::on_bytes_normalized hands back the messages it normalized, in decode order, as handed to the sequencer); SimulatedFeed::publish keeps a line's market event only where its message equals, every field, the message the cell normalized that line into, and counts any other as a capture failure, so what the drain's LakeSink seals is the cell's reading and not the publisher's intent. The tick lake read back through qip_storage::lake_history equals the original cell's normalized messages one for one, and a fresh cell fed those lines through ReplayFeed and the same decoder normalizes them into the same messages, field for field (capture_time included). The book rebuilt from the lake equals Cell::book_digest, and the replayed cell's decisions and hash-chained journal equal the original's. Capture path: qip-edge-node main.rs run() builds LakeSink over config.storage.blobs(LAKE_NAMESPACE) on every node, and the committed execution-node template sets QIP_STORAGE_TARGET=engine and QIP_VENUE_FEED=simulated; no node is provisioned (deployable false).",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327",
       "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs",
@@ -4750,19 +4750,25 @@
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::the_lake_alone_rebuilds_the_book_the_venue_published",
       "backend/crates/apps/qip-edge-node/tests/lake_clock.rs::reading_the_lake_back_returns_each_ticks_disciplined_clock",
       "backend/crates/libs/qip-storage/src/lake_history.rs RecordedTick::clock / RecordedClock",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs the_book_rebuilt_from_the_lake_equals_the_book_the_cell_reconstructed_from_the_bytes"
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs the_book_rebuilt_from_the_lake_equals_the_book_the_cell_reconstructed_from_the_bytes",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::on_bytes_normalized / ingest",
+      "backend/crates/apps/qip-edge-node/src/feed.rs SimulatedFeed::publish capture check (Ok(event) if event.payload() == read), take_normalized; ReplayFeed::take_normalized",
+      "backend/crates/apps/qip-edge-node/src/main.rs LakeSink::new(config.storage.blobs(LAKE_NAMESPACE)..)",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_STORAGE_TARGET=engine, QIP_VENUE_FEED=simulated",
+      "backend/crates/apps/qip-edge-node/tests/lake_replay.rs the_lake_seals_the_events_the_cell_normalized_and_replay_from_it_reproduces_them_field_for_field",
+      "backend/crates/apps/qip-edge-node/tests/lake_replay.rs replaying_retained_lake_history_through_a_fresh_cell_yields_the_same_decisions"
     ],
-    "gap": "2026-10-25: skeptic REFUTED: the book rebuilt from the lake equals Cell::book_digest (85b0d971), but the lake seals publisher messages, not the events the cell normalized, so no test proves replay reproduces normalized events field for field, and capture runs only behind the gated feed into a memory store; remaining step is sealing (or comparing) the cell-normalized events on a default or committed-enabled capture path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test decision_loop the_lake_alone; cargo test -p qip-edge-node --test lake_clock",
+    "verification": "cd backend && cargo test -p qip-edge-node --test lake_replay; cargo test -p qip-edge-node --test decision_loop the_book_rebuilt_from_the_lake; cargo test -p qip-edge-node --test lake_clock",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A composition root writes market segments: qip-edge-node main.rs run() builds LakeSink::new(config.storage.blobs(LAKE_NAMESPACE)...) and drain.rs LakeSink::deliver seals every MARKET_EVENT_APPLIED tick with a disciplined clock block. The binary's default store is memory; the committed execution-node template sets QIP_STORAGE_TARGET=engine and QIP_VENUE_FEED=simulated, but no node is provisioned. 2026-10-24 lane L3-DATA: write-read-replay test added (1f35c346). Mutations fired, restored by cp + cmp: LakeSink::deliver skipping even-sequenced ticks ('only 37 of 73 ticks reached the lake', bounded by PATIENCE); feed capturing each level one above the published price (bids rebuilt from the lake differ); decode_line returning clock: None (read-back test left None, right Some(..)). Independent skeptic (code-reviewer) verdict REFUTED: read-back dropped the clock (since fixed), replay compared against venue not cell books, lake not byte-derived, replay consumer off by default. Kept PARTIAL. 2026-10-25: 85b0d971 adds Cell::book_digest and the book-equality test (decoder mutation). Skeptic (code-reviewer) REFUTED as above."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: A composition root writes market segments: qip-edge-node main.rs run() builds LakeSink::new(config.storage.blobs(LAKE_NAMESPACE)...) and drain.rs LakeSink::deliver seals every MARKET_EVENT_APPLIED tick with a disciplined clock block. The binary's default store is memory; the committed execution-node template sets QIP_STORAGE_TARGET=engine and QIP_VENUE_FEED=simulated, but no node is provisioned. 2026-10-24 lane L3-DATA: write-read-replay test added (1f35c346). Mutations fired, restored by cp + cmp: LakeSink::deliver skipping even-sequenced ticks ('only 37 of 73 ticks reached the lake', bounded by PATIENCE); feed capturing each level one above the published price (bids rebuilt from the lake differ); decode_line returning clock: None (read-back test left None, right Some(..)). Independent skeptic (code-reviewer) verdict REFUTED: read-back dropped the clock (since fixed), replay compared against venue not cell books, lake not byte-derived, replay consumer off by default. Kept PARTIAL. 2026-10-25: 85b0d971 adds Cell::book_digest and the book-equality test (decoder mutation). Skeptic (code-reviewer) REFUTED as above. Lane t5-05 2026-11-13: the 2026-10-25 refutation answered - the lake now seals only events equal, field for field, to what the cell's decoder normalized (capture check in SimulatedFeed::publish over Cell::on_bytes_normalized), and the new lake_replay test compares three whole sequences: the original cell's normalized messages, the lake's read-back, and a fresh cell's normalization of the lake's lines. Mutations, each fired and restored byte-for-byte (cmp): stamp capture's payload receive instant 1 ns late ('the passes sealed ticks (0)' - the check refused every line); drop the check and write order_count Some(1) in capture ('message 0: the lake retains an event the cell did not normalize'); decode the replay frame at now + 1 ns ('message 0: the replay from the lake normalized an event the original cell did not'). Dropping the check with the late stamp did not fire - the lake re-derives a line's receive instant from the event header - and is stated in the test, not counted. Capture path is the committed one (template sets engine storage and the simulated feed); provisioning a node is out of scope and is why deployable stays false."
   }
 ]
