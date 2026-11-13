@@ -24,7 +24,9 @@ use qip_contracts::expansion::OntologyTypeFamily;
 use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp};
 use qip_deepbrain::ambient_journal::{AmbientJournal, AmbientRecord, JournalDestination, records};
 use qip_deepbrain::discovery::{DiscoveryConfig, DiscoveryDesk};
-use qip_deepbrain::research::{FillObservation, ResearchConfig, ResearchLoop, registered_tools};
+use qip_deepbrain::research::{
+    FillBiasAction, FillObservation, ResearchConfig, ResearchLoop, registered_tools,
+};
 use qip_expansion::curriculum::{State, TaskKind};
 use qip_expansion::desk::CloseReason;
 use qip_expansion::plan::AcquisitionAction;
@@ -787,6 +789,86 @@ fn a_research_campaign_runs_four_environments_in_order_with_provenance_and_repla
         first,
         run(),
         "the same fills replayed to different datasets"
+    );
+}
+
+/// R12-EXPAND-6050 on the shipped path: a promoted fill-bias campaign no longer
+/// only *records* its installation — it hands the correction to the platform's
+/// paper fill model as a `FillBiasAction` on the round, which the node applies
+/// through `admit_fill_bias`. The correction fitted on fills ~40 bp rich that
+/// beats the uncorrected twin installs, so the round carries one install action
+/// for the venue naming the fitted bias.
+///
+/// The hand-off itself is proven against the platform: applied to a platform at
+/// which no strategy trades the venue, `admit_fill_bias` is refused by the
+/// kernel seam's fail-closed guard and says so, and nothing is installed —
+/// which proves the round actually calls `Platform::install_fill_bias` rather
+/// than swallowing the action. The seam's positive path (install shifts the
+/// scored fills, withdrawal reverts them) is proven in `qip-kernel`'s
+/// `central` suite against a registered venue.
+///
+/// Mutation A: delete the `round.fill_bias_actions.push(..)` in the install arm
+/// of `carry_out` — the round carries no action and the first assertion fails.
+/// Mutation B: make `admit_fill_bias` return `Vec::new()` without calling the
+/// seam — the refusal is not reported and the "one refusal naming the venue"
+/// assertion fails.
+#[test]
+fn a_promoted_campaign_hands_its_fill_bias_correction_to_the_platforms_paper_model() {
+    let mut research = deployed(BTreeMap::new());
+    let round = two_sweeps(&mut research, &fills(40.0, 0, 0.0), &fills(40.0, 8, 40.0));
+    assert_eq!(
+        round.campaigns.get("promoted"),
+        Some(&1),
+        "premise: one promotion"
+    );
+    assert_eq!(
+        round.campaigns.get("installed"),
+        Some(&1),
+        "premise: the correction's shadow window cleared and it installed"
+    );
+
+    let installs: Vec<&FillBiasAction> = round
+        .fill_bias_actions
+        .iter()
+        .filter(|action| action.install)
+        .collect();
+    assert_eq!(
+        installs.len(),
+        1,
+        "the promoted campaign handed no install action to the paper model: {:?}",
+        round.fill_bias_actions
+    );
+    let action = installs[0];
+    assert_eq!(action.venue, VENUE, "the install named another venue");
+    assert!(
+        action.bias_bps.is_finite() && action.bias_bps > 0.0,
+        "the fitted bias was not a positive correction: {}",
+        action.bias_bps
+    );
+    assert!(
+        round.fill_bias_actions.iter().all(|a| a.install),
+        "a withdrawal was handed off for a correction that cleared: {:?}",
+        round.fill_bias_actions
+    );
+
+    // The hand-off reaches the platform seam: a venue no strategy trades is
+    // refused there, so admit reports exactly one refusal naming it and
+    // installs nothing.
+    let mut platform = platform_over(Universe::new());
+    let failures = round.admit_fill_bias(&mut platform, t0());
+    assert_eq!(
+        failures.len(),
+        1,
+        "admit_fill_bias did not drive the platform seam: {failures:?}"
+    );
+    assert!(
+        failures[0].contains(VENUE),
+        "the refusal did not name the venue: {failures:?}"
+    );
+    assert_eq!(
+        platform.installed_fill_bias(VENUE),
+        None,
+        "a correction was installed at a venue no strategy trades"
     );
 }
 
