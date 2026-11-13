@@ -560,14 +560,19 @@
   {
     "id": "R12-AMBIENT-3024",
     "status": "PARTIAL",
-    "current": "MetaIntelligence market allocates research attention and keeps a reputation book in deepbrain.",
+    "current": "The Meta Brain (meta-brain, ADR 0466) is rostered and built by Organisation::standard as the one arbiter: it runs after the panel in a second dispatch phase with the panel's findings, reads per-(agent, regime) hit rates from research memory (the kernel now stamps every charged call with its regime, and the REASON brief carries the regime in force), allocates attention by that record, and resolves a contested panel to a reliability-weighted balance reported as a fact, never a vote.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/manifests.rs roster: no meta brain manifest",
-      "backend/crates/agents/qip-investment-agents/src/chief.rs:306 dispatch runs each agent on the brief alone; no agent sees the panel's findings",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:337 SelfModel, kernel-side",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
+      "backend/crates/agents/qip-investment-agents/src/meta_brain.rs MetaBrain, reliability_weighted_balance",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs Arbiter, PanelView, Organisation::with_arbiters, dispatch's second phase, standard_arbiters",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::AttentionAllocation, RegimeReliability, DisagreementResolution",
+      "backend/crates/libs/qip-agents/src/memory.rs Episode::regime, ResearchMemory::reliability_by_regime, RegimeRecord",
+      "backend/crates/libs/qip-agents/src/finding.rs AgentBrief::regime, in_regime",
+      "backend/crates/runtime/qip-kernel/src/platform.rs write_research_memory stamps regime; stage_reason's brief in_regime(regime_context)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_meta_brain_resolves_a_contested_panel_by_each_authors_record_in_the_regime, the_meta_brain_reports_no_resolution_for_a_panel_that_agrees, removing_the_meta_brain_drops_its_three_scopes_from_coverage, an_arbiter_on_the_panel_or_off_the_roster_does_not_assemble",
+      "backend/crates/runtime/qip-kernel/tests/episodic.rs every_call_charged_to_research_memory_carries_the_regime_it_was_made_in, the_reason_stage_runs_the_meta_brain_under_the_regime_in_force",
+      "backend/crates/libs/qip-agents/tests/memory.rs the_record_by_regime_counts_only_what_had_resolved_by_then_and_only_under_its_own_regime"
     ],
-    "gap": "No meta manifest or agent. Resolving disagreement needs the panel's findings, which Organisation::dispatch never shows an agent (each runs on the brief alone), so it needs a second dispatch phase run after the panel when report.is_contested(). Per-regime reliability needs SelfModel or a fed ResearchMemory on the desk; the desk's memory is ResearchMemory::new() fixed at assembly.",
+    "gap": "2026-11-12 (t50-20): brains are measured per regime, models are not. The clause names brains/models; the Meta Brain reads research memory, which records analyst calls, and no source in the tree keys a forecaster's or production model's record by regime (the tournament's Brier scores and the deep brain's drift reports are un-regimed, and the model registry gate is held only by the model-failure probe). In the production organisation on the populated fixture the panel is not contested, so DisagreementResolution's removal is proven on a two-agent leaning panel, and in the kernel by the REASON dispatch's contested resolution, not on the standard fixture. REASON does not yet act on the resolution (ADR 0466 'Not decided here').",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -575,10 +580,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cd backend && cargo test -p qip-investment-agents --test organisation && cargo test -p qip-agents --test memory && cargo test -p qip-kernel --test episodic -- every_call_charged the_reason_stage_runs_the_meta",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  2026-11-12 lane t50-20 (wave580): Meta Brain built and wired (ADR 0466). Mutations, each restored by cp+cmp: records_in ignores the regime -> resolved to 0, expected 0.8; second phase never runs -> AttentionAllocation not covered with it; resolution on any panel -> the agreeing-panel test fails; weight ignores reliability -> resolved to 0; regime_reliability_cells renamed -> RegimeReliability not covered; attention_allocated renamed -> AttentionAllocation not covered; doubled arbiter admitted -> assembly test fails; reliability_by_regime drops the resolved_at check -> the late resolution leaked in; kernel regime: None -> equity-analyst was charged with no regime; stage_reason drops in_regime -> the brief named no regime; Organisation::standard drops with_arbiters -> the meta brain never ran. Observed, not changed: ResearchMemory::hit_rate counts an outcome resolved after as_of (filters occurred_at only), a point-in-time leak in the pooled rate."
   },
   {
     "id": "R12-WORLD-3025",
