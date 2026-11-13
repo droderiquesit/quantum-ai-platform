@@ -4061,12 +4061,19 @@
   {
     "id": "R12-OBS-1172",
     "status": "PARTIAL",
-    "current": "Telemetry registries and SLO definitions; alert policies gated off (workload_metrics_exist = false); no auto-remediation.",
+    "current": "Six of seven scope items map to code reached from qip-deepbrain's run loop with named tests (docs/blueprint/lanes/t50-17-obs-1172-scope-map.md): self-observation (EntityGraph, five classes), SLOs (critical_paths evaluated every iteration), anomaly detection (detect_level_shift on iteration time), runbook-only auto-remediation (Remediator + CapabilitySwitch, ADR 0213), and since 2026-11-12 incident triage (aiops::triage, severity + owning entity on the journalled IncidentRecord) and an autonomous test loop re-running every drafted replay fixture each SHIFT_HALF iterations (Operations::check_fixtures), ADR 0460. Alert policies remain gated off (workload_metrics_exist = false).",
     "evidence": [
       "backend/crates/libs/qip-observability/src/slo.rs:32",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs"
+      "backend/crates/tests/qip-acceptance/tests/slo.rs",
+      "backend/crates/libs/qip-observability/src/aiops.rs (fn triage, EntityGraph::implicated, rank_incidents)",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs (Operations::open_incident, Operations::check_fixtures)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::the_test_loop_re_runs_each_fixture_and_reports_whether_its_shift_has_cleared",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_venue_misbehaving_in_the_window_makes_the_incident_critical_and_owns_it",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_trading_facing_incident_ranks_above_an_uncontained_one_and_a_contained_one_last",
+      "docs/adr/0460-the-deep-brain-triages-each-incident-by-what-it-touched-and-re-runs-every-drafted-replay-fixture-as-an-autonomous-test-loop.md",
+      "docs/blueprint/lanes/t50-17-obs-1172-scope-map.md"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-11-12: deployment verification has no composition-root caller — Platform::release_decision is reached only from qip-kernel/tests/self_observation.rs; expose it (qip-api route with the portal endpoint mirror and OpenAPI, or a qip-cli verb) and make deploy.yml ask it before promotion, with a test refusing a release while the budget is spent. Until then the scope map's deployment-verification row fails inspection.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4077,7 +4084,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " 2026-11-12 session t50-17: triage and autonomous test loop landed (ADR 0460), eight mutations fired; deployment verification still unwired."
   },
   {
     "id": "R12-EXPAND-1173",
