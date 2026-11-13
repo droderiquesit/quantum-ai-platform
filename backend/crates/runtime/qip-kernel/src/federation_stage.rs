@@ -327,10 +327,92 @@ pub struct CapitalView {
     pub unsettled: f64,
 }
 
-/// What the counterparty member reads about one venue (R12-WORLD-3049): the
-/// feasibility refusals the platform's window holds at it, read and never
-/// written. The window is the evidence a venue is withdrawn on; this member
-/// forecasts from it and decides nothing.
+/// What part a counterparty plays in the network the platform depends on
+/// (R12-WORLD-3049). The requirement names brokers, exchanges, bridges,
+/// custodians and settlement dependencies; each is a role a node of the
+/// counterparty graph can hold, so a pass can say which of them it modelled
+/// and which it did not.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CounterpartyRole {
+    /// The desk's broker: the one counterparty every desk order reaches.
+    Broker,
+    /// A venue an order is executed at. The default, because every venue
+    /// the refusal window names was named by an order bound for it.
+    #[default]
+    Exchange,
+    /// A holder of the book's assets.
+    Custodian,
+    /// A transfer path proceeds cross between a venue and where they settle.
+    Bridge,
+    /// A clearing house, settlement chain or agent a venue's trades settle
+    /// through.
+    SettlementAgent,
+}
+
+impl CounterpartyRole {
+    /// Every role, in declaration order: what [`counterparty_roles_unmodelled`]
+    /// checks a pass against.
+    pub const ALL: [Self; 5] = [
+        Self::Broker,
+        Self::Exchange,
+        Self::Custodian,
+        Self::Bridge,
+        Self::SettlementAgent,
+    ];
+
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Broker => "broker",
+            Self::Exchange => "exchange",
+            Self::Custodian => "custodian",
+            Self::Bridge => "bridge",
+            Self::SettlementAgent => "settlement_agent",
+        }
+    }
+}
+
+/// Why one counterparty depends on another: the edge kind of the graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyKind {
+    /// The dependent sends orders through the provider (a broker to the
+    /// exchanges it routes to).
+    Execution,
+    /// The provider holds the dependent's assets.
+    Custody,
+    /// The dependent's trades settle through the provider.
+    Settlement,
+    /// The dependent's proceeds cross the provider to arrive.
+    Bridge,
+}
+
+impl DependencyKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Execution => "execution",
+            Self::Custody => "custody",
+            Self::Settlement => "settlement",
+            Self::Bridge => "bridge",
+        }
+    }
+}
+
+/// One edge of the counterparty graph, held on the dependent's view.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CounterpartyDependency {
+    /// The provider's name, as its own [`CounterpartyView::venue`].
+    pub on: String,
+    pub kind: DependencyKind,
+}
+
+/// What the counterparty member reads about one counterparty
+/// (R12-WORLD-3049): the feasibility refusals the platform's window holds at
+/// it, read and never written, its role in the network, and the
+/// counterparties it depends on. The window is the evidence a venue is
+/// withdrawn on; this member forecasts from it and decides nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CounterpartyView {
     pub venue: String,
@@ -340,12 +422,118 @@ pub struct CounterpartyView {
     /// This venue's share of every refusal in the window; zero when the
     /// window is empty.
     pub share: f64,
+    #[serde(default)]
+    pub role: CounterpartyRole,
+    /// The counterparties this one depends on, in name order. An edge naming
+    /// a counterparty with no view of its own carries no contagion: nothing
+    /// is known about the provider.
+    #[serde(default)]
+    pub depends_on: Vec<CounterpartyDependency>,
+    /// Evidence refusals at this venue the platform *recorded* in each
+    /// recent cycle, keyed by the cycle that recorded them. This, not the
+    /// window, is what a forecast resolves against: the window evicts in
+    /// insertion order, so a count read from it falls when an entry counted
+    /// at the forecast is evicted, and a stamp read from it cannot tell a
+    /// cell report stamped early and ingested late from one that never came.
+    #[serde(default)]
+    pub recorded_by_cycle: BTreeMap<u64, u32>,
 }
 
 impl CounterpartyView {
-    fn refused_since(&self, since: Timestamp) -> usize {
-        self.refused_at.iter().filter(|at| **at >= since).count()
+    fn recorded_in(&self, cycle: u64) -> u32 {
+        self.recorded_by_cycle.get(&cycle).copied().unwrap_or(0)
     }
+}
+
+/// How much of a provider's refusal share one dependency edge carries to the
+/// dependent, per hop. A stated prior, not a fit: a custodian refusing half
+/// the window's orders is read as a quarter's pressure on the broker that
+/// holds assets there, an eighth two hops away. Calibration charges every
+/// miss.
+pub const CONTAGION_TRANSMISSION: f64 = 0.5;
+
+/// The longest dependency chain contagion is carried along. A bound on the
+/// work a pass does, and on how far a forecast reaches for a cause.
+pub const CONTAGION_MAX_HOPS: usize = 3;
+
+/// One contagion path the counterparty member found this pass: refusals at
+/// `source` reaching `at` along `edges`, carried as `pressure`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContagionPath {
+    /// The counterparty the pressure lands on.
+    pub at: String,
+    /// The counterparty whose refusals are the cause.
+    pub source: String,
+    /// Each hop from `at` to `source`: the provider reached and the kind of
+    /// dependency crossed to reach it. The last entry names `source`.
+    pub edges: Vec<CounterpartyDependency>,
+    /// `source`'s share × [`CONTAGION_TRANSMISSION`]^hops.
+    pub pressure: f64,
+}
+
+/// Every contagion path through `views`' dependency graph, by `at` then
+/// `source` (R12-WORLD-3049): for each counterparty, the shortest dependency
+/// chain to every provider within [`CONTAGION_MAX_HOPS`] that holds refusals.
+/// Breadth-first with a visited set, so a cycle in the graph ends a path
+/// rather than looping, and the shortest chain is the one kept because it
+/// carries the most pressure.
+pub fn contagion_paths(views: &[CounterpartyView]) -> Vec<ContagionPath> {
+    let by_name: BTreeMap<&str, &CounterpartyView> =
+        views.iter().map(|v| (v.venue.as_str(), v)).collect();
+    let mut paths = Vec::new();
+    for (name, view) in &by_name {
+        let mut seen: BTreeSet<&str> = BTreeSet::from([*name]);
+        let mut frontier: Vec<(&CounterpartyView, Vec<CounterpartyDependency>)> =
+            vec![(view, Vec::new())];
+        for _ in 0..CONTAGION_MAX_HOPS {
+            let mut next = Vec::new();
+            for (node, chain) in &frontier {
+                for edge in &node.depends_on {
+                    let Some(provider) = by_name.get(edge.on.as_str()) else {
+                        continue;
+                    };
+                    if !seen.insert(provider.venue.as_str()) {
+                        continue;
+                    }
+                    let mut edges = chain.clone();
+                    edges.push(edge.clone());
+                    if provider.share > 0.0 && provider.share.is_finite() {
+                        let hops = i32::try_from(edges.len()).unwrap_or(i32::MAX);
+                        paths.push(ContagionPath {
+                            at: (*name).to_string(),
+                            source: provider.venue.clone(),
+                            pressure: provider.share.min(1.0) * CONTAGION_TRANSMISSION.powi(hops),
+                            edges: edges.clone(),
+                        });
+                    }
+                    next.push((*provider, edges));
+                }
+            }
+            frontier = next;
+        }
+    }
+    paths.sort_by(|a, b| (&a.at, &a.source).cmp(&(&b.at, &b.source)));
+    paths
+}
+
+/// The pressure every path landing on `at` carries, combined as independent
+/// causes: `1 − Π(1 − pressure)`. Zero with no path.
+pub fn contagion_pressure(paths: &[ContagionPath], at: &str) -> f64 {
+    1.0 - paths
+        .iter()
+        .filter(|p| p.at == at)
+        .fold(1.0, |kept, p| kept * (1.0 - p.pressure.clamp(0.0, 1.0)))
+}
+
+/// The roles of [`CounterpartyRole::ALL`] no counterparty this pass holds, by
+/// name. Non-empty is the finding that the member modelled no bridge, say,
+/// rather than a silence that reads as a bridge-free network.
+pub fn counterparty_roles_unmodelled(views: &[CounterpartyView]) -> Vec<String> {
+    CounterpartyRole::ALL
+        .iter()
+        .filter(|role| !views.iter().any(|v| v.role == **role))
+        .map(|role| role.as_str().to_string())
+        .collect()
 }
 
 /// Everything one pass reads.
@@ -451,6 +639,15 @@ pub struct FederationReview {
     /// on a record written before the field existed.
     #[serde(default)]
     pub contradictions: Vec<ViewContradiction>,
+    /// Every contagion path the counterparty member carried pressure along
+    /// this pass (R12-WORLD-3049). Absent on a record written before the
+    /// field existed.
+    #[serde(default)]
+    pub contagion: Vec<ContagionPath>,
+    /// Counterparty roles no counterparty held this pass, by name. Absent on
+    /// a record written before the field existed.
+    #[serde(default)]
+    pub counterparty_unmodelled: Vec<String>,
 }
 
 /// How far from even odds each of two opposed views must be before the
@@ -611,15 +808,12 @@ enum Pending {
         cycle: u64,
         since: Timestamp,
     },
+    /// Resolved on the Evidence refusals recorded in cycle `cycle + 1`, the
+    /// next pass, once a later pass can see that cycle complete. The
+    /// forecasting cycle's own DECIDE records in `cycle` and is excluded; a
+    /// cell report recorded during the next pass counts whatever its stamp.
     Counterparty {
         venue: String,
-        /// The forecasting pass's instant.
-        since: Timestamp,
-        /// Refusals at the venue stamped at or after `since` that the window
-        /// already held when the forecast was made: the desk refuses during
-        /// DECIDE at the cycle's own instant, so a strict "after" would miss
-        /// the refusals that matter, and these are not new.
-        already: usize,
         cycle: u64,
     },
 }
@@ -1672,8 +1866,20 @@ impl FederationStage {
         // again before the next pass? A venue that carries a large share of
         // the window's refusals is likelier to; the prior is stated, and
         // calibration scores every miss.
-        for view in inputs.counterparties.iter().take(COUNTERPARTY_MAX_VENUES) {
-            let probability = 0.05 + 0.85 * view.share;
+        let counterparties: Vec<CounterpartyView> = inputs
+            .counterparties
+            .iter()
+            .take(COUNTERPARTY_MAX_VENUES)
+            .cloned()
+            .collect();
+        let contagion = contagion_paths(&counterparties);
+        let counterparty_unmodelled = counterparty_roles_unmodelled(&counterparties);
+        for view in &counterparties {
+            // A venue's own share and the pressure its providers carry onto
+            // it are read as independent causes of a refusal.
+            let pressure = contagion_pressure(&contagion, &view.venue);
+            let lean = 1.0 - (1.0 - view.share.clamp(0.0, 1.0)) * (1.0 - pressure);
+            let probability = 0.05 + 0.85 * lean;
             let proposition = counterparty_proposition(&view.venue, inputs.cycle);
             if feed(
                 &mut self.federation,
@@ -1682,7 +1888,9 @@ impl FederationStage {
                     proposition: proposition.clone(),
                     probability,
                     evidence_fit: if view.refused_at.is_empty() { 0.3 } else { 0.6 },
-                    causal_coherence: 0.4,
+                    // A named dependency chain is a stated cause, not only a
+                    // rate.
+                    causal_coherence: if pressure > 0.0 { 0.6 } else { 0.4 },
                     uncertainty: 0.5,
                     at: now,
                 },
@@ -1695,8 +1903,6 @@ impl FederationStage {
                     proposition.clone(),
                     Pending::Counterparty {
                         venue: view.venue.clone(),
-                        since: now,
-                        already: view.refused_since(now),
                         cycle: inputs.cycle,
                     },
                 );
@@ -2089,6 +2295,8 @@ impl FederationStage {
             information_requests,
             request_spreads_bp,
             contradictions,
+            contagion,
+            counterparty_unmodelled,
         }
     }
 
@@ -2295,20 +2503,22 @@ impl FederationStage {
                     .iter()
                     .find(|v| &v.series == series && v.valid_at > *valid_at)
                     .map(|v| Some((v.level > *level) == *up && (v.level - *level).abs() > 0.0)),
-                Pending::Counterparty {
-                    venue,
-                    since,
-                    already,
-                    cycle,
-                } if *cycle < inputs.cycle => Some(Some(
-                    inputs
-                        .counterparties
-                        .iter()
-                        .find(|v| &v.venue == venue)
-                        // A venue the window no longer names holds no refusal
-                        // at all, so none arrived since.
-                        .is_some_and(|v| v.refused_since(*since) > *already),
-                )),
+                // Cycle `cycle + 1` is complete only once `cycle + 2` runs:
+                // its own DECIDE and the cell reports recorded before the
+                // next cycle starts are still to come when it is current.
+                Pending::Counterparty { venue, cycle }
+                    if cycle.saturating_add(1) < inputs.cycle =>
+                {
+                    Some(Some(
+                        inputs
+                            .counterparties
+                            .iter()
+                            .find(|v| &v.venue == venue)
+                            // A venue the platform no longer names recorded
+                            // nothing in that cycle.
+                            .is_some_and(|v| v.recorded_in(cycle.saturating_add(1)) > 0),
+                    ))
+                }
                 Pending::Counterparty { .. } => None,
             };
             match answer {
@@ -2455,7 +2665,33 @@ mod tests {
             venue: name.to_string(),
             refused_at: refused_at.to_vec(),
             share,
+            role: CounterpartyRole::Exchange,
+            depends_on: Vec::new(),
+            recorded_by_cycle: BTreeMap::new(),
         }
+    }
+
+    /// `view` with `count` Evidence refusals recorded in `cycle`.
+    fn recorded(mut view: CounterpartyView, cycle: u64, count: u32) -> CounterpartyView {
+        view.recorded_by_cycle.insert(cycle, count);
+        view
+    }
+
+    /// `view` holding `role` and depending on each `(provider, kind)`.
+    fn node(
+        mut view: CounterpartyView,
+        role: CounterpartyRole,
+        on: &[(&str, DependencyKind)],
+    ) -> CounterpartyView {
+        view.role = role;
+        view.depends_on = on
+            .iter()
+            .map(|(provider, kind)| CounterpartyDependency {
+                on: (*provider).to_string(),
+                kind: *kind,
+            })
+            .collect();
+        view
     }
 
     fn day(n: i64) -> Timestamp {
@@ -3473,13 +3709,14 @@ mod tests {
 
     /// R12-WORLD-3049: the counterparty member forecasts, per venue, whether
     /// the next pass records a refusal there. A venue carrying more of the
-    /// window's refusals is forecast likelier to; a refusal arriving after
-    /// the forecast resolves it true; and a refusal the window already held
-    /// at the forecast instant (the desk refuses in DECIDE, stamped at the
-    /// cycle's own instant) is not counted as new.
+    /// window's refusals is forecast likelier to, and the forecast resolves
+    /// on what the platform *recorded* in the next cycle — not on the
+    /// forecasting cycle's own DECIDE, and not on a count read back from a
+    /// window that evicts.
     ///
-    /// Mutations: drop the share term from the prior; count every refusal
-    /// at or after the forecast instant as new (ignore `already`); feed the
+    /// Mutations: drop the share term from the prior; resolve on the
+    /// forecasting cycle's own records (`cycle` for `cycle + 1`); resolve as
+    /// soon as the next cycle is current (`cycle < inputs.cycle`); feed the
     /// member nothing.
     #[test]
     fn a_venue_whose_refusals_rose_gives_the_counterparty_member_a_view_resolved_next_pass() {
@@ -3510,12 +3747,17 @@ mod tests {
         };
         let noisy_old = [day(0).saturating_sub(Duration::from_hours(3))];
         let mut stage = FederationStage::new();
+        // Cycle 1 forecasts; its own DECIDE refuses at both venues, recorded
+        // in cycle 1, which is not the next pass.
         let first = stage.run(
             &with_venues(
                 1,
                 100.0,
                 day(0),
-                vec![venue("NOISY", &noisy_old, 0.9), venue("QUIET", &[], 0.0)],
+                vec![
+                    recorded(venue("NOISY", &noisy_old, 0.9), 1, 2),
+                    recorded(venue("QUIET", &[], 0.0), 1, 1),
+                ],
             ),
             day(0),
         );
@@ -3527,40 +3769,168 @@ mod tests {
         );
         assert!(!first.silent.contains(&COUNTERPARTY.to_string()));
 
-        // The noisy venue refuses again after the forecast; the quiet one
-        // does not.
-        let fresh = day(0).saturating_add(Duration::from_hours(5));
+        // Cycle 2 is the next pass, still under way when its own UNDERSTAND
+        // runs: nothing resolves yet. The noisy venue records a refusal in
+        // it; the window it is read from has since evicted the old one.
+        let fresh = day(1).saturating_add(Duration::from_hours(1));
         let second = stage.run(
             &with_venues(
                 2,
                 101.0,
                 day(1),
                 vec![
-                    venue("NOISY", &[noisy_old[0], fresh], 0.9),
-                    venue("QUIET", &[], 0.0),
+                    recorded(recorded(venue("NOISY", &[fresh], 0.9), 1, 2), 2, 1),
+                    recorded(venue("QUIET", &[], 0.0), 1, 1),
                 ],
             ),
             day(1),
         );
-        assert_eq!(resolved(&second, "NOISY", 1), Some(true));
-        assert_eq!(resolved(&second, "QUIET", 1), Some(false));
-
-        // A refusal stamped at the forecasting pass's own instant was
-        // already in the window: the next pass holding only it is no new
-        // refusal.
-        let mut same = FederationStage::new();
-        same.run(
-            &with_venues(1, 100.0, day(0), vec![venue("DESK", &[day(0)], 1.0)]),
-            day(0),
-        );
-        let later = same.run(
-            &with_venues(2, 101.0, day(1), vec![venue("DESK", &[day(0)], 1.0)]),
-            day(1),
-        );
         assert_eq!(
-            resolved(&later, "DESK", 1),
+            resolved(&second, "NOISY", 1),
+            None,
+            "resolved before the next pass was complete"
+        );
+
+        // Cycle 3 sees cycle 2 complete: the noisy venue refused in it, the
+        // quiet one recorded only in the forecasting cycle itself.
+        let third = stage.run(
+            &with_venues(
+                3,
+                102.0,
+                day(2),
+                vec![
+                    recorded(recorded(venue("NOISY", &[fresh], 0.9), 1, 2), 2, 1),
+                    recorded(venue("QUIET", &[], 0.0), 1, 1),
+                ],
+            ),
+            day(2),
+        );
+        assert_eq!(resolved(&third, "NOISY", 1), Some(true));
+        assert_eq!(
+            resolved(&third, "QUIET", 1),
             Some(false),
-            "a refusal the window held at the forecast was counted as new"
+            "the forecasting cycle's own refusal resolved its next-pass forecast"
+        );
+    }
+
+    /// R12-WORLD-3049, bar part 4: the member models custodians, bridges and
+    /// settlement dependencies as nodes of a dependency graph and carries a
+    /// provider's refusals along its edges as contagion. A broker whose
+    /// custodian refuses is forecast likelier to refuse than the same broker
+    /// with the edge removed, the path is recorded in the review, it decays
+    /// with every hop, and a cycle in the graph ends a path rather than
+    /// looping.
+    ///
+    /// Mutations: drop the pressure term from the prior; record no path;
+    /// make transmission hop-independent (`powi(1)`); remove the visited
+    /// check; report every role as modelled.
+    #[test]
+    fn a_custodian_refusing_carries_contagion_to_the_broker_that_depends_on_it() {
+        let probability = |review: &FederationReview, name: &str| {
+            review
+                .arbitrations
+                .iter()
+                .find(|a| a.proposition == counterparty_proposition(name, 1))
+                .and_then(|a| {
+                    a.disagreement
+                        .views
+                        .iter()
+                        .find(|v| v.model == COUNTERPARTY)
+                })
+                .map(|v| v.probability)
+                .unwrap_or_else(|| panic!("no view on {name}: {:?}", review.arbitrations))
+        };
+        let graph = |linked: bool| {
+            let deps: &[(&str, DependencyKind)] = if linked {
+                &[("CUSTODY", DependencyKind::Custody)]
+            } else {
+                &[]
+            };
+            vec![
+                node(venue("BROKER", &[], 0.0), CounterpartyRole::Broker, deps),
+                node(
+                    venue("CUSTODY", &[day(0)], 0.8),
+                    CounterpartyRole::Custodian,
+                    &[("SETTLE", DependencyKind::Settlement)],
+                ),
+                node(
+                    venue("SETTLE", &[], 0.0),
+                    CounterpartyRole::SettlementAgent,
+                    &[("BRIDGE", DependencyKind::Bridge)],
+                ),
+                node(venue("EXCH", &[], 0.0), CounterpartyRole::Exchange, &[]),
+                node(
+                    venue("BRIDGE", &[day(0)], 0.2),
+                    CounterpartyRole::Bridge,
+                    // A cycle back to the custodian, three hops round:
+                    // it must end the path, not charge the custodian's
+                    // refusals to itself.
+                    &[("CUSTODY", DependencyKind::Custody)],
+                ),
+            ]
+        };
+        let run = |venues: Vec<CounterpartyView>| {
+            let mut fed = inputs(1, 100.0, day(0), Some(1));
+            fed.counterparties = venues;
+            FederationStage::new().run(&fed, day(0))
+        };
+        let linked = run(graph(true));
+        let unlinked = run(graph(false));
+
+        // Premise: the broker holds no refusal of its own in either graph,
+        // so any difference is the edge.
+        assert!(graph(true)[0].refused_at.is_empty() && graph(true)[0].share == 0.0);
+        let with = probability(&linked, "BROKER");
+        let without = probability(&unlinked, "BROKER");
+        assert!(
+            with > without + 0.3,
+            "a broker whose custodian refuses was not forecast likelier ({with} vs {without})"
+        );
+
+        let path = |review: &FederationReview, at: &str, source: &str| {
+            review
+                .contagion
+                .iter()
+                .find(|p| p.at == at && p.source == source)
+                .cloned()
+        };
+        let direct = path(&linked, "BROKER", "CUSTODY").expect("the custody path is recorded");
+        assert_eq!(
+            direct.edges,
+            vec![CounterpartyDependency {
+                on: "CUSTODY".into(),
+                kind: DependencyKind::Custody
+            }]
+        );
+        assert!((direct.pressure - 0.8 * CONTAGION_TRANSMISSION).abs() < 1e-12);
+        // Three hops: broker → custodian → settlement → bridge.
+        let far = path(&linked, "BROKER", "BRIDGE").expect("the three-hop bridge path");
+        assert_eq!(far.edges.len(), 3);
+        assert!(
+            (far.pressure - 0.2 * CONTAGION_TRANSMISSION.powi(3)).abs() < 1e-12,
+            "contagion did not decay per hop: {far:?}"
+        );
+        // custodian → settlement → bridge → custodian is a cycle within
+        // the hop bound: the visited set cuts it.
+        assert!(
+            linked.contagion.iter().all(|p| p.at != p.source),
+            "a cycle carried a counterparty's refusals back onto itself: {:?}",
+            linked.contagion
+        );
+        assert!(path(&unlinked, "BROKER", "CUSTODY").is_none());
+
+        // Every role is modelled in the full graph; a graph with no bridge
+        // says so.
+        assert!(
+            linked.counterparty_unmodelled.is_empty(),
+            "{:?}",
+            linked.counterparty_unmodelled
+        );
+        let mut bridgeless = graph(true);
+        bridgeless.pop();
+        assert_eq!(
+            run(bridgeless).counterparty_unmodelled,
+            vec!["bridge".to_string()]
         );
     }
 }
