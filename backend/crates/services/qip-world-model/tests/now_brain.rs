@@ -1014,3 +1014,264 @@ fn a_causal_estimator_contributes_beside_the_kalman_and_their_disagreement_is_re
         BTreeSet::from(["kalman-local-level", "causal-parents"])
     );
 }
+
+fn exposure(value: f64, source: &str, at: Timestamp) -> Observation {
+    obs(
+        scope(ScopeKind::Instrument, "AAA"),
+        "exposure_fraction",
+        Domain::Positioning,
+        "US",
+        value,
+        source,
+        at,
+    )
+}
+
+fn dispute_views(step: &qip_world_model::now::NowStep, key: &VariableKey) -> BTreeSet<String> {
+    step.disagreements
+        .iter()
+        .find(|d| {
+            d.disputed_propositions
+                .iter()
+                .any(|p| p.contains(&key.to_string()))
+        })
+        .unwrap_or_else(|| panic!("a disagreement on {key} is recorded: {step:?}"))
+        .views
+        .iter()
+        .map(|w| w.id.clone())
+        .collect()
+}
+
+/// R12-WORLD-3078: the neural state-space estimator learns a variable's
+/// dynamics and contributes a competing estimate. A return that climbs by
+/// 0.01 a reading is a trend the Kalman local-level filter, which assumes a
+/// random walk with almost no process noise over an hour, chases from
+/// behind; the network learns the increment and predicts it. It abstains
+/// for its warm-up (three reading means), which is the premise that the
+/// second view on the fourth step is the network's and not the readings'.
+/// From then on it contributes, the two disagree by more than half a scale,
+/// and the dispute is recorded naming both.
+///
+/// Mutation: make `NeuralFilter::propose` always abstain -- the fourth
+/// step's ensemble then has one member and no dispute is recorded. That the
+/// network *learns* is proven by the next test, not this one: here an
+/// untrained network still disagrees, because its large innovations make it
+/// trust the reading.
+#[test]
+fn the_neural_estimator_learns_a_trend_and_its_disagreement_with_the_kalman_filter_is_recorded() {
+    use qip_world_model::now::NeuralFilter;
+    let key = VariableKey::new(scope(ScopeKind::Instrument, "AAA"), "return").unwrap();
+    let mut brain = kalman_only().with_worker(Box::new(NeuralFilter::default()));
+    let mut kalman = kalman_only();
+    let token = brain.lead();
+    let kt = kalman.lead();
+    let mut last = None;
+    let mut kalman_last = None;
+    for i in 0..8_i32 {
+        let at = later(t0(), 60 * i64::from(i));
+        let value = 0.01 * f64::from(i);
+        let step = brain
+            .step(token, vec![ret("AAA", "US", value, "s1", at)], at)
+            .unwrap();
+        let k = kalman
+            .step(kt, vec![ret("AAA", "US", value, "s1", at)], at)
+            .unwrap();
+        let v = only(&step, &key).clone();
+        if i < 3 {
+            assert_eq!(
+                v.ensemble, 1,
+                "premise: the network abstains while it warms up"
+            );
+        } else {
+            assert_eq!(v.ensemble, 2, "step {i}: both estimators contributed");
+        }
+        kalman_last = Some(only(&k, &key).mean);
+        last = Some((v, step, value));
+    }
+    let (v, step, reading) = last.unwrap();
+    let kalman_alone = kalman_last.unwrap();
+    assert!(
+        v.disagreement > 0.5 * 0.01,
+        "the disagreement is material against the return's scale: {}",
+        v.disagreement
+    );
+    assert_eq!(
+        dispute_views(&step, &key),
+        BTreeSet::from([
+            "kalman-local-level".to_string(),
+            "neural-adaline".to_string()
+        ])
+    );
+    // The network has learned the trend: its candidate sits near the
+    // reading, so the ensemble mean (Kalman + network over two) sits well
+    // above the Kalman filter's lagging answer -- by more than a third of
+    // the gap between the reading and the Kalman answer.
+    let gap = reading - kalman_alone;
+    assert!(
+        gap > 0.01,
+        "premise: the Kalman filter lags the trend: {gap}"
+    );
+    assert!(
+        v.mean - kalman_alone > gap / 3.0,
+        "the ensemble moved toward the learned trend: {} vs Kalman {kalman_alone}, reading {reading}",
+        v.mean
+    );
+}
+
+/// R12-WORLD-3078: the symbolic estimator proposes from the constraint
+/// rather than only vetoing by it. Two sources split on a unit-interval
+/// share, 0.80 and 1.18: the Kalman filter's answer, 0.99, is admissible
+/// and stands, but almost half its posterior lies above one, which a share
+/// cannot be. The symbolic estimator conditions the same posterior on the
+/// rule and proposes its truncated mean, well below; the two disagree by
+/// more than half the share's scale and the dispute is recorded naming
+/// both. On the return, which no rule bounds, the symbolic estimator
+/// abstains -- the premise that its view comes from the rule.
+///
+/// Mutation: make `SymbolicFilter::propose` always abstain -- the share's
+/// ensemble has one member and no dispute is recorded. A second mutation,
+/// proposing the untruncated posterior mean, makes the two views agree and
+/// the disagreement assertion fails.
+#[test]
+fn the_symbolic_estimator_proposes_from_its_constraint_and_its_disagreement_with_the_kalman_is_recorded()
+ {
+    use qip_world_model::now::SymbolicFilter;
+    let share = VariableKey::new(scope(ScopeKind::Instrument, "AAA"), "exposure_fraction").unwrap();
+    let ret_key = VariableKey::new(scope(ScopeKind::Instrument, "AAA"), "return").unwrap();
+    let mut brain = kalman_only().with_worker(Box::new(SymbolicFilter));
+    let token = brain.lead();
+    let step = brain
+        .step(
+            token,
+            vec![
+                exposure(0.80, "s1", t0()),
+                exposure(1.18, "s2", t0()),
+                ret("AAA", "US", 0.01, "s1", t0()),
+            ],
+            t0(),
+        )
+        .unwrap();
+    assert_eq!(
+        only(&step, &ret_key).ensemble,
+        1,
+        "premise: no rule bounds a return, so the symbolic estimator abstains"
+    );
+    let v = only(&step, &share);
+    assert_eq!(v.ensemble, 2, "both estimators contributed: {step:?}");
+    assert!(
+        v.disagreement > 0.5 * 0.25,
+        "the truncated mean sits well below the Kalman answer: {}",
+        v.disagreement
+    );
+    assert!(v.mean < 0.99 && v.mean > 0.0, "{}", v.mean);
+    assert_eq!(
+        dispute_views(&step, &share),
+        BTreeSet::from([
+            "kalman-local-level".to_string(),
+            "symbolic-constraint".to_string()
+        ])
+    );
+}
+
+/// R12-WORLD-3078: a reading past a hard bound is not left with nothing
+/// admissible. A share read at 1.3 makes the Kalman candidate inadmissible,
+/// and with only the veto the variable was refused; the symbolic estimator
+/// estimates it at the bound, so the state is promoted, inside the rule.
+///
+/// Mutation: make `SymbolicFilter::propose` always abstain -- nothing is
+/// admissible and the share is refused.
+#[test]
+fn a_share_read_past_its_bound_is_estimated_at_the_bound_by_the_symbolic_estimator() {
+    use qip_world_model::now::SymbolicFilter;
+    let share = VariableKey::new(scope(ScopeKind::Instrument, "AAA"), "exposure_fraction").unwrap();
+    let mut veto_only = kalman_only();
+    let vt = veto_only.lead();
+    let refused = veto_only
+        .step(vt, vec![exposure(1.3, "s1", t0())], t0())
+        .unwrap();
+    assert!(
+        refused.promoted.is_empty() && refused.vetoed.get("kalman-local-level") == Some(&1),
+        "premise: the Kalman candidate breaks the rule and nothing else proposes: {refused:?}"
+    );
+    let mut brain = kalman_only().with_worker(Box::new(SymbolicFilter));
+    let token = brain.lead();
+    let step = brain
+        .step(token, vec![exposure(1.3, "s1", t0())], t0())
+        .unwrap();
+    let v = only(&step, &share);
+    assert_eq!(v.ensemble, 1);
+    assert!(
+        (v.mean - 1.0).abs() < 1e-12,
+        "estimated at the bound: {}",
+        v.mean
+    );
+}
+
+/// R12-WORLD-3078: the standard brain registers every kind the requirement
+/// names that has an in-tree estimator -- state-space, graph, neural and
+/// symbolic among them -- and not the causal one, whose edges are not yet
+/// slopes. Mutation: drop either new worker from `NowBrain::standard`.
+#[test]
+fn the_standard_brain_registers_the_neural_and_symbolic_estimators() {
+    let brain = NowBrain::standard(7).unwrap();
+    let kinds: BTreeSet<EstimatorKind> = brain.workers().into_iter().map(|(_, k)| k).collect();
+    for kind in [
+        EstimatorKind::StateSpace,
+        EstimatorKind::Particle,
+        EstimatorKind::Robust,
+        EstimatorKind::Graph,
+        EstimatorKind::Neural,
+        EstimatorKind::Symbolic,
+    ] {
+        assert!(kinds.contains(&kind), "{kind:?} registered: {kinds:?}");
+    }
+    assert!(!kinds.contains(&EstimatorKind::Causal));
+}
+
+/// R12-WORLD-3078: the neural estimator's transition is learned, not
+/// assumed. Fed a series that rises by one each reading, an untrained
+/// network predicts a random walk, misses by one every time, and so weighs
+/// its prediction no more than the reading -- its candidate sits half a unit
+/// behind and as uncertain as the reading over two. Trained online, it
+/// predicts the increment: its candidate meets the reading and its variance
+/// falls far below the reading's.
+///
+/// Mutation: drop the weight update in `NeuralFilter::propose` (`*w +=
+/// NEURAL_RATE * ...` to `*w += 0.0 * ...`) -- the candidate lags by about
+/// half a unit and keeps about half the reading's variance.
+#[test]
+fn the_neural_estimator_learns_the_transition_and_then_trusts_its_prediction() {
+    use qip_world_model::now::NeuralFilter;
+    let key = VariableKey::new(scope(ScopeKind::Instrument, "AAA"), "return").unwrap();
+    let mut net = NeuralFilter::default();
+    let mut last = None;
+    for i in 0..40_i32 {
+        let reading = [f64::from(i)];
+        let evidence = Evidence {
+            key: &key,
+            prior: None,
+            readings: &reading,
+            measurement_variance: 1.0,
+            process_variance: 0.0,
+            related: &[],
+            causal: &[],
+            constraint: Constraint::Unbounded,
+        };
+        let c = net.propose(&evidence).unwrap();
+        if i < 3 {
+            assert!(c.is_none(), "premise: it abstains while it warms up");
+        }
+        last = c.map(|c| (c, f64::from(i)));
+    }
+    let (c, reading) = last.expect("a trained network proposes");
+    assert!(
+        (c.mean - reading).abs() < 0.05,
+        "the learned prediction meets the reading: {} vs {reading}",
+        c.mean
+    );
+    assert!(
+        c.variance < 0.1,
+        "the network trusts a transition it has learned: {}",
+        c.variance
+    );
+}

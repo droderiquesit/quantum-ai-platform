@@ -841,6 +841,9 @@ pub struct Evidence<'a> {
     /// (R12-WORLD-3078); empty where the graph names no parent or none of
     /// them has a promoted belief yet.
     pub causal: &'a [CausalBelief],
+    /// The symbolic constraint the catalogue declares for the variable, so a
+    /// symbolic estimator can propose from it rather than only veto by it.
+    pub constraint: Constraint,
 }
 
 /// A causal parent of a scope, as the brain is told it each step: the parent
@@ -883,6 +886,9 @@ pub enum EstimatorKind {
     Graph,
     /// A causal model.
     Causal,
+    /// A symbolic model: the variable's declared constraint read as an
+    /// estimate, not only as a veto.
+    Symbolic,
 }
 
 /// A state-filter worker (WORLD-9019). Each proposes a candidate latent value
@@ -1112,6 +1118,220 @@ impl StateFilter for CausalFilter {
             .map(|b| b.transmission.powi(2) * b.variance)
             .sum::<f64>()
             + e.process_variance;
+        Ok(Some(Candidate { mean, variance }))
+    }
+}
+
+/// How many past increments the neural estimator's network reads.
+const NEURAL_LAGS: usize = 2;
+/// The normalised least-mean-squares learning rate, in `(0, 2)` for the
+/// update to be stable; one half learns a stationary drift within a handful
+/// of readings without chasing every wiggle.
+const NEURAL_RATE: f64 = 0.5;
+/// The weight one new squared innovation carries in the network's running
+/// prediction-error variance.
+const NEURAL_ERROR_DECAY: f64 = 0.2;
+
+/// One variable's network state: the recent reading means it recurs over,
+/// its weights, and its running prediction-error variance.
+#[derive(Clone, Debug, Default)]
+struct NeuralState {
+    history: Vec<f64>,
+    weights: [f64; NEURAL_LAGS],
+    error_variance: Option<f64>,
+}
+
+/// The neural state-space estimator (R12-WORLD-3078,
+/// [`EstimatorKind::Neural`]): an adaptive linear neuron (ADALINE) per
+/// variable, recurring over the variable's own recent increments and trained
+/// online by normalised least mean squares. Its transition is *learned*: the
+/// Kalman filter assumes the state is a random walk, and this network
+/// predicts the next level as the last one plus a weighted sum of the last
+/// [`NEURAL_LAGS`] increments, so a variable that trends or mean-reverts is
+/// predicted differently by the two, and the ensemble records it when the
+/// difference is material.
+///
+/// The prediction, with the network's running innovation variance as its
+/// variance, is combined with the readings' mean by precision. That variance
+/// contains the measurement noise as well as the transition error, so the
+/// prediction is if anything under-weighted; the network never claims more
+/// confidence in its own dynamics than its record earns.
+///
+/// It abstains until it holds `NEURAL_LAGS + 1` reading means: a network with
+/// no history has nothing to recur on, and its answer would be the readings
+/// themselves, a copy of the Kalman measurement counted as independent
+/// agreement. Deterministic, with no randomness, so a replay reproduces it.
+#[derive(Debug, Default)]
+pub struct NeuralFilter {
+    states: BTreeMap<VariableKey, NeuralState>,
+}
+
+impl StateFilter for NeuralFilter {
+    fn id(&self) -> &str {
+        "neural-adaline"
+    }
+    fn kind(&self) -> EstimatorKind {
+        EstimatorKind::Neural
+    }
+    fn propose(&mut self, e: &Evidence<'_>) -> Result<Option<Candidate>> {
+        let z = e.mean();
+        let r = e.measurement_variance;
+        let state = self.states.entry(e.key.clone()).or_default();
+        if state.history.len() <= NEURAL_LAGS {
+            state.history.push(z);
+            return Ok(None);
+        }
+        let n = state.history.len();
+        let last = state.history[n - 1];
+        // The last NEURAL_LAGS increments, most recent first.
+        let mut increments = [0.0; NEURAL_LAGS];
+        for (i, slot) in increments.iter_mut().enumerate() {
+            *slot = state.history[n - 1 - i] - state.history[n - 2 - i];
+        }
+        let predicted = last
+            + state
+                .weights
+                .iter()
+                .zip(&increments)
+                .map(|(w, d)| w * d)
+                .sum::<f64>();
+        let innovation = z - predicted;
+        // The record before this innovation judges this prediction; the
+        // innovation itself must not vouch for the prediction it scores.
+        let p = state.error_variance.unwrap_or(r + e.process_variance);
+        let norm = increments.iter().map(|d| d * d).sum::<f64>();
+        if norm > 0.0 {
+            for (w, d) in state.weights.iter_mut().zip(&increments) {
+                *w += NEURAL_RATE * innovation * d / norm;
+            }
+        }
+        state.error_variance =
+            Some((1.0 - NEURAL_ERROR_DECAY) * p + NEURAL_ERROR_DECAY * innovation.powi(2));
+        state.history.push(z);
+        state.history.remove(0);
+        let healthy = predicted.is_finite()
+            && p.is_finite()
+            && p >= 0.0
+            && state.weights.iter().all(|w| w.is_finite());
+        if !(healthy && r.is_finite() && r > 0.0) {
+            self.states.remove(e.key);
+            return Err(Error::numeric(format!(
+                "the neural estimator's state for {} is not finite (measurement variance \
+                 {r}); it is reset and warms up again",
+                e.key
+            )));
+        }
+        if p == 0.0 {
+            return Ok(Some(Candidate {
+                mean: predicted,
+                variance: 0.0,
+            }));
+        }
+        let precision = 1.0 / p + 1.0 / r;
+        Ok(Some(Candidate {
+            mean: (predicted / p + z / r) / precision,
+            variance: 1.0 / precision,
+        }))
+    }
+    fn forget(&mut self, key: &VariableKey) {
+        self.states.remove(key);
+    }
+}
+
+/// The probability mass, outside a constraint's admissible set, below which
+/// the symbolic estimator holds that the rule does not bind.
+const SYMBOLIC_BINDS: f64 = 1e-3;
+
+/// The symbolic estimator (R12-WORLD-3078, [`EstimatorKind::Symbolic`]): the
+/// variable's declared constraint read as knowledge rather than only as a
+/// veto. It forms the local-level posterior the Kalman filter forms and
+/// conditions it on the rule — the moments of that Gaussian truncated to the
+/// admissible set. A share read at 0.98 with a spread that reaches past 1 is
+/// estimated *below* the Kalman answer, because a share above one is
+/// impossible and the mass the Kalman filter puts there is mass the rule
+/// moves inside; a share read at 1.3 is vetoed from the Kalman filter and
+/// estimated by this one near the bound, so a reading past a hard bound still
+/// moves the state rather than leaving nothing admissible.
+///
+/// It abstains where the rule does not bind — an unbounded variable, or a
+/// posterior with less than [`SYMBOLIC_BINDS`] of its mass outside the set —
+/// because there its answer is the Kalman one, and a second copy counted as
+/// agreement was never independent.
+#[derive(Debug, Default)]
+pub struct SymbolicFilter;
+
+impl StateFilter for SymbolicFilter {
+    fn id(&self) -> &str {
+        "symbolic-constraint"
+    }
+    fn kind(&self) -> EstimatorKind {
+        EstimatorKind::Symbolic
+    }
+    fn propose(&mut self, e: &Evidence<'_>) -> Result<Option<Candidate>> {
+        let (lo, hi) = match e.constraint {
+            Constraint::Unbounded => return Ok(None),
+            Constraint::NonNegative => (0.0, f64::INFINITY),
+            Constraint::UnitInterval => (0.0, 1.0),
+        };
+        let z = e.mean();
+        let r = e.measurement_variance;
+        let (m, v) = match e.prior {
+            None => (z, r),
+            Some((m, v)) => {
+                let p = v + e.process_variance;
+                let gain = p / (p + r);
+                (m + gain * (z - m), (1.0 - gain) * p)
+            }
+        };
+        if !(m.is_finite() && v.is_finite() && v >= 0.0) {
+            return Err(Error::numeric(format!(
+                "the symbolic estimator's posterior for {} is not finite ({m}, {v})",
+                e.key
+            )));
+        }
+        if v == 0.0 {
+            // A point posterior: the rule binds only if the point breaks it,
+            // and then the admissible point nearest it is the estimate.
+            if e.constraint.admits(m) {
+                return Ok(None);
+            }
+            return Ok(Some(Candidate {
+                mean: if m < lo { lo } else { hi },
+                variance: 0.0,
+            }));
+        }
+        let s = v.sqrt();
+        let a = (lo - m) / s;
+        let b = (hi - m) / s;
+        let (pdf_b, cdf_b, b_pdf_b) = if b.is_finite() {
+            let pdf = qip_numerics::distributions::normal_pdf(b);
+            (pdf, qip_numerics::distributions::normal_cdf(b), b * pdf)
+        } else {
+            (0.0, 1.0, 0.0)
+        };
+        let pdf_a = qip_numerics::distributions::normal_pdf(a);
+        let inside = cdf_b - qip_numerics::distributions::normal_cdf(a);
+        if 1.0 - inside < SYMBOLIC_BINDS {
+            return Ok(None);
+        }
+        if !(inside.is_finite() && inside > f64::EPSILON) {
+            // Essentially the whole posterior lies past a bound: the
+            // admissible point nearest it is the estimate, at the
+            // posterior's own variance.
+            return Ok(Some(Candidate {
+                mean: if m < lo { lo } else { hi },
+                variance: v,
+            }));
+        }
+        let shift = (pdf_a - pdf_b) / inside;
+        let mean = m + s * shift;
+        let variance = v * (1.0 + (a * pdf_a - b_pdf_b) / inside - shift.powi(2));
+        if !(mean.is_finite() && variance.is_finite() && variance >= 0.0) {
+            return Err(Error::numeric(format!(
+                "the truncated moments for {} are not finite ({mean}, {variance})",
+                e.key
+            )));
+        }
         Ok(Some(Candidate { mean, variance }))
     }
 }
@@ -1347,8 +1567,13 @@ impl NowBrain {
         })
     }
 
-    /// The four in-tree filters over the standard catalogue: the three
-    /// single-variable filters and the graph estimator over the scope graph.
+    /// The six in-tree filters over the standard catalogue: the three
+    /// single-variable filters, the graph estimator over the scope graph,
+    /// the neural state-space estimator and the symbolic estimator
+    /// (R12-WORLD-3078). The last two abstain where they would only repeat
+    /// the Kalman answer — the network until it has history to recur on, the
+    /// rule where it does not bind — so neither is counted as agreement it
+    /// did not earn.
     ///
     /// [`CausalFilter`] is not registered here, deliberately. The causal
     /// graph's edge strength is a Granger partial R², a measure of fit and
@@ -1362,7 +1587,9 @@ impl NowBrain {
             .with_worker(Box::new(KalmanFilter))
             .with_worker(Box::new(ParticleFilter::seeded(seed)))
             .with_worker(Box::new(RobustFilter))
-            .with_worker(Box::new(GraphFilter)))
+            .with_worker(Box::new(GraphFilter))
+            .with_worker(Box::new(NeuralFilter::default()))
+            .with_worker(Box::new(SymbolicFilter)))
     }
 
     /// State each scope id's causal parents for the steps that follow,
@@ -1654,6 +1881,7 @@ impl NowBrain {
             process_variance,
             related: &related,
             causal: &causal,
+            constraint: spec.constraint,
         };
         let mut candidates: Vec<(String, Candidate)> = Vec::new();
         for w in &mut self.workers {

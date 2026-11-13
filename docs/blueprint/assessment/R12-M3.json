@@ -1850,7 +1850,7 @@
   {
     "id": "R12-WORLD-3078",
     "status": "PARTIAL",
-    "current": "NowBrain::standard registers four estimators: Kalman (state-space), particle, robust and the graph estimator GraphFilter (EstimatorKind::Graph), which reads the same variables promoted belief at the scopes containing it (the regions, the global) from Evidence::related and proposes the precision-weighted combination, abstaining where nothing contains the variable. NowStage::new builds the standard brain, so the graph member runs in every cycle; two estimators on one variable both contribute and their ModelDisagreement is recorded.",
+    "current": "NowBrain::standard registers six estimators: Kalman (state-space), particle, robust, the graph estimator GraphFilter, the neural state-space estimator NeuralFilter (an online-trained adaptive linear neuron over the variable's last two increments, EstimatorKind::Neural, abstaining for a three-reading warm-up) and the symbolic estimator SymbolicFilter (the declared constraint read as an estimate: the local-level posterior truncated to the admissible set, EstimatorKind::Symbolic, abstaining where the rule does not bind). Two estimators on one variable both contribute and their ModelDisagreement is recorded, for the graph, causal, neural and symbolic members each; in a full cycle the network's dispute on an accelerating return is journaled. CausalFilter exists and contributes when registered but is not in the standard set.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/now.rs::GraphFilter",
       "backend/crates/services/qip-world-model/src/now.rs::RelatedBelief and Evidence::related",
@@ -1862,9 +1862,18 @@
       "backend/crates/services/qip-world-model/src/now.rs CausalFilter, CausalParent, NowBrain::set_causal_parents",
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::now_causal_parents",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::a_causal_estimator_contributes_beside_the_kalman_and_their_disagreement_is_recorded",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism",
+      "backend/crates/services/qip-world-model/src/now.rs::NeuralFilter and NowBrain::standard",
+      "backend/crates/services/qip-world-model/src/now.rs::SymbolicFilter, EstimatorKind::Symbolic and Evidence::constraint",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_neural_estimator_learns_a_trend_and_its_disagreement_with_the_kalman_filter_is_recorded",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_neural_estimator_learns_the_transition_and_then_trusts_its_prediction",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_symbolic_estimator_proposes_from_its_constraint_and_its_disagreement_with_the_kalman_is_recorded",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::a_share_read_past_its_bound_is_estimated_at_the_bound_by_the_symbolic_estimator",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_standard_brain_registers_the_neural_and_symbolic_estimators",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_neural_estimator_competes_in_the_cycle_and_its_dispute_is_journaled",
+      "docs/adr/0498 (neural and symbolic estimators in the standard ensemble)"
     ],
-    "gap": "2026-10-31 (L4, commits 7585d30f and its follow-up, skeptic REFUTED). Closed: a causal estimator (now::CausalFilter) exists, proposes a scope's state from its causal parents' promoted beliefs, and contributes beside the Kalman filter with the disagreement recorded (unit test); the kernel builds each priced instrument's signed causal parents (Platform::now_causal_parents) and NowStage hands them to the brain. Still open: the filter is not registered in NowBrain::standard, because the graph's edge strength is a Granger partial R² (fit, not slope) without its lag, and fusing R²·parent into every variable by default would bias every promoted belief; it joins once edges carry a fitted coefficient used with its lag, restricted to return; EstimatorKind::Neural has no implementation and no symbolic estimator proposes estimates (constraints only veto), so two of the requirement's named kinds are absent; no full-cycle test shows the causal candidate in the fused set.",
+    "gap": "2026-11-12 (t50-36, ADR 0498). Closed: EstimatorKind::Neural has an implementation (NeuralFilter) and a symbolic estimator (SymbolicFilter) proposes estimates from the constraint; both are registered in NowBrain::standard, and a full-cycle test journals the network's dispute. Still open: CausalFilter is not registered in NowBrain::standard, because the causal graph's edge strength is a Granger partial R2 (fit, not slope) without its lag, and fusing R2*parent by default would bias every promoted belief; it joins once edges carry a fitted coefficient used at its lag, restricted to return. No full-cycle test shows the causal or the symbolic candidate in a journaled dispute (the symbolic one's in-cycle disagreements on bounded variables stay under the half-scale threshold on the test tapes). So the causal model, one of the five named kinds, does not contribute on the default path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1874,10 +1883,10 @@
       "R12-WORLD-3075"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test now_brain the_graph_estimator && cargo +1.94.1 test -p qip-kernel --test now_lattice",
+    "verification": "cd backend && cargo test -p qip-world-model --test now_brain && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL. 2026-10-31 (L4): two mutants killed (CausalFilter always abstains; drop the mechanism sign), restored sha256-identical. Skeptic REFUTED and found the default registration would bias promoted beliefs; the filter was taken out of standard() in the follow-up commit. Stays PARTIAL."
+    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL. 2026-10-31 (L4): two mutants killed (CausalFilter always abstains; drop the mechanism sign), restored sha256-identical. Skeptic REFUTED and found the default registration would bias promoted beliefs; the filter was taken out of standard() in the follow-up commit. Stays PARTIAL. 2026-11-12 (t50-36): neural and symbolic estimators added and registered. Mutants killed, each restored sha256-identical: NeuralFilter always abstains (unit and cycle tests); NeuralFilter weight update zeroed (the learned-transition test: 38.5 vs 39); SymbolicFilter always abstains (two tests); untruncated mean (disagreement test); either worker dropped from standard(). Stays PARTIAL on the causal default registration."
   },
   {
     "id": "R12-AMBIENT-3079",
