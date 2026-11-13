@@ -87,8 +87,15 @@ may change the tolerance" is read as: no setting may override or bypass the
 mandate's own term. A stricter reading, under which the desk's mandate may
 not be stated at assembly at all, would leave the narrowing unable to fire;
 if the owner holds that reading, D2 is the clause to amend and the rest
-stands. **No composition root sets the field in this change**, so every
-shipped binary still runs at tolerance 1. See "What remains".
+stands. The three roots that assemble a platform (`qip-api`,
+`qip-fastbrain`, `qip-deepbrain`) read the term from
+`QIP_DESK_RISK_TOLERANCE`. Unset is 1, the operator's limits exactly as
+written, and each root says so in a start-up line. A value that is present
+and is not a fraction in [0, 1] stops the process with the variable named;
+it is never clamped and never read as unset. dev states `1` (owner
+decision 33, 2026-11-13); test, stage and prod state nothing. Stated or
+unset, every binary still runs at tolerance 1 until a person gives a lower
+figure. See "What remains".
 
 **D3. Tolerance 1 is the ceiling, byte for byte.** At tolerance 1 the
 narrowed set equals the ceiling under `PartialEq`, carries no narrowing
@@ -152,7 +159,11 @@ decision of that boot. Each refusal also carries the three figures itself.
 - `qip-capital` gains `Mandate::desk_tolerating`.
 - `qip-kernel` gains `PlatformConfig::desk_risk_tolerance`, builds the desk
   mandate with it, builds the order manager's checker from the registry's
-  figure, and journals `LimitsNarrowed`.
+  figure, and journals `LimitsNarrowed`. `Platform::limits_in_force` and
+  `OrderManager::limits_in_force` read the narrowed set.
+- `qip-api`, `qip-fastbrain` and `qip-deepbrain` read
+  `QIP_DESK_RISK_TOLERANCE` through `with_desk_risk_tolerance_from`; the
+  parser and the variable's name are in `qip_kernel::limit_narrowing`.
 - No limit set, bound, threshold or default changes. `Platform::limits` and
   `Platform::risk_limits` still return the ceiling.
   `RefusedLimit::RiskTolerance` stays as it is.
@@ -179,9 +190,12 @@ pre-trade refusal shows both.
 
 ## What remains
 
-- No composition root reads a desk tolerance. A person gives the figure and
-  the roots (`backend/crates/apps/*/src/main.rs`) read it; the Terraform
-  variable that would carry it is on a protected path.
+- A narrowing figure. The Terraform variable `desk_risk_tolerance` carries
+  the term to the three roots and refuses a value outside 0 to 1 at plan
+  time (`infrastructure/terraform/tests/desk-risk-tolerance.tftest.hcl`).
+  dev states `1`, the operator's limits exactly as written, under owner
+  decision 33; no environment states a lower one. A figure below one is the
+  desk's risk appetite and a person's to give, per environment.
 - The edge cell's envelope (D7).
 
 ## Evidence

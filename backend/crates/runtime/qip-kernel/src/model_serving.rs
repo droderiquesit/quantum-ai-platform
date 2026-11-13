@@ -1397,6 +1397,13 @@ impl Platform {
             stages.push(format!("{name}: {} on {}", test.evidence, tests.window));
         }
         stages.push(format!("verifier: {verified}"));
+        // ADR 0480 (R12-MODEL-7022): a microstructure card's distillate is
+        // named to a cell only under a verified release pack. Read off the
+        // card, not the caller, and carried in the signed stages so the
+        // requirement is on the record a restart rebuilds from.
+        if card.purpose == crate::microstructure_training::MICROSTRUCTURE_PURPOSE {
+            stages.push(crate::microstructure_training::RELEASE_PACK_REQUIRED_STAGE.to_string());
+        }
         let mut record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,
@@ -1649,6 +1656,17 @@ impl Platform {
                 && !location.is_some_and(|location| permitted.contains(location))
             {
                 unlicensed += 1;
+                continue;
+            }
+            // ADR 0480 (R12-MODEL-7022): a microstructure model reaches a
+            // cell only under a verified release pack. With none admitted
+            // every other distillate is ungated; this one is withheld, and
+            // counted as unreleased, because the release is the only thing
+            // that says a person approved these weights for the reflex path.
+            if self.release_packs.is_none()
+                && crate::microstructure_training::requires_release_pack(&promotion.stages)
+            {
+                unreleased += 1;
                 continue;
             }
             // ADR 0110: with release packs admitted, a distillate is named to

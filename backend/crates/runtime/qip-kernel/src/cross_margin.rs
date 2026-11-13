@@ -410,6 +410,44 @@ impl EventBody for CrossMarginFinding {
     }
 }
 
+/// The cross-margin review the platform runs every cycle, as an obligation
+/// source for the survival kernel. The impl stays here, beside the review,
+/// because `qip-survival` cannot name the runtime (ADR 0464).
+///
+/// * **Margin** is `maintenance_required`: the model's maintenance rate on the
+///   gross at *every* venue carrying it, observed or not, plus every observed
+///   debit. An unobserved venue is charged rather than skipped, because an
+///   account nobody has read must not read as one that needs nothing posted.
+/// * **Collateral** is zero, derived rather than assumed: every pledge this
+///   platform can attest is a pledge *into a margin domain* (see
+///   [`review`]), so it is the cover for the margin above
+///   and not a second encumbrance. No pledge outside a margin domain is
+///   recorded anywhere in this platform; one would be the ledger's to report.
+/// * **Settlement** is zero: the review reads balances and exposure, not
+///   trade dates. Since R12-CAPITAL-4087 the platform withholds a desk sale's
+///   proceeds until the desk venue's T+1 calendar makes them usable, and the
+///   ledger's owed accruals, both through [`CombinedObligations`].
+impl qip_survival::survival::CapitalObligations for CrossMarginReview {
+    fn margin_required(&self) -> Result<Decimal> {
+        if self.maintenance_required.is_negative() {
+            return Err(qip_core::error::Error::invalid(format!(
+                "the cross-margin review requires {} of maintenance, which is not an amount \
+                 anybody can post",
+                self.maintenance_required
+            )));
+        }
+        Ok(self.maintenance_required)
+    }
+
+    fn collateral_encumbered(&self) -> Result<Decimal> {
+        Ok(Decimal::ZERO)
+    }
+
+    fn settlement_due(&self) -> Result<Decimal> {
+        Ok(Decimal::ZERO)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -533,6 +533,7 @@ mod memory_registry {
             conclusion: "positive".to_string(),
             evidence: vec![run.to_string()],
             conviction,
+            regime: None,
             outcome: Some(EpisodeOutcome {
                 resolved_at: at("2026-10-01T00:00:00Z"),
                 correct,
