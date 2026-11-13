@@ -62,6 +62,7 @@ use qip_arbitrage::{
     PlanSettings, SearchSettings, SizePolicy, TradableRegistry,
 };
 use qip_contracts::degradation::StrategyClass;
+use qip_contracts::message::BookSide;
 use qip_contracts::policy::CycleWhitelist;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueId, VenueStatus};
@@ -272,6 +273,111 @@ pub fn graph_from_whitelist_in(
     Ok(graph)
 }
 
+/// Build the discovery graph the operator's market reference describes
+/// (ADR 0502), or `None` when the payload carried no reference.
+///
+/// Each referenced book yields both of its conversions — the asks turn the
+/// quote into the base, the bids the base into the quote — at a placeholder
+/// rate the desk re-quotes from the cell's books before every search. The
+/// reference is refused whole on the same terms as the whitelist: a venue
+/// this cell may not trade, a book converting an instrument into itself, a
+/// cost outside `[0, 1)`, one venue stated as two classes, or more edges
+/// than a pass walks. Refusing is the restrictive direction: a desk with no
+/// discovery graph still trades its whitelist, and a reference read past an
+/// error would report cycles over conversions nobody stated.
+pub fn graph_from_reference_in(
+    whitelist: &CycleWhitelist,
+    venues: &[VenueId],
+    region: Option<&str>,
+) -> Result<Option<ArbitrageGraph>> {
+    if whitelist.market_reference.is_empty() {
+        return Ok(None);
+    }
+    if whitelist.market_reference.len().saturating_mul(2) > MAX_CONVERSIONS {
+        return Err(Error::invalid(format!(
+            "the market reference names {} books, {} conversions, and this node walks at most \
+             {MAX_CONVERSIONS} per pass",
+            whitelist.market_reference.len(),
+            whitelist.market_reference.len().saturating_mul(2)
+        )));
+    }
+    let place = |node: Node| match region {
+        Some(region) => node.in_region(region),
+        None => node,
+    };
+    let mut graph = ArbitrageGraph::new();
+    let mut classes = BTreeMap::new();
+    for (position, market) in whitelist.market_reference.iter().enumerate() {
+        let venue = VenueId::new(market.venue.as_str());
+        if !venues.contains(&venue) {
+            return Err(Error::denied(format!(
+                "reference market {position} ({} at {}) names a venue this cell may not trade; \
+                 the cell holds no book there to search, and the reference is refused whole",
+                market.market, market.venue
+            )));
+        }
+        if market.base == market.quote {
+            return Err(Error::invalid(format!(
+                "reference market {position} ({}) quotes {} against itself",
+                market.market, market.base
+            )));
+        }
+        if market.cost_fraction.is_negative() || market.cost_fraction >= Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "reference market {position} ({}) has cost fraction {}, outside [0, 1)",
+                market.market, market.cost_fraction
+            )));
+        }
+        match classes.insert(venue.clone(), market.venue_class) {
+            Some(previous) if previous != market.venue_class => {
+                return Err(Error::invalid(format!(
+                    "the market reference names {} as both {previous:?} and {:?}",
+                    market.venue, market.venue_class
+                )));
+            }
+            _ => {}
+        }
+        graph.register_venue(
+            venue.clone(),
+            VenueFacts::new(market.venue_class, VenueStatus::Open),
+        );
+        let base = || {
+            place(Node::new(
+                ObjectId::from_string(market.base.as_str()),
+                venue.clone(),
+            ))
+        };
+        let quote = || {
+            place(Node::new(
+                ObjectId::from_string(market.quote.as_str()),
+                venue.clone(),
+            ))
+        };
+        let book = ObjectId::from_string(market.market.as_str());
+        graph.add_trade(
+            quote(),
+            base(),
+            Decimal::ONE,
+            market.cost_fraction,
+            book.clone(),
+            BookSide::Ask,
+            Timestamp::EPOCH,
+            0,
+        )?;
+        graph.add_trade(
+            base(),
+            quote(),
+            Decimal::ONE,
+            market.cost_fraction,
+            book,
+            BookSide::Bid,
+            Timestamp::EPOCH,
+            0,
+        )?;
+    }
+    Ok(Some(graph))
+}
+
 /// The cell's own registry of what can be traded: every book it holds, on
 /// both of its sides.
 ///
@@ -380,7 +486,7 @@ pub fn desk_from_whitelist_in(
         EdgeAssumptions::default(),
         PlanSettings::with_budget(budget),
     );
-    ArbitrageDesk::new(
+    let desk = ArbitrageDesk::new(
         strategy,
         scanner,
         graph,
@@ -388,7 +494,13 @@ pub fn desk_from_whitelist_in(
         envelope,
         MAX_CYCLES_PER_PASS,
         LEG_VALIDITY,
-    )
+    )?;
+    // ADR 0502: the operator's market reference, searched for cycles the
+    // desk reports and never sends.
+    match graph_from_reference_in(whitelist, venues, region)? {
+        Some(reference) => desk.with_discovery(reference),
+        None => Ok(desk),
+    }
 }
 
 /// What one attempt to install the desk did, for the tick and the log.

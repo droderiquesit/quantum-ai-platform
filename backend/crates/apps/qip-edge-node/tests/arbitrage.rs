@@ -17,8 +17,8 @@
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{
-    BeliefPriors, CausalDigest, CycleWhitelist, EpisodicDigest, PolicyPayload, Slot,
-    WhitelistedConversion,
+    BeliefPriors, CausalDigest, CycleWhitelist, EpisodicDigest, PolicyPayload, ReferencedMarket,
+    Slot, WhitelistedConversion,
 };
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
@@ -113,6 +113,7 @@ fn triangle(venue: &str) -> CycleWhitelist {
             ("ETH".to_string(), dec!("3.3")),
             ("BTC".to_string(), dec!("0.16")),
         ]),
+        market_reference: Vec::new(),
     }
 }
 
@@ -799,5 +800,231 @@ fn a_holding_the_whitelist_states_as_wrapped_and_pending_is_its_own_node_and_bre
         }),
         "an edge joins the wrapped and the native holding"
     );
+    Ok(())
+}
+
+// --- R12-MESH-5042, ADR 0502: discovery proposes and the operator permits ---
+
+/// The operator's market reference for the triangle's three books: each
+/// stated once, with what it converts between.
+fn reference(venue: &str) -> Vec<ReferencedMarket> {
+    [
+        ("ETHUSDT", "ETH", "USDT"),
+        ("ETHBTC", "ETH", "BTC"),
+        ("BTCUSDT", "BTC", "USDT"),
+    ]
+    .into_iter()
+    .map(|(market, base, quote)| ReferencedMarket {
+        venue: venue.to_string(),
+        venue_class: VenueClass::CryptoExchange,
+        market: market.to_string(),
+        base: base.to_string(),
+        quote: quote.to_string(),
+        cost_fraction: dec!("0.0004"),
+    })
+    .collect()
+}
+
+/// The triangle's whitelist with the ETH -> BTC conversion dropped, so no
+/// whitelisted cycle exists, and the full market reference beside it.
+fn triangle_missing_the_cross(venue: &str) -> CycleWhitelist {
+    let mut whitelist = triangle(venue);
+    whitelist
+        .conversions
+        .retain(|conversion| conversion.market != "ETHBTC");
+    whitelist.market_reference = reference(venue);
+    whitelist
+}
+
+/// The label the discovery graph gives the ETH -> BTC conversion, read from
+/// the graph rather than spelled out, so the assertion cannot pass on a
+/// substring of a neighbouring edge's label.
+fn cross_label(graph: &qip_arbitrage::ArbitrageGraph) -> String {
+    let labels: Vec<String> = graph
+        .edges()
+        .iter()
+        .filter(|edge| {
+            matches!(&edge.kind, qip_arbitrage::graph::EdgeKind::Trade { market, side }
+                if market.as_str() == "ETHBTC" && *side == BookSide::Bid)
+        })
+        .map(|edge| edge.label())
+        .collect();
+    assert_eq!(
+        labels.len(),
+        1,
+        "the reference states the cross's bid side once"
+    );
+    labels[0].clone()
+}
+
+/// The requirement's mutation, held as a test: drop a whitelist edge and the
+/// desk finds no opportunity, even though the operator's reference — which
+/// the same desk searches — still describes the cycle. What the reference
+/// finds is reported as a `DiscoveredCycle` naming the dropped edge, and
+/// that type holds nothing the order path can send.
+///
+/// Guards against discovery widening what trades: a desk that scanned the
+/// reference graph for its opportunities would find the triangle here.
+#[test]
+fn dropping_a_whitelist_edge_leaves_no_opportunity_and_the_reference_reports_the_cycle_with_that_edge_outside()
+-> Result<()> {
+    use qip_arbitrage::liquidity::StaticLiquidity;
+    use qip_edge_node::arbitrage::desk_from_whitelist;
+
+    let venue = VenueId::new(VENUE);
+    let mut books = StaticLiquidity::new();
+    for (market, bid, ask, size) in [
+        ("ETHUSDT", dec!("3000.0"), dec!("3000.1"), dec!("200")),
+        ("ETHBTC", dec!("0.0505"), dec!("0.05051"), dec!("200")),
+        ("BTCUSDT", dec!("60000"), dec!("60001"), dec!("10")),
+    ] {
+        books = books.with_quote(
+            venue.clone(),
+            ObjectId::from_string(market),
+            t(0),
+            bid,
+            size,
+            ask,
+            size,
+            20,
+        );
+    }
+
+    // Premise: with every whitelist edge, these books are an opportunity,
+    // and the reference finds nothing outside the whitelist to report.
+    let mut whole = triangle(VENUE);
+    whole.market_reference = reference(VENUE);
+    let mut full = desk_from_whitelist(
+        &whole,
+        std::slice::from_ref(&venue),
+        StrategyId::new(DESK),
+        signed_envelope(DESK)?,
+    )?;
+    full.refresh(&books)?;
+    assert_eq!(full.scan(&books, t(1)).opportunities.len(), 1);
+    assert!(
+        full.discover(&books, t(1))?.is_empty(),
+        "a cycle wholly inside the whitelist was reported as discovered"
+    );
+
+    let mut desk = desk_from_whitelist(
+        &triangle_missing_the_cross(VENUE),
+        std::slice::from_ref(&venue),
+        StrategyId::new(DESK),
+        signed_envelope(DESK)?,
+    )?;
+    assert_eq!(desk.graph().edge_count(), 2);
+    let reference_graph = desk
+        .discovery_graph()
+        .expect("the payload's reference gives the desk a discovery graph");
+    assert_eq!(reference_graph.edge_count(), 6, "both sides of three books");
+    let cross = cross_label(reference_graph);
+
+    desk.refresh(&books)?;
+    let report = desk.scan(&books, t(1));
+    assert!(
+        report.opportunities.is_empty(),
+        "an opportunity was found through a conversion the whitelist does not carry: {:?}",
+        report
+            .opportunities
+            .iter()
+            .map(|opportunity| opportunity.cycle_id(t(1)))
+            .collect::<Vec<_>>()
+    );
+
+    let discovered = desk.discover(&books, t(1))?;
+    assert_eq!(discovered.len(), 1, "{discovered:?}");
+    assert_eq!(discovered[0].outside, vec![cross]);
+    assert_eq!(discovered[0].path.len(), 3);
+    assert!(discovered[0].net > Decimal::ZERO);
+    Ok(())
+}
+
+/// The owner's closure for R12-MESH-5042, through the assembled node: the
+/// cell searches its books over the signed reference, journals the cycle it
+/// finds outside the whitelist as `CycleDiscovered`, and sends nothing on
+/// it — no path is assigned, which is the send loop's input, and no edge is
+/// priced into the journal, which every cycle that enters the loop is.
+#[test]
+fn a_discovered_cycle_outside_the_whitelist_is_reported_and_never_sent() -> Result<()> {
+    use qip_contracts::reflex::Decision;
+
+    let install = |whitelist: CycleWhitelist| -> Result<NodeAssembly> {
+        let mut node = assembled();
+        let mut installer = installer();
+        node.cell
+            .apply_policy(policy(1, t(10), true, Some(whitelist))?, t(10))?;
+        installer.offer(signed_envelope(DESK)?)?;
+        let outcome = installer.install(&mut node.cell, t(12));
+        assert!(
+            matches!(outcome, Installation::Installed(_)),
+            "the premise is an installed desk: {outcome:?}"
+        );
+        for state in dislocated_books()? {
+            node.cell.track(state);
+        }
+        Ok(node)
+    };
+    let discovered_in = |node: &NodeAssembly| -> Vec<(String, Vec<String>)> {
+        node.cell
+            .journal()
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.decision {
+                Decision::CycleDiscovered { cycle, outside, .. } => {
+                    Some((cycle.clone(), outside.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let priced_in = |node: &NodeAssembly| {
+        node.cell
+            .journal()
+            .entries()
+            .iter()
+            .filter(|entry| matches!(entry.decision, Decision::EdgePriced { .. }))
+            .count()
+    };
+
+    // Premise: the whole triangle, whitelisted and referenced, is routed
+    // toward the send path and is not reported as a discovery.
+    let mut whole = triangle(VENUE);
+    whole.market_reference = reference(VENUE);
+    let mut node = install(whole)?;
+    let report = node.cell.work(t(20), &mut RecordingGateway::default())?;
+    assert_eq!(report.paths.len(), 1, "{:?}", report.refusals);
+    assert!(report.discovered_cycles.is_empty());
+    assert_eq!(priced_in(&node), 1);
+    assert!(discovered_in(&node).is_empty());
+
+    let mut node = install(triangle_missing_the_cross(VENUE))?;
+    let cross = cross_label(
+        node.cell
+            .arbitrage()
+            .and_then(|desk| desk.discovery_graph())
+            .expect("the installed desk holds the reference graph"),
+    );
+    let mut gateway = RecordingGateway::default();
+    let report = node.cell.work(t(20), &mut gateway)?;
+
+    assert_eq!(report.discovered_cycles.len(), 1, "{:?}", report.refusals);
+    assert_eq!(report.discovered_cycles[0].outside, vec![cross.clone()]);
+    let journaled = discovered_in(&node);
+    assert_eq!(journaled.len(), 1, "the discovery was not journaled");
+    assert_eq!(journaled[0].1, vec![cross]);
+    assert_eq!(journaled[0].0, report.discovered_cycles[0].label());
+
+    assert!(
+        report.paths.is_empty(),
+        "a discovered cycle was routed toward the send path"
+    );
+    assert_eq!(
+        priced_in(&node),
+        0,
+        "a discovered cycle entered the send loop"
+    );
+    assert!(report.orders.is_empty());
+    assert!(gateway.placed.is_empty());
     Ok(())
 }

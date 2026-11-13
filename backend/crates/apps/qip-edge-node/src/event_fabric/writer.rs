@@ -255,6 +255,7 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::BookResynchronised { .. }
         | Decision::SignalRaised { .. }
         | Decision::EdgePriced { .. }
+        | Decision::CycleDiscovered { .. }
         | Decision::Refused { .. }
         | Decision::HaltChanged { .. }
         | Decision::PolicyApplied { .. }

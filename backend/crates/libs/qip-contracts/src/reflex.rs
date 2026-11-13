@@ -121,6 +121,17 @@ pub enum Decision {
         net: String,
         positive: bool,
     },
+    /// A cycle the desk found over the operator's market reference with at
+    /// least one edge outside the signed whitelist (ADR 0502). A report and
+    /// nothing else: no order is ever built from it. `cycle` names the path
+    /// as the desk walked it, `outside` names each edge the whitelist does
+    /// not carry, and `net` is the edge the scanner priced, so an operator
+    /// can decide from the record alone whether to permit the conversions.
+    CycleDiscovered {
+        cycle: String,
+        outside: Vec<String>,
+        net: String,
+    },
     /// An order was sent to a venue.
     ///
     /// `release_at` and `equalised` are ADR 0084's: the instant the gateway
@@ -781,6 +792,7 @@ impl Decision {
             Self::BookResynchronised { .. } => "book_resynchronised",
             Self::SignalRaised { .. } => "signal_raised",
             Self::EdgePriced { .. } => "edge_priced",
+            Self::CycleDiscovered { .. } => "cycle_discovered",
             Self::OrderSent { .. } => "order_sent",
             Self::Filled { .. } => "filled",
             Self::Hedged { .. } => "hedged",

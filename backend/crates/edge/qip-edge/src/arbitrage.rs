@@ -61,6 +61,19 @@
 //! `qip_arbitrage::legs::unwind_plan`) before the halt, so "cannot be
 //! unwound from here" is no longer true of a leg that has filled.
 
+//!
+//! # What the desk discovers, and why it never sends on it (ADR 0502)
+//!
+//! Discovery proposes and the operator permits. A desk built with
+//! [`ArbitrageDesk::with_discovery`] also holds a second graph, built from
+//! the operator's signed market reference over every book the operator
+//! named, and [`ArbitrageDesk::discover`] searches it with the same scanner
+//! at the same sizes. Every cycle it finds with an edge the whitelist does
+//! not carry comes back as a [`DiscoveredCycle`] — a path, the edges
+//! outside the whitelist, and the priced net — and the type holds no leg,
+//! no plan and no `Opportunity`, so nothing built from it can reach
+//! `Cell::place_cycle`. Only the whitelist graph's scan feeds the send path.
+
 use crate::envelope::VerifiedEnvelope;
 use qip_arbitrage::graph::EdgeKind;
 use qip_arbitrage::{
@@ -95,6 +108,100 @@ pub struct ArbitrageDesk {
     /// affected-edge filter of blueprint §30.1: a book whose pair has not
     /// moved has not moved, so its edge keeps the rate it holds.
     last_seen: Vec<Option<(Timestamp, u32)>>,
+    /// The graph over the operator's market reference, when the payload
+    /// carried one (ADR 0502). Searched for reporting only.
+    discovery: Option<Discovery>,
+}
+
+/// The discovery graph and its own affected-edge record, kept apart from
+/// the whitelist graph's so a re-quote of one never marks the other read.
+#[derive(Debug)]
+struct Discovery {
+    graph: ArbitrageGraph,
+    last_seen: Vec<Option<(Timestamp, u32)>>,
+}
+
+/// A cycle the desk found over the operator's market reference that uses
+/// at least one conversion the signed whitelist does not carry (ADR 0502).
+///
+/// Deliberately a report and nothing more: it carries labels and a priced
+/// net, and no leg, plan or `Opportunity`, so the cell's order path has
+/// nothing in it to send. The operator reads it and decides whether to
+/// permit the conversions; the cell never decides that for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredCycle {
+    /// Every edge of the cycle, in the order the search walked it.
+    pub path: Vec<String>,
+    /// The edges of the cycle the whitelist does not carry. Never empty: a
+    /// cycle wholly inside the whitelist is the whitelist scan's to find.
+    pub outside: Vec<String>,
+    /// The net edge the scanner priced, at the desk's own sizes.
+    pub net: Decimal,
+}
+
+impl DiscoveredCycle {
+    /// The path as one string, for the journal.
+    pub fn label(&self) -> String {
+        self.path.join(" | ")
+    }
+}
+
+/// Which book side a trade edge consumes, as a key that ignores the nodes'
+/// region and representation: a whitelisted conversion is permitted by the
+/// book and side it trades against, and the discovery graph is built from
+/// a reference that states neither.
+fn trade_key(edge: &qip_arbitrage::graph::ConversionEdge) -> Option<(String, String, bool)> {
+    match &edge.kind {
+        EdgeKind::Trade { market, side } => Some((
+            edge.from.venue.as_str().to_string(),
+            market.as_str().to_string(),
+            matches!(side, BookSide::Ask),
+        )),
+        _ => None,
+    }
+}
+
+/// Re-quote every trade edge of `graph` whose book has moved, recording
+/// what each was read from in `last_seen`. See [`ArbitrageDesk::refresh`].
+fn requote(
+    graph: &mut ArbitrageGraph,
+    last_seen: &mut [Option<(Timestamp, u32)>],
+    source: &dyn LiquiditySource,
+) -> Result<EdgeRefresh> {
+    let mut report = EdgeRefresh::default();
+    for index in 0..graph.edge_count() {
+        let Some(edge) = graph.edge(index) else {
+            continue;
+        };
+        let EdgeKind::Trade { market, side } = &edge.kind else {
+            continue;
+        };
+        let venue = &edge.from.venue;
+        let observed_at = source.as_of(venue, market).unwrap_or(Timestamp::EPOCH);
+        let observations = source.observations(venue, market);
+        let seen = Some((observed_at, observations));
+        if last_seen.get(index).copied().flatten() == seen {
+            report.unchanged += 1;
+            continue;
+        }
+        let rate = source
+            .touch(venue, market, *side)
+            .and_then(|(price, _)| match side {
+                BookSide::Ask => Decimal::ONE.checked_div(price),
+                BookSide::Bid => Some(price),
+            })
+            .unwrap_or(Decimal::ZERO);
+        graph.refresh_trade(index, rate, observed_at, observations)?;
+        // Recorded only once the graph holds the quote, so a refused
+        // refresh leaves the edge marked unread and the next pass tries
+        // it again rather than skipping an edge that never took its
+        // price.
+        if let Some(slot) = last_seen.get_mut(index) {
+            *slot = seen;
+        }
+        report.repriced += 1;
+    }
+    Ok(report)
 }
 
 /// What one [`ArbitrageDesk::refresh`] did to the graph (§30.1, "recompute
@@ -214,7 +321,102 @@ impl ArbitrageDesk {
             max_cycles_per_pass,
             leg_validity,
             last_seen: vec![None; edge_count],
+            discovery: None,
         })
+    }
+
+    /// Give the desk a graph over the operator's market reference to
+    /// search for cycles it may report and never send (ADR 0502).
+    ///
+    /// Refused on the same terms as the whitelist graph: no trade edge is a
+    /// discovery that searches nothing, and a synthetic has no book to
+    /// re-quote from.
+    pub fn with_discovery(mut self, graph: ArbitrageGraph) -> Result<Self> {
+        if !graph
+            .edges()
+            .iter()
+            .any(|edge| matches!(edge.kind, EdgeKind::Trade { .. }))
+        {
+            return Err(Error::invalid(
+                "the market reference yields no trade edge; a discovery graph with nothing to \
+                 re-quote searches nothing",
+            ));
+        }
+        if let Some(synthetic) = graph
+            .edges()
+            .iter()
+            .find(|edge| matches!(edge.kind, EdgeKind::Synthetic { .. }))
+        {
+            return Err(Error::invalid(format!(
+                "reference conversion {} is synthetic and the cell holds no book to re-quote it \
+                 from",
+                synthetic.label()
+            )));
+        }
+        let edges = graph.edge_count();
+        self.discovery = Some(Discovery {
+            graph,
+            last_seen: vec![None; edges],
+        });
+        Ok(self)
+    }
+
+    /// The discovery graph, when the desk holds one.
+    pub fn discovery_graph(&self) -> Option<&ArbitrageGraph> {
+        self.discovery.as_ref().map(|discovery| &discovery.graph)
+    }
+
+    /// Search the market reference for cycles outside the whitelist, and
+    /// report them (ADR 0502).
+    ///
+    /// Re-quotes the discovery graph from the same books the whitelist graph
+    /// reads, scans it with the desk's own scanner and sizes, and keeps each
+    /// opportunity with at least one trade edge whose book and side the
+    /// whitelist does not carry. What returns is a [`DiscoveredCycle`],
+    /// which holds nothing the order path can send. Bounded by the scanner's
+    /// own `max_candidates`. A desk with no discovery graph reports nothing.
+    pub fn discover(
+        &mut self,
+        source: &dyn LiquiditySource,
+        now: Timestamp,
+    ) -> Result<Vec<DiscoveredCycle>> {
+        let Self {
+            graph,
+            scanner,
+            sizes,
+            discovery,
+            ..
+        } = self;
+        let Some(discovery) = discovery.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let permitted: std::collections::BTreeSet<(String, String, bool)> =
+            graph.edges().iter().filter_map(trade_key).collect();
+        requote(&mut discovery.graph, &mut discovery.last_seen, source)?;
+        let report = scanner.scan(&discovery.graph, source, sizes, now);
+        let mut found = Vec::new();
+        for opportunity in &report.opportunities {
+            let mut path = Vec::with_capacity(opportunity.candidate.edges.len());
+            let mut outside = Vec::new();
+            for &index in &opportunity.candidate.edges {
+                let Some(edge) = discovery.graph.edge(index) else {
+                    continue;
+                };
+                let label = edge.label();
+                if trade_key(edge).is_some_and(|key| !permitted.contains(&key)) {
+                    outside.push(label.clone());
+                }
+                path.push(label);
+            }
+            if !outside.is_empty() {
+                found.push(DiscoveredCycle {
+                    path,
+                    outside,
+                    net: opportunity.net(),
+                });
+            }
+        }
+        Ok(found)
     }
 
     pub fn strategy(&self) -> &StrategyId {
@@ -286,41 +488,7 @@ impl ArbitrageDesk {
     /// Only trade edges are touched. A transfer's rate is one by definition,
     /// and [`Self::new`] refused any synthetic.
     pub fn refresh(&mut self, source: &dyn LiquiditySource) -> Result<EdgeRefresh> {
-        let mut report = EdgeRefresh::default();
-        for index in 0..self.graph.edge_count() {
-            let Some(edge) = self.graph.edge(index) else {
-                continue;
-            };
-            let EdgeKind::Trade { market, side } = &edge.kind else {
-                continue;
-            };
-            let venue = &edge.from.venue;
-            let observed_at = source.as_of(venue, market).unwrap_or(Timestamp::EPOCH);
-            let observations = source.observations(venue, market);
-            let seen = Some((observed_at, observations));
-            if self.last_seen.get(index).copied().flatten() == seen {
-                report.unchanged += 1;
-                continue;
-            }
-            let rate = source
-                .touch(venue, market, *side)
-                .and_then(|(price, _)| match side {
-                    BookSide::Ask => Decimal::ONE.checked_div(price),
-                    BookSide::Bid => Some(price),
-                })
-                .unwrap_or(Decimal::ZERO);
-            self.graph
-                .refresh_trade(index, rate, observed_at, observations)?;
-            // Recorded only once the graph holds the quote, so a refused
-            // refresh leaves the edge marked unread and the next pass tries
-            // it again rather than skipping an edge that never took its
-            // price.
-            if let Some(slot) = self.last_seen.get_mut(index) {
-                *slot = seen;
-            }
-            report.repriced += 1;
-        }
-        Ok(report)
+        requote(&mut self.graph, &mut self.last_seen, source)
     }
 
     /// Forget which books the desk has read, so the next [`Self::refresh`]
@@ -333,6 +501,9 @@ impl ArbitrageDesk {
     /// affected-edge filter would then keep a rate no book holds.
     pub fn forget_books(&mut self) {
         self.last_seen = vec![None; self.graph.edge_count()];
+        if let Some(discovery) = self.discovery.as_mut() {
+            discovery.last_seen = vec![None; discovery.graph.edge_count()];
+        }
     }
 
     /// Run the scanner over the graph as last refreshed, against the source.
