@@ -663,6 +663,12 @@ pub struct Platform {
     /// per-venue fill-probability, slippage and impact estimates, the left
     /// fold of its own journal records and resumed from them.
     microstructure_model: crate::microstructure_model::MicrostructureModel,
+    /// The fill-bias corrections a research campaign installed into the paper
+    /// fill model (R12-EXPAND-6050): per venue, the signed basis points
+    /// subtracted from the twin's predicted entry when its paper fills are
+    /// scored. The left fold of its own install/withdraw journal records,
+    /// resumed from them, so a replay reproduces the installed set.
+    fill_bias_installations: crate::fill_bias_installation::InstalledFillBiases,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -6662,6 +6668,7 @@ impl Platform {
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
+        let fill_bias_installations_resumed = crate::fill_bias_installation::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -6737,6 +6744,7 @@ impl Platform {
             replay_divergence_windows: replay_divergence_resumed.1,
             microstructure_deltas: BTreeMap::new(),
             microstructure_model: microstructure_model_resumed,
+            fill_bias_installations: fill_bias_installations_resumed,
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
@@ -28154,12 +28162,12 @@ impl Platform {
                     let realised_outcome_bps = outcomes.map(|(_, realised)| realised);
                     let outcome_error_bps =
                         outcomes.map(|(predicted, realised)| predicted - realised);
-                    let trade_error_bps = trade
+                    let raw_trade_error_bps = trade
                         .and_then(|entry| entry.counterfactual_outcome.simulated_entry_price())
                         .and_then(|simulated| {
                             fill_error_bps(simulated, path.fill_price, path.side)
                         });
-                    if let Some(error_bps) = trade_error_bps {
+                    if let Some(error_bps) = raw_trade_error_bps {
                         self.telemetry.metrics.observe_with(
                             names::VENUE_FILL_ERROR_BPS,
                             labels([("venue", path.venue.as_str())]),
@@ -28181,6 +28189,21 @@ impl Platform {
                             problems.push(format!("fill calibration: {}", error.message()));
                         }
                     }
+                    // R12-EXPAND-6050: the fill-bias correction a research
+                    // campaign installed for this venue is applied to the
+                    // residual the fill score carries — the paper fill the next
+                    // campaign reads, so the paper window's fills are produced
+                    // under the correction and revert to raw the cycle after it
+                    // is withdrawn. It subtracts the fitted bias from the twin's
+                    // prediction, which in the signed-bps residual is
+                    // `raw - bias`. The twin's own fill calibration above keeps
+                    // the *raw* error on purpose: that path (R12-TICK-2080) is
+                    // where the correction's own bias was measured, and folding
+                    // the correction back into it would count the same bias
+                    // twice.
+                    let trade_error_bps = raw_trade_error_bps.map(|raw| {
+                        raw - self.installed_fill_bias(path.venue.as_str()).unwrap_or(0.0)
+                    });
                     scored += 1;
                     self.fill_scores.push(FillScore {
                         order_id,
@@ -28365,6 +28388,94 @@ impl Platform {
         }
         self.microstructure_deltas.insert(key, delta);
         Ok(true)
+    }
+
+    /// Install a fill-bias correction into the paper fill model for its venue
+    /// (R12-EXPAND-6050), journaling it **before** the state moves so a replay
+    /// reproduces the installed correction from the log alone. A non-finite
+    /// bias corrects nothing and is refused; a venue no registered strategy
+    /// trades is refused like a microstructure delta for one — fail closed
+    /// rather than correcting fills nobody produces. `Ok(true)` installed (or
+    /// replaced an earlier correction for the venue); the paper fills scored
+    /// at the venue from here are scored under the correction, and the next
+    /// campaign reads the corrected residuals.
+    pub fn install_fill_bias(
+        &mut self,
+        venue: &str,
+        bias_bps: f64,
+        campaign: &str,
+        now: Timestamp,
+    ) -> Result<bool> {
+        if !bias_bps.is_finite() {
+            return Err(Error::invalid(format!(
+                "a fill-bias correction at {venue} is {bias_bps}; a non-finite bias corrects \
+                 nothing and is refused"
+            )));
+        }
+        if !self
+            .central
+            .factory()
+            .candidates()
+            .any(|candidate| candidate.venue().as_str() == venue)
+        {
+            return Err(Error::denied(format!(
+                "no registered strategy trades at {venue}; a fill-bias correction for it would \
+                 score fills nobody produces and is refused"
+            )));
+        }
+        let record = crate::fill_bias_installation::FillBiasInstallationRecord {
+            venue: venue.to_string(),
+            bias_bps,
+            campaign: campaign.to_string(),
+            installed: true,
+            at: now,
+        };
+        self.journal_record(
+            record.clone(),
+            crate::fill_bias_installation::FILL_BIAS_INSTALLATION_ORIGIN,
+            now,
+        )?;
+        self.fill_bias_installations.apply(&record);
+        Ok(true)
+    }
+
+    /// Withdraw an installed fill-bias correction (R12-EXPAND-6050): a
+    /// campaign whose paper window refused the correction removes it from the
+    /// live paper model, so the venue's later paper fills are scored raw
+    /// again. `Ok(false)` is a venue with no installed correction — the right
+    /// reading of a refusal no earlier sweep's install stood behind.
+    /// `Ok(true)` withdrew one, after journaling the withdrawal so the revert
+    /// replays from the log.
+    pub fn withdraw_fill_bias(&mut self, venue: &str, now: Timestamp) -> Result<bool> {
+        let Some(installed) = self.fill_bias_installations.get(venue).cloned() else {
+            return Ok(false);
+        };
+        let record = crate::fill_bias_installation::FillBiasInstallationRecord {
+            venue: venue.to_string(),
+            bias_bps: installed.bias_bps,
+            campaign: installed.campaign,
+            installed: false,
+            at: now,
+        };
+        self.journal_record(
+            record.clone(),
+            crate::fill_bias_installation::FILL_BIAS_INSTALLATION_ORIGIN,
+            now,
+        )?;
+        self.fill_bias_installations.apply(&record);
+        Ok(true)
+    }
+
+    /// The basis points the installed fill-bias correction subtracts from the
+    /// twin's predicted entry at `venue`, if one is installed (R12-EXPAND-6050).
+    pub fn installed_fill_bias(&self, venue: &str) -> Option<f64> {
+        self.fill_bias_installations.bias_bps(venue)
+    }
+
+    /// The paper fill model's installed fill-bias corrections, for a reader
+    /// that walks the installed set rather than one venue (R12-EXPAND-6050).
+    pub fn installed_fill_biases(&self) -> &crate::fill_bias_installation::InstalledFillBiases {
+        &self.fill_bias_installations
     }
 
     /// The latest concluded microstructure delta for `venue` from `cell`.
