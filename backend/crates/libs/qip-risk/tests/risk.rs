@@ -533,6 +533,10 @@ fn state() -> RiskState {
         margin_utilisation: None,
         margin_basis: None,
         funding_buffer: None,
+        // No convexity limit is exercised here; its fixtures are in
+        // limit_fixtures.rs.
+        convexity: BTreeMap::new(),
+        convexity_before_order: None,
     }
 }
 

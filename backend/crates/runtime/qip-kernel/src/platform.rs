@@ -24409,6 +24409,15 @@ impl Platform {
         let state = self.with_margin_and_funding(state, figures);
         let state = self.with_custody_exposure(state);
         let state = self.with_twin_misfit(state);
+        // Each catalogue record's gamma and vega per unit of notional, for
+        // `LimitKind::MaxBookGamma` and `MaxBookVega` (ADR 0492,
+        // R12-RISK-4095). The same derivation the Hedge Brain's survey
+        // reports, so the gate and the desk read one figure. A record that
+        // states no Greeks gets no entry, and both limits refuse on that.
+        let state = RiskState {
+            convexity: crate::hedge::convexity_of(&self.market.read().universe),
+            ..state
+        };
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity

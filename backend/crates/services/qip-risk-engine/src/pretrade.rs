@@ -350,6 +350,12 @@ impl PreTradeChecker {
         // reads it: a survival ceiling the book already stands above must
         // still admit the sale that brings it back down.
         projected.gross_before_order = Some(current.gross_exposure);
+        // The book's gamma and vega before this order, so `MaxBookGamma` and
+        // `MaxBookVega` admit the order that brings a book over its bound
+        // back down (ADR 0492). `None` when the pre-order book was itself
+        // unmeasured: there is then no "before" to compare against, and the
+        // limits fall back to the gross exemption rather than to a guess.
+        projected.convexity_before_order = current.book_convexity().ok();
         projected
     }
 

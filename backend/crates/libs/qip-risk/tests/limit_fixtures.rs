@@ -33,6 +33,8 @@
 //! | `MaxSurvivalGross` | `a_book_inside_its_survival_ceiling_passes` | `a_book_beyond_its_survival_ceiling_is_vetoed` |
 //! | `MaxMarginUtilisation` | `a_book_inside_its_margin_utilisation_limit_passes` | `a_book_beyond_its_margin_utilisation_limit_is_vetoed` |
 //! | `MinFundingBuffer` | `a_book_above_the_funding_floor_passes` | `a_book_below_the_funding_floor_is_vetoed` |
+//! | `MaxBookGamma` | `a_book_inside_its_gamma_limit_passes` | `a_book_beyond_its_gamma_limit_is_vetoed` |
+//! | `MaxBookVega` | `a_book_inside_its_vega_limit_passes` | `a_book_beyond_its_vega_limit_is_vetoed` |
 //!
 //! The two venue rules carry a third fixture,
 //! `a_venue_with_no_exposure_figure_is_vetoed_by_both_venue_rules`, because
@@ -43,7 +45,10 @@
 //! arm of `LimitKind`, so adding an arm without a row here fails to compile.
 
 use qip_core::{Decimal, dec};
-use qip_risk::limits::{Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, RiskState};
+use qip_risk::limits::{
+    BookConvexity, Convexity, Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, RiskState,
+    Severity,
+};
 use std::collections::BTreeMap;
 
 /// One million of equity, 900k gross, 700k net, two names, three equal
@@ -110,6 +115,21 @@ fn state() -> RiskState {
         margin_utilisation: Some(0.6),
         margin_basis: None,
         funding_buffer: Some(0.30),
+        // AAPL carries option-like convexity and MSFT is linear: a book gamma
+        // of 80,000 x 0.001 = 80 and a book vega of 80,000 x 0.002 = 160 per
+        // volatility point, 0.016% of equity. Not a projection, so there is
+        // no "before".
+        convexity: BTreeMap::from([
+            (
+                "AAPL".to_string(),
+                Convexity {
+                    gamma_per_notional: 0.001,
+                    vega_per_notional: 0.002,
+                },
+            ),
+            ("MSFT".to_string(), Convexity::default()),
+        ]),
+        convexity_before_order: None,
     }
 }
 
@@ -896,6 +916,132 @@ fn a_book_below_the_funding_floor_is_vetoed() {
     assert!((breach.observed - 0.30).abs() < 1e-9);
 }
 
+// --- MaxBookGamma and MaxBookVega (ADR 0492, R12-RISK-4095) ---------------
+
+#[test]
+fn a_book_inside_its_gamma_limit_passes() {
+    let at = |limit: f64| LimitKind::MaxBookGamma { limit };
+    passes(at(100.0), at(50.0), &state());
+}
+
+#[test]
+fn a_book_beyond_its_gamma_limit_is_vetoed() {
+    let at = |limit: f64| LimitKind::MaxBookGamma { limit };
+    let breach = vetoes(at(50.0), at(100.0), &state());
+    assert!((breach.observed - 80.0).abs() < 1e-9, "{}", breach.observed);
+}
+
+#[test]
+fn a_book_inside_its_vega_limit_passes() {
+    let at = |limit: f64| LimitKind::MaxBookVega { limit };
+    passes(at(0.0002), at(0.0001), &state());
+}
+
+#[test]
+fn a_book_beyond_its_vega_limit_is_vetoed() {
+    let at = |limit: f64| LimitKind::MaxBookVega { limit };
+    let breach = vetoes(at(0.0001), at(0.0002), &state());
+    assert!(
+        (breach.observed - 0.00016).abs() < 1e-12,
+        "{}",
+        breach.observed
+    );
+}
+
+/// A held instrument the convexity map holds nothing for is unmeasured, and
+/// both rules refuse on it at `Critical`, naming the instrument, rather than
+/// reading it as flat. Mutation: read an absent entry as zero in
+/// `RiskState::book_convexity` — the book measures 0 and both pass.
+#[test]
+fn a_book_holding_an_instrument_with_no_stated_convexity_is_refused_by_both_rules() {
+    let unmeasured = RiskState {
+        convexity: BTreeMap::from([("MSFT".to_string(), Convexity::default())]),
+        ..state()
+    };
+    assert!(
+        unmeasured.book_convexity().is_err(),
+        "premise: AAPL has no entry"
+    );
+    for rule in [
+        LimitKind::MaxBookGamma { limit: 1e12 },
+        LimitKind::MaxBookVega { limit: 1e12 },
+    ] {
+        assert!(
+            !check(rule.clone(), &state()).is_blocked(),
+            "premise: {} admits the measured book at a loose bound",
+            rule.label()
+        );
+        let verdict = check(rule.clone(), &unmeasured);
+        let breach = verdict
+            .blocking()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("{} admitted an unmeasured book", rule.label()))
+            .clone();
+        assert_eq!(breach.severity, Severity::Critical);
+        assert_eq!(breach.subject.as_deref(), Some("AAPL"));
+    }
+}
+
+/// An order that does not raise gross is how a position whose Greeks are
+/// missing gets closed, and an order that does not raise the absolute figure
+/// is how a book over its bound comes back inside; neither is refused.
+/// Mutations: drop the `sheds_gross` arm of `convexity_reading` (the
+/// unmeasured wind-down is refused); compare `after <= before` without
+/// `abs` (the shedding order, whose before is -90, is refused). Not writing
+/// `convexity_before_order` in `PreTradeChecker::project` is caught in
+/// `qip-risk-engine`'s `risk_engine.rs`.
+#[test]
+fn an_order_that_sheds_convexity_or_winds_down_an_unmeasured_book_is_not_refused() {
+    let gamma = LimitKind::MaxBookGamma { limit: 50.0 };
+    let before = |gamma: f64| BookConvexity { gamma, vega: 0.0 };
+    let adding = RiskState {
+        convexity_before_order: Some(before(70.0)),
+        ..state()
+    };
+    assert!(
+        check(gamma.clone(), &adding).is_blocked(),
+        "premise: an order taking gamma from 70 to 80 past 50 is refused"
+    );
+    let shedding = RiskState {
+        convexity_before_order: Some(before(-90.0)),
+        ..state()
+    };
+    assert!(
+        !check(gamma, &shedding).is_blocked(),
+        "an order taking |gamma| from 90 to 80 must pass"
+    );
+
+    let unmeasured = |gross_before: i64| RiskState {
+        convexity: BTreeMap::new(),
+        gross_before_order: Some(Decimal::from_int(gross_before)),
+        ..state()
+    };
+    let vega = LimitKind::MaxBookVega { limit: 1e12 };
+    assert!(
+        check(vega.clone(), &unmeasured(850_000)).is_blocked(),
+        "premise: an order raising gross on an unmeasured book is refused"
+    );
+    assert!(
+        !check(vega, &unmeasured(950_000)).is_blocked(),
+        "an order lowering gross on an unmeasured book must pass"
+    );
+}
+
+/// Vega is a share of equity, and a book with no positive equity refuses
+/// rather than dividing by it. Mutation: divide by equity without the
+/// positivity check — a negative equity yields a negative share that passes.
+#[test]
+fn the_vega_rule_refuses_a_book_with_no_positive_equity() {
+    let rule = LimitKind::MaxBookVega { limit: 1e12 };
+    assert!(!check(rule.clone(), &state()).is_blocked(), "premise");
+    let insolvent = RiskState {
+        equity: Decimal::from_int(-1),
+        ..state()
+    };
+    assert!(check(rule, &insolvent).is_blocked());
+}
+
 #[test]
 fn every_limit_kind_has_both_fixtures() {
     // One value of every arm. The `match` below is exhaustive with no
@@ -949,8 +1095,10 @@ fn every_limit_kind_has_both_fixtures() {
         LimitKind::MaxSurvivalGross { limit: 1.0 },
         LimitKind::MaxMarginUtilisation { limit: 1.0 },
         LimitKind::MinFundingBuffer { limit: 0.1 },
+        LimitKind::MaxBookGamma { limit: 1.0 },
+        LimitKind::MaxBookVega { limit: 1.0 },
     ];
-    let fixtures: [(&str, &str); 22] = [
+    let fixtures: [(&str, &str); 24] = [
         (
             "an_order_inside_the_notional_limit_passes",
             "an_order_beyond_the_notional_limit_is_vetoed",
@@ -1039,6 +1187,14 @@ fn every_limit_kind_has_both_fixtures() {
             "a_book_above_the_funding_floor_passes",
             "a_book_below_the_funding_floor_is_vetoed",
         ),
+        (
+            "a_book_inside_its_gamma_limit_passes",
+            "a_book_beyond_its_gamma_limit_is_vetoed",
+        ),
+        (
+            "a_book_inside_its_vega_limit_passes",
+            "a_book_beyond_its_vega_limit_is_vetoed",
+        ),
     ];
     let source = include_str!("limit_fixtures.rs");
     for (kind, (pass, veto)) in kinds.iter().zip(fixtures) {
@@ -1065,6 +1221,8 @@ fn every_limit_kind_has_both_fixtures() {
             LimitKind::MaxSurvivalGross { .. } => "MaxSurvivalGross",
             LimitKind::MaxMarginUtilisation { .. } => "MaxMarginUtilisation",
             LimitKind::MinFundingBuffer { .. } => "MinFundingBuffer",
+            LimitKind::MaxBookGamma { .. } => "MaxBookGamma",
+            LimitKind::MaxBookVega { .. } => "MaxBookVega",
         };
         // Each named fixture exists as a test in this file, and the table
         // row names both. Matched on the whole declaration so a fixture

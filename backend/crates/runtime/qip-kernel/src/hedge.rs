@@ -59,7 +59,7 @@ use qip_risk::hedge_search::{
     ForecastWorld, Greeks, HedgeCandidate, HedgeObjective, HedgeSearch, InstrumentClass, LegSide,
     SearchRefusal, WorldMove,
 };
-use qip_risk::limits::{COUNTERPARTY_AXIS, RiskState};
+use qip_risk::limits::{COUNTERPARTY_AXIS, Convexity, RiskState};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -168,11 +168,12 @@ impl HedgeCandidateDeclaration {
 }
 
 /// The book's Greeks. Delta is the book's net signed notional. Gamma and vega
-/// are `Some(0.0)` only when every held position is an instrument with no
-/// convexity or volatility sensitivity by construction (see
-/// [`is_linear`]); the catalogue carries no per-position option
-/// sensitivities, so a book holding anything else reports them `None`, and an
-/// unmeasured Greek must not read as a flat one.
+/// are measured from each held record's catalogue Greeks through
+/// [`convexity_of`] — a zero for an instrument with no convexity by
+/// construction (see [`is_linear`]) — and are `None` when any held record
+/// states none, so an unmeasured Greek never reads as a flat one. The same
+/// derivation feeds `RiskState::convexity`, which `MaxBookGamma` and
+/// `MaxBookVega` read at the gate (ADR 0492).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BookGreeks {
     pub delta: Decimal,
@@ -310,8 +311,9 @@ fn classes_named(classes: &BTreeSet<AssetClass>) -> String {
 /// Whether an instrument type has no convexity and no volatility sensitivity
 /// by construction, so its gamma and vega are exactly zero rather than
 /// unknown. Deliberately a short list: every type not named here (options,
-/// variance swaps, convertibles, bonds, swaps, structured credit) is one the
-/// catalogue gives no sensitivities for, and stays unmeasured.
+/// variance swaps, convertibles, bonds, swaps, structured credit) is measured
+/// only where its catalogue record states Greeks — see [`convexity_of`] — and
+/// stays unmeasured where it does not.
 fn is_linear(kind: qip_financial::asset_class::InstrumentType) -> bool {
     use qip_financial::asset_class::InstrumentType as T;
     matches!(
@@ -330,19 +332,79 @@ fn is_linear(kind: qip_financial::asset_class::InstrumentType) -> bool {
     )
 }
 
-/// The book's (gamma, vega): a measured zero when every held position is a
-/// linear instrument in the catalogue, `None` when any is not, or is absent
-/// from it and so cannot be known to be.
-fn book_option_greeks(held: &[String], universe: &Universe) -> (Option<f64>, Option<f64>) {
-    let linear = held.iter().all(|object| {
-        universe
-            .get(&ObjectId::from_string(object.clone()))
-            .is_some_and(|record| is_linear(record.instrument_type))
-    });
-    if linear {
-        (Some(0.0), Some(0.0))
-    } else {
-        (None, None)
+/// One catalogue record's gamma and vega per unit of signed notional, or
+/// `None` when the record cannot state them (ADR 0492, R12-RISK-4095).
+///
+/// A linear instrument is a measured zero. Anything else is measured from
+/// the Greeks its extension carries — an option's, a volatility product's,
+/// a structured note's — which are stated per unit of the underlying, so one
+/// contract carries them times its contract multiplier.
+///
+/// **The divisor is the notional the risk state books for one contract, and
+/// that is the record's price alone.** The desk books an order's notional
+/// as quantity times reference price (`ProposedOrder::notional`) and a
+/// fill's as quantity times fill price, with no contract multiplier, so the
+/// contracts a position holds are its notional over the price. Dividing by
+/// `FinancialObject::notional(1)` instead — price times multiplier — would
+/// read every option book a multiplier's worth flatter than it is: this was
+/// the first form of this function, and the integration test's breaching
+/// order was admitted under it. Should the desk ever book the multiplier
+/// into notional, this divisor moves with it, and
+/// `tests/market_risk_convexity.rs` fails until it does.
+///
+/// A record with no Greeks, Greeks that are not finite, or a price that is
+/// not positive yields nothing, and the gamma and vega limits refuse on the
+/// absence rather than reading it as flat.
+fn record_convexity(record: &qip_financial::FinancialObject) -> Option<Convexity> {
+    if is_linear(record.instrument_type) {
+        return Some(Convexity::default());
+    }
+    let greeks = record.extension.greeks()?;
+    if !greeks.is_finite()
+        || !record.price.is_positive()
+        || !record.contract_multiplier.is_positive()
+    {
+        return None;
+    }
+    // Greeks are statistics and cross into `f64` here; the price and the
+    // multiplier are read once and nothing monetary is computed from the
+    // result.
+    let per_notional = record.contract_multiplier.to_f64() / record.price.to_f64();
+    let sensitivity = Convexity {
+        gamma_per_notional: greeks.gamma * per_notional,
+        vega_per_notional: greeks.vega * per_notional,
+    };
+    (sensitivity.gamma_per_notional.is_finite() && sensitivity.vega_per_notional.is_finite())
+        .then_some(sensitivity)
+}
+
+/// The convexity of every catalogue record that can state one, keyed as
+/// `RiskState::position_notionals` is. The one derivation both the risk
+/// state the gate reads and the Hedge Brain's survey use, so the figure a
+/// limit refused on and the figure the desk was shown cannot disagree.
+pub fn convexity_of(universe: &Universe) -> BTreeMap<String, Convexity> {
+    universe
+        .iter()
+        .filter_map(|record| {
+            record_convexity(record)
+                .map(|sensitivity| (record.object_id.as_str().to_string(), sensitivity))
+        })
+        .collect()
+}
+
+/// The book's (gamma, vega), from [`convexity_of`] over the held notionals:
+/// a measured figure when every held position's record states one — zero
+/// for a book held entirely in linear instruments — and `None` when any
+/// does not, or is absent from the catalogue and so cannot be known to.
+fn book_option_greeks(state: &RiskState, universe: &Universe) -> (Option<f64>, Option<f64>) {
+    let measured = RiskState {
+        position_notionals: state.position_notionals.clone(),
+        convexity: convexity_of(universe),
+        ..RiskState::default()
+    };
+    match measured.book_convexity() {
+        Ok(book) => (Some(book.gamma), Some(book.vega)),
+        Err(_) => (None, None),
     }
 }
 
@@ -555,7 +617,7 @@ pub fn plan(inputs: &HedgeBrainInputs<'_>) -> HedgeBrainReport {
                 .collect()
         })
         .unwrap_or_default();
-    let (gamma, vega) = book_option_greeks(&held, inputs.universe);
+    let (gamma, vega) = book_option_greeks(state, inputs.universe);
     let (correlation, pair_correlations) = correlations(&held, inputs.price_history);
     let survey = ExposureSurvey {
         drivers: axis(CAUSAL_DRIVER_AXIS),

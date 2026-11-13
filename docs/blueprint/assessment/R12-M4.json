@@ -2210,13 +2210,16 @@
   {
     "id": "R12-RISK-4095",
     "status": "PARTIAL",
-    "current": "LimitKind covers volatility, VaR, expected shortfall, drawdown, daily loss and axis weights including factor/causal-driver axes; gap fills are charged at the fill price. No basis or Greeks.",
+    "current": "Price (MaxNetExposure, MaxPositionNotional), volatility (MaxVolatility, VaR, ES), factor and causal-driver (MaxAxisWeight on their axes) and Greeks are measured and limited. Since ADR 0492 (2026-11-13) book gamma and vega are measured from each catalogue record's extension Greeks (qip_kernel::hedge::convexity_of, one derivation read by RiskState::convexity and the Hedge Brain's BookGreeks) and gated by LimitKind::MaxBookGamma and MaxBookVega, which refuse a held or ordered instrument whose record states no usable Greeks and admit an order that lowers the absolute figure; delta is the net signed notional MaxNetExposure already limits. Neither convexity limit ships in a default set: no owner stated a bound.",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/limits.rs:157-165 MaxVolatility/VaR/ES/Drawdown/DailyLoss",
-      "backend/crates/libs/qip-risk/src/limits.rs:149 MaxAxisWeight",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:20113 gapped fill test"
+      "backend/crates/libs/qip-risk/src/limits.rs MaxBookGamma/MaxBookVega arms, RiskState::book_convexity (grep -n 'MaxBookGamma\\|fn book_convexity')",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs convexity_of / record_convexity (grep -n 'fn convexity_of\\|fn record_convexity')",
+      "backend/crates/runtime/qip-kernel/tests/market_risk_convexity.rs (3 tests through Platform::submit_order, mutation-verified)",
+      "backend/crates/libs/qip-risk/tests/limit_fixtures.rs gamma/vega pass and veto fixtures, unmeasured refusal, exemptions",
+      "backend/crates/services/qip-risk-engine/tests/risk_engine.rs a_sale_that_lowers_book_gamma_is_admitted_by_a_gamma_bound_the_book_already_exceeds",
+      "backend/crates/libs/qip-risk/src/limits.rs MaxVolatility/VaR/ES/Drawdown/DailyLoss and MaxAxisWeight arms"
     ],
-    "gap": "Book-level basis and Greeks exposures have no measurement to limit: BookGreeks carries delta (the book's net signed notional, already limited by MaxNetExposure) with gamma and vega None, because the risk aggregate holds signed notionals and no option sensitivities, and no book basis figure exists (basis_volatility is a per-hedge-candidate input, not a book measurement). A MaxNetDelta limit would duplicate MaxNetExposure and a MaxBasisExposure fed from ExposureSurvey could not fire. Needs per-instrument sensitivities on catalogue records and a hedge-pair basis in the aggregate before a limit can read them.",
+    "gap": "2026-11-13: basis and gap have neither a book measurement nor a recorded finding. basis_volatility is a per-hedge-candidate input (qip-risk/src/hedge_search.rs) and Universe::basis prices one future against its underlying; a book basis needs hedge pairs carried in the risk aggregate before a MaxBasisExposure limit could read it. A gapped fill is charged at its fill price and stress worlds price discontinuous moves, but no named gap-exposure figure reaches the gate or a journaled finding. Theta, rho, vanna and vomma are on the catalogue record and not aggregated. No shipped limits file names MaxBookGamma or MaxBookVega.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2227,7 +2230,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the grader's closure (limits filled from ExposureSurvey Greeks/basis) names figures the survey does not hold; adding the limits first is the MaxExpectedShortfall defect. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the grader's closure (limits filled from ExposureSurvey Greeks/basis) names figures the survey does not hold; adding the limits first is the MaxExpectedShortfall defect. Kept PARTIAL. Lane t50-33 2026-11-13: Greeks closed per ADR 0492 (catalogue Greeks were already on option extensions and the kernel ignored them); basis and gap remain, so PARTIAL."
   },
   {
     "id": "R12-RISK-4096",
