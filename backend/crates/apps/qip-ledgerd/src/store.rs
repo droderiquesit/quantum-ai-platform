@@ -294,6 +294,11 @@ pub enum Disposition {
     /// This record filled a gap and was applied. The consumer must re-read
     /// the partition from `offset`, where the cell's held records start.
     ReReadFrom { offset: u64 },
+    /// The venue's custody statement advanced the chain and was compared with
+    /// the cell's booked fills in the same batch (ADR 0494). `breaks` units
+    /// disagreed; each was journaled as a `custody_break` note and counted by
+    /// direction, and the balances were not touched.
+    CustodyCompared { breaks: usize },
 }
 
 /// A durable note of a park, a gap filled, or a release, naming what an
@@ -1009,6 +1014,34 @@ impl LedgerStore {
             },
             P1Record::Span(_) => None,
         };
+        // The custody statement meets the same fence before the chain (ADR
+        // 0130 decision 6): a statement not marked simulated parks the cell
+        // as live, and nothing is compared against it. A statement that does
+        // not parse is held for the same reason a malformed fill is: the
+        // venue said something about the cell's holdings that nobody can read.
+        let custody = match &delivery.record {
+            P1Record::Outcome(outcome) => {
+                CustodyStatement::from_entry(cell, outcome.session, &outcome.entry)
+            }
+            P1Record::Span(_) => Ok(None),
+        };
+        if let Ok(Some(statement)) = &custody
+            && !statement.simulated
+        {
+            self.telemetry.live_fill_refused();
+            return self.park_cell(
+                delivery,
+                &cursor,
+                park,
+                ParkReason::LiveFill,
+                format!(
+                    "a custody statement from {} at sequence {} is not marked simulated; this \
+                     platform reconciles paper custody only (ADR 0130 decision 6)",
+                    statement.venue, statement.sequence
+                ),
+            );
+        }
+
         if let Some((Err(refusal), false)) = &fill {
             self.telemetry.live_fill_refused();
             return self.park_cell(
@@ -1094,6 +1127,19 @@ impl LedgerStore {
             return self.park_cell(delivery, &cursor, park, ParkReason::Integrity, detail);
         }
 
+        let custody = match custody {
+            Ok(custody) => custody,
+            Err(refusal) => {
+                return self.park_cell(
+                    delivery,
+                    &cursor,
+                    park,
+                    ParkReason::RefusedFill,
+                    refusal.message().to_string(),
+                );
+            }
+        };
+
         let mut pending: Option<(String, Option<Vec<LedgerEvent>>)> = None;
         let event = match fill {
             None => None,
@@ -1157,6 +1203,16 @@ impl LedgerStore {
         };
 
         let mut batch = LedgerBatch::new();
+        // The statement is compared in the batch that advances the chain onto
+        // it (ADR 0494): the chain checks above proved every earlier entry of
+        // this session is applied, so the ledger side is complete, and the
+        // comparison and the tail move together or not at all.
+        let mut custody_breaks = None;
+        if let Some(statement) = &custody {
+            let (compared, breaks) = self.compare_custody(batch, statement)?;
+            batch = compared;
+            custody_breaks = Some(breaks);
+        }
         // The pending row moves in the batch that books the event, so a
         // settlement and the row it closes are never committed apart.
         match pending {
@@ -1231,15 +1287,23 @@ impl LedgerStore {
         self.store.commit(batch)?;
 
         self.telemetry.commit("success");
+        if let Some(breaks) = &custody_breaks {
+            for found in breaks {
+                self.telemetry.custody_break(found.direction.as_str());
+            }
+        }
         if reread.is_some() {
             self.record_parked_keys()?;
         }
-        Ok(match (reread, &event) {
-            (Some(offset), _) => Disposition::ReReadFrom { offset },
-            (None, Some(event)) => Disposition::Posted {
+        Ok(match (reread, &event, custody_breaks) {
+            (Some(offset), _, _) => Disposition::ReReadFrom { offset },
+            (None, Some(event), _) => Disposition::Posted {
                 postings: event.postings().len(),
             },
-            (None, None) => Disposition::Advanced,
+            (None, None, Some(breaks)) => Disposition::CustodyCompared {
+                breaks: breaks.len(),
+            },
+            (None, None, None) => Disposition::Advanced,
         })
     }
 
@@ -1395,6 +1459,29 @@ impl LedgerStore {
             return Ok(CustodyReconciliation::Pending);
         }
 
+        let (batch, breaks) = self.compare_custody(LedgerBatch::new(), statement)?;
+        self.store.commit(batch)?;
+        for found in &breaks {
+            self.telemetry.custody_break(found.direction.as_str());
+        }
+        Ok(match custody::halt_for(statement, &breaks) {
+            Some(halt) => CustodyReconciliation::Broken { breaks, halt },
+            None => CustodyReconciliation::Agrees,
+        })
+    }
+
+    /// The comparison itself, added to `batch` and not committed: the cell's
+    /// booked fills at or before the statement's position, per unit, against
+    /// the statement, with a `custody_break` note per disagreeing unit and the
+    /// mark that makes the same statement `Stale` next time. The caller holds
+    /// the writer lock, commits, and counts the breaks only once committed,
+    /// so a counter never names a break the journal does not hold.
+    fn compare_custody(
+        &self,
+        batch: LedgerBatch,
+        statement: &CustodyStatement,
+    ) -> Result<(LedgerBatch, Vec<CustodyBreak>)> {
+        let mark_key = format!("{PREFIX_CUSTODY}{}/{}", statement.cell, statement.venue);
         let mut ledger: BTreeMap<String, Decimal> = BTreeMap::new();
         for event in self.fill_events()? {
             let source = event.source();
@@ -1425,7 +1512,7 @@ impl LedgerStore {
         }
 
         let breaks = custody::compare(&ledger, statement);
-        let mut batch = LedgerBatch::new().put_as(
+        let mut batch = batch.put_as(
             mark_key,
             &CustodyMark {
                 session: statement.session,
@@ -1458,14 +1545,7 @@ impl LedgerStore {
                 },
             )?;
         }
-        self.store.commit(batch)?;
-        for found in &breaks {
-            self.telemetry.custody_break(found.direction.as_str());
-        }
-        Ok(match custody::halt_for(statement, &breaks) {
-            Some(halt) => CustodyReconciliation::Broken { breaks, halt },
-            None => CustodyReconciliation::Agrees,
-        })
+        Ok((batch, breaks))
     }
 
     // --- decisions --------------------------------------------------------

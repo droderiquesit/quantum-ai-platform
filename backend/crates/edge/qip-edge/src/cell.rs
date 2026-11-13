@@ -1883,6 +1883,11 @@ pub struct Cell {
     /// composition root can arm it, because only the composition root knows
     /// whether this process is a restart — see [`crate::resume`].
     resume: Option<ResumeDiscipline>,
+    /// The custody each configured venue last stated, as journaled (ADR
+    /// 0494): its holdings and the cash units it left out. A statement equal
+    /// to the last one is not journaled again. Bounded by the configured
+    /// venue list, because a statement for any other venue is refused.
+    custody_stated: BTreeMap<VenueId, (BTreeMap<String, Decimal>, BTreeSet<String>)>,
     /// When each venue's feed was last heard, on this cell's own clock.
     ///
     /// Written by [`Cell::on_bytes`] and [`Cell::feed_heartbeat`] and by
@@ -2053,6 +2058,7 @@ impl Cell {
             suspended: BTreeMap::new(),
             outlook: RegionOutlook::AllLit,
             resume: None,
+            custody_stated: BTreeMap::new(),
             feed_heard: BTreeMap::new(),
             clock_lead: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
@@ -2521,6 +2527,66 @@ impl Cell {
         self.resume = Some(discipline);
         self.record_awaiting_reconciliation();
         Ok(())
+    }
+
+    /// Journal what a configured venue states it holds for this cell, as
+    /// that venue's custody statement on the cell's own chain (ADR 0130
+    /// decision 4, ADR 0494; R12-LEDGER-10185).
+    ///
+    /// The entry's chain position is the statement's: every fill the cell
+    /// journaled before it is in the venue's figure, and `qip-ledgerd`
+    /// compares the two when it applies the entry. Journaled only when the
+    /// venue's statement differs from the last one journaled for it, and on
+    /// the first call — every fill moves the venue's holdings, so every fill
+    /// is followed by a statement that covers it, and a quiet cell does not
+    /// grow its chain by a statement per pass. Answers the sequence journaled,
+    /// or `None` when nothing moved.
+    ///
+    /// Always `simulated: true`, and there is no argument that says
+    /// otherwise: a cell is paper by construction, and a custody statement
+    /// it journals is a simulated venue's. Refuses a venue the cell was not
+    /// configured with, and a unit stated both as a holding and as cash.
+    pub fn record_custody_statement(
+        &mut self,
+        venue: &VenueId,
+        holdings: BTreeMap<String, Decimal>,
+        cash_units: BTreeSet<String>,
+        now: Timestamp,
+    ) -> Result<Option<u64>> {
+        if !self.config.venues.contains(venue) {
+            return Err(Error::invalid(format!(
+                "{} is not a venue this cell trades at, so it holds nothing there to state; a \
+                 custody statement names one of the cell's configured venues",
+                venue.as_str()
+            )));
+        }
+        if let Some(unit) = holdings.keys().find(|unit| cash_units.contains(*unit)) {
+            return Err(Error::invalid(format!(
+                "{unit} is stated both as a holding and as a cash unit of {}'s custody \
+                 statement; one unit is compared or left out, not both",
+                venue.as_str()
+            )));
+        }
+        let stated = (holdings, cash_units);
+        if self.custody_stated.get(venue) == Some(&stated) {
+            return Ok(None);
+        }
+        let entry = self.journal.record(
+            Decision::CustodyStatement {
+                venue: venue.as_str().to_string(),
+                holdings: stated
+                    .0
+                    .iter()
+                    .map(|(unit, quantity)| (unit.clone(), quantity.to_string()))
+                    .collect(),
+                cash_units: stated.1.iter().cloned().collect(),
+                simulated: true,
+            },
+            now,
+        );
+        let sequence = entry.sequence;
+        self.custody_stated.insert(venue.clone(), stated);
+        Ok(Some(sequence))
     }
 
     /// The discipline in force, if the cell is still reconciling.

@@ -247,6 +247,11 @@ pub fn is_outcome(decision: &Decision) -> bool {
         // the ledger reads P1 and a settlement shed with P2 would leave the
         // fill's cash in settlement for ever (ADR 0440).
         Decision::Settled { .. } => true,
+        // The venue's custody statement: P1, because the ledger reads P1 and
+        // compares it with the fills before it on the same chain (ADR 0494).
+        // Shed with P2, a break between the venue and the ledger would go
+        // unfound for as long as the stream was shedding.
+        Decision::CustodyStatement { .. } => true,
         Decision::Ingested { .. }
         | Decision::GapDetected { .. }
         | Decision::FeedSilent { .. }

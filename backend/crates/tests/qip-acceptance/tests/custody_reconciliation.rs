@@ -14,8 +14,19 @@
 //! Every hop is the production type except one, and the test names it: the
 //! carrier from `qip-ledgerd` to the centre's halt signer. Here the test
 //! signs the store's unsigned command with the cell's key and frames it on
-//! the halt topic; in a deployment that is `qip-api`'s `broadcast_halt`, and
-//! no binary calls `reconcile_custody` yet — that wiring is the row's gap.
+//! the halt topic; in a deployment that is `qip-api`'s `broadcast_halt`.
+//!
+//! Since ADR 0494 the node's pass journals the venue's statement on the
+//! cell's chain, and `LedgerStore::apply` compares it as it applies it:
+//!
+//! ```text
+//! run_pass -> SimulatedGateway::custody_holdings
+//!   -> Cell::record_custody_statement -> Decision::CustodyStatement on P1
+//!   -> LedgerStore::apply -> Disposition::CustodyCompared
+//! ```
+//!
+//! What is still missing is the carrier from a `custody_break` to the
+//! centre's halt signer.
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
@@ -59,6 +70,7 @@ use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};
 use qip_strategy::program::Program;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -240,6 +252,31 @@ fn p1_after_a_fill(node: &mut NodeAssembly, label: &str) -> Result<Vec<P1Record>
         .collect())
 }
 
+/// The chain up to, and not including, the custody statement the node
+/// journaled after the fill (ADR 0494).
+///
+/// The tests that drive `reconcile_custody` out of band compare their own
+/// statement at the shipped position. Since the pass journals the venue's
+/// statement on the chain, the ledger compares that one when it applies it
+/// and marks the position, so an out-of-band statement at or behind it is
+/// `Stale`. The prefix is the same chain the node shipped up to the instant
+/// before the venue's statement — a consistent chain, not a doctored one —
+/// and the in-stream comparison has its own test below.
+fn before_the_journaled_statement(records: &[P1Record]) -> Vec<P1Record> {
+    let at = records
+        .iter()
+        .position(|r| {
+            matches!(r, P1Record::Outcome(o) if matches!(o.entry.decision, Recorded::CustodyStatement { .. }))
+        })
+        .expect("premise: the pass journaled the venue's custody statement");
+    assert_eq!(
+        at + 1,
+        records.len(),
+        "premise: the statement is the last record the pass shipped"
+    );
+    records[..at].to_vec()
+}
+
 fn ledger(records: &[P1Record], label: &str) -> Result<(LedgerStore, Arc<Metrics>)> {
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(t(0)));
     let metrics = Arc::new(Metrics::new("qip-ledgerd"));
@@ -357,7 +394,7 @@ fn a_custody_break_halts_the_cell_through_a_signed_p0_halt_and_an_agreeing_state
         panic!("premise: the node ran its pass");
     };
     assert_eq!(report.fills.len(), 1, "premise: the cell filled");
-    let records = p1_after_a_fill(&mut node, "agree")?;
+    let records = before_the_journaled_statement(&p1_after_a_fill(&mut node, "agree")?);
     assert!(
         records.iter().any(|r| matches!(r, P1Record::Outcome(o) if matches!(o.entry.decision, Recorded::Filled { .. }))),
         "premise: the fill is on P1"
@@ -405,7 +442,7 @@ fn a_custody_break_halts_the_cell_through_a_signed_p0_halt_and_an_agreeing_state
     let PassOutcome::Ran { .. } = pass(&mut node, &mut gateway, &mut feed, t(10))? else {
         panic!("premise: the node ran its pass");
     };
-    let records = p1_after_a_fill(&mut node, "break")?;
+    let records = before_the_journaled_statement(&p1_after_a_fill(&mut node, "break")?);
     let at = shipped_position(&records);
     let (store, metrics) = ledger(&records, "break-ledger")?;
     let submitted = gateway.submitted_count();
@@ -484,7 +521,7 @@ fn a_custody_statement_not_marked_simulated_is_refused() -> Result<()> {
     let PassOutcome::Ran { .. } = pass(&mut node, &mut gateway, &mut feed, t(10))? else {
         panic!("premise: the node ran its pass");
     };
-    let records = p1_after_a_fill(&mut node, "live")?;
+    let records = before_the_journaled_statement(&p1_after_a_fill(&mut node, "live")?);
     let at = shipped_position(&records);
     let (store, _metrics) = ledger(&records, "live-ledger")?;
     let mut live = statement(&gateway, at, Decimal::ZERO)?;
@@ -501,6 +538,115 @@ fn a_custody_statement_not_marked_simulated_is_refused() -> Result<()> {
     assert!(
         refusal.to_string().contains("not marked simulated"),
         "{refusal}"
+    );
+    Ok(())
+}
+
+/// The production path end to end (ADR 0494, R12-LEDGER-10185): a node pass
+/// that fills journals the simulated venue's custody statement after the
+/// fill, the statement ships on P1, and the ledger compares it with the fill
+/// it booked as it applies it — and they agree, because both are the same
+/// venue's account of the same pass. A second pass in which nothing filled
+/// journals no second statement.
+///
+/// Mutations, each run and restored: drop the `record_custody_statement`
+/// call from the pass — no statement reaches P1 ("journaled no custody
+/// statement"); leave both cash-unit inserts out of `custody_holdings` — the
+/// ledger reads the fill's USD leg as a holding the venue denies and
+/// `compared` is `[1]`; remove the unchanged-statement check in
+/// `Cell::record_custody_statement` — "an unchanged statement was journaled
+/// again"; remove its configured-venue check — the foreign venue is
+/// accepted; journal `simulated: false` — the paper assertion fails.
+#[test]
+fn a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_ledger_finds_it_agrees()
+-> Result<()> {
+    use qip_ledgerd::store::Disposition;
+    let (mut node, mut gateway, mut feed) = funded_node()?;
+    let PassOutcome::Ran { report, .. } = pass(&mut node, &mut gateway, &mut feed, t(10))? else {
+        panic!("premise: the node ran its pass");
+    };
+    assert_eq!(report.fills.len(), 1, "premise: the cell filled");
+    let records = p1_after_a_fill(&mut node, "in-stream")?;
+    let fill_at = records
+        .iter()
+        .position(|r| matches!(r, P1Record::Outcome(o) if matches!(o.entry.decision, Recorded::Filled { .. })))
+        .expect("premise: the fill is on P1");
+    let statement_at = records
+        .iter()
+        .position(|r| matches!(r, P1Record::Outcome(o) if matches!(o.entry.decision, Recorded::CustodyStatement { .. })))
+        .expect("the pass journaled no custody statement on P1");
+    assert!(
+        statement_at > fill_at,
+        "the statement must follow the fill it covers"
+    );
+    let P1Record::Outcome(outcome) = &records[statement_at] else {
+        unreachable!()
+    };
+    let Recorded::CustodyStatement {
+        holdings,
+        simulated,
+        ..
+    } = &outcome.entry.decision
+    else {
+        unreachable!()
+    };
+    assert!(
+        *simulated,
+        "a cell's custody statement is paper by construction"
+    );
+    assert!(
+        holdings
+            .iter()
+            .any(|(unit, quantity)| unit == object().as_str() && quantity != "0"),
+        "premise: the venue states the traded units: {holdings:?}"
+    );
+
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(t(0)));
+    let metrics = Arc::new(Metrics::new("qip-ledgerd"));
+    let store = LedgerStore::open(
+        scratch("in-stream-ledger"),
+        qip_storage::EngineConfig::new(clock),
+        LedgerTelemetry::new(Arc::clone(&metrics)),
+    )?;
+    let mut compared = Vec::new();
+    for (offset, record) in records.iter().enumerate() {
+        let disposition = store.apply(&Delivery {
+            partition: "p0".to_string(),
+            offset: offset as u64,
+            record_hash: qip_core::sha256_hex(&serde_json::to_vec(record).expect("serialises")),
+            record: record.clone(),
+        })?;
+        if let Disposition::CustodyCompared { breaks } = disposition {
+            compared.push(breaks);
+        }
+    }
+    assert_eq!(compared, vec![0], "one statement, compared once, agreeing");
+    assert_eq!(custody_breaks(&metrics, "ledger_over_venue"), 0);
+    assert_eq!(custody_breaks(&metrics, "venue_over_ledger"), 0);
+    assert!(store.journal()?.iter().all(|n| n.event != "custody_break"));
+
+    // Nothing moved at the venue since the pass: the same statement is not
+    // journaled again. A statement that differs is, at the next sequence.
+    let (holdings, cash) = gateway.custody_holdings();
+    assert_eq!(
+        node.cell
+            .record_custody_statement(&venue(), holdings.clone(), cash.clone(), t(11))?,
+        None,
+        "an unchanged statement was journaled again"
+    );
+    let mut moved = holdings;
+    moved.insert(object().as_str().to_string(), Decimal::ZERO);
+    assert!(
+        node.cell
+            .record_custody_statement(&venue(), moved, cash.clone(), t(11))?
+            .is_some(),
+        "a changed statement was not journaled"
+    );
+    // A venue the cell does not trade at holds nothing for it to state.
+    assert!(
+        node.cell
+            .record_custody_statement(&VenueId::new("sim-elsewhere"), BTreeMap::new(), cash, t(11))
+            .is_err()
     );
     Ok(())
 }
