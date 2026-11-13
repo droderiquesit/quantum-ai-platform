@@ -287,3 +287,101 @@ fn an_applied_action_whose_outcome_cannot_be_journalled_is_an_ok_with_the_failur
         error.message()
     );
 }
+
+// --- R12-OBS-1172: incident triage ---
+
+fn sig(class: SignalClass, name: &str, value: f64, at: i64) -> Signal {
+    Signal {
+        class,
+        name: name.to_string(),
+        value,
+        at: t(at),
+    }
+}
+
+/// A person reads incidents in the order this returns, so a misranked one
+/// is read late. Mutation: reorder `Severity`'s variants so `Major` sorts
+/// above `Critical` — the trading-facing incident falls to second and the
+/// first assertion fires. Mutation: drop `.then_with(|| a.1.cmp(&b.1))` —
+/// the two minors fall back to id order and the second assertion fires.
+#[test]
+fn a_trading_facing_incident_ranks_above_an_uncontained_one_and_a_contained_one_last() {
+    use qip_observability::aiops::{Severity, rank_incidents, triage};
+    let node = EntityKey::new("deployment", "qip-deepbrain");
+    let venue = qip_observability::aiops::Implicated {
+        entity: EntityKey::new("venue", "XNYS"),
+        signals: 1,
+        classes: BTreeSet::from([SignalClass::TradingBehaviour]),
+    };
+    let critical = triage(&node, vec![venue], true, &[]);
+    let major = triage(&node, vec![], false, &[]);
+    let minor = triage(&node, vec![], true, &[]);
+    let objective = triage(&node, vec![], true, &["api_availability".to_string()]);
+    assert_eq!(
+        (critical.severity, major.severity, minor.severity),
+        (Severity::Critical, Severity::Major, Severity::Minor),
+        "premise: one incident of each severity"
+    );
+    assert_eq!(objective.severity, Severity::Critical, "a missed objective");
+    let incidents = vec![
+        ("INC-1".to_string(), t(10), minor.clone()),
+        ("INC-2".to_string(), t(20), major),
+        ("INC-3".to_string(), t(30), critical),
+    ];
+    assert_eq!(rank_incidents(&incidents), vec!["INC-3", "INC-2", "INC-1"]);
+    // Within a severity, the one that has run longest first, whatever its id.
+    let same = vec![
+        ("INC-A".to_string(), t(50), minor.clone()),
+        ("INC-Z".to_string(), t(10), minor),
+    ];
+    assert_eq!(rank_incidents(&same), vec!["INC-Z", "INC-A"]);
+}
+
+/// Mutation: drop the window filter in `EntityGraph::implicated` — the
+/// model's drift from before the window is counted, it outranks the venue,
+/// and the owner assertion fires. Mutation: rank fewest-first — the owner
+/// is the model again and the same assertion fires.
+#[test]
+fn the_owner_is_the_most_implicated_entity_in_the_window_and_the_process_when_none_is() {
+    use qip_observability::aiops::triage;
+    let node = EntityKey::new("deployment", "qip-deepbrain");
+    let venue = EntityKey::new("venue", "XNYS");
+    let model = EntityKey::new("model", "m-1");
+    let mut g = EntityGraph::new();
+    for at in [1, 2, 3] {
+        g.record(
+            &sig(SignalClass::ModelHealth, "drifted", 1.0, at),
+            &[node.clone(), model.clone()],
+        )
+        .unwrap();
+    }
+    for at in [100, 101] {
+        g.record(
+            &sig(SignalClass::TradingBehaviour, "fill_error_bps", 90.0, at),
+            &[node.clone(), venue.clone()],
+        )
+        .unwrap();
+    }
+    g.record(
+        &sig(SignalClass::ModelHealth, "drifted", 1.0, 102),
+        &[node.clone(), model.clone()],
+    )
+    .unwrap();
+    let abnormal = |_: &EntityKey, _: &Signal| true;
+    let implicated = g.implicated(t(50), t(200), &node, abnormal);
+    assert_eq!(
+        implicated.len(),
+        2,
+        "premise: two entities in the window: {implicated:?}"
+    );
+    assert!(
+        implicated.iter().all(|i| i.entity != node),
+        "the process the shift was found in is the fallback, never a candidate"
+    );
+    let owned = triage(&node, implicated, true, &[]);
+    assert_eq!(owned.owner, venue, "{owned:?}");
+    // Nothing abnormal in the window: the process owns its own incident.
+    let none = g.implicated(t(50), t(200), &node, |_, _| false);
+    assert!(none.is_empty());
+    assert_eq!(triage(&node, none, true, &[]).owner, node);
+}

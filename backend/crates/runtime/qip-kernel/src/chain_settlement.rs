@@ -100,6 +100,12 @@ impl ChainSettlementTerms {
         })
     }
 
+    /// Whether the proceeds cross a declared bridge: what makes the bridge a
+    /// node of the counterparty graph (R12-WORLD-3049).
+    pub const fn bridged(&self) -> bool {
+        self.bridge.is_some()
+    }
+
     /// When proceeds from a sale filled at `at` are final and, if bridged,
     /// delivered: `at + depth × block_interval`, plus the bridge delay.
     ///
