@@ -1191,6 +1191,51 @@ that narrows a security scanner, whatever the owner has delegated.
     sentence as a standing bar, the fifteen rows go back to PARTIAL and
     nothing else changes.
 
+33. **Four owner actions, done by the orchestrator on the owner's
+    instruction** (owner, 2026-11-13: "i command you to do step1 through 4
+    you asked me to do. I give you full authority complete it right know").
+    The four steps were the ones the orchestrator had listed as the owner's
+    own that afternoon. What each came to:
+
+    - *Start `infra.yml` for dev: plan, then up.* The plan was dispatched
+      on `main` (run 123, 2026-11-13 18:28Z) and stopped at `terraform
+      init`: Google answered the state bucket read with 403
+      `UserProjectAccountProblem`, "The billing account for the owning
+      project is disabled in state absent". Project `algorik-qip-dev` has
+      no billing account attached. Nothing was planned and `up` was not
+      started. Attaching billing needs the owner's console session, the
+      mechanical limit the delegation already names; no instruction given
+      in a conversation can supply it. Every row waiting on a deployment
+      waits on this first. `up` also stays behind the rule that billed
+      infrastructure is not created without its monthly cost named, and a
+      plan that cannot run names none.
+    - *Apply the two held patches.* Both edit the protected guard suite
+      `architecture.rs`, which is why they were held. Applied unchanged:
+      lane t50-02's `only_the_cost_router_mints_a_deterministic_gate`
+      (ADR 0430), an added test and nothing removed; and lane t50-19's
+      change (ADR 0464), which adds `qip-survival` to `NO_SOLVER_AUTHORITY`
+      and allows one service edge, `qip-survival -> qip-capital`. With it
+      lane t50-19 merges. The edge is the only allowance among them.
+    - *Merge the rolling pull request once CI is green.* Done only on a
+      head whose every check has passed, and recorded in the pull request
+      that follows it.
+    - *Set the desk risk tolerance figure.* dev now states
+      `desk_risk_tolerance = "1"`. The owner delegated the figure and named
+      none. A tolerance below one is a risk appetite: how much of the
+      operator's ceiling the desk may use. Nothing in the repository
+      states the desk's, and the orchestrator does not make one up. One is
+      the only value that asserts nothing new: the operator's limit set
+      exactly as written, which is what every binary already ran with the
+      variable unset. Stating it carries the term through Terraform and
+      the three dev manifests, refuses a value outside 0 to 1 at plan
+      time, and has each root log the tolerance as stated and not as
+      defaulted. It narrows no limit and raises none; ADR 0405 lets the
+      term do nothing but narrow. The two patches that carried the
+      variable and corrected ADR 0405 are applied with it. test, stage and
+      prod state nothing. The owner sets a real appetite by changing that
+      one line to a lower fraction, for example "0.5" to halve every
+      maximum.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
