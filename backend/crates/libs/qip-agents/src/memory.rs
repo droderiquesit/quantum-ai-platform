@@ -417,17 +417,28 @@ impl ResearchMemory {
             .collect()
     }
 
-    /// An agent's hit rate over resolved episodes up to `as_of`.
+    /// Episodes for one agent whose outcome was known by `as_of`: the call
+    /// had been made *and* graded at or before that instant.
+    ///
+    /// Filtering on `occurred_at` alone is not enough. An episode made last
+    /// month and graded tomorrow carries its outcome in memory today, and a
+    /// backtest replaying last week would read a grade nobody had then — the
+    /// point-in-time leakage this method exists to stop.
+    pub fn resolved_as_of(&self, agent_id: &str, as_of: Timestamp) -> Vec<&Episode> {
+        self.episodes_as_of(agent_id, as_of)
+            .into_iter()
+            .filter(|e| e.outcome.as_ref().is_some_and(|o| o.resolved_at <= as_of))
+            .collect()
+    }
+
+    /// An agent's hit rate over episodes resolved at or before `as_of`.
     ///
     /// Returns `None` rather than a default when nothing has resolved: an
     /// agent with no track record has no track record, and reporting 0.5 would
-    /// invent one.
+    /// invent one. An outcome resolved after `as_of` does not count, because
+    /// it was not knowable then (see [`ResearchMemory::resolved_as_of`]).
     pub fn hit_rate(&self, agent_id: &str, as_of: Timestamp) -> Option<f64> {
-        let resolved: Vec<&Episode> = self
-            .episodes_as_of(agent_id, as_of)
-            .into_iter()
-            .filter(|e| e.outcome.is_some())
-            .collect();
+        let resolved = self.resolved_as_of(agent_id, as_of);
         if resolved.is_empty() {
             return None;
         }

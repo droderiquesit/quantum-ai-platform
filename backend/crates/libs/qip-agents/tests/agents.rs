@@ -1075,7 +1075,55 @@ fn an_agent_with_no_track_record_has_no_hit_rate() {
     assert_eq!(memory.hit_rate("macro", now()), None);
     memory.record_episode(episode(1, true, now()));
     memory.record_episode(episode(2, false, now()));
-    assert_eq!(memory.hit_rate("macro", now()), Some(0.5));
+    // `episode` grades each call thirty days after it was made, so the track
+    // record exists from then and not before. This read `hit_rate(now())`
+    // and expected 0.5 until the leak below was closed: it was asserting a
+    // grade nobody had yet.
+    let graded = now().saturating_add(Duration::from_days(30));
+    assert_eq!(memory.hit_rate("macro", graded), Some(0.5));
+}
+
+#[test]
+fn an_outcome_resolved_after_the_as_of_instant_does_not_count_in_the_hit_rate() {
+    // A backtest replaying day 10 must read the analyst's record as it stood
+    // on day 10. Until 2026-11-13 `hit_rate` filtered on when the call was
+    // made and counted any outcome attached since, so a call made on day 0
+    // and graded on day 30 scored the analyst on day 10 with a grade nobody
+    // had: point-in-time leakage, and a backtest that reads it is fiction.
+    let mut memory = ResearchMemory::new();
+    let made = now();
+    // A wrong call graded on day 5 and a right call graded on day 30.
+    let mut early = episode(1, false, made);
+    if let Some(outcome) = early.outcome.as_mut() {
+        outcome.resolved_at = made.saturating_add(Duration::from_days(5));
+    }
+    let late = episode(2, true, made);
+    // The premise: the late grade really is after the instant read below,
+    // and the early one at or before it.
+    let day_ten = made.saturating_add(Duration::from_days(10));
+    assert!(
+        late.outcome
+            .as_ref()
+            .is_some_and(|o| o.resolved_at > day_ten)
+    );
+    assert!(
+        early
+            .outcome
+            .as_ref()
+            .is_some_and(|o| o.resolved_at <= day_ten)
+    );
+    memory.record_episode(early);
+    memory.record_episode(late);
+
+    // On day 10 only the day-5 grade was known: one wrong call, rate 0.
+    assert_eq!(memory.hit_rate("macro", day_ten), Some(0.0));
+    assert_eq!(memory.resolved_as_of("macro", day_ten).len(), 1);
+    // Before any grade, no record at all — not a rate over ungraded calls.
+    assert_eq!(memory.hit_rate("macro", made), None);
+    // On day 30 both grades are known.
+    let day_thirty = made.saturating_add(Duration::from_days(30));
+    assert_eq!(memory.hit_rate("macro", day_thirty), Some(0.5));
+    assert_eq!(memory.resolved_as_of("macro", day_thirty).len(), 2);
 }
 
 #[test]
