@@ -537,6 +537,7 @@ impl SourceTransport for Signing {
 
 /// An Ed25519 signer and a committed registry naming its key `ts-1` for
 /// issuer `test-issuer`, covering `source` until 2027.
+#[allow(clippy::unwrap_used)] // a test fixture: a key that cannot be made is the failure report
 fn test_issuer(
     source: &str,
 ) -> (

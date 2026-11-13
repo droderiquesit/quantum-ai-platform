@@ -6,7 +6,7 @@
 //! served the document; and the fabric credits only a token a verification
 //! made, never one decoded from bytes.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)] // integration tests may unwrap: a panic is the failure report; the float comparisons are against the exact constants the fabric adds, and replay must reproduce them bit for bit
 
 use qip_core::Timestamp;
 use qip_evidence::fabric::{INDEPENDENTLY_VOUCHED_CREDIT, JournaledClaim, UNSIGNED_AUTHENTICITY};
