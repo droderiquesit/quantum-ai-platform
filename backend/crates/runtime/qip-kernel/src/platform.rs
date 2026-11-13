@@ -2283,6 +2283,39 @@ fn scenario_input_digest(
 }
 
 impl StressReport {
+    /// Every world this stress priced, as the data the survival kernel reads
+    /// (ADR 0464): the library, the adversarial sequence, every causal driver
+    /// and the generated tail worlds — every number SIMULATE computed, and not
+    /// a curated subset of them. Not the advisory worlds, which are reported
+    /// and not applied. `qip-survival` cannot name this report, which is built
+    /// from `qip-simulation-engine`'s types and so reaches alpha.
+    pub fn worlds(&self) -> qip_survival::survival::StressedWorlds {
+        use qip_survival::survival::WorldLoss;
+        let library = self.scenarios.iter().map(|r| WorldLoss {
+            scenario: r.scenario.clone(),
+            loss_fraction: r.loss_fraction,
+        });
+        let adversarial = self.adversarial.iter().map(|sequence| WorldLoss {
+            scenario: ADVERSARIAL_SCENARIO_NAME.to_string(),
+            loss_fraction: sequence.result.loss_fraction,
+        });
+        let causal = self.causal.iter().map(|r| WorldLoss {
+            scenario: r.scenario.clone(),
+            loss_fraction: r.loss_fraction,
+        });
+        let tail = self.tail_worlds.iter().map(|w| WorldLoss {
+            scenario: w.scenario.clone(),
+            loss_fraction: w.loss_fraction,
+        });
+        qip_survival::survival::StressedWorlds {
+            worlds: library
+                .chain(adversarial)
+                .chain(causal)
+                .chain(tail)
+                .collect(),
+        }
+    }
+
     /// `report` carrying `advisory` as reported-only worlds, with the reserve
     /// they would demand if applied: the report with them moved into
     /// `tail_worlds`, priced by the same `survival::tail_response` the
@@ -2296,11 +2329,14 @@ impl StressReport {
         if !advisory.is_empty() {
             let mut applied = report.clone();
             applied.tail_worlds.extend(advisory.iter().cloned());
-            report.advisory_reserve =
-                crate::survival::tail_response(Some(&applied), equity, STRESS_LOSS_TOLERANCE)
-                    .ok()
-                    .flatten()
-                    .map(|response| response.reserve);
+            report.advisory_reserve = crate::survival::tail_response(
+                Some(&applied.worlds()),
+                equity,
+                STRESS_LOSS_TOLERANCE,
+            )
+            .ok()
+            .flatten()
+            .map(|response| response.reserve);
         }
         report.advisory_worlds = advisory;
         report
@@ -12926,7 +12962,7 @@ impl Platform {
     /// [`StressReport::advisory_reserve`] for the reserve they would demand.
     pub fn applied_stress_reserve(&self) -> Result<Option<Decimal>> {
         Ok(crate::survival::tail_response(
-            self.stress.as_ref(),
+            self.stress.as_ref().map(StressReport::worlds).as_ref(),
             self.equity(),
             STRESS_LOSS_TOLERANCE,
         )?
@@ -13234,9 +13270,12 @@ impl Platform {
             .deployable_capital(now)
             .and_then(|free| self.survival_figures(free, now));
         if let Ok(figures) = figures {
-            let _lowered_on_refusal =
-                self.governor
-                    .seed(figures, self.stress.as_ref(), STRESS_LOSS_TOLERANCE, now);
+            let _lowered_on_refusal = self.governor.seed(
+                figures,
+                self.stress.as_ref().map(StressReport::worlds).as_ref(),
+                STRESS_LOSS_TOLERANCE,
+                now,
+            );
         }
     }
 
@@ -15686,7 +15725,7 @@ impl Platform {
         // DECIDE (`crate::confidence`). Nothing here drops a feed.
         self.governor
             .signals_mut()
-            .observe_distribution(&statistics);
+            .observe_distribution(&statistics.distribution_reading());
         let statistics_detail = if statistics.has_findings() {
             format!("; {}", statistics.describe())
         } else {
@@ -19978,7 +20017,7 @@ impl Platform {
         let figures = self.survival_figures(free, now)?;
         let sizing = self.governor.size(
             figures,
-            self.stress.as_ref(),
+            self.stress.as_ref().map(StressReport::worlds).as_ref(),
             STRESS_LOSS_TOLERANCE,
             &views,
             now,

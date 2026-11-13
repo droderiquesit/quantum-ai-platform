@@ -8103,7 +8103,8 @@ fn decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant() 
             bytes: 0,
             cycle: 1,
             at: start(),
-        },
+        }
+        .distribution_reading(),
     );
     let (shrunk, _) = issue_through_the_platform(&mut shifted, &id)?;
     assert_eq!(shrunk, full * OOD_FLOOR);

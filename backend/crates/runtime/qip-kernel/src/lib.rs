@@ -46,7 +46,9 @@ pub mod chain_settlement;
 pub mod class_exposure;
 pub mod commerce_research;
 pub mod compute_routing;
-pub mod confidence;
+/// Moved to `qip-survival` (ADR 0464); re-exported so `qip_kernel::confidence`
+/// paths keep compiling.
+pub use qip_survival::confidence;
 pub mod config;
 pub mod cost_anomaly_tasks;
 pub mod counterfactual_alternatives;
@@ -100,7 +102,14 @@ pub mod sizing_review;
 pub mod source_alpha_record;
 pub mod source_discovery;
 pub mod source_lifecycle;
-pub mod survival;
+/// The survival kernel, moved to `qip-survival` (ADR 0464) and re-exported so
+/// `qip_kernel::survival` paths keep compiling, beside the survival limit the
+/// kernel installs because it composes the Capital and Risk Brains.
+pub mod survival {
+    pub use crate::survival_limit::install_survival_limit;
+    pub use qip_survival::survival::*;
+}
+mod survival_limit;
 pub mod symbolic_stage;
 pub mod tactical_lane;
 pub mod tail;

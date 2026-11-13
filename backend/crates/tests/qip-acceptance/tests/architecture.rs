@@ -1430,6 +1430,10 @@ const NO_SOLVER_AUTHORITY: &[&str] = &[
     // reserve floor, leverage decisions and the permission a financing
     // source needs. It says no to money, so no solver may reach it.
     "qip-treasury",
+    // The survival kernel and the confidence governor (ADR 0464, moved out of
+    // `qip-kernel`): the ceiling the survival limit vetoes against and the
+    // contraction a capital grant takes. It says no to money.
+    "qip-survival",
 ];
 
 /// The service crates that hold none of those four authorities.
@@ -4000,11 +4004,12 @@ fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
 /// resolved it on 2026-10-18, less the fabric's edge to `qip-capital`, which
 /// ADR 0385 removed on 2026-11-11, and the lifecycle's edge to
 /// `qip-simulation-engine`, which ADR 0386 removed the same day by moving the
-/// validation statistics to `qip-numerics`. Eleven edges, each a domain engine reading a
+/// validation statistics to `qip-numerics`, plus `qip-survival`'s edge to
+/// `qip-capital` (ADR 0464, 2026-11-12). Twelve edges, each a domain engine reading a
 /// *type* another engine publishes; none of them is a service reaching into
 /// another's mutable state. A new edge is a decision, so it is added here in
 /// the same change that adds it, with a reviewer reading why.
-const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 11] = [
+const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 12] = [
     ("qip-brokers", "qip-execution-engine"),
     ("qip-data-finder", "qip-market-ingestion"),
     ("qip-data-finder", "qip-mesh"),
@@ -4013,6 +4018,10 @@ const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 11] = [
     ("qip-execution-engine", "qip-risk-engine"),
     ("qip-portfolio-engine", "qip-optimization-engine"),
     ("qip-reasoning-engine", "qip-world-model"),
+    // ADR 0464: the survival kernel runs the capital waterfall
+    // (`CapitalSurvivalState`) and reads the ledger's obligations
+    // (`LedgerObligations`); both crates are the Capital Brain.
+    ("qip-survival", "qip-capital"),
     ("qip-twin", "qip-learning-engine"),
     ("qip-twin", "qip-simulation-engine"),
     ("qip-world-model", "qip-entity-resolution"),
