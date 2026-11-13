@@ -1537,6 +1537,14 @@ pub mod names {
     /// Remediations attempted, by action and outcome (`applied`, `refused`,
     /// `failed`).
     pub const AIOPS_REMEDIATIONS: &str = "qip_aiops_remediations_total";
+    /// Incidents triaged, by `severity` (`critical`, `major`, `minor` — the
+    /// `qip_observability::aiops::Severity` enum, so the label is bounded).
+    pub const AIOPS_INCIDENTS_TRIAGED: &str = "qip_aiops_incidents_triaged_total";
+    /// Checks the autonomous test loop ran against a drafted replay fixture,
+    /// by `outcome` (`cleared`, `still_shifted`, `awaiting_samples`,
+    /// `no_longer_reproduces`). A fixture that stops reproducing its own
+    /// shift is a regression test that no longer tests anything.
+    pub const AIOPS_FIXTURE_CHECKS: &str = "qip_aiops_fixture_checks_total";
     /// Entities the operations graph holds.
     pub const AIOPS_ENTITIES: &str = "qip_aiops_entities";
     /// A critical-path objective's error budget consumed, and the

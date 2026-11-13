@@ -2572,3 +2572,64 @@ fn every_drained_lake_segment_carries_the_venues_published_bytes_line_for_line()
     );
     Ok(())
 }
+
+/// ADR 0428, R12-CONTRACT-7072: a turn that applied tape events ships its
+/// feature digest with a market state pack built over them, at the seam that
+/// builds the digest. Without the wiring the contract would exist and no
+/// pass would ever carry one, which is the state this row was left in.
+///
+/// Pass 1 is excluded on purpose, and the exclusion is a measured fact, not
+/// a convenience: the simulated feed stamps its first events at the pass's
+/// own instant and there is no previous pass, so the interval is empty and
+/// the constructor refuses it (logged: "pass 1 ships no market state
+/// pack"). ADR 0428 decisions 3 and 4 make that pass unattested, which the
+/// consumer reads as flagged; this test pins that every later pass carries
+/// a pack.
+///
+/// Mutation: build the digest with `market_state: None` in
+/// `DecisionLoop::feature_digest` — the spooled digest over applied events
+/// then carries no pack and the final assertion fails.
+#[test]
+fn a_turn_that_applied_tape_ships_a_market_state_pack_in_its_feature_digest() -> Result<()> {
+    use qip_events::Topic;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let _watchdog = Watchdog::arm("a digest over applied events reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 10;
+    let digest = loop {
+        rig.decisions.turn(t(second))?;
+        second += 1;
+        let found = writer::records(&rig.spool)?
+            .into_iter()
+            .filter(|r| r.event.topic == Topic::ReflexFeatureDigested)
+            .map(|r| writer::feature_digest(&r.event))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .find(|d| d.applied > 0 && d.pass > 1);
+        if let Some(digest) = found {
+            break digest;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: no turn applied a tape event"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    let Some(pack) = &digest.market_state else {
+        panic!(
+            "pass {} applied {} event(s) and shipped no market state pack",
+            digest.pass, digest.applied
+        );
+    };
+    assert!(pack.from() < pack.to(), "a time-bounded pack");
+    assert_eq!(
+        pack.feature_lineage(),
+        [format!(
+            "reflex.market_event.applied@{}",
+            digest.applied_digest
+        )],
+        "the lineage names the tape this digest counted"
+    );
+    Ok(())
+}

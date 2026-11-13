@@ -152,8 +152,9 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookView, ChainView, CompanyView, ComplianceView, Desk, ExecutionRecord, ExecutionView,
-    ForecasterHealth, MarketView, ModelsView, PoolReading, RiskView, TradeSide,
+    BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk, ExecutionRecord,
+    ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView, ModelsView,
+    PoolReading, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -669,6 +670,18 @@ pub struct Platform {
     /// so the oldest *is* evicted here (see the constant for why that is
     /// right here and wrong for the two queues above).
     feasibility_refusals: Vec<FeasibilityRefusal>,
+    /// Evidence refusals recorded per venue per cycle, for the counterparty
+    /// member's resolver (R12-WORLD-3049). Written only beside the window in
+    /// [`Self::record_feasibility_refusal`] and never read by anything that
+    /// withdraws a venue: a tally, not evidence. Kept apart from the window
+    /// because the window evicts, and an eviction is not a refusal that
+    /// failed to happen. Bounded to the cycles a forecast can still wait on.
+    counterparty_arrivals: BTreeMap<String, BTreeMap<u64, u32>>,
+    /// Roles an operator declared for counterparties (R12-WORLD-3049).
+    counterparty_roles: BTreeMap<String, crate::federation_stage::CounterpartyRole>,
+    /// Dependencies an operator declared between counterparties: dependent,
+    /// provider, kind.
+    counterparty_edges: BTreeSet<(String, String, crate::federation_stage::DependencyKind)>,
     /// Venues withdrawn on feasibility evidence — blueprint §12.3's fourth
     /// row, ADR 0062. The one writer is [`Self::withdraw_venue`], reached
     /// from [`Self::review_venues`] after the `venue.withdrawn` record is
@@ -6393,6 +6406,7 @@ impl Platform {
                     now,
                 ),
                 marks: BTreeMap::new(),
+                purpose: BookPurpose::default(),
             },
             RiskView {
                 state: RiskState {
@@ -6418,6 +6432,7 @@ impl Platform {
         let book = Upstream::new(BookView {
             portfolio: asset_book_opened(initial_equity, now),
             marks: BTreeMap::new(),
+            purpose: BookPurpose::default(),
         });
         desk.book = book.gate(desk.book.required(), desk.book.label());
         let executions = Upstream::new(ExecutionView::default());
@@ -6738,6 +6753,9 @@ impl Platform {
             microstructure_deltas: BTreeMap::new(),
             microstructure_model: microstructure_model_resumed,
             feasibility_refusals: Vec::new(),
+            counterparty_arrivals: BTreeMap::new(),
+            counterparty_roles: BTreeMap::new(),
+            counterparty_edges: BTreeSet::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             yield_shelf: declared_shelf.shelf,
             routing_terms: declared_shelf.terms,
@@ -12345,10 +12363,70 @@ impl Platform {
                     .map(|bar| (object.to_string(), bar.close))
             })
             .collect();
+        let purpose = self.book_purpose(&portfolio, &marks);
         self.book.update(|view| {
             view.portfolio = portfolio;
             view.marks = marks;
+            view.purpose = purpose;
         });
+    }
+
+    /// What each held position is held for, as the desk's Portfolio/Asset
+    /// Brain reads it (R12-ASSET-3019, ADR 0468), from the records the
+    /// platform already decides with so the brain cannot disagree with
+    /// them: the horizon and hypothesis `construct_from` recorded, the
+    /// sizing instant beside the mandate, the hedge standing
+    /// [`Self::position_obligations`] states, and the factor breakdown
+    /// [`Portfolio::exposures`] computes from the catalogue loadings.
+    ///
+    /// A refusal from either of the last two is carried as its reason and
+    /// leaves the slot empty, so the brain reports every position as
+    /// undeclared and says why, rather than reporting the book unhedged.
+    fn book_purpose(
+        &self,
+        portfolio: &Portfolio,
+        marks: &BTreeMap<String, Decimal>,
+    ) -> BookPurpose {
+        use qip_financial::position_record::Declared;
+        let mut purpose = BookPurpose::default();
+        for position in portfolio.positions() {
+            let object = position.object_id.as_str();
+            if let Some((hypothesis, horizon)) = self.position_horizons.get(object) {
+                purpose.horizons.insert(
+                    object.to_string(),
+                    HeldHorizon {
+                        hypothesis: hypothesis.clone(),
+                        horizon: *horizon,
+                        sized_at: self
+                            .position_mandates
+                            .get(object)
+                            .map(crate::position_register::PositionMandate::sized_at),
+                    },
+                );
+            }
+        }
+        match self.position_obligations() {
+            Ok(obligations) => {
+                for (object, record) in obligations {
+                    let standing = match record.hedges() {
+                        Declared::Present(policies) => HedgeStanding::Hedged(policies.clone()),
+                        Declared::NoneApplicable { reason } => HedgeStanding::Unhedged {
+                            reason: reason.clone(),
+                        },
+                    };
+                    purpose.hedges.insert(object, standing);
+                }
+            }
+            Err(refusal) => purpose.hedges_refused = Some(refusal.message().to_string()),
+        }
+        let market = self.market.read();
+        match portfolio.exposures(&market.universe, marks) {
+            Ok(breakdown) => {
+                purpose.factor_exposure = breakdown.by_factor.net;
+            }
+            Err(refusal) => purpose.factors_refused = Some(refusal.message().to_string()),
+        }
+        purpose
     }
 
     /// List `object_id` in the universe history from `at` the first time the
@@ -16222,9 +16300,121 @@ impl Platform {
     /// is one two operators signed away; neither is the venue refusing, and
     /// counting them inflated a withdrawn or reinstated venue's forecast and
     /// resolved its proposition on refusals that were not its own.
+    /// Declare the part `name` plays in the counterparty network
+    /// (R12-WORLD-3049). A declared role outranks every derived one. Refuses
+    /// an empty name, and a declaration past [`COUNTERPARTY_MAX_VENUES`]
+    /// counterparties, which the member could not forecast for anyway.
+    ///
+    /// [`COUNTERPARTY_MAX_VENUES`]: crate::federation_stage::COUNTERPARTY_MAX_VENUES
+    pub fn declare_counterparty(
+        &mut self,
+        name: &str,
+        role: crate::federation_stage::CounterpartyRole,
+    ) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(Error::invalid(
+                "a counterparty with an empty name cannot be told from any other; name it",
+            ));
+        }
+        if !self.counterparty_roles.contains_key(name)
+            && self.counterparty_roles.len() >= crate::federation_stage::COUNTERPARTY_MAX_VENUES
+        {
+            return Err(Error::invalid(format!(
+                "{} counterparties are already declared, the most the counterparty member \
+                 forecasts for; withdraw one before declaring `{name}`",
+                crate::federation_stage::COUNTERPARTY_MAX_VENUES
+            )));
+        }
+        self.counterparty_roles.insert(name.to_string(), role);
+        Ok(())
+    }
+
+    /// Declare that `dependent` depends on `on` (R12-WORLD-3049): the edge
+    /// contagion is carried along. Refuses an empty name, a counterparty
+    /// depending on itself — a loop carries no cause and would read as one —
+    /// and more than four edges per forecastable counterparty.
+    pub fn declare_counterparty_dependency(
+        &mut self,
+        dependent: &str,
+        on: &str,
+        kind: crate::federation_stage::DependencyKind,
+    ) -> Result<()> {
+        if dependent.trim().is_empty() || on.trim().is_empty() {
+            return Err(Error::invalid(
+                "a dependency names both counterparties; an empty name is neither",
+            ));
+        }
+        if dependent == on {
+            return Err(Error::invalid(format!(
+                "`{dependent}` cannot depend on itself; name the provider it depends on"
+            )));
+        }
+        let bound = 4 * crate::federation_stage::COUNTERPARTY_MAX_VENUES;
+        let edge = (dependent.to_string(), on.to_string(), kind);
+        if !self.counterparty_edges.contains(&edge) && self.counterparty_edges.len() >= bound {
+            return Err(Error::invalid(format!(
+                "{bound} counterparty dependencies are already declared; withdraw one first"
+            )));
+        }
+        self.counterparty_edges.insert(edge);
+        Ok(())
+    }
+
+    /// The counterparty graph the member reads (R12-WORLD-3049), one view per
+    /// node in name order. Nodes: the desk broker, every venue holding
+    /// Evidence in the window or recorded recently, every declared
+    /// counterparty, every venue or custodian a positive holdings statement
+    /// names, and, for a venue with chain settlement terms, the chain its
+    /// proceeds settle on and the bridge they cross if one is declared.
+    /// Edges: the declared ones, the broker's custody dependency on each
+    /// holder of the book's assets, and each chain-settled venue's settlement
+    /// and bridge dependencies. Every derived edge comes from a fact the
+    /// platform already holds; none is inferred from a name.
     fn counterparty_views(&self) -> Vec<crate::federation_stage::CounterpartyView> {
+        use crate::federation_stage::{CounterpartyDependency, CounterpartyRole, DependencyKind};
+        let broker = self.broker.name().to_string();
+        let mut roles: BTreeMap<String, CounterpartyRole> = BTreeMap::new();
+        let mut edges: BTreeMap<String, BTreeSet<CounterpartyDependency>> = BTreeMap::new();
+        let mut edge = |from: &str, on: &str, kind: DependencyKind| {
+            edges
+                .entry(from.to_string())
+                .or_default()
+                .insert(CounterpartyDependency {
+                    on: on.to_string(),
+                    kind,
+                });
+        };
+        for (key, observation) in &self.holdings_observed {
+            let holder = key.venue.as_str();
+            if observation.observed.is_positive() && holder != broker {
+                roles.insert(holder.to_string(), CounterpartyRole::Custodian);
+                edge(&broker, holder, DependencyKind::Custody);
+            }
+        }
+        for (venue, terms) in &self.chain_settlement {
+            roles.entry(venue.clone()).or_default();
+            let chain = format!("settlement:{venue}");
+            roles.insert(chain.clone(), CounterpartyRole::SettlementAgent);
+            edge(venue, &chain, DependencyKind::Settlement);
+            if terms.bridged() {
+                let bridge = format!("bridge:{venue}");
+                roles.insert(bridge.clone(), CounterpartyRole::Bridge);
+                edge(venue, &bridge, DependencyKind::Bridge);
+            }
+        }
+        for (from, on, kind) in &self.counterparty_edges {
+            edge(from, on, *kind);
+            roles.entry(from.clone()).or_default();
+            roles.entry(on.clone()).or_default();
+        }
+        roles.insert(broker.clone(), CounterpartyRole::Broker);
+        for (name, role) in &self.counterparty_roles {
+            roles.insert(name.clone(), *role);
+        }
         let mut by_venue: BTreeMap<String, Vec<Timestamp>> = BTreeMap::new();
-        by_venue.insert(self.broker.name().to_string(), Vec::new());
+        for name in roles.keys().chain(self.counterparty_arrivals.keys()) {
+            by_venue.entry(name.clone()).or_default();
+        }
         let evidence: Vec<&FeasibilityRefusal> = self
             .feasibility_refusals
             .iter()
@@ -16246,6 +16436,16 @@ impl Platform {
                     } else {
                         refused_at.len() as f64 / total as f64
                     },
+                    role: roles.get(&venue).copied().unwrap_or_default(),
+                    depends_on: edges
+                        .get(&venue)
+                        .map(|set| set.iter().cloned().collect())
+                        .unwrap_or_default(),
+                    recorded_by_cycle: self
+                        .counterparty_arrivals
+                        .get(&venue)
+                        .cloned()
+                        .unwrap_or_default(),
                     venue,
                     refused_at,
                 },
@@ -24416,10 +24616,26 @@ impl Platform {
         // here rather than at a stage because this is the one state both the
         // pre-trade veto and the monitor read. See `crate::shared_cause` for
         // why the per-family level has no producer and no shipped cap.
-        let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
+        //
+        // The systemic level (R12-RISK-1162) is charged from the same
+        // attribution, across the region each held record names.
+        let regions: BTreeMap<String, String> = state
+            .position_notionals
+            .keys()
+            .filter_map(|instrument| {
+                self.exposure_axes_for(instrument)
+                    .remove("country")
+                    .map(|region| (instrument.clone(), region))
+            })
+            .collect();
+        let state = crate::shared_cause::observe(&self.world, &self.price_history, &regions, state);
         let state = self.with_margin_and_funding(state, figures);
         let state = self.with_custody_exposure(state);
         let state = self.with_twin_misfit(state);
+        // Operational risk (R12-RISK-1162): the gross stranded at each venue
+        // this platform has withdrawn for failing its order path, charged
+        // from the counterparty axis the line above also reads.
+        let state = qip_risk::operational::with_operational_failure(state, &self.withdrawn_venues);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -24536,9 +24752,12 @@ impl Platform {
         self.fill_calibration
             .venue(venue)
             .is_some_and(|calibration| {
+                // `correction_bps` is the larger of the spread and the
+                // impact correction (R12-TICK-2080): reading `bias_bps`
+                // alone let a size-dependent misfit hide in the slope.
+                let correction = calibration.correction_bps();
                 calibration.observations >= TWIN_MISFIT_MIN_OBSERVATIONS
-                    && (calibration.bias_bps.is_nan()
-                        || calibration.bias_bps.abs() >= TWIN_MISFIT_BIAS_BPS)
+                    && (correction.is_nan() || correction >= TWIN_MISFIT_BIAS_BPS)
             })
     }
 
@@ -28177,19 +28396,36 @@ impl Platform {
                             error_bps,
                             Histogram::signed_basis_points,
                         );
-                        // R12-TICK-2080: the fill's share of the bar it filled
-                        // in, so the calibration can split the error between
-                        // spread and impact. Unknown — no order on the desk, no
-                        // bar covering the fill, a bar with no volume — leaves
-                        // the spread to take the whole error, as before, rather
-                        // than a participation nobody measured.
-                        let participation = self.fill_participation(&order_id, &path);
-                        if let Err(error) = self.fill_calibration.observe_with_participation(
+                    }
+                    // R12-TICK-2080, ADR 0450: the twin's charged cost for
+                    // the venue's own fill, under the uncalibrated model and
+                    // in the twin's own impact units, against what the venue
+                    // actually cost. Not the entry error charted above: that
+                    // is the venue's slippage from the twin's mark, which no
+                    // improvement in the twin's cost model can shrink, and
+                    // fitting it charged every cost twice. A cell's fill has
+                    // no arrival price, and is measured from the twin's mark
+                    // until its report carries one (`fill_cost_error`).
+                    let base = CostModel::liquid_equity();
+                    if let Some((error_bps, unit)) =
+                        self.fill_cost_error(&order_id, &path, trade, &base)
+                    {
+                        match self.fill_calibration.observe_cost(
                             path.venue.as_str(),
+                            &base,
                             error_bps,
-                            participation,
+                            unit,
                         ) {
-                            problems.push(format!("fill calibration: {}", error.message()));
+                            Ok(observed) if observed.refused => problems.push(format!(
+                                "fill calibration: the correction fitted at {} would carry the \
+                                 twin's spread or impact past the platform's cost ceiling, so \
+                                 the previous one is kept",
+                                path.venue.as_str()
+                            )),
+                            Ok(_) => {}
+                            Err(error) => {
+                                problems.push(format!("fill calibration: {}", error.message()))
+                            }
                         }
                     }
                     scored += 1;
@@ -28627,42 +28863,87 @@ impl Platform {
         self.tactical = Some(refresh);
     }
 
-    /// The share of its bar's volume a scored fill took (R12-TICK-2080): the
-    /// quantity the desk's order filled, or the cell's reported fill
-    /// quantity, over the volume of the held bar whose session covers the
-    /// decision instant. `None` when any of the three is unknown, so the
-    /// calibration charges the error to the spread alone rather than to a
-    /// size nobody measured. Money to statistic at the one place it happens
-    /// for this path: a participation is a ratio of two quantities.
-    fn fill_participation(&self, order_id: &OrderId, path: &FilledPath) -> Option<f64> {
-        let quantity = match &path.cell {
-            Some(origin) => origin.quantity,
-            None => self
-                .orders
-                .order(order_id)?
-                .fills
-                .iter()
-                .try_fold(Decimal::ZERO, |sum, fill| sum.checked_add(fill.quantity))?,
+    /// The twin's charged cost for a scored desk fill under `base`, less
+    /// what the venue actually cost, in basis points of notional, with the
+    /// fill's impact unit in the twin's terms (R12-TICK-2080, ADR 0450).
+    ///
+    /// Reality's cost is the venue's slippage from the order's arrival
+    /// price plus the fees it billed over the notional it filled. The
+    /// twin's is `base` pricing the quantity the venue filled at the twin's
+    /// own entry mark, against the liquidity the twin priced its trade arm
+    /// with — so the size is the venue's and the volume and volatility are
+    /// the twin's, which is the only pairing in which the impact term means
+    /// the same thing on both sides. A cell's fill is measured from the
+    /// twin's mark instead, for want of an arrival price (see the arm).
+    /// `None` when a desk fill has no order or arrival price, there is no
+    /// traded arm, or `base` refuses the size; the unit is `None` when the twin's volatility scales impact
+    /// to nothing, so the error is charged to the spread alone. Money
+    /// crosses to statistics here and is never booked.
+    fn fill_cost_error(
+        &self,
+        order_id: &OrderId,
+        path: &FilledPath,
+        trade: Option<&qip_twin::counterfactual::Counterfactual>,
+        base: &CostModel,
+    ) -> Option<(f64, Option<f64>)> {
+        let outcome = &trade?.counterfactual_outcome;
+        let SimulatedFill::Filled { entry_price, .. } = outcome.fill() else {
+            return None;
         };
-        if quantity <= Decimal::ZERO {
+        let liquidity = outcome.entry_liquidity()?;
+        let (filled, reality_bps) = match &path.cell {
+            // A cell's report carries neither the arrival price its order
+            // was sent at nor the fees the venue billed, so its cost is
+            // measured from the twin's own mark with no fees: the price
+            // error and the cost error cannot be told apart on a cell fill
+            // until the report carries both (ADR 0450, "What remains").
+            // Kept rather than dropped because R12-RES-7104's hold at a
+            // cell's venue reads that venue's calibration.
+            Some(origin) => {
+                let slippage =
+                    signed_bps(path.fill_price.to_f64(), entry_price.to_f64(), path.side)?;
+                (origin.quantity, slippage)
+            }
+            None => {
+                let order = self.orders.order(order_id)?;
+                let arrival = order.arrival_price;
+                if !arrival.is_positive() {
+                    return None;
+                }
+                let filled = order
+                    .fills
+                    .iter()
+                    .try_fold(Decimal::ZERO, |sum, fill| sum.checked_add(fill.quantity))?;
+                let notional: f64 = order
+                    .fills
+                    .iter()
+                    .map(|fill| fill.quantity.to_f64() * fill.price.to_f64())
+                    .sum();
+                let paid: f64 = order.fills.iter().map(|fill| fill.costs.to_f64()).sum();
+                if !(notional.is_finite() && notional > 0.0) {
+                    return None;
+                }
+                let slippage = signed_bps(path.fill_price.to_f64(), arrival.to_f64(), path.side)?;
+                (filled, slippage + paid / notional * 10_000.0)
+            }
+        };
+        if filled <= Decimal::ZERO {
             return None;
         }
-        let bars = self.bar_history.get(path.object_id.as_str())?;
-        let bar = bars
-            .iter()
-            .find(|bar| bar.open_time <= path.decided_at && path.decided_at < bar.close_time())
-            .or_else(|| {
-                bars.iter()
-                    .rev()
-                    .find(|bar| bar.close_time() <= path.decided_at)
-            })?;
-        if bar.volume <= Decimal::ZERO {
-            return None;
-        }
-        let participation = quantity.to_f64() / bar.volume.to_f64();
-        (0.0..=1.0)
-            .contains(&participation)
-            .then_some(participation)
+        let charged = base
+            .cost_of(
+                filled,
+                *entry_price,
+                liquidity.daily_volume_f64,
+                liquidity.daily_volatility_f64,
+            )
+            .ok()?;
+        let error_bps = charged.total_bps() - reality_bps;
+        let unit = base.impact_unit(
+            filled.to_f64() / liquidity.daily_volume_f64,
+            liquidity.daily_volatility_f64,
+        );
+        error_bps.is_finite().then_some((error_bps, unit))
     }
 
     /// The twin's per-venue fill calibration, as the scored fills have moved
@@ -28729,6 +29010,18 @@ impl Platform {
             names::FEASIBILITY_REFUSALS,
             labels([("venue", venue), ("constraint", constraint)]),
         );
+        if standing == RefusalStanding::Evidence {
+            let floor = self
+                .cycle
+                .saturating_sub(crate::federation_stage::FEDERATION_PENDING_CYCLES + 1);
+            let tally = self
+                .counterparty_arrivals
+                .entry(venue.to_string())
+                .or_default();
+            tally.retain(|cycle, _| *cycle >= floor);
+            let count = tally.entry(self.cycle).or_insert(0);
+            *count = count.saturating_add(1);
+        }
         if self.feasibility_refusals.len() >= FEASIBILITY_WINDOW {
             // **Nothing that cannot withdraw a venue may displace something
             // that can.** An echo and a pardoned refusal are both denominator
@@ -30427,6 +30720,8 @@ fn gate_of(refusal: &RefusalReason) -> String {
         RefusalReason::VenueRejected { .. } => "venue",
         // The edge charts the same pattern under `conduct_spoofing`.
         RefusalReason::Conduct { .. } => "conduct-spoofing",
+        // The edge charts the same pattern under `self_trade` (ADR 0472).
+        RefusalReason::SelfTrade { .. } => "conduct-self-trade",
     }
     .to_string()
 }
@@ -31587,6 +31882,174 @@ mod decide_tests {
             "{views:?}"
         );
         assert!((of("YVENUE").share - 2.0 / 3.0).abs() < 1e-12, "{views:?}");
+    }
+
+    /// R12-WORLD-3049: the counterparty graph is built from facts the
+    /// platform holds. A positive holdings statement makes its holder a
+    /// custodian the broker depends on for custody; a venue's chain
+    /// settlement terms make its chain a settlement dependency and its
+    /// declared bridge a bridge dependency; a declared role and edge are
+    /// carried; and a declaration naming no provider, or itself, is refused.
+    ///
+    /// Mutations: derive no custody edge; drop the bridge node; drop the
+    /// settlement node; ignore declared edges; accept a self-dependency.
+    #[test]
+    fn the_counterparty_graph_names_custodians_bridges_and_settlement_dependencies() {
+        use crate::federation_stage::{CounterpartyDependency, CounterpartyRole, DependencyKind};
+        use qip_chain::{Confirmations, FeeBps};
+        let mut platform = small_book_platform();
+        platform
+            .observe_statement(
+                VenueId::new("custodian-a"),
+                "USD",
+                Decimal::from_int(1_000),
+                Decimal::from_int(1),
+                Timestamp::from_secs(1_760_000_000),
+            )
+            .expect("a cash statement is accepted");
+        let bridge = crate::chain_settlement::DeclaredBridge::declare(
+            Duration::from_mins(10),
+            FeeBps::new(30).expect("30bp is a fee"),
+        )
+        .expect("a positive delay is a bridge");
+        platform.declare_chain_settlement(
+            "XCHAIN",
+            crate::chain_settlement::ChainSettlementTerms::declare(
+                Confirmations::exactly(12),
+                Duration::from_secs(12),
+                Some(bridge),
+            )
+            .expect("twelve blocks of twelve seconds are terms"),
+        );
+        platform
+            .declare_counterparty("ccp-a", CounterpartyRole::SettlementAgent)
+            .expect("a named role is accepted");
+        platform
+            .declare_counterparty_dependency("XVENUE", "ccp-a", DependencyKind::Settlement)
+            .expect("a named edge is accepted");
+        assert!(
+            platform
+                .declare_counterparty_dependency("XVENUE", "XVENUE", DependencyKind::Settlement)
+                .is_err()
+        );
+        assert!(
+            platform
+                .declare_counterparty_dependency("XVENUE", " ", DependencyKind::Settlement)
+                .is_err()
+        );
+        assert!(
+            platform
+                .declare_counterparty("", CounterpartyRole::Bridge)
+                .is_err()
+        );
+
+        let views = platform.counterparty_views();
+        let of = |name: &str| {
+            views
+                .iter()
+                .find(|v| v.venue == name)
+                .unwrap_or_else(|| panic!("no view of {name}: {views:?}"))
+        };
+        let dep = |on: &str, kind| CounterpartyDependency {
+            on: on.to_string(),
+            kind,
+        };
+        let broker = platform.broker.name().to_string();
+        assert_eq!(of(&broker).role, CounterpartyRole::Broker);
+        assert!(
+            of(&broker)
+                .depends_on
+                .contains(&dep("custodian-a", DependencyKind::Custody)),
+            "{views:?}"
+        );
+        assert_eq!(of("custodian-a").role, CounterpartyRole::Custodian);
+        assert_eq!(
+            of("XCHAIN").depends_on,
+            vec![
+                dep("bridge:XCHAIN", DependencyKind::Bridge),
+                dep("settlement:XCHAIN", DependencyKind::Settlement),
+            ]
+        );
+        assert_eq!(of("bridge:XCHAIN").role, CounterpartyRole::Bridge);
+        assert_eq!(
+            of("settlement:XCHAIN").role,
+            CounterpartyRole::SettlementAgent
+        );
+        assert_eq!(
+            of("XVENUE").depends_on,
+            vec![dep("ccp-a", DependencyKind::Settlement)]
+        );
+        assert_eq!(of("ccp-a").role, CounterpartyRole::SettlementAgent);
+        assert!(
+            crate::federation_stage::counterparty_roles_unmodelled(&views).is_empty(),
+            "{views:?}"
+        );
+    }
+
+    /// R12-WORLD-3049, the resolver limits the 2026-10-31 skeptic named: the
+    /// counterparty member resolves on what each cycle *recorded*, so an
+    /// eviction from the full window cannot falsify the count, a cell report
+    /// stamped long before its ingestion is counted in the cycle that
+    /// recorded it, and only Evidence is counted.
+    ///
+    /// Mutations: tally every standing; tally under the refusal's stamp
+    /// rather than the recording cycle; drop the tally when the window is
+    /// full.
+    #[test]
+    fn the_counterparty_tally_counts_by_recording_cycle_and_survives_eviction() {
+        use crate::venue_review::{FEASIBILITY_WINDOW, FeasibilitySeam, RefusalStanding};
+        let mut platform = small_book_platform();
+        let early = Timestamp::from_secs(1_000);
+        platform.cycle = 4;
+        for _ in 0..FEASIBILITY_WINDOW {
+            platform.record_feasibility_refusal(
+                "XFLOOD",
+                "feasibility_lot_size",
+                FeasibilitySeam::Edge,
+                Some("cell-a"),
+                early,
+                RefusalStanding::Evidence,
+            );
+        }
+        platform.record_feasibility_refusal(
+            "XECHO",
+            "feasibility_withdrawn_venue",
+            FeasibilitySeam::Edge,
+            Some("cell-a"),
+            early,
+            RefusalStanding::Echo,
+        );
+        platform.cycle = 5;
+        // Stamped at the epoch's dawn, recorded in cycle 5; the window is
+        // full, so it evicts one of cycle 4's entries as it is seated.
+        platform.record_feasibility_refusal(
+            "XLATE",
+            "feasibility_lot_size",
+            FeasibilitySeam::Edge,
+            Some("cell-b"),
+            early,
+            RefusalStanding::Evidence,
+        );
+        // Premise: the window is full and evicted a cycle-4 entry.
+        assert_eq!(platform.feasibility_refusals.len(), FEASIBILITY_WINDOW);
+        let views = platform.counterparty_views();
+        let of = |name: &str| views.iter().find(|v| v.venue == name);
+        let flood = of("XFLOOD").expect("the flooding venue is a node");
+        assert_eq!(flood.refused_at.len(), FEASIBILITY_WINDOW - 1);
+        assert_eq!(
+            flood.recorded_by_cycle.get(&4).copied(),
+            Some(u32::try_from(FEASIBILITY_WINDOW).expect("the window fits u32")),
+            "an eviction falsified the cycle's count"
+        );
+        assert_eq!(
+            of("XLATE").map(|v| v.recorded_by_cycle.clone()),
+            Some(BTreeMap::from([(5, 1)])),
+            "a late-ingested report was not counted in the cycle that recorded it"
+        );
+        assert!(
+            of("XECHO").is_none_or(|v| v.recorded_by_cycle.is_empty()),
+            "an echo was counted as a refusal"
+        );
     }
 
     /// R12-QUANT-4018: a promotion restored from the log passes the workload
@@ -32889,6 +33352,213 @@ mod decide_tests {
             blocks(&state, CUSTODIAN_LIMIT),
             "0.70 of equity at one custodian did not block against the 0.60 cap: {:?}",
             LimitSet::conservative_default().check(&state).breaches
+        );
+    }
+
+    /// The names the shipped set gives R12-RISK-1162's two caps, compared for
+    /// equality for the reason [`CAUSAL_DRIVER_LIMIT`] gives.
+    const OPERATIONAL_LIMIT: &str = "operational-failure-venue-gross";
+    const SYSTEMIC_LIMIT: &str = "systemic-contagion";
+
+    #[test]
+    fn gross_stranded_at_a_venue_the_platform_withdrew_blocks_through_risk_state() {
+        // R12-RISK-1162, operational risk. A withdrawal stops new orders
+        // reaching a venue whose order path failed; the gross already there
+        // stays exposed to that failure. Four positions of 750,000 traded at
+        // one venue are 0.30 of a ten-million book: 0.075 each against the
+        // 0.10 position cap, so nothing else in the shipped set objects.
+        let mut platform = shared_cause_platform();
+        let mut at_venue = BTreeMap::new();
+        at_venue.insert(
+            qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+            "venue-failing".to_string(),
+        );
+        for index in 0..4 {
+            platform
+                .aggregates
+                .apply_fill(
+                    DESK_STRATEGY,
+                    &format!("STRANDED-{index}"),
+                    &at_venue,
+                    Decimal::from_int(750_000),
+                )
+                .expect("aggregated");
+        }
+        // Premise: the venue is healthy, so the axis is absent and the cap is
+        // silent — the block below is the withdrawal's doing.
+        let healthy = platform.risk_state();
+        assert!(
+            !healthy
+                .axis_exposures
+                .contains_key(qip_risk::OPERATIONAL_FAILURE_AXIS)
+        );
+        assert!(!breaches(&healthy, OPERATIONAL_LIMIT));
+        assert!(
+            LimitSet::conservative_default()
+                .check(&healthy)
+                .blocking()
+                .is_empty(),
+            "premise: the healthy book blocks on nothing: {:?}",
+            LimitSet::conservative_default().check(&healthy).breaches
+        );
+
+        platform
+            .withdrawn_venues
+            .insert("venue-failing".to_string());
+        let state = platform.risk_state();
+        assert_eq!(
+            state.axis_exposures[qip_risk::OPERATIONAL_FAILURE_AXIS]["venue-failing"],
+            Decimal::from_int(3_000_000)
+        );
+        assert!(
+            blocks(&state, OPERATIONAL_LIMIT),
+            "0.30 of equity stranded at a withdrawn venue did not block against 0.25: {:?}",
+            LimitSet::conservative_default().check(&state).breaches
+        );
+        // And the veto reaches an order in a different name entirely.
+        let checker = PreTradeChecker::new(LimitSet::conservative_default());
+        let order = qip_risk_engine::pretrade::ProposedOrder {
+            object_id: qip_core::ids::ObjectId::from_string("ELSEWHERE"),
+            quantity: Decimal::from_int(1),
+            reference_price: Decimal::from_int(100),
+            axes: BTreeMap::new(),
+            scope: DESK_STRATEGY.to_string(),
+        };
+        let result = checker
+            .check(&order, &state, Timestamp::from_secs(1_760_000_000))
+            .expect("a well-formed order is checked rather than refused as malformed");
+        let qip_risk_engine::pretrade::PreTradeDecision::Rejected { reasons } = &result.decision
+        else {
+            panic!(
+                "new risk elsewhere was admitted while 0.30 of equity sat at a withdrawn \
+                 venue: {}",
+                result.decision.describe()
+            );
+        };
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.starts_with(&format!("{OPERATIONAL_LIMIT}: "))),
+            "rejected, but not for the stranded gross: {reasons:?}"
+        );
+    }
+
+    /// A universe whose records name the region the systemic level reads.
+    fn regional_universe(listings: &[(&str, &str)]) -> Universe {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut universe = Universe::new();
+        for (symbol, country) in listings.iter().copied() {
+            universe
+                .insert(
+                    FinancialObject::builder(
+                        qip_core::ObjectId::from_string(symbol),
+                        symbol,
+                        InstrumentType::CommonStock,
+                        LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                    )
+                    .venue("XNAS")
+                    .sector(Sector::Financials)
+                    .geography(country)
+                    .price(Decimal::from_int(100))
+                    .provenance(Provenance::synthetic("test", now))
+                    .build(now)
+                    .expect("valid object"),
+                )
+                .expect("insertable");
+        }
+        universe
+    }
+
+    /// Five positions of 800,000 (0.08 each, 0.40 together) all downstream of
+    /// one claimed cause, in the regions `listings` names.
+    fn one_driver_book(listings: &[(&str, &str)]) -> RiskState {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(10_000_000));
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            regional_universe(listings),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        for (symbol, _) in listings {
+            platform
+                .aggregates
+                .apply_fill(
+                    DESK_STRATEGY,
+                    symbol,
+                    &BTreeMap::new(),
+                    Decimal::from_int(800_000),
+                )
+                .expect("aggregated");
+            platform
+                .world
+                .update(|world| {
+                    world.claim_causal(
+                        qip_world_model::causal::CausalEdge::new(
+                            "funding-stress",
+                            *symbol,
+                            qip_world_model::causal::Mechanism::DiscountRate,
+                            1.0,
+                            Duration::from_days(1),
+                            Timestamp::from_secs(1_760_000_000),
+                        )
+                        .expect("a strength in [0, 1] is admitted")
+                        .with_confidence(1.0)
+                        .expect("a confidence in [0, 1] is admitted"),
+                    )
+                })
+                .expect("an edge naming both ends is admitted");
+        }
+        platform.risk_state()
+    }
+
+    #[test]
+    fn one_causal_driver_reaching_two_regions_blocks_through_risk_state_and_one_region_does_not() {
+        // R12-RISK-1162, systemic risk. 0.40 of equity behind one mechanism
+        // sits inside the causal-driver cap's 0.50 (and below its 0.425
+        // warning), so that cap admits both books below. Only the regional
+        // span tells them apart.
+        let local = one_driver_book(&[
+            ("US-A", "US"),
+            ("US-B", "US"),
+            ("US-C", "US"),
+            ("US-D", "US"),
+            ("US-E", "US"),
+        ]);
+        assert!(
+            !breaches(&local, CAUSAL_DRIVER_LIMIT),
+            "premise: the driver cap admits 0.40"
+        );
+        assert!(
+            local.axis_exposures[qip_risk::SYSTEMIC_CONTAGION_AXIS].is_empty(),
+            "a mechanism confined to one region is measured and not systemic"
+        );
+        assert!(!breaches(&local, SYSTEMIC_LIMIT));
+
+        let crossing = one_driver_book(&[
+            ("US-A", "US"),
+            ("US-B", "US"),
+            ("US-C", "US"),
+            ("DE-A", "DE"),
+            ("DE-B", "DE"),
+        ]);
+        assert!(!breaches(&crossing, CAUSAL_DRIVER_LIMIT));
+        assert!(!breaches(&crossing, "country-concentration"));
+        assert_eq!(
+            crossing.axis_exposures[qip_risk::SYSTEMIC_CONTAGION_AXIS]["funding-stress"],
+            Decimal::from_int(4_000_000)
+        );
+        assert!(
+            blocks(&crossing, SYSTEMIC_LIMIT),
+            "0.40 of equity behind one cross-border mechanism did not block against 0.35: {:?}",
+            LimitSet::conservative_default().check(&crossing).breaches
         );
     }
 

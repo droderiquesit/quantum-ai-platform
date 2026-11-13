@@ -2225,6 +2225,43 @@ impl LimitSet {
                      until the twin's error comes back inside the measured bound",
                 ),
             )
+            // Added by R12-RISK-1162 (ADR 0462). Strictly additions: no
+            // limit above moved. Operational: a venue the platform withdrew
+            // on feasibility evidence is at least as unreliable as one whose
+            // twin misprices it, so it carries no more than the misfit cap's
+            // quarter of equity — the same figure, not a new one. Systemic:
+            // one causal mechanism reaching two or more regions may carry no
+            // more of equity than one sector may (`sector-concentration`'s
+            // 0.35), which sits inside the causal-driver cap's 0.50, so the
+            // contagion cap fires on books the driver cap admits.
+            .with(
+                Limit::new(
+                    "operational-failure-venue-gross",
+                    LimitKind::MaxAxisWeight {
+                        axis: crate::operational::OPERATIONAL_FAILURE_AXIS.into(),
+                        limit: 0.25,
+                    },
+                )
+                .with_rationale(
+                    "gross stranded at a venue the platform withdrew for failing its order \
+                     path cannot be adjusted through that venue: it may carry at most a \
+                     quarter of equity before new risk elsewhere is refused",
+                ),
+            )
+            .with(
+                Limit::new(
+                    "systemic-contagion",
+                    LimitKind::MaxAxisWeight {
+                        axis: crate::systemic::SYSTEMIC_CONTAGION_AXIS.into(),
+                        limit: 0.35,
+                    },
+                )
+                .with_rationale(
+                    "a causal driver whose held positions span regions turns one shock into \
+                     contagion the per-country cap cannot see: no such driver may carry more \
+                     of equity than one sector may",
+                ),
+            )
         // No venue limit ships here. `venue-exposure-simulated` did, and
         // nothing in production writes `RiskState::venue_exposures`, so it
         // read zero on every book and could not fire. Restore it only in the

@@ -132,6 +132,13 @@ pub struct FeatureDigest {
     pub applied_from_ns: i64,
     pub applied_to_ns: i64,
     pub applied_digest: String,
+    /// The market state the pass's applied events describe, with the
+    /// integrity flags computed from them (ADR 0428, amending ADR 0151
+    /// decision 2's carrier). Absent when the pass applied no event, which
+    /// is "no tape"; absent over applied events is *unattested*, and a
+    /// consumer reads it as flagged, never as clean (ADR 0428 decision 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub market_state: Option<crate::market_state::MarketStatePack>,
 }
 
 /// The features one instrument was sized against this pass.
