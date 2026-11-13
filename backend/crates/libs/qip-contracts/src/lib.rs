@@ -52,6 +52,7 @@ pub mod message;
 pub mod policy;
 pub mod quantum;
 pub mod reflex;
+pub mod reflex_forecast;
 pub mod reflex_journal;
 pub mod reflex_package;
 pub mod regional_episode;
