@@ -63,6 +63,18 @@ spread on no new evidence.
   on an accelerating return.
 - The NOW review's `ensemble` lists six workers, not four.
 
+## What it costs
+
+- Two more workers run on every variable each step. The network keeps three
+  reading means and two weights per variable, bounded by the store's own
+  variable bound and dropped on expiry; the symbolic estimator keeps nothing.
+- Every downstream reader of the instrument `return` now reads an ensemble
+  that includes a learned transition, so a lattice forecast moves slightly
+  when the network has learned a trend, and a replay of an older log under
+  this build promotes different means from the one that wrote it.
+- The NOW review's `ensemble` lists six workers, and any reader that
+  counted four had to be updated (two kernel tests were).
+
 ## What remains
 
 The causal estimator is still not standard. The causal graph's edge
