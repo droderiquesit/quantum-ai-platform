@@ -459,6 +459,68 @@ fn a_cell_at_observation_holds_none_of_the_region_allocation() -> Result<()> {
     Ok(())
 }
 
+/// A signal refused at a decision gate reaches the centre with what it
+/// proposed (R12-MODEL-7210, ADR 0448).
+///
+/// The failure this guards: a cell's refusal of a directional signal shipped
+/// as a gate and a sentence, so the centre's LEARN stage priced every veto
+/// the desk made and none a cell made — a loop that learns only from what it
+/// was allowed to do. Observation autonomy is the gate driven here because it
+/// refuses an intent whose instrument, venue, side and admitted size are all
+/// known.
+///
+/// Mutation: `refuse_proposed` without its `refused_legs.push` — the
+/// autonomy refusal ships with no leg ("carries no proposal").
+#[test]
+fn a_signal_refused_at_observation_ships_the_leg_it_proposed_on_the_delta() -> Result<()> {
+    let mut cell = trading_cell(&[("alpha", SignalKind::Enter, "100")], None, None)?;
+    let operator = OperatorIdentity::verified("alice@example.com", "oidc", t(40));
+    cell.autonomy_mut().request_change(
+        AutonomyLevel::Observation,
+        &operator,
+        "a drill that proves an observed refusal carries its proposal",
+        None,
+        t(41),
+    )?;
+    let report = cell.work(t(50), &mut RecordingGateway::default())?;
+    let delta = cell.state_delta(&report, t(50));
+    let refused: Vec<_> = delta
+        .refusals
+        .iter()
+        .filter(|refusal| refusal.gate == "autonomy")
+        .collect();
+    // Premise: the autonomy gate refused exactly one intent.
+    assert_eq!(refused.len(), 1, "the premise failed: {:?}", delta.refusals);
+    assert_eq!(
+        refused[0].legs.len(),
+        1,
+        "the autonomy refusal carries no proposal: {:?}",
+        refused[0]
+    );
+    let leg = &refused[0].legs[0];
+    assert_eq!(leg.object_id, object());
+    assert_eq!(leg.venue, venue());
+    // An `Enter` buys, and a buy takes the ask on the wire.
+    assert_eq!(leg.side, BookSide::Ask);
+    assert!(leg.quantity.is_positive(), "the leg has no size: {leg:?}");
+    assert!(
+        leg.quantity <= dec!("100"),
+        "the leg is larger than the signal asked for: {leg:?}"
+    );
+    assert!(leg.reference_price.is_positive());
+    // Only the refusal that judged the intent carries it.
+    assert!(
+        delta
+            .refusals
+            .iter()
+            .filter(|refusal| refusal.gate != "autonomy")
+            .all(|refusal| refusal.legs.is_empty()),
+        "a leg was attached to a refusal that did not judge it: {:?}",
+        delta.refusals
+    );
+    Ok(())
+}
+
 #[test]
 fn the_region_allocation_series_report_what_the_cell_has_left() -> Result<()> {
     let opening = dec!("100000000");

@@ -297,6 +297,29 @@ impl CostModel {
         Ok(self.pricing_at(daily_volatility)?.impact_bps(participation))
     }
 
+    /// The factor [`Self::impact_coefficient_bps`] is multiplied by to give
+    /// the impact of one order: the measured volatility over the reference,
+    /// times the square root of the participation (capped where
+    /// `qip-financial`'s law caps it), so that
+    /// `impact_bps(p, σ) == impact_coefficient_bps * impact_unit(p, σ)`.
+    ///
+    /// Stated so a caller fitting the coefficient from fills (R12-TICK-2080)
+    /// fits it in the units the model prices in. A fit in
+    /// `sqrt(quantity / one bar's volume)` — what the twin's calibration used
+    /// first — differs from this by the volatility scale and by the ratio of
+    /// that bar's volume to the window's mean, and a slope in the wrong unit
+    /// is a coefficient correction of the wrong size. A participation that
+    /// is negative or not a number has no unit and yields `None`, as does a
+    /// volatility the model would scale to zero.
+    pub fn impact_unit(&self, participation: f64, daily_volatility: f64) -> Option<f64> {
+        if !(participation.is_finite() && participation >= 0.0) {
+            return None;
+        }
+        let scale = self.volatility_scale(daily_volatility);
+        let unit = scale * participation.min(4.0).sqrt();
+        (unit.is_finite() && scale > 0.0).then_some(unit)
+    }
+
     pub fn is_frictionless(&self) -> bool {
         self.commission_bps == 0.0
             && self.tax_bps == 0.0
