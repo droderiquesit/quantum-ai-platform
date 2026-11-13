@@ -18,6 +18,10 @@
 //! 1. [`AgencyRecord::PassOpened`] — the goal, the acting identity, and the
 //!    code and policy versions the pass ran under (R12-GOV-6121: a decision
 //!    nobody can say what produced cannot be reproduced);
+//!    then any [`AgencyRecord::ToolRevoked`] or
+//!    [`AgencyRecord::ToolReauthorised`] taking effect from this pass
+//!    (ADR 0534), which [`resume`] folds so a withdrawal outlives the policy
+//!    line that made it;
 //! 2. a widening, if one was asked for, granted or refused;
 //! 3. [`AgencyRecord::GoalApproved`], [`AgencyRecord::PlanApproved`] and —
 //!    only once an adapter call was attempted — [`AgencyRecord::Executed`]:
@@ -195,6 +199,23 @@ pub enum AgencyRecord {
         stage_failed: Option<String>,
         reason: String,
     },
+    /// A registered tool withdrawn by the operator's policy (ADR 0534,
+    /// R12-RES-7109). Written once, with the first pass that runs under the
+    /// revocation, and read back by [`resume`] so the withdrawal outlives
+    /// the policy line that made it: deleting the name from the policy
+    /// readmits nothing.
+    ToolRevoked {
+        pass: u64,
+        tool: String,
+    },
+    /// A revoked tool restored, and on whose authority (ADR 0534): the only
+    /// record [`resume`] lifts a [`Self::ToolRevoked`] on.
+    ToolReauthorised {
+        pass: u64,
+        tool: String,
+        operator: String,
+        reason: String,
+    },
     PassConcluded {
         pass: u64,
         /// `shadowed`, `executed`, `refused`, `stopped`, `no_action`,
@@ -226,6 +247,8 @@ impl AgencyRecord {
             | Self::PlanBlocked { pass, .. }
             | Self::Learned { pass, .. }
             | Self::LearningWithheld { pass, .. }
+            | Self::ToolRevoked { pass, .. }
+            | Self::ToolReauthorised { pass, .. }
             | Self::PassConcluded { pass, .. } => *pass,
         }
     }
@@ -245,6 +268,8 @@ impl AgencyRecord {
             Self::PlanBlocked { .. } => "blocked",
             Self::Learned { .. } => "learned",
             Self::LearningWithheld { .. } => "learning-withheld",
+            Self::ToolRevoked { .. } => "tool-revoked",
+            Self::ToolReauthorised { .. } => "tool-reauthorised",
             Self::PassConcluded { .. } => "concluded",
         }
     }
@@ -323,6 +348,28 @@ fn outcome_label(outcome: &Outcome) -> (&'static str, String, Vec<String>) {
     }
 }
 
+/// A change to which registered tools stand withdrawn (ADR 0534), journaled
+/// with the pass it first applies to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StandingChange {
+    Revoked {
+        tool: String,
+    },
+    Reauthorised {
+        tool: String,
+        operator: String,
+        reason: String,
+    },
+}
+
+impl StandingChange {
+    pub fn tool(&self) -> &str {
+        match self {
+            Self::Revoked { tool } | Self::Reauthorised { tool, .. } => tool,
+        }
+    }
+}
+
 /// One pass, as [`record_pass`] journals it.
 #[derive(Debug, Clone, Copy)]
 pub struct PassEntry<'a> {
@@ -344,6 +391,10 @@ pub struct PassEntry<'a> {
     /// [`crate::guard::ActionGuard::recheck_released`] found at the session's
     /// start that the journal does not already hold (R12-GOV-3030).
     pub post_release: &'a [PostReleaseFinding],
+    /// Revocations and reauthorisations that take effect from this pass
+    /// (ADR 0534). Written after the opening and before any tool decision,
+    /// so a reader meets the withdrawal before the refusals it causes.
+    pub standing: &'a [StandingChange],
     /// When the platform recorded the pass.
     pub at: Timestamp,
 }
@@ -360,6 +411,7 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
         acting_identity,
         learning,
         post_release,
+        standing,
         at,
     } = entry;
     let mut w = Writer {
@@ -382,6 +434,25 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
         },
         at,
     )?;
+    for change in standing {
+        let record = match change {
+            StandingChange::Revoked { tool } => AgencyRecord::ToolRevoked {
+                pass,
+                tool: tool.clone(),
+            },
+            StandingChange::Reauthorised {
+                tool,
+                operator,
+                reason,
+            } => AgencyRecord::ToolReauthorised {
+                pass,
+                tool: tool.clone(),
+                operator: operator.clone(),
+                reason: reason.clone(),
+            },
+        };
+        w.write(record, at)?;
+    }
     match widening {
         Some(WideningOutcome::Granted {
             class,
@@ -593,6 +664,10 @@ pub struct Resumed {
     /// Every post-release finding already filed, so a session files only
     /// what is new.
     pub findings: Vec<PostReleaseFinding>,
+    /// The latest revocation or reauthorisation journaled for each tool
+    /// (ADR 0534). A tool whose entry is [`StandingChange::Revoked`] stands
+    /// withdrawn whatever the policy now says.
+    pub standing: BTreeMap<String, StandingChange>,
 }
 
 /// Read back what [`record_pass`] wrote. Refuses a log whose chain does not
@@ -610,6 +685,7 @@ pub fn resume(log: &EventLog) -> Result<Resumed, Error> {
         decisions: Vec::new(),
         voices: Vec::new(),
         findings: Vec::new(),
+        standing: BTreeMap::new(),
     };
     for record in records(log)? {
         resumed.next_pass = resumed.next_pass.max(record.pass().saturating_add(1));
@@ -617,6 +693,26 @@ pub fn resume(log: &EventLog) -> Result<Resumed, Error> {
             AgencyRecord::ToolDecision { decision, .. } => resumed.decisions.push(decision),
             AgencyRecord::VoiceReleased { voice, .. } => resumed.voices.push(voice),
             AgencyRecord::PostReleaseFinding { finding, .. } => resumed.findings.push(finding),
+            AgencyRecord::ToolRevoked { tool, .. } => {
+                resumed
+                    .standing
+                    .insert(tool.clone(), StandingChange::Revoked { tool });
+            }
+            AgencyRecord::ToolReauthorised {
+                tool,
+                operator,
+                reason,
+                ..
+            } => {
+                resumed.standing.insert(
+                    tool.clone(),
+                    StandingChange::Reauthorised {
+                        tool,
+                        operator,
+                        reason,
+                    },
+                );
+            }
             _ => {}
         }
     }
@@ -738,7 +834,9 @@ pub fn lineages(log: &EventLog) -> Result<BTreeMap<u64, PassLineage>, Error> {
             | AgencyRecord::WideningRefused { .. }
             | AgencyRecord::PlanBlocked { .. }
             | AgencyRecord::PostReleaseFinding { .. }
-            | AgencyRecord::LearningWithheld { .. } => {}
+            | AgencyRecord::LearningWithheld { .. }
+            | AgencyRecord::ToolRevoked { .. }
+            | AgencyRecord::ToolReauthorised { .. } => {}
         }
     }
     Ok(out)
