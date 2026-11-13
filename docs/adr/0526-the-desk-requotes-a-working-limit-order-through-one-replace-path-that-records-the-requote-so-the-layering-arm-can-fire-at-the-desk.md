@@ -99,6 +99,10 @@ clause.
   - `the_same_desk_requotes_with_no_opposite_fill_are_admitted_because_the_cancel_ratio_alone_does_not_see_them`
   - `a_desk_requote_judged_against_no_touch_is_not_counted_as_away`
   - `a_desk_requote_for_another_side_is_refused_before_the_original_is_withdrawn`
+- The layering test's offer fills at a second venue. Since ADR 0472 the desk
+  refuses a sale at the venue its own bids are working at, so at the desk
+  the layering shape can only take its benefit elsewhere, which ADR 0285
+  decision 1 counts.
 - Mutations, each restored byte-for-byte (`cmp`): `replace` recording no
   requote fails the first test; `requote_moved_away` counting a missing
   touch as away fails the third; the side check removed fails the fourth.

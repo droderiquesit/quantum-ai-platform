@@ -1671,3 +1671,36 @@ fn a_backtest_over_a_past_date_includes_an_instrument_delisted_later_and_reports
     assert!(unguarded.outages.is_empty());
     Ok(())
 }
+
+/// R12-TICK-2080, ADR 0450: the impact unit is the factor the coefficient
+/// is multiplied by, so a calibration that fits a slope per unit corrects
+/// the coefficient by exactly that slope. An earlier fit used
+/// `sqrt(quantity / one bar's volume)` and was off by the volatility scale.
+///
+/// Mutation: drop the volatility scale from `impact_unit` — at twice the
+/// reference volatility the identity misses by a factor of two.
+#[test]
+fn the_impact_unit_times_the_coefficient_is_the_impact_the_model_charges() -> Result<()> {
+    let model = CostModel::liquid_equity();
+    let reference = qip_simulation_engine::costs::reference_daily_volatility();
+    for (participation, volatility) in
+        [(0.04, reference), (0.09, 2.0 * reference), (5.0, reference)]
+    {
+        let unit = model
+            .impact_unit(participation, volatility)
+            .expect("a measured volatility has a unit");
+        let charged = model.impact_bps(participation, volatility)?;
+        assert!(
+            (model.impact_coefficient_bps * unit - charged).abs() < 1e-9,
+            "{} x {unit} is not the {charged} bps the model charges",
+            model.impact_coefficient_bps
+        );
+    }
+    assert!(
+        model.impact_unit(0.04, 0.0).is_none(),
+        "no volatility, no unit"
+    );
+    assert!(model.impact_unit(-0.01, reference).is_none());
+    assert!(model.impact_unit(f64::NAN, reference).is_none());
+    Ok(())
+}

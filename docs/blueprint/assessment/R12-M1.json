@@ -1655,7 +1655,7 @@
     "verification": "cargo test -p qip-edge --lib a_cell_that_layers; cargo test -p qip-edge --test pricing; cargo test -p qip-execution-engine --test execution requote",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 section 13: gap restated, PARTIAL kept; no code. Counting requotes would convict ordinary market making, so the measure needs its own bound. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Requote layering is refused at the cell and at the desk, beside the cancel-before-fill gate and never in its place. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Requote layering is refused beside the cancel-before-fill gate, at the cell and the desk, under that gate's own 60-second, four-withdrawal, three-quarters bound, with an opposite-side fill at any venue of the instrument counted.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L5-EDGE: ADR 0285 accepted and the cell half implemented. The test sits in cell.rs crossing_tests rather than tests/pricing.rs, because it drives a sell through place_net and its fill through confirm_execution_reports. Its twin with no opposite fill is admitted, so the cancel-before-fill gate does not refuse the pattern (4 withdrawals against 8 placements). Mutations, each restored byte-for-byte (cmp): the arm ignoring the opposite-side fill (cell.rs:13911), no requote counted as away (:13918), the cell's fill path recording no fill (:13917). No desk twin: the desk has no replace path. conduct.rs's module doc was corrected: it said requotes were not counted, which GOV-6126 had made untrue. 2026-11-13 lane t5-02 (wave580, ADR 0526): desk replace path built and graded COMPLETE. The desk layering test drives four resting bids, one filled offer and four requotes one tick below the best bid; the fourth replacement is refused by the layering arm (the cancel ratio is 4 withdrawals against 7 placements, under its bound) and its twin with no opposite fill is admitted. Mutations, each restored byte-for-byte (cmp) and the four tests green after: replace recording no requote (fails the layering test at its 'expected the layering arm to refuse' arm), requote_moved_away counting a missing touch as away (fails the no-touch test), the side check removed (fails the side test). Momentum ignition stays under R12-RISK-4103."
+    "notes": "2026-10-24 ADR 0155 section 13: gap restated, PARTIAL kept; no code. Counting requotes would convict ordinary market making, so the measure needs its own bound. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Requote layering is refused at the cell and at the desk, beside the cancel-before-fill gate and never in its place. Handed to lane L5 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Requote layering is refused beside the cancel-before-fill gate, at the cell and the desk, under that gate's own 60-second, four-withdrawal, three-quarters bound, with an opposite-side fill at any venue of the instrument counted.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-10-31 lane L5-EDGE: ADR 0285 accepted and the cell half implemented. The test sits in cell.rs crossing_tests rather than tests/pricing.rs, because it drives a sell through place_net and its fill through confirm_execution_reports. Its twin with no opposite fill is admitted, so the cancel-before-fill gate does not refuse the pattern (4 withdrawals against 8 placements). Mutations, each restored byte-for-byte (cmp): the arm ignoring the opposite-side fill (cell.rs:13911), no requote counted as away (:13918), the cell's fill path recording no fill (:13917). No desk twin: the desk has no replace path. conduct.rs's module doc was corrected: it said requotes were not counted, which GOV-6126 had made untrue. 2026-11-13 lane t5-02 (wave580, ADR 0526): desk replace path built and graded COMPLETE. The desk layering test drives four resting bids at one venue, one offer filled at a second venue (since ADR 0472 the desk refuses a sale at the venue its own bids rest at, and ADR 0285 decision 1 counts an opposite fill at any venue) and four requotes one tick below the best bid; the fourth replacement is refused by the layering arm (the cancel ratio is 4 withdrawals against 7 placements, under its bound) and its twin with no opposite fill is admitted. Mutations, each restored byte-for-byte (cmp) and the four tests green after: replace recording no requote (fails the layering test at its 'expected the layering arm to refuse' arm), requote_moved_away counting a missing touch as away (fails the no-touch test), the side check removed (fails the side test). Momentum ignition stays under R12-RISK-4103."
   },
   {
     "id": "R12-AGENCY-1069",
@@ -3835,13 +3835,18 @@
   },
   {
     "id": "R12-RISK-1162",
-    "status": "PARTIAL",
-    "current": "Pre-trade limits (leverage, exposure, concentration, ES, counterparty), shared-cause risk, settlement gate; operational/systemic risk not modelled.",
+    "status": "COMPLETE",
+    "current": "All twelve scope items map to a seam reached from a composition root and a named #[test]. Ten pre-existed: pre-trade (PreTradeChecker::check), post-trade (RiskMonitor::observe), market (RiskState::with_tail_risk), liquidity (Platform::liquidatable_within), counterparty (COUNTERPARTY_AXIS), concentration (sector-concentration), causal-driver (shared_cause seat_causal_drivers), settlement (qip-edge GATE_SETTLEMENT on Cell::work), model (Platform::venue_misfit, twin-misfit-venue-gross) and data (RiskState::unevaluated refusing every order). Since 2026-11-12 (ADR 0462) operational risk is qip_risk::operational::with_operational_failure, the counterparty gross stranded at a venue the platform has withdrawn, and systemic risk is qip_risk::systemic::with_systemic_contagion, the gross one causal driver reaches across two or more regions; both run in Platform::risk_state_from and are capped by shipped MaxAxisWeight limits operational-failure-venue-gross (0.25) and systemic-contagion (0.35). qip-acceptance risk_management_scope fails when any item's seam or test leaves, when a mapped test loses #[test], when a producer leaves risk_state_from, or when an axis item is uncapped.",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/limits.rs:118",
-      "backend/crates/libs/qip-risk/src/shared_cause.rs"
+      "backend/crates/libs/qip-risk/src/operational.rs with_operational_failure",
+      "backend/crates/libs/qip-risk/src/systemic.rs with_systemic_contagion",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::risk_state_from",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::gross_stranded_at_a_venue_the_platform_withdrew_blocks_through_risk_state",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::one_causal_driver_reaching_two_regions_blocks_through_risk_state_and_one_region_does_not",
+      "backend/crates/tests/qip-acceptance/tests/risk_management_scope.rs",
+      "docs/adr/0462-operational-and-systemic-risk-are-two-axes-the-shipped-axis-weight-veto-reads.md"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3852,7 +3857,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Graded 2026-11-12 by session t50-18. Mutation-verified: the new producers, the new caps and the inspection suite (see the lane commit). The ten pre-existing mapped tests were run, not re-mutated in this lane. Operational risk is bounded to withdrawal evidence; crowding across other firms' books is not modelled (no such data in the tree). qip-compliance model_risk.rs is reached by no composition root and is not the mapped model-risk seam."
   },
   {
     "id": "R12-CAPITAL-1163",
@@ -4062,12 +4067,19 @@
   {
     "id": "R12-OBS-1172",
     "status": "PARTIAL",
-    "current": "Telemetry registries and SLO definitions; alert policies gated off (workload_metrics_exist = false); no auto-remediation.",
+    "current": "Six of seven scope items map to code reached from qip-deepbrain's run loop with named tests (docs/blueprint/lanes/t50-17-obs-1172-scope-map.md): self-observation (EntityGraph, five classes), SLOs (critical_paths evaluated every iteration), anomaly detection (detect_level_shift on iteration time), runbook-only auto-remediation (Remediator + CapabilitySwitch, ADR 0213), and since 2026-11-12 incident triage (aiops::triage, severity + owning entity on the journalled IncidentRecord) and an autonomous test loop re-running every drafted replay fixture each SHIFT_HALF iterations (Operations::check_fixtures), ADR 0460. Alert policies remain gated off (workload_metrics_exist = false).",
     "evidence": [
       "backend/crates/libs/qip-observability/src/slo.rs:32",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs"
+      "backend/crates/tests/qip-acceptance/tests/slo.rs",
+      "backend/crates/libs/qip-observability/src/aiops.rs (fn triage, EntityGraph::implicated, rank_incidents)",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs (Operations::open_incident, Operations::check_fixtures)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::the_test_loop_re_runs_each_fixture_and_reports_whether_its_shift_has_cleared",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_venue_misbehaving_in_the_window_makes_the_incident_critical_and_owns_it",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_trading_facing_incident_ranks_above_an_uncontained_one_and_a_contained_one_last",
+      "docs/adr/0460-the-deep-brain-triages-each-incident-by-what-it-touched-and-re-runs-every-drafted-replay-fixture-as-an-autonomous-test-loop.md",
+      "docs/blueprint/lanes/t50-17-obs-1172-scope-map.md"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "2026-11-12: deployment verification has no composition-root caller — Platform::release_decision is reached only from qip-kernel/tests/self_observation.rs; expose it (qip-api route with the portal endpoint mirror and OpenAPI, or a qip-cli verb) and make deploy.yml ask it before promotion, with a test refusing a release while the budget is spent. Until then the scope map's deployment-verification row fails inspection.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4078,7 +4090,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " 2026-11-12 session t50-17: triage and autonomous test loop landed (ADR 0460), eight mutations fired; deployment verification still unwired."
   },
   {
     "id": "R12-EXPAND-1173",

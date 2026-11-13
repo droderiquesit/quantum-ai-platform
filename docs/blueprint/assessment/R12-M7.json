@@ -1662,13 +1662,22 @@
   {
     "id": "R12-CONTRACT-7072",
     "status": "PARTIAL",
-    "current": "MarketStatePack refuses an empty event list, an inverted interval, a non-positive horizon, an empty lineage and out-of-interval events. It is built nowhere outside qip-contracts.",
+    "current": "MarketStatePack refuses an empty event list, an inverted interval, a non-positive horizon, an empty or blank lineage and out-of-interval events on construction, and the same shape refusals on decode (MarketStatePackWire): every field required, impossible flags and unknown fields refused, round trip keeps every field. Since 2026-11-12 (ADR 0428) the edge node builds one per pass over the events it applied (qip_edge_node::market_state::market_state_of, called in the scheduler's feature_digest seam) and ships it inside FeatureDigest on reflex.feature_digested, schema version 2; the receiver decodes a sequence gap as a flag. No consumer reads it.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/market_state.rs:39-70",
-      "backend/crates/libs/qip-contracts/tests/market_state.rs",
-      "backend/crates/libs/qip-contracts/tests/market_state.rs::a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape"
+      "backend/crates/libs/qip-contracts/src/market_state.rs",
+      "backend/crates/libs/qip-contracts/tests/market_state.rs::a_pack_line_missing_any_required_field_is_refused_on_decode",
+      "backend/crates/libs/qip-contracts/tests/market_state.rs::a_pack_round_trips_through_its_wire_form_keeping_every_field",
+      "backend/crates/libs/qip-contracts/tests/market_state.rs::a_pack_line_the_constructor_would_refuse_is_refused_on_decode",
+      "backend/crates/libs/qip-contracts/tests/market_state.rs::a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape",
+      "backend/crates/apps/qip-edge-node/src/market_state.rs",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::a_sequence_gap_on_the_applied_tape_is_a_flag_in_the_digest_the_receiver_decodes",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::a_late_event_stretches_the_pass_interval_rather_than_losing_the_pack",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_turn_that_applied_tape_ships_a_market_state_pack_in_its_feature_digest",
+      "docs/adr/0428-a-market-state-pack-rides-in-the-passs-feature-digest-and-the-tick-desks-fusion-may-only-remove-a-weight.md",
+      "docs/adr/0429-an-event-fabric-topic-moves-schema-version-by-additive-change-in-one-commit-across-lock-binding-broker-and-consumers-and-a-prior-version-retires-only-on-evidence.md",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::the_v2_digest_consumer_admits_a_v1_body_with_no_pack_and_refuses_a_newer_version"
     ],
-    "gap": "No production producer/consumer. ADR 0151 decision 2 names both: the edge capture drain builds a pack per interval over the MarketEvents it applied (never over zero, which is now refused in the constructor) and the pack rides in the pass's FeatureSnapshot P2 record; the consumer is the tick desk's fusion (fusion.rs), which removes a flagged instrument's input weight and never raises one. Neither is built: the drain (qip-edge-node event_fabric/drain.rs) holds MarketEvents only inside the lake writer, and fusion.rs is off by default (QIP_DEEPBRAIN_TICK_EVERY unset). Corrected 2026-10-24.",
+    "gap": "2026-11-12 (session t50-01): contract, carriage and producer are built (ADR 0428 decisions 1-4). What remains is the consumer (decision 5): the tick desk's fusion must remove a flagged or unattested instrument's input weight and never raise one, with a mutation-verified test that fails if a weight is raised. Nothing on the deep brain reads reflex.feature_digested's pack today, and fusion (qip-kernel fusion.rs) takes MarketTraces, not digests, so the consumer needs the pack routed from the fabric to the tick desk first. Also measured: pass 1 on every node start ships no pack (its events are stamped at the pass instant, so the interval is empty) and is unattested by decision 4.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1679,7 +1688,7 @@
     "verification": "cargo test -p qip-contracts --test market_state",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap. 2026-10-24 lane T7-KERNEL slice: MarketStatePack::new now refuses zero events, so the producer cannot claim a clean tape over an empty interval. Mutation - disable the events.is_empty() refusal - a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape failed; restored, passes. Remaining slices: edge drain producer, FeatureSnapshot P2 carriage, fusion consumer. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0151 decision 2 stands on the producer and the consumer. The edge builds a pack per pass over the market events it applied, and never over none. Handed to lane L2 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: MarketStatePack rides in the pass's FeatureDigest on reflex.feature_digested, not an unbuilt FeatureSnapshot, amending ADR 0151 decision 2's carrier; the tick desk's fusion stays its only consumer and may only remove a weight.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap. 2026-10-24 lane T7-KERNEL slice: MarketStatePack::new now refuses zero events, so the producer cannot claim a clean tape over an empty interval. Mutation - disable the events.is_empty() refusal - a_pack_over_no_events_is_refused_rather_than_reported_as_a_clean_tape failed; restored, passes. Remaining slices: edge drain producer, FeatureSnapshot P2 carriage, fusion consumer. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0151 decision 2 stands on the producer and the consumer. The edge builds a pack per pass over the market events it applied, and never over none. Handed to lane L2 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: MarketStatePack rides in the pass's FeatureDigest on reflex.feature_digested, not an unbuilt FeatureSnapshot, amending ADR 0151 decision 2's carrier; the tick desk's fusion stays its only consumer and may only remove a weight.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-12 lane t50-01: contract slice. Decode routed through MarketStatePackWire (try_from) re-running the constructor's shape checks; ADR 0428 claimed and accepted. Mutations, each fired and restored byte-for-byte: encode integrity as [] (round-trip test), #[serde(default)] on integrity (missing-field test), skip check_shape on decode, admit a zero-gap flag, drop deny_unknown_fields. Status stays PARTIAL per owner ruling until producer and consumer close. Producer slice (same lane): FeatureDigest.market_state added, REFLEX_FEATURE_DIGESTED bumped to schema version 2 with v1 retired (its one consumer qip-edge-node decodes the v2 type). Mutations, each fired and restored byte-for-byte: market_state_of returning Ok(None) (gap-at-receiver and late-event tests), from = previous pass instant alone (late-event test), scheduler digest built with market_state None (decision_loop test). Versioning (owner decision 26): ADR 0429 written as the general fabric-versioning ADR; ADR 0428 decision 1 now meets each clause for reflex.feature_digested v1->v2. Mutation: writer::decode_as admitting only its own version (!= for >) - the v1-under-v2 test failed; restored. Dropping #[serde(default)] on market_state does not fire it, correctly: serde reads an absent Option as None."
   },
   {
     "id": "R12-CONTRACT-7073",
@@ -4923,12 +4932,16 @@
   {
     "id": "R12-MODEL-7210",
     "status": "PARTIAL",
-    "current": "LEARN scores fills/declines/counterfactuals; desk fills also become P1 records and fastbrain's DeskShipper carries them to the ledger stream (loopback-tested, nothing deployed). Nothing consumes them for learning.",
+    "current": "LEARN scores desk fills (score_filled), desk declines (score_declined) and cells' refusals that carry legs (score_cell_refusals) each cycle. Since 2026-11-12 (ADR 0448, lane t50-11) a cell's refusal of a fully reasoned directional intent at envelope_expiry, capital, hedge_target, envelope_drawdown, the exposure and authority gates, autonomy and net_edge carries the leg it proposed on DeltaRefusal::legs, so the centre queues and prices it beside the arbitrage cycles. Desk outcome records DeskShipper ships are written from the same booked fill as the FilledPath score_filled prices; the join is pinned by a test rather than given a second learner.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::refuse_proposed",
+      "backend/crates/edge/qip-edge/tests/reservation.rs a_signal_refused_at_observation_ships_the_leg_it_proposed_on_the_delta",
+      "backend/crates/tests/qip-acceptance/tests/cell_refusal_learning.rs",
+      "docs/adr/0448-a-cell-refusal-of-a-fully-reasoned-intent-carries-the-leg-it-proposed-so-learn-prices-cell-vetoes.md"
     ],
-    "gap": "Desk risk-limit vetoes are already learned from: capture_submission records Action::Rejected with gate, rules and readings and queues the sizing-evidence refusals for score_declined. Not learned from: edge-cell refusals, which reach the centre as DeltaRefusal { gate, reason, venue } with no instrument, side or size (see R12-MESH-5068 for the wire change), and desk outcome records, which DeskShipper carries to the ledger stream and no learner consumes.",
+    "gap": "2026-11-12 (lane t50-11): still not priced — cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4936,10 +4949,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-kernel --test learning; cargo test -p qip-edge --test reservation; cargo test -p qip-acceptance --test cell_refusal_learning",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. Gap corrected 2026-10-18 (lane L01): the desk half of 'rejected-by-risk' is done and tested; the edge half needs the cell wire to carry the refused intent."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. Gap corrected 2026-10-18 (lane L01): the desk half of 'rejected-by-risk' is done and tested; the edge half needs the cell wire to carry the refused intent. Re-graded 2026-11-12 (lane t50-11, ADR 0448): PARTIAL. Cell decision-gate refusals now carry their proposed leg and are priced by LEARN end to end in test; desk outcome records are covered by the in-process LEARN path (pinned by every_desk_fill_shipped_to_the_ledger_is_one_the_learn_stage_prices). Remaining gates named in gap."
   },
   {
     "id": "R12-FABRIC-7211",

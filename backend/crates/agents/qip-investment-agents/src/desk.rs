@@ -35,6 +35,59 @@ pub struct BookView {
     pub portfolio: Portfolio,
     /// Marks used for valuation, keyed by object id.
     pub marks: BTreeMap<String, qip_core::Decimal>,
+    /// What each held position is held *for*: its horizon, its hedges and
+    /// the causal driver and factors it is allocated to (R12-ASSET-3019,
+    /// ADR 0468). Written by the kernel from its position register beside
+    /// the book itself; a default (empty) purpose states nothing, and the
+    /// Portfolio/Asset Brain reports every position it does not cover as
+    /// undeclared rather than as unhedged or open-ended.
+    pub purpose: BookPurpose,
+}
+
+/// The investment horizon a held position was sized on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldHorizon {
+    /// The hypothesis the position was last sized on — the causal claim it
+    /// is held for, and so the driver it is allocated to (ADR 0468).
+    pub hypothesis: String,
+    /// That hypothesis's own horizon.
+    pub horizon: qip_core::Duration,
+    /// When the sizing that recorded the horizon ran, where the register
+    /// knows. `None` for a horizon resumed from the log with no sizing
+    /// instant beside it: its age is then unknown, and the brain counts it
+    /// as such rather than as within or past its horizon.
+    pub sized_at: Option<qip_core::Timestamp>,
+}
+
+/// A held position's hedge standing as the register states it. A position
+/// with no entry is *undeclared* — nobody looked — which is kept apart
+/// from [`HedgeStanding::Unhedged`], a position the platform looked at and
+/// found nothing covering.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HedgeStanding {
+    /// The declared hedge policies whose hedge is actually held.
+    Hedged(Vec<String>),
+    /// No hedge applies, with the reason the register gave.
+    Unhedged { reason: String },
+}
+
+/// The purpose half of the book (R12-ASSET-3019, ADR 0468).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BookPurpose {
+    /// Horizon by object id; a held position absent here has none on record.
+    pub horizons: BTreeMap<String, HeldHorizon>,
+    /// Hedge standing by object id; a held position absent here is
+    /// undeclared.
+    pub hedges: BTreeMap<String, HedgeStanding>,
+    /// Why the register could not state any hedge this cycle, when it
+    /// refused; every position is then undeclared and the brain says why.
+    pub hedges_refused: Option<String>,
+    /// Signed exposure per factor, in money, from the catalogue loadings
+    /// `Portfolio::exposures` reads. Empty where no held instrument loads
+    /// on any factor.
+    pub factor_exposure: BTreeMap<String, qip_core::Decimal>,
+    /// Why the factor breakdown could not be computed, when it refused.
+    pub factors_refused: Option<String>,
 }
 
 /// The risk picture and the limits that bound it.
@@ -352,6 +405,7 @@ impl Desk {
                     as_of,
                 ),
                 marks: BTreeMap::new(),
+                purpose: BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),

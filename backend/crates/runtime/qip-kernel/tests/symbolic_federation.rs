@@ -2084,3 +2084,53 @@ fn a_journaled_derivation_carries_its_subject_as_a_closed_knowledge_graph_and_re
     assert_refused_for(&platform, &edited, "knowledge graph");
     Ok(())
 }
+
+/// R12-WORLD-3049's population check, per scope part: the counterparty
+/// member's journaled review names every counterparty role — broker,
+/// exchange, custodian, bridge, settlement agent — that no counterparty held
+/// on the platform's own cycle. A platform declaring all of them reports
+/// none unmodelled; one omitting any single role reports exactly that one,
+/// so an absent part fails the check by name rather than reading as a
+/// network without it. The broker is the desk's own and is never absent.
+///
+/// Mutations: report every role as modelled; build the counterparty views
+/// without declared roles; drop `counterparty_unmodelled` from the review.
+#[test]
+fn the_counterparty_review_names_each_network_role_no_counterparty_held() -> Result<()> {
+    use federation_stage::{CounterpartyRole, DependencyKind};
+    let unmodelled = |omit: Option<CounterpartyRole>| -> Result<Vec<String>> {
+        let mut platform = platform()?;
+        for role in CounterpartyRole::ALL {
+            if Some(role) == omit || role == CounterpartyRole::Broker {
+                continue;
+            }
+            platform.declare_counterparty(&format!("cp-{}", role.as_str()), role)?;
+        }
+        // An edge's undeclared end is read as an exchange, so the edge is
+        // declared only when every role is.
+        if omit.is_none() {
+            platform.declare_counterparty_dependency(
+                "cp-exchange",
+                "cp-custodian",
+                DependencyKind::Custody,
+            )?;
+        }
+        platform.run_cycle(start());
+        let reviews = federation_stage::replay(&platform)?;
+        assert_eq!(reviews.len(), 1, "one review from the log");
+        Ok(reviews[0].counterparty_unmodelled.clone())
+    };
+    assert_eq!(unmodelled(None)?, Vec::<String>::new());
+    for role in CounterpartyRole::ALL {
+        if role == CounterpartyRole::Broker {
+            continue;
+        }
+        assert_eq!(
+            unmodelled(Some(role))?,
+            vec![role.as_str().to_string()],
+            "omitting {} was not reported",
+            role.as_str()
+        );
+    }
+    Ok(())
+}
