@@ -107,20 +107,36 @@ fn the_committed_policy_names_the_hierarchy_the_networks_and_the_databases_as_co
         .collect();
     assert_eq!(open, vec![false, true, true, true, false, false, false]);
     // The Friday evening window the owner added on 2026-11-13 (decision 34):
-    // 18:00 to 23:59 UTC on Friday and on no other day. The same seven days
-    // at 19:00 UTC, an hour the Tuesday-to-Thursday window still holds open,
-    // so the only day that differs from the row above is Friday. A Friday
-    // window that leaked into Saturday, or one open at 15:00, would be a
-    // change window nobody decided.
+    // 18:00 to 23:59 UTC on Friday, carried to 03:00 UTC on Saturday, which
+    // is still Friday evening where the owner works. The same seven days at
+    // 19:00 UTC, an hour the Tuesday-to-Thursday window still holds open, so
+    // the only day that differs from the row above is Friday. A Friday
+    // window that leaked into Saturday evening, or one open at 15:00, would
+    // be a change window nobody decided.
     let evening: Vec<bool> = (19..=25)
         .map(|day| {
             parsed.open_at(Timestamp::parse_rfc3339(&format!("2026-10-{day}T19:00:00Z")).unwrap())
         })
         .collect();
     assert_eq!(evening, vec![false, true, true, true, true, false, false]);
-    // And it shuts at its own edges: before 18:00, and from 23:59.
+    // And the same seven days at 01:00 UTC: only Saturday's small hours are
+    // open, the tail of that Friday evening. No other night is.
+    let small_hours: Vec<bool> = (19..=25)
+        .map(|day| {
+            parsed.open_at(Timestamp::parse_rfc3339(&format!("2026-10-{day}T01:00:00Z")).unwrap())
+        })
+        .collect();
+    assert_eq!(
+        small_hours,
+        vec![false, false, false, false, false, true, false]
+    );
+    // It shuts at its own edges: before 18:00 on Friday, for the one minute
+    // the format cannot span at midnight, and from 03:00 on Saturday.
     assert!(!parsed.open_at(Timestamp::parse_rfc3339("2026-10-23T17:59:00Z").unwrap()));
     assert!(parsed.open_at(Timestamp::parse_rfc3339("2026-10-23T18:00:00Z").unwrap()));
     assert!(parsed.open_at(Timestamp::parse_rfc3339("2026-10-23T23:58:00Z").unwrap()));
     assert!(!parsed.open_at(Timestamp::parse_rfc3339("2026-10-23T23:59:00Z").unwrap()));
+    assert!(parsed.open_at(Timestamp::parse_rfc3339("2026-10-24T00:00:00Z").unwrap()));
+    assert!(parsed.open_at(Timestamp::parse_rfc3339("2026-10-24T02:59:00Z").unwrap()));
+    assert!(!parsed.open_at(Timestamp::parse_rfc3339("2026-10-24T03:00:00Z").unwrap()));
 }

@@ -1203,16 +1203,20 @@ that narrows a security scanner, whatever the owner has delegated.
     answered, quoting both reasons: "This is incorrect fix this and do it
     immediately".
 
-    - *The window.* A second window is added: Friday, 18:00 to 23:59 UTC.
-      It is a standing window, because the policy's format names weekdays
-      and has no one-off date; it is not widened further, and the Tuesday
-      to Thursday window is untouched. This is a relaxation of a
+    - *The window.* A second window is added: Friday from 18:00 UTC,
+      carried to 03:00 UTC on Saturday, which is still Friday evening in
+      the Americas. It was first written to end at 23:59 UTC; the session
+      then lost four hours to a usage limit, the apply could no longer
+      start before midnight UTC, and the same instruction was carried over
+      it rather than left to expire. It is a standing window, because the
+      policy's format names weekdays and has no one-off date; it is not
+      widened further, and the Tuesday to Thursday window is untouched. This is a relaxation of a
       change-management guard, made on the owner's instruction and said
       here so nobody reads it as an oversight. The reason the guard gives
       still holds on a Friday evening only if a person is watching: the
       owner was. The owner removes it by deleting one line. `qip-cli`'s
-      `change_window` test now pins the Friday window's day and both its
-      edges, so a window that leaked into another day would fail.
+      `change_window` test now pins the window's days and every edge, so
+      a window that leaked into another day or night would fail.
     - *Main's ci.* One finding failed the static-analysis gate on main:
       `rust/cleartext-logging` at
       `backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs`, an
