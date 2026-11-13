@@ -500,7 +500,7 @@ fn a_scenario_world_yields_a_portfolio_outcome_distribution_whose_weights_sum_to
 /// spread where it was; fills with no participation beside them move the
 /// spread alone, as before.
 ///
-/// Mutation: make `observe_with_participation` ignore the participation and
+/// Mutation: make `observe_cost` ignore the impact unit and
 /// update the bias alone — the impact coefficient never moves and the first
 /// assertion fails.
 #[test]
@@ -514,7 +514,7 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
     for round in 0..40 {
         let participation = participations[round % participations.len()];
         let error_bps = -20.0 * participation.sqrt();
-        calibration.observe_with_participation("XLON", error_bps, Some(participation))?;
+        calibration.observe_cost("XLON", &base, error_bps, Some(participation.sqrt()))?;
     }
     let calibrated = calibration.cost_model(&base, "XLON");
     assert!(
@@ -536,7 +536,7 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
     // Without participation the slope is untouched and the spread moves.
     let mut blind = FillCalibration::default();
     for _ in 0..20 {
-        blind.observe_with_participation("XLON", -12.0, None)?;
+        blind.observe_cost("XLON", &base, -12.0, None)?;
     }
     let venue = blind.venue("XLON").expect("calibrated");
     assert_eq!(venue.impact_slope_bps, 0.0);
@@ -545,9 +545,9 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
 
     assert!(
         calibration
-            .observe_with_participation("XLON", -1.0, Some(1.5))
+            .observe_cost("XLON", &base, -1.0, Some(-0.1))
             .is_err(),
-        "a fill that took more than the bar traded is refused"
+        "a negative impact unit is refused"
     );
 
     // Fills that are one size for the twin's purposes — a share against bars
@@ -556,9 +556,9 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
     // the identifiability floor two such fills fitted a slope of thousands of
     // basis points per unit root and the twin's impact term left the earth.
     let mut one_size = FillCalibration::default();
-    one_size.observe_with_participation("XLON", -30.0, Some(1.0e-6))?;
-    one_size.observe_with_participation("XLON", 25.0, Some(2.0e-6))?;
-    one_size.observe_with_participation("XLON", -40.0, Some(1.5e-6))?;
+    one_size.observe_cost("XLON", &base, -30.0, Some((1.0e-6_f64).sqrt()))?;
+    one_size.observe_cost("XLON", &base, 25.0, Some((2.0e-6_f64).sqrt()))?;
+    one_size.observe_cost("XLON", &base, -40.0, Some((1.5e-6_f64).sqrt()))?;
     let venue = one_size.venue("XLON").expect("calibrated");
     assert_eq!(venue.participation_observations, 3);
     assert_eq!(
@@ -570,6 +570,93 @@ fn after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficie
         (one_size.cost_model(&base, "XLON").impact_coefficient_bps - base.impact_coefficient_bps)
             .abs()
             < 1e-12
+    );
+    Ok(())
+}
+
+/// R12-TICK-2080, ADR 0450: a fitted impact slope that would carry the base
+/// coefficient to the platform's cost ceiling is refused, not adopted and
+/// not clamped. Adopted, it would leave the venue `Unpriceable`, and an
+/// unpriceable trade is never scored, so the venue could never be
+/// calibrated back: an earlier version had no bound and did exactly that.
+///
+/// Mutation: drop the `< MAX_TRADE_COST_BPS` arm of the slope's adoption
+/// test in `observe_cost` — the wild slope is adopted and the corrected
+/// coefficient passes the ceiling. Mutation: drop the same arm of the
+/// bias's — the half-spread passes it and the venue no longer prices.
+#[test]
+fn an_impact_slope_that_would_price_past_the_cost_ceiling_is_refused_and_the_old_slope_kept()
+-> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut calibration = FillCalibration::default();
+    // A sane size law first: the twin overcharges 30 bps per impact unit.
+    let units = [0.1_f64, 0.2, 0.3, 0.4];
+    for round in 0..20 {
+        let unit = units[round % units.len()];
+        let observed = calibration.observe_cost("XLON", &base, 30.0 * unit, Some(unit))?;
+        assert!(!observed.refused, "premise: a sane slope is adopted");
+    }
+    let sane = calibration
+        .venue("XLON")
+        .expect("calibrated")
+        .impact_slope_bps;
+    assert!(
+        (sane - 30.0).abs() < 1e-6,
+        "premise: the fit found 30: {sane}"
+    );
+
+    // Then fills that state a size law costing more than the notional.
+    let mut refused = 0;
+    for round in 0..20 {
+        let unit = units[round % units.len()];
+        let observed = calibration.observe_cost("XLON", &base, -50_000.0 * unit, Some(unit))?;
+        refused += usize::from(observed.refused);
+    }
+    let venue = calibration.venue("XLON").expect("calibrated");
+    let corrected = calibration.cost_model(&base, "XLON").impact_coefficient_bps;
+    assert!(
+        corrected < qip_financial::costs::MAX_TRADE_COST_BPS,
+        "the corrected coefficient {corrected} passed the cost ceiling"
+    );
+    assert!(refused > 0, "no slope was refused");
+    assert_eq!(venue.refusals, refused as u64);
+    assert!(
+        calibration
+            .cost_model(&base, "XLON")
+            .pricing_at(qip_simulation_engine::costs::reference_daily_volatility())
+            .is_ok(),
+        "the venue still prices at the reference volatility"
+    );
+    Ok(())
+}
+
+/// R12-RES-7104 read through R12-TICK-2080: the correction the kernel's
+/// misfit test reads includes the impact slope at the venue's own size, so
+/// a twin that is wrong only about size is not read as right.
+///
+/// Mutation: make `correction_bps` return `bias_bps.abs()` — the size-only
+/// misfit reads as zero and the assertion fails.
+#[test]
+fn a_twin_wrong_only_about_size_reports_a_correction_at_the_venues_own_size() -> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut calibration = FillCalibration::default();
+    let units = [0.2_f64, 0.4, 0.6, 0.8];
+    for round in 0..40 {
+        let unit = units[round % units.len()];
+        calibration.observe_cost("XLON", &base, -50.0 * unit, Some(unit))?;
+    }
+    let venue = calibration.venue("XLON").expect("calibrated");
+    assert!(
+        venue.bias_bps.abs() < 1.0,
+        "premise: no spread error, {}",
+        venue.bias_bps
+    );
+    let mean_unit = venue.sizes.root / venue.sizes.weight;
+    let expected = 50.0 * mean_unit;
+    assert!(
+        (venue.correction_bps() - expected).abs() < 1.0,
+        "the correction {} is not the slope at the mean unit {expected}",
+        venue.correction_bps()
     );
     Ok(())
 }
