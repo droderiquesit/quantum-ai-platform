@@ -1648,9 +1648,10 @@ pub struct ResearchLoop {
     coverage: BTreeMap<String, BTreeSet<String>>,
     /// Signals routed but not yet activated, by signal id, with each
     /// signal's expiry — the deadline its information request is urgent
-    /// against. Bounded by the router's hold queue: an entry leaves when its
+    /// against — and the urgency the signal stated at emission, the floor
+    /// `admit` ranks it at. Bounded by the router's hold queue: an entry leaves when its
     /// signal is activated, shed, expired or found below materiality.
-    pending: BTreeMap<String, (RaisedGap, Timestamp)>,
+    pending: BTreeMap<String, (RaisedGap, Timestamp, u32)>,
     /// NOW surprise signals routed but not yet activated, by signal id, with
     /// the specialist each would wake. Bounded like `pending`.
     pending_wakes: BTreeMap<String, qip_kernel::now_stage::Specialist>,
@@ -2906,8 +2907,10 @@ impl ResearchLoop {
         }
         for (raised, signal) in routable {
             if let Some(raised) = raised {
-                self.pending
-                    .insert(signal.id().to_string(), (raised, signal.expiry()));
+                self.pending.insert(
+                    signal.id().to_string(),
+                    (raised, signal.expiry(), signal.urgency_bp()),
+                );
             }
             let events = self.router.route(&signal, now)?;
             round.signals.push(signal.clone());
@@ -2996,7 +2999,9 @@ impl ResearchLoop {
                             }
                             continue;
                         }
-                        let Some((gap, deadline)) = self.pending.remove(&event.signal_id) else {
+                        let Some((gap, deadline, stated_urgency)) =
+                            self.pending.remove(&event.signal_id)
+                        else {
                             continue;
                         };
                         // Irrefutable while attention has one authority: a
@@ -3009,6 +3014,7 @@ impl ResearchLoop {
                         self.admit(
                             gap,
                             deadline,
+                            stated_urgency,
                             event.pathway,
                             &event.feedback_link,
                             now,
@@ -3240,6 +3246,7 @@ impl ResearchLoop {
         &mut self,
         gap: RaisedGap,
         deadline: Timestamp,
+        stated_urgency: u32,
         pathway: Pathway,
         feedback_link: &str,
         now: Timestamp,
@@ -3263,7 +3270,16 @@ impl ResearchLoop {
         // a sweep ranks ahead of the same gap raised this instant. The same
         // figure ranks the desk's queue (R12-EXPAND-6048) and the request
         // below; the desk reads it as a fraction of the scale.
-        let urgency = urgency_bp(now, deadline, self.config.signal_ttl);
+        //
+        // The signal's own stated urgency is a floor under that figure, not
+        // ignored (R12-AMBIENT-10175): a NOW surprise states its urgency as
+        // its severity (`now::surprise_signals`), and until 2026-11-13 this
+        // line recomputed urgency from the expiry alone, so a ten-sigma
+        // surprise woke its specialist at the same half-scale urgency as a
+        // one-sigma one and `AmbientSignal::urgency_bp` had no reader. The
+        // deadline can only raise it: a signal the router deferred ages
+        // toward the full scale whatever its producer stated.
+        let urgency = urgency_bp(now, deadline, self.config.signal_ttl).max(stated_urgency);
         let admission = self.desk.offer_by_deadline(
             gap,
             f64::from(urgency) / f64::from(qip_contracts::ambient::MAX_SEVERITY_BP),
@@ -3555,6 +3571,7 @@ impl ResearchLoop {
         self.admit(
             raised,
             signal.expiry(),
+            signal.urgency_bp(),
             pathway,
             feedback_link,
             now,
@@ -5397,6 +5414,8 @@ mod tests {
                 .admit(
                     gap(domain),
                     deadline,
+                    // No stated urgency: this test ranks on the deadline alone.
+                    0,
                     Pathway::ResearchTask,
                     link,
                     now,

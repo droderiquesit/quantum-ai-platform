@@ -4,20 +4,23 @@
 //! market, and holds a compiled cognitive package unsigned when no signer is
 //! installed.
 //!
-//! Two exit items are not driven here, and the register row says so. A
+//! Value-of-information sensing is driven here too since 2026-11-13: a
+//! residual gap priced from the notional the platform paper-filled launches
+//! an information request on §9.10's product rank
+//! (`a_gap_carrying_economic_value_launches_an_information_request_on_the_product_rank`).
+//!
+//! One exit item is not driven here, and the register row says so. A
 //! specialist proposal needs a platform calibration of at least
 //! `MIN_EVALUATED` evaluated theses with a class hit rate under
 //! `HIT_RATE_FLOOR`, which no fixture in the tree produces through a cycle
-//! (`qip-expansion/tests/meta.rs` proves `propose_specialists` itself). An
-//! information request launches only for a gap carrying economic value; the
-//! fill-residual gaps this fixture raises carry none, so `info_launched`
-//! stays zero by design of the rank (`research.rs`'s in-module test proves
-//! the launching case).
+//! (`qip-expansion/tests/meta.rs` proves `propose_specialists` itself), and
+//! even an accepted proposal is an `InstantiateSpecialist` plan step with no
+//! executor: the deep brain's roster is a reviewed static manifest.
 
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_core::error::{Error, Result};
-use qip_core::{Context, Duration, Timestamp};
+use qip_core::{Context, Decimal, Duration, Timestamp};
 use qip_deepbrain::research::{FillObservation, ResearchConfig, ResearchLoop, ResearchRound};
 use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
@@ -121,5 +124,146 @@ fn a_compiled_cognitive_package_with_no_signer_is_held_unsigned_and_never_publis
             .is_empty(),
         "an unsigned package reached the store"
     );
+    Ok(())
+}
+
+// --- value-of-information sensing: a priced gap launches on the product rank
+
+/// A platform that knows `AAA` and has paper-filled `quantity` of it, so the
+/// outcome record carries the notional a residual gap is priced from.
+fn platform_with_a_fill_of(quantity: i64) -> Result<(Platform, String)> {
+    use qip_core::ObjectId;
+    use qip_execution_engine::order::Side;
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    let aaa = || ObjectId::from_string("obj-AAA".to_string());
+    let mut universe = Universe::new();
+    universe.insert(
+        FinancialObject::builder(
+            aaa(),
+            "AAA",
+            InstrumentType::CommonStock,
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue("XNYS")
+        .sector(Sector::InformationTechnology)
+        .price(Decimal::from_int(100))
+        .provenance(Provenance::synthetic("phase-16-exit", t0()))
+        .build(t0())?,
+    )?;
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(t0(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )?;
+    platform.observe(quiet_tape(&aaa()));
+    let order = platform.order_from(
+        aaa(),
+        Side::Buy,
+        Decimal::from_int(quantity),
+        Decimal::from_int(100),
+        "prop-phase-16",
+        vec!["hyp-phase-16".to_string()],
+        t0(),
+    );
+    platform.submit_order(order, t0())?;
+    let venue = qip_deepbrain::research::fill_notionals(&platform)?
+        .into_iter()
+        .find(|(_, notional)| notional.is_positive())
+        .map(|(venue, _)| venue)
+        .ok_or_else(|| Error::invalid("premise: the fill is on the outcome record"))?;
+    Ok((platform, venue))
+}
+
+/// Ninety quiet daily bars ending at `t0`, so the paper venue has a price.
+fn quiet_tape(object: &qip_core::ObjectId) -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+    use qip_financial::quality::DataQuality;
+    use qip_market::bar::{Bar, Interval};
+    (0..90i64)
+        .filter_map(|i| {
+            let close = Decimal::from_f64(if i % 2 == 0 { 100.3 } else { 99.7 })?;
+            Some(qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(
+                Bar {
+                    object_id: object.clone(),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: t0().saturating_sub(Duration::from_days(90 - i)),
+                    open: close,
+                    high: close,
+                    low: close,
+                    close,
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: None,
+                    quality: DataQuality::default(),
+                },
+            )))
+        })
+        .collect()
+}
+
+/// Phase 16's value-of-information deliverable, driven through the sweep
+/// rather than through `cheapest_viable` alone: fills that miss the twin by
+/// ~200 bp at a venue that traded real paper notional raise a residual gap
+/// whose economic value is that miss applied to the notional, and the sweep
+/// launches an information request for it on §9.10's product rank. A ~40 bp
+/// miss on the same notional ranks below `MIN_VIABLE_BP` (severity 0.16 at
+/// half-scale urgency), which is the rank working, not failing; the larger
+/// miss is what makes the evidence worth its cost.
+///
+/// The premise half is the existing fixture: the same residuals on a
+/// platform that filled nothing state no economic value and launch nothing,
+/// so this test is not passing on a rank that launches everything.
+///
+/// Mutation (2026-11-13): make `cheapest_viable` return `None` for every
+/// gap — `info_launched` is zero and the first assertion fails.
+#[test]
+fn a_gap_carrying_economic_value_launches_an_information_request_on_the_product_rank() -> Result<()>
+{
+    let (unpriced, _, _) = two_sweeps()?;
+    assert_eq!(
+        unpriced.info_launched, 0,
+        "premise: an unpriced residual gap launches nothing: {unpriced:?}"
+    );
+
+    let (platform, venue) = platform_with_a_fill_of(150)?;
+    let observed: Vec<FillObservation> = (0..10)
+        .map(|i| FillObservation {
+            venue: venue.clone(),
+            object_id: "obj-AAA".to_string(),
+            filled_at: t0().saturating_add(Duration::from_mins(i)),
+            trade_error_bps: Some(if i % 2 == 0 { 190.0 } else { 210.0 }),
+        })
+        .collect();
+    let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())?;
+    let round = research.sweep_over(
+        &platform,
+        &observed,
+        &[],
+        t0().saturating_add(Duration::from_days(1)),
+        &set(&[]),
+        &set(&["US"]),
+    )?;
+    assert!(
+        round.info_launched > 0,
+        "a priced gap launched no information request: {round:?}"
+    );
+    let launched: Vec<_> = research
+        .info_requests()
+        .filter(|r| r.status() == qip_contracts::ambient::AcquisitionStatus::InProgress)
+        .collect();
+    assert!(!launched.is_empty(), "no request is in progress: {round:?}");
+    for request in launched {
+        assert!(
+            request.criteria().net_value_bp() >= qip_deepbrain::research::MIN_VIABLE_BP,
+            "a request below the viability floor launched: {request:?}"
+        );
+    }
     Ok(())
 }
