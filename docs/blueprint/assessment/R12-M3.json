@@ -587,8 +587,8 @@
   },
   {
     "id": "R12-WORLD-3025",
-    "status": "PARTIAL",
-    "current": "Federation arbitration (four decisions with calibration) runs each UNDERSTAND pass and is journaled; a World Model Arbitration Brain on the production roster reads the journaled review from a kernel-written desk slot and reports each decision, the preserved disagreement and member calibration, and the deep brain registry covers world-model-arbitration only through that roster-derived entry (ADR 0488).",
+    "status": "COMPLETE",
+    "current": "A World Model Arbitration Brain on the production roster (manifests::world_model_arbitration_brain, built by chief::standard_agents) reads the FederationReview UNDERSTAND journals through a kernel-written desk slot carrying its cycle and journal position, decides each proposition itself from the scored views the record preserves under the federation's rule (decide_on) — branch, merge, abstain or request more data — names any recorded decision those views do not reproduce, keeps every disagreeing view in its count and states each member's calibration; removing it drops Scope::WorldModelArbitration from coverage, and the deep brain registry covers world-model-arbitration only through its roster-derived entry (ADR 0488).",
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/world_model_brain.rs::WorldModelArbitrationAnalyst",
       "backend/crates/agents/qip-investment-agents/src/manifests.rs::world_model_arbitration_brain (on roster)",
@@ -601,7 +601,7 @@
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage",
       "docs/adr/0488-the-world-model-arbitration-brain-is-an-organisation-specialist-reading-the-journaled-federation-review-from-a-kernel-written-slot.md"
     ],
-    "gap": "2026-11-12 (session t50-31, ADR 0488). Closed: the World Model Arbitration Brain is constructed in the production organisation (manifests::roster, chief::standard_agents), reads the FederationReview UNDERSTAND journals through a kernel-written desk slot carrying its cycle and journal position, emits a finding counting branch/merge/abstain/request-more-data, the disagreeing views kept and member calibration, and removing it drops Scope::WorldModelArbitration from coverage; the hand-written registry spec is gone and the deep brain's entry is derived from the roster. Still open: the specialist reports the kernel FederationStage's decisions and does not itself score or decide (the arbitration runs in UNDERSTAND, before the panel convenes); the registry entry's calibration is the organisation_spec literal 0.0, not computed from the federation's resolved forecasts (ADR 0158 decision 8); qip-fastbrain and qip-api build the same Platform with no brain registry or require_coverage check; nothing in DECIDE reads the specialist's finding.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -612,7 +612,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test symbolic_federation; cargo test -p qip-deepbrain --test brains",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL. 2026-11-12 (t50-31): specialist added (ADR 0488); seven mutants killed (agent dropped from standard_agents; abstain counted as branch; one view per disagreement; observed guard removed; empty-pass guard removed; kernel slot writer removed; manifest scope competency renamed), each restored byte-for-byte. Graded PARTIAL by its own session; no skeptic has run."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL. 2026-11-13 (t50-31, ADR 0488): graded COMPLETE by its own session against the verification field; awaits the independent skeptic. Mutants killed, each restored byte-for-byte: agent dropped from standard_agents; Abstain counted as Branch; one view counted per disagreement; observed guard removed; empty-pass guard removed; kernel slot writer call removed; manifest world-model-arbitration competency renamed (deep brain standard refuses naming the scope); recorded decision counted instead of decide_on's; reproduction comparison dropped. Residuals, outside the requirement text and verification field and recorded for the skeptic: member scoring (the composite) is computed by the kernel FederationStage in UNDERSTAND and the specialist decides on those scores; the registry entry's calibration is the organisation_spec literal 0.0 for every organisation agent; qip-fastbrain and qip-api build the same organisation but run no brain registry check; nothing in DECIDE reads the specialist's finding."
   },
   {
     "id": "R12-REASON-3026",
