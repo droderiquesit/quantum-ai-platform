@@ -74,6 +74,18 @@ to fills and settlements only: a `Hedged` or `OrderSent` record carrying
   order bound for a live-class venue under `GATE_LIVE_VENUE` before any
   intent or hedge is journaled.
 
+## What it costs
+
+- One extra keyed read per intent, hedge, fill or withdrawal on the
+  ledger's writer path, and one extra row in the batch that books it. The
+  writer is already serialised behind one mutex per store; the read is a
+  point lookup, not a scan.
+- Storage that grows by one row per order for as long as the ledger is
+  kept, with no compaction: closed rows are retained because they are the
+  ledger's own record of what was sent.
+- A stricter fence: a stream carrying a live intent or hedge now stops its
+  cell until an operator releases it, where it used to be advanced past.
+
 ## What this does not do (the gap, dated 2026-11-13)
 
 - **No cycle identity.** P1 records carry no cycle id, so the register can

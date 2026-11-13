@@ -759,62 +759,53 @@ impl LedgerStore {
             return Ok(Some((key, row)));
         }
 
-        let (order_id, moved): (&str, Box<dyn Fn(&mut OrderRow) -> Result<()>>) =
-            match &outcome.entry.decision {
-                Decision::Filled {
-                    order_id, quantity, ..
-                } => {
-                    let filled = parse_quantity(order_id, "fill quantity", quantity)?;
-                    (
-                        order_id,
-                        Box::new(move |row: &mut OrderRow| {
-                            row.filled = row.filled.checked_add(filled).ok_or_else(|| {
-                                Error::numeric(format!(
-                                    "the filled quantity of order {} overflows",
-                                    row.order_id
-                                ))
-                            })?;
-                            if row.filled >= row.quantity {
-                                row.state = OrderState::Filled;
-                            }
-                            Ok(())
-                        }),
-                    )
-                }
-                Decision::OrderExpired {
-                    order_id,
-                    withdrawn,
-                    ..
-                }
-                | Decision::MassCancelled {
-                    order_id,
-                    withdrawn,
-                    ..
-                }
-                | Decision::VenueWithdrawn {
-                    order_id,
-                    withdrawn,
-                    ..
-                } => {
-                    let withdrawn = withdrawn.clone();
-                    (
-                        order_id,
-                        Box::new(move |row: &mut OrderRow| {
-                            if row.state == OrderState::Open {
-                                row.state = OrderState::Withdrawn;
-                                row.withdrawn = Some(withdrawn.clone());
-                            }
-                            Ok(())
-                        }),
-                    )
-                }
-                _ => return Ok(None),
-            };
+        let (order_id, movement) = match &outcome.entry.decision {
+            Decision::Filled {
+                order_id, quantity, ..
+            } => (
+                order_id,
+                Movement::Fill(parse_quantity(order_id, "fill quantity", quantity)?),
+            ),
+            Decision::OrderExpired {
+                order_id,
+                withdrawn,
+                ..
+            }
+            | Decision::MassCancelled {
+                order_id,
+                withdrawn,
+                ..
+            }
+            | Decision::VenueWithdrawn {
+                order_id,
+                withdrawn,
+                ..
+            } => (order_id, Movement::Withdraw(withdrawn)),
+            _ => return Ok(None),
+        };
         let key = order_key(cell, session, order_id);
         let Some(mut row) = self.read::<OrderRow>(&key)? else {
             return Ok(None);
         };
-        moved(&mut row)?;
+        match movement {
+            Movement::Fill(filled) => {
+                row.filled = row.filled.checked_add(filled).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the filled quantity of order {} overflows",
+                        row.order_id
+                    ))
+                })?;
+                if row.filled >= row.quantity {
+                    row.state = OrderState::Filled;
+                }
+            }
+            Movement::Withdraw(withdrawn) => {
+                if row.state == OrderState::Open {
+                    row.state = OrderState::Withdrawn;
+                    row.withdrawn = Some(withdrawn.clone());
+                }
+            }
+        }
         row.last_moved_at = sequence;
         Ok(Some((key, row)))
     }
@@ -2265,6 +2256,14 @@ fn chain_position(key: &str) -> Result<(String, u64, u64)> {
 /// written as one value. Recorded here so it is a stated choice.
 fn pending_key(cell: &str, order_id: &str) -> String {
     format!("{PREFIX_PENDING}{}/{}", hex(cell), hex(order_id))
+}
+
+/// What a fill or a withdrawal does to the register row it names.
+enum Movement<'a> {
+    /// A fill of this quantity.
+    Fill(Decimal),
+    /// A withdrawal, carrying the venue's answer.
+    Withdraw(&'a String),
 }
 
 fn order_key(cell: &str, session: u64, order_id: &str) -> String {
