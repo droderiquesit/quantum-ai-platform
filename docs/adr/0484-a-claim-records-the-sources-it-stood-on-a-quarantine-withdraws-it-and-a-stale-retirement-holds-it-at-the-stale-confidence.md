@@ -92,7 +92,7 @@ have withdrawn nothing, ever, while reading in the diff as protection: the
   hypothesis's number would make the record fail its own audit. The claim —
   the thing calibration and sizing read — is where the downweight belongs.
 
-## Cost
+## What it costs
 
 - A `BTreeSet<String>` and an `Option<String>` on every recorded claim,
   bounded by `PREDICTION_HISTORY` as the rest of the working set is.
