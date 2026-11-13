@@ -669,11 +669,13 @@ fn entry_cost_bps(model: &CostModel, participation: f64) -> f64 {
 }
 
 /// The impact unit of a fill at `participation` at the reference
-/// volatility: what the base's impact coefficient is multiplied by.
+/// volatility: what the base's impact coefficient is multiplied by. A
+/// participation with no unit reads as NaN, which `observe_cost` refuses, so
+/// a broken helper fails the test rather than fitting a made-up size.
 fn unit(participation: f64) -> f64 {
     CostModel::liquid_equity()
         .impact_unit(participation, reference_daily_volatility())
-        .expect("a finite participation has a unit")
+        .unwrap_or(f64::NAN)
 }
 
 /// A venue that charges nine basis points more spread and twenty-five more
