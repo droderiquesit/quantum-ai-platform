@@ -425,6 +425,16 @@ pub struct SimulatedOutcome {
     /// existed reads zero, which is what an outcome with no entry carries.
     #[serde(default)]
     entry_costs: Simulated<Decimal>,
+    /// The liquidity the entry was priced against — the window's mean volume
+    /// and volatility the cost model read — where the alternative traded.
+    /// Carried so the twin's charged cost can be re-derived at another size
+    /// or under another model (R12-TICK-2080): the fill calibration prices
+    /// the venue's own fill under the uncalibrated model against exactly
+    /// this liquidity, and re-estimating it from the bars would be a second
+    /// estimate of one fact. `None` on an outcome that did not trade and on
+    /// a record written before this field existed.
+    #[serde(default)]
+    entry_liquidity: Option<Liquidity>,
     entry_at: Timestamp,
     exit_at: Timestamp,
     fixed_as_of: Timestamp,
@@ -461,6 +471,12 @@ impl SimulatedOutcome {
     /// the position has been exited.
     pub const fn simulated_entry_costs(&self) -> Simulated<Decimal> {
         self.entry_costs
+    }
+
+    /// The liquidity the entry was priced against, where the alternative
+    /// traded. A statistic, not money.
+    pub const fn entry_liquidity(&self) -> Option<Liquidity> {
+        self.entry_liquidity
     }
 
     /// The price the alternative would have entered at, where it traded.
@@ -744,6 +760,7 @@ impl CounterfactualEngine {
                 pnl: Simulated::ZERO,
                 costs: Simulated::ZERO,
                 entry_costs: Simulated::ZERO,
+                entry_liquidity: None,
                 entry_at,
                 exit_at,
                 fixed_as_of: plan.fixed_as_of,
@@ -790,6 +807,7 @@ impl CounterfactualEngine {
                     pnl: Simulated::ZERO,
                     costs: Simulated::ZERO,
                     entry_costs: Simulated::ZERO,
+                    entry_liquidity: None,
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
@@ -814,6 +832,7 @@ impl CounterfactualEngine {
                     pnl: Simulated::ZERO,
                     costs: Simulated::ZERO,
                     entry_costs: Simulated::ZERO,
+                    entry_liquidity: None,
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
@@ -837,6 +856,7 @@ impl CounterfactualEngine {
                     pnl: Simulated::ZERO,
                     costs: Simulated::ZERO,
                     entry_costs: Simulated::ZERO,
+                    entry_liquidity: None,
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
@@ -898,6 +918,7 @@ impl CounterfactualEngine {
             pnl: Simulated::of(gross + hedge_gross - costs),
             costs: Simulated::of(costs),
             entry_costs: Simulated::of(entry_costs),
+            entry_liquidity: Some(plan.liquidity),
             entry_at,
             exit_at,
             fixed_as_of: plan.fixed_as_of,

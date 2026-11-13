@@ -55,7 +55,7 @@ use qip_events::{Envelope, EventBody, EventLog, Topic};
 use qip_kernel::Platform;
 use qip_observability::aiops::{
     Anomaly, AuditRecord, AuditSink, Effector, EntityGraph, EntityKey, Remediator, Runbook, Signal,
-    SignalClass, TimelineEvent, TimelineSource, build_timeline, detect_level_shift,
+    SignalClass, TimelineEvent, TimelineSource, Triage, build_timeline, detect_level_shift, triage,
 };
 use qip_observability::critical_paths;
 use qip_observability::metrics::{Metrics, labels, names};
@@ -197,6 +197,10 @@ pub struct IncidentRecord {
     pub fixture: std::result::Result<FixtureLink, String>,
     /// Where the record was drafted: never anywhere a message leaves from.
     pub channel: String,
+    /// Severity, owner and why (R12-OBS-1172). `None` only on a record
+    /// journalled before triage existed, which still decodes.
+    #[serde(default)]
+    pub triage: Option<Triage>,
 }
 
 impl EventBody for IncidentRecord {
@@ -583,6 +587,87 @@ pub struct Incident {
     /// or why the record could not be written. The action, if one ran, ran
     /// either way and its audit records are on the journal already.
     pub recorded: std::result::Result<(u64, FixtureLink), String>,
+    /// Severity and owning entity (R12-OBS-1172).
+    pub triage: Triage,
+}
+
+/// What one re-run of a drafted fixture found (R12-OBS-1172, ADR 0460).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureOutcome {
+    /// It reproduces, and the level after it is back at the pre-shift
+    /// baseline.
+    Cleared,
+    /// It reproduces, and the level after it is still shifted.
+    StillShifted,
+    /// It reproduces; fewer than one detector half has been recorded since.
+    AwaitingSamples,
+    /// Its window no longer replays to its shift, or cannot be replayed.
+    NoLongerReproduces,
+}
+
+impl FixtureOutcome {
+    /// The `outcome` label value. A fixed set of literals.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cleared => "cleared",
+            Self::StillShifted => "still_shifted",
+            Self::AwaitingSamples => "awaiting_samples",
+            Self::NoLongerReproduces => "no_longer_reproduces",
+        }
+    }
+}
+
+/// One fixture's check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixtureCheck {
+    pub incident: String,
+    pub outcome: FixtureOutcome,
+}
+
+/// Whether `signal` on `entity` is abnormal for triage: a model reported
+/// drifted, or a venue fill past [`VENUE_BEHAVIOUR_BPS`] — the same two
+/// tests that put either on an incident's timeline, so triage and timeline
+/// cannot disagree about what was unusual.
+fn is_abnormal(entity: &EntityKey, signal: &Signal) -> bool {
+    match entity.kind.as_str() {
+        "model" => signal.name == "drifted",
+        "venue" => signal.name == "fill_error_bps" && signal.value.abs() > VENUE_BEHAVIOUR_BPS,
+        _ => false,
+    }
+}
+
+/// Check one fixture against `book`'s samples (see
+/// [`Operations::check_fixtures`]). A journal that cannot be read is an
+/// error, not a verdict: "the test could not run" is not "the test failed".
+pub fn check_fixture(book: &RemediationJournal, fixture: &ReplayFixture) -> Result<FixtureOutcome> {
+    let samples = book.samples()?;
+    match replay_fixture(book, fixture) {
+        Ok(Some(found)) if found == fixture.expected => {}
+        _ => return Ok(FixtureOutcome::NoLongerReproduces),
+    }
+    let (from, to) = fixture.journal_sequences;
+    let baseline: Vec<(Timestamp, f64)> = samples
+        .iter()
+        .filter(|(seq, _, s)| (from..=to).contains(seq) && s.at >= fixture.expected.window_start)
+        .take(fixture.half)
+        .map(|(_, _, s)| (s.at, s.iteration_ms))
+        .collect();
+    let after: Vec<(Timestamp, f64)> = samples
+        .iter()
+        .filter(|(seq, _, _)| *seq > to)
+        .map(|(_, _, s)| (s.at, s.iteration_ms))
+        .collect();
+    if baseline.len() < fixture.half || after.len() < fixture.half {
+        return Ok(FixtureOutcome::AwaitingSamples);
+    }
+    let mut points = baseline;
+    points.extend_from_slice(&after[after.len() - fixture.half..]);
+    Ok(
+        match detect_level_shift(&fixture.series, &points, fixture.half)? {
+            None => FixtureOutcome::Cleared,
+            Some(_) => FixtureOutcome::StillShifted,
+        },
+    )
 }
 
 /// What the loop did this iteration.
@@ -593,6 +678,8 @@ pub struct OperationsRound {
     pub quantum: Option<&'static str>,
     /// Critical-path objectives measured and missed this iteration.
     pub objectives_missed: Vec<String>,
+    /// What the autonomous test loop found, on an iteration it ran.
+    pub fixture_checks: Option<Vec<FixtureCheck>>,
 }
 
 impl OperationsRound {
@@ -600,8 +687,11 @@ impl OperationsRound {
         let mut parts = Vec::new();
         if let Some(incident) = &self.incident {
             parts.push(format!(
-                "incident {}: {} ({} timeline event(s)); remediation: {}",
+                "incident {} [{}, owned by {} {}]: {} ({} timeline event(s)); remediation: {}",
                 incident.id,
+                incident.triage.severity.as_str(),
+                incident.triage.owner.kind,
+                incident.triage.owner.id,
                 TimelineEvent::from(&incident.shift).detail,
                 incident.timeline.len(),
                 match &incident.remediation {
@@ -639,6 +729,20 @@ impl OperationsRound {
                 "objectives missed: {}",
                 self.objectives_missed.join(", ")
             ));
+        }
+        // Only the checks a person must act on: a fixture that no longer
+        // reproduces, or a shift that has not cleared.
+        for check in self.fixture_checks.iter().flatten() {
+            if matches!(
+                check.outcome,
+                FixtureOutcome::NoLongerReproduces | FixtureOutcome::StillShifted
+            ) {
+                parts.push(format!(
+                    "fixture for {} {}",
+                    check.incident,
+                    check.outcome.as_str()
+                ));
+            }
         }
         (!parts.is_empty()).then(|| format!("operations: {}", parts.join("; ")))
     }
@@ -691,6 +795,8 @@ pub struct Operations {
     fills_read: usize,
     /// When the last model package was promoted (R12-OBS-9151).
     package_promoted_at: Option<Timestamp>,
+    /// Iterations observed by this process, for the test loop's cadence.
+    observed: u64,
 }
 
 impl Operations {
@@ -751,6 +857,7 @@ impl Operations {
             last_shift_end: None,
             fills_read: 0,
             package_promoted_at: None,
+            observed: 0,
         })
     }
 
@@ -953,6 +1060,21 @@ impl Operations {
         }
         self.iterations
             .push_back((at, facts.iteration_ms, sequence));
+
+        // The node's paths are evaluated by the node, against the registry
+        // that records their series; here they would read unmeasured forever.
+        // Before the detector, so an incident opened this iteration is
+        // triaged against the objectives this iteration measured.
+        let statuses = critical_paths::evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service != critical_paths::EDGE_NODE_SERVICE
+        });
+        critical_paths::record(&metrics, &statuses);
+        round.objectives_missed = statuses
+            .iter()
+            .filter(|s| s.is_observed() && !s.is_met)
+            .map(|s| s.slo.name.clone())
+            .collect();
+
         if self.iterations.len() >= 2 * SHIFT_HALF {
             let points: Vec<(Timestamp, f64)> =
                 self.iterations.iter().map(|(t, v, _)| (*t, *v)).collect();
@@ -961,7 +1083,8 @@ impl Operations {
                     .last_shift_end
                     .is_none_or(|end| shift.window_start > end)
             {
-                round.incident = Some(self.open_incident(shift, at, &metrics)?);
+                round.incident =
+                    Some(self.open_incident(shift, at, &metrics, &round.objectives_missed)?);
             }
         }
 
@@ -972,17 +1095,20 @@ impl Operations {
             round.quantum = Some(outcome);
         }
 
-        // The node's paths are evaluated by the node, against the registry
-        // that records their series; here they would read unmeasured forever.
-        let statuses = critical_paths::evaluate_where(&metrics.snapshot(), |path| {
-            path.slo.service != critical_paths::EDGE_NODE_SERVICE
-        });
-        critical_paths::record(&metrics, &statuses);
-        round.objectives_missed = statuses
-            .iter()
-            .filter(|s| s.is_observed() && !s.is_met)
-            .map(|s| s.slo.name.clone())
-            .collect();
+        // The autonomous test loop: every drafted fixture re-run against the
+        // journal once per detector half, the fewest fresh samples that can
+        // change a verdict (R12-OBS-1172, ADR 0460).
+        self.observed += 1;
+        if self.observed.is_multiple_of(SHIFT_HALF as u64) {
+            let checks = self.check_fixtures()?;
+            for check in &checks {
+                metrics.count(
+                    names::AIOPS_FIXTURE_CHECKS,
+                    labels([("outcome", check.outcome.as_str())]),
+                );
+            }
+            round.fixture_checks = Some(checks);
+        }
         Ok(round)
     }
 
@@ -1061,6 +1187,7 @@ impl Operations {
         shift: Anomaly,
         at: Timestamp,
         metrics: &Metrics,
+        objectives_missed: &[String],
     ) -> Result<Incident> {
         self.incidents += 1;
         let id = format!("INC-deepbrain-{:06}", self.incidents);
@@ -1142,6 +1269,25 @@ impl Operations {
             None => Ok(results.join("; ")),
         };
 
+        // Triage over the same window the timeline covers: which entity owns
+        // the incident, and how much it matters (R12-OBS-1172).
+        let implicated = self.graph.implicated(
+            shift.window_start.saturating_sub(INCIDENT_LOOKBACK),
+            at,
+            &self.deployment,
+            is_abnormal,
+        );
+        let triage = triage(
+            &self.deployment,
+            implicated,
+            remediation.is_ok(),
+            objectives_missed,
+        );
+        metrics.count(
+            names::AIOPS_INCIDENTS_TRIAGED,
+            labels([("severity", triage.severity.as_str())]),
+        );
+
         // Every audit record the remediator wrote for this incident, read
         // back from its trail rather than restated, so the record and the
         // trail cannot disagree about what was done.
@@ -1162,6 +1308,7 @@ impl Operations {
             for_a_person: for_a_person.clone(),
             fixture: fixture.clone(),
             channel: OUTBOX_CHANNEL.to_string(),
+            triage: Some(triage.clone()),
         };
         let recorded = self
             .book
@@ -1180,7 +1327,34 @@ impl Operations {
             for_a_person,
             fixture,
             recorded,
+            triage,
         })
+    }
+
+    /// The autonomous test loop's body: every fixture in the outbox, re-run.
+    ///
+    /// Two checks per fixture. First, its window is replayed from the journal
+    /// and must still find the shift it was drafted on — a regression test
+    /// that no longer reproduces its regression guards nothing, whether the
+    /// journal moved under it or the detector changed. Second, the shift's
+    /// own pre-shift half is set beside the newest half of samples recorded
+    /// after the window, and the detector is asked whether the level is
+    /// still shifted from that baseline: the "after the fix" half of the
+    /// fixture's own `proposed_test`, run by the process instead of waiting
+    /// for a person to.
+    pub fn check_fixtures(&self) -> Result<Vec<FixtureCheck>> {
+        let mut checks = Vec::new();
+        for draft in self.book.drafts()? {
+            let OperationsDraft::Fixture(fixture) = draft.draft else {
+                continue;
+            };
+            let outcome = check_fixture(&self.book, &fixture)?;
+            checks.push(FixtureCheck {
+                incident: fixture.incident.clone(),
+                outcome,
+            });
+        }
+        Ok(checks)
     }
 
     /// The cycle's journal entry, read back from the log rather than from a

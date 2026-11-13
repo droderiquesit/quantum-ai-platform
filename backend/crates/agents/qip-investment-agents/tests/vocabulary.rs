@@ -163,6 +163,7 @@ fn desk(universe: Universe, world: WorldModel) -> Arc<Desk> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),

@@ -38,6 +38,7 @@ pub mod gateway;
 pub mod halt;
 /// The health and scrape surface, on a thread of its own.
 pub mod health;
+pub mod market_state;
 pub mod mesh;
 pub mod mirror;
 /// The outbox's configuration: spool, budgets, cadence, fabric endpoint.
