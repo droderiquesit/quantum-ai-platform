@@ -2364,15 +2364,19 @@
   },
   {
     "id": "R12-TICK-10103",
-    "status": "PARTIAL",
-    "current": "Every filled order the twin prices in LEARN yields a FillScore whose trade_error_bps is the signed residual of the twin's simulated entry against the venue's fill on the side taken (platform.rs::score_filled, fill_error_bps). The score is charted by venue (VENUE_FILL_ERROR_BPS), fed to the per-venue fill calibration, and journaled whole in each cycle record through CounterfactualJournal::fill_outcomes. Resolved theses become Episodes in the same stage (remember_resolved). session_replay::replay reads the sealed ACT sessions (instruction against venue answer) and reports reconciliation breaks only; it prices nothing and has no predicted side.",
+    "status": "COMPLETE",
+    "current": "Every filled order the twin prices in LEARN yields a FillScore comparing the twin's predicted fill, slippage and outcome with the venue's: trade_error_bps (entry against fill on the side taken), predicted_slippage_bps against realised_slippage_bps (both against the arrival price), and predicted_outcome_bps against realised_outcome_bps marked at the twin's printed exit net of entry costs, with outcome_error_bps as the model residual (platform.rs::score_filled). The score is charted by venue (VENUE_FILL_ERROR_BPS), feeds the per-venue fill calibration, and is journaled whole in each cycle record (CounterfactualJournal::fill_outcomes). Episodes: a resolved thesis becomes an Episode in the same stage (remember_resolved), whose outcome lists every fill on an order that expressed the claim (fills_expressing), and since 2026-11-13 each EpisodeFill carries twin: Option<FillResidual>, the residuals copied from the order's FillScore (fill_residual) - so the episode, not only the journal, says how far the twin was from reality. None before LEARN prices the order, after its score ages out, or when the twin refused it: an absence, never a zero residual.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs::score_filled (fill_error_bps, fill_calibration.observe, fill_scores.push)",
       "backend/crates/runtime/qip-kernel/src/platform.rs::CounterfactualJournal::fill_outcomes",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18745 remember_resolved (EpisodeOutcome.fills = fills_expressing)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18800 fills_expressing twin: fill_residual; :18819 fill_residual; Platform::episode_fills",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs:438 EpisodeFill::twin; :453 FillResidual",
       "backend/crates/runtime/qip-kernel/tests/learning.rs::the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_resolving_episode_carries_the_twins_predicted_fill_beside_the_venues_once_learn_priced_it"
     ],
-    "gap": "2026-10-25: skeptic REFUTED the first residual (it was the entry error rescaled); 7a10bf8c reworks it as predicted versus realised outcome net of entry costs, mutation-verified, but no second skeptic round has run and the episodes clause (a FillScore is a residual, not an episode) is unmet; handed to lane L3b with that step.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2380,10 +2384,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill. 2026-10-25 lane L3-DATA (wave580): residuals added. Mutation fired: recording outcome_error_bps as None - 'the horizon closed, so the outcome residual exists'. Not promoted (episodes not emitted); no skeptic run. 2026-10-25: skeptic (code-reviewer) REFUTED d51cad76: outcome_error marked two gross returns at one close, so it read zero whenever the twin's entry matched the fill. 7a10bf8c: both sides marked at the twin's printed exit, per unit, net of entry costs (SimulatedOutcome::simulated_entry_costs; FillScore predicted_outcome_bps, realised_outcome_bps). Mutations: drop the venue's costs (fails -2.999 vs -3.999 bps); drop the twin's entry costs (predicted equals gross). Row handed to L3b 2026-10-25."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill. 2026-10-25 lane L3-DATA (wave580): residuals added. Mutation fired: recording outcome_error_bps as None - 'the horizon closed, so the outcome residual exists'. Not promoted (episodes not emitted); no skeptic run. 2026-10-25: skeptic (code-reviewer) REFUTED d51cad76: outcome_error marked two gross returns at one close, so it read zero whenever the twin's entry matched the fill. 7a10bf8c: both sides marked at the twin's printed exit, per unit, net of entry costs (SimulatedOutcome::simulated_entry_costs; FillScore predicted_outcome_bps, realised_outcome_bps). Mutations: drop the venue's costs (fails -2.999 vs -3.999 bps); drop the twin's entry costs (predicted equals gross). Row handed to L3b 2026-10-25. Lane t5-05 2026-11-13: episodes clause closed - EpisodeFill carries the twin's FillResidual copied from the order's FillScore, so the episode a claim resolves into compares predicted with actual fill, slippage and outcome. Mutations, each fired and restored byte-for-byte (cmp): build EpisodeFill with twin: None ('LEARN priced the order, so the episode carries the twin's residual'); copy predicted_outcome_bps into outcome_error_bps in fill_residual (left Some(996.55) right Some(1000.55)). Graded COMPLETE for the second skeptic round; the 2026-10-25 refutation (entry error rescaled) was answered by 7a10bf8c and its two mutations. Limit stated, not hidden: an order LEARN has not priced when its claim resolves (the twin's horizon is its own) leaves its episode fill with twin None."
   },
   {
     "id": "R12-MODEL-10104",

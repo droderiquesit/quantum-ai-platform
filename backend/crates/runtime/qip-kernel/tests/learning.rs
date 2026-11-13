@@ -1549,6 +1549,78 @@ fn a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_o
     Ok(())
 }
 
+/// R12-TICK-10103's episodes clause: the episode a claim resolves into
+/// carries, for each fill on an order that expressed it, the twin's predicted
+/// fill, slippage and outcome beside the venue's — the same figures LEARN
+/// scored, not a second computation of them.
+///
+/// The failure it prevents: the comparison of the twin with reality lived
+/// only in a per-cycle journal keyed by order, a residual no episode pointed
+/// at, so recalling a precedent never recalled whether the twin that sized it
+/// had been wrong about the fill. And before the order is priced the episode
+/// must record no residual rather than a zero one, which would read as the
+/// twin having been exactly right.
+///
+/// Mutation: build each `EpisodeFill` with `twin: None` in
+/// `fills_expressing` — the second assertion finds no residual. Mutation:
+/// copy `predicted_outcome_bps` into `outcome_error_bps` in
+/// `fill_residual` — the equality with the score fails.
+#[test]
+fn a_resolving_episode_carries_the_twins_predicted_fill_beside_the_venues_once_learn_priced_it()
+-> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    let order = fill_one(&mut platform, "prop-episode", start())?;
+
+    let before = platform.episode_fills("hyp-prop-episode");
+    assert!(
+        !before.is_empty() && before.iter().all(|fill| fill.order_id == order.as_str()),
+        "premise: the order that expressed the claim filled and the episode finds it: {before:?}"
+    );
+    assert!(
+        before.iter().all(|fill| fill.twin.is_none()),
+        "nothing was priced yet, so the episode must carry no residual: {before:?}"
+    );
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1, "premise: LEARN priced the fill");
+    let score = &scores[0];
+    assert!(
+        score.outcome_error_bps.is_some() && score.trade_error_bps.is_some(),
+        "premise: the score holds the residuals the episode should carry"
+    );
+
+    let after = platform.episode_fills("hyp-prop-episode");
+    assert_eq!(after.len(), before.len(), "the same fills, now priced");
+    for fill in &after {
+        let twin = fill
+            .twin
+            .as_ref()
+            .expect("LEARN priced the order, so the episode carries the twin's residual");
+        assert_eq!(twin.scored_at, score.scored_at);
+        assert_eq!(twin.trade_error_bps, score.trade_error_bps);
+        assert_eq!(twin.predicted_slippage_bps, score.predicted_slippage_bps);
+        assert_eq!(twin.realised_slippage_bps, score.realised_slippage_bps);
+        assert_eq!(twin.predicted_outcome_bps, score.predicted_outcome_bps);
+        assert_eq!(twin.realised_outcome_bps, score.realised_outcome_bps);
+        assert_eq!(twin.outcome_error_bps, score.outcome_error_bps);
+    }
+    assert!(
+        platform.episode_fills("hyp-nobody-claimed").is_empty(),
+        "an episode on a claim no order expressed records no fill"
+    );
+    Ok(())
+}
+
 /// R12-TICK-2080: the twin is recalibrated from the fills it mispriced, and
 /// the calibration is what its next pricing on that venue uses.
 ///

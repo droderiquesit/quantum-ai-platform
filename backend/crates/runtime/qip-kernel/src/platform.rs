@@ -18797,11 +18797,39 @@ impl Platform {
             .into_iter()
             .filter(|fill| orders.contains(fill.order_id.as_str()))
             .map(|fill| qip_ai::memory::EpisodeFill {
+                twin: self.fill_residual(fill.order_id.as_str()),
                 order_id: fill.order_id.to_string(),
                 quantity: fill.quantity,
                 price: fill.price,
             })
             .collect()
+    }
+
+    /// The fills an episode resolving on `hypothesis` now would record, each
+    /// with the twin's residual for its order where LEARN has priced it — the
+    /// read of what [`Self::remember_resolved`] writes onto the episode.
+    pub fn episode_fills(&self, hypothesis: &str) -> Vec<qip_ai::memory::EpisodeFill> {
+        self.fills_expressing(hypothesis)
+    }
+
+    /// The twin's residual for `order_id`, copied from the latest
+    /// [`FillScore`] LEARN wrote for it. `None` before the order is priced,
+    /// after its score has aged out of the bounded history, or when the twin
+    /// refused it: an absence rather than a zero residual.
+    fn fill_residual(&self, order_id: &str) -> Option<qip_ai::memory::FillResidual> {
+        self.fill_scores
+            .iter()
+            .rev()
+            .find(|score| score.order_id.as_str() == order_id)
+            .map(|score| qip_ai::memory::FillResidual {
+                scored_at: score.scored_at,
+                trade_error_bps: score.trade_error_bps,
+                predicted_slippage_bps: score.predicted_slippage_bps,
+                realised_slippage_bps: score.realised_slippage_bps,
+                predicted_outcome_bps: score.predicted_outcome_bps,
+                realised_outcome_bps: score.realised_outcome_bps,
+                outcome_error_bps: score.outcome_error_bps,
+            })
     }
 
     /// Write one resolved episode into the research organisation's memory,
