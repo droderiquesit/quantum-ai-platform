@@ -75,6 +75,18 @@ The thresholds are conservative engineering defaults; the existing
 deep-brain suites pass with the models on. They are not figures the owner
 stated, and no calibration against outcomes stands behind them.
 
+## What it costs
+
+- Compute per sweep: one AR(1) fit and one window statistic per subject,
+  and 256 × 10 bootstrap draws per subject for the path simulation, over at
+  most `SWEEP_PRICES` prices each. Linear in the subjects held; no I/O.
+- Attention: the three models spend from the same hourly budget as every
+  other producer, so on a busy book they compete with the event-triggered
+  signals for activations. A storm is deferred or shed on the record.
+- Thresholds nobody has calibrated: until outcomes score them, every
+  default is a judgement, and a wrong one either wakes specialists for noise
+  or stays silent on a drift it was meant to see.
+
 ## Consequences
 
 - An operator reading an attention event can tell a scheduled model's wake

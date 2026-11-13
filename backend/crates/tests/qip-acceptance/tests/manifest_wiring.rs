@@ -2035,6 +2035,16 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_AMBIENT_MODELS",
+        "The always-on ambient models' switch (ADR 0478, R12-AMBIENT-1180): \
+         the scheduled forecast, path simulation and weak-signal scan. `on` by \
+         default and `on` or `off` only; anything else is refused at start-up. \
+         No manifest sets it because the default is the deployed posture: the \
+         variable exists so an operator can prove that turning the models off \
+         removes their scheduled signals, not so a deployment ships them off.",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_EVOLUTION_CANDIDATES",
         THE_PACE_THE_PROBES_ASSUME,
     ),
