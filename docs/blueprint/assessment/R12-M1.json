@@ -4230,15 +4230,22 @@
   },
   {
     "id": "R12-AMBIENT-1180",
-    "status": "PARTIAL",
-    "current": "Research sweep (gaps, NOW surprises), attention router and ambient journal run in deepbrain.",
+    "status": "COMPLETE",
+    "current": "Research sweep in deepbrain routes, through one AttentionRouter, the event-triggered producers (now-surprise novelty, forecast_miss assumptions, precursor_* precursors, limit_approach, gaps) and, since 2026-11-12 (ADR 0478), three scheduled models under Trigger::Schedule: ambient-forecast (AR(1) one-step walk-forward forecast), ambient-path-simulation (seeded bootstrap drawdown share) and ambient-weak-signal (sub-anomaly breadth scan), each refusing unmeasurable input by reason. Reached from node::run_with.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366"
+      "predict: qip-deepbrain/src/ambient_models.rs FORECAST_MODEL; tests/ambient_models.rs a_forecast_that_misses_by_four_residual_deviations_wakes_a_specialist_and_a_calm_tape_does_not",
+      "detect novelty: qip-deepbrain/src/now.rs surprise_signals; tests/research.rs a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists",
+      "monitor assumptions: qip-deepbrain/src/research.rs forecast_miss_signal; tests/forecast_sentinel.rs a_forecast_reality_resolves_outside_its_interval_reaches_the_attention_router",
+      "simulate paths: ambient_models.rs PATH_MODEL; tests/ambient_models.rs a_subject_whose_simulated_paths_breach_a_fifteen_percent_drawdown_raises_a_risk_review_and_a_calm_one_does_not",
+      "scan weak signals: ambient_models.rs WEAK_SIGNAL_MODEL; tests/ambient_models.rs four_of_five_subjects_leaning_the_same_way_below_the_anomaly_bar_is_a_weak_signal_and_half_a_book_or_three_subjects_are_not",
+      "identify precursors: research.rs precursor_signal; tests/research.rs a_widening_regional_gap_routes_one_precursor_before_any_anomaly_and_none_when_the_sentinel_is_off",
+      "route attention without prompts, from the composition root's loop: node::run_with; tests/ambient_models.rs the_deep_brains_run_loop_routes_every_scheduled_models_signal_without_a_prompt",
+      "docs/adr/0478-the-ambient-mesh-runs-a-forecast-a-path-simulation-and-a-weak-signal-scan-on-every-sweep-under-a-scheduled-trigger.md"
     ],
-    "gap": "No always-on forecast, path-simulation, weak-signal or precursor models.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -4246,7 +4253,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-11-12 session t50-26: graded COMPLETE against the inspection bar; every scope item's named test was run and mutation-verified (eight mutations on the new models and routing, three on the novelty, assumption and precursor routing). Follow-ups outside the bar (ADR 0478): the scheduled forecast is not yet emitted as a qip-contracts Forecast record; no threshold is calibrated against outcomes; nothing is deployed."
   },
   {
     "id": "R12-WORLD-1181",

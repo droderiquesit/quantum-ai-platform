@@ -51,6 +51,7 @@
 
 pub mod ambient_agency;
 pub mod ambient_journal;
+pub mod ambient_models;
 pub mod artifacts;
 pub mod attestation;
 pub mod brains;
