@@ -152,9 +152,9 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk, ExecutionRecord,
-    ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView, ModelsView,
-    PoolReading, RiskView, TradeSide,
+    ArbitrationView, BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk,
+    ExecutionRecord, ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView,
+    ModelsView, PoolReading, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -1221,6 +1221,11 @@ pub struct Platform {
     /// (R12-REASON-3013, ADR 0458), rebuilt before every REASON by
     /// `brief_the_desk_on_company`.
     company_view: Upstream<CompanyView>,
+    /// The World Model Federation's latest review as the desk's World Model
+    /// Arbitration Brain reads it (R12-WORLD-3025, ADR 0488), rewritten by
+    /// UNDERSTAND from the review it journals, so REASON's panel reads the
+    /// pass that ran this cycle.
+    arbitration_view: Upstream<ArbitrationView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -6443,6 +6448,9 @@ impl Platform {
         desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
         let company_view = Upstream::new(CompanyView::default());
         desk.company = company_view.gate(desk.company.required(), desk.company.label());
+        let arbitration_view = Upstream::new(ArbitrationView::default());
+        desk.arbitration =
+            arbitration_view.gate(desk.arbitration.required(), desk.arbitration.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6937,6 +6945,7 @@ impl Platform {
             models,
             chain_view,
             company_view,
+            arbitration_view,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -12521,6 +12530,37 @@ impl Platform {
         self.company_view.read()
     }
 
+    /// Write `review`'s arbitrations, its members' calibration and its
+    /// uncovered scopes into the slot the desk's World Model Arbitration
+    /// Brain reads (R12-WORLD-3025, ADR 0488). Called from UNDERSTAND with
+    /// the review it is about to journal, and only there: the slot is
+    /// replaced wholesale, so an arbitration that has resolved stops being
+    /// reported on the next pass.
+    fn brief_the_desk_on_arbitration(&self, review: &crate::federation_stage::FederationReview) {
+        let arbitrations = review.arbitrations.clone();
+        let calibrations: BTreeMap<String, qip_world_model::federation::Calibration> = review
+            .population
+            .iter()
+            .map(|member| (member.id.clone(), member.calibration))
+            .collect();
+        let uncovered = review.uncovered.clone();
+        let (cycle, journal_base) = (review.cycle, review.journal_base);
+        self.arbitration_view.update(|view| {
+            view.observed = true;
+            view.cycle = cycle;
+            view.journal_base = journal_base;
+            view.arbitrations = arbitrations;
+            view.calibrations = calibrations;
+            view.uncovered = uncovered;
+        });
+    }
+
+    /// The federation review the desk's World Model Arbitration Brain reads,
+    /// as UNDERSTAND last wrote it.
+    pub fn desk_arbitration_view(&self) -> Reading<'_, ArbitrationView> {
+        self.arbitration_view.read()
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -16585,6 +16625,11 @@ impl Platform {
                 }
             }
         }
+        // Brief the desk's World Model Arbitration Brain from the very
+        // review about to be journaled, so what the specialist reports in
+        // REASON is the record a replay reads and not a second account of
+        // the same pass (R12-WORLD-3025, ADR 0488).
+        self.brief_the_desk_on_arbitration(&review);
         if let Err(error) = self.journal_record(review, "kernel/federation", now) {
             problems.push(format!(
                 "the world model federation's review was computed and not journalled: {}",

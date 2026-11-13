@@ -92,11 +92,15 @@ pub enum Scope {
     /// The issuer's debt, cash, leverage and maturity ladder
     /// (R12-REASON-3013).
     CapitalStructure,
+    /// The world model federation's arbitration of its competing members:
+    /// branch, merge, abstain or request more data, with the disagreement
+    /// kept (R12-WORLD-3025).
+    WorldModelArbitration,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 19] = [
+    pub const ALL: [Scope; 20] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -116,6 +120,7 @@ impl Scope {
         Scope::CorporateEvents,
         Scope::ManagementGuidance,
         Scope::CapitalStructure,
+        Scope::WorldModelArbitration,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -139,6 +144,7 @@ impl Scope {
             Self::CorporateEvents => "corporate_events",
             Self::ManagementGuidance => "management_guidance",
             Self::CapitalStructure => "capital_structure",
+            Self::WorldModelArbitration => "world_model_arbitration",
         }
     }
 
@@ -186,6 +192,7 @@ impl Scope {
             Self::CorporateEvents => &["corporate_actions_pending"],
             Self::ManagementGuidance => &["guidance_gap", "guidance_outstanding"],
             Self::CapitalStructure => &["net_debt", "net_leverage", "debt_due_within_year"],
+            Self::WorldModelArbitration => &["arbitrations_decided"],
         }
     }
 

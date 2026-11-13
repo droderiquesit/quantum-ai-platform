@@ -558,6 +558,10 @@ pub fn standard_agents(
         )),
         Arc::new(crate::fundamental_brain::CompanyFundamentalAnalyst::new(
             manifests::company_fundamental_brain(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(crate::world_model_brain::WorldModelArbitrationAnalyst::new(
+            manifests::world_model_arbitration_brain(reviewed_at),
             desk,
         )),
     ]

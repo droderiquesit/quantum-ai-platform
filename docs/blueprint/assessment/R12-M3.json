@@ -583,27 +583,31 @@
   {
     "id": "R12-WORLD-3025",
     "status": "PARTIAL",
-    "current": "Federation arbitration (four decisions with calibration) runs each UNDERSTAND pass and is journaled.",
+    "current": "Federation arbitration (four decisions with calibration) runs each UNDERSTAND pass and is journaled; a World Model Arbitration Brain on the production roster reads the journaled review from a kernel-written desk slot and reports each decision, the preserved disagreement and member calibration, and the deep brain registry covers world-model-arbitration only through that roster-derived entry (ADR 0488).",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:362 Federation (in-process only; module doc says no composition root builds it)",
-      "backend/crates/services/qip-world-model/tests/federation.rs:243 arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output",
+      "backend/crates/agents/qip-investment-agents/src/world_model_brain.rs::WorldModelArbitrationAnalyst",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs::world_model_arbitration_brain (on roster)",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs::standard_agents",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::WorldModelArbitration",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::brief_the_desk_on_arbitration",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation",
-      "backend/crates/apps/qip-deepbrain/src/brains.rs arbitration_spec, REQUIRED_SCOPES, BrainRegistry::require_coverage",
-      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage"
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs::removing_the_world_model_arbitration_brain_drops_world_model_arbitration_from_coverage",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::understand_briefs_the_desk_from_the_federation_review_it_journals_and_the_arbitration_brain_reports_it",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage",
+      "docs/adr/0488-the-world-model-arbitration-brain-is-an-organisation-specialist-reading-the-journaled-federation-review-from-a-kernel-written-slot.md"
     ],
-    "gap": "2026-10-25 (L4, commit 4f9bdc2d, skeptic REFUTED). Closed: the deep brain registry (brains::standard) carries a World Model Arbitration Brain entry over world-model-arbitration, and require_coverage refuses start when that scope is missing. Still open: the entry is a hand-written BrainSpec describing the kernel FederationStage, not a specialist constructed in the production organisation (the qip-investment-agents roster has none); removing it stops nothing but start-up, since FederationStage::run is independent of the registry and main.rs only prints the registry; the spec is not tied to the FederationReview the stage journals; the fast brain and qip-api build the same Platform with no registry or coverage check; and under ADR 0158 decision 8 a spec enters through the Cognitive Compiler or a reviewed spec, with calibration tracked, which this literal (calibration 0.0) is not.",
+    "gap": "2026-11-12 (session t50-31, ADR 0488). Closed: the World Model Arbitration Brain is constructed in the production organisation (manifests::roster, chief::standard_agents), reads the FederationReview UNDERSTAND journals through a kernel-written desk slot carrying its cycle and journal position, emits a finding counting branch/merge/abstain/request-more-data, the disagreeing views kept and member calibration, and removing it drops Scope::WorldModelArbitration from coverage; the hand-written registry spec is gone and the deep brain's entry is derived from the roster. Still open: the specialist reports the kernel FederationStage's decisions and does not itself score or decide (the arbitration runs in UNDERSTAND, before the panel convenes); the registry entry's calibration is the organisation_spec literal 0.0, not computed from the federation's resolved forecasts (ADR 0158 decision 8); qip-fastbrain and qip-api build the same Platform with no brain registry or require_coverage check; nothing in DECIDE reads the specialist's finding.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test symbolic_federation; cargo test -p qip-deepbrain --test brains",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL. 2026-11-12 (t50-31): specialist added (ADR 0488); seven mutants killed (agent dropped from standard_agents; abstain counted as branch; one view per disagreement; observed guard removed; empty-pass guard removed; kernel slot writer removed; manifest scope competency renamed), each restored byte-for-byte. Graded PARTIAL by its own session; no skeptic has run."
   },
   {
     "id": "R12-REASON-3026",

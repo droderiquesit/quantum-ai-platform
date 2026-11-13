@@ -2134,3 +2134,92 @@ fn the_counterparty_review_names_each_network_role_no_counterparty_held() -> Res
     }
     Ok(())
 }
+
+/// R12-WORLD-3025, ADR 0488. The World Model Arbitration Brain reads the
+/// review UNDERSTAND has just journaled, on the platform's own desk: the
+/// slot the kernel writes names the replayed review's cycle and journal
+/// position, holds its arbitrations unchanged, and the specialist run over
+/// that desk reports the same number of decisions — every one a request for
+/// more data on a fresh federation, whose members are all unscored.
+///
+/// The failure this guards: a specialist that reads a slot the kernel never
+/// writes reports "no data" forever, and the organisation's coverage of
+/// world-model arbitration is a test fixture's and not the platform's.
+///
+/// Mutation: drop the `self.brief_the_desk_on_arbitration(&review)` call in
+/// `Platform::stage_understand`'s federation pass — the slot stays
+/// unobserved and the first assertion fails.
+#[test]
+fn understand_briefs_the_desk_from_the_federation_review_it_journals_and_the_arbitration_brain_reports_it()
+-> Result<()> {
+    use qip_agents::runtime::{Agent, AgentHost};
+    use qip_investment_agents::world_model_brain::WorldModelArbitrationAnalyst;
+    use qip_investment_agents::{ids, manifests};
+
+    let mut platform = platform()?;
+    let mut records = bars("AAA", 120);
+    records.extend(bars("BBB", 120));
+    platform.observe(records);
+    for step in 0..2 {
+        platform.run_cycle(start().saturating_add(Duration::from_mins(5 * step)));
+    }
+    let reviews = federation_stage::replay(&platform)?;
+    let last = reviews.last().expect("premise: a review was journaled");
+    assert!(
+        !last.arbitrations.is_empty(),
+        "premise: the federation arbitrated something"
+    );
+    {
+        let view = platform.desk_arbitration_view();
+        assert!(view.observed, "UNDERSTAND did not brief the desk");
+        assert_eq!(view.cycle, last.cycle);
+        assert_eq!(view.journal_base, last.journal_base);
+        assert_eq!(view.arbitrations, last.arbitrations);
+        assert_eq!(view.calibrations.len(), last.population.len());
+    }
+
+    let agent = WorldModelArbitrationAnalyst::new(
+        manifests::world_model_arbitration_brain(start()),
+        platform.desk().clone(),
+    );
+    assert_eq!(agent.manifest().id, ids::WORLD_MODEL_ARBITRATION);
+    let brief = qip_agents::finding::AgentBrief::new(
+        "how did the world model federation arbitrate",
+        start(),
+        Duration::from_days(1),
+    );
+    let record = AgentHost::new(1).run(
+        &agent,
+        &brief,
+        start(),
+        qip_core::lineage::Lineage::root(
+            qip_core::lineage::CorrelationId::from_string("wma"),
+            "test",
+        ),
+        qip_core::ids::AgentRunId::from_string("run-wma"),
+    );
+    let finding = record.finding.expect("the specialist answered");
+    let fact = |label: &str| {
+        finding
+            .facts
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value)
+    };
+    assert_eq!(
+        fact("arbitrations_decided"),
+        Some(last.arbitrations.len() as f64),
+        "{}",
+        finding.claim
+    );
+    let requests = last
+        .arbitrations
+        .iter()
+        .filter(|a| matches!(a.decision, Decision::RequestMoreInformation(_)))
+        .count();
+    assert_eq!(
+        fact("arbitrations_request_more_data"),
+        Some(requests as f64)
+    );
+    Ok(())
+}
