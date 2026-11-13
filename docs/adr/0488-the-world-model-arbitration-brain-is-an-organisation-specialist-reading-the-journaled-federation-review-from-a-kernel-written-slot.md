@@ -50,15 +50,23 @@ removing the entry stopped nothing but start-up.
    same cycle, and a finding is checkable against the record a replay reads —
    it is not a second account of the same pass.
 
-3. **It reports the federation's decisions; it makes none.** The finding
-   counts each decision arm (`arbitrations_branch`, `_merge`, `_abstain`,
-   `_request_more_data`, total `arbitrations_decided`), keeps every
-   disagreeing view in `disagreeing_views_kept`, reports the widest spread,
-   and states calibration as the federation scored it (`members_calibrated`,
+3. **It decides each proposition itself, under the federation's rule.** For
+   every arbitration in the review the specialist recomputes the decision
+   from the scored views the record preserves with
+   `qip_world_model::federation::decide_on` — the federation's pure decision
+   rule, the same function a replay uses — and counts its own decisions
+   (`arbitrations_branch`, `_merge`, `_abstain`, `_request_more_data`, total
+   `arbitrations_decided`). A recorded decision its views do not reproduce is
+   counted in `arbitrations_not_reproduced`, named in the finding's missing
+   inputs (so the finding is `Partial`), and not repeated. One rule, not two:
+   a second decision rule in the specialist would be a second account of the
+   same fact, and the two would disagree. The finding keeps every disagreeing
+   view in `disagreeing_views_kept`, reports the widest spread, and states
+   calibration as the federation scored it (`members_calibrated`,
    `members_unscored`, `members_outside_calibration_claim`, and
    `mean_member_brier` only when at least one member is scored — a mean over
-   no scored member would be a number nobody measured). It re-scores nothing
-   and merges no probability the federation did not merge.
+   no scored member would be a number nobody measured). It re-scores no
+   member and sizes nothing.
 
 4. **No review, or an empty one, is no data.** Before any federation pass,
    or when a pass arbitrated nothing, the finding is a no-view naming why.
@@ -84,6 +92,24 @@ removing the entry stopped nothing but start-up.
 - The roster is twenty-eight agents and the standard organisation
   twenty-seven dispatched agents (the chief is on the roster and dispatches).
 
+## What it costs
+
+- One more agent run per REASON panel, reading one slot and folding a
+  bounded list (the review's arbitrations, one per proposition in the
+  federation's universe). No model call: the manifest grants none and the
+  budget allows none.
+- The desk gains a slot the kernel must keep in step with the journal. The
+  writer is one call, placed before the review is moved into the log, so the
+  slot can only hold what is journaled — but it is a second place the review
+  lives in memory, replaced wholesale each pass.
+- The roster grows to twenty-eight and every count of it in the documents
+  moves with it.
+- The deep brain loses the entry that named the kernel's `FederationStage`
+  as a tool. A reader of the registry now sees an organisation agent whose
+  tools are capability grants; where the arbitration actually runs is
+  stated in this record and in the agent's module documentation, not in the
+  registry.
+
 ## What remains (not decided here)
 
 - The registry entry's `calibration` field is still `0.0`, as for every
@@ -93,6 +119,10 @@ removing the entry stopped nothing but start-up.
 - `qip-fastbrain` and `qip-api` build the same `Platform` (so the same
   organisation and the same slot) but run no brain registry or
   `require_coverage` check; only `qip-deepbrain` does.
+- The specialist decides with the federation's rule; it does not propose a
+  different one. A change to the rule is a change to
+  `qip_world_model::federation::decide`, and both the federation and the
+  specialist move with it.
 - The specialist's finding is advisory and feeds the chief's synthesis like
   any other; nothing in DECIDE reads it. DECIDE's narrowing still reads the
   federation review directly (ADR 0125 decision 4).

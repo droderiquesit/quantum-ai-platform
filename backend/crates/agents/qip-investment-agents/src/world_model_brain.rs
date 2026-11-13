@@ -13,11 +13,14 @@
 //!
 //! It reads the desk's arbitration slot, which the kernel writes from the
 //! review it has just journaled (`Platform::brief_the_desk_on_arbitration`),
-//! so every decision it reports is the federation's and not this agent's:
-//! it decides nothing, re-scores nothing and merges no number the federation
-//! did not merge. What it adds is a finding in the organisation's record
-//! that names each decision, keeps every disagreeing view in the count, and
-//! states each member's calibration as the federation scored it.
+//! and it decides each proposition from the scored views that record
+//! preserves, under the federation's own pure decision rule
+//! (`qip_world_model::federation::decide_on`). Its counts of branch, merge,
+//! abstain and request-more-data are its own decisions; where a recorded
+//! decision does not follow from its own views, the brain counts it as not
+//! reproduced and names the proposition rather than repeating it. It keeps
+//! every disagreeing view in the count and states each member's calibration
+//! as the federation scored it. It re-scores no member and sizes nothing.
 //!
 //! **No review is no data, never a federation that agreed.** Before the
 //! kernel has run a pass, or when a pass arbitrated nothing, the finding is a
@@ -29,7 +32,7 @@ use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
 use qip_agents::runtime::{Agent, AgentContext};
 use qip_core::error::Result;
-use qip_world_model::federation::{Calibration, Decision};
+use qip_world_model::federation::{Calibration, Decision, decide_on};
 use std::sync::Arc;
 
 /// The input every fact this agent states is computed from.
@@ -75,11 +78,22 @@ impl Agent for WorldModelArbitrationAnalyst {
             ));
         }
 
+        // The specialist decides each proposition itself, from the scored
+        // views the record preserves, under the federation's own decision
+        // rule (`decide_on`, a pure function of the views). A recorded
+        // decision that its own views do not reproduce is counted and named
+        // rather than repeated: the brain reports what the evidence decides,
+        // and a journal that says otherwise is the finding.
         let (mut branch, mut merge, mut abstain, mut request) = (0usize, 0usize, 0usize, 0usize);
         let mut views_kept = 0usize;
         let mut widest = 0.0_f64;
+        let mut not_reproduced: Vec<&str> = Vec::new();
         for arbitration in &view.arbitrations {
-            match arbitration.decision {
+            let (decided, _, _) = decide_on(&arbitration.proposition, &arbitration.disagreement);
+            if decided != arbitration.decision {
+                not_reproduced.push(arbitration.proposition.as_str());
+            }
+            match decided {
                 Decision::Branch => branch += 1,
                 Decision::Merge => merge += 1,
                 Decision::Abstain => abstain += 1,
@@ -116,12 +130,20 @@ impl Agent for WorldModelArbitrationAnalyst {
             "federation review of cycle {} (journal position {}): {} arbitration(s) — {branch} \
              branch, {merge} merge, {abstain} abstain, {request} request more data — keeping \
              {views_kept} view(s), the widest spread {widest:.3}; {scored} member(s) calibrated, \
-             {unscored} unscored, {outside_claim} outside their claimed Brier",
+             {unscored} unscored, {outside_claim} outside their claimed Brier; {} recorded \
+             decision(s) not reproduced by their own views",
             view.cycle,
             view.journal_base,
-            view.arbitrations.len()
+            view.arbitrations.len(),
+            not_reproduced.len()
         );
         let mut missing = Vec::new();
+        if !not_reproduced.is_empty() {
+            missing.push(format!(
+                "a recorded decision its own views do not reproduce, on {}",
+                not_reproduced.join(", ")
+            ));
+        }
         if !view.uncovered.is_empty() {
             missing.push(format!(
                 "no live member covers {}",
@@ -167,6 +189,13 @@ impl Agent for WorldModelArbitrationAnalyst {
             ))
             .fact(computed(
                 ctx,
+                "arbitrations_not_reproduced",
+                not_reproduced.len() as f64,
+                "count",
+                SOURCE,
+            ))
+            .fact(computed(
+                ctx,
                 "disagreeing_views_kept",
                 views_kept as f64,
                 "count",
@@ -201,7 +230,8 @@ impl Agent for WorldModelArbitrationAnalyst {
                 SOURCE,
             ))
             .caveats(vec![
-                "reports the federation's own decisions; it re-scores and merges nothing"
+                "decides each proposition from the views the federation scored, under the \
+                 federation's own rule; it re-scores no member"
                     .to_string(),
                 "an unscored member has no resolved forecast: unscored is not a Brier of zero"
                     .to_string(),

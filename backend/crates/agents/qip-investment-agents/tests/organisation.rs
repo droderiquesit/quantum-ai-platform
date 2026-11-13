@@ -4087,15 +4087,20 @@ fn an_analyst_checks_its_call_against_its_own_procedure_and_states_a_departure()
 
 // --- the World Model Arbitration Brain (R12-WORLD-3025, ADR 0488) ---------
 
-fn scored(model: &str, probability: f64) -> qip_world_model::federation::ScoredView {
+fn scored(
+    model: &str,
+    probability: f64,
+    composite: Option<f64>,
+    uncertainty: f64,
+) -> qip_world_model::federation::ScoredView {
     qip_world_model::federation::ScoredView {
         model: model.to_string(),
         probability,
         evidence_fit: 0.5,
-        predictive_performance: None,
+        predictive_performance: composite,
         causal_coherence: 0.5,
-        uncertainty: 0.3,
-        composite: None,
+        uncertainty,
+        composite,
         lineage: qip_world_model::federation::ViewLineage {
             parents: Vec::new(),
             trigger: None,
@@ -4123,41 +4128,60 @@ fn arbitration(
 }
 
 /// A desk whose arbitration slot holds a federation review with one
-/// arbitration of each kind, as the kernel's UNDERSTAND writes it: seven
-/// views kept across the four, the widest spread 0.6 on the branch, two
-/// members scored (one outside its claimed Brier) and one unscored.
-fn desk_with_a_federation_review() -> Arc<Desk> {
-    use qip_investment_agents::desk::ArbitrationView;
-    use qip_world_model::federation::{Calibration, Decision, InformationRequest};
-    let arbitrations = vec![
+/// arbitration of each kind, as the kernel's UNDERSTAND writes it: each
+/// recorded decision is the one the federation's rule reaches on its own
+/// views (two close scored views far apart branch; two that agree merge;
+/// two too uncertain abstain; one unscored view asks), eight views kept, the
+/// widest spread 0.6 on the branch, two members scored (one outside its
+/// claimed Brier) and one unscored.
+fn federation_review_arbitrations() -> Vec<qip_world_model::federation::Arbitration> {
+    use qip_world_model::federation::{Decision, InformationRequest};
+    vec![
         arbitration(
             "AAA:next-close-up@1",
             Decision::Branch,
-            vec![scored("momentum", 0.8), scored("reversion", 0.2)],
+            vec![
+                scored("momentum", 0.8, Some(0.60), 0.3),
+                scored("reversion", 0.2, Some(0.58), 0.3),
+            ],
             0.6,
         ),
         arbitration(
             "BBB:next-close-up@1",
             Decision::Merge,
-            vec![scored("momentum", 0.55), scored("reversion", 0.5)],
+            vec![
+                scored("momentum", 0.55, Some(0.60), 0.3),
+                scored("reversion", 0.50, Some(0.55), 0.3),
+            ],
             0.05,
         ),
         arbitration(
             "CCC:next-close-up@1",
             Decision::Abstain,
-            vec![scored("momentum", 0.5)],
-            0.0,
+            vec![
+                scored("momentum", 0.7, Some(0.5), 0.9),
+                scored("reversion", 0.4, Some(0.5), 0.9),
+            ],
+            0.3,
         ),
         arbitration(
             "DDD:next-close-up@1",
             Decision::RequestMoreInformation(InformationRequest {
                 proposition: "DDD:next-close-up@1".to_string(),
-                models: vec!["momentum".to_string(), "macro".to_string()],
+                models: vec!["macro".to_string()],
             }),
-            vec![scored("momentum", 0.7), scored("macro", 0.4)],
+            vec![
+                scored("momentum", 0.7, Some(0.6), 0.3),
+                scored("macro", 0.4, None, 0.3),
+            ],
             0.3,
         ),
-    ];
+    ]
+}
+
+fn desk_with_review(arbitrations: Vec<qip_world_model::federation::Arbitration>) -> Arc<Desk> {
+    use qip_investment_agents::desk::ArbitrationView;
+    use qip_world_model::federation::Calibration;
     let calibrations = BTreeMap::from([
         (
             "momentum".to_string(),
@@ -4187,6 +4211,10 @@ fn desk_with_a_federation_review() -> Arc<Desk> {
     }))
 }
 
+fn desk_with_a_federation_review() -> Arc<Desk> {
+    desk_with_review(federation_review_arbitrations())
+}
+
 fn arbitration_finding(
     report: &qip_investment_agents::OrganisationReport,
 ) -> &qip_agents::finding::AgentFinding {
@@ -4211,8 +4239,8 @@ fn arbitration_finding(
 ///
 /// Mutations: drop the `WorldModelArbitrationAnalyst` from `standard_agents`
 /// (the premise finding is missing); count `Decision::Abstain` under
-/// `branch` (the branch and abstain figures move); count only the first view
-/// of each disagreement (seven becomes four).
+/// `branch` (the branch and abstain figures move); count one view per
+/// disagreement (eight becomes four).
 #[test]
 fn removing_the_world_model_arbitration_brain_drops_world_model_arbitration_from_coverage()
 -> Result<()> {
@@ -4229,7 +4257,8 @@ fn removing_the_world_model_arbitration_brain_drops_world_model_arbitration_from
         fact_value(finding, "arbitrations_request_more_data"),
         Some(1.0)
     );
-    assert_eq!(fact_value(finding, "disagreeing_views_kept"), Some(7.0));
+    assert_eq!(fact_value(finding, "arbitrations_not_reproduced"), Some(0.0));
+    assert_eq!(fact_value(finding, "disagreeing_views_kept"), Some(8.0));
     assert_eq!(fact_value(finding, "widest_disagreement_spread"), Some(0.6));
     assert_eq!(fact_value(finding, "members_calibrated"), Some(2.0));
     assert_eq!(fact_value(finding, "members_unscored"), Some(1.0));
@@ -4312,6 +4341,46 @@ fn a_federation_review_that_arbitrated_nothing_does_not_cover_world_model_arbitr
         !report
             .covered_scopes()
             .contains(&Scope::WorldModelArbitration)
+    );
+    Ok(())
+}
+
+/// The brain decides each proposition from the views the record preserves,
+/// and does not repeat a recorded decision those views do not support. A
+/// review whose branch arbitration is recorded as a merge — two close
+/// composites far apart, which the federation's rule branches — is counted
+/// as a branch, flagged as not reproduced, and named in the finding's missing
+/// inputs, so a journal edited or written by a different rule is a finding
+/// rather than a figure.
+///
+/// Mutation: count the recorded `arbitration.decision` instead of the one
+/// `decide_on` reaches — the branch count drops to zero and merge rises to
+/// two; or drop the `decided != arbitration.decision` comparison — nothing
+/// is reported not reproduced.
+#[test]
+fn the_world_model_arbitration_brain_decides_from_the_preserved_views_and_names_a_record_they_do_not_reproduce()
+-> Result<()> {
+    let mut arbitrations = federation_review_arbitrations();
+    assert_eq!(
+        arbitrations[0].decision,
+        qip_world_model::federation::Decision::Branch,
+        "premise: the first fixture arbitration is the branch"
+    );
+    arbitrations[0].decision = qip_world_model::federation::Decision::Merge;
+    let mut org = organisation(desk_with_review(arbitrations))?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = arbitration_finding(&report);
+    assert_eq!(fact_value(finding, "arbitrations_branch"), Some(1.0));
+    assert_eq!(fact_value(finding, "arbitrations_merge"), Some(1.0));
+    assert_eq!(fact_value(finding, "arbitrations_not_reproduced"), Some(1.0));
+    assert_eq!(finding.status, FindingStatus::Partial, "{}", finding.claim);
+    assert!(
+        finding
+            .missing_inputs
+            .iter()
+            .any(|m| m.contains("AAA:next-close-up@1")),
+        "{:?}",
+        finding.missing_inputs
     );
     Ok(())
 }
