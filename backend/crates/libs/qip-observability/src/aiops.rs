@@ -253,6 +253,158 @@ pub fn build_timeline(
     Ok(out)
 }
 
+// --- R12-OBS-1172: incident triage -----------------------------------------
+
+/// How much an incident matters, ordered so that `Critical > Major > Minor`.
+///
+/// The classes are decided by what the incident touched and whether anything
+/// contained it, never by a score threshold: the level-shift score already
+/// cleared its own bar to open the incident, and a second, larger number
+/// would be a figure nobody chose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// A runbook contained it and nothing trading-facing was implicated.
+    Minor,
+    /// No automated action contained it: a person must, and until they do
+    /// the shift is still running.
+    Major,
+    /// It coincided with trading behaviour on an entity, or with a missed
+    /// committed objective: what the desk relies on is involved.
+    Critical,
+}
+
+impl Severity {
+    /// The `severity` label value. A fixed set of literals.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Minor => "minor",
+            Self::Major => "major",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// One entity an incident's window implicates, with how many abnormal
+/// signals it carried there and of which classes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Implicated {
+    pub entity: EntityKey,
+    pub signals: usize,
+    pub classes: BTreeSet<SignalClass>,
+}
+
+impl EntityGraph {
+    /// Entities other than `exclude` carrying a signal `abnormal` accepts in
+    /// `[start, end]`, most abnormal signals first and ties in key order, so
+    /// the ranking is the same on every replay.
+    pub fn implicated(
+        &self,
+        start: Timestamp,
+        end: Timestamp,
+        exclude: &EntityKey,
+        abnormal: impl Fn(&EntityKey, &Signal) -> bool,
+    ) -> Vec<Implicated> {
+        let mut out: Vec<Implicated> = self
+            .nodes
+            .iter()
+            .filter(|(entity, _)| *entity != exclude)
+            .filter_map(|(entity, signals)| {
+                let hits: Vec<&Signal> = signals
+                    .iter()
+                    .filter(|s| s.at >= start && s.at <= end && abnormal(entity, s))
+                    .collect();
+                (!hits.is_empty()).then(|| Implicated {
+                    entity: entity.clone(),
+                    signals: hits.len(),
+                    classes: hits.iter().map(|s| s.class).collect(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.signals
+                .cmp(&a.signals)
+                .then_with(|| a.entity.cmp(&b.entity))
+        });
+        out
+    }
+}
+
+/// An incident's triage: its severity, the entity that owns it, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Triage {
+    pub severity: Severity,
+    /// The most-implicated entity, or the process the shift was found in
+    /// where nothing else was implicated.
+    pub owner: EntityKey,
+    pub implicated: Vec<Implicated>,
+    pub reasons: Vec<String>,
+}
+
+/// Triage an incident.
+///
+/// `implicated` is [`EntityGraph::implicated`]'s ranking; `contained` is
+/// whether a runbook action was applied; `objectives_missed` names the
+/// committed objectives measured and missed when the incident opened. The
+/// owner falls back to `observed_in`, the process whose series shifted,
+/// because an incident nobody owns is one nobody reads.
+pub fn triage(
+    observed_in: &EntityKey,
+    implicated: Vec<Implicated>,
+    contained: bool,
+    objectives_missed: &[String],
+) -> Triage {
+    let mut reasons = Vec::new();
+    let trading: Vec<&Implicated> = implicated
+        .iter()
+        .filter(|i| i.classes.contains(&SignalClass::TradingBehaviour))
+        .collect();
+    for i in &trading {
+        reasons.push(format!(
+            "trading behaviour on {} {} in the incident window",
+            i.entity.kind, i.entity.id
+        ));
+    }
+    if !objectives_missed.is_empty() {
+        reasons.push(format!(
+            "committed objective(s) missed: {}",
+            objectives_missed.join(", ")
+        ));
+    }
+    if !contained {
+        reasons.push("no runbook action contained it; a person must".to_string());
+    }
+    let severity = if !trading.is_empty() || !objectives_missed.is_empty() {
+        Severity::Critical
+    } else if !contained {
+        Severity::Major
+    } else {
+        Severity::Minor
+    };
+    let owner = implicated
+        .first()
+        .map_or_else(|| observed_in.clone(), |i| i.entity.clone());
+    Triage {
+        severity,
+        owner,
+        implicated,
+        reasons,
+    }
+}
+
+/// Incident ids in the order a person should read them: most severe first,
+/// and within a severity the oldest first, since it has run longest.
+pub fn rank_incidents(incidents: &[(String, Timestamp, Triage)]) -> Vec<&str> {
+    let mut order: Vec<&(String, Timestamp, Triage)> = incidents.iter().collect();
+    order.sort_by(|a, b| {
+        b.2.severity
+            .cmp(&a.2.severity)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    order.into_iter().map(|(id, _, _)| id.as_str()).collect()
+}
+
 // --- OBS-005 / OBS-030: runbook-only remediation, audited -------------------
 
 /// A pre-approved runbook: one named action, on a fixed set of targets.

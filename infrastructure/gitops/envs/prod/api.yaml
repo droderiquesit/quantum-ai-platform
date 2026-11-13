@@ -245,6 +245,18 @@ spec:
           mode: 292
           versionRef:
             external: latest
+  # Two targets always, and their order is the contract Kargo's promotion
+  # reads (kargo/base/promotiontask.yaml, ADR 0452): index 0 is the revision
+  # serving the stable share, index 1 the `standby` — the canary while one
+  # runs, the previous promoted digest's revision otherwise, at 0%, kept so
+  # that a return to it is a traffic change and not a new revision. Each
+  # revision is named `qip-<env>-api-<first twelve hex of its digest>`.
+  # Nothing has been promoted here (`TO-PIN`), so no revision has a name
+  # yet; the first promotion names it and takes 100%, not a canary.
   traffic:
   - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
     percent: 100
+    tag: stable
+  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
+    percent: 0
+    tag: standby
