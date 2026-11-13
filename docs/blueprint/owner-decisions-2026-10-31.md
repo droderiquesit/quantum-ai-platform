@@ -1208,7 +1208,8 @@ that narrows a security scanner, whatever the owner has delegated.
       in a conversation can supply it. Every row waiting on a deployment
       waits on this first. `up` also stays behind the rule that billed
       infrastructure is not created without its monthly cost named, and a
-      plan that cannot run names none.
+      plan that cannot run names none. The owner attached billing the same
+      evening and the plan then ran; decision 34 carries on from there.
     - *Apply the two held patches.* Both edit the protected guard suite
       `architecture.rs`, which is why they were held. Applied unchanged:
       lane t50-02's `only_the_cost_router_mints_a_deterministic_gate`
@@ -1235,6 +1236,46 @@ that narrows a security scanner, whatever the owner has delegated.
       prod state nothing. The owner sets a real appetite by changing that
       one line to a lower fraction, for example "0.5" to halve every
       maximum.
+
+34. **A change window on Friday evening, and main's ci made green, so dev
+    can be applied** (owner, 2026-11-13). The orchestrator had told the owner
+    that `infra.yml up` for dev could not run that day for two reasons the
+    repository itself gives: the plan adds a network firewall policy, a core
+    change, and core changes land only Tuesday to Thursday, 14:00 to 20:00
+    UTC (`infrastructure/change-windows.json`, R12-GCP-9120); and `up`
+    applies nothing on a commit whose push-started ci did not succeed, while
+    main's ci had been red on its static-analysis job. It said it would not
+    widen the window unasked, because that relaxes a guard. The owner
+    answered, quoting both reasons: "This is incorrect fix this and do it
+    immediately".
+
+    - *The window.* A second window is added: Friday from 18:00 UTC,
+      carried to 03:00 UTC on Saturday, which is still Friday evening in
+      the Americas. It was first written to end at 23:59 UTC; the session
+      then lost four hours to a usage limit, the apply could no longer
+      start before midnight UTC, and the same instruction was carried over
+      it rather than left to expire. It is a standing window, because the
+      policy's format names weekdays and has no one-off date; it is not
+      widened further, and the Tuesday to Thursday window is untouched. This is a relaxation of a
+      change-management guard, made on the owner's instruction and said
+      here so nobody reads it as an oversight. The reason the guard gives
+      still holds on a Friday evening only if a person is watching: the
+      owner was. The owner removes it by deleting one line. `qip-cli`'s
+      `change_window` test now pins the window's days and every edge, so
+      a window that leaked into another day or night would fail.
+    - *Main's ci.* One finding failed the static-analysis gate on main:
+      `rust/cleartext-logging` at
+      `backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs`, an
+      assertion message that printed an entry of a constant named
+      `PER_BUILD_SECRETS`. The message no longer prints the entry; it names
+      it by position. No baseline entry is added and no scanner setting is
+      touched.
+    - The plan the owner was shown on 2026-11-13 (run 125): 37 to add, 25
+      to change, 1 to destroy, the one destroy being the replacement of the
+      storage service agent's grant on the evidence key. No key, secret or
+      bucket is destroyed. The repository's own estimate for dev fully up is
+      about 780 to 960 USD a month (`dev-redeploy-readiness.md` section 5),
+      against a recorded ceiling of 25 USD a day.
 
 ## Where this stopped (2026-11-01)
 
