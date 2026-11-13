@@ -1076,7 +1076,7 @@ fn the_reason_stage_runs_the_meta_brain_under_the_regime_in_force() -> Result<()
     let last = runs
         .iter()
         .filter_map(|run| run.finding.as_ref())
-        .last()
+        .next_back()
         .expect("the meta brain's run produced a finding");
     assert!(
         !last.claim.contains("every regime, pooled"),

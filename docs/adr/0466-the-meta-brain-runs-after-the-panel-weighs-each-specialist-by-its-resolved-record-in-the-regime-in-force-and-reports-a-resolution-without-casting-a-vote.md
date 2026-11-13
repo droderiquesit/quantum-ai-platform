@@ -85,7 +85,7 @@ Three things stood in the way, each recorded in the row's gap since
    copy of the panel it read. REASON reads the resolution beside the panel's
    balance; nothing in this record makes it act on either.
 
-## Consequences
+## What it costs
 
 - The roster is twenty-eight; the organisation runs twenty-seven agents,
   twenty-six on the panel and one after it. `README.md`,
@@ -96,6 +96,12 @@ Three things stood in the way, each recorded in the row's gap since
   `qip-kernel/tests/episodic.rs::the_reason_stage_runs_the_meta_brain_under_the_regime_in_force`.
 - Research episodes written before this change carry no regime and stay out
   of every per-regime record; they still count in the pooled hit rate.
+- One more run per dispatch, and `qip_agents::memory::Episode` and
+  `AgentBrief` each carry one more optional field; every struct literal of
+  `Episode` names it.
+- A cold memory reports reliability and attention for nobody until analyst
+  calls resolve in the regime in force; the scopes are uncovered until then,
+  which is the honest reading and not a fault.
 
 ## Not decided here
 
