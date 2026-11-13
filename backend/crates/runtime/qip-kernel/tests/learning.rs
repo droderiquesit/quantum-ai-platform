@@ -1438,6 +1438,63 @@ fn the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue() -
     Ok(())
 }
 
+/// R12-MODEL-4008: the twin is calibrated "to historical replay", which
+/// until this test meant only to fills held in memory — a restart priced its
+/// first counterfactuals with the uncalibrated model. The same scored fill
+/// the test above charts is here refitted from the platform's own journal,
+/// and the refitted twin prices that venue as the live one does and not as
+/// the base model does: a recalibration from the record changing twin output.
+///
+/// Mutation: make `fill_replay::recorded_fills` return no fills — the refit
+/// holds no venue and prices at the base, and the first assertion fails.
+#[test]
+fn a_twin_refitted_from_the_journal_prices_the_venue_as_the_live_twin_does() -> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-filled", start())?;
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    assert_eq!(
+        platform.fill_scores().len(),
+        1,
+        "premise: the fill was priced"
+    );
+
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let venue = platform.desk_venue().to_string();
+    let live = platform.fill_calibration().cost_model(&base, &venue);
+    assert_ne!(live, base, "premise: the live twin moved off the base");
+
+    let replayed = qip_kernel::fill_replay::refit_from_journal(
+        &platform.journal_entries()?,
+        qip_twin::calibration::DEFAULT_LEARNING_RATE,
+    )?;
+    let refitted = replayed.cost_model(&base, &venue);
+    assert_ne!(
+        refitted, base,
+        "the twin refitted from the journal still prices at the base"
+    );
+    assert_eq!(
+        refitted, live,
+        "the twin refitted from the journal prices the venue differently from the live twin"
+    );
+    assert_eq!(
+        replayed
+            .venue(&venue)
+            .map(|calibration| calibration.observations),
+        Some(1),
+        "the fill journaled in every later cycle was replayed more than once"
+    );
+    Ok(())
+}
+
 /// R12-TICK-10103: the LEARN score compares the twin's predicted fill,
 /// slippage and outcome with what happened. The tape opens its last bar
 /// before the fill at 90 against an arrival of 100, so the twin predicts an

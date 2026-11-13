@@ -141,19 +141,7 @@ impl FillCalibration {
         error_bps: f64,
         participation: Option<f64>,
     ) -> Result<&VenueCalibration> {
-        if !error_bps.is_finite() {
-            return Err(Error::invalid(format!(
-                "a fill error of {error_bps} bps on {venue} is not a number the twin can learn from"
-            )));
-        }
-        if let Some(participation) = participation
-            && !(0.0..=1.0).contains(&participation)
-        {
-            return Err(Error::invalid(format!(
-                "a fill participation of {participation} on {venue} is not a fraction of the \
-                 bar's volume; the twin cannot learn a size law from it"
-            )));
-        }
+        check_observation(venue, error_bps, participation)?;
         let rate = self.learning_rate;
         let entry = self.venues.entry(venue.to_string()).or_default();
         match participation {
@@ -194,6 +182,55 @@ impl FillCalibration {
         Ok(entry)
     }
 
+    /// Refit the twin from a recorded history of fills, oldest first
+    /// (R12-MODEL-4008): the calibration a restarted platform, or a research
+    /// desk asking what the twin would have learned, rebuilds from the event
+    /// log rather than from whatever happened to be in memory.
+    ///
+    /// Every record is checked before any is absorbed, so a history with one
+    /// unreadable record refuses whole and leaves the calibration exactly as
+    /// it was. Absorbing the readable prefix and stopping would leave a twin
+    /// fitted to an arbitrary cut of the record, one no replay of the same
+    /// log could tell apart from a complete one. The refusal names the
+    /// record's position so the caller can find it in the log.
+    ///
+    /// Each record is absorbed exactly as [`Self::observe_with_participation`]
+    /// absorbs a live fill, so replaying the fills a running platform saw
+    /// yields the calibration that platform held: one rule, not two that can
+    /// drift apart. Returns how many fills were absorbed.
+    pub fn replay<I>(&mut self, history: I) -> Result<usize>
+    where
+        I: IntoIterator<Item = RecordedFill>,
+    {
+        let history: Vec<RecordedFill> = history.into_iter().collect();
+        for (position, fill) in history.iter().enumerate() {
+            check_observation(&fill.venue, fill.error_bps, fill.participation).map_err(
+                |error| {
+                    Error::invalid(format!(
+                        "recorded fill {position} of {} cannot be replayed, and none was \
+                         absorbed: {}",
+                        history.len(),
+                        error.message()
+                    ))
+                },
+            )?;
+        }
+        for fill in &history {
+            self.observe_with_participation(&fill.venue, fill.error_bps, fill.participation)?;
+        }
+        Ok(history.len())
+    }
+
+    /// A calibration at `learning_rate` fitted from `history` alone.
+    pub fn from_history<I>(learning_rate: f64, history: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = RecordedFill>,
+    {
+        let mut calibration = Self::new(learning_rate)?;
+        calibration.replay(history)?;
+        Ok(calibration)
+    }
+
     /// The calibration held for `venue`, if any fill has been observed there.
     pub fn venue(&self, venue: &str) -> Option<&VenueCalibration> {
         self.venues.get(venue)
@@ -214,4 +251,46 @@ impl FillCalibration {
         }
         model
     }
+}
+
+/// One fill as the event log recorded it, in the terms the calibration
+/// learns from (R12-MODEL-4008): the venue it filled at, the twin's signed
+/// entry error against it in basis points as the kernel's
+/// `FillScore::trade_error_bps` records it, negative meaning the twin filled
+/// better than reality, and the fill's share of its bar's volume where the
+/// record carries one.
+///
+/// The error is read as an error against the *uncalibrated* twin, as
+/// [`FillCalibration::observe_with_participation`] reads a live one. That is
+/// what the kernel measures: its error compares the twin's entry *price*
+/// with the venue's, and the calibrated half-spread is charged as a cost
+/// beside that price rather than moving it — eight fills on one tape scored
+/// an identical error while the venue's bias moved by thousands of basis
+/// points. Treating it as a residual of the calibrated twin instead was
+/// tried on 2026-11-13 and made the bias integrate without bound.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecordedFill {
+    pub venue: String,
+    pub error_bps: f64,
+    #[serde(default)]
+    pub participation: Option<f64>,
+}
+
+/// The one check a live fill and a replayed fill both pass, so the two
+/// cannot disagree about what the twin may learn from.
+fn check_observation(venue: &str, error_bps: f64, participation: Option<f64>) -> Result<()> {
+    if !error_bps.is_finite() {
+        return Err(Error::invalid(format!(
+            "a fill error of {error_bps} bps on {venue} is not a number the twin can learn from"
+        )));
+    }
+    if let Some(participation) = participation
+        && !(0.0..=1.0).contains(&participation)
+    {
+        return Err(Error::invalid(format!(
+            "a fill participation of {participation} on {venue} is not a fraction of the \
+             bar's volume; the twin cannot learn a size law from it"
+        )));
+    }
+    Ok(())
 }
