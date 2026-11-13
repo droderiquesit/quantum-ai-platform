@@ -1087,6 +1087,25 @@ pub struct ResearchRound {
     /// (R12-EXPAND-6042): the microstructure delta a learner reads, the
     /// delta's id being the campaign's.
     pub deltas: Vec<qip_contracts::microstructure_delta::MicrostructureDelta>,
+    /// The fill-bias corrections this sweep decided to install into, or
+    /// withdraw from, the platform's paper fill model (R12-EXPAND-6050). The
+    /// sweep holds `&Platform`, so like `deltas` the act waits for the node's
+    /// `&mut Platform` and is applied through [`ResearchRound::admit_fill_bias`]
+    /// after the sweep.
+    pub fill_bias_actions: Vec<FillBiasAction>,
+}
+
+/// One fill-bias correction a sweep decided to apply to the paper fill model
+/// (R12-EXPAND-6050): a campaign whose shadow window cleared installs its
+/// fitted bias, and one whose paper window refused the correction withdraws
+/// whatever stood at the venue.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FillBiasAction {
+    pub venue: String,
+    pub bias_bps: f64,
+    pub campaign: String,
+    /// `true` installs the correction, `false` withdraws it.
+    pub install: bool,
 }
 
 impl ResearchRound {
@@ -1109,6 +1128,36 @@ impl ResearchRound {
                             error.message()
                         )
                     })
+            })
+            .collect()
+    }
+
+    /// Apply the fill-bias corrections this sweep decided to the platform's
+    /// paper fill model (R12-EXPAND-6050), in decision order, journaling each
+    /// through the kernel seam so a replay reproduces it. A refusal — a venue
+    /// no registered strategy trades, or a non-finite bias — is said, not
+    /// swallowed; the sweep's own counts already stand.
+    pub fn admit_fill_bias(&self, platform: &mut Platform, now: Timestamp) -> Vec<String> {
+        self.fill_bias_actions
+            .iter()
+            .filter_map(|action| {
+                let result = if action.install {
+                    platform.install_fill_bias(
+                        &action.venue,
+                        action.bias_bps,
+                        &action.campaign,
+                        now,
+                    )
+                } else {
+                    platform.withdraw_fill_bias(&action.venue, now)
+                };
+                result.err().map(|error| {
+                    format!(
+                        "fill-bias correction at {} was not applied to the paper model: {}",
+                        action.venue,
+                        error.message()
+                    )
+                })
             })
             .collect()
     }
@@ -4443,6 +4492,13 @@ impl ResearchLoop {
             // ADR 0142 d5's two phases, on the round beside the verdict: an
             // installation is the moment the correction started acting in
             // the paper window, a withdrawal the moment paper refused it.
+            // R12-EXPAND-6050: the installation is now an act on the paper
+            // fill model, not only a record. A correction whose shadow window
+            // cleared and whose paper window held is handed to the platform
+            // to install; one whose paper window refused it is handed a
+            // withdrawal, which removes any correction an earlier sweep
+            // installed at the venue and is a no-op otherwise. The act itself
+            // waits for the node's `&mut Platform` (`admit_fill_bias`).
             if result.installation.is_some() {
                 *round.campaigns.entry("installed").or_default() += 1;
                 metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "installed")]));
@@ -4450,6 +4506,19 @@ impl ResearchLoop {
             if result.withdrawal.is_some() {
                 *round.campaigns.entry("withdrawn").or_default() += 1;
                 metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "withdrawn")]));
+                round.fill_bias_actions.push(FillBiasAction {
+                    venue: result.correction.venue.clone(),
+                    bias_bps: result.correction.bias_bps,
+                    campaign: question.clone(),
+                    install: false,
+                });
+            } else if result.installation.is_some() {
+                round.fill_bias_actions.push(FillBiasAction {
+                    venue: result.correction.venue.clone(),
+                    bias_bps: result.correction.bias_bps,
+                    campaign: question.clone(),
+                    install: true,
+                });
             }
             let outcome = match self.desk.conclude(&result.campaign, &result.evaluation) {
                 Ok(capability) => {
