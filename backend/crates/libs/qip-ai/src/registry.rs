@@ -346,6 +346,12 @@ pub struct ModelCard {
     /// [`ModelRegistry::record_shadow_round`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<ShadowRecord>,
+    /// The simulation or paper trial a candidate ran through before the
+    /// kernel would promote it (ADR 0436, R12-MODEL-4022). Written only by
+    /// [`ModelRegistry::record_trial_round`]. Absent from cards written
+    /// before the field existed, which the kernel's gate refuses as untried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<TrialRecord>,
     /// Whether the platform fitted this model for itself (the deep brain's
     /// learning desk). A self-fitted card reaches production only out of a
     /// completed shadow stage, whichever caller asks: the guard is here in
@@ -353,6 +359,92 @@ pub struct ModelCard {
     /// chooses (R12-EXPAND-6070).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub self_fitted: bool,
+    /// The four promotion tests as they were last run on this card's
+    /// artifact (ADR 0392, R12-MODEL-10202). Absent on a card nobody has
+    /// tested, which [`ModelRegistry::promote_artifact`] refuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_tests: Option<PromotionTests>,
+}
+
+/// The replay test: the artifact, served twice, gave the same output bit
+/// for bit on every row of a recorded window.
+pub const REPLAY_TEST: &str = "replay";
+/// The calibration test: a scale and offset mapping the artifact's outputs
+/// onto what the recorded window realised could be measured.
+pub const CALIBRATION_TEST: &str = "calibration";
+/// The classical-baseline test: the artifact's error on the recorded window
+/// is strictly below the zero-move predictor's.
+pub const CLASSICAL_BASELINE_TEST: &str = "classical_baseline";
+/// The envelope test: every output on the recorded window is a finite
+/// number a deterministic threshold can be compared against.
+pub const RISK_ENVELOPE_TEST: &str = "risk_envelope";
+
+/// The four tests a promotion needs, in the order a refusal names them
+/// (ADR 0392).
+pub const PROMOTION_TESTS: [&str; 4] = [
+    REPLAY_TEST,
+    CALIBRATION_TEST,
+    CLASSICAL_BASELINE_TEST,
+    RISK_ENVELOPE_TEST,
+];
+
+/// One promotion test's result: whether it passed and the sentence that
+/// says what was measured.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromotionTest {
+    pub passed: bool,
+    pub evidence: String,
+}
+
+/// The promotion tests run on one artifact over one recorded window
+/// (ADR 0392, R12-MODEL-10202).
+///
+/// The failure it prevents: a model reached production on a passing
+/// evaluation alone, never having been run again over recorded inputs,
+/// measured for calibration, compared with a classical predictor, or shown
+/// to emit numbers a deterministic check can carry. The results name the
+/// artifact digest they were measured on, so tests run on one set of bytes
+/// do not admit another.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromotionTests {
+    /// [`crate::serving::ModelArtifact::digest`] of the bytes tested.
+    pub artifact_digest: String,
+    /// The recorded window the tests ran over, by its dataset name.
+    pub window: String,
+    /// How many recorded rows the window held.
+    pub rows: usize,
+    pub ran_at: Timestamp,
+    /// Keyed by the names in [`PROMOTION_TESTS`].
+    pub results: BTreeMap<String, PromotionTest>,
+}
+
+impl PromotionTests {
+    /// Why these results do not admit `artifact_digest`, or `None` when all
+    /// four tests are present, passed, and were run on those bytes.
+    pub fn gap(&self, artifact_digest: &str) -> Option<String> {
+        if self.artifact_digest != artifact_digest {
+            return Some(format!(
+                "its promotion tests ran on artifact {} and this artifact is {artifact_digest}; \
+                 run the tests on the bytes being promoted",
+                self.artifact_digest
+            ));
+        }
+        for name in PROMOTION_TESTS {
+            match self.results.get(name) {
+                None => {
+                    return Some(format!(
+                        "it has no {name} test on record; run the promotion tests on a recorded \
+                         window before promoting it"
+                    ));
+                }
+                Some(test) if !test.passed => {
+                    return Some(format!("it failed its {name} test: {}", test.evidence));
+                }
+                Some(_) => {}
+            }
+        }
+        None
+    }
 }
 
 /// Shadow rounds a self-fitted model must win before it may be promoted.
@@ -376,6 +468,63 @@ pub struct ShadowRecord {
     pub last_round: Timestamp,
     /// One line per round won: what it was scored on, and against whom.
     pub evidence: Vec<String>,
+}
+
+/// Trial rounds a candidate must complete in simulation or paper trading
+/// before the kernel promotes it (ADR 0436, R12-MODEL-4022). The shadow
+/// stage's figure, not a new one: no figure for this was ever stated by the
+/// owner, and three windows after the fit is already this registry's
+/// smallest count that distinguishes a model from one lucky window.
+pub const MIN_TRIAL_ROUNDS: u32 = MIN_SHADOW_ROUNDS;
+
+/// Where a trial round executed. Two arms and no third: a trial is the
+/// platform's own execution target (ADR 0003), and a variant that could
+/// name a live venue does not exist to be chosen, so "validated in
+/// simulation and paper trading" cannot be satisfied by a live run however a
+/// caller labels it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrialVenue {
+    /// Replayed against the market simulator: recorded bars, the twin's
+    /// fill model, no broker.
+    Simulation,
+    /// Run against the simulated broker in the paper-trading cycle.
+    Paper,
+}
+
+impl TrialVenue {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Simulation => "simulation",
+            Self::Paper => "paper",
+        }
+    }
+}
+
+/// A candidate's simulation or paper trial (ADR 0436).
+///
+/// The failure it prevents (R12-MODEL-4022): a training-pipeline candidate
+/// went from its held-out statistics straight to production. Out-of-sample
+/// statistics say how a model predicts; they do not say how its decisions
+/// behave once they meet execution, which is what a trial records. Recorded
+/// beside the card's stage rather than as one, so a candidate keeps the
+/// stage its other gates read while the trial accumulates.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrialRecord {
+    pub since: Timestamp,
+    pub rounds: u32,
+    pub last_round: Timestamp,
+    /// One line per round: the venue and what the round was scored on.
+    pub evidence: Vec<String>,
+    /// Every venue a round ran on, so a reader sees which kind of trial it was.
+    pub venues: BTreeSet<TrialVenue>,
+}
+
+impl TrialRecord {
+    /// Whether the trial has run the rounds promotion requires.
+    pub fn completed(&self) -> bool {
+        self.rounds >= MIN_TRIAL_ROUNDS
+    }
 }
 
 /// Where one feature's values came from (R12-MODEL-4016): enough for a
@@ -485,7 +634,9 @@ impl ModelCard {
             campaign_id: None,
             code_version: None,
             shadow: None,
+            trial: None,
             self_fitted: false,
+            promotion_tests: None,
         }
     }
 
@@ -834,13 +985,36 @@ impl ModelRegistry {
     /// Register `card`, or replace the card already held under its reference.
     ///
     /// Refuses a new reference once the registry holds [`MAX_CARDS`] cards
-    /// (R12-MODEL-9003). A replacement is always admitted: it does not grow
-    /// the registry. Refused rather than evicted, because a card the event log
-    /// still names and the registry silently dropped is a replay that cannot
-    /// find it; the refusal is the visible control, and the caller counts and
-    /// journals it.
+    /// (R12-MODEL-9003). A replacement does not grow the registry and is
+    /// admitted at the cap. Refused rather than evicted, because a card the
+    /// event log still names and the registry silently dropped is a replay
+    /// that cannot find it; the refusal is the visible control, and the
+    /// caller counts and journals it.
+    ///
+    /// A replacement may revise what is recorded about a version and never
+    /// which artifact the version names (R12-COVERAGE-7170): once the held
+    /// card is bound to an artifact digest, a card under the same reference
+    /// carrying a different digest, or none, is refused. A version here is a
+    /// string and is not ordered; what makes the registry versioned is that
+    /// `name@version` names one artifact, every version is its own card, and
+    /// a successor is a new reference beside the old one.
+    /// [`Self::promote_artifact`] and [`Self::register_package`] already held
+    /// that line; this door did not, so re-registering a promoted version
+    /// swapped the bytes every earlier decision cited without a refusal.
     pub fn register(&mut self, card: ModelCard) -> Result<()> {
         let reference = card.reference();
+        if let Some(bound) = self
+            .cards
+            .get(&reference)
+            .and_then(|held| held.artifact_digest.as_deref())
+            && card.artifact_digest.as_deref() != Some(bound)
+        {
+            return Err(Error::denied(format!(
+                "{reference} is bound to artifact {bound} and the card offered carries {}; a \
+                 version names one artifact, so register the new bytes under a new version",
+                card.artifact_digest.as_deref().unwrap_or("no artifact")
+            )));
+        }
         // ADR 0198: `promote` is the one door into production for a model the
         // platform fitted for itself, and this seam honours the same rule, so
         // a card built at `Production` cannot walk around the shadow stage
@@ -1079,10 +1253,81 @@ impl ModelRegistry {
         Ok(shadow.rounds_won)
     }
 
-    /// Promote a model to production, recording when.
-    pub fn promote(&mut self, reference: &str, at: Timestamp) -> Result<()> {
+    /// Record one simulation or paper trial round a candidate completed
+    /// (ADR 0436). Returns the rounds so far. Refused for blank evidence, for
+    /// a card in production or retirement — a trial is what comes before
+    /// acceptance, and a round recorded after it would be read as the
+    /// evidence the acceptance rested on — and for a round not strictly
+    /// after the last: one round counted twice is one round.
+    pub fn record_trial_round(
+        &mut self,
+        reference: &str,
+        venue: TrialVenue,
+        evidence: &str,
+        at: Timestamp,
+    ) -> Result<u32> {
+        if evidence.trim().is_empty() {
+            return Err(Error::invalid(
+                "a trial round names what the candidate was scored on in the trial",
+            ));
+        }
         let card = self
             .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if matches!(card.stage, ModelStage::Production | ModelStage::Retired) {
+            return Err(Error::denied(format!(
+                "{reference} is in {:?}; a trial round is recorded only for a candidate not yet \
+                 accepted",
+                card.stage
+            )));
+        }
+        let line = format!("{}: {}", venue.as_str(), evidence.trim());
+        match card.trial.as_mut() {
+            None => {
+                card.trial = Some(TrialRecord {
+                    since: at,
+                    rounds: 1,
+                    last_round: at,
+                    evidence: vec![line],
+                    venues: BTreeSet::from([venue]),
+                });
+                Ok(1)
+            }
+            Some(trial) => {
+                if at <= trial.last_round {
+                    return Err(Error::denied(format!(
+                        "{reference}'s last trial round was at {}; a round at {} is not a new one",
+                        trial.last_round.as_secs(),
+                        at.as_secs()
+                    )));
+                }
+                trial.rounds = trial.rounds.saturating_add(1);
+                trial.last_round = at;
+                trial.evidence.push(line);
+                trial.venues.insert(venue);
+                Ok(trial.rounds)
+            }
+        }
+    }
+
+    /// Promote a model to production, recording when.
+    pub fn promote(&mut self, reference: &str, at: Timestamp) -> Result<()> {
+        self.require_promotable(reference)?;
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        card.stage = ModelStage::Production;
+        card.deployed_at = Some(at);
+        Ok(())
+    }
+
+    /// Every refusal [`Self::promote`] makes, changing nothing. Apart from
+    /// `promote` so that [`Self::promote_artifact`] can refuse on the card's
+    /// own terms first and on its promotion tests second, before the card
+    /// moves.
+    fn require_promotable(&self, reference: &str) -> Result<()> {
+        let card = self
+            .get(reference)
             .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
         if card.latest_evaluation().is_none_or(|e| !e.passed) {
             return Err(Error::denied(format!(
@@ -1112,8 +1357,6 @@ impl ModelRegistry {
                 )));
             }
         }
-        card.stage = ModelStage::Production;
-        card.deployed_at = Some(at);
         Ok(())
     }
 
@@ -1121,10 +1364,12 @@ impl ModelRegistry {
     /// (ADR 0083's promote stage), and return the artifact named by its
     /// digest for the composition root to write.
     ///
-    /// Three refusals, each before the card changes: an artifact whose digest
+    /// Four refusals, each before the card changes: an artifact whose digest
     /// is not the digest of its payload (the bytes are not the bytes), a
     /// card that would not promote on its own terms — no passing evaluation
-    /// — and a card already promoted with a *different* artifact. The last
+    /// — a card whose four promotion tests are missing, failed or were run
+    /// on other bytes (ADR 0392), and a card already promoted with a
+    /// *different* artifact. The last
     /// is the one a reader might expect to be allowed: re-promoting a
     /// version with new bytes is a different model wearing the same name,
     /// and every decision that referenced the old digest would then cite a
@@ -1150,6 +1395,29 @@ impl ModelRegistry {
                  version whose bytes changed is a different model — register it under a new \
                  version rather than replacing what decisions already cite",
                 artifact.reference, artifact.digest
+            )));
+        }
+        self.require_promotable(&artifact.reference)?;
+        // ADR 0392 (R12-MODEL-10202): no artifact is promoted without the
+        // four promotion tests on its card, passed, on these bytes. After
+        // the card's own refusals, so a card with no passing evaluation is
+        // refused for that; before the card moves, so a refusal changes
+        // nothing.
+        let untested = match self
+            .get(&artifact.reference)
+            .and_then(|card| card.promotion_tests.as_ref())
+        {
+            None => Some(format!(
+                "it has no promotion tests on record ({}); run them on a recorded window \
+                 before promoting it",
+                PROMOTION_TESTS.join(", ")
+            )),
+            Some(tests) => tests.gap(&artifact.digest),
+        };
+        if let Some(gap) = untested {
+            return Err(Error::denied(format!(
+                "{} cannot be promoted: {gap}",
+                artifact.reference
             )));
         }
         self.promote(&artifact.reference, at)?;

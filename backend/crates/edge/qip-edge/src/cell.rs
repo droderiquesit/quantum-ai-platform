@@ -1515,6 +1515,10 @@ struct Working {
     /// behind it but the price is the order R12-GOV-6127 forbids. Set by
     /// `record_sent`, the one place a `Working` enters the set.
     grounds: Vec<String>,
+    /// The sequence of this order's `OrderSent` entry, set by `record_sent`
+    /// from the entry it journals, so each fill can name the decision it
+    /// rests on (ADR 0454) without the ledger rebuilding it by order id.
+    decision_sequence: Option<u64>,
 }
 
 /// How many orders the cell will hold open at once.
@@ -6342,6 +6346,18 @@ impl Cell {
             price,
         );
         let notional = desired * charged_at;
+        // What this signal proposes, as a refusal past this line carries it
+        // (ADR 0448): every gate below judges an intent whose instrument,
+        // venue, side and size are known, so the centre can price the veto.
+        // The size is the one the gate judged — the narrowed ask before the
+        // envelope, the admitted quantity after it.
+        let proposed = |quantity: Decimal| RefusedLeg {
+            object_id: signal.object_id.clone(),
+            venue: venue.clone(),
+            side,
+            quantity,
+            reference_price: price,
+        };
         let key = signal.strategy.as_str().to_string();
         let Some(deployed) = self.deployed.get(&key) else {
             self.refuse(
@@ -6357,11 +6373,12 @@ impl Cell {
         // it is the backstop bounding a cell that lost contact, and a backstop
         // consulted only on arrival is not one.
         if !deployed.envelope.is_live(now) {
-            self.refuse(
+            self.refuse_proposed(
                 report,
                 "envelope_expiry",
                 "the capital envelope has expired; the cell stops rather than continues",
                 now,
+                proposed(desired),
             );
             return Ok(None);
         }
@@ -6378,7 +6395,7 @@ impl Cell {
                 deployed.envelope.signature(),
                 unpriced,
             );
-            self.refuse(report, "capital", &reason, now);
+            self.refuse_proposed(report, "capital", &reason, now, proposed(desired));
             return Ok(None);
         }
 
@@ -6390,7 +6407,7 @@ impl Cell {
             BookSide::Bid => -desired,
         };
         if let Some(reason) = self.hedge_refusal(&venue, &signal.object_id, signed, now) {
-            self.refuse(report, GATE_HEDGE_TARGET, &reason, now);
+            self.refuse_proposed(report, GATE_HEDGE_TARGET, &reason, now, proposed(desired));
             return Ok(None);
         }
 
@@ -6406,7 +6423,13 @@ impl Cell {
                 "strategy {key} under grant {}: {reason}",
                 deployed.envelope.signature()
             );
-            self.refuse(report, GATE_ENVELOPE_DRAWDOWN, &reason, now);
+            self.refuse_proposed(
+                report,
+                GATE_ENVELOPE_DRAWDOWN,
+                &reason,
+                now,
+                proposed(desired),
+            );
             return Ok(None);
         }
 
@@ -6435,7 +6458,7 @@ impl Cell {
                     reason,
                     now,
                 );
-                self.refuse(report, "capital", &reason, now);
+                self.refuse_proposed(report, "capital", &reason, now, proposed(desired));
                 return Ok(None);
             }
         };
@@ -6468,7 +6491,7 @@ impl Cell {
             )
         });
         if let Some((gate, reason)) = verdict {
-            self.refuse(report, gate, &reason, now);
+            self.refuse_proposed(report, gate, &reason, now, proposed(quantity));
             return Ok(None);
         }
 
@@ -6488,16 +6511,17 @@ impl Cell {
             )
         });
         if let Some((gate, reason)) = authority {
-            self.refuse(report, gate, &reason, now);
+            self.refuse_proposed(report, gate, &reason, now, proposed(quantity));
             return Ok(None);
         }
 
         if self.autonomy.level() == AutonomyLevel::Observation {
-            self.refuse(
+            self.refuse_proposed(
                 report,
                 "autonomy",
                 "the cell is at observation and sends nothing",
                 now,
+                proposed(quantity),
             );
             return Ok(None);
         }
@@ -6567,7 +6591,7 @@ impl Cell {
         // ADR 0155 §8, after the intent exists and before it can join a net.
         if let Some(reason) = self.net_edge_refusal(signal, &intent, report) {
             self.release_region_hold_for(signal.strategy.as_str());
-            self.refuse(report, GATE_NET_EDGE, &reason, now);
+            self.refuse_proposed(report, GATE_NET_EDGE, &reason, now, refused_leg(&intent));
             return Ok(None);
         }
         Ok(Some(intent))
@@ -6857,6 +6881,7 @@ impl Cell {
                 net: net_intent.clone(),
                 region_committed,
                 grounds: Vec::new(),
+                decision_sequence: None,
             },
             schedule.equalised(),
             grants,
@@ -7299,23 +7324,32 @@ impl Cell {
         now: Timestamp,
     ) {
         let order = &working.order;
-        self.journal.record(
-            Decision::OrderSent {
-                order_id: order.order_id.clone(),
-                venue: order.venue.as_str().to_string(),
-                quantity: order.quantity.to_string(),
-                simulated: order.simulated,
-                release_at: Some(order.release_at),
-                equalised,
-                grants,
-                grounds: grounds.clone(),
-            },
-            now,
-        );
+        let decision_sequence = self
+            .journal
+            .record(
+                Decision::OrderSent {
+                    order_id: order.order_id.clone(),
+                    venue: order.venue.as_str().to_string(),
+                    quantity: order.quantity.to_string(),
+                    simulated: order.simulated,
+                    release_at: Some(order.release_at),
+                    equalised,
+                    grants,
+                    grounds: grounds.clone(),
+                },
+                now,
+            )
+            .sequence;
         self.metrics.order_placed(&order.venue);
         let order_id = order.order_id.clone();
-        self.working
-            .insert(order_id, Working { grounds, ..working });
+        self.working.insert(
+            order_id,
+            Working {
+                grounds,
+                decision_sequence: Some(decision_sequence),
+                ..working
+            },
+        );
     }
 
     /// The grounds a net intent stands on (R12-GOV-6127): its expected
@@ -8365,6 +8399,7 @@ impl Cell {
             working.order.closed = Some("filled".to_string());
         }
         let shares = working.net.split_fill(execution.quantity);
+        let decision_sequence = working.decision_sequence;
         // The listing's quote currency as the placer states it, read after
         // the venue check above so it is asked about the venue that filled.
         // `None` stays `None`: a price journaled in a currency the cell
@@ -8443,6 +8478,9 @@ impl Cell {
                 // never zero (LEDGER-019); an estimate here would be the
                 // cell inventing a venue fact the ledger then books.
                 fee: None,
+                // The `OrderSent` entry this order went out on, whose
+                // contributors are the shares above (ADR 0454).
+                decision_sequence,
             },
             now,
         );
@@ -10854,6 +10892,7 @@ impl Cell {
                 // a cycle leg over.
                 region_committed: Decimal::ZERO,
                 grounds: Vec::new(),
+                decision_sequence: None,
             },
             schedule.equalised(),
             grants,
@@ -11966,6 +12005,34 @@ impl Cell {
             },
             now,
         );
+    }
+
+    /// Refuse an intent the cell had fully reasoned — instrument, venue,
+    /// side, size and price all known — and keep that proposal on the
+    /// refusal, so the centre can price what declining it cost
+    /// (R12-MODEL-7210, ADR 0448).
+    ///
+    /// Until this existed only a whole arbitrage cycle carried what it would
+    /// have sent; a directional signal refused at the capital envelope, the
+    /// drawdown stop, the hedge target, the exposure or authority bounds,
+    /// observation autonomy or the net-edge gate reached the centre as a
+    /// gate and a sentence, so the LEARN stage scored every veto the desk
+    /// made and none a cell made. A loop that learns only from what it was
+    /// allowed to do is biased toward its own gates. The leg is what was
+    /// proposed, never an order; it goes into the same side table
+    /// `admit_cycle` writes, keyed by this refusal's index, so the join in
+    /// [`Self::state_delta`] attaches it to this refusal and no other.
+    fn refuse_proposed(
+        &mut self,
+        report: &mut WorkReport,
+        gate: &str,
+        reason: &str,
+        now: Timestamp,
+        leg: RefusedLeg,
+    ) {
+        let index = report.refusals.len();
+        self.refuse(report, gate, reason, now);
+        report.refused_legs.push((index, vec![leg]));
     }
 
     /// Book one position change into its owner's realised P&L, and write the

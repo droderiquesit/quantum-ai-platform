@@ -457,4 +457,21 @@ impl EnvelopeIssuer {
     pub fn is_valid(&self, envelope: &CapitalEnvelope, now: Timestamp) -> bool {
         self.verify(envelope, now).is_ok()
     }
+
+    /// Sign a hedge narrowing under the key this issuer signs envelopes with
+    /// (ADR 0126 decision 4, ADR 0407).
+    ///
+    /// A narrowing is capital authority, so a cell verifies it under its
+    /// `envelope` key; signing it anywhere but here would put a second
+    /// envelope key in the centre. Refuses one [`HedgeNarrowing::check`]
+    /// refuses, because a malformed narrowing signed is a defect the cell
+    /// would only name later and further from its cause.
+    pub fn sign_hedge(
+        &self,
+        mut narrowing: qip_contracts::policy::HedgeNarrowing,
+    ) -> Result<qip_contracts::policy::HedgeNarrowing> {
+        narrowing.check()?;
+        narrowing.signature = self.sign(&narrowing.signing_payload())?;
+        Ok(narrowing)
+    }
 }

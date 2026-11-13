@@ -16,6 +16,7 @@
 
 mod server;
 
+use qip_contracts::venue::VenueStatus;
 use qip_core::error::Error;
 use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_events::{EventBus, EventLog, Topic};
@@ -122,6 +123,25 @@ fn book_of(records: &[SensedRecord]) -> &OrderBook {
         .expect("the records contain a book")
 }
 
+/// The books among `records`.
+fn books_in(records: &[SensedRecord]) -> usize {
+    records
+        .iter()
+        .filter(|record| matches!(record, SensedRecord::Book(_)))
+        .count()
+}
+
+/// The venue statuses published among `records`, in order (R12-TICK-2053).
+fn statuses_in(records: &[SensedRecord]) -> Vec<VenueStatus> {
+    records
+        .iter()
+        .filter_map(|record| match record {
+            SensedRecord::Status(update) => Some(update.status),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A two-sided book, open, complete as of sequence 1000.
 const SNAPSHOT: &str = r#"{
   "symbol": "NWSC",
@@ -197,7 +217,11 @@ fn a_snapshot_and_the_increments_after_it_build_the_book_the_venue_published() {
     let stats = adapter.stats();
     assert_eq!(stats.snapshots, 1, "one snapshot to start the book");
     assert_eq!(stats.resynchronisations, 0, "nothing had to be rebuilt");
-    assert_eq!(stats.emitted, 1);
+    // The book, and the venue's first stated status as its own typed record
+    // (R12-TICK-2053): the book starts `Unreachable` until the venue speaks.
+    assert_eq!(stats.emitted, 2);
+    assert_eq!(books_in(&records), 1);
+    assert_eq!(statuses_in(&records), vec![VenueStatus::Open]);
 }
 
 #[test]
@@ -593,6 +617,16 @@ fn a_book_that_crosses_while_the_venue_says_it_is_trading_is_rebuilt_rather_than
 
     let book = book_of(&records);
     assert_eq!(book.sequence, 1010, "the rebuilt book is what is published");
+    // The rebuild restated `open`, and a restated status is not a change:
+    // republishing it would read downstream as the venue toggling.
+    //
+    // Mutation: in `depth::session_record` publish every `StatusChange`
+    // rather than only one that changes the held status — two `Open`s.
+    assert_eq!(
+        statuses_in(&records),
+        vec![VenueStatus::Open],
+        "{records:?}"
+    );
     assert!(
         book.validate().is_ok(),
         "the rebuilt book should be structurally sound: {:?}",
@@ -626,11 +660,20 @@ fn a_vendor_that_keeps_sending_a_crossed_book_is_refused_and_its_levels_are_left
     let mut adapter = adapter_for(&server);
     let records = adapter.poll(poll_instant()).expect("the poll succeeds");
 
-    assert!(
-        records.is_empty(),
+    assert_eq!(
+        books_in(&records),
+        0,
         "a crossed book must not be published: the mid computed from an inverted touch is a \
          plausible number no strategy should size against, got {records:?}"
     );
+    // What is published is the status the first snapshot stated; the
+    // rebuild's is stamped after this poll's clock and is withheld with it.
+    assert_eq!(
+        statuses_in(&records),
+        vec![VenueStatus::Open],
+        "{records:?}"
+    );
+    assert_eq!(records.len(), 1, "{records:?}");
     let stats = adapter.stats();
     assert_eq!(stats.withheld_crossed, 1);
     assert_eq!(
@@ -682,11 +725,25 @@ fn a_crossed_book_during_an_auction_is_withheld_as_the_auction_state_it_is_and_n
     let mut adapter = adapter_for(&server);
     let records = adapter.poll(poll_instant()).expect("the poll succeeds");
 
-    assert!(
-        records.is_empty(),
+    assert_eq!(
+        books_in(&records),
+        0,
         "the continuous touch during an auction is a book nobody can hit, so it is withheld \
          whatever its condition, got {records:?}"
     );
+    // What the venue did say — that it is in an auction, and where the auction
+    // would cross — reaches the centre as typed records rather than nowhere.
+    assert_eq!(statuses_in(&records), vec![VenueStatus::Auction]);
+    let auctions: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            SensedRecord::Auction(auction) => Some(auction),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(auctions.len(), 1, "{records:?}");
+    assert_eq!(auctions[0].indicative_price, Some(dec!("101.35")));
+    assert_eq!(auctions[0].imbalance, dec!("800"));
     let stats = adapter.stats();
     assert_eq!(stats.withheld_auction, 1);
     assert_eq!(
@@ -801,10 +858,14 @@ fn a_book_at_a_venue_that_is_not_trading_continuously_is_withheld() {
     let mut adapter = adapter_for(&server);
     let records = adapter.poll(poll_instant()).expect("the poll succeeds");
 
-    assert!(
-        records.is_empty(),
+    assert_eq!(
+        books_in(&records),
+        0,
         "a halted venue's resting levels are not a market to price off, got {records:?}"
     );
+    // The halt itself is published: before R12-TICK-2053 the centre learned
+    // of it only from the books stopping.
+    assert_eq!(statuses_in(&records), vec![VenueStatus::Halted]);
     assert_eq!(adapter.stats().withheld_not_trading, 1);
     assert_eq!(
         adapter.stats().snapshots,
@@ -973,7 +1034,9 @@ fn a_book_the_caller_could_not_yet_have_seen_is_withheld_until_the_clock_reaches
         "a delayed entitlement means this deployment was not allowed to see this book yet, got \
          {records:?}"
     );
-    assert_eq!(adapter.stats().withheld_late, 1);
+    // The book and the status it was read under are both held back: the
+    // status's knowable instant is under the same entitlement delay.
+    assert_eq!(adapter.stats().withheld_late, 2);
     assert_eq!(adapter.stats().emitted, 0);
 
     let later = adapter
@@ -1001,11 +1064,12 @@ fn the_fetch_helper_returns_what_the_vendor_sent_without_the_knowable_gate() {
 
     let records = adapter.fetch(poll_instant()).expect("the fetch succeeds");
     assert_eq!(
-        records.len(),
+        books_in(&records),
         1,
         "fetch exists so an operator can test the connection and the credential without the \
          answer depending on where the clock is"
     );
+    assert_eq!(statuses_in(&records), vec![VenueStatus::Open]);
     assert_eq!(adapter.stats().withheld_late, 0);
 }
 
@@ -1344,7 +1408,10 @@ fn a_configured_adapter_still_states_what_production_has_to_add() {
         "a snapshot-plus-increment feed needs a sequence-addressable resume point, and saying so \
          is the difference between a recovery and a guess: {requirement}"
     );
-    assert_eq!(descriptor.topics, vec![Topic::MarketOrderBook]);
+    assert_eq!(
+        descriptor.topics,
+        vec![Topic::MarketOrderBook, Topic::MarketSession]
+    );
     assert_eq!(descriptor.licensing, LicensingClass::Licensed);
     assert!(descriptor.is_production_grade());
     assert_eq!(adapter.instruments(), vec![object_id()]);
@@ -1565,8 +1632,13 @@ fn books_from_a_live_fetch_publish_through_the_ingestion_service() {
     bus.drain(&context).expect("the bus drains");
 
     assert_eq!(
-        published, 1,
-        "the book passed the validation gate and published"
+        published, 2,
+        "the book and the venue's status passed the validation gate and published"
+    );
+    assert_eq!(
+        log.borrow().by_topic(Topic::MarketSession).len(),
+        1,
+        "the status reaches the bus on its own topic"
     );
     let log = log.borrow();
     assert_eq!(

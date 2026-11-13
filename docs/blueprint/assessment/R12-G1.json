@@ -1906,9 +1906,13 @@
   },
   {
     "id": "R12-FABRIC-8084",
-    "status": "PARTIAL",
-    "current": "The batch header carries magic/version, message type, schema id/version, flags, producer id/epoch, sequence, logical timestamp and the CRC32C. Event id, trace id, source timestamp and payload length ride each record under its own CRC. The partition is broker-stamped inside ADR 0129's format-version-2 BrokerOrigin {region, partition, principal}, under the batch CRC, by Broker::stamp_origin. That runs only for batches an authenticated session produces (produce_from): a batch appended through produce_to carries no origin, and so no partition.",
+    "status": "COMPLETE",
+    "current": "The batch header carries magic/version, message type, schema id/version, flags, producer id/epoch, sequence, logical timestamp and the CRC32C; event id, trace id, source timestamp and payload length ride each record under its own CRC. The partition is broker-stamped on every append by Broker::stamp_origin, which both produce paths call: alone as a partition-only origin tag for produce_to and sessionless producers, inside ADR 0129's v2 BrokerOrigin {region, partition, principal} for an authenticated session, under the batch CRC either way. A producer-stated partition or origin is refused.",
     "evidence": [
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:595 Broker::stamp_origin (stamp_broker_partition on every append; called from both admission paths at :1057 and :1229)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:993 every_append_names_its_partition_even_without_a_session_or_a_region",
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs:731 every_broker_stamped_layout_round_trips_equal_and_refuses_every_single_bit_flip",
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs:602 a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption",
       "backend/crates/libs/qip-events/src/event_fabric/codec.rs Batch::origin, BrokerOrigin, stamp_broker_origin",
       "backend/crates/libs/qip-events/tests/event_fabric_codec.rs::a_broker_stamped_partition_round_trips_and_a_flipped_partition_bit_is_corruption",
       "backend/crates/libs/qip-events/tests/event_fabric_origin.rs",
@@ -1918,7 +1922,7 @@
       "backend/crates/libs/qip-events/tests/event_fabric_codec.rs a_partition_stamped_without_a_session_round_trips_and_a_flipped_bit_in_it_is_corruption, every_broker_stamped_layout_round_trips_equal_and_refuses_every_single_bit_flip",
       "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs every_append_names_its_partition_even_without_a_session_or_a_region"
     ],
-    "gap": "2026-10-25 (lane L1-MONEY, 17300548, c885dafd, fix after it): the partition is now stamped on every broker append, produce_to and sessionless producers included, as a partition-only origin tag inside the v2 header and the batch CRC. Every-field round trip, re-encode byte identity and an exhaustive single-bit flip run over both stamped layouts, and a producer-stated partition is refused. Still PARTIAL by the two-round rule: skeptic round 1 REFUTED on evidence (since added); round 2 REFUTED because c885dafd committed a mutation through a botched restore. That line was restored in the next commit and both mutations re-fired against clean code, but no third skeptic round was run.",
+    "gap": "None in the repository. 2026-11-11 (fw-c-01, independent third verification round, no owner ruling needed): the row's own bar is met. Every-field round trip with re-encode byte identity and an exhaustive single-bit flip over both stamped layouts pass (event_fabric_codec 11 passed, event_fabric_origin 7 passed, event_fabric_broker 15 passed); mutation replacing stamp_broker_partition in Broker::stamp_origin with a no-op fails every_append_names_its_partition_even_without_a_session_or_a_region with left None, right Some(2); restored byte for byte (git diff empty) and it passes. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1926,7 +1930,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events (131 passed, 0 failed); cargo test -p qip-streaming (134 passed, 0 failed); event_fabric_codec \"ok. 11 passed; 0 failed\"; event_fabric_broker \"ok. 15 passed; 0 failed\"; qip-fabricd 58/0, qip-ledgerd 51/0, qip-transport 156/0, qip-desk-ship 10/0, qip-edge-node 303/0 (on 17300548)",
+    "verification": "cargo test -p qip-events --test event_fabric_codec --test event_fabric_origin && cargo test -p qip-streaming --test event_fabric_broker (11, 7 and 15 passed, 0 failed, 2026-11-11)",
     "work_item": "",
     "size": "S",
     "notes": " ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Partition field in the header (or ADR stating the route carries it). 2026-10-24 lane L1-MONEY (11b4bc12, ADR 0160): partition added under a flag bit. Mutations fired: encode omits the partition bytes ('batch CRC mismatch'), decode ignores the flag (round trip None), stamp_broker drops it (both tests fail); restored with cp+cmp. Independent code-reviewer skeptic: HOLDS against the requirement text (requirements.md:173); the ADR 0129 d4 deviation it flagged is now ADR 0160. 2026-10-24 parent session, merge 4: back to PARTIAL. L1's flag-bit partition (ADR 0160) and L5's version-2 origin collided in the codec. The version-2 format was kept; ADR 0160 was not landed. L1's flipped-bit test was re-pointed at the version-2 origin. Mutation: omitting the origin's partition from encode and decoding it as 0 fails it with left Some(0), right Some(7). Restored by copy, cmp clean, and the suite reads 'ok. 9 passed'. 2026-10-25 lane L1-MONEY: mutations fired, each restored byte-for-byte: encode tag 0 for partition-only; disagreement refusal off; broker drops the partition stamp; tag-1 decode drops the partition; stated-partition refusal off. Two code-reviewer skeptic rounds, both REFUTED (evidence; then a committed mutation, since fixed). Kept PARTIAL by the owner's two-round rule. 2026-10-25 lane L1b-fabric: its own partition-field design was dropped on the parent's instruction in favour of this (lane L1's) encoding; what L1b kept on top of it: `FabricEnvelope::open` refuses a read of a batch as any partition but `Batch::partition` whether or not an origin is stamped (event_fabric_origin.rs::an_in_process_batch_carries_its_partition_without_an_origin_and_is_refused_as_another), and `catch_up` and `rebuild_from_archive` refuse to hydrate a batch stamped for another partition (`require_stamped_for`)."
@@ -3129,23 +3133,27 @@
   },
   {
     "id": "R12-LEDGER-8136",
-    "status": "MISSING",
-    "current": "Config literal nam-eur-asea; no default_leader.",
+    "status": "COMPLETE",
+    "current": "ADR 0393: modules/data keys the ledger's placement by the writer's region. us-east4 (qip-ledgerd's region in dev) plans google_spanner_instance.global on nam3 and the positions database's default_leader by DDL from var.spanner_default_leader (ADR 0394: default us-east4, validated to nam3's read-write regions us-east4 and us-east1); enable_spanner in a region with no decided placement fails a lifecycle.precondition naming the ADR, so the data stays in the United States until a residency review adds an entry. Spanner remains off in every environment. Since ADR 0394 the acceptance suite admits a placement config only from an explicit list of Google's multi-region configuration names (checked on Google's instance-configuration page 2026-11-12), which admits nam3 and refuses regional-*, a single region, dual-region-* and the unpublished nam-eur-asea, while keeping the regional- refusal.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:385"
+      "infrastructure/terraform/modules/data/main.tf local.spanner_placements (default_leader = var.spanner_default_leader), google_spanner_instance.global config and precondition, google_spanner_database.positions ddl; modules/data/variables.tf variable spanner_default_leader and its validation",
+      "infrastructure/terraform/modules/data/tests/spanner_placement.tftest.hcl (seven plans: us-east4 admitted on nam3 with leader us-east4; europe-west2 with Spanner on refused; europe-west2 with Spanner off admitted; leader europe-west1 refused; leader us-central1 (witness) refused; leader us-east4 admitted to the DDL; leader us-east1 reaches the DDL)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration (instance reads the placement; every placement config is not regional-* and is on GOOGLE_SPANNER_MULTI_REGION_CONFIGS) and ::the_multi_region_list_admits_nam3_and_refuses_a_regional_a_single_region_and_a_misspelt_name",
+      "docs/adr/0393-the-ledgers-spanner-instance-is-nam3-with-its-default-leader-at-us-east4-the-write-origin-and-its-data-stays-in-the-united-states-until-a-residency-review.md",
+      "docs/adr/0394-the-ledgers-spanner-configuration-is-checked-against-googles-named-multi-region-list-and-its-default-leader-is-a-validated-module-variable.md"
     ],
-    "gap": "Leader choice + rationale.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/spanner_placement.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The ledger holds simulated paper balances and no customer data, so no foreign residency rule binds it today. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The ledger's Spanner instance is nam3 with its leader at the us-east4 write origin, and its data stays in the United States until a residency review says otherwise."
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The ledger holds simulated paper balances and no customer data, so no foreign residency rule binds it today. Handed to lane L1b (wave1031-handoff-2026-10-31.json); stays MISSING until the lane closes it. ADR to claim first, title: The ledger's Spanner instance is nam3 with its leader at the us-east4 write origin, and its data stays in the United States until a residency review says otherwise. 2026-11-12 fw-d-01: closed by ADR 0393. Mutations in modules/data/main.tf, each restored by cp+cmp: default_leader us-east4 -> us-east1 fails the admitting run at the DDL assertion; config -> \"nam-eur-asea\" fails it at the nam3 assertion; precondition condition -> var.enable_spanner || ... fails the refusing run ('Missing expected failure'). For the acceptance test: map config -> regional-us-east4 fails 'is a single region'; instance config -> literal \"nam3\" fails 'is not the placement ADR 0393 decides'. terraform test in modules/data: 31 passed. No credentialed plan was run; Spanner is off in every environment, so none would show the instance. 2026-11-12 fix-a-01: a skeptic found two closure parts unmet (the guard was a prefix check, not a list; the leader was a literal, not a validated variable); closed by ADR 0394. Mutations, each restored by cp+cmp: map config -> nam-eur-asea, us-east4 and dual-region-germany1 each fail the acceptance test at 'is not one of Google's multi-region Spanner configurations'; deleting \"nam3\" from the list fails both tests ('nam3, ADR 0393's placement, is not admitted'); adding \"us-east4\" to the list fails 'is admitted as a multi-region Spanner configuration'; validation -> spanner_default_leader != \"\" fails the europe-west1 run ('Missing expected failure'); map default_leader -> literal \"us-east4\" fails the us-east1 DDL run. terraform test in modules/data: 35 passed, 0 failed. Orchestrator's hold, kept as history: 2026-11-12 (orchestrator, independent verification of the 2026-11-12 grade): held PARTIAL. The placement itself is built: modules/data keys it by region, us-east4 maps to nam3 with default_leader us-east4 by DDL, an undecided region is refused by precondition, and ADR 0393 records why. Three parts of the owner's 2026-10-31 closure for this row are unmet. (1) The acceptance test the row cites (infrastructure.rs the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration) asserts only that no placement config starts with regional-, so a bare single region such as us-east4 would pass; the closure asks for an explicit list of Google multi-region configuration names that admits nam3 and refuses regional-* and any single region. (2) The closure asks for default_leader to come from a modules/data variable defaulting to us-east4 and validated against nam3's read-write regions; the leader is a literal in local.spanner_placements. (3) ADR 0393 does not record either departure. Earlier: "
   },
   {
     "id": "R12-LEDGER-8137",
@@ -3181,7 +3189,7 @@
       "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_decision_path_reads_a_balance_from_a_derived_copy (9fb4ebe3)",
       "backend/crates/tests/qip-acceptance/tests/derived_copies.rs no_production_source_outside_the_warehouse_module_and_its_one_insert_only_sink_queries_a_derived_copy_calls_the_bigquery_rest_host_or_reads_a_spanner_change_stream"
     ],
-    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.\n2026-11-06 (lane L1-MONEY, 57c3163d + follow-up): the guard scans qip-mesh too (only the client module and the one batch-load sink may name the warehouse), refuses the BigQuery REST API in both its URL and its relative /bigquery/v2/ path form outside the client, and refuses change-stream readers and FROM READ_/CHANGE STREAM SQL; each detector is checked against seeded fixtures. One skeptic REFUTED promotion on bar 3. Remaining: a type alias or grouped import (use qip_mesh::{bigquery::X}) passes the name scan; the GCS staging objects under warehouse-staging/ can be read back by any BlobStore holder unguarded; no Pub/Sub or Dataflow feed detector; the Memorystore cache (qip-storage redis.rs) as a derived copy is not covered; qip-api's qip-capital Book is a second balance source the guard's doc does not name.",
+    "gap": "2026-10-30 (lane L1-MONEY, 9fb4ebe3): a guard pins the warehouse seam. Outside qip-mesh only the deep brain's insert-only outcome sink names BigQueryWarehouse; it never queries; no production source names a change-stream reader. Skeptic REFUTED it as one seam, not the property. Remaining:\n- qip-mesh is exempt, so a wrapper around BigQueryWarehouse::query would bypass the guard;\n- raw HTTP to bigquery.googleapis.com and Spanner change-stream reads (READ_<stream> SQL) are not detected;\n- the change-stream premise is vacuous;\n- the kernel's copy of ledger balances (observe_ledger_obligations, read by the survival gate) has no freshness bound or single named source;\n- the sink premise (.insert() also matches a set insert.\n2026-11-06 (lane L1-MONEY, 57c3163d + follow-up): the guard scans qip-mesh too (only the client module and the one batch-load sink may name the warehouse), refuses the BigQuery REST API in both its URL and its relative /bigquery/v2/ path form outside the client, and refuses change-stream readers and FROM READ_/CHANGE STREAM SQL; each detector is checked against seeded fixtures. One skeptic REFUTED promotion on bar 3. Remaining: a type alias or grouped import (use qip_mesh::{bigquery::X}) passes the name scan; the GCS staging objects under warehouse-staging/ can be read back by any BlobStore holder unguarded; no Pub/Sub or Dataflow feed detector; the Memorystore cache (qip-storage redis.rs) as a derived copy is not covered; qip-api's qip-capital Book is a second balance source the guard's doc does not name.\n2026-11-12 (session fw-d-01): not closed in a fast-win slot. Each of the five remaining items is its own detector, with seeded fixtures and a mutation per detector. Two of them also need a decision first: whether the Memorystore cache, and qip-api's qip-capital Book, count as derived copies or as named sources.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3199,13 +3207,14 @@
   {
     "id": "R12-LEDGER-8139",
     "status": "PARTIAL",
-    "current": "The edge cell reconciles venue drop-copy against its own order/position state, halts on a break, and writes ReconciliationBreak to P1; nothing compares venue/custody truth with qip-ledgerd balances.",
+    "current": "The edge cell reconciles venue drop-copy against its own order/position state and halts on a break. Since 2026-11-12 (ADR 0442) qip-ledgerd's LedgerStore::reconcile_custody compares the simulated venue's CustodyStatement with the cell's booked fills at the statement's chain position, journals and counts each break, and returns a deterministic whole-cell HaltCommand; an acceptance test carries that halt, signed, on the P0 halt topic through the cell's PolicyDownlink and the next pass is halted. No binary produces the statement or calls the comparison yet.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:239 ReconciliationBreak classified P1",
-      "backend/crates/apps/qip-edge-node/src/pass.rs:77 breaks halt the cell",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:212 break written to spool"
+      "backend/crates/libs/qip-contracts/src/ledger/custody.rs compare, halt_for",
+      "backend/crates/apps/qip-ledgerd/src/store.rs LedgerStore::reconcile_custody",
+      "backend/crates/tests/qip-acceptance/tests/custody_reconciliation.rs a_custody_break_halts_the_cell_through_a_signed_p0_halt_and_an_agreeing_statement_does_not",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:77 breaks halt the cell"
     ],
-    "gap": "Ledger-vs-venue/custody comparison feeding the halt.",
+    "gap": "2026-11-12: production wiring. The node does not publish CustodyStatement on P1, qip-ledgerd's consumer does not call reconcile_custody, and no carrier takes a Broken answer to qip-api's halt signer and broadcast_halt. Cash custody is not compared.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3215,10 +3224,10 @@
       "R12-LEDGER-8134"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test telemetry",
+    "verification": "cargo test -p qip-acceptance --test custody_reconciliation (\"ok. 2 passed; 0 failed\")",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Cell-side break now reaches P1; ledger-side reconciliation still absent."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Cell-side break now reaches P1; ledger-side reconciliation still absent. 2026-11-12 lane t50-08 (ADR 0442): comparator, store method and P0 halt path landed and tested; five mutations fired (halt_for None, trading filter removed, simulated refusal removed, Pending check removed, cash filter removed), each restored with cp+cmp. Kept PARTIAL: no producer or caller in a binary."
   },
   {
     "id": "R12-LEDGER-8140",

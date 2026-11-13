@@ -153,6 +153,49 @@ pub struct TapeDocument {
     pub alternative_data: Vec<TapeReading>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dividend_declarations: Vec<TapeDeclaration>,
+    /// Delistings, failures, renamings and spinoffs — the corporate actions
+    /// that change which instruments the universe holds rather than what a
+    /// share is worth. Defaulted, like every section but the bars.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listing_changes: Vec<TapeListingChange>,
+}
+
+/// The change a [`TapeListingChange`] makes to the universe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TapeListingChangeKind {
+    /// The instrument stops trading.
+    Delisting { reason: String },
+    /// The product failed and stops trading (ADR 0446).
+    Failed { reason: String },
+    /// The ticker changes; the instrument does not.
+    Renamed { new_symbol: String },
+    /// `spun_entity` leaves the instrument carrying `value_fraction` of its
+    /// value, and is listed from the ex-date.
+    Spinoff {
+        spun_entity: String,
+        value_fraction: f64,
+    },
+}
+
+/// One listing change and the two instants that place it in time.
+///
+/// The section exists because, until it did, no shipped feed could say an
+/// instrument had stopped trading: the tape carried cash dividends only, so
+/// on every path a process could be started on, the historical universe's
+/// delisting and renaming arms were reached from tests alone, and a backtest
+/// over the tape's names was a backtest over survivors (R12-TICK-2090).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TapeListingChange {
+    pub object_id: String,
+    /// When the change was announced. RFC 3339.
+    pub at: String,
+    /// When the announcement became knowable. RFC 3339; never before `at`,
+    /// and never before the tape's first bar is knowable.
+    pub known_at: String,
+    /// The instant the change takes effect. RFC 3339; never before `at`.
+    pub ex_date: String,
+    pub change: TapeListingChangeKind,
 }
 
 /// One cash-dividend declaration and the two instants that place it in time.
@@ -220,6 +263,7 @@ pub struct Tape {
     releases: Vec<ReleaseEntry>,
     readings: Vec<ReadingEntry>,
     declarations: Vec<DeclarationEntry>,
+    listing_changes: Vec<DeclarationEntry>,
 }
 
 /// The two instants of one record, parsed and held to the refusals every
@@ -518,6 +562,74 @@ impl Tape {
             });
         }
 
+        let mut listing_changes = Vec::with_capacity(document.listing_changes.len());
+        let mut check = SectionCheck::new("listing change", clock_starts);
+        for (index, change) in document.listing_changes.iter().enumerate() {
+            let placed = check.place(index, &change.object_id, &change.at, &change.known_at)?;
+            let ex_date = instant(&change.ex_date, "listing change", index, "ex_date")?;
+            // A change cannot take effect before it was announced: the
+            // history would end a listing on a date nothing yet said it
+            // ended, which is a delisting read from the future.
+            if ex_date < placed.at {
+                return Err(Error::invalid(format!(
+                    "listing change {index} ({}) takes effect at {}, before it was announced at \
+                     {}: a change cannot apply before it exists",
+                    change.object_id,
+                    ex_date.to_rfc3339(),
+                    placed.at.to_rfc3339()
+                )));
+            }
+            let kind = match &change.change {
+                TapeListingChangeKind::Delisting { reason } => CorporateActionKind::Delisting {
+                    reason: stated(reason, "reason", index, &change.object_id)?,
+                },
+                TapeListingChangeKind::Failed { reason } => CorporateActionKind::Failed {
+                    reason: stated(reason, "reason", index, &change.object_id)?,
+                },
+                TapeListingChangeKind::Renamed { new_symbol } => CorporateActionKind::Renamed {
+                    new_symbol: stated(new_symbol, "new_symbol", index, &change.object_id)?,
+                },
+                TapeListingChangeKind::Spinoff {
+                    spun_entity,
+                    value_fraction,
+                } => {
+                    let spun_entity = stated(spun_entity, "spun_entity", index, &change.object_id)?;
+                    if spun_entity == change.object_id {
+                        return Err(Error::invalid(format!(
+                            "listing change {index} spins {spun_entity} off from itself; a spun \
+                             entity is a new instrument"
+                        )));
+                    }
+                    CorporateActionKind::Spinoff {
+                        spun_entity,
+                        value_fraction: *value_fraction,
+                    }
+                }
+            };
+            let action = CorporateAction {
+                object_id: ObjectId::from_string(change.object_id.as_str()),
+                ex_date,
+                record_date: None,
+                payment_date: None,
+                kind,
+                announced_at: placed.at,
+            };
+            // The spinoff's fraction is validated where every other price
+            // adjustment is, so a tape cannot carry one the platform would
+            // refuse at its ex-date; the reference price is irrelevant to a
+            // spinoff's factor, which is one minus the fraction.
+            if matches!(action.kind, CorporateActionKind::Spinoff { .. }) {
+                action.price_adjustment_factor(Decimal::ONE).map_err(|e| {
+                    Error::invalid(format!("listing change {index}: {}", e.message()))
+                })?;
+            }
+            listing_changes.push(DeclarationEntry {
+                at: placed.at,
+                known_at: placed.known_at,
+                action,
+            });
+        }
+
         Ok(Self {
             name: document.name,
             interval: document.interval,
@@ -525,6 +637,7 @@ impl Tape {
             releases,
             readings,
             declarations,
+            listing_changes,
         })
     }
 
@@ -556,6 +669,11 @@ impl Tape {
         &self.declarations
     }
 
+    /// The listing changes, in tape order.
+    pub fn listing_changes(&self) -> &[DeclarationEntry] {
+        &self.listing_changes
+    }
+
     /// How many bars the tape holds. The other sections are counted by
     /// [`Self::releases`], [`Self::readings`] and [`Self::declarations`].
     pub fn len(&self) -> usize {
@@ -568,7 +686,11 @@ impl Tape {
 
     /// Every record across the four sections.
     pub fn record_count(&self) -> usize {
-        self.entries.len() + self.releases.len() + self.readings.len() + self.declarations.len()
+        self.entries.len()
+            + self.releases.len()
+            + self.readings.len()
+            + self.declarations.len()
+            + self.listing_changes.len()
     }
 
     /// The instruments the tape prices, in id order.
@@ -586,6 +708,7 @@ impl Tape {
             .chain(self.releases.iter().map(|entry| entry.known_at))
             .chain(self.readings.iter().map(|entry| entry.known_at))
             .chain(self.declarations.iter().map(|entry| entry.known_at))
+            .chain(self.listing_changes.iter().map(|entry| entry.known_at))
     }
 
     /// Distinct knowable instants across every section — the number of
@@ -628,6 +751,18 @@ impl Tape {
     }
 }
 
+/// A listing change's text field, refused when blank: a delisting with no
+/// reason, a rename to no symbol or a spinoff of nothing is a record that
+/// says nothing, and the historical universe would file it as a fact.
+fn stated(text: &str, field: &str, index: usize, object_id: &str) -> Result<String> {
+    if text.trim().is_empty() {
+        return Err(Error::invalid(format!(
+            "listing change {index} ({object_id}) has an empty {field}; state it"
+        )));
+    }
+    Ok(text.to_string())
+}
+
 fn instant(text: &str, section: &str, index: usize, field: &str) -> Result<Timestamp> {
     Timestamp::parse_rfc3339(text).ok_or_else(|| {
         Error::invalid(format!(
@@ -646,6 +781,7 @@ pub struct TapeFeed {
     releases: usize,
     readings: usize,
     declarations: usize,
+    listing_changes: usize,
     /// The clock tape time is written to. Shared with whoever builds the
     /// platform, so the cycle's `now` and the platform's own clock agree.
     clock: Arc<ManualClock>,
@@ -664,6 +800,7 @@ impl TapeFeed {
             releases: 0,
             readings: 0,
             declarations: 0,
+            listing_changes: 0,
             clock: Arc::new(ManualClock::new(start)),
         }
     }
@@ -688,6 +825,11 @@ impl TapeFeed {
                 .declarations
                 .len()
                 .saturating_sub(self.declarations)
+            + self
+                .tape
+                .listing_changes
+                .len()
+                .saturating_sub(self.listing_changes)
     }
 
     /// The knowable instant of the next unreleased record in any section.
@@ -705,6 +847,10 @@ impl TapeFeed {
             self.tape
                 .declarations
                 .get(self.declarations)
+                .map(|entry| entry.known_at),
+            self.tape
+                .listing_changes
+                .get(self.listing_changes)
                 .map(|entry| entry.known_at),
         ]
         .into_iter()
@@ -758,6 +904,15 @@ impl DataAdapter for TapeFeed {
                 entry.action.clone(),
             )));
             self.declarations += 1;
+        }
+        while let Some(entry) = self.tape.listing_changes.get(self.listing_changes) {
+            if entry.known_at > until {
+                break;
+            }
+            out.push(SensedRecord::CorporateAction(Box::new(
+                entry.action.clone(),
+            )));
+            self.listing_changes += 1;
         }
         while let Some(entry) = self.tape.releases.get(self.releases) {
             if entry.known_at > until {
@@ -858,6 +1013,7 @@ mod tests {
             macro_releases: Vec::new(),
             alternative_data: Vec::new(),
             dividend_declarations: Vec::new(),
+            listing_changes: Vec::new(),
         }
     }
 
@@ -1062,6 +1218,134 @@ mod tests {
         let refusal = Tape::from_document(leak).expect_err("a leaking declaration loaded");
         assert!(
             refusal.message().contains("look-ahead") && refusal.message().contains("declaration 0"),
+            "{}",
+            refusal.message()
+        );
+    }
+
+    fn listing_change(
+        object_id: &str,
+        known_at: &str,
+        change: TapeListingChangeKind,
+    ) -> TapeListingChange {
+        TapeListingChange {
+            object_id: object_id.to_string(),
+            at: "2025-01-06T22:00:00Z".to_string(),
+            known_at: known_at.to_string(),
+            ex_date: "2025-01-20T00:00:00Z".to_string(),
+            change,
+        }
+    }
+
+    /// R12-TICK-2090, ADR 0446: a shipped tape can say an instrument stopped
+    /// trading, failed, was renamed or spun something off, and each reaches
+    /// the platform as the corporate action the historical universe writes
+    /// from. Until this section existed the tape carried cash dividends only,
+    /// so no feed a process could be started on emitted a delisting.
+    /// Mutations: skip the listing-change poll loop (nothing is released),
+    /// map `failed` to `Delisting` (the failure arrives as a delisting), and
+    /// drop the ex-date-before-announcement refusal (the backwards record
+    /// loads).
+    #[test]
+    fn a_listing_change_is_released_as_its_corporate_action_and_a_self_contradicting_one_is_refused()
+     {
+        let mut good = document(two_days());
+        good.listing_changes = vec![
+            listing_change(
+                "OBJ-A",
+                "2025-01-06T22:15:00Z",
+                TapeListingChangeKind::Delisting {
+                    reason: "acquired for cash".to_string(),
+                },
+            ),
+            listing_change(
+                "OBJ-B",
+                "2025-01-06T22:15:00Z",
+                TapeListingChangeKind::Failed {
+                    reason: "the fund was wound up".to_string(),
+                },
+            ),
+            listing_change(
+                "OBJ-C",
+                "2025-01-06T22:15:00Z",
+                TapeListingChangeKind::Renamed {
+                    new_symbol: "CCX".to_string(),
+                },
+            ),
+            listing_change(
+                "OBJ-D",
+                "2025-01-06T22:15:00Z",
+                TapeListingChangeKind::Spinoff {
+                    spun_entity: "OBJ-E".to_string(),
+                    value_fraction: 0.2,
+                },
+            ),
+        ];
+        let tape = Tape::from_document(good.clone()).expect("the premise: it loads");
+        assert_eq!(tape.listing_changes().len(), 4);
+        assert_eq!(tape.record_count(), 6, "two bars and four listing changes");
+        let mut feed = TapeFeed::new(tape);
+        let _ = feed.advance();
+        let _ = feed.poll(Timestamp::parse_rfc3339("2025-01-06T21:15:00Z").expect("an instant"));
+        let second = feed.advance().expect("the listing changes' period");
+        let released = feed.poll(second).expect("polls");
+        let kinds: Vec<&CorporateActionKind> = released
+            .iter()
+            .filter_map(|record| match record {
+                SensedRecord::CorporateAction(action) => Some(&action.kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            4,
+            "every listing change releases: {released:?}"
+        );
+        assert!(matches!(kinds[0], CorporateActionKind::Delisting { .. }));
+        assert!(
+            matches!(kinds[1], CorporateActionKind::Failed { reason } if reason == "the fund was wound up"),
+            "a failure must arrive as a failure, not a delisting: {:?}",
+            kinds[1]
+        );
+        assert!(
+            matches!(kinds[2], CorporateActionKind::Renamed { new_symbol } if new_symbol == "CCX")
+        );
+        assert!(
+            matches!(kinds[3], CorporateActionKind::Spinoff { spun_entity, .. } if spun_entity == "OBJ-E")
+        );
+        assert_eq!(
+            feed.remaining(),
+            1,
+            "every listing change is released and only the second day's bar remains"
+        );
+
+        let mut backwards = good.clone();
+        backwards.listing_changes[0].ex_date = "2025-01-01T00:00:00Z".to_string();
+        let refusal =
+            Tape::from_document(backwards).expect_err("a change effective before announced loaded");
+        assert!(
+            refusal.message().contains("before it was announced"),
+            "{}",
+            refusal.message()
+        );
+        let mut blank = good.clone();
+        blank.listing_changes[1].change = TapeListingChangeKind::Failed {
+            reason: " ".to_string(),
+        };
+        let refusal = Tape::from_document(blank).expect_err("a failure with no reason loaded");
+        assert!(
+            refusal.message().contains("empty reason"),
+            "{}",
+            refusal.message()
+        );
+        let mut whole = good;
+        whole.listing_changes[3].change = TapeListingChangeKind::Spinoff {
+            spun_entity: "OBJ-E".to_string(),
+            value_fraction: 1.5,
+        };
+        let refusal = Tape::from_document(whole).expect_err("a spinoff of more than all loaded");
+        assert!(
+            refusal.message().contains("listing change 3"),
             "{}",
             refusal.message()
         );
@@ -1455,6 +1739,7 @@ mod tests {
             macro_releases,
             alternative_data,
             dividend_declarations,
+            listing_changes: Vec::new(),
         }
     }
 

@@ -872,3 +872,241 @@ fn a_constraint_problem_as_a_qubo_decodes_to_the_classical_optimum_of_the_proble
         0
     );
 }
+
+// ---- R12-REASON-3054: the ontology ----------------------------------------
+
+use qip_reasoning_engine::ontology::{Derivation, Fact, Inference, Ontology, RelationSpec};
+
+fn spec(domain: &str, range: &str, inverse: Option<&str>, transitive: bool) -> RelationSpec {
+    RelationSpec {
+        domain: domain.to_string(),
+        range: range.to_string(),
+        inverse: inverse.map(str::to_string),
+        transitive,
+    }
+}
+
+/// Walk a fact's derivation down to asserted facts, failing on a step that
+/// cites a fact the inference does not hold: a derivation that points at
+/// nothing is a claim, not a proof.
+fn grounds(inference: &Inference, fact: &Fact, depth: usize) -> BTreeSet<Fact> {
+    assert!(depth < 64, "derivation of {fact:?} does not bottom out");
+    let why = inference
+        .derivation(fact)
+        .unwrap_or_else(|| panic!("{fact:?} is cited but does not hold"));
+    match why {
+        Derivation::Asserted => BTreeSet::from([fact.clone()]),
+        Derivation::IsA { from, .. } | Derivation::Inverse { from } => {
+            grounds(inference, from, depth + 1)
+        }
+        Derivation::Transitive { left, right } => {
+            let mut g = grounds(inference, left, depth + 1);
+            g.extend(grounds(inference, right, depth + 1));
+            g
+        }
+    }
+}
+
+#[test]
+#[allow(clippy::needless_range_loop)] // a class may only name earlier classes, by index
+fn instance_typing_is_closed_under_is_a_exactly_as_reachability_in_the_hierarchy_says() {
+    // The failure this guards: an instance typed `future` was not an
+    // instance of `instrument`, so a rule about instruments never applied to
+    // one. Checked against reachability computed here on a plain adjacency
+    // list, over random hierarchies.
+    let mut rng = Lcg(3054);
+    for _ in 0..40 {
+        let n = 2 + rng.next(10) as usize;
+        let mut parents: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut ontology = Ontology::new("fixture", 1);
+        for c in 0..n {
+            for p in 0..c {
+                if rng.next(3) == 0 {
+                    parents[c].push(p);
+                }
+            }
+            let names: Vec<String> = parents[c].iter().map(|p| format!("c{p}")).collect();
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            ontology = ontology.class(&format!("c{c}"), &refs).unwrap();
+        }
+        let leaf = rng.next(n as u64) as usize;
+        let mut reach = BTreeSet::from([leaf]);
+        let mut frontier = vec![leaf];
+        while let Some(c) = frontier.pop() {
+            for &p in &parents[c] {
+                if reach.insert(p) {
+                    frontier.push(p);
+                }
+            }
+        }
+        let asserted = Fact::instance("x", &format!("c{leaf}"));
+        let inference = ontology.infer(std::slice::from_ref(&asserted)).unwrap();
+        let expected: BTreeSet<String> = reach.iter().map(|c| format!("c{c}")).collect();
+        assert_eq!(inference.classes_of("x"), expected);
+        for class in &expected {
+            let fact = Fact::instance("x", class);
+            assert_eq!(
+                grounds(&inference, &fact, 0),
+                BTreeSet::from([asserted.clone()])
+            );
+        }
+    }
+}
+
+#[test]
+#[allow(clippy::needless_range_loop)] // Warshall's algorithm reads as indices
+fn a_transitive_relation_closes_to_reachability_and_its_inverse_mirrors_every_pair() {
+    // Checked against Warshall's algorithm on a boolean matrix written here.
+    let mut rng = Lcg(10_3054);
+    for _ in 0..30 {
+        let n = 2 + rng.next(7) as usize;
+        let ontology = Ontology::new("fixture", 1)
+            .class("node", &[])
+            .unwrap()
+            .relation("part_of", spec("node", "node", Some("has_part"), true))
+            .unwrap()
+            .relation("has_part", spec("node", "node", Some("part_of"), true))
+            .unwrap();
+        let mut adjacency = vec![vec![false; n]; n];
+        let mut asserted: Vec<Fact> = (0..n)
+            .map(|i| Fact::instance(&format!("e{i}"), "node"))
+            .collect();
+        for (i, row) in adjacency.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                if i != j && rng.next(4) == 0 {
+                    *cell = true;
+                    asserted.push(Fact::related(&format!("e{i}"), "part_of", &format!("e{j}")));
+                }
+            }
+        }
+        let mut closure = adjacency.clone();
+        for k in 0..n {
+            for i in 0..n {
+                for j in 0..n {
+                    closure[i][j] = closure[i][j] || (closure[i][k] && closure[k][j]);
+                }
+            }
+        }
+        let inference = ontology.infer(&asserted).unwrap();
+        for i in 0..n {
+            for j in 0..n {
+                let (a, b) = (format!("e{i}"), format!("e{j}"));
+                assert_eq!(
+                    inference.holds(&Fact::related(&a, "part_of", &b)),
+                    closure[i][j],
+                    "part_of {a} {b}"
+                );
+                assert_eq!(
+                    inference.holds(&Fact::related(&b, "has_part", &a)),
+                    closure[i][j],
+                    "has_part {b} {a}"
+                );
+                if closure[i][j] {
+                    let g = grounds(&inference, &Fact::related(&b, "has_part", &a), 0);
+                    assert!(g.iter().all(|f| asserted.contains(f)));
+                }
+            }
+        }
+        assert!(inference.is_consistent(), "{:?}", inference.violations);
+    }
+}
+
+fn instruments() -> Ontology {
+    Ontology::new("fixture", 1)
+        .class("instrument", &[])
+        .unwrap()
+        .class("dated_contract", &["instrument"])
+        .unwrap()
+        .class("future", &["dated_contract"])
+        .unwrap()
+        .class("date", &[])
+        .unwrap()
+        .relation("expires_on", spec("dated_contract", "date", None, false))
+        .unwrap()
+}
+
+#[test]
+fn a_relation_is_typed_against_the_closed_hierarchy_and_an_untyped_end_is_named_not_retyped() {
+    let ontology = instruments();
+    // Premise: a future reaches `dated_contract` only through is-a, so a
+    // check against asserted classes alone would wrongly flag this.
+    let typed = ontology
+        .infer(&[
+            Fact::instance("CLZ6", "future"),
+            Fact::instance("2026-12-18", "date"),
+            Fact::related("CLZ6", "expires_on", "2026-12-18"),
+        ])
+        .unwrap();
+    assert!(typed.is_consistent(), "{:?}", typed.violations);
+    assert!(typed.holds(&Fact::instance("CLZ6", "dated_contract")));
+
+    // An equity-like instrument is not a dated contract: the relation is a
+    // violation naming the end and the class, and the instrument is not
+    // silently made a dated contract.
+    let untyped = ontology
+        .infer(&[
+            Fact::instance("AAA", "instrument"),
+            Fact::instance("2026-12-18", "date"),
+            Fact::related("AAA", "expires_on", "2026-12-18"),
+        ])
+        .unwrap();
+    assert_eq!(untyped.violations.len(), 1, "{:?}", untyped.violations);
+    let v = &untyped.violations[0];
+    assert_eq!(
+        (v.end.as_str(), v.entity.as_str(), v.expected.as_str()),
+        ("domain", "AAA", "dated_contract")
+    );
+    assert!(!untyped.holds(&Fact::instance("AAA", "dated_contract")));
+}
+
+#[test]
+fn a_word_the_vocabulary_does_not_hold_is_refused_and_the_closure_does_not_depend_on_assertion_order()
+ {
+    let ontology = instruments();
+    let unknown_class = ontology
+        .infer(&[Fact::instance("x", "option")])
+        .unwrap_err();
+    assert!(
+        unknown_class.message().contains("'option'"),
+        "{}",
+        unknown_class.message()
+    );
+    let unknown_relation = ontology
+        .infer(&[Fact::related("x", "settles_on", "y")])
+        .unwrap_err();
+    assert!(
+        unknown_relation.message().contains("'settles_on'"),
+        "{}",
+        unknown_relation.message()
+    );
+    let dangling = Ontology::new("fixture", 1)
+        .class("node", &[])
+        .unwrap()
+        .relation("part_of", spec("node", "node", Some("has_part"), false))
+        .unwrap()
+        .infer(&[])
+        .unwrap_err();
+    assert!(
+        dangling.message().contains("'has_part'"),
+        "{}",
+        dangling.message()
+    );
+    assert!(
+        Ontology::new("fixture", 1)
+            .class("a", &["missing"])
+            .is_err(),
+        "a parent must be declared before its child"
+    );
+
+    let facts = vec![
+        Fact::instance("CLZ6", "future"),
+        Fact::instance("2026-12-18", "date"),
+        Fact::related("CLZ6", "expires_on", "2026-12-18"),
+    ];
+    let mut reversed = facts.clone();
+    reversed.reverse();
+    assert_eq!(
+        ontology.infer(&facts).unwrap(),
+        ontology.infer(&reversed).unwrap()
+    );
+}

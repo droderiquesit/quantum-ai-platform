@@ -134,6 +134,7 @@ fn filled(order: &str) -> Decision {
         side: Some(BookSide::Ask),
         quote_unit: Some("GBP".to_string()),
         fee: None,
+        decision_sequence: None,
     }
 }
 
@@ -569,6 +570,7 @@ fn a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped() {
         applied_from_ns: 0,
         applied_to_ns: 0,
         applied_digest: sha256_hex(b""),
+        market_state: None,
     };
     // Two passes: a quiet one and one handed a thousand ticks.
     for (pass, ticks) in [(10u64, 3u64), (11, 1_000)] {
@@ -721,10 +723,14 @@ fn an_input_backlog_overflow_writes_a_gap_that_marks_the_window_unreproducible()
 }
 
 fn market_event() -> MarketEvent {
-    let at = t(30);
+    tape_event(7, t(30))
+}
+
+/// One level update on the `XLON/test-tape/0` stream at `sequence`.
+fn tape_event(sequence: u64, at: Timestamp) -> MarketEvent {
     let payload = MarketMessage::new(
         ObjectId::from_string("obj-OUTBOX"),
-        Origin::new(VenueId::new("XLON"), "test-tape", 0, 7),
+        Origin::new(VenueId::new("XLON"), "test-tape", 0, sequence),
         MessageBody::LevelSet {
             side: BookSide::Bid,
             price: Decimal::parse("101.5").expect("parses"),
@@ -922,5 +928,163 @@ fn the_writer_beats_the_gauge_heartbeat_while_idle_and_marks_it_unwritable_on_an
             .expect("reads back")
             .is_empty(),
         "nothing reached the spool"
+    );
+}
+
+/// R12-CONTRACT-7072, ADR 0428: the pack a pass builds over the events it
+/// applied crosses `reflex.feature_digested` inside the digest, and a
+/// sequence gap on the tape is still a flag when the receiving end decodes
+/// it. A pass that applied nothing carries no pack, never a clean one.
+///
+/// Mutation: ship `market_state: None` from `Scheduler::feature_digest`'s
+/// producer here (`market_state_of` returning `Ok(None)` for every pass) —
+/// the decoded digest then carries no pack and the flag assertion fails.
+#[test]
+fn a_sequence_gap_on_the_applied_tape_is_a_flag_in_the_digest_the_receiver_decodes() {
+    use qip_contracts::market_state::IntegrityFlag;
+    use qip_contracts::replay::FeatureDigest;
+    use qip_edge_node::market_state::market_state_of;
+
+    // Sequences 8 and 9 never arrived; time says nothing was lost.
+    let applied = vec![tape_event(7, t(30)), tape_event(10, t(31))];
+    let applied_digest = sha256_hex(b"applied");
+    let pack = market_state_of(Some(t(29)), t(32), &applied, &applied_digest)
+        .expect("the pass's interval holds its events");
+    assert!(
+        market_state_of(Some(t(29)), t(32), &[], &applied_digest)
+            .expect("no events is not an error")
+            .is_none(),
+        "a pass that applied nothing carries no pack (ADR 0151 decision 2)"
+    );
+    let digest = FeatureDigest {
+        cell: CELL.to_string(),
+        session: "1".to_string(),
+        pass: 12,
+        now_ns: t(32).as_nanos(),
+        instruments: Vec::new(),
+        ticks: 2,
+        applied: 2,
+        applied_from_ns: t(30).as_nanos(),
+        applied_to_ns: t(31).as_nanos(),
+        applied_digest,
+        market_state: pack,
+    };
+
+    let (sender, receiver) = writer::channel(2).expect("a positive capacity");
+    let (_, telemetry) = telemetry();
+    let thresholds = Thresholds::new(
+        1 << 30,
+        Decimal::parse("0.25").expect("parses"),
+        Decimal::parse("0.5").expect("parses"),
+    )
+    .expect("valid lines");
+    let mut inputs = RecordedInputs::new(sender, thresholds, telemetry);
+    assert_eq!(
+        inputs
+            .record(PassInputs {
+                marker: marker(12),
+                applied,
+                digest: Some(digest.clone()),
+            })
+            .expect("the writer is alive"),
+        Recorded::HandedOff
+    );
+    let dir = temp_dir("market-state");
+    let mut outbox = open_writer(segment_log(&dir), receiver, t(0));
+    drain(&mut outbox.writer);
+    let records = writer::records(outbox.writer.spool()).expect("reads back");
+    let received: Vec<FeatureDigest> = on(&records, Topic::ReflexFeatureDigested)
+        .iter()
+        .map(|r| writer::feature_digest(&r.event).expect("a feature digest"))
+        .collect();
+    assert_eq!(received.len(), 1, "one digest for the pass");
+    let Some(state) = &received[0].market_state else {
+        panic!("the digest reached the receiver without the pass's market state pack");
+    };
+    assert_eq!(
+        state.integrity(),
+        [IntegrityFlag::SequenceGap {
+            stream: "XLON/test-tape/0".to_string(),
+            missing: 2
+        }],
+        "the gap the producer saw is the flag the receiver reads"
+    );
+    assert_eq!(
+        (state.from(), state.to()),
+        (t(29), t(32)),
+        "the pass's interval"
+    );
+    assert_eq!(state.horizon(), t(32).since(t(29)));
+    assert_eq!(received[0], digest, "the digest crosses byte for byte");
+}
+
+/// ADR 0428 decision 3: the interval stretches to hold a late event rather
+/// than refusing it. An event stamped before the previous pass (venue
+/// latency) is still this pass's tape; a pack that refused it would ship
+/// nothing and leave the pass unattested on every slow feed.
+///
+/// Mutation: take `from` as the previous pass's instant alone in
+/// `market_state_of` — the late event falls outside and the build fails.
+#[test]
+fn a_late_event_stretches_the_pass_interval_rather_than_losing_the_pack() {
+    use qip_edge_node::market_state::market_state_of;
+    let late = [tape_event(7, t(20)), tape_event(8, t(31))];
+    let pack = market_state_of(Some(t(29)), t(32), &late, "d")
+        .expect("a late event is inside the stretched interval")
+        .expect("a pass over two events carries a pack");
+    assert_eq!((pack.from(), pack.to()), (t(20), t(32)));
+    assert!(
+        pack.integrity().is_empty(),
+        "premise: the tape is contiguous"
+    );
+}
+
+/// ADR 0429 clause 3, for `reflex.feature_digested` v1 to v2 (ADR 0428): the
+/// one surveyed consumer admits the retired version. A v1 body — the digest
+/// as it was before the pack existed, at `schema_version: 1` — decodes
+/// through `writer::feature_digest` under the v2 binding with the pack
+/// absent, and a body from a version newer than the binding is refused.
+/// Retiring v1 from the lock is safe only because this holds.
+///
+/// Mutation: make `decode_as` in `event_fabric/writer.rs` admit only the
+/// binding's own version (`!=` for `>`) — the v1 body is refused and the
+/// first `expect` fails. (Dropping `#[serde(default)]` from
+/// `FeatureDigest::market_state` does not fire it, and need not: serde
+/// already reads an absent `Option` field as `None`; the field being an
+/// `Option` is what keeps v1 readable.)
+#[test]
+fn the_v2_digest_consumer_admits_a_v1_body_with_no_pack_and_refuses_a_newer_version() {
+    use qip_events::envelope::AnyEvent;
+    use qip_events::event_fabric::bindings::REFLEX_FEATURE_DIGESTED;
+    assert_eq!(
+        REFLEX_FEATURE_DIGESTED.schema_version, 2,
+        "premise: the binding is at v2"
+    );
+    let v1 = serde_json::json!({
+        "cell": CELL, "session": "1", "pass": 3, "now_ns": t(20).as_nanos(),
+        "instruments": [], "ticks": 0, "applied": 0,
+        "applied_from_ns": 0, "applied_to_ns": 0, "applied_digest": sha256_hex(b""),
+    });
+    let at = |schema_version: u32| AnyEvent {
+        event_id: EventId::from_string(format!("v{schema_version}")),
+        topic: REFLEX_FEATURE_DIGESTED.topic,
+        schema_version,
+        occurred_at: t(20),
+        recorded_at: t(20),
+        sequence: 0,
+        lineage: qip_core::Lineage::root(
+            qip_core::lineage::CorrelationId::from_string("c-1"),
+            "test",
+        ),
+        idempotency_key: None,
+        payload: v1.clone(),
+        payload_hash: sha256_hex(canonical_json(&v1).as_bytes()),
+    };
+    let digest = writer::feature_digest(&at(1)).expect("a v1 digest decodes under v2");
+    assert_eq!(digest.pass, 3);
+    assert!(digest.market_state.is_none(), "a v1 body carries no pack");
+    assert!(
+        writer::feature_digest(&at(3)).is_err(),
+        "a body newer than the binding is refused"
     );
 }

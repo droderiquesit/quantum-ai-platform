@@ -1008,6 +1008,33 @@ impl AssetClassRegistry {
         Ok(self)
     }
 
+    /// This registry with `class`'s record withdrawn *and* every sibling's
+    /// offset into `class` dropped from its hedge map (R12-COVERAGE-5100).
+    ///
+    /// [`Self::without`] refuses to withdraw a class a sibling hedges with,
+    /// which is right for the question it answers — "may this one record go
+    /// on its own" — and makes it useless for the other question: does the
+    /// record of `FixedIncome`, `Credit` or `Rates` itself admit that class's
+    /// instruments? Those three hedge into one another, so `without` refused
+    /// all three, and the test that asked accepted the hedge-map refusal as
+    /// the answer. A refusal reached through a sibling's hedge map proves
+    /// nothing about the class's own record. This withdraws the record and
+    /// every offset that named it, so what is left is a table `shipped` could
+    /// have produced — narrower in every column, no hedge into an unheld
+    /// class — and an instrument of `class` meets the refusal that names its
+    /// own class.
+    ///
+    /// Narrowing only, like `without`: fewer records and fewer offsets,
+    /// never a new one.
+    pub fn withdrawing(mut self, class: AssetClass) -> Result<Self> {
+        self.records.remove(&class);
+        for record in self.records.values_mut() {
+            record.hedge_classes.remove(&class);
+        }
+        self.check_hedge_map()?;
+        Ok(self)
+    }
+
     /// Admit one instrument, or refuse naming its class.
     ///
     /// §17.7's "an unregistered class cannot be traded", as the one sentence
@@ -1201,6 +1228,72 @@ mod tests {
                 .without(AssetClass::Rates)
                 .is_err()
         );
+        Ok(())
+    }
+
+    /// R12-COVERAGE-5098's own mutation, for the two classes that row names:
+    /// with the `ForeignExchange` and `Cash` records removed, an FX spot and
+    /// a cash instrument are each refused by the admission `Platform::new`
+    /// calls, naming its class. Until this existed only `DigitalAsset` was
+    /// ever withdrawn, so a `ForeignExchange` or `Cash` record that `admit`
+    /// stopped consulting would have left every test green.
+    ///
+    /// The two are removed together, from the table itself, because each
+    /// hedges into the other: `without` refuses to withdraw either alone, as
+    /// `shipped` would refuse such a table, and this test asserts that too.
+    #[test]
+    fn removing_the_fx_and_cash_records_makes_their_instruments_refused_by_the_same_admission()
+    -> Result<()> {
+        use qip_financial::asset_class::InstrumentType;
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::quality::Provenance;
+        let at = qip_core::Timestamp::from_secs(1_760_000_000);
+        let instrument = |id: &str, kind: InstrumentType| {
+            FinancialObject::builder(
+                qip_core::ObjectId::from_string(id),
+                id,
+                kind,
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("SIM")
+            .price(Decimal::ONE)
+            .tick_size(Decimal::parse("0.00001").ok_or_else(|| Error::invalid("tick"))?)
+            .provenance(Provenance::synthetic("asset-class-test", at))
+            .build(at)
+        };
+        let fx = instrument("obj-EURUSD", InstrumentType::FxSpot)?;
+        let cash = instrument("obj-USD-CASH", InstrumentType::Cash)?;
+        assert_eq!(fx.asset_class, AssetClass::ForeignExchange);
+        assert_eq!(cash.asset_class, AssetClass::Cash);
+        let shipped = AssetClassRegistry::shipped()?;
+        // Premise: the shipped table admits both.
+        shipped.admit(&fx)?;
+        shipped.admit(&cash)?;
+        for class in [AssetClass::ForeignExchange, AssetClass::Cash] {
+            assert!(
+                shipped.clone().without(class).is_err(),
+                "{} was withdrawn alone while its sibling hedges into it",
+                class.as_str()
+            );
+        }
+        let mut narrowed = shipped;
+        narrowed.records.remove(&AssetClass::ForeignExchange);
+        narrowed.records.remove(&AssetClass::Cash);
+        for object in [&fx, &cash] {
+            let refused = narrowed
+                .admit(object)
+                .expect_err("an instrument of a removed class was admitted");
+            let expected = format!(
+                "{} is a {} and no record registers",
+                object.object_id.as_str(),
+                object.asset_class.as_str()
+            );
+            assert!(
+                refused.message().contains(&expected),
+                "{}",
+                refused.message()
+            );
+        }
         Ok(())
     }
 

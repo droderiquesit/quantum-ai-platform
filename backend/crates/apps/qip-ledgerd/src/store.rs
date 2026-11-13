@@ -93,17 +93,21 @@
 
 use crate::backend::{LedgerBackend, LedgerBatch, LocalBackend};
 use crate::telemetry::LedgerTelemetry;
+use qip_contracts::ledger::custody::{self, CustodyBreak, CustodyStatement};
 use qip_contracts::ledger::{Account, Direction, LedgerEvent, LedgerObligations};
 use qip_contracts::ledger_operation::{LedgerOperation, OperationKind, Phase};
+use qip_contracts::policy::HaltCommand;
 use qip_contracts::reflex::{ChainSpan, Decision, OutcomeRecord};
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, hmac_sha256, to_hex};
 use qip_core::{Decimal, Timestamp};
-use qip_portfolio::ledger::{PaperFill, post};
+use qip_portfolio::ledger::{
+    PaperFill, PaperSettlement, post, post_in_settlement, post_settlement,
+};
 use qip_storage::EngineConfig;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -127,6 +131,15 @@ const PREFIX_JOURNAL: &str = "journal/";
 const PREFIX_WATERMARK: &str = "watermark/";
 const PREFIX_OPERATION: &str = "operation/";
 const PREFIX_LOT: &str = "lot/";
+/// `custody/<cell>/<venue>`: the chain position of the last custody
+/// statement compared for that cell at that venue, so a statement at or
+/// behind it is answered as stale and never journals its break twice.
+const PREFIX_CUSTODY: &str = "custody/";
+/// The fills of one order whose cash waits on the venue's `Settled`
+/// record, keyed `pending/<cell>/<order>` (ADR 0440). Bounded by the orders
+/// in settlement: a settlement deletes its order's row in the batch that
+/// books it.
+const PREFIX_PENDING: &str = "pending/";
 const KEY_PROBE: &str = "meta/probe";
 
 /// How many key ranges a monotonic key family is spread over
@@ -295,6 +308,34 @@ pub struct JournalNote {
     pub event: String,
     pub detail: String,
     pub operator_action: String,
+}
+
+/// What [`LedgerStore::reconcile_custody`] concluded about one statement.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CustodyReconciliation {
+    /// The ledger has not yet applied the cell's chain up to the statement's
+    /// position, so the fills the venue counted are not all booked. Not a
+    /// break, and not compared: compare again once the ledger catches up.
+    Pending,
+    /// A statement at or behind one already compared for this cell and
+    /// venue. Nothing is journaled again.
+    Stale,
+    /// The ledger and the venue hold the same units.
+    Agrees,
+    /// They disagree. Each break was journaled and counted; `halt` is the
+    /// deterministic, unsigned whole-cell halt (ADR 0442) for the centre to
+    /// sign under its halt key and publish on the P0 control stream.
+    Broken {
+        breaks: Vec<CustodyBreak>,
+        halt: HaltCommand,
+    },
+}
+
+/// The last statement compared for a cell at a venue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct CustodyMark {
+    session: u64,
+    sequence: u64,
 }
 
 /// A cell's chain position: the last sequence applied and its digest.
@@ -518,6 +559,12 @@ pub struct LedgerStore {
     /// restart, which understates it, and that understatement is stated on
     /// [`Self::record_mismatch_age`] rather than hidden.
     parked_since: Mutex<BTreeMap<String, std::time::Instant>>,
+    /// Venues whose paper fills settle on a cycle, so a fill's cash leg is
+    /// booked to `in_settlement:` and waits on the venue's `Settled` record
+    /// (ADR 0130 decision 1, ADR 0440). Empty unless the composition root
+    /// says otherwise, and a venue not named here books its cash at the
+    /// fill, as every fill did before this set existed.
+    settlement_cycle_venues: BTreeSet<String>,
 }
 
 impl LedgerStore {
@@ -543,11 +590,37 @@ impl LedgerStore {
             telemetry,
             writer: Mutex::new(()),
             parked_since: Mutex::new(BTreeMap::new()),
+            settlement_cycle_venues: BTreeSet::new(),
         };
         ledger.verify_history()?;
         // A restarted process reports the parks it inherited, not zero.
         ledger.record_parked_keys()?;
         Ok(ledger)
+    }
+
+    /// Name the venues whose paper fills settle on a cycle (ADR 0440).
+    ///
+    /// A fill at one of them books its cash leg to `in_settlement:` and only
+    /// that venue's `Decision::Settled` moves it to `trading:`. Refused when a
+    /// name is blank: a blank venue matches no fill, and a declaration that
+    /// declares nothing reads as a configured cycle while being none.
+    pub fn with_settlement_cycle_venues(
+        mut self,
+        venues: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
+        for venue in venues {
+            refuse_blank("settlement-cycle venue", &venue)?;
+            self.settlement_cycle_venues.insert(venue);
+        }
+        Ok(self)
+    }
+
+    /// The fills of `order_id` on `cell` whose cash is in settlement, in the
+    /// order they were booked; empty when none is.
+    pub fn pending_settlement(&self, cell: &str, order_id: &str) -> Result<Vec<LedgerEvent>> {
+        Ok(self
+            .read::<Vec<LedgerEvent>>(&pending_key(cell, order_id))?
+            .unwrap_or_default())
     }
 
     /// `local` or `spanner`.
@@ -920,11 +993,18 @@ impl LedgerStore {
 
         // The fourth paper fence, before the chain: a live fill is refused as
         // live wherever it sits, and never waits behind a gap to be counted.
+        // A settlement meets the same fence: the venue's word that cash
+        // settled is booked only when it is marked simulated (ADR 0440).
         let fill = match &delivery.record {
             P1Record::Outcome(outcome) => match &outcome.entry.decision {
-                Decision::Filled { simulated, .. } => {
-                    Some((PaperFill::try_from(outcome.as_ref()), *simulated))
-                }
+                Decision::Filled { simulated, .. } => Some((
+                    PaperFill::try_from(outcome.as_ref()).map(Economic::Fill),
+                    *simulated,
+                )),
+                Decision::Settled { simulated, .. } => Some((
+                    PaperSettlement::try_from(outcome.as_ref()).map(Economic::Settlement),
+                    *simulated,
+                )),
                 _ => None,
             },
             P1Record::Span(_) => None,
@@ -1014,6 +1094,7 @@ impl LedgerStore {
             return self.park_cell(delivery, &cursor, park, ParkReason::Integrity, detail);
         }
 
+        let mut pending: Option<(String, Option<Vec<LedgerEvent>>)> = None;
         let event = match fill {
             None => None,
             Some((Err(refusal), _)) => {
@@ -1025,22 +1106,64 @@ impl LedgerStore {
                     refusal.message().to_string(),
                 );
             }
-            Some((Ok(paper), _)) => match post(&paper) {
-                Ok(event) => Some(event),
-                Err(refusal) => {
-                    self.telemetry.unbalanced_refused();
-                    return self.park_cell(
-                        delivery,
-                        &cursor,
-                        park,
-                        ParkReason::RefusedFill,
-                        refusal.message().to_string(),
-                    );
+            Some((Ok(Economic::Fill(paper)), _)) => {
+                let in_settlement = self.settlement_cycle_venues.contains(paper.venue());
+                let posted = if in_settlement {
+                    post_in_settlement(&paper)
+                } else {
+                    post(&paper)
+                };
+                match posted {
+                    Ok(event) => {
+                        if in_settlement {
+                            let key = pending_key(cell, &paper.source().order_id);
+                            let mut held: Vec<LedgerEvent> = self.read(&key)?.unwrap_or_default();
+                            held.push(event.clone());
+                            pending = Some((key, Some(held)));
+                        }
+                        Some(event)
+                    }
+                    Err(refusal) => {
+                        self.telemetry.unbalanced_refused();
+                        return self.park_cell(
+                            delivery,
+                            &cursor,
+                            park,
+                            ParkReason::RefusedFill,
+                            refusal.message().to_string(),
+                        );
+                    }
                 }
-            },
+            }
+            Some((Ok(Economic::Settlement(settlement)), _)) => {
+                let key = pending_key(cell, &settlement.source().order_id);
+                let held: Vec<LedgerEvent> = self.read(&key)?.unwrap_or_default();
+                match post_settlement(&settlement, &held) {
+                    Ok(event) => {
+                        pending = Some((key, None));
+                        Some(event)
+                    }
+                    Err(refusal) => {
+                        return self.park_cell(
+                            delivery,
+                            &cursor,
+                            park,
+                            ParkReason::RefusedFill,
+                            refusal.message().to_string(),
+                        );
+                    }
+                }
+            }
         };
 
         let mut batch = LedgerBatch::new();
+        // The pending row moves in the batch that books the event, so a
+        // settlement and the row it closes are never committed apart.
+        match pending {
+            None => {}
+            Some((key, Some(held))) => batch = batch.put_as(key, &held)?,
+            Some((key, None)) => batch = batch.delete(key),
+        }
         if let Some(event) = &event {
             match self.fold(event) {
                 Ok(rows) => {
@@ -1231,6 +1354,118 @@ impl LedgerStore {
         self.store.commit(batch)?;
         self.record_parked_keys()?;
         Ok(park.offset)
+    }
+
+    /// Compare the simulated venue's custody statement with what this ledger
+    /// booked for the cell (ADR 0130 decision 4, ADR 0442, R12-LEDGER-8139).
+    ///
+    /// The ledger side is the cell's booked fills at or before the
+    /// statement's `(session, sequence)`, summed over every
+    /// `trading:<cell>/<strategy>` leg, per unit — the chain the cell
+    /// shipped, and nothing booked after the venue took its statement.
+    /// Operations (ADR 0123) are not counted: they move units between the
+    /// platform's own accounts and not to or from the venue.
+    ///
+    /// Refuses a statement not marked simulated (ADR 0130 decision 6).
+    /// Answers [`CustodyReconciliation::Pending`] while the ledger's tail for
+    /// the cell is behind the statement, because a fill still in flight on
+    /// P1 is not a break; and [`CustodyReconciliation::Stale`] for a
+    /// statement at or behind the last one compared. A break is journaled as
+    /// a `custody_break` note and counted by direction, never adjusted: the
+    /// ledger's balances are not touched.
+    pub fn reconcile_custody(&self, statement: &CustodyStatement) -> Result<CustodyReconciliation> {
+        if !statement.simulated {
+            return Err(Error::denied(format!(
+                "a custody statement from {} for {} is not marked simulated; this platform \
+                 reconciles paper custody only (ADR 0130 decision 6) and compares nothing",
+                statement.venue, statement.cell
+            )));
+        }
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let mark_key = format!("{PREFIX_CUSTODY}{}/{}", statement.cell, statement.venue);
+        if let Some(mark) = self.read::<CustodyMark>(&mark_key)?
+            && statement.is_at_or_before(mark.session, mark.sequence)
+        {
+            return Ok(CustodyReconciliation::Stale);
+        }
+        let Some(tail) = self.tail(&statement.cell)? else {
+            return Ok(CustodyReconciliation::Pending);
+        };
+        if !statement.is_at_or_before(tail.session, tail.sequence) {
+            return Ok(CustodyReconciliation::Pending);
+        }
+
+        let mut ledger: BTreeMap<String, Decimal> = BTreeMap::new();
+        for event in self.fill_events()? {
+            let source = event.source();
+            if source.cell != statement.cell
+                || !(source.session, source.journal_sequence)
+                    .le(&(statement.session, statement.sequence))
+            {
+                continue;
+            }
+            for posting in event.postings() {
+                if !matches!(&posting.account, Account::Trading { cell, .. } if *cell == statement.cell)
+                {
+                    continue;
+                }
+                let entry = ledger.entry(posting.unit.clone()).or_insert(Decimal::ZERO);
+                let moved = match posting.direction {
+                    Direction::Debit => entry.checked_add(posting.amount),
+                    Direction::Credit => entry.checked_sub(posting.amount),
+                };
+                *entry = moved.ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the ledger's {} holding for {} would overflow while reconciling \
+                         custody; nothing was compared",
+                        posting.unit, statement.cell
+                    ))
+                })?;
+            }
+        }
+
+        let breaks = custody::compare(&ledger, statement);
+        let mut batch = LedgerBatch::new().put_as(
+            mark_key,
+            &CustodyMark {
+                session: statement.session,
+                sequence: statement.sequence,
+            },
+        )?;
+        for found in &breaks {
+            batch = self.note(
+                batch,
+                JournalNote {
+                    cell: statement.cell.clone(),
+                    partition: format!("custody:{}", statement.venue),
+                    offset: statement.sequence,
+                    event: "custody_break".to_string(),
+                    detail: format!(
+                        "{}: the ledger books {} and {} states {} ({}) at session {} \
+                         sequence {}",
+                        found.unit,
+                        found.ledger,
+                        statement.venue,
+                        found.venue,
+                        found.direction.as_str(),
+                        statement.session,
+                        statement.sequence
+                    ),
+                    operator_action: "the cell is halted; find which side is wrong, and \
+                                      release by a policy payload issued after the halt once \
+                                      a later statement agrees"
+                        .to_string(),
+                },
+            )?;
+        }
+        self.store.commit(batch)?;
+        for found in &breaks {
+            self.telemetry.custody_break(found.direction.as_str());
+        }
+        Ok(match custody::halt_for(statement, &breaks) {
+            Some(halt) => CustodyReconciliation::Broken { breaks, halt },
+            None => CustodyReconciliation::Agrees,
+        })
     }
 
     // --- decisions --------------------------------------------------------
@@ -1568,6 +1803,13 @@ impl LedgerStore {
 
 // --- helpers --------------------------------------------------------------------
 
+/// What an outcome books: a fill, or the venue's settlement of one order's
+/// fills (ADR 0440). Both are refused as live by the same fence.
+enum Economic {
+    Fill(PaperFill),
+    Settlement(PaperSettlement),
+}
+
 fn refuse_blank(what: &str, value: &str) -> Result<()> {
     if value.is_empty() {
         return Err(Error::invalid(format!(
@@ -1778,6 +2020,10 @@ fn chain_position(key: &str) -> Result<(String, u64, u64)> {
 /// (R12-LEDGER-8137): a per-cell hot row, bounded by the cell count rather
 /// than growing, and left unsharded because a cell's tail is read and
 /// written as one value. Recorded here so it is a stated choice.
+fn pending_key(cell: &str, order_id: &str) -> String {
+    format!("{PREFIX_PENDING}{}/{}", hex(cell), hex(order_id))
+}
+
 fn tail_key(cell: &str) -> String {
     format!("{PREFIX_TAIL}{}", hex(cell))
 }

@@ -1036,12 +1036,57 @@ impl TournamentStage {
         now: Timestamp,
     ) -> Option<ReasonVerdict> {
         let hypothesis = observation.hypothesis;
-        let sign = hypothesis.claim.implied_sign()?;
-        let subject = hypothesis.subjects.first()?.as_str().to_string();
-        let reference = *observation.closes.last()?;
+        // Fail closed (ADR 0170 decision 1, R12-REASON-3108): an approved
+        // prediction is important by definition, and one the society cannot
+        // be shown has not survived it. Each of these returns used to read
+        // as "no refutation", so an approved thesis with no subject or no
+        // usable close went on unattacked.
+        let unattackable = |why: &str| {
+            observation.approved.then(|| ReasonVerdict {
+                clause: format!("; not attacked: {why}"),
+                refuted: Some(format!("it could not be attacked: {why}")),
+            })
+        };
+        let Some(subject) = hypothesis.subjects.first().map(|s| s.as_str().to_string()) else {
+            return unattackable("it names no subject");
+        };
+        let Some(&reference) = observation.closes.last() else {
+            return unattackable("no close is held for its subject");
+        };
         if !(reference.is_finite() && reference > 0.0) {
-            return None;
+            return unattackable("its subject's last close is not a positive price");
         }
+        // An undirected claim (a regime shift) has no close-direction
+        // question to open, but it is still a forecast the society attacks
+        // when it is important, with the critics that need no side.
+        let Some(sign) = hypothesis.claim.implied_sign() else {
+            let confidence = hypothesis.effective_confidence().clamp(0.0, 1.0);
+            if !(observation.approved || confidence >= IMPORTANCE_CONFIDENCE) {
+                return None;
+            }
+            let rets = returns(observation.closes);
+            let question = format!("q-{}", hypothesis.hypothesis_id.as_str());
+            let dossier =
+                self.prediction_dossier(&observation, 0.0, &subject, &BTreeMap::new(), &rets);
+            let verification = self.society.attack_prediction(&dossier, now);
+            let refuted = verification
+                .verdict
+                .is_refuted()
+                .then(|| verification.verdict.summary());
+            let clause = format!(
+                "; undirected, no tournament question; verifier society: {}",
+                verification.verdict.summary()
+            );
+            match challenge_exchange(&self.society, &question, &dossier, &verification, now) {
+                Ok(exchange) => self.review.challenges.push(exchange),
+                Err(error) => self
+                    .review
+                    .refused
+                    .push(format!("{question}/challenge: {}", error.message())),
+            }
+            self.review.verifications.push(verification);
+            return Some(ReasonVerdict { clause, refuted });
+        };
         let question = format!("q-{}", hypothesis.hypothesis_id.as_str());
         let target = format!("{subject}/close-direction");
         let resolves_at = now.saturating_add(hypothesis.horizon);
@@ -1414,7 +1459,9 @@ impl TournamentStage {
             })
             .collect();
         let window = &rets[rets.len().saturating_sub(TAIL_WINDOW)..];
-        let adverse_tail_bps = if window.is_empty() {
+        // An undirected claim has no adverse side, so no adverse tail: the
+        // tail critic abstains rather than reading every move as harmless.
+        let adverse_tail_bps = if window.is_empty() || sign == 0.0 {
             None
         } else {
             Some(
@@ -2129,6 +2176,152 @@ mod tests {
                 .contains("tournament refused the question")
         );
         assert_eq!(unapproved.refuted, None);
+    }
+
+    /// R12-REASON-3108: an important undirected forecast — a regime shift,
+    /// which the standard detectors form — is attacked by the critics that
+    /// need no side, and their refutation vetoes it; the bull and bear
+    /// critics abstain rather than reading the panel's lean against a claim
+    /// that never said which way. And an approved prediction whose subject
+    /// has no close fails closed rather than reading as unrefuted.
+    /// Mutations: restore `implied_sign()?` at the top of
+    /// `observe_reasoning` — the regime shift is observed as `None` and the
+    /// first expectation fails; drop the direction guard in
+    /// `directional_attack` — the bull and bear critics stop abstaining;
+    /// make `unattackable` return `None` — the empty-closes assertion fails.
+    #[test]
+    fn an_approved_regime_shift_is_attacked_without_a_side_and_a_refutation_vetoes_it() {
+        use qip_core::ids::{EvidenceId, HypothesisId, ObjectId};
+        use qip_learning_engine::verifier::{CriticKind, CriticVerdict};
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet};
+        use qip_reasoning_engine::hypothesis::{
+            CausalChain, CausalStep, Claim, HypothesisDraft, UncertaintyType,
+        };
+        use qip_world_model::causal::Mechanism;
+
+        let at = Timestamp::from_secs(1_760_000_000);
+        let hypothesis = Hypothesis::form(HypothesisDraft {
+            hypothesis_id: HypothesisId::from_string("hyp-9-obj-AAA"),
+            opportunity_id: None,
+            formed_at: at,
+            as_of: at,
+            class: "regime".to_string(),
+            claim: Claim::RegimeShift,
+            statement: "AAA's volatility regime changed".to_string(),
+            subjects: vec![ObjectId::from_string("obj-AAA")],
+            chain: CausalChain::new(vec![CausalStep::new(
+                "order-flow",
+                "obj-AAA",
+                Mechanism::CreditConditions,
+                "liquidity withdrew",
+                Duration::from_days(2),
+                0.8,
+            )]),
+            evidence: EvidenceSet::from_items(vec![
+                Evidence::new(
+                    EvidenceId::from_string("e1"),
+                    EvidenceKind::MarketObservation,
+                    Stance::Supports,
+                    "realised volatility doubled".to_string(),
+                    "rec-e1".to_string(),
+                    "exchange",
+                    at,
+                    at,
+                )
+                .with_reliability(0.9)
+                .with_diagnosticity(0.6),
+            ]),
+            prior: 0.4,
+            uncertainty_type: UncertaintyType::Epistemic,
+            falsifiers: vec!["volatility reverts within the week".to_string()],
+            leading_alternative: "one news day, not a regime".to_string(),
+            horizon: Duration::from_days(5),
+            contributors: Vec::new(),
+            models: Vec::new(),
+        })
+        .expect("a well-formed draft forms");
+        assert_eq!(
+            hypothesis.claim.implied_sign(),
+            None,
+            "premise: the claim is undirected"
+        );
+        let report = OrganisationReport {
+            as_of: at,
+            question: "did AAA change regime".to_string(),
+            runs: Vec::new(),
+            findings: Vec::new(),
+            deferred: Vec::new(),
+            failed: Vec::new(),
+            missing_inputs: Vec::new(),
+            backlogged: Vec::new(),
+            backlog_refused: Vec::new(),
+        };
+        let closes: Vec<f64> = (0..30).map(|i| 100.0 + f64::from(i % 3)).collect();
+        let roster: Vec<String> = Vec::new();
+        let observe = |stage: &mut TournamentStage, closes: &[f64], spread: f64| {
+            stage.observe_reasoning(
+                ReasonObservation {
+                    hypothesis: &hypothesis,
+                    report: &report,
+                    roster: &roster,
+                    regime: "trend/calm".to_string(),
+                    closes,
+                    spread_ratio: Some(spread),
+                    crossed_recently: Some(false),
+                    expected_move_bps: 100.0,
+                    approved: true,
+                    explaining: BTreeSet::new(),
+                },
+                at,
+            )
+        };
+
+        let mut stage = TournamentStage::new();
+        // No specialist formed a view, so the missing-variable critic — one
+        // that needs no side — refutes it, and the refutation is the veto.
+        let calm = observe(&mut stage, &closes, 1.0)
+            .expect("an approved undirected forecast is attacked, not skipped");
+        let veto = calm.refuted.expect("a refuted regime shift is vetoed");
+        assert!(veto.contains("missing_variable"), "{veto}");
+        assert!(
+            !veto.contains("manipulation"),
+            "premise: the spread is calm: {veto}"
+        );
+        let verification = stage
+            .review
+            .verifications
+            .last()
+            .expect("the attack is recorded");
+        let verdict_of = |kind: CriticKind| {
+            verification
+                .findings
+                .iter()
+                .find(|f| f.critic == kind)
+                .map(|f| f.verdict.clone())
+                .expect("every critic answered")
+        };
+        for side in [CriticKind::Bull, CriticKind::Bear] {
+            assert!(
+                matches!(verdict_of(side), CriticVerdict::Abstained { .. }),
+                "{side:?} argued a side the claim never took"
+            );
+        }
+        assert!(
+            matches!(
+                verdict_of(CriticKind::StructuralBreak),
+                CriticVerdict::Survived { .. }
+            ),
+            "the structural-break critic examined it"
+        );
+
+        let thin = observe(&mut stage, &closes, 1_000.0).expect("attacked");
+        let veto = thin.refuted.expect("a refuted regime shift is vetoed");
+        assert!(veto.contains("manipulation"), "{veto}");
+
+        let unpriced = observe(&mut stage, &[], 1.0)
+            .expect("an approved forecast with no close is refused, not skipped");
+        let refusal = unpriced.refuted.expect("it was let through unattacked");
+        assert!(refusal.starts_with("it could not be attacked"), "{refusal}");
     }
 
     /// R12-MODEL-6022, ADR 0149 decision 13's measurement: each LEARN that

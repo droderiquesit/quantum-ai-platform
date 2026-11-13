@@ -21,6 +21,7 @@
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
+use qip_events::Topic;
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::extensions::{Extension, PrivateAssetDetails};
@@ -32,6 +33,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::{CycleReport, Stage};
 use qip_kernel::hedge_review::HedgePolicyDeclaration;
 use qip_kernel::platform::Platform;
+use qip_kernel::position_register::PositionObligationsStated;
 use qip_market::bar::{Bar, Interval};
 use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -40,6 +42,7 @@ use qip_portfolio::PositionLifecycle;
 use qip_reasoning_engine::redteam::ReviewPolicy;
 use qip_risk::hedge::HedgeAxis;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_streaming::envelope::StreamEnvelope;
 
 /// See the module note: low enough that the panel approves a thesis on the
 /// synthetic tape. Not the shipped value.
@@ -314,6 +317,29 @@ fn in_memory(universe: Universe, config: PlatformConfig) -> Result<Platform> {
     )
 }
 
+/// Buy ten units of `symbol` through the desk control path, so the book
+/// holds it; the premise is asserted rather than assumed.
+fn hold(platform: &mut Platform, symbol: &str) -> Result<()> {
+    let order = platform.order_for(
+        object(symbol),
+        qip_execution_engine::order::Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-hedge-leg",
+        vec!["hyp-hedge-leg".to_string()],
+        start(),
+    )?;
+    platform.submit_order(order, start())?;
+    assert!(
+        platform
+            .positions_at_cost()
+            .get(object(symbol).as_str())
+            .is_some_and(|(quantity, _)| !quantity.is_zero()),
+        "premise: obj-{symbol} is held"
+    );
+    Ok(())
+}
+
 fn present<T: Clone>(declared: &Declared<T>, what: &str) -> T {
     match declared {
         Declared::Present(value) => value.clone(),
@@ -354,6 +380,10 @@ fn none_reason<T: std::fmt::Debug>(declared: &Declared<T>, what: &str) -> String
 #[test]
 fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none() -> Result<()> {
     let policies = vec![
+        // Hedged with a distinct instrument the book holds: obj-HEDGE, an
+        // information-technology name bought after the cycle opens obj-AAA.
+        // Until 2026-11-12 this policy hedged with obj-AAA itself, and the
+        // test read a position offsetting itself as hedged.
         HedgePolicyDeclaration::new(
             "tech-beta",
             HedgeAxis::Sector,
@@ -371,7 +401,9 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
     ];
 
     // --- the listed name -------------------------------------------------
-    let mut listed_book = in_memory(universe()?, config().with_hedge_policies(policies))?;
+    let mut hedged_universe = universe()?;
+    hedged_universe.insert(listed("HEDGE")?)?;
+    let mut listed_book = in_memory(hedged_universe, config().with_hedge_policies(policies))?;
     listed_book.observe(tape("AAA"));
     let report = listed_book.run_cycle(start());
     assert!(report.traversed_every_stage(), "{}", report.summarise());
@@ -379,6 +411,7 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
         listed_book.positions_at_cost().contains_key("obj-AAA"),
         "premise: the cycle opened a position in obj-AAA"
     );
+    hold(&mut listed_book, "HEDGE")?;
     let ex_date = start().saturating_add(Duration::from_days(30));
     listed_book.observe(vec![SensedRecord::CorporateAction(Box::new(
         CorporateAction {
@@ -402,6 +435,20 @@ fn each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none
     assert!(
         hedges[0].starts_with("tech-beta (hedged with obj-HEDGE on sector "),
         "{hedges:?}"
+    );
+    // The hedge leg itself: it hedges the bucket obj-AAA is held in, and
+    // nothing else. Not hedged by tech-beta although tech-beta covers it — a
+    // position is not its own hedge — and not the hedge for energy, where
+    // nothing is held.
+    let hedge_leg = obligations
+        .get("obj-HEDGE")
+        .expect("the held hedge leg states its obligations");
+    assert_eq!(
+        present(hedge_leg.hedges(), "obj-HEDGE's hedge relationship"),
+        vec![format!(
+            "tech-beta (this position is the hedge for sector {})",
+            Sector::InformationTechnology.as_str()
+        )],
     );
     let actions = present(
         aaa.corporate_actions(),
@@ -489,7 +536,7 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
             leverage_only(),
         )
     };
-    {
+    let (sized_hypothesis, sized_horizon, sized_plan) = {
         let mut first = over(start())?;
         first.observe(tape("PRIV"));
         let report = first.run_cycle(start());
@@ -538,22 +585,38 @@ fn a_held_position_record_carries_valuation_confidence_horizon_and_expected_liqu
             "the LEARN stage did not count the record: {}",
             report.summarise()
         );
-    }
+        let plan = *first
+            .position_exit_plan(fund)
+            .expect("premise: the construction dated an exit plan for obj-PRIV");
+        assert_eq!(plan.exit_at(), start().saturating_add(approved_horizon));
+        (record.hypothesis().to_string(), record.horizon(), plan)
+    };
 
+    // A second process over the same log, which ran no construction: the
+    // horizon and the exit plan are the journalled ones, not refused and not
+    // re-derived from a thesis this process never approved (R12-ASSET-4067,
+    // R12-ASSET-4069). Before the record was journalled, this process
+    // refused the holding "no hypothesis horizon on record" and held no plan.
+    //
+    // Mutation: drop the `resume_position_horizons` call at assembly — the
+    // resumed holding is refused and this assertion fails.
     let later = start().saturating_add(Duration::from_hours(1));
     let second = over(later)?;
     assert!(
         second.positions_at_cost().contains_key(fund),
         "premise: the resumed book holds obj-PRIV"
     );
-    let refusal = second
-        .position_holding(fund, later)
-        .err()
-        .map(|error| error.message().to_string())
-        .unwrap_or_default();
     assert!(
-        refusal.starts_with("obj-PRIV is held with no hypothesis horizon on record"),
-        "a resumed position with no approved hypothesis stated a horizon: {refusal:?}"
+        second.proposals().is_empty(),
+        "premise: the second process constructed nothing, so what it states is resumed"
+    );
+    let resumed = second.position_holding(fund, later)?;
+    assert_eq!(resumed.hypothesis(), sized_hypothesis);
+    assert_eq!(resumed.horizon(), sized_horizon);
+    assert_eq!(
+        second.position_exit_plan(fund).copied(),
+        Some(sized_plan),
+        "the resumed exit plan is not the one construction dated"
     );
     // And a holding nobody has is refused, not recorded.
     assert!(second.position_holding("obj-NONE", later).is_err());
@@ -660,6 +723,104 @@ fn the_desk_reads_the_book_the_cycle_opened_marked_at_its_latest_close() -> Resu
             .is_some_and(|mark| mark.is_positive()),
         "the held instrument is marked at its latest close: {:?}",
         view.marks
+    );
+    Ok(())
+}
+
+/// R12-ASSET-3019 (ADR 0468): the desk's book slot carries what the held
+/// position is held *for* — the hypothesis and horizon `construct_from`
+/// recorded, the sizing instant beside its mandate, and the hedge standing
+/// the register states — so the Portfolio/Asset Brain reads the register's
+/// facts on the default cycle. With no hedge policy declared the position
+/// is stated *unhedged*, with the reason, and never left undeclared.
+///
+/// Mutations: drop `view.purpose = purpose;` from `brief_the_desk_on_book`
+/// — the slot keeps the empty purpose it was assembled with and the horizon
+/// assertion fails; drop the hedge insert in `book_purpose` — the standing
+/// reads `None`; drop the factor assignment — no factor allocation arrives.
+#[test]
+fn the_desk_reads_each_held_positions_horizon_and_hedge_standing() -> Result<()> {
+    use qip_investment_agents::desk::HedgeStanding;
+    let aaa = object("AAA");
+    // AAA loads 1.2 on one catalogue factor, so the factor allocation has
+    // something to carry; the shared fixture states none.
+    let mut loaded = listed("AAA")?;
+    loaded
+        .risk
+        .factor_exposures
+        .loadings
+        .insert("equity_market".to_string(), 1.2);
+    let mut universe = Universe::new();
+    universe.insert(loaded)?;
+    let config = config().with_event_log_file(log_path("desk-book-purpose"));
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe,
+        leverage_only(),
+    )?;
+    platform.observe(tape("AAA"));
+    let first = platform.run_cycle(start());
+    assert!(first.traversed_every_stage(), "{}", first.summarise());
+    let (hypothesis, horizon) = {
+        let holding = platform.position_holding(aaa.as_str(), start());
+        let holding = holding.map_err(|e| {
+            qip_core::error::Error::invalid(format!(
+                "premise: the cycle sized obj-AAA on a hypothesis with a horizon: {}",
+                e.message()
+            ))
+        })?;
+        (holding.hypothesis().to_string(), holding.horizon())
+    };
+    let second = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(second.traversed_every_stage(), "{}", second.summarise());
+    let view = platform.desk_book_view();
+    let held = view
+        .purpose
+        .horizons
+        .get(aaa.as_str())
+        .unwrap_or_else(|| panic!("no horizon reached the desk: {:?}", view.purpose));
+    assert_eq!(
+        held.hypothesis, hypothesis,
+        "the driver is the sizing hypothesis"
+    );
+    assert_eq!(held.horizon, horizon);
+    assert!(
+        held.sized_at.is_some(),
+        "the sizing instant beside the mandate reached the desk"
+    );
+    match view.purpose.hedges.get(aaa.as_str()) {
+        Some(HedgeStanding::Unhedged { reason }) => assert!(
+            reason.contains("no hedge policy is declared"),
+            "the reason is the register's: {reason}"
+        ),
+        other => panic!("obj-AAA's hedge standing was not stated as unhedged: {other:?}"),
+    }
+    assert!(view.purpose.hedges_refused.is_none());
+    assert!(view.purpose.factors_refused.is_none());
+    let factor = view
+        .purpose
+        .factor_exposure
+        .get("equity_market")
+        .copied()
+        .unwrap_or_else(|| panic!("no factor allocation reached the desk: {:?}", view.purpose));
+    let quantity = view
+        .portfolio
+        .positions()
+        .find(|position| position.object_id == aaa)
+        .map(|position| position.quantity())
+        .expect("premise: the desk's book holds obj-AAA");
+    let mark = view
+        .marks
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: marked");
+    assert_eq!(
+        factor,
+        dec!("1.2") * quantity * mark,
+        "the factor exposure is the loading times the marked position"
     );
     Ok(())
 }
@@ -997,6 +1158,123 @@ fn a_capital_call_on_a_private_funds_commitment_moves_its_lifecycle_from_committ
         platform.private_stage(fund_id.as_str()),
         Some(PrivateStage::Funding),
         "a capital call did not move the commitment's lifecycle"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-4068: a declared hedge policy is the position's hedge only where
+/// its hedge instrument is actually held, and the per-position record reaches
+/// the log rather than only the stage line's counts.
+///
+/// The failure this guards: the hedge relationship was resolved from the
+/// declarations alone, so a book that declared "hedge information technology
+/// with obj-HEDGE" and never bought obj-HEDGE read as hedged; and LEARN
+/// counted each record and dropped it, so the log could not say which
+/// position was unhedged on a cycle, or why.
+///
+/// Mutations: pass `|_| true` as `held` in `Platform::position_obligations`
+/// and obj-AAA reads as hedged by the obj-HEDGE it does not hold; delete the
+/// `journal_record` of `PositionObligationsStated` in LEARN and the log holds
+/// no record of the cycle's obligations.
+#[test]
+fn a_declared_hedge_whose_instrument_is_not_held_is_not_a_hedge_and_the_record_is_journalled()
+-> Result<()> {
+    let policies = vec![HedgePolicyDeclaration::new(
+        "tech-beta",
+        HedgeAxis::Sector,
+        Sector::InformationTechnology.as_str(),
+        object("HEDGE"),
+        dec!("1"),
+    )];
+    let mut book = in_memory(universe()?, config().with_hedge_policies(policies))?;
+    book.observe(tape("AAA"));
+    let report = book.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let held = book.positions_at_cost();
+    assert!(held.contains_key("obj-AAA"), "premise: obj-AAA is held");
+    assert!(
+        !held.contains_key("obj-HEDGE"),
+        "premise: the hedge leg is not"
+    );
+
+    let obligations = book.position_obligations()?;
+    let aaa = obligations
+        .get("obj-AAA")
+        .expect("the held position states its obligations");
+    let reason = none_reason(aaa.hedges(), "obj-AAA's hedge relationship");
+    assert!(
+        reason
+            .contains("hedge instrument is not held: tech-beta (hedged with obj-HEDGE on sector "),
+        "the unhedged position does not name the declared hedge it lacks: {reason}"
+    );
+
+    let mut journalled = Vec::new();
+    for record in book.event_log().by_topic(Topic::RiskEvaluated) {
+        if let Ok(envelope) = StreamEnvelope::from_frame(record)
+            && let Ok(decoded) = envelope.decode::<PositionObligationsStated>()
+        {
+            journalled.push(decoded.body);
+        }
+    }
+    assert_eq!(journalled.len(), 1, "one obligations record for one cycle");
+    let logged = journalled[0]
+        .positions
+        .get("obj-AAA")
+        .expect("the journalled record carries the held position");
+    assert_eq!(
+        logged.hedges(),
+        aaa.hedges(),
+        "the log states the same hedge relationship the platform serves"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-4068: a position named as its own hedge, with nothing else
+/// held in the bucket it hedges, states no hedge and says why.
+///
+/// tech-beta hedges the information-technology sector with obj-AAA, and
+/// obj-AAA is the only position. It is covered by the policy and it is the
+/// policy's hedge instrument, so both arms used to read as a hedge: "hedged
+/// with obj-AAA" — a long offsetting itself — and "the hedge for
+/// information technology" — over a bucket in which nothing else is held.
+/// Neither offsets anything.
+///
+/// Mutations: in `hedge_review::policies_relating_to`, push a self-covering
+/// policy to `held` instead of `own` — obj-AAA reads as hedged by itself;
+/// set `exposed = true` without looking at the book — obj-AAA reads as the
+/// hedge for a bucket nothing else is held in. Either fails `none_reason`.
+#[test]
+fn a_position_named_as_its_own_hedge_over_a_bucket_holding_nothing_else_states_no_hedge()
+-> Result<()> {
+    let policies = vec![HedgePolicyDeclaration::new(
+        "tech-beta",
+        HedgeAxis::Sector,
+        Sector::InformationTechnology.as_str(),
+        object("AAA"),
+        dec!("1"),
+    )];
+    let mut book = in_memory(universe()?, config().with_hedge_policies(policies))?;
+    book.observe(tape("AAA"));
+    let report = book.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let held = book.positions_at_cost();
+    assert_eq!(
+        held.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["obj-AAA"],
+        "premise: obj-AAA is the only position"
+    );
+    let obligations = book.position_obligations()?;
+    let aaa = obligations
+        .get("obj-AAA")
+        .expect("the held position states its obligations");
+    let reason = none_reason(aaa.hedges(), "obj-AAA's hedge relationship");
+    assert!(
+        reason.contains("with this position as its own hedge, which offsets nothing: tech-beta (hedged with obj-AAA on sector "),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("no other held position lies in the bucket it hedges: tech-beta (this position is the hedge for sector "),
+        "{reason}"
     );
     Ok(())
 }

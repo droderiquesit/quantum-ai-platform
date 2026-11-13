@@ -62,6 +62,7 @@ use qip_events::{EventBody, Topic};
 use qip_reasoning_engine::constraint::{Answer, Constraint, Form, Problem, Variable};
 use qip_reasoning_engine::lifecycle::{Admissibility, Lifecycle};
 use qip_reasoning_engine::network::{Network, Node};
+use qip_reasoning_engine::ontology::{Fact, Inference, Ontology, RelationSpec};
 use qip_reasoning_engine::rules::{
     Cond, Invariant, Op, RevisionTask, Rule, RulePack, Value, Verdict,
 };
@@ -287,8 +288,11 @@ pub struct TemporalInputs {
     /// entered when the hypothesis formed settles that long after it, and
     /// the timeline is asked to hold settlement before the deadline: a
     /// claim that resolves before its trade could settle is refused as a
-    /// link. The lag counts calendar days, so the settlement instant is the
-    /// earliest the convention allows — a weekend only makes it later.
+    /// link. The platform walks the lag in settlement days on the home
+    /// jurisdiction's calendar, so a weekend or a declared holiday moves the
+    /// settlement instant; no holiday dates are committed, so a holiday
+    /// counts as a settlement day until one is declared. A record written
+    /// before 2026-11-12 carries a calendar-day lag, which replays as itself.
     /// Absent on a record written before the field existed.
     #[serde(default)]
     pub settlement: Option<(String, Duration)>,
@@ -419,6 +423,43 @@ pub struct SymbolicDerivation {
     /// not acted on.
     #[serde(default)]
     pub feasibility: Option<Feasibility>,
+    /// The hypothesis, its anomaly and its subject as a typed knowledge
+    /// graph, closed under [`platform_knowledge_graph`]'s axioms
+    /// (R12-REASON-3054). `None` only on a record written before it existed.
+    #[serde(default)]
+    pub knowledge: Option<KnowledgeDerivation>,
+}
+
+/// The knowledge-graph part: the facts asserted from the input, and their
+/// closure with every inferred fact's derivation. The asserted facts are
+/// recorded so [`verify`] re-closes them rather than trusting the closure.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeDerivation {
+    pub asserted: Vec<Fact>,
+    pub inference: Step<Inference>,
+}
+
+impl KnowledgeDerivation {
+    /// Whether the graph entails that the hypothesis concerns a contract
+    /// whose lifecycle ends before the claim can resolve: the hypothesis
+    /// `concerns` the subject, and the subject is `in_stage`
+    /// [`CONTRACT_EXPIRES_BEFORE_HORIZON`]. Read off the closure, so it holds
+    /// only where the subject was typed a dated contract.
+    pub fn outlived_by_claim(&self, hypothesis_id: &str, subject: &str) -> bool {
+        let Step::Derived(inference) = &self.inference else {
+            return false;
+        };
+        let instrument = instrument_entity(subject);
+        inference.holds(&Fact::related(
+            &hypothesis_entity(hypothesis_id),
+            "concerns",
+            &instrument,
+        )) && inference.holds(&Fact::related(
+            &instrument,
+            "in_stage",
+            CONTRACT_EXPIRES_BEFORE_HORIZON,
+        )) && inference.holds(&Fact::instance(&instrument, "dated_contract"))
+    }
 }
 
 impl EventBody for SymbolicDerivation {
@@ -761,6 +802,133 @@ pub fn hypothesis_lifecycle() -> Lifecycle {
             .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
             .collect(),
     }
+}
+
+/// The knowledge graph's name and version. A recorded closure names them,
+/// and [`verify`] re-closes against this build's graph.
+pub const KNOWLEDGE_GRAPH: &str = "reason/platform-knowledge";
+pub const KNOWLEDGE_GRAPH_VERSION: u32 = 1;
+
+/// A dated contract's financial-lifecycle stages relative to the claim's
+/// deadline.
+pub const CONTRACT_LIVE_THROUGH_HORIZON: &str = "contract/live_through_horizon";
+pub const CONTRACT_EXPIRES_BEFORE_HORIZON: &str = "contract/expires_before_horizon";
+
+/// The asset classes whose instruments are physical things, and so carry a
+/// delivery lifecycle as well as a financial one.
+const PHYSICAL_CLASSES: [&str; 2] = ["commodity", "real_asset"];
+
+fn hypothesis_entity(id: &str) -> String {
+    format!("hypothesis:{id}")
+}
+
+fn instrument_entity(subject: &str) -> String {
+    format!("instrument:{subject}")
+}
+
+/// The vocabulary the symbolic stage reasons over (R12-REASON-3054).
+///
+/// Every asset class is a class beneath `instrument`, and the physical ones
+/// beneath `physical_asset` too, so a commodity is typed as something with a
+/// delivery lifecycle by the hierarchy rather than by a special case.
+/// `grounded_in` is transitive so that a hypothesis is entailed to rest on
+/// the instrument its anomaly was observed on; `concerns` has an inverse so
+/// the instrument names every hypothesis about it.
+pub fn platform_knowledge_graph() -> Result<Ontology> {
+    let relation = |domain: &str, range: &str, inverse: Option<&str>, transitive| RelationSpec {
+        domain: domain.to_string(),
+        range: range.to_string(),
+        inverse: inverse.map(str::to_string),
+        transitive,
+    };
+    let mut graph = Ontology::new(KNOWLEDGE_GRAPH, KNOWLEDGE_GRAPH_VERSION)
+        .class("entity", &[])?
+        .class("instrument", &["entity"])?
+        .class("dated_contract", &["instrument"])?
+        .class("physical_asset", &["instrument"])?
+        .class("event", &["entity"])?
+        .class("anomaly", &["event"])?
+        .class("hypothesis", &["entity"])?
+        .class("settlement_convention", &["entity"])?
+        .class("lifecycle_stage", &["entity"])?
+        .class("hypothesis_stage", &["lifecycle_stage"])?
+        .class("contract_stage", &["lifecycle_stage"])?;
+    for class in qip_financial::asset_class::AssetClass::ALL {
+        let name = class.as_str();
+        let parents: &[&str] = if PHYSICAL_CLASSES.contains(&name) {
+            &["instrument", "physical_asset"]
+        } else {
+            &["instrument"]
+        };
+        graph = graph.class(name, parents)?;
+    }
+    graph
+        .relation(
+            "concerns",
+            relation("hypothesis", "instrument", Some("concerned_by"), false),
+        )?
+        .relation(
+            "concerned_by",
+            relation("instrument", "hypothesis", Some("concerns"), false),
+        )?
+        .relation("arose_from", relation("hypothesis", "anomaly", None, false))?
+        .relation(
+            "observed_on",
+            relation("anomaly", "instrument", None, false),
+        )?
+        .relation("grounded_in", relation("entity", "entity", None, true))?
+        .relation(
+            "settles_via",
+            relation("instrument", "settlement_convention", None, false),
+        )?
+        .relation(
+            "in_stage",
+            relation("entity", "lifecycle_stage", None, false),
+        )
+}
+
+/// The facts the input asserts. Only what the platform read is asserted: a
+/// subject with no class is left untyped, so `concerns` reports it as a
+/// typing violation rather than inventing a class for it.
+fn knowledge_facts(input: &SymbolicInput) -> Vec<Fact> {
+    let hypothesis = hypothesis_entity(&input.hypothesis_id);
+    let instrument = instrument_entity(&input.subject);
+    let anomaly = format!("anomaly:{}:{}", input.anomaly.detector, input.hypothesis_id);
+    let stage = format!("hypothesis/{}", input.status);
+    let mut facts = vec![
+        Fact::instance(&hypothesis, "hypothesis"),
+        Fact::instance(&anomaly, "anomaly"),
+        Fact::instance(&stage, "hypothesis_stage"),
+        Fact::related(&hypothesis, "concerns", &instrument),
+        Fact::related(&hypothesis, "arose_from", &anomaly),
+        Fact::related(&anomaly, "observed_on", &instrument),
+        Fact::related(&hypothesis, "grounded_in", &anomaly),
+        Fact::related(&anomaly, "grounded_in", &instrument),
+        Fact::related(&hypothesis, "in_stage", &stage),
+    ];
+    if let Some(class) = &input.subject_class {
+        facts.push(Fact::instance(&instrument, class));
+    }
+    if let Some((convention, _)) = &input.settlement {
+        let convention = format!("settlement:{convention}");
+        facts.push(Fact::instance(&convention, "settlement_convention"));
+        facts.push(Fact::related(&instrument, "settles_via", &convention));
+    }
+    if let Some(margin) = input.contract_expiry_margin_days {
+        let stage = if margin < 0 {
+            CONTRACT_EXPIRES_BEFORE_HORIZON
+        } else {
+            CONTRACT_LIVE_THROUGH_HORIZON
+        };
+        facts.push(Fact::instance(&instrument, "dated_contract"));
+        facts.push(Fact::instance(stage, "contract_stage"));
+        facts.push(Fact::related(&instrument, "in_stage", stage));
+    }
+    facts
+}
+
+fn close_knowledge(asserted: &[Fact]) -> Step<Inference> {
+    Step::of(platform_knowledge_graph().and_then(|graph| graph.infer(asserted)))
 }
 
 /// The rule pack's facts for `input`.
@@ -1193,6 +1361,7 @@ pub fn derive_under(
                 }),
         );
     let acting = Step::of(acting(eligible, halted));
+    let asserted = knowledge_facts(&input);
     let subject_type = SubjectTyping {
         typed: Step::of(type_subject(input.subject_class.as_deref())),
         class: input.subject_class,
@@ -1200,6 +1369,10 @@ pub fn derive_under(
     let violated_assumptions = violated_assumptions(&rules, &temporal, &acting);
     let uncertainty = uncertainty_of(&posterior);
     let feasibility = feasibility_of(pack, &input.hypothesis_id, &rules, &acting);
+    let knowledge = KnowledgeDerivation {
+        inference: close_knowledge(&asserted),
+        asserted,
+    };
     SymbolicDerivation {
         cycle: input.cycle,
         hypothesis_id: input.hypothesis_id,
@@ -1217,6 +1390,7 @@ pub fn derive_under(
         uncertainty,
         subject_type: Some(subject_type),
         feasibility: Some(feasibility),
+        knowledge: Some(knowledge),
     }
 }
 
@@ -1326,6 +1500,15 @@ pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<(
             "derivation for {id}: re-typed against this build's ontology (v{ONTOLOGY_VERSION}), \
              the subject does not match the journaled typing; the subject typing is not \
              reproducible"
+        )));
+    }
+    if let Some(knowledge) = &derivation.knowledge
+        && close_knowledge(&knowledge.asserted) != knowledge.inference
+    {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: re-closing its asserted facts under this build's knowledge \
+             graph ({KNOWLEDGE_GRAPH} v{KNOWLEDGE_GRAPH_VERSION}) does not give the journaled \
+             closure; the knowledge graph is not reproducible"
         )));
     }
     let pack = rule_pack();
@@ -1451,6 +1634,52 @@ mod tests {
 
     fn at(secs: i64) -> Timestamp {
         Timestamp::from_secs(1_700_000_000 + secs)
+    }
+
+    #[test]
+    fn a_dated_contract_that_expires_before_the_deadline_is_entailed_to_be_outlived_by_the_claim() {
+        // R12-REASON-3054, the financial and physical lifecycles: the stage
+        // is asserted from the expiry margin, the contract typing from the
+        // same fact, and the physical typing only from the hierarchy.
+        use qip_reasoning_engine::ontology::{Derivation, Fact};
+        let with = |class: &str, margin: Option<i64>| {
+            let mut i = input();
+            i.subject_class = Some(class.to_string());
+            i.contract_expiry_margin_days = margin;
+            let asserted = knowledge_facts(&i);
+            KnowledgeDerivation {
+                inference: close_knowledge(&asserted),
+                asserted,
+            }
+        };
+        let short = with("commodity", Some(-1));
+        assert!(short.outlived_by_claim("hyp-3-AAA", "AAA"));
+        let Step::Derived(inference) = &short.inference else {
+            panic!("refused: {:?}", short.inference);
+        };
+        assert!(inference.is_consistent(), "{:?}", inference.violations);
+        let physical = Fact::instance("instrument:AAA", "physical_asset");
+        assert!(!short.asserted.contains(&physical));
+        assert!(matches!(
+            inference.derivation(&physical),
+            Some(Derivation::IsA { .. })
+        ));
+        assert!(!with("commodity", Some(0)).outlived_by_claim("hyp-3-AAA", "AAA"));
+        assert!(!with("equity", None).outlived_by_claim("hyp-3-AAA", "AAA"));
+        // An untyped subject is reported, not typed.
+        let mut untyped = input();
+        untyped.subject_class = None;
+        let Step::Derived(inference) = close_knowledge(&knowledge_facts(&untyped)) else {
+            panic!("refused");
+        };
+        assert!(
+            inference
+                .violations
+                .iter()
+                .any(|v| v.entity == "instrument:AAA" && v.expected == "instrument"),
+            "{:?}",
+            inference.violations
+        );
     }
 
     fn input() -> SymbolicInput {

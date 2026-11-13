@@ -271,6 +271,19 @@ pub struct RoundSummary {
     /// One line per measurement, up to [`MAX_REFUSALS_REPORTED`], each opening
     /// with the calibration statement its run carried.
     pub crowding: Vec<String>,
+    /// Registered candidates whose largest position was put through the
+    /// standard scenario library (ADR 0408). **Measured, never gated**: no
+    /// tolerance for a candidate's stressed loss has been given.
+    pub stress_measured: usize,
+    /// Of those, how many the factor model had no beta for, so no shock
+    /// reached the position and the loss is the stressed exit alone.
+    pub stress_unmodelled: usize,
+    /// The worst stressed loss of the round, by scenario, as a fraction of
+    /// the equity the candidate's run held when it carried the position.
+    pub stress_worst: Option<(String, f64)>,
+    /// Why a registered candidate was not stressed, up to
+    /// [`MAX_REFUSALS_REPORTED`].
+    pub stress_refusals: Vec<String>,
     /// The campaign the round's window was assembled through (§22.4), where
     /// a round ran: the id the manifest the backtest's inputs are recorded
     /// on was journaled under. Until 2026-10-31 the strategy turn backtested
@@ -333,7 +346,47 @@ impl RoundSummary {
                 .map_or_else(|| "no concentration verdict".to_string(), |v| v.describe()),
             self.trials
         ) + &self.crowding_clause()
+            + &self.stress_clause()
             + &campaign
+    }
+
+    /// Count one registered candidate's stress result.
+    fn record_stress(&mut self, stress: std::result::Result<CandidateStress, String>) {
+        match stress {
+            Ok(stress) => {
+                self.stress_measured += 1;
+                if stress.unmodelled {
+                    self.stress_unmodelled += 1;
+                }
+                let worse = self
+                    .stress_worst
+                    .as_ref()
+                    .is_none_or(|(_, loss)| stress.worst_loss_fraction > *loss);
+                if worse {
+                    self.stress_worst = Some((stress.worst_scenario, stress.worst_loss_fraction));
+                }
+            }
+            Err(why) => {
+                if self.stress_refusals.len() < MAX_REFUSALS_REPORTED {
+                    self.stress_refusals.push(why);
+                }
+            }
+        }
+    }
+
+    /// What the scenario library found, appended to the round line; empty
+    /// where nothing was stressed.
+    fn stress_clause(&self) -> String {
+        let Some((scenario, loss)) = &self.stress_worst else {
+            return String::new();
+        };
+        format!(
+            ", {} candidate(s) stressed with {} unmodelled, worst {scenario} at {:.2}% of \
+             equity (measured, not gated: ADR 0408)",
+            self.stress_measured,
+            self.stress_unmodelled,
+            loss * 100.0
+        )
     }
 
     /// What the crowding measurement found, appended to the round line.
@@ -1162,6 +1215,7 @@ impl EvolutionEngine {
                     ) {
                         Ok(()) => {
                             summary.registered += 1;
+                            summary.record_stress(scored.stress);
                             // Ask whether the edge just registered survives
                             // company (ADR 0059). A refusal to measure is a
                             // reported problem and not a failed round: the
@@ -1659,8 +1713,138 @@ impl EvolutionEngine {
             // gate can tell this series came out of a simulation.
             manifest: recorded_manifest(subject, bars)?,
         };
-        Ok(Scored { holdout, net })
+        // Stressed here, from the run just scored, so the position the
+        // library is applied to is one this candidate chose to hold on this
+        // window and not a figure reconstructed later from somewhere else.
+        let stress = self
+            .stress_peak(subject, &result)
+            .map_err(|error| error.message().to_string());
+        Ok(Scored {
+            holdout,
+            net,
+            stress,
+        })
     }
+
+    /// Apply the standard scenario library to the largest position a
+    /// candidate's run held (§3's "stress", R12-MODEL-1159; ADR 0408).
+    ///
+    /// The strategy factory backtested what it generated and never asked what
+    /// a gap, a credit event or a liquidity drought would have done to the
+    /// book a candidate was willing to carry: `StressTester` stressed the
+    /// platform's open book and nothing a search produced. The beta is the
+    /// one the platform's own stage reads, `MarketFactor` over the closes
+    /// this engine holds, and the exit is priced off the backtest's own cost
+    /// model, so no figure is written at this seam. A subject the factor
+    /// cannot measure is stressed by nothing and says so on `unmodelled`,
+    /// rather than reporting the liquidation cost alone as a loss.
+    ///
+    /// **Measured, not gated.** No loss tolerance for a strategy candidate
+    /// has been given, and inventing one here would be a promotion rule
+    /// nobody set (ADR 0408).
+    fn stress_peak(
+        &self,
+        subject: &ObjectId,
+        result: &qip_simulation_engine::backtest::BacktestResult,
+    ) -> Result<CandidateStress> {
+        let (notional, equity) = peak_exposure(result, subject.as_str())?.ok_or_else(|| {
+            Error::invalid(format!(
+                "the run held no position on {subject}, so there is nothing to stress"
+            ))
+        })?;
+        let tape: BTreeMap<String, Vec<f64>> = self
+            .history
+            .iter()
+            .map(|(name, bars)| {
+                (
+                    name.clone(),
+                    bars.iter().map(|bar| bar.close.to_f64()).collect(),
+                )
+            })
+            .collect();
+        let market = qip_risk::market_factor::MarketFactor::estimate(&tape);
+        let mut betas = BTreeMap::new();
+        if let Some(beta) = market.beta_of(subject.as_str()) {
+            betas.insert(qip_risk::market_factor::EQUITY_SHOCK.to_string(), beta);
+        }
+        let unmodelled = betas.is_empty();
+        let costs = &result.config.costs;
+        let tester = qip_simulation_engine::scenario::StressTester::new(
+            costs.commission_bps + costs.half_spread_bps + costs.tax_bps,
+        );
+        let exposure = qip_simulation_engine::scenario::FactorExposure {
+            object_id: subject.as_str().to_string(),
+            notional,
+            betas,
+        };
+        let results = tester.apply_all(
+            &qip_simulation_engine::scenario::standard_library(),
+            &[exposure],
+            equity,
+            result.finished_at,
+        )?;
+        let worst = results
+            .first()
+            .ok_or_else(|| Error::invalid("the scenario library applied no scenario"))?;
+        Ok(CandidateStress {
+            scenarios: results.len(),
+            worst_scenario: worst.scenario.clone(),
+            worst_loss_fraction: worst.loss_fraction,
+            unmodelled,
+        })
+    }
+}
+
+/// What the scenario library did to a candidate's largest position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidateStress {
+    /// Scenarios applied: the whole library, every time.
+    pub scenarios: usize,
+    /// The scenario that cost the most.
+    pub worst_scenario: String,
+    /// Its loss, as a positive fraction of the equity the run had when it
+    /// held that position.
+    pub worst_loss_fraction: f64,
+    /// Whether the factor model had no beta for the subject, so the loss is
+    /// the stressed exit cost alone and no shock reached the position.
+    pub unmodelled: bool,
+}
+
+/// The largest signed notional a run held on `subject`, and the equity it
+/// had at that instant.
+///
+/// The largest and not the last: a strategy that ends a window flat would
+/// otherwise be stressed at nothing, however large the book it carried an
+/// hour earlier, and a stress test that only ever looks at the closing bell
+/// measures when the window ended rather than what the strategy risks.
+/// `None` when the run never held a position on the subject; an error when
+/// a notional overflows, which is refused rather than saturated.
+fn peak_exposure(
+    result: &qip_simulation_engine::backtest::BacktestResult,
+    subject: &str,
+) -> Result<Option<(Decimal, f64)>> {
+    let mut held = Decimal::ZERO;
+    let mut peak: Option<(Decimal, f64)> = None;
+    for fill in result.fills.iter().filter(|fill| fill.object_id == subject) {
+        held += fill.quantity;
+        let notional = held.checked_mul(fill.price).ok_or_else(|| {
+            Error::numeric(format!(
+                "the position on {subject} overflowed at {}",
+                fill.at.to_rfc3339()
+            ))
+        })?;
+        let larger = peak.is_none_or(|(best, _)| notional.abs() > best.abs());
+        if larger && !notional.is_zero() {
+            let equity = result
+                .equity_curve
+                .iter()
+                .take_while(|(at, _)| *at <= fill.at)
+                .last()
+                .map_or(result.config.initial_capital, |(_, equity)| *equity);
+            peak = Some((notional, equity.to_f64()));
+        }
+    }
+    Ok(peak)
 }
 
 /// One candidate scored: the gate's evidence, and the holdout tail as a
@@ -1668,6 +1852,9 @@ impl EvolutionEngine {
 struct Scored {
     holdout: HoldoutInputs,
     net: NetReturns,
+    /// The scenario library over the run's largest position, or why it
+    /// could not be applied.
+    stress: std::result::Result<CandidateStress, String>,
 }
 
 /// Recover, per period, the cost the equity curve already absorbed.
@@ -1985,6 +2172,107 @@ mod tests {
             fed.registered >= 1,
             "no candidate registered against the populated universe: {fed:?}. Registration              requires `evaluate` to return evidence, and `evaluate` refuses a run with no              fills -- so this also asserts the backtests actually traded"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn every_registered_candidate_is_stressed_against_the_whole_scenario_library() -> Result<()> {
+        // R12-MODEL-1159's "stress": until ADR 0408 the factory backtested
+        // what it generated and nothing applied a scenario to a candidate, so
+        // the strategy factory's scope had no stress at all on the path from
+        // the deep brain's root.
+        let (_platform, _engine, summaries) = run_rounds(1)?;
+        let first = summaries
+            .first()
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        // Premise: something registered, or equality at zero proves nothing.
+        assert!(
+            first.registered >= 1,
+            "no candidate was registered, so the stress step is untested: {first:?}"
+        );
+        assert_eq!(
+            first.stress_measured, first.registered,
+            "{} registered and {} stressed; refusals: {:?}",
+            first.registered, first.stress_measured, first.stress_refusals
+        );
+        let library: Vec<String> = qip_simulation_engine::scenario::standard_library()
+            .into_iter()
+            .map(|scenario| scenario.name)
+            .collect();
+        let (scenario, loss) = first
+            .stress_worst
+            .clone()
+            .ok_or_else(|| Error::not_found("a worst stressed loss"))?;
+        assert!(
+            library.contains(&scenario),
+            "{scenario} is not a scenario of the library: {library:?}"
+        );
+        // A loss above zero: the stressed exit alone costs something, so a
+        // zero here is a position of nothing or a tester never called.
+        assert!(loss > 0.0, "the worst stressed loss was {loss}");
+        assert!(
+            first.describe().contains("measured, not gated: ADR 0408"),
+            "the round line does not report the stress: {}",
+            first.describe()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_candidate_is_stressed_at_the_largest_position_its_run_held_and_not_the_one_it_ended_on()
+    -> Result<()> {
+        use qip_simulation_engine::backtest::{BacktestResult, SimulatedFill};
+        let at = |minute: i64| Timestamp::from_millis(minute * 60_000);
+        let fill = |minute: i64, quantity: i64| SimulatedFill {
+            at: at(minute),
+            object_id: "obj-AAA".to_string(),
+            quantity: Decimal::from_int(quantity),
+            price: Decimal::from_int(10),
+            cost: Default::default(),
+        };
+        let config = BacktestConfig::default();
+        let result = BacktestResult {
+            strategy: "s".to_string(),
+            started_at: at(0),
+            finished_at: at(10),
+            config,
+            equity_curve: vec![
+                (at(0), Decimal::from_int(1_000)),
+                (at(2), Decimal::from_int(900)),
+            ],
+            returns: Vec::new(),
+            // Long thirty, then out to five, then flat: the run ends holding
+            // nothing, and the book it carried is three hundred.
+            fills: vec![
+                fill(1, 30),
+                fill(3, -25),
+                fill(4, -5),
+                SimulatedFill {
+                    object_id: "obj-BBB".to_string(),
+                    ..fill(5, 1_000)
+                },
+            ],
+            rejected: Vec::new(),
+            missing_prices: Vec::new(),
+            total_commission: 0.0,
+            total_spread: 0.0,
+            total_impact: 0.0,
+            rebalance_count: 0,
+            guarded_reads: 0,
+            position_lifecycle: BTreeMap::new(),
+            superseded: 0,
+            outages: Vec::new(),
+        };
+        let (notional, equity) = peak_exposure(&result, "obj-AAA")?
+            .ok_or_else(|| Error::not_found("a peak position"))?;
+        assert_eq!(notional, Decimal::from_int(300));
+        // The equity the run had when it held the peak (the minute-0 mark),
+        // not the later 900 it ended on.
+        assert!(
+            (equity - 1_000.0).abs() < 1e-9,
+            "equity at the peak was {equity}"
+        );
+        assert!(peak_exposure(&result, "obj-CCC")?.is_none());
         Ok(())
     }
 

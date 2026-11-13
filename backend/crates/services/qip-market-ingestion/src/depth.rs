@@ -435,6 +435,15 @@ pub struct DepthFeedAdapter {
     books: BTreeMap<String, DepthState>,
     client: HttpClient,
     stats: DepthStats,
+    /// The session facts this pass applied — a venue status change, an
+    /// auction indication, a reset — each as its typed canonical record
+    /// (R12-TICK-2053) paired with the instant it became knowable. Until
+    /// these were published a book's state machine consumed them and they
+    /// went no further: the centre learned that a venue had halted only
+    /// from its books stopping. Cleared at the start of every pass, so a
+    /// pass that fails publishes none of what it applied, as it publishes
+    /// none of its books.
+    session: Vec<(SensedRecord, Timestamp)>,
 }
 
 impl DepthFeedAdapter {
@@ -605,6 +614,7 @@ impl DepthFeedAdapter {
             books,
             client,
             stats: DepthStats::default(),
+            session: Vec::new(),
         })
     }
 
@@ -729,11 +739,15 @@ impl DepthFeedAdapter {
         // Grown per published book rather than reserved from the book count;
         // the count is bounded by `MAX_INSTRUMENTS` at construction.
         let mut dated = Vec::new();
+        self.session.clear();
         for symbol in self.symbols() {
             if let Some(record) = self.refresh(&symbol, until)? {
                 dated.push(record);
             }
         }
+        // Bounded by the messages applied this pass, which each response's
+        // `max_messages` cap bounds.
+        dated.append(&mut self.session);
         Ok(dated)
     }
 
@@ -968,6 +982,7 @@ impl DepthFeedAdapter {
         }
 
         for message in &messages {
+            let before = held.state.status();
             if let Err(error) = held.state.apply(message) {
                 // The book is now half a snapshot. Leaving it stale is what
                 // stops the next poll reading it as a complete one; the tracker
@@ -979,6 +994,11 @@ impl DepthFeedAdapter {
                     self.config.name,
                     self.config.book_kind.as_str()
                 )));
+            }
+            if let Some(record) =
+                session_record(held, message, before, self.config.publication_delay)?
+            {
+                self.session.push(record);
             }
         }
         held.state.resynchronised(wire.at);
@@ -1081,6 +1101,7 @@ impl DepthFeedAdapter {
         }
 
         for message in &released {
+            let before = held.state.status();
             if let Err(error) = held.state.apply(message) {
                 // A refused message leaves `VenueState` exactly as it was, but
                 // the messages before it in this batch were applied. Marking
@@ -1094,6 +1115,11 @@ impl DepthFeedAdapter {
                     "{}: {symbol} sent an update this book cannot apply: {error}",
                     self.config.name
                 )));
+            }
+            if let Some(record) =
+                session_record(held, message, before, self.config.publication_delay)?
+            {
+                self.session.push(record);
             }
         }
         Ok(())
@@ -1152,7 +1178,7 @@ impl DataAdapter for DepthFeedAdapter {
             name: self.config.name.clone(),
             provider: self.config.provider.clone(),
             licensing: self.config.licensing,
-            topics: vec![Topic::MarketOrderBook],
+            topics: vec![Topic::MarketOrderBook, Topic::MarketSession],
             expected_latency: self.config.publication_delay,
             // Never `None`, even fully configured: see [`Self::REQUIREMENTS`].
             production_requirement: Some(self.requirement()),
@@ -1193,6 +1219,51 @@ impl MarketDataAdapter for DepthFeedAdapter {
             .values()
             .map(|held| held.instrument.object_id.clone())
             .collect()
+    }
+}
+
+/// The typed session record an applied message becomes, if it is one, and
+/// the instant it became knowable.
+///
+/// A status is published when it changes what the book holds, not on every
+/// snapshot that restates it: a snapshot carries the venue's status as part
+/// of being complete, and republishing an unchanged one each rebuild would
+/// read downstream as the venue toggling. Every auction indication and every
+/// reset is published — each is news. Trades and depth updates are not: a
+/// depth update's canonical record is the book this adapter publishes, and a
+/// depth feed's prints are the trade adapters' to publish.
+fn session_record(
+    held: &DepthState,
+    message: &MarketMessage,
+    before: VenueStatus,
+    delay: Duration,
+) -> Result<Option<(SensedRecord, Timestamp)>> {
+    let publish = match &message.body {
+        MessageBody::StatusChange { status } => *status != before,
+        MessageBody::AuctionUpdate { .. } | MessageBody::Reset { .. } => true,
+        MessageBody::OrderAdded { .. }
+        | MessageBody::OrderReduced { .. }
+        | MessageBody::OrderRemoved { .. }
+        | MessageBody::OrderReplaced { .. }
+        | MessageBody::LevelSet { .. }
+        | MessageBody::Quote { .. }
+        | MessageBody::Trade { .. } => false,
+    };
+    if !publish {
+        return Ok(None);
+    }
+    // The quality argument is read only for a quote or a trade, which never
+    // reach this line.
+    match crate::session::normalise(
+        message,
+        &held.instrument.object_id,
+        qip_financial::quality::DataQuality::default(),
+    )? {
+        crate::session::Canonical::Record(record) => {
+            let knowable = message.venue_time.saturating_add(delay);
+            Ok(Some((*record, knowable)))
+        }
+        crate::session::Canonical::DepthUpdate => Ok(None),
     }
 }
 

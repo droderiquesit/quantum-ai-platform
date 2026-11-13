@@ -52,8 +52,9 @@ pub const DEFAULT_IMPORTANCE_THRESHOLD: f64 = 0.3;
 /// How many admitted [`MemoryEntry`] records the registry keeps whole, newest
 /// last, beside its per-kind counts (R12-EXPAND-6057). The counts are the
 /// record of what was admitted; the entries are a bounded working set for a
-/// reader that wants the last few, and the oldest leaves when a newer one
-/// arrives rather than the set growing with the platform's uptime.
+/// reader that wants the last few. The set never grows with the platform's
+/// uptime, and what leaves it is decided by the entries' own declared
+/// policies, not by arrival order: see [`MemoryRegistry::admit`].
 pub const RETAINED_MEMORY_ENTRIES: usize = 256;
 
 /// A way of answering a kind of question, distilled from episodes that
@@ -70,6 +71,40 @@ pub struct Procedure {
     pub supporting_episodes: Vec<AgentRunId>,
     /// When it became known. Reads are filtered on this.
     pub learned_at: Timestamp,
+    /// The method as rules an agent can follow (R12-WORLD-3034): for each
+    /// subject the supporting calls were about, the lean that came out
+    /// right. Empty for a procedure recorded as prose steps only, which no
+    /// agent can check itself against.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub rules: Vec<ProcedureRule>,
+}
+
+/// One step of a procedure an agent can execute: on `subject`, lean `lean`,
+/// because `support` of the procedure's correct calls on that subject did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureRule {
+    /// The instrument the calls were about, as the brief names it.
+    pub subject: String,
+    /// The lean that resolved correct: `positive` or `negative`, the
+    /// spelling of [`crate::finding::Direction::as_str`].
+    pub lean: String,
+    /// Correct calls on `subject` that leaned this way. At least one.
+    pub support: usize,
+}
+
+impl Procedure {
+    /// The rule this procedure holds for `subject`, if any.
+    pub fn rule_for(&self, subject: &str) -> Option<&ProcedureRule> {
+        self.rules.iter().find(|rule| rule.subject == subject)
+    }
+}
+
+/// The name an agent's own procedure is kept under in research memory.
+///
+/// One spelling, here, because the kernel writes under it and the agent
+/// reads under it: two spellings would deliver a procedure nobody finds.
+pub fn procedure_name_for(agent_id: &str) -> String {
+    format!("procedure:{agent_id}")
 }
 
 /// Episodes [`ResearchMemory::new`] holds before giving up the oldest.
@@ -500,7 +535,72 @@ impl ResearchMemory {
             steps,
             supporting_episodes,
             learned_at: at,
+            rules: Vec::new(),
         });
+        Ok(version)
+    }
+
+    /// Record the next version of procedure `name` as a method: `rules` an
+    /// agent can follow, rendered as its steps, under every refusal
+    /// [`Self::record_procedure`] makes. Also refused: no rule, a blank
+    /// subject, a subject named twice, a lean other than `positive` or
+    /// `negative`, or a rule supported by no call. A rule nobody could
+    /// follow is a step written for the record and not for the desk.
+    pub fn record_method(
+        &mut self,
+        name: &str,
+        rules: Vec<ProcedureRule>,
+        supporting_episodes: Vec<AgentRunId>,
+        at: Timestamp,
+    ) -> Result<u32> {
+        if rules.is_empty() {
+            return Err(Error::invalid(format!(
+                "procedure `{}` is a method with no rule",
+                name.trim()
+            )));
+        }
+        let mut subjects: Vec<&str> = Vec::new();
+        for rule in &rules {
+            if rule.subject.trim().is_empty() {
+                return Err(Error::invalid("a procedure rule must name its subject"));
+            }
+            if subjects.contains(&rule.subject.as_str()) {
+                return Err(Error::invalid(format!(
+                    "procedure rule for `{}` is given twice; one subject has one lean",
+                    rule.subject
+                )));
+            }
+            subjects.push(rule.subject.as_str());
+            if rule.lean != "positive" && rule.lean != "negative" {
+                return Err(Error::invalid(format!(
+                    "procedure rule for `{}` leans `{}`; only positive or negative can be followed",
+                    rule.subject, rule.lean
+                )));
+            }
+            if rule.support == 0 {
+                return Err(Error::invalid(format!(
+                    "procedure rule for `{}` is supported by no call",
+                    rule.subject
+                )));
+            }
+        }
+        let steps = rules
+            .iter()
+            .map(|rule| {
+                format!(
+                    "on {}: lean {} ({} correct call(s))",
+                    rule.subject, rule.lean, rule.support
+                )
+            })
+            .collect();
+        let version = self.record_procedure(name, steps, supporting_episodes, at)?;
+        if let Some(latest) = self
+            .procedures
+            .get_mut(name.trim())
+            .and_then(|versions| versions.back_mut())
+        {
+            latest.rules = rules;
+        }
         Ok(version)
     }
 
@@ -556,11 +656,23 @@ pub struct MemoryRegistry {
     /// Entries admitted through [`Self::admit`], by kind (R12-EXPAND-6057).
     admitted: BTreeMap<MemoryKind, usize>,
     /// Entries [`Self::admit`] refused because a declared field was missing
-    /// or out of range. Counted on the registry, so a producer that builds a
-    /// malformed entry is visible here rather than only in its own error.
+    /// or out of range, and entries [`Self::admit_version`] refused for a
+    /// version that did not raise the latest. Counted on the registry, so a
+    /// producer that builds a malformed entry or replays a stale one is
+    /// visible here rather than only in its own error.
     refused: usize,
-    /// The last [`RETAINED_MEMORY_ENTRIES`] admitted entries, oldest first.
-    entries: VecDeque<MemoryEntry>,
+    /// At most [`RETAINED_MEMORY_ENTRIES`] admitted entries, in admission
+    /// order, each with the version of its id it was admitted as and each
+    /// still inside its own retention policy.
+    entries: VecDeque<(u32, MemoryEntry)>,
+    /// The newest creation instant admitted, in epoch milliseconds: the
+    /// registry's clock for retention, so expiry replays from the entries
+    /// alone and reads no wall clock.
+    clock_ms: u64,
+    /// Entries dropped because their retention policy's age had passed.
+    expired: usize,
+    /// Entries dropped at capacity because their value was the least held.
+    evicted_for_value: usize,
 }
 
 impl MemoryRegistry {
@@ -585,6 +697,9 @@ impl MemoryRegistry {
             admitted: BTreeMap::new(),
             refused: 0,
             entries: VecDeque::new(),
+            clock_ms: 0,
+            expired: 0,
+            evicted_for_value: 0,
         })
     }
 
@@ -597,6 +712,9 @@ impl MemoryRegistry {
             admitted: BTreeMap::new(),
             refused: 0,
             entries: VecDeque::new(),
+            clock_ms: 0,
+            expired: 0,
+            evicted_for_value: 0,
         }
     }
 
@@ -650,17 +768,162 @@ impl MemoryRegistry {
     /// `[0, 1]`, or no tags. The refusal is counted on the registry as well
     /// as returned, because the producer that built the entry is the party
     /// least likely to read its own error.
+    ///
+    /// The declared policies are what decide what the working set keeps.
+    /// On every admission the registry's clock advances to the newest
+    /// creation instant it has seen, and every held entry older than its own
+    /// `retention_policy.max_age_ms` by that clock leaves ([`Self::expired`]).
+    /// When the set is still full, the entry of least value leaves
+    /// ([`Self::evicted_for_value`]): one below its own
+    /// `value_policy.importance_threshold` before any at or above it, then
+    /// the lowest importance, then the oldest. First-in-first-out would let a
+    /// burst of unsurprising calls push out the one costly failure the
+    /// registry exists to remember, and would read a retention policy that
+    /// was declared and never consulted.
+    ///
+    /// Versioned by id (R12-COVERAGE-7170): an id not held is admitted as
+    /// version one, and an id already held is admitted as the next version
+    /// beside the one it follows, which stays readable through
+    /// [`Self::entry_at`]. The failure it prevents: two entries under one id
+    /// were both held with nothing to say which was current, so a reader
+    /// taking the first match and one taking the last read different
+    /// memories under the same name.
     pub fn admit(&mut self, entry: MemoryEntry) -> Result<()> {
         if let Err(error) = entry.validate() {
             self.refused += 1;
             return Err(error);
         }
-        *self.admitted.entry(entry.kind).or_default() += 1;
-        if self.entries.len() == RETAINED_MEMORY_ENTRIES {
-            self.entries.pop_front();
-        }
-        self.entries.push_back(entry);
+        let next = match self.latest_version(&entry.id) {
+            None => 1,
+            Some(latest) => match latest.checked_add(1) {
+                Some(next) => next,
+                None => {
+                    self.refused += 1;
+                    return Err(Error::numeric(format!(
+                        "memory entry `{}` has no version left to take; admit its successor \
+                         under a new id",
+                        entry.id
+                    )));
+                }
+            },
+        };
+        self.hold(next, entry);
         Ok(())
+    }
+
+    /// Admit `entry` as exactly `version` of its id, for a producer that
+    /// numbers its own revisions (a replayed journal, a distilled abstraction
+    /// rewritten on new evidence).
+    ///
+    /// Refuses everything [`Self::admit`] refuses, a version of zero, and a
+    /// version not above the latest held for the id: a late-arriving old
+    /// revision admitted over a newer one would become the entry a reader
+    /// taking the latest gets, which is the current memory replaced by a
+    /// stale one. The refusal is counted like any other.
+    pub fn admit_version(&mut self, entry: MemoryEntry, version: u32) -> Result<()> {
+        if let Err(error) = entry.validate() {
+            self.refused += 1;
+            return Err(error);
+        }
+        if version == 0 {
+            self.refused += 1;
+            return Err(Error::invalid(format!(
+                "memory entry `{}` was offered as version 0; versions start at 1, so admit it \
+                 through `admit` and let the registry number it",
+                entry.id
+            )));
+        }
+        if let Some(latest) = self.latest_version(&entry.id)
+            && version <= latest
+        {
+            self.refused += 1;
+            return Err(Error::invalid(format!(
+                "memory entry `{}` version {version} is not above the latest held version \
+                 {latest}; admit version {} or higher, or use `admit` to take the next",
+                entry.id,
+                latest.saturating_add(1)
+            )));
+        }
+        self.hold(version, entry);
+        Ok(())
+    }
+
+    /// Count and keep one admitted entry under the declared policies (see
+    /// [`Self::admit`]): expired entries leave, then at capacity the least
+    /// valuable one does, whichever version of whichever id it is.
+    fn hold(&mut self, version: u32, entry: MemoryEntry) {
+        *self.admitted.entry(entry.kind).or_default() += 1;
+        self.clock_ms = self.clock_ms.max(entry.created_at_ms);
+        let clock = self.clock_ms;
+        let before = self.entries.len();
+        self.entries.retain(|(_, held)| {
+            clock.saturating_sub(held.created_at_ms) <= held.retention_policy.max_age_ms
+        });
+        self.expired += before - self.entries.len();
+        if self.entries.len() >= RETAINED_MEMORY_ENTRIES {
+            let least = self
+                .entries
+                .iter()
+                .enumerate()
+                .min_by(|(i, (_, a)), (j, (_, b))| {
+                    let valued =
+                        |e: &MemoryEntry| e.importance >= e.value_policy.importance_threshold;
+                    valued(a)
+                        .cmp(&valued(b))
+                        .then(a.importance.total_cmp(&b.importance))
+                        .then(i.cmp(j))
+                })
+                .map(|(i, _)| i);
+            if let Some(index) = least {
+                self.entries.remove(index);
+                self.evicted_for_value += 1;
+            }
+        }
+        self.entries.push_back((version, entry));
+    }
+
+    /// The highest version held for `id`, or `None` when no version of it is
+    /// in the working set.
+    ///
+    /// Read off the held entries rather than a counter per id, because ids
+    /// are minted per resolved call and a counter kept for each would grow
+    /// with the platform's uptime. The consequence, stated rather than
+    /// hidden: once every version of an id has left the working set the
+    /// registry no longer knows the id, and a later entry under it is version
+    /// one again. The event log is the record; this is a working set over it.
+    pub fn latest_version(&self, id: &str) -> Option<u32> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.id == id)
+            .map(|(version, _)| *version)
+            .max()
+    }
+
+    /// The entry admitted as `version` of `id`, while it is still held.
+    pub fn entry_at(&self, id: &str, version: u32) -> Option<&MemoryEntry> {
+        self.entries
+            .iter()
+            .find(|(held, entry)| *held == version && entry.id == id)
+            .map(|(_, entry)| entry)
+    }
+
+    /// Entries dropped because their declared retention age had passed.
+    pub fn expired(&self) -> usize {
+        self.expired
+    }
+
+    /// Entries dropped at capacity as the least valuable held.
+    pub fn evicted_for_value(&self) -> usize {
+        self.evicted_for_value
+    }
+
+    /// The held entries of `kind` carrying `tag`, in admission order: what a
+    /// running decision reads back from the registry.
+    pub fn held(&self, kind: MemoryKind, tag: &str) -> impl Iterator<Item = &MemoryEntry> {
+        self.entries
+            .iter()
+            .map(|(_, entry)| entry)
+            .filter(move |e| e.kind == kind && e.tags.iter().any(|t| t == tag))
     }
 
     /// Entries admitted under `kind` since the registry was built.
@@ -675,6 +938,6 @@ impl MemoryRegistry {
 
     /// The retained entries, oldest first.
     pub fn entries(&self) -> impl Iterator<Item = &MemoryEntry> {
-        self.entries.iter()
+        self.entries.iter().map(|(_, entry)| entry)
     }
 }

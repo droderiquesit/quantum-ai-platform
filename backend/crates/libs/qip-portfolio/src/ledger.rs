@@ -33,13 +33,14 @@
 //! [`FeeReport::Unreported`]; it is never estimated, and never zero.
 
 use qip_contracts::ledger::{
-    Account, Direction, FeeReport, LedgerEvent, Posting, Settlement, SourceEvent,
+    Account, Attribution, Direction, FeeReport, LedgerEvent, Posting, Settlement, SettlementState,
+    SourceEvent,
 };
 use qip_contracts::message::BookSide;
 use qip_contracts::reflex::{Decision, OutcomeRecord};
-use qip_core::Decimal;
 use qip_core::decimal::{SCALE, SCALE_DIGITS};
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Timestamp};
 use std::collections::BTreeMap;
 
 /// A fill the ledger may book: simulated, complete, and exact.
@@ -60,6 +61,10 @@ pub struct PaperFill {
     /// Keyed by strategy so the postings come out in one order on every
     /// run, whatever order the cell listed the shares in.
     shares: BTreeMap<String, Decimal>,
+    /// The cell's `OrderSent` entry this fill rests on, when the cell stated
+    /// it (ADR 0454). Present, the fill books at schema 2 under the cell that
+    /// sent it with its full attribution chain; absent, at schema 1.
+    decision_sequence: Option<u64>,
 }
 
 /// Parse a journal decimal exactly, or refuse.
@@ -154,6 +159,7 @@ impl TryFrom<&OutcomeRecord> for PaperFill {
             side,
             quote_unit,
             fee,
+            decision_sequence,
         } = &outcome.entry.decision
         else {
             return Err(Error::invalid(format!(
@@ -271,6 +277,7 @@ impl TryFrom<&OutcomeRecord> for PaperFill {
             price,
             fee,
             shares: split,
+            decision_sequence: *decision_sequence,
         })
     }
 }
@@ -278,6 +285,11 @@ impl TryFrom<&OutcomeRecord> for PaperFill {
 impl PaperFill {
     pub fn source(&self) -> &SourceEvent {
         &self.source
+    }
+
+    /// The venue that reported the fill.
+    pub fn venue(&self) -> &str {
+        &self.venue
     }
 
     pub fn side(&self) -> BookSide {
@@ -299,6 +311,11 @@ impl PaperFill {
     pub fn shares(&self) -> &BTreeMap<String, Decimal> {
         &self.shares
     }
+
+    /// The cell's `OrderSent` entry this fill rests on, when stated.
+    pub fn decision_sequence(&self) -> Option<u64> {
+        self.decision_sequence
+    }
 }
 
 fn leg(account: &Account, direction: Direction, unit: &str, amount: Decimal) -> Posting {
@@ -318,6 +335,35 @@ fn leg(account: &Account, direction: Direction, unit: &str, amount: Decimal) -> 
 /// set that does not balance per unit, so an error here is always a named
 /// refusal and never a plugged difference.
 pub fn post(fill: &PaperFill) -> Result<LedgerEvent> {
+    post_at(fill, CashLeg::Immediate)
+}
+
+/// Book one paper fill at a venue that settles on a cycle (ADR 0130
+/// decision 1, ADR 0440; R12-LEDGER-5011).
+///
+/// The same postings as [`post`] except that each share's cash leg is booked
+/// against `in_settlement:<cell>/<strategy>` instead of `trading:`, and the
+/// event states [`SettlementState::InSettlement`]. Units move to the book at
+/// the trade date, as the position is the strategy's from execution; only
+/// the cash waits. A reported fee is still charged to the book at the trade
+/// date, because the venue charged it when it reported the fill and nothing
+/// about the fee waits on settlement.
+///
+/// ```text
+/// cash leg, bought (Ask):  Dr venue:v            U q*p   Cr in_settlement:c/s  U q*p
+/// cash leg, sold   (Bid):  Dr in_settlement:c/s  U q*p   Cr venue:v            U q*p
+/// ```
+pub fn post_in_settlement(fill: &PaperFill) -> Result<LedgerEvent> {
+    post_at(fill, CashLeg::InSettlement)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CashLeg {
+    Immediate,
+    InSettlement,
+}
+
+fn post_at(fill: &PaperFill, cash_leg: CashLeg) -> Result<LedgerEvent> {
     let venue = Account::Venue {
         venue: fill.venue.clone(),
     };
@@ -333,17 +379,24 @@ pub fn post(fill: &PaperFill) -> Result<LedgerEvent> {
             strategy: strategy.clone(),
         };
         let cash = exact_product(share, fill.price)?;
+        let cash_account = match cash_leg {
+            CashLeg::Immediate => trading.clone(),
+            CashLeg::InSettlement => Account::InSettlement {
+                cell: fill.source.cell.clone(),
+                strategy: strategy.clone(),
+            },
+        };
         match fill.side {
             BookSide::Ask => {
                 postings.push(leg(&trading, Direction::Debit, object, share));
                 postings.push(leg(&venue, Direction::Credit, object, share));
                 postings.push(leg(&venue, Direction::Debit, unit, cash));
-                postings.push(leg(&trading, Direction::Credit, unit, cash));
+                postings.push(leg(&cash_account, Direction::Credit, unit, cash));
             }
             BookSide::Bid => {
                 postings.push(leg(&venue, Direction::Debit, object, share));
                 postings.push(leg(&trading, Direction::Credit, object, share));
-                postings.push(leg(&trading, Direction::Debit, unit, cash));
+                postings.push(leg(&cash_account, Direction::Debit, unit, cash));
                 postings.push(leg(&venue, Direction::Credit, unit, cash));
             }
         }
@@ -355,11 +408,222 @@ pub fn post(fill: &PaperFill) -> Result<LedgerEvent> {
             postings.push(leg(&trading, Direction::Credit, unit, part));
         }
     }
-    LedgerEvent::new(
+    let state = match cash_leg {
+        CashLeg::Immediate => SettlementState::Immediate,
+        CashLeg::InSettlement => SettlementState::InSettlement,
+    };
+    let event = LedgerEvent::staged(
         fill.source.clone(),
         Settlement::Simulated,
         fill.fee,
         postings,
+        state,
+    )?;
+    // ADR 0454: a fill whose cell stated the decision it rests on books at
+    // schema 2, owned by that cell, with the chain from the fill through the
+    // order and the decision to each contributor's share. One the producer
+    // stated no decision for stays schema 1: the ledger does not rebuild a
+    // chain nobody stated.
+    match fill.decision_sequence {
+        Some(decision_sequence) => event.attributed(
+            fill.source.cell.clone(),
+            Attribution {
+                order_id: fill.source.order_id.clone(),
+                decision_sequence,
+                contributors: fill.shares.clone(),
+            },
+        ),
+        None => Ok(event),
+    }
+}
+
+/// A venue's report that one order's fills settled, which the ledger may
+/// book: simulated, placed on one chain, and naming an order and a venue.
+///
+/// Like [`PaperFill`], its existence is the paper check: the only
+/// constructor refuses a `Settled` record whose `simulated` flag is not
+/// `true`, before anything else is read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaperSettlement {
+    source: SourceEvent,
+    venue: String,
+    settlement_date: Timestamp,
+}
+
+impl TryFrom<&OutcomeRecord> for PaperSettlement {
+    type Error = Error;
+
+    fn try_from(outcome: &OutcomeRecord) -> Result<Self> {
+        let Decision::Settled {
+            order_id,
+            venue,
+            settlement_date,
+            simulated,
+        } = &outcome.entry.decision
+        else {
+            return Err(Error::invalid(format!(
+                "outcome {}#{} is a `{}` decision, not a settlement",
+                outcome.cell,
+                outcome.journal_sequence,
+                outcome.entry.decision.kind()
+            )));
+        };
+        if !simulated {
+            return Err(Error::denied(format!(
+                "settlement of order {order_id} at {venue} is not marked simulated; the \
+                 ledger books paper settlements only and a live one has no representation in it"
+            )));
+        }
+        if outcome.journal_sequence != outcome.entry.sequence
+            || outcome.journal_digest != outcome.entry.digest
+        {
+            return Err(Error::invalid(format!(
+                "outcome cites journal entry {} ({}) but carries entry {} ({}); the ledger \
+                 refuses a settlement whose source it cannot place on one chain",
+                outcome.journal_sequence,
+                outcome.journal_digest,
+                outcome.entry.sequence,
+                outcome.entry.digest
+            )));
+        }
+        if venue.is_empty() {
+            return Err(Error::invalid(format!(
+                "settlement of order {order_id} names no venue; the ledger will not settle \
+                 cash against a venue it cannot check the fills against"
+            )));
+        }
+        Ok(Self {
+            source: SourceEvent {
+                cell: outcome.cell.clone(),
+                session: outcome.session,
+                journal_sequence: outcome.journal_sequence,
+                journal_digest: outcome.journal_digest.clone(),
+                order_id: order_id.clone(),
+            },
+            venue: venue.clone(),
+            settlement_date: *settlement_date,
+        })
+    }
+}
+
+impl PaperSettlement {
+    pub fn source(&self) -> &SourceEvent {
+        &self.source
+    }
+
+    pub fn venue(&self) -> &str {
+        &self.venue
+    }
+
+    pub fn settlement_date(&self) -> Timestamp {
+        self.settlement_date
+    }
+}
+
+/// Book a venue's settlement of the fills in `pending`, moving each one's
+/// cash from `in_settlement:` to `trading:` (ADR 0130 decision 2, ADR 0440).
+///
+/// For every `in_settlement:<c>/<s>` posting of direction `D` in a pending
+/// fill, the settlement posts the opposite of `D` to that account and `D` to
+/// `trading:<c>/<s>`, in the same unit and amount, so the in-settlement
+/// balance the fills opened is closed exactly and nothing is estimated.
+///
+/// Refused, never adjusted: no pending fill; a pending event that is not
+/// [`SettlementState::InSettlement`]; a pending fill on another cell, order
+/// or venue than the settlement names — two claims about one order that
+/// disagree are not booked as if they agreed; and two pending events citing
+/// one journal entry.
+pub fn post_settlement(
+    settlement: &PaperSettlement,
+    pending: &[LedgerEvent],
+) -> Result<LedgerEvent> {
+    if pending.is_empty() {
+        return Err(Error::invalid(format!(
+            "the venue settled order {} on cell {} but nothing on that order is in \
+             settlement; the ledger refuses a settlement with no fill to close",
+            settlement.source.order_id, settlement.source.cell
+        )));
+    }
+    let venue_account = Account::Venue {
+        venue: settlement.venue.clone(),
+    };
+    let mut postings = Vec::new();
+    let mut fills = Vec::with_capacity(pending.len());
+    for fill in pending {
+        if fill.settlement_state() != SettlementState::InSettlement {
+            return Err(Error::invalid(format!(
+                "event for journal entry {} is at stage {:?}, not in settlement; only cash \
+                 in settlement can be settled",
+                fill.source().journal_sequence,
+                fill.settlement_state()
+            )));
+        }
+        if fill.source().cell != settlement.source.cell
+            || fill.source().order_id != settlement.source.order_id
+        {
+            return Err(Error::invalid(format!(
+                "the pending fill cites {}/{} but the settlement names {}/{}; one \
+                 settlement closes one order's fills",
+                fill.source().cell,
+                fill.source().order_id,
+                settlement.source.cell,
+                settlement.source.order_id
+            )));
+        }
+        if !fill
+            .postings()
+            .iter()
+            .any(|posting| posting.account == venue_account)
+        {
+            return Err(Error::invalid(format!(
+                "order {} filled at another venue than {}, which reported its settlement; \
+                 the ledger will not settle one venue's fill on another's word",
+                settlement.source.order_id, settlement.venue
+            )));
+        }
+        fills.push(fill.source().journal_sequence);
+        for posting in fill.postings() {
+            let Account::InSettlement { cell, strategy } = &posting.account else {
+                continue;
+            };
+            let opposite = match posting.direction {
+                Direction::Debit => Direction::Credit,
+                Direction::Credit => Direction::Debit,
+            };
+            postings.push(leg(
+                &posting.account,
+                opposite,
+                &posting.unit,
+                posting.amount,
+            ));
+            postings.push(leg(
+                &Account::Trading {
+                    cell: cell.clone(),
+                    strategy: strategy.clone(),
+                },
+                posting.direction,
+                &posting.unit,
+                posting.amount,
+            ));
+        }
+    }
+    fills.sort_unstable();
+    if fills.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(Error::invalid(format!(
+            "two pending events for order {} cite one journal entry; the ledger will not \
+             settle one fill twice",
+            settlement.source.order_id
+        )));
+    }
+    LedgerEvent::staged(
+        settlement.source.clone(),
+        Settlement::Simulated,
+        FeeReport::Unreported,
+        postings,
+        SettlementState::Settled {
+            settlement_date: settlement.settlement_date,
+            fills,
+        },
     )
 }
 
@@ -385,6 +649,7 @@ mod tests {
                 side: Some(BookSide::Ask),
                 quote_unit: Some("USD".to_string()),
                 fee: None,
+                decision_sequence: None,
             },
             digest: "test-digest".to_string(),
             version: ChainVersion::V2,
@@ -480,6 +745,7 @@ mod tests {
                 side: None,
                 quote_unit: Some("USD".to_string()),
                 fee: None,
+                decision_sequence: None,
             },
             digest: "d".to_string(),
             version: ChainVersion::V2,

@@ -53,9 +53,13 @@
   },
   {
     "id": "R12-MODEL-9003",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_ai::registry::ModelRegistry tracks model cards, evaluation, a stage alias with retained alias history, and require_for_decision refuses unevaluated/drifted/retired models; the kernel's model_serving promotes/rolls back with lineage and journals every promotion with its evaluation evidence. Since 2026-10-24 every registered card is journaled too: Platform::journal_model_registry writes a ModelRegistered record for every card that is new or changed (a drift reading alone excepted) and the deep brain calls it after each learning round; a restarted Platform rebuilds the newest card per reference from the log, and the deep brain refills its registry from it before its first round (every card, production included), continuing the fit count past the restored versions. At start the deep brain fetches every promoted and displaced model's artifact by the digest its promotion record names (main.rs, LearningDesk::restore_artifacts over read_model_artifact), so a restored incumbent is held to the same strictly-better gate; one whose artifact cannot be fetched blocks promotion on its subject by name.",
     "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:971 ModelRegistry::require_for_decision over ModelCard::decision_eligibility (:657; 'model has never been evaluated' at :665)",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:608 a_never_evaluated_model_cannot_drive_a_decision",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:985 a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_artifact",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:1122 an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newest_moves",
       "backend/crates/libs/qip-ai/src/registry.rs:130 alias, require_for_decision",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs::resume_model_promotions",
       "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_restarted_platform_rebuilds_every_promoted_version_with_its_evaluation_and_alias_history_from_the_log",
@@ -84,7 +88,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs learning::tests::a_restore_past_the_cap_refuses_the_overflow_and_reports_it_once",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs ModelRegistrationRefused, Platform::refuse_model_registration"
     ],
-    "gap": "2026-10-25 (lane L2-INTEL): the multi-displacement limit is closed. ModelPromotion carries the rollback_parent the registry chose, and restore_registry takes it from the record. Remaining known limits: (1) re-publishing a version still in production with a non-empty displaced list would be replayed as a rollback (unreachable on the shipped path, where the desk promotes fresh versions); (2) a displaced card that was never production is retired live but restored in Validation (unreachable: the desk displaces only production cards); (3) closed 2026-10-30: the registry is bounded at MAX_CARDS (4,096), refused rather than evicted (parent's ruling under the delegation); a full registry refuses the deep brain's round before the fit, counted under MODEL_PACKAGES{outcome=card_refused_at_cap} and journaled as ModelRegistrationRefused, and restore_registry applies the same cap and reports each refusal once. A drift reading that stays on one side of the threshold is re-measured, not journaled. Awaiting a skeptic.",
+    "gap": "None for the row's own bar. 2026-11-11 (fw-c-01, independent verification round, no owner ruling needed): registering, evaluating and promoting leaves version, evaluation, lineage, alias and promotion evidence readable (a_registered_model_keeps_all_six_attributes..., an_alias_move_names_its_mover_and_its_evidence..., promotion_durability.rs), and a card with its evaluations removed is refused by require_for_decision. model_infrastructure 53 passed, promotion_durability 6 passed. Mutation: the never-evaluated arm of decision_eligibility made to fall through to class_eligibility; a_never_evaluated_model_cannot_drive_a_decision failed (52 passed, 1 failed); restored byte for byte (git diff empty) and 53 passed. The two restore edge cases the earlier gap listed (a re-published in-production version with a displaced list replayed as a rollback; a never-production displaced card restored in Validation) are unreachable on the shipped path and outside the requirement's check. The managed registry service is not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -92,7 +96,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-ai --test model_infrastructure && cargo +1.94.1 test -p qip-deepbrain --lib -- a_restarted a_crash_around && cargo +1.94.1 test -p qip-kernel --test promotion_durability",
+    "verification": "cd backend && cargo test -p qip-ai --test model_infrastructure && cargo test -p qip-kernel --test promotion_durability (53 and 6 passed, 0 failed, 2026-11-11)",
     "work_item": "",
     "size": "M",
     "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing. 2026-10-24 L2-INTEL: mutations fired, each restored by copy and cmp: the journal_model_registry call in maybe_learn deleted; the restore_registry call deleted; the fit-count continuation in restore_registry disabled (a restarted fit reused a restored version and replaced its card). qip-kernel, qip-deepbrain and qip-ai: 88 test binaries ok, none failed. 2026-10-24 L2-INTEL second pass: mutations fired, each restored by copy and cmp: restoring production cards (stage condition dropped) fails a_restarted_desk_restores_its_unpromoted_cards_and_still_promotes_a_better_candidate; whole-card comparison instead of same_but_drift fails a_card_is_journaled_when_registered_and_on_a_kept_change_but_not_on_drift_alone. qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 test binaries ok. 2026-10-24 L2-INTEL third pass: mutations fired, each restored by copy and cmp: production cards left out of restore_registry (the equal candidate is promoted unopposed); the promoted set skipped in restore_artifacts (the better candidate is refused for want of an artifact). Second skeptic (security-engineer) REFUTED 9c61a602 for the unopposed promotion; its reproduction is the equal-candidate half of the new test. 2026-10-24 L2-INTEL fourth pass: mutations fired, each restored by copy and cmp: stage reconciliation disabled (v1 restored Production); orphan check disabled (candidate promoted unopposed); promoted-version scan disabled (next fit reuses v2's version); the kernel's journal call in promote_model_from removed (both restart tests fail). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL fifth pass: mutations fired, each restored by copy and cmp: cards journaled after the record in promote_model_from (the cut after the record loses v2's card); stage reconciliation off (v2 restored in production beside v1); the artifact store write disabled (the restarted desk cannot rescore its incumbent). qip-kernel, qip-deepbrain, qip-fastbrain, qip-api: 108 binaries ok. 2026-10-24 L2-INTEL sixth pass: mutations fired, each restored by copy and cmp: the moved cards journaled before the record (the cut-before-record test sees v2 read as promoted); journal_moved_cards removed (both restart tests fail); retired_at kept when the log forces Production (the rollback-crash test reads the reactivated model as retired); drift compared without the threshold side (the crossing is not journaled). Gate: clippy -p qip-kernel -p qip-deepbrain clean; cargo test -p qip-kernel -p qip-deepbrain -p qip-learning-engine -p qip-training -p qip-fastbrain -p qip-api -p qip-acceptance --no-fail-fast: 169 binaries ok, qip-acceptance documentation failing only the_blueprint_views_are_what_their_sources_render_to (the matrix is re-rendered at merge) and, before ADR 0170 gained its cost section, every_decision_record_states_what_it_costs. 2026-10-24 L2-INTEL seventh pass: mutations fired and restored by cmp: dropping the artifact_digest replay fails a_crash_around at the digest assertion; dropping the displaced (unassigned) alias move fails it at the displacement assertion; dropping the assigned move fails it at the assigned assertion. qip-deepbrain lib 212 passed 0 failed. 2026-10-25 L2-INTEL eighth pass: mutations fired and restored by cmp: wording every displaced move bare fails a_crash_around (left: bare evaluation, right: 'displaced by ...'); treating a rollback record as a promotion fails a_crash_just_after_a_rollback (left: 'displaced by ...', right: the bare rollback reading). 2026-10-25 L2-INTEL ninth pass: mutation: delete the out-of-production refusal in promote_model_from; a_version_taken_out_of_production_returns_only_through_a_rollback panics at promotion_durability.rs:386 ('went back into production without a rollback'); restored by cp+cmp; passes. 2026-10-25 L2-INTEL tenth pass: the ninth skeptic's three mutations each fire and are restored by cp+cmp. retired_at not filled from the log: both crash tests fail (left None, right the record instant). deployed_at not taken from the record: both fail (a_crash_around left None; rollback test left t1, right t_rb). rollback_parent set to None: a_crash_around fails (left None, right v1). 2026-10-25 L2-INTEL: mutations: record displaced.first() as the record's rollback_parent (fails both new tests); ignore the record's parent in the replay (fails the deepbrain crash test); restored by copy + cmp. 2026-10-30 L2-INTEL cap: mutations, each fired, restored by copy + cmp. Disabling the cap check in register fails a_registry_at_its_cap; disabling registry_full in maybe_learn fails a_full_registry_refuses_the_round; dropping the restore's refusal report fails a_restore_past_the_cap."
@@ -701,14 +705,16 @@
   {
     "id": "R12-AMBIENT-9029",
     "status": "PARTIAL",
-    "current": "Agents with explicit capability grants and tool registries (qip-agents), investment agents run in the kernel; agents holding a language model cannot reach the market. Tasks are not Fabric topics; no multimodal reasoning.",
+    "current": "Agents with explicit capability grants and tool registries (qip-agents); investment agents run in the kernel; agents holding a language model cannot reach the market. Since ADR 0456 every agent run the REASON stage dispatches is journaled whole on agent.run_completed (findings and denied accesses included), and a run the log refused stops the stage forming a hypothesis. Tasks are not Fabric topics; no knowledge-API seam; no multimodal reasoning.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/capability.rs",
       "backend/crates/libs/qip-agents/tests/explicit_grants.rs",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:503 an_agent_that_holds_a_language_model_cannot_touch_the_market",
-      "backend/crates/agents/qip-investment-agents/src"
+      "backend/crates/agents/qip-investment-agents/src",
+      "backend/crates/runtime/qip-kernel/src/agent_journal.rs",
+      "docs/adr/0456-every-agent-run-the-reason-stage-dispatches-is-journaled-whole-before-any-finding-from-it-is-synthesised.md"
     ],
-    "gap": "Fabric task interface; knowledge APIs.",
+    "gap": "Gap dated 2026-11-12: the verification bar (only granted tools; outputs journaled) is met through the kernel by ADR 0456 and mutation-verified tests. Remaining from the requirement text: a Fabric task/result interface for specialist agents, a knowledge-API seam for research agents, and multimodal reasoning (absent from the tree).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -716,7 +722,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test explicit_grants",
+    "verification": "cargo test -p qip-agents --test explicit_grants && cargo test -p qip-kernel --lib agent_journal",
     "work_item": "",
     "size": "L",
     "notes": ""
@@ -835,7 +841,7 @@
       "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_research_round_journals_the_agent_budgets_and_model_weights_it_allocated_on",
       "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing"
     ],
-    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar parts 4 and 2): the requirement's test clause says a ComputePlan bounds per-agent budgets and model weights — ComputePlanFields (qip-contracts control.rs:259-273) carries one budget for the whole QPU plan and no per-agent or per-model field, the per-agent bound is a separate map handed to allocate_within, and nothing anywhere bounds a model weight (the journaled weight_bp is read, never capped; the tree has no ModelWeight type); and agent_budgets is empty by default with QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS set in no committed environment, so the per-agent bound sits behind an env var every environment leaves unset. Met: the refusal of an agent past its stated budget, the ComputePlan on QPU grants, and since 2026-10-25 the journaled MarketRecord (budgets, grants with their weight, declines, spend). Closing it: a ComputePlan that carries the per-agent budget lines and a model-weight ceiling the allocator enforces, a default budget set in the shipped configuration (fail closed), and a model-weight refusal test. Also noted: a grant whose question has no cell is left off the record (research.rs run_market `if let Some((key, _)) = cells.get(..)`), caught only by the units-sum assertion.",
+    "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar parts 4 and 2): the requirement's test clause says a ComputePlan bounds per-agent budgets and model weights — ComputePlanFields (qip-contracts control.rs:259-273) carries one budget for the whole QPU plan and no per-agent or per-model field, the per-agent bound is a separate map handed to allocate_within, and nothing anywhere bounds a model weight (the journaled weight_bp is read, never capped; the tree has no ModelWeight type); and agent_budgets is empty by default with QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS set in no committed environment, so the per-agent bound sits behind an env var every environment leaves unset. Met: the refusal of an agent past its stated budget, the ComputePlan on QPU grants, and since 2026-10-25 the journaled MarketRecord (budgets, grants with their weight, declines, spend). Closing it: a ComputePlan that carries the per-agent budget lines and a model-weight ceiling the allocator enforces, a default budget set in the shipped configuration (fail closed), and a model-weight refusal test. Also noted: a grant whose question has no cell is left off the record (research.rs run_market `if let Some((key, _)) = cells.get(..)`), caught only by the units-sum assertion. 2026-11-12 (fw-g-01): the two remaining bounds are figures nobody gave: a default per-agent research budget for the shipped configuration and a model-weight ceiling for the allocator; both stay with the owner (decision 28), and the ComputePlan fields and the refusal test can be built only once those figures exist.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2729,23 +2735,28 @@
   },
   {
     "id": "R12-CICD-9116",
-    "status": "MISSING",
-    "current": "Cloud Run services; rollback is a re-dispatch of deploy for an earlier commit (existing tag reused).",
+    "status": "PARTIAL",
+    "current": "ADR 0452: qip-api is released by a Cloud Run traffic-split canary that Kargo's promote-cloud-run task writes into envs/<env>/api.yaml (two targets, stable and standby; revisions named qip-<env>-api-<digest12>); an Argo CD PostSync SLO gate (envs/<env>/slo-gate.yaml) soaks 600 s and fails the sync unless the canary revision's own pushed qip_service_requests_total/qip_service_errors_total show at least one request at availability >= 0.99 (the declared SERVICE_ERROR_OBJECTIVE), refusing on no series, no request or an unreadable answer; qip-telemetry-drain leads the generic_task task id with K_REVISION so the gate can select the canary; rollback to the previous digest is one Kargo promotion of the previous freight, which routes 100% back to that digest's revision kept at 0% under standby. The singleton brains (min = max = 1) are never canaried by traffic.",
     "evidence": [
-      ".github/workflows/deploy.yml:395-422"
+      "docs/adr/0452-a-cloud-run-request-service-is-released-by-a-traffic-split-canary-held-by-an-slo-gate-and-rolled-back-by-promoting-the-previous-freight.md",
+      "infrastructure/gitops/kargo/base/promotiontask.yaml (steps api_traffic, api_complete, api_hold, api_canary)",
+      "infrastructure/gitops/envs/*/api.yaml (spec.traffic stable/standby)",
+      "infrastructure/gitops/envs/*/slo-gate.yaml",
+      "backend/crates/services/qip-telemetry-drain/src/cloud_monitoring.rs (REVISION_VARIABLE, CloudMonitoringConfig::task_id)",
+      "backend/crates/tests/qip-acceptance/tests/cloud_run_canary.rs"
     ],
-    "gap": "Cloud Run traffic-split canary, an SLO gate read from the pushed series (ADR 0122), and rollback to the previous promoted digest (ADR 0115), driven through the Kargo promotion (ADR 0114 Amendment 1).",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-11-12 (t50-13): the requirement names GKE with Argo Rollouts; ADR 0114 D4 refuses that mechanism and Amendment 1 scores this row on the Cloud Run equivalent, which ADR 0452 builds. Missing: (1) evidence on a running control plane (suspended, ADR 0093): no Kargo has evaluated the promotion's expressions (Digest[7:19], int(), integer yaml-update values), no Cloud Run has accepted two targets naming one revision under two tags, and no gate has read a pushed series; a dev run of a canary, a passing gate, a refused gate and a one-promotion rollback closes it. (2) Completion of a passed canary is a second promotion that Kargo cannot require to follow a passing gate in the same stage. (3) qip-api's exporter must be configured (QIP_METRICS_EXPORT_PROJECT) in the environment, or every canary is refused for want of series.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "plan: rollback is one Kargo promotion of the previous freight (ADR 0452 decision 4); pinned by cloud_run_canary.rs, mutation-verified; not run on a live control plane",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "ADR 0452 (2026-11-12, session t50-13). Earlier: Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-REFLEX-9117",

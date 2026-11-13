@@ -14,6 +14,7 @@ use qip_protocols::{
 const ORDER: ByteOrder = ByteOrder::Little;
 const BOOK_TEMPLATE: u16 = 1;
 const STATUS_TEMPLATE: u16 = 2;
+const AUCTION_TEMPLATE: u16 = 3;
 /// Nine implied decimals, the widest SBE price convention in use.
 const PRICE_EXPONENT: u32 = 9;
 
@@ -98,6 +99,63 @@ fn schema() -> SbeSchema {
                     20,
                     SbeEncoding::Uint { width: 1 },
                     FieldRole::Status,
+                ));
+                fields
+            },
+            group: None,
+        })
+        .with_message(SbeMessage {
+            template_id: AUCTION_TEMPLATE,
+            name: "AuctionImbalance".to_string(),
+            kind: SbeMessageKind::Auction,
+            fields: {
+                let mut fields = vec![
+                    SbeField::new(
+                        "TransactTime",
+                        0,
+                        SbeEncoding::Uint { width: 8 },
+                        FieldRole::VenueTimeNanos,
+                    ),
+                    SbeField::new(
+                        "MsgSeqNum",
+                        8,
+                        SbeEncoding::Uint { width: 4 },
+                        FieldRole::Sequence,
+                    ),
+                ];
+                fields.push(SbeField::new(
+                    "Symbol",
+                    12,
+                    SbeEncoding::Ascii { width: 8 },
+                    FieldRole::Symbol,
+                ));
+                fields.push(SbeField::new(
+                    "IndicativePx",
+                    20,
+                    SbeEncoding::Fixed {
+                        width: 8,
+                        signed: true,
+                        exponent: PRICE_EXPONENT,
+                    },
+                    FieldRole::Price,
+                ));
+                fields.push(SbeField::new(
+                    "PairedQty",
+                    28,
+                    SbeEncoding::Uint { width: 4 },
+                    FieldRole::PairedQuantity,
+                ));
+                fields.push(SbeField::new(
+                    "ImbalanceQty",
+                    32,
+                    SbeEncoding::Uint { width: 4 },
+                    FieldRole::ImbalanceQuantity,
+                ));
+                fields.push(SbeField::new(
+                    "ImbalanceSide",
+                    36,
+                    SbeEncoding::Uint { width: 1 },
+                    FieldRole::ImbalanceSide,
                 ));
                 fields
             },
@@ -345,5 +403,79 @@ fn decoding_the_same_bytes_twice_produces_identical_messages() {
     assert_eq!(
         decoder().decode(&bytes, at()).expect("decodes"),
         decoder().decode(&bytes, at()).expect("decodes")
+    );
+}
+
+fn auction_message(price: &str, paired: u32, unpaired: u32, side: u8) -> Vec<u8> {
+    let mut block = header_block(1_704_207_845_000_000_000, 5_002, 0);
+    put_ascii(&mut block, 8, "ESZ4");
+    let mantissa = Decimal::parse(price).expect("literal").raw();
+    put_uint(&mut block, ORDER, 8, mantissa as u64);
+    put_uint(&mut block, ORDER, 4, u64::from(paired));
+    put_uint(&mut block, ORDER, 4, u64::from(unpaired));
+    put_uint(&mut block, ORDER, 1, u64::from(side));
+    frame_message(&schema(), AUCTION_TEMPLATE, 1, &block, None)
+}
+
+/// R12-TICK-2053: an auction template decodes to the typed auction variant.
+/// Before the `Auction` kind existed an SBE schema had no kind to declare an
+/// imbalance message under, so the auction reached the platform only as its
+/// closing cross.
+///
+/// Mutation: in `src/sbe.rs` make the `Auction` arm return `None` — no
+/// message decodes ("an auction template decodes to an auction update").
+/// Mutation: read `PairedQuantity` for the imbalance — the imbalance
+/// assertion fails.
+#[test]
+fn an_auction_template_decodes_to_an_auction_update() {
+    let mut decoder = decoder();
+    let messages = decoder
+        .decode(&auction_message("4512.75", 900, 150, 1), at())
+        .expect("decodes");
+    assert_eq!(
+        messages.len(),
+        1,
+        "an auction template decodes to an auction update"
+    );
+    let MessageBody::AuctionUpdate {
+        indicative_price,
+        paired,
+        imbalance,
+        imbalance_side,
+    } = &messages[0].body
+    else {
+        panic!("expected an auction update, got {:?}", messages[0].body);
+    };
+    assert_eq!(
+        *indicative_price,
+        Some(Decimal::parse("4512.75").expect("literal"))
+    );
+    assert_eq!(*paired, Decimal::from_int(900));
+    assert_eq!(*imbalance, Decimal::from_int(150));
+    assert_eq!(*imbalance_side, Some(BookSide::Ask));
+
+    // "None" leans nowhere and no price yet is no price; a side code the
+    // schema does not define is refused, not guessed.
+    let messages = decoder
+        .decode(&auction_message("0", 900, 0, 2), at())
+        .expect("decodes");
+    assert!(matches!(
+        messages[0].body,
+        MessageBody::AuctionUpdate {
+            indicative_price: None,
+            imbalance_side: None,
+            ..
+        }
+    ));
+    let messages = decoder
+        .decode(&auction_message("4512.75", 900, 150, 7), at())
+        .expect("the batch survives");
+    assert!(messages.is_empty(), "an undefined side code is not guessed");
+    assert!(
+        decoder
+            .diagnostics()
+            .recent_skips
+            .iter()
+            .any(|skip| matches!(skip.reason, SkipReason::Malformed { .. }))
     );
 }

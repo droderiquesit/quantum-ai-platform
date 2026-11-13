@@ -91,6 +91,7 @@ use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThr
 use qip_kernel::federation_stage::{self, Resolution};
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
+use qip_opportunity_engine::precursor::{self, Precursor, PrecursorConfig, PrecursorScanner};
 use qip_reasoning_engine::compiler::{
     CognitiveCompiler, Compiled, CompilerBounds, Condition, Discovery, Finding as Established,
     PackageSigner, ReflexRule, SignedReflexPackage, Verification,
@@ -549,6 +550,18 @@ pub struct ResearchConfig {
     /// raises a capital-preparation signal per recommended movement
     /// (R12-AMBIENT-3072). On by default; a sweep with it off raises none.
     pub capital_sentinel: bool,
+    /// Whether the sweep reads the forecast lattice's misses — resolutions
+    /// whose outcome fell outside the interval the lattice held at that
+    /// horizon — and raises one assumption signal per material miss
+    /// (R12-AMBIENT-3066). On by default; [`FORECAST_SENTINEL_VARIABLE`]
+    /// set to `off` turns it off, and a sweep with it off raises none.
+    pub forecast_sentinel: bool,
+    /// Whether the sweep runs the opportunity sentinels (R12-AMBIENT-3069,
+    /// ADR 0434): sub-threshold detector statistics rising toward a
+    /// dislocation become research-task signals before the anomaly fires.
+    /// On by default; with it off the sweep scores nothing and raises no
+    /// precursor. Set by [`OPPORTUNITY_SENTINEL_VARIABLE`].
+    pub opportunity_sentinel: bool,
     /// How far ahead the sentinel asks the planner to look. A day by
     /// default, the horizon DECIDE plans over, so the two read one plan: a
     /// horizon shorter than a venue's settlement refuses every lane as
@@ -564,6 +577,13 @@ pub struct ResearchConfig {
     /// it. Default 256.
     pub attention_held_capacity: usize,
 }
+
+/// The variable switching the forecast sentinel (R12-AMBIENT-3066): `on` or
+/// `off`, on when unset. Anything else is refused at start-up, because a
+/// typo that silently left the sentinel on (or off) is a switch nobody holds.
+pub const FORECAST_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_FORECAST_SENTINEL";
+/// The variable switching the opportunity sentinels: `on` or `off`.
+pub const OPPORTUNITY_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_OPPORTUNITY_SENTINEL";
 
 /// The variable naming the attention router's hourly activation budget.
 pub const ATTENTION_BUDGET_VARIABLE: &str = "QIP_DEEPBRAIN_ATTENTION_BUDGET_PER_HOUR";
@@ -616,6 +636,8 @@ impl Default for ResearchConfig {
             qpu_per_sweep: Decimal::ZERO,
             agent_budgets: BTreeMap::new(),
             capital_sentinel: true,
+            forecast_sentinel: true,
+            opportunity_sentinel: true,
             capital_horizon: CAPITAL_HORIZON,
             attention_budget_per_hour: 256,
             attention_held_capacity: 256,
@@ -645,6 +667,17 @@ impl ResearchConfig {
                          activations per hour; a zero budget would hold every signal forever"
                     ))
                 })?;
+        }
+        if let Some(raw) = lookup(FORECAST_SENTINEL_VARIABLE) {
+            config.forecast_sentinel = match raw.trim() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(Error::invalid(format!(
+                        "{FORECAST_SENTINEL_VARIABLE} is {raw:?}; say on or off, or unset it for on"
+                    )));
+                }
+            };
         }
         if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_JURISDICTION") {
             if raw.trim().is_empty() {
@@ -682,6 +715,20 @@ impl ResearchConfig {
         }
         if let Some(raw) = lookup(AGENT_BUDGETS_VARIABLE) {
             config.agent_budgets = parse_agent_budgets(&raw)?;
+        }
+        if let Some(raw) = lookup(OPPORTUNITY_SENTINEL_VARIABLE) {
+            // Refused rather than read as off: a typo that silently
+            // disabled the sentinel would be noticed only after the
+            // dislocation it should have seen coming.
+            config.opportunity_sentinel = match raw.trim() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(Error::invalid(format!(
+                        "{OPPORTUNITY_SENTINEL_VARIABLE} is {raw:?}; state `on` or `off`"
+                    )));
+                }
+            };
         }
         Ok(config)
     }
@@ -880,6 +927,13 @@ pub struct ResearchRound {
     /// had already dropped because this loop fell behind.
     pub now_surprises: usize,
     pub now_surprises_lost: u64,
+    /// Forecast-lattice misses read this sweep (R12-AMBIENT-3066), how many
+    /// the kernel's queue had already dropped because this loop fell
+    /// behind, and the misses refused as unsizeable (a degenerate interval
+    /// or a non-finite figure), each with why.
+    pub forecast_misses: usize,
+    pub forecast_misses_lost: u64,
+    pub forecast_misses_refused: Vec<String>,
     /// Specialists a NOW surprise woke, by specialist (AMBIENT-3079).
     pub now_wakes: BTreeMap<&'static str, usize>,
     /// Claims the world fabric held when the sweep scanned it.
@@ -980,6 +1034,9 @@ pub struct ResearchRound {
     /// warning threshold — each raised this sweep as a risk-review signal
     /// before the limit fires (R12-AMBIENT-3070), by limit name.
     pub limit_warnings: BTreeMap<String, f64>,
+    /// The precursors the opportunity sentinels raised this sweep, each
+    /// routed as one research-task signal (R12-AMBIENT-3069).
+    pub precursors: Vec<Precursor>,
     /// Pre-positioning movements the sweep recommended and the router
     /// activated for capital preparation (R12-AMBIENT-3065/3072): advice for
     /// the treasury, never a transfer.
@@ -1030,6 +1087,31 @@ pub struct ResearchRound {
     /// (R12-EXPAND-6042): the microstructure delta a learner reads, the
     /// delta's id being the campaign's.
     pub deltas: Vec<qip_contracts::microstructure_delta::MicrostructureDelta>,
+}
+
+impl ResearchRound {
+    /// Admit every delta this round concluded to `platform`, so its next
+    /// LEARN folds them into the microstructure model (R12-MODEL-1198).
+    /// Returns one line per refusal — a venue no registered strategy trades
+    /// at, or a delta no newer than the one held — so the caller says it
+    /// rather than swallowing it.
+    pub fn admit_deltas(&self, platform: &mut Platform) -> Vec<String> {
+        self.deltas
+            .iter()
+            .filter_map(|delta| {
+                platform
+                    .admit_microstructure_delta((**delta).clone())
+                    .err()
+                    .map(|error| {
+                        format!(
+                            "microstructure delta {} was not admitted: {}",
+                            delta.delta_id,
+                            error.message()
+                        )
+                    })
+            })
+            .collect()
+    }
 }
 
 /// Fills a campaign's venue must have scored since the campaign opened
@@ -1554,6 +1636,9 @@ pub struct ResearchLoop {
     desk: ExpansionDesk,
     router: AttentionRouter,
     detectors: DetectorRegistry,
+    /// The opportunity sentinels' memory and what they watch (ADR 0434).
+    precursors: PrecursorScanner,
+    precursor_config: PrecursorConfig,
     persistence: PersistenceTracker,
     /// The second persistence detector, over the federation's resolutions
     /// (ADR 0346).
@@ -1574,6 +1659,9 @@ pub struct ResearchLoop {
     pending_capital: BTreeMap<String, CapitalAdvice>,
     /// The kernel NOW queue's sequence number this loop has read through.
     surprises_seen: u64,
+    /// The forecast lattice's miss sequence number this loop has read
+    /// through (R12-AMBIENT-3066).
+    misses_seen: u64,
     /// Reconciliation-break records already read off the log, in log order
     /// (R12-EXPAND-6066), so each halt is raised once.
     breaks_seen: usize,
@@ -1822,6 +1910,8 @@ impl ResearchLoop {
             desk,
             router: AttentionRouter::new(policy),
             detectors: DetectorRegistry::standard(),
+            precursors: PrecursorScanner::new(),
+            precursor_config: PrecursorConfig::default(),
             persistence: PersistenceTracker::new(PERSIST_SWEEPS)?,
             beliefs: BeliefWatch::new()?,
             ticks: TickCampaignDetector::new()?,
@@ -1831,6 +1921,7 @@ impl ResearchLoop {
             pending_wakes: BTreeMap::new(),
             pending_capital: BTreeMap::new(),
             surprises_seen: 0,
+            misses_seen: 0,
             breaks_seen: 0,
             issued: 0,
             fills_read: 0,
@@ -2075,6 +2166,16 @@ impl ResearchLoop {
 
     /// Publish signed packages to `store`. Without a signer nothing is
     /// written whatever the store: an unsigned package cannot be loaded.
+    /// Replace what the opportunity sentinels watch — the regional pairs,
+    /// physical readings and leg sets a deployment names. Refused when the
+    /// configuration could not tell a rise from a reading.
+    pub fn with_precursors(mut self, config: PrecursorConfig) -> Result<Self> {
+        config.validate()?;
+        self.precursor_config = config;
+        self.precursors = PrecursorScanner::new();
+        Ok(self)
+    }
+
     pub fn with_package_store(mut self, store: Arc<dyn BlobStore>) -> Self {
         self.package_store = Some(store);
         self
@@ -2238,6 +2339,18 @@ impl ResearchLoop {
         }
         let anomalies = self.detectors.detect_all(&context);
         round.anomalies = anomalies.len();
+        // The opportunity sentinels (R12-AMBIENT-3069, ADR 0434): the same
+        // statistics below their thresholds, remembered across sweeps, and
+        // a run rising toward one raised before the detector fires. A
+        // subject any detector flagged this sweep is the anomaly path's.
+        let precursors_now: Vec<Precursor> = if self.config.opportunity_sentinel {
+            let flagged: BTreeSet<String> = anomalies.iter().map(|a| a.subject.clone()).collect();
+            let scores = precursor::score(&context, &self.precursor_config);
+            self.precursors
+                .observe(&scores, &flagged, &self.precursor_config, now)
+        } else {
+            Vec::new()
+        };
         let mut members: Vec<(String, Observation)> = Vec::new();
         let mut readings: Vec<Reading> = Vec::new();
         let mut flagged: BTreeSet<String> = BTreeSet::new();
@@ -2673,6 +2786,29 @@ impl ResearchLoop {
             }
         }
         self.surprises_seen = newest;
+        // The forecast sentinel (R12-AMBIENT-3066): every forecast the
+        // lattice resolved outside the interval it held is reality departing
+        // from an expected future state at that horizon, raised as an
+        // assumption signal — the model that expected otherwise is the
+        // assumption — and routed like everything else. Off, the queue is
+        // read through and nothing is raised, so turning it back on does not
+        // replay a backlog as if it were fresh.
+        let (misses, newest, lost) = platform.lattice().misses_since(self.misses_seen);
+        if self.config.forecast_sentinel {
+            round.forecast_misses = misses.len();
+            round.forecast_misses_lost = lost;
+            for miss in misses {
+                match forecast_miss_signal(miss, now, self.config.signal_ttl, &mut self.issued) {
+                    Ok(signal) => routable.push((None, signal)),
+                    Err(error) => round.forecast_misses_refused.push(format!(
+                        "{}: {}",
+                        miss.forecast_id,
+                        error.message()
+                    )),
+                }
+            }
+        }
+        self.misses_seen = newest;
         // The pre-limit sentinel (R12-AMBIENT-3070): a limit the book is
         // approaching — inside it, past its warning threshold — is a risk
         // review raised now, while a smaller order still fixes it, rather
@@ -2689,6 +2825,13 @@ impl ResearchLoop {
                 .limit_warnings
                 .insert(signal.subject().to_string(), utilisation);
             routable.push((None, signal));
+        }
+        for found in precursors_now {
+            routable.push((
+                None,
+                precursor_signal(&found, now, self.config.signal_ttl, &mut self.issued)?,
+            ));
+            round.precursors.push(found);
         }
         // The capital sentinel (R12-AMBIENT-3072): the DECIDE stage's
         // pre-positioning plan, one capital-preparation signal per
@@ -4653,6 +4796,128 @@ pub fn limit_approach_signals(
         out.push((signal, utilisation));
     }
     Ok(out)
+}
+
+/// The assumption signal one forecast-lattice miss is (R12-AMBIENT-3066).
+///
+/// Sized by how far outside its own 80% interval the outcome landed, in
+/// widths of that interval: an outcome a whole interval past the bound is the
+/// top of the scale, one a tenth past is the router's materiality line. A
+/// calibrated lattice misses its interval one time in five by construction,
+/// and most of those misses are near the bound, so the size rather than the
+/// miss is what makes a signal worth a review. An interval that is not a
+/// positive finite width, or an outcome that is not finite, is refused rather
+/// than sized: a miss against nothing measurable is not a finding.
+pub fn forecast_miss_signal(
+    miss: &qip_kernel::lattice_stage::ForecastMiss,
+    now: Timestamp,
+    ttl: Duration,
+    issued: &mut u64,
+) -> Result<AmbientSignal> {
+    let [lower, median, upper] = miss.quantiles;
+    let width = upper - lower;
+    if !(width.is_finite() && width > 0.0 && median.is_finite() && miss.outcome.is_finite()) {
+        return Err(Error::numeric(format!(
+            "forecast {} has an interval of width {width} or an outcome {}; nothing to size a \
+             miss against",
+            miss.forecast_id, miss.outcome
+        )));
+    }
+    let outside = if miss.outcome > upper {
+        miss.outcome - upper
+    } else if miss.outcome < lower {
+        lower - miss.outcome
+    } else {
+        return Err(Error::invalid(format!(
+            "forecast {} resolved inside its interval; that is not a miss",
+            miss.forecast_id
+        )));
+    };
+    // Statistic to integer: interval widths to basis points, the scale's top
+    // at one whole width past the bound.
+    let severity = ((outside / width) * 10_000.0).round().min(10_000.0) as u32;
+    let decimal = |value: f64| {
+        Decimal::from_f64(value)
+            .ok_or_else(|| Error::numeric("a forecast figure has no decimal form"))
+    };
+    let horizon = miss.horizon.as_str();
+    *issued += 1;
+    AmbientSignal::new(
+        format!("ambient-{issued}"),
+        SignalClass::Assumption,
+        format!("forecast:{}:{horizon}", miss.subject),
+        severity,
+        Trigger::Event("forecast_miss".to_string()),
+        now,
+        Detection {
+            observed_deviation: decimal(miss.outcome)?,
+            expected_baseline: decimal(median)?,
+            horizon: miss.horizon.representative(),
+            novelty_bp: severity,
+            affected_entities: vec![miss.subject.clone()],
+            urgency_bp: severity,
+            wake_targets: vec![Pathway::ReflexModelUpdate],
+            evidence_ids: vec![miss.forecast_id.clone(), format!("horizon:{horizon}")],
+            expiry: now.saturating_add(ttl),
+        },
+    )
+}
+
+/// The research-task signal one precursor is (R12-AMBIENT-3069, ADR 0434).
+///
+/// Severity is how far the newest score has come toward the detector's
+/// threshold, so a run at 90% of a breakdown outranks one at 55%; the
+/// subject names the family, so two families approaching one instrument
+/// are two signals and not a cluster of one.
+pub fn precursor_signal(
+    found: &Precursor,
+    now: Timestamp,
+    ttl: Duration,
+    issued: &mut u64,
+) -> Result<AmbientSignal> {
+    let approach = found.approach();
+    let severity = basis_points(approach)?;
+    let decimal = |value: f64| {
+        Decimal::from_f64(value)
+            .ok_or_else(|| Error::numeric("a precursor score has no decimal form"))
+    };
+    let newest = found
+        .scores
+        .last()
+        .copied()
+        .ok_or_else(|| Error::invalid("a precursor with no scores is no run"))?;
+    *issued += 1;
+    let family = found.family.as_str();
+    AmbientSignal::new(
+        format!("ambient-{issued}"),
+        SignalClass::Opportunity,
+        format!("precursor:{family}:{}", found.subject),
+        severity,
+        Trigger::Event(format!("precursor_{family}")),
+        now,
+        Detection {
+            observed_deviation: decimal(newest)?,
+            expected_baseline: decimal(found.threshold)?,
+            horizon: Duration::ZERO,
+            novelty_bp: severity,
+            affected_entities: found.subject.split('|').map(str::to_string).collect(),
+            urgency_bp: severity,
+            wake_targets: vec![Pathway::ResearchTask],
+            evidence_ids: vec![
+                format!("precursor:{family}"),
+                format!(
+                    "scores:{}",
+                    found
+                        .scores
+                        .iter()
+                        .map(|s| format!("{s:.3}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            ],
+            expiry: now.saturating_add(ttl),
+        },
+    )
 }
 
 /// The figures of one planned movement the sweep reads, copied out of the

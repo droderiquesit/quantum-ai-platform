@@ -33,6 +33,7 @@
 
 pub mod adaptive_cadence;
 pub mod adversary_review;
+pub mod agent_journal;
 pub mod asset_class_registry;
 pub mod attribution;
 pub mod blueprint_objectives;
@@ -47,6 +48,7 @@ pub mod commerce_research;
 pub mod compute_routing;
 pub mod confidence;
 pub mod config;
+pub mod cost_anomaly_tasks;
 pub mod counterfactual_alternatives;
 pub mod counterfactual_trial;
 pub mod cross_margin;
@@ -70,6 +72,7 @@ pub mod hedge_review;
 pub mod lattice_stage;
 pub mod limit_narrowing;
 pub mod market_factory_stage;
+pub mod microstructure_model;
 pub mod model_serving;
 pub mod model_tournament;
 pub mod model_trust;

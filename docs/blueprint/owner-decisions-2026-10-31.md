@@ -1159,6 +1159,38 @@ that narrows a security scanner, whatever the owner has delegated.
       rule files were run before the commit. No rule was relaxed and none
       will be under this permission.
 
+32. **A row with a REGRADE_TEXT ruling moves to COMPLETE only on a verification
+    that ran, and an independent check that agreed** (orchestrator under
+    decision 28, 2026-11-12, after the owner's 2026-11-11 "focus on the
+    fastest wins"). Decision 14 says of the REGRADE_TEXT class that "no row
+    moves to COMPLETE". That sentence described what applying the rulings
+    did on 2026-10-31: the row's text was corrected and nothing was
+    verified, so nothing was promoted. It is not read as a bar on ever
+    promoting such a row, because the ruling's reading would then be a
+    reading no evidence could meet. It is not read as a promotion either.
+    A ruling fixes the reading of the requirement; it never makes an unmet
+    bar met.
+
+    So a REGRADE_TEXT row reaches COMPLETE only when three things hold: a
+    session that did not write the code ran the row's named test and a
+    mutation of the code it guards, and recorded both; every part of the
+    requirement, read as the ruling reads it, is met by code it cites; and
+    a second, read-only check that did not see the first session's
+    reasoning tried to refute the grade and could not.
+
+    Applied in round 31. Three sessions graded sixteen rows COMPLETE, and a
+    skeptic per row then tried to refute each. Fifteen held. R12-AGENCY-7027
+    did not: the requirement names causal simulation access for the
+    orchestrator, the warm door that was graded as the orchestrator has
+    none, and the row's own verification command was not run. Its ruling
+    explains that absence as a decided design; it does not supply the
+    access, and the same ruling had left the row PARTIAL on 2026-10-31. The
+    row is returned to PARTIAL with both points in its gap.
+
+    The owner may reverse this reading. If the owner means decision 14's
+    sentence as a standing bar, the fifteen rows go back to PARTIAL and
+    nothing else changes.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly

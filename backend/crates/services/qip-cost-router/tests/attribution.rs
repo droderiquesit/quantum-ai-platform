@@ -103,3 +103,47 @@ fn each_charge_carries_strategy_model_source_and_region_and_the_rollup_sums_per_
     }
     Ok(())
 }
+
+/// R12-FINOPS-10136: one rung inside a shared ledger can be billed to a
+/// narrower attribution — the cycle's REASON panel to the desk — while every
+/// other rung keeps the ledger's own keys, and the four-way report sums to
+/// the ledger's total on every dimension. Mutation: make `entries` ignore the
+/// per-charge attribution — the strategy cut has no `desk` key.
+#[test]
+fn a_rung_charged_to_a_strategy_reports_under_it_while_the_rest_keep_the_ledgers_keys() -> Result<()>
+{
+    let mut ledger = ComputeLedger::new("cycle 1", Budget::research_default())?
+        .with_attribution(Attribution::region("home"));
+    ledger.charge(IntelligenceTier::DeterministicCode)?;
+    ledger.charge_attributed(
+        IntelligenceTier::MultiAgentReasoning,
+        Attribution {
+            strategy: Some("desk".to_string()),
+            data_source: None,
+            region: Some("home".to_string()),
+        },
+    )?;
+    ledger.charge(IntelligenceTier::DeterministicCode)?;
+    let report = qip_cost_router::CostReport::of([&ledger]);
+    assert_eq!(
+        report.strategy.get("desk"),
+        Some(&IntelligenceTier::MultiAgentReasoning.cost())
+    );
+    assert_eq!(
+        report.strategy.get(qip_cost_router::UNATTRIBUTED),
+        Some(
+            &(IntelligenceTier::DeterministicCode.cost()
+                + IntelligenceTier::DeterministicCode.cost())
+        )
+    );
+    for cut in [
+        &report.strategy,
+        &report.model,
+        &report.data_source,
+        &report.region,
+    ] {
+        let total = cut.values().fold(Decimal::ZERO, |sum, cost| sum + *cost);
+        assert_eq!(total, ledger.total_cost(), "{report:?}");
+    }
+    Ok(())
+}

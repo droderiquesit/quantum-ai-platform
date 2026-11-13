@@ -61,7 +61,8 @@ use std::time::Duration as StdDuration;
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::policy::{
-    Dispositions, GrantManifest, HaltCommand, PolicyPayload, RiskEnvelopeSnapshot, Slot,
+    Dispositions, GrantManifest, HaltCommand, HedgeNarrowing, PolicyPayload, RiskEnvelopeSnapshot,
+    Slot,
 };
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -465,6 +466,11 @@ struct CapitalLane {
     /// again. Bounded; see [`DISPATCH_MEMORY`].
     dispatched: BTreeSet<String>,
     dispatched_order: VecDeque<String>,
+    /// The plan id and issue instant of the hedge narrowing last delivered
+    /// to this cell. A cell refuses a narrowing at or behind the one it
+    /// applied, so sending the same one every cycle would buy a journaled
+    /// refusal per cycle and nothing else; one not delivered is retried.
+    hedge_delivered: Option<(String, Timestamp)>,
 }
 
 impl CapitalLane {
@@ -697,6 +703,13 @@ pub struct PendingPolicy {
     /// tell apart — "this process has resumed no promotion" and "every
     /// promotion it holds named no distillate" — are in the sentence.
     pub models: Vec<String>,
+    /// The Hedge Brain's latest plan as signed narrowings, one per cell it
+    /// binds (ADR 0407, R12-CAPITAL-10098). Signed by the central plane's
+    /// envelope issuer, not by the policy signer, because a cell verifies a
+    /// narrowing under its `envelope` key.
+    pub hedges: Vec<(String, HedgeNarrowing)>,
+    /// One line for every part of the plan no cell is sent, and why.
+    pub hedge_lines: Vec<String>,
 }
 
 /// The policy payloads one cycle should ship, one per configured cell.
@@ -899,6 +912,16 @@ pub fn pending_policy(
     // order (ADR 0129 decision 5). `None` before the first cycle, and then
     // the field is off the wire and out of the signature.
     let decision = platform.decision_origin();
+    // The hedge narrowings, once per dispatch and for the configured cells
+    // only: the plan is the brain's, the books and the issuer the plane's,
+    // and the API supplies the cells and the instant (ADR 0407).
+    let hedges = platform.issue_hedge_narrowings(cells.iter().map(String::as_str), now);
+    pending.hedge_lines = hedges.lines;
+    pending.hedges = hedges
+        .narrowings
+        .into_iter()
+        .map(|narrowing| (narrowing.cell.clone(), narrowing))
+        .collect();
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
         let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
@@ -1228,6 +1251,7 @@ impl MeshBackbone {
                     courier,
                     dispatched: BTreeSet::new(),
                     dispatched_order: VecDeque::new(),
+                    hedge_delivered: None,
                 },
             );
             listeners.push(facing);
@@ -1301,8 +1325,14 @@ impl MeshBackbone {
             shares: pending.shares,
             episodic: pending.episodic,
             dispositions: pending.dispositions,
+            hedge_lines: pending.hedge_lines,
             ..PolicySummary::default()
         };
+        // Before the policy signer is consulted: a narrowing is already
+        // signed under the envelope key, so a backbone without a policy key
+        // still sends one, and one without an envelope signer never had one
+        // to send.
+        self.send_hedges(pending.hedges, now, &mut summary);
         let signing = match (&self.signers, &self.policy_key) {
             (Some(signers), _) => Signing::Asymmetric(Arc::clone(&signers.policy)),
             (None, Some(key)) => match self.shared_key_at(key, now) {
@@ -1342,6 +1372,33 @@ impl MeshBackbone {
             }
         }
         summary
+    }
+
+    /// Send each signed hedge narrowing to its cell once (ADR 0407).
+    fn send_hedges(
+        &mut self,
+        hedges: Vec<(String, HedgeNarrowing)>,
+        now: Timestamp,
+        summary: &mut PolicySummary,
+    ) {
+        for (cell, narrowing) in hedges {
+            let Some(lane) = self.lanes.get_mut(&cell) else {
+                summary.unserved += 1;
+                continue;
+            };
+            let identity = (narrowing.plan_id.clone(), narrowing.issued_at);
+            if lane.hedge_delivered.as_ref() == Some(&identity) {
+                continue;
+            }
+            match lane.courier.send_hedge(narrowing, now) {
+                Ok(PolicySend::Delivered) => {
+                    lane.hedge_delivered = Some(identity);
+                    summary.hedges_sent += 1;
+                }
+                Ok(PolicySend::CircuitOpen) => summary.circuit_open += 1,
+                Err(error) => summary.errors.push(format!("{cell}: {}", error.message())),
+            }
+        }
     }
 
     /// Sign and broadcast a halt to every cell.
@@ -1617,6 +1674,14 @@ pub struct PolicySummary {
     /// lot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispositions: Vec<String>,
+    /// Hedge narrowings delivered this dispatch (ADR 0407), counted apart
+    /// from `sent` because they are signed under another key and a cell
+    /// applies them on another topic.
+    #[serde(default)]
+    pub hedges_sent: usize,
+    /// Every part of the Hedge Brain's plan no cell was sent, and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hedge_lines: Vec<String>,
 }
 
 pub fn exchange_json(

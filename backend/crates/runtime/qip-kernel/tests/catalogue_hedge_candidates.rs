@@ -249,6 +249,78 @@ fn a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogu
     Ok(())
 }
 
+/// R12-CAPITAL-10098 (ADR 0407): the Hedge Brain's plan is what the centre
+/// derives a cell's narrowing from, and a cell's statement the settled book
+/// contradicts is read as no position at all. Premise first: before any
+/// cycle the platform has no plan and derives nothing, so the line found
+/// after it was written from the plan the cycle made.
+#[test]
+fn a_cycles_hedge_plan_is_derived_for_a_cell_and_a_statement_the_settled_book_contradicts_binds_nothing()
+-> Result<()> {
+    let universe = catalogue();
+    let mut platform = platform(catalogue())?;
+    platform.observe(tape(EXPOSED, 0.0, -0.09));
+    platform.observe(tape(SUBJECT, 0.0, -0.09));
+    let order = platform.order_from(
+        ObjectId::from_string(EXPOSED),
+        Side::Buy,
+        dec!("7200"),
+        dec!("100"),
+        "prop-exposed",
+        vec!["hyp-exposed".to_string()],
+        start(),
+    );
+    platform.submit_order(order, start())?;
+    print_every_name(&mut platform, &universe, start());
+    let before = platform.issue_hedge_narrowings(["newyork-1"], start());
+    assert!(
+        before.narrowings.is_empty() && before.lines.is_empty(),
+        "premise: no plan, nothing derived: {before:?}"
+    );
+
+    let after = start().saturating_add(Duration::from_days(1));
+    platform.run_cycle(after);
+    let plans = logged_plans(&platform);
+    let plan = plans
+        .first()
+        .and_then(|record| record.plan.clone())
+        .expect("premise: the cycle planned a hedge");
+    let leg = plan.instruments.first().expect("a planned leg");
+    // The side the leg reduces: a sell narrows a long, a buy a short.
+    let held = match leg.side {
+        qip_contracts::control::HedgeSide::Sell => leg.quantity,
+        qip_contracts::control::HedgeSide::Buy => -leg.quantity,
+    };
+    platform.ingest_cell_report(
+        qip_kernel::CellReport::new("newyork-1", after).with_advisory_positions(
+            vec![qip_contracts::wire::AdvisoryPosition {
+                object_id: ObjectId::from_string(leg.instrument.clone()),
+                venue: leg.venue.clone(),
+                quantity: held,
+            }],
+            1,
+        ),
+        after,
+    )?;
+    let derived = platform.issue_hedge_narrowings(["newyork-1"], after);
+    assert!(
+        derived.narrowings.is_empty(),
+        "a target was derived from a position the settled book does not hold: {:?}",
+        derived.narrowings
+    );
+    assert!(
+        derived
+            .lines
+            .iter()
+            .any(|line| line.starts_with(plan.plan_id.as_str())
+                && line.contains("disagrees with the settled book")
+                && line.contains(leg.instrument.as_str())),
+        "the plan's derivation does not say why the cell is not narrowed: {:?}",
+        derived.lines
+    );
+    Ok(())
+}
+
 /// The declaration is the catalogue's common stock and nothing else: a record
 /// of another type has no stated equity loading, and a declared one would be
 /// a guessed beta. Every declaration carries the record's own venue, spread

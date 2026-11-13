@@ -504,6 +504,84 @@ fn the_cycle_that_grades_a_thesis_journals_each_agents_hit_rate() -> Result<()> 
     Ok(())
 }
 
+/// R12-FINOPS-10136 on the shipped path: a cycle that convenes the panel
+/// bills the panel's rungs to the desk strategy that acts on what it
+/// approves, and the cycle's journal entry — which `qip-deepbrain` reads back
+/// — carries the bill cut by strategy, model, data source and region, each
+/// summing to exactly the cycle's cost. Mutations: charge the REASON rungs
+/// with `ledger.charge` instead of `charge_attributed` — the desk key is
+/// absent; journal `cost_by: None` — the entry carries no report.
+#[test]
+fn a_convened_cycle_bills_the_panel_to_the_desk_and_journals_its_bill_per_dimension() -> Result<()>
+{
+    use qip_cost_router::IntelligenceTier;
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    assert!(
+        platform
+            .reason_routing()
+            .is_some_and(|routing| routing.dispatched),
+        "premise: the panel convened"
+    );
+    let ledger = platform.cycle_ledger().expect("a cycle has run");
+    let panel: Decimal = ledger
+        .charges()
+        .iter()
+        .filter(|charge| charge.tier == IntelligenceTier::MultiAgentReasoning)
+        .map(|charge| charge.cost)
+        .fold(Decimal::ZERO, |sum, cost| sum + cost);
+    assert!(
+        panel.is_positive(),
+        "premise: the panel convened and was billed: {}",
+        ledger.basis()
+    );
+    let entry = platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .iter()
+        .filter_map(|event| {
+            event
+                .decode::<qip_kernel::platform::CycleJournalEntry>()
+                .ok()
+                .map(|envelope| envelope.body)
+        })
+        .next_back()
+        .expect("the cycle was journaled");
+    let report = entry
+        .cost_by
+        .expect("the journal carries the bill per dimension");
+    let total = |cut: &std::collections::BTreeMap<String, Decimal>| {
+        cut.values().fold(Decimal::ZERO, |sum, cost| sum + *cost)
+    };
+    for cut in [
+        &report.strategy,
+        &report.model,
+        &report.data_source,
+        &report.region,
+    ] {
+        assert_eq!(total(cut), entry.compute_cost, "{report:?}");
+    }
+    assert_eq!(entry.compute_cost, platform.last_cycle_cost());
+    let desk = report
+        .strategy
+        .get("central-desk")
+        .copied()
+        .expect("the panel's rungs are the desk's");
+    assert!(desk >= panel, "{report:?}");
+    assert!(
+        report.strategy.contains_key(qip_cost_router::UNATTRIBUTED),
+        "the cycle-wide rungs stay unattributed to a strategy: {report:?}"
+    );
+    assert_eq!(
+        report.region.keys().collect::<Vec<_>>(),
+        vec!["home"],
+        "{report:?}"
+    );
+    Ok(())
+}
+
 /// R12-MODEL-10123, ADR 0391. Until this, a resolved thesis scored the
 /// forecast and the agents that argued it and never the routing that bought
 /// it: `qip_cost_router::ReputationBook` had no caller outside its own
@@ -516,6 +594,10 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
     let mut platform = platform()?;
     platform.observe(bars("AAA", 120));
     let first = platform.run_cycle(start());
+    // R12-FINOPS-10139: what each cycle billed the panel's rung, read off
+    // the ledger the cycle charged, to check the spend book against below.
+    let panel = qip_cost_router::IntelligenceTier::MultiAgentReasoning;
+    let mut panel_charges = platform.cycle_ledger().map_or(0, |l| l.count(panel));
     assert!(
         !platform.predictions().is_empty(),
         "premise: a claim was written:\n{}",
@@ -587,6 +669,7 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         .collect();
     platform.observe(swings);
     let second = platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    panel_charges += platform.cycle_ledger().map_or(0, |l| l.count(panel));
     let learn = second.stage(Stage::Learn).expect("learn ran");
     assert!(
         learn.detail.contains("graded"),
@@ -626,6 +709,31 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         learn.detail.contains("1 routing choice(s) scored"),
         "{}",
         learn.detail
+    );
+
+    // R12-FINOPS-10139. The failure this guards: the ledger knew what the
+    // rung cost and the book how often it was right, and no figure divided
+    // one by the other. The join is read back from the running platform.
+    assert!(panel_charges > 0, "premise: the cycles billed the panel");
+    let benefit = platform.model_benefit();
+    let row = benefit
+        .iter()
+        .find(|b| b.model == panel.as_str())
+        .expect("the panel's rung is reported");
+    assert!(row.references.contains(&rung), "{row:?}");
+    assert_eq!(row.spend.charges, panel_charges as u64, "{row:?}");
+    assert_eq!(
+        row.spend.cost,
+        panel.cost() * Decimal::from_int(panel_charges as i64)
+    );
+    assert_eq!(
+        (row.correct, row.observations),
+        (u64::from(record.correct), u64::from(record.observations))
+    );
+    assert_eq!(
+        row.cost_per_correct,
+        (record.correct > 0).then_some(row.spend.cost),
+        "one scored call: the cost per correct call is the whole bill or none"
     );
     Ok(())
 }
@@ -1124,6 +1232,61 @@ fn a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are
     Ok(())
 }
 
+/// Every desk fill `DeskShipper` carries to the ledger stream is one the
+/// in-process LEARN stage prices (R12-MODEL-7210, ADR 0448).
+///
+/// The gap this closes was a reading, not a missing path: the shipped P1
+/// records were said to reach "no learner", and a consumer of the ledger
+/// stream was proposed to feed them back. The shipped record and the
+/// learner's queue are written from the same booked fill in the same
+/// `Platform`, so a second consumer would score each desk fill twice. What
+/// must hold instead is the join, and this pins it: the order id on the
+/// pending outcome record is the order id LEARN scores.
+///
+/// Mutation: in `Platform::capture_submission`, replace the desk path's
+/// `self.filled.push(FilledPath { .. })` with a `drop` — the record still
+/// ships and no score names its order ("shipped and never learned from").
+#[test]
+fn every_desk_fill_shipped_to_the_ledger_is_one_the_learn_stage_prices() -> Result<()> {
+    use qip_contracts::reflex::Decision;
+    let mut platform = platform()?;
+    platform.observe(flat_bars_after(
+        "AAA",
+        start().saturating_sub(Duration::from_days(91)),
+        90,
+        100.0,
+    ));
+    let order_id = fill_one(&mut platform, "prop-shipped", start())?;
+    let shipped: Vec<String> = platform
+        .pending_desk_outcomes()
+        .iter()
+        .filter_map(|outcome| match &outcome.record.entry.decision {
+            Decision::Filled { order_id, .. } => Some(order_id.to_string()),
+            _ => None,
+        })
+        .collect();
+    // Premise: the fill became a record waiting to ship.
+    assert!(
+        shipped.iter().any(|id| id == order_id.as_str()),
+        "the premise failed: no shipped record names {order_id}: {shipped:?}"
+    );
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scored: Vec<&str> = platform
+        .fill_scores()
+        .iter()
+        .map(|score| score.order_id.as_str())
+        .collect();
+    for id in &shipped {
+        assert!(
+            scored.contains(&id.as_str()),
+            "desk fill {id} was shipped and never learned from: scored {scored:?}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left() -> Result<()> {
     // The failure this guards (R12-MODEL-6004): the simulated venue fills 60%
@@ -1441,18 +1604,27 @@ fn a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_o
     Ok(())
 }
 
-/// R12-TICK-2080: the twin is recalibrated from the fills it mispriced, and
-/// the calibration is what its next pricing on that venue uses.
+/// R12-TICK-2080, ADR 0450: the twin is recalibrated from what its cost
+/// model charges for the venue's fill against what the venue actually cost —
+/// not from the gap between the twin's mark and the fill.
 ///
-/// Mutation: delete the `fill_calibration.observe` call in `score_filled` —
-/// the venue holds no calibration. Mutation: price with
-/// `CostModel::liquid_equity()` again instead of the calibrated model — the
-/// spread assertion still passes here, so the observation count and bias
-/// are the guard on the first half and `qip-twin`'s
-/// `after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills`
-/// on the second.
+/// The tape opens the bar the twin enters on at 90 against an arrival of
+/// 100, so the twin's *mark* is ten percent off the fill. That is a price
+/// error, and it is charted on `qip_venue_fill_error_bps`; it is not a cost
+/// error, and a calibration that fitted it charged a thousand basis points of
+/// spread the venue never took. The quiet tape has no volatility, so the
+/// twin charges no impact and the error is the spread term alone: the base
+/// model's commission and half-spread against the venue's slippage from its
+/// arrival price and the fees it billed, worked here from the order
+/// manager's own fills.
+///
+/// Mutation: feed `trade_error_bps` (mark against fill) to the calibration
+/// instead of the cost error — the bias is two hundred basis points and the
+/// hand-worked figure disagrees. Mutation: delete the `observe_cost` call in
+/// `score_filled` — the venue holds no calibration.
 #[test]
-fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill() -> Result<()> {
+fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_venues_cost()
+-> Result<()> {
     let mut platform = platform()?;
     let mut tape = quiet_bars("AAA", 90);
     let last = tape.pop().expect("ninety bars");
@@ -1462,7 +1634,7 @@ fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill
     };
     tape.push(bar("AAA", last_at, 90.0, 90.0));
     platform.observe(tape);
-    fill_one(&mut platform, "prop-filled", start())?;
+    let order_id = fill_one(&mut platform, "prop-filled", start())?;
     assert!(
         platform
             .fill_calibration()
@@ -1472,26 +1644,58 @@ fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill
     );
     platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
     platform.run_cycle(start().saturating_add(Duration::from_days(3)));
-    let error = platform.fill_scores()[0]
+    let mark_error = platform.fill_scores()[0]
         .trade_error_bps
         .expect("the fill was priced");
+    assert!(
+        mark_error < -500.0,
+        "premise: the twin's mark is far from the fill, {mark_error} bps"
+    );
+
+    let fills: Vec<_> = platform
+        .orders()
+        .fills()
+        .into_iter()
+        .filter(|fill| fill.order_id == order_id)
+        .collect();
+    assert!(
+        !fills.is_empty(),
+        "premise: the order manager holds the fill"
+    );
+    let notional: f64 = fills
+        .iter()
+        .map(|fill| fill.quantity.to_f64() * fill.price.to_f64())
+        .sum();
+    let paid: f64 = fills.iter().map(|fill| fill.costs.to_f64()).sum();
+    let arrival = platform
+        .orders()
+        .order(&order_id)
+        .expect("the order manager holds the order")
+        .arrival_price
+        .to_f64();
+    let slippage = (fills[0].price.to_f64() - arrival) / arrival * 10_000.0;
+    let reality = slippage + paid / notional * 10_000.0;
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let charged = base.commission_bps + base.half_spread_bps + base.tax_bps;
     let calibration = platform
         .fill_calibration()
         .venue("simulated-venue")
         .expect("the priced fill calibrated its venue");
     assert_eq!(calibration.observations, 1);
     assert!(
-        (calibration.bias_bps - 0.2 * error).abs() < 1e-9,
-        "one fifth of the way to the observed error {error}: {}",
+        (calibration.bias_bps - 0.2 * (charged - reality)).abs() < 1e-6,
+        "one fifth of the way to the cost error {} (charged {charged}, venue {reality}): {}",
+        charged - reality,
         calibration.bias_bps
     );
-    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
     let calibrated = platform
         .fill_calibration()
         .cost_model(&base, "simulated-venue");
     assert!(
-        calibrated.half_spread_bps > base.half_spread_bps,
-        "a twin that filled better than the venue now pays a wider spread there"
+        calibrated.half_spread_bps > base.half_spread_bps
+            && calibrated.half_spread_bps < base.half_spread_bps + 1.0,
+        "the venue costs slightly more than the twin charged, so the spread widens a little: {}",
+        calibrated.half_spread_bps
     );
     Ok(())
 }
@@ -2758,6 +2962,45 @@ fn the_same_book_at_a_venue_the_twin_has_not_mispriced_is_admitted() -> Result<(
     Ok(())
 }
 
+/// R12-RES-7104 read through R12-TICK-2080 (ADR 0450): a twin wrong only
+/// about size — no spread error, every basis point of it in the impact
+/// slope — is a misfit twin, and narrows the venue like one. Before ADR 0450
+/// `twin_misfit` read `bias_bps` alone and this twin passed as right.
+///
+/// Mutation: make `twin_misfit` read `calibration.bias_bps.abs()` instead of
+/// `correction_bps()` — the premise holds and the misfit assertion fails.
+#[test]
+fn a_twin_wrong_only_about_size_is_a_misfit_twin() -> Result<()> {
+    let mut platform = platform_under_the_misfit_cap()?;
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let units = [0.5_f64, 1.0, 1.5, 2.0];
+    for round in 0..12 {
+        let unit = units[round % units.len()];
+        platform.fill_calibration_mut().observe_cost(
+            MISFIT_VENUE,
+            &base,
+            -100.0 * unit,
+            Some(unit),
+        )?;
+    }
+    let calibration = platform
+        .fill_calibration()
+        .venue(MISFIT_VENUE)
+        .expect("calibrated")
+        .clone();
+    assert!(
+        calibration.bias_bps.abs() < qip_kernel::platform::TWIN_MISFIT_BIAS_BPS,
+        "premise: the spread alone does not read as misfit, {}",
+        calibration.bias_bps
+    );
+    assert!(
+        platform.twin_misfit(MISFIT_VENUE),
+        "a twin wrong by {} bps at the venue's own size was not read as misfit",
+        calibration.correction_bps()
+    );
+    Ok(())
+}
+
 // --- R12-RISK-4096: a short with no known borrow is refused ----------------
 
 fn sell(platform: &mut Platform, quantity: Decimal, tag: &str, at: Timestamp) -> Result<()> {
@@ -2943,6 +3186,58 @@ fn members_as_of(platform: &Platform, at: Timestamp) -> Vec<String> {
         .collect()
 }
 
+/// R12-REASON-3013, ADR 0458: a corporate action the tape announces reaches
+/// the slot the Company/Fundamental Brain reads at the next REASON, and a
+/// platform no corporate-action feed has reached says so rather than
+/// reporting an empty calendar.
+///
+/// Mutations: stop `stage_reason` calling `brief_the_desk_on_company` — the
+/// slot stays unobserved after the cycle; drop the `corporate_actions_seen`
+/// write in `queue_corporate_action` — the action is held but the slot reads
+/// as having no source.
+#[test]
+fn an_announced_corporate_action_reaches_the_company_fundamental_brains_slot() -> Result<()> {
+    let mut platform = platform()?;
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    {
+        let view = platform.desk_company_view();
+        assert!(
+            !view.corporate_actions_observed,
+            "no feed has delivered a corporate action, so the slot has no source"
+        );
+        assert!(view.corporate_actions.is_empty());
+    }
+    let absorbed = platform.observe(vec![SensedRecord::CorporateAction(Box::new(
+        CorporateAction {
+            object_id: object("AAA"),
+            ex_date: start().saturating_add(Duration::from_days(30)),
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::CashDividend {
+                amount: dec!("0.5"),
+            },
+            announced_at: start(),
+        },
+    ))]);
+    assert_eq!(absorbed, 1, "premise: the action was absorbed");
+    let report = platform.run_cycle(start().saturating_add(Duration::from_secs(60)));
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let view = platform.desk_company_view();
+    assert!(
+        view.corporate_actions_observed,
+        "REASON did not brief the desk on the company"
+    );
+    assert_eq!(
+        view.corporate_actions.len(),
+        1,
+        "{:?}",
+        view.corporate_actions
+    );
+    assert_eq!(view.corporate_actions[0].object_id, object("AAA"));
+    Ok(())
+}
+
 /// R12-TICK-2090: the platform keeps the universe that existed. A delisting
 /// announced on the tape ends the name's membership at its ex-date and not
 /// before, so a backtest as of a date before the ex-date still holds it; a
@@ -3046,43 +3341,187 @@ fn a_delisting_on_the_tape_ends_membership_at_its_ex_date_and_a_withdrawn_venue_
     Ok(())
 }
 
+/// R12-TICK-2090, ADR 0446: a failure on the tape ends the name's listing
+/// *as a failure*, kept for the dates it traded, and a spinoff lists its
+/// spun entity from the ex-date with the parent it left. Re-fed, neither is
+/// recorded twice. Mutations: drop the `Failed` arm in
+/// `queue_corporate_action` (the failure is filed as a plain delisting via
+/// `is_terminal`, and `failed()` is empty); drop the `Spinoff` arm (the spun
+/// entity is never listed).
+#[test]
+fn a_failure_on_the_tape_is_kept_as_a_failure_and_a_spinoff_lists_its_spun_entity() -> Result<()> {
+    let mut platform = platform()?;
+    let ex = start().saturating_add(Duration::from_days(3));
+    let actions = || {
+        vec![
+            SensedRecord::CorporateAction(Box::new(CorporateAction {
+                object_id: object("BBB"),
+                ex_date: ex,
+                record_date: None,
+                payment_date: None,
+                kind: CorporateActionKind::Failed {
+                    reason: "the fund was wound up".to_string(),
+                },
+                announced_at: start(),
+            })),
+            SensedRecord::CorporateAction(Box::new(CorporateAction {
+                object_id: object("AAA"),
+                ex_date: ex,
+                record_date: None,
+                payment_date: None,
+                kind: CorporateActionKind::Spinoff {
+                    spun_entity: "obj-CCC".to_string(),
+                    value_fraction: 0.2,
+                },
+                announced_at: start(),
+            })),
+        ]
+    };
+    assert!(
+        platform.universe_history().failed().is_empty(),
+        "the premise: nothing has failed"
+    );
+    assert_eq!(platform.observe(actions()), 2, "the premise: both absorbed");
+
+    let failed = platform.universe_history().failed();
+    assert_eq!(
+        failed.len(),
+        1,
+        "the failure was not kept as one: {failed:?}"
+    );
+    assert_eq!(failed[0].object_id.as_str(), "obj-BBB");
+    assert_eq!(failed[0].delisted_at, Some(ex));
+    assert_eq!(
+        members_as_of(&platform, ex.saturating_sub(Duration::from_secs(1))),
+        vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        "a failed product is a member on the dates it traded, and the spun entity is not yet"
+    );
+    assert_eq!(
+        members_as_of(&platform, ex),
+        vec!["obj-AAA".to_string(), "obj-CCC".to_string()],
+        "from the ex-date the failed name is gone and the spun entity is listed"
+    );
+    assert_eq!(
+        platform
+            .universe_history()
+            .listing(&ObjectId::from_string("obj-CCC"))
+            .and_then(|listing| listing.spun_off_from.clone())
+            .map(|parent| parent.as_str().to_string()),
+        Some("obj-AAA".to_string())
+    );
+
+    // Re-fed: the idempotency key drops both, and nothing is listed or
+    // failed twice.
+    let _ = platform.observe(actions());
+    assert_eq!(platform.universe_history().failed().len(), 1);
+    assert_eq!(members_as_of(&platform, ex).len(), 2);
+    Ok(())
+}
+
 // --- the fill's participation reaches the twin's calibration (R12-TICK-2080)
 
-/// R12-TICK-2080: the LEARN stage hands the twin's calibration each scored
-/// fill's participation in its bar's volume beside the fill error, so the
-/// twin can tell an impact misfit from a spread misfit; without it every
-/// error was charged to the spread. Mutation: pass `None` for the
-/// participation in `score_filled` — the calibration counts no fill with a
-/// size and the assertion fails.
-#[test]
-fn a_scored_fill_reaches_the_twins_calibration_with_its_participation() -> Result<()> {
-    let mut platform = platform()?;
-    let mut tape = quiet_bars("AAA", 90);
-    let last = tape.pop().expect("ninety bars");
-    let last_at = match &last {
-        SensedRecord::Bar(bar) => bar.open_time,
-        _ => unreachable!("quiet_bars produces bars"),
-    };
-    tape.push(bar("AAA", last_at, 90.0, 90.0));
-    platform.observe(tape);
-    fill_one(&mut platform, "prop-participation", start())?;
-    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
-    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+/// A tape that moves: each day's bar opens at 100 and closes 1.26 percent
+/// away, alternately up and down, on `volume` shares, so the twin's
+/// liquidity estimate has a volatility near the cost model's reference and
+/// a mean volume an order of a few hundred shares is a real share of.
+fn volatile_bars(symbol: &str, count: usize, volume: Decimal) -> Vec<SensedRecord> {
+    (0..count)
+        .map(|i| {
+            let step = if i % 2 == 0 { 1.0126 } else { 1.0 / 1.0126 };
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            match bar(symbol, at, 100.0, 100.0 * step) {
+                SensedRecord::Bar(mut bar) => {
+                    bar.volume = volume;
+                    SensedRecord::Bar(bar)
+                }
+                _ => unreachable!("bar produces a bar"),
+            }
+        })
+        .collect()
+}
 
-    let scores = platform.fill_scores();
-    assert_eq!(scores.len(), 1, "premise: the fill was priced");
+/// R12-TICK-2080's bar, on the platform's own simulated venue: after fills
+/// whose cost the twin gets systematically wrong, the twin's spread and
+/// impact parameters converge on what the venue actually charges.
+///
+/// The desk's venue charges a three basis-point half-spread and one of
+/// commission, and no impact at all — the kernel supplies it no liquidity
+/// statistics, so its square-root term is zero (`SimulatedBroker::fill_price`).
+/// The twin's base model charges a 2.5 bp half-spread, one of commission and
+/// a 40 bp impact coefficient. Sixteen fills of four sizes on a tape with a
+/// volatility near the reference must therefore move the twin to a 3 bp
+/// half-spread and an impact coefficient near zero: the simulator's true
+/// values, reached from the twin's own impact units.
+///
+/// Mutation: make `observe_cost` return before updating anything (freeze
+/// the parameters) — the coefficient stays at 40 and the spread at 2.5.
+/// Mutation: fit the slope on `sqrt(participation)` without the volatility
+/// scale — at this tape's scale the fit still lands, so the guard on the
+/// unit is `qip-simulation-engine`'s
+/// `the_impact_unit_times_the_coefficient_is_the_impact_the_model_charges`.
+#[test]
+fn after_fills_with_systematic_cost_error_the_twins_spread_and_impact_converge_on_the_venues_true_values()
+-> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = volatile_bars("AAA", 90, dec!("10000"));
+    platform.observe(std::mem::take(&mut tape));
+    let sizes = [dec!("100"), dec!("300"), dec!("600"), dec!("1000")];
+    let mut submitted = 0;
+    for round in 0..4 {
+        for (n, quantity) in sizes.iter().enumerate() {
+            let fills_before = platform.orders().fills().len();
+            let order = platform.order_from(
+                object("AAA"),
+                Side::Buy,
+                *quantity,
+                dec!("100"),
+                &format!("prop-converge-{round}-{n}"),
+                vec![format!("hyp-converge-{round}-{n}")],
+                start(),
+            );
+            platform.submit_order(order, start())?;
+            if platform.orders().fills().len() > fills_before {
+                submitted += 1;
+            }
+        }
+    }
     assert!(
-        scores[0].trade_error_bps.is_some(),
-        "premise: the twin priced an entry to compare the fill with"
+        submitted >= 12,
+        "premise: the venue filled the sizes, {submitted}"
     );
-    let venue = platform
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    let scoring_time = start().saturating_add(Duration::from_days(3));
+    for _ in 0..4 {
+        platform.run_cycle(scoring_time);
+    }
+    let venue = platform.desk_venue().to_string();
+    let calibration = platform
         .fill_calibration()
-        .venue(&scores[0].venue)
-        .expect("the venue was calibrated from the fill");
-    assert_eq!(venue.observations, 1);
+        .venue(&venue)
+        .expect("the scored fills calibrated the venue")
+        .clone();
     assert_eq!(
-        venue.participation_observations, 1,
-        "the fill reached the calibration without its participation"
+        calibration.participation_observations, calibration.observations,
+        "every fill reached the calibration with its impact unit"
+    );
+    assert!(
+        calibration.observations >= 12,
+        "premise: the fills were scored, {}",
+        calibration.observations
+    );
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let calibrated = platform.fill_calibration().cost_model(&base, &venue);
+    assert!(
+        calibrated.impact_coefficient_bps < 2.0,
+        "the impact coefficient did not converge on the venue's zero: {} -> {}",
+        base.impact_coefficient_bps,
+        calibrated.impact_coefficient_bps
+    );
+    assert!(
+        (calibrated.half_spread_bps - 3.0).abs() < 0.2,
+        "the half-spread did not converge on the venue's 3 bp: {} -> {}",
+        base.half_spread_bps,
+        calibrated.half_spread_bps
     );
     Ok(())
 }
@@ -3312,5 +3751,75 @@ fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate(
     );
     // And kept out of the desk's own declined sample, which sizes the desk.
     assert!(platform.declined_scores().is_empty());
+    Ok(())
+}
+
+// --- venue session facts reach the centre typed (R12-TICK-2053) -------------
+
+fn book(symbol: &str, at: Timestamp) -> SensedRecord {
+    use qip_market::book::{BookLevel, OrderBook};
+    let level = |price: &str| BookLevel {
+        price: Decimal::parse(price).unwrap_or_default(),
+        size: dec!("500"),
+        order_count: 2,
+    };
+    SensedRecord::Book(Box::new(OrderBook {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        at,
+        bids: vec![level("99.99")],
+        asks: vec![level("100.01")],
+        sequence: 7,
+    }))
+}
+
+/// A venue's halt reaches the centre as a typed status record, and the next
+/// book from that venue is taken as depth at a halted venue rather than as
+/// continuous trading. Before the status record existed every central book
+/// was filed under `VenueStatus::Open`, a halt included.
+///
+/// Mutation: read `VenueStatus::Open` for the book again in
+/// `Platform::absorb_records` — the halted venue counts as usable
+/// ("a halted venue's book was read as tradable depth").
+#[test]
+fn a_venue_halt_reaches_the_centre_typed_and_the_next_book_is_read_under_it() -> Result<()> {
+    use qip_contracts::venue::VenueStatus;
+    use qip_market_ingestion::session::VenueStatusUpdate;
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+
+    // Premise: an ordinary book is usable depth.
+    assert_eq!(platform.observe(vec![book("AAA", at)]), 1);
+    let map = platform
+        .liquidity()
+        .current_map(&object("AAA"), at)
+        .expect("premise: the book is mapped");
+    assert_eq!(
+        map.usable_venue_count(),
+        1,
+        "premise: an open venue is usable"
+    );
+
+    let halted_at = at.saturating_add(Duration::from_secs(1));
+    let halt = SensedRecord::Status(Box::new(VenueStatusUpdate {
+        object_id: object("AAA"),
+        venue: "XNYS".to_string(),
+        at: halted_at,
+        capture_time: halted_at,
+        sequence: Some(8),
+        status: VenueStatus::Halted,
+    }));
+    let next = halted_at.saturating_add(Duration::from_secs(1));
+    assert_eq!(platform.observe(vec![halt, book("AAA", next)]), 2);
+    let map = platform
+        .liquidity()
+        .current_map(&object("AAA"), next)
+        .expect("the book is mapped");
+    assert_eq!(map.venue_count(), 1);
+    assert_eq!(
+        map.usable_venue_count(),
+        0,
+        "a halted venue's book was read as tradable depth"
+    );
     Ok(())
 }

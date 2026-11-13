@@ -630,12 +630,45 @@ resource "google_redis_instance" "cache" {
 
 # --- Cross-region transactions ----------------------------------------------
 
+# Where the ledger of record is placed, keyed by the region that writes it
+# (ADR 0393, R12-LEDGER-8136).
+#
+# `qip-ledgerd` is the ledger's only writer (ADR 0113 decision 1) and runs in
+# `var.region`, so that region is the write origin. A read-write transaction
+# commits through the database's leader region, and a leader on another
+# continent puts an ocean crossing inside every commit. The configuration was
+# `nam-eur-asea` with no default leader: Spanner picked one, and the ledger's
+# balances were replicated to Europe and Asia although nothing had asked
+# whether they may be held there. The ledger holds simulated paper balances
+# and no customer data, so no foreign residency rule binds it today, and the
+# narrower placement is the one that needs no review: the United States, with
+# the leader where the writer is.
+#
+# One entry, because one placement has been decided. A region missing from
+# this map has no decided placement, and planning Spanner there is refused by
+# the precondition below rather than defaulted, since a default would choose a
+# residency for data nobody reviewed. Every committed environment plans with
+# `enable_spanner = false`; test, stage and prod sit in `europe-west2`, and
+# turning Spanner on there needs an entry here and the residency review that
+# justifies it.
+locals {
+  spanner_placements = {
+    # `nam3` is read-write in us-east4 and us-east1 with a witness in
+    # us-central1, so a regional loss in Virginia fails the leader over to
+    # South Carolina and the book's data stays in the United States.
+    # The leader is `var.spanner_default_leader` (ADR 0394), validated
+    # against nam3's read-write regions and defaulting to us-east4.
+    "us-east4" = { config = "nam3", default_leader = var.spanner_default_leader }
+  }
+  spanner_placement = lookup(local.spanner_placements, var.region, null)
+}
+
 resource "google_spanner_instance" "global" {
   count = var.enable_spanner ? 1 : 0
 
   project      = var.project_id
   name         = "${local.prefix}-global"
-  config       = "nam-eur-asea"
+  config       = local.spanner_placement == null ? "" : local.spanner_placement.config
   display_name = "QIP ${var.environment} global"
   labels       = var.labels
 
@@ -665,6 +698,13 @@ resource "google_spanner_instance" "global" {
   }
 
   force_destroy = !var.deletion_protection
+
+  lifecycle {
+    precondition {
+      condition     = local.spanner_placement != null
+      error_message = "enable_spanner is true in a region with no decided ledger placement (ADR 0393). The ledger's leader goes where its writer runs, and its residency needs a review before data is placed outside the United States; add the region to local.spanner_placements in modules/data/main.tf with that review, or keep enable_spanner = false."
+    }
+  }
 }
 
 resource "google_spanner_database" "positions" {
@@ -673,6 +713,13 @@ resource "google_spanner_database" "positions" {
   project  = var.project_id
   instance = google_spanner_instance.global[0].name
   name     = "positions"
+
+  # The leader is a database option, set by DDL; the provider has no
+  # attribute for it. Unset, Spanner chooses the configuration's default
+  # leader, which is a choice nobody recorded.
+  ddl = local.spanner_placement == null ? [] : [
+    "ALTER DATABASE `positions` SET OPTIONS (default_leader = '${local.spanner_placement.default_leader}')",
+  ]
 
   encryption_config {
     kms_key_name = google_kms_crypto_key.records[0].id

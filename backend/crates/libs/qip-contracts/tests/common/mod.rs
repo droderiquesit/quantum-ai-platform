@@ -70,6 +70,19 @@ where
         );
         let refusal = decoded.expect_err(&format!("{} without `{key}` was admitted", T::NAME));
         assert_eq!(refusal.code(), "schema", "{} without `{key}`", T::NAME);
+        // The code alone cannot tell a missing field from an invariant: a
+        // field given `#[serde(default)]` decodes to its default, and when
+        // that default breaks an invariant `decode` still answers `schema`.
+        // So a defaulted field passed this check as long as its default was
+        // invalid, and the property named here is that the producer must
+        // state the field, not that its default happens to be refused.
+        assert!(
+            refusal
+                .to_string()
+                .contains(&format!("missing field `{key}`")),
+            "{} without `{key}` was refused for another reason, so the field is defaulted: {refusal}",
+            T::NAME
+        );
     }
     let mut extra = object.clone();
     extra.insert("smuggled".to_string(), serde_json::Value::Bool(true));
@@ -86,6 +99,65 @@ where
     assert!(
         serde_json::from_value::<Validated<T>>(serde_json::Value::Object(foreign)).is_err(),
         "{} admitted a foreign schema version",
+        T::NAME
+    );
+}
+
+/// Every key of the nested object at `pointer` (a JSON pointer such as
+/// `/trace/0`), removed in turn, is refused on decode with serde's own
+/// `missing field` refusal, and an unknown key there is refused too.
+///
+/// The top-level check above cannot see inside a list or a sub-record: a
+/// trace step or an envelope that gained `#[serde(default)]`, or lost
+/// `deny_unknown_fields`, decoded as before and passed it. Each nested
+/// record the contract carries is a record a producer must state in full.
+pub(crate) fn refuses_missing_and_unknown_nested<T>(fields: T, pointer: &str)
+where
+    T: Contract + Serialize + DeserializeOwned + Clone + PartialEq + Debug,
+{
+    let value = serde_json::to_value(&fields).expect("fixture serialises");
+    let nested = value
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_object)
+        .unwrap_or_else(|| panic!("premise: {} has an object at {pointer}", T::NAME))
+        .clone();
+    assert!(
+        serde_json::from_value::<Validated<T>>(value.clone()).is_ok(),
+        "premise: the intact {} decodes",
+        T::NAME
+    );
+    assert!(
+        !nested.is_empty(),
+        "premise: {} has keys at {pointer} to remove",
+        T::NAME
+    );
+    let decode = |object: serde_json::Map<String, serde_json::Value>| {
+        let mut whole = value.clone();
+        *whole.pointer_mut(pointer).expect("the pointer resolves") =
+            serde_json::Value::Object(object);
+        Validated::<T>::decode(&serde_json::to_vec(&whole).expect("encodes"))
+    };
+    for key in nested.keys() {
+        let mut missing = nested.clone();
+        missing.remove(key);
+        let refusal = decode(missing).expect_err(&format!(
+            "{} without `{pointer}/{key}` was admitted",
+            T::NAME
+        ));
+        assert!(
+            refusal
+                .to_string()
+                .contains(&format!("missing field `{key}`")),
+            "{} without `{pointer}/{key}` was refused for another reason, so the field is \
+             defaulted: {refusal}",
+            T::NAME
+        );
+    }
+    let mut extra = nested;
+    extra.insert("smuggled".to_string(), serde_json::Value::Bool(true));
+    assert!(
+        decode(extra).is_err(),
+        "{} admitted an unknown field at {pointer}",
         T::NAME
     );
 }

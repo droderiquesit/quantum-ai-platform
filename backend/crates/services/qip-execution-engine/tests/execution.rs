@@ -834,6 +834,13 @@ fn only_a_judgment_about_the_order_itself_is_sizing_evidence() {
         RefusalReason::VenueRejected {
             detail: "the venue declined the order".to_string(),
         },
+        // ADR 0472: a self-trade refusal is about the desk's own resting
+        // book, not about whether this order was well sized.
+        RefusalReason::SelfTrade {
+            venue: "simulated-venue".to_string(),
+            resting_order: "ord-AAA-0".to_string(),
+            detail: "a buy of the desk's own is working".to_string(),
+        },
     ];
     for refusal in &not_evidence {
         assert!(
@@ -1988,6 +1995,362 @@ fn a_kill_switch_sweep_of_unfilled_orders_is_not_counted_as_the_desks_withdrawal
         result.accepted,
         "a kill switch's sweep convicted the desk of a pattern: {:?}",
         result.refusal
+    );
+    Ok(())
+}
+
+#[test]
+fn a_desk_order_that_would_trade_against_its_own_working_order_is_refused_before_the_broker()
+-> Result<()> {
+    // R12-GOV-6126, ADR 0472. The cell refuses a net that would cross a
+    // resting order of its own (`self_trade`); the desk's order manager let a
+    // sale go to the venue while a buy of the desk's own rested on the same
+    // instrument there, which is a wash trade the venue would match.
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    let mut venue = RestingBroker {
+        capabilities: simulator(),
+        submitted: 0,
+    };
+    let placed = |index: usize, object: &str, side: Side| {
+        let mut order = order(object, side, "10");
+        order.order_id = OrderId::from_string(format!("ord-{object}-{index}"));
+        order.order_type = OrderType::Limit { price: dec!("100") };
+        order
+    };
+
+    // A market order's open remainder takes liquidity and rests in no book,
+    // so it refuses nothing: counted, a desk that sold its way out of a
+    // margin call with a partly filled market sale could not buy again.
+    let mut market = order("MKT", Side::Buy, "10");
+    market.order_id = OrderId::from_string("ord-MKT-0".to_string());
+    assert!(matches!(market.order_type, OrderType::Market), "premise");
+    let result = submit(&mut manager, market, &mut venue, &controller);
+    assert!(
+        result.accepted && result.fills.is_empty(),
+        "premise: the market buy stays open"
+    );
+    let mut sale = order("MKT", Side::Sell, "10");
+    sale.order_id = OrderId::from_string("ord-MKT-1".to_string());
+    let result = submit(&mut manager, sale, &mut venue, &controller);
+    assert!(
+        result.accepted,
+        "a sale was refused against a market order's remainder: {:?}",
+        result.refusal
+    );
+    venue.submitted = 0;
+
+    // Premise: a limit buy rests unfilled at the venue.
+    let result = submit(
+        &mut manager,
+        placed(0, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "premise: the buy was refused: {:?}",
+        result.refusal
+    );
+    assert!(
+        result.fills.is_empty(),
+        "premise: the buy filled and rests nothing"
+    );
+    assert_eq!(venue.submitted, 1);
+
+    // A sale of the same instrument at the same venue is refused, naming the
+    // resting order, and the venue is never asked.
+    let result = submit(
+        &mut manager,
+        placed(1, "AAA", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        !result.accepted,
+        "a sale crossed the desk's own resting buy"
+    );
+    match result.refusal.as_ref() {
+        Some(RefusalReason::SelfTrade {
+            venue: at,
+            resting_order,
+            ..
+        }) => {
+            assert_eq!(at, venue.name());
+            assert_eq!(resting_order, "ord-AAA-0");
+        }
+        other => panic!("expected a self-trade refusal, got {other:?}"),
+    }
+    assert_eq!(venue.submitted, 1, "the refused sale reached the venue");
+
+    // Neither the same side nor another instrument is a self-trade.
+    let result = submit(
+        &mut manager,
+        placed(2, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "a second buy was refused: {:?}",
+        result.refusal
+    );
+    let result = submit(
+        &mut manager,
+        placed(3, "BBB", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "a sale of another instrument was refused: {:?}",
+        result.refusal
+    );
+
+    // Once the desk's buys are withdrawn nothing rests opposite, and the
+    // sale goes: the refusal lasts as long as the resting order and no longer.
+    for index in [0, 2] {
+        manager.cancel(
+            &OrderId::from_string(format!("ord-AAA-{index}")),
+            &mut venue,
+            "withdrawn by the desk",
+            now(),
+        )?;
+    }
+    let result = submit(
+        &mut manager,
+        placed(4, "AAA", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "the sale stayed refused after the buys were withdrawn: {:?}",
+        result.refusal
+    );
+    Ok(())
+}
+
+// --- working a partial sale's remainder (ADR 0424) --------------------------
+
+fn half_fills() -> Result<SimulatedBroker> {
+    let settings = SimulationSettings::default()
+        .with_rejection_probability(0.0)?
+        .with_immediate_fill_fraction(dec!("0.5"))?;
+    Ok(SimulatedBroker::new(settings, 3))
+}
+
+/// ADR 0424: an open sale's remainder is worked to flat and no further, and
+/// an open purchase's is not worked at all. Working skips the pre-trade
+/// check the order passed on submission, which is sound only for a fill that
+/// reduces exposure.
+///
+/// Mutation: drop the `Side::Sell` filter in `OrderManager::work_sales` —
+/// the purchase is worked ("a purchase's remainder was worked"). Mutation:
+/// work the whole remainder rather than `min(remaining, room)` — the sale
+/// sells past the long ("a worked sale sold past flat").
+#[test]
+fn an_open_sale_is_worked_down_to_the_long_held_and_an_open_purchase_is_not() -> Result<()> {
+    let mut manager = manager();
+    let mut broker = half_fills()?;
+    let controller = AutonomyController::new();
+    let bought = submit(
+        &mut manager,
+        order("AAA", Side::Buy, "1000"),
+        &mut broker,
+        &controller,
+    );
+    let sold = submit(
+        &mut manager,
+        order("BBB", Side::Sell, "1000"),
+        &mut broker,
+        &controller,
+    );
+    // Premise: both filled half and are open with five hundred left.
+    assert!(bought.accepted && sold.accepted);
+    assert_eq!(manager.open_orders().len(), 2, "premise: both orders open");
+
+    // The desk holds 500 of AAA and 300 of BBB. The sale has 500 left and
+    // only 300 of that takes the long to flat; the other 200 would open a
+    // short the working must not open.
+    let held = BTreeMap::from([
+        (object("AAA").as_str().to_string(), dec!("500")),
+        (object("BBB").as_str().to_string(), dec!("300")),
+    ]);
+    let later = now().saturating_add(Duration::from_secs(60));
+    let worked = manager.work_sales(&mut broker, &controller, &held, later);
+    assert_eq!(
+        worked.len(),
+        1,
+        "a purchase's remainder was worked: {worked:?}"
+    );
+    let sale = &worked[0];
+    assert_eq!(sale.side, Side::Sell);
+    let quantity: Decimal = sale.fills.iter().map(|fill| fill.quantity).sum();
+    assert_eq!(quantity, dec!("300"), "a worked sale sold past flat");
+    assert!(sale.fills.iter().all(|fill| fill.simulated));
+
+    // Working the same book again with nothing left long works nothing.
+    let flat = BTreeMap::from([(object("BBB").as_str().to_string(), Decimal::ZERO)]);
+    assert!(
+        manager
+            .work_sales(&mut broker, &controller, &flat, later)
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// A stopped platform does not trade an order it accepted before it stopped.
+///
+/// Mutation: drop the `is_halted` check in `work_sales` — the halted scope's
+/// sale is worked ("a halted scope's sale was worked").
+#[test]
+fn a_halted_scope_works_nothing() -> Result<()> {
+    let mut manager = manager();
+    let mut broker = half_fills()?;
+    let mut controller = AutonomyController::new();
+    submit(
+        &mut manager,
+        order("BBB", Side::Sell, "1000"),
+        &mut broker,
+        &controller,
+    );
+    controller
+        .kill_switch_mut()
+        .trip_scope("momentum", now(), "risk-monitor", "test halt");
+    let held = BTreeMap::from([(object("BBB").as_str().to_string(), dec!("500"))]);
+    let worked = manager.work_sales(&mut broker, &controller, &held, now());
+    assert!(worked.is_empty(), "a halted scope's sale was worked");
+    Ok(())
+}
+
+/// Working draws nothing from the venue's random stream, so a replay of the
+/// same orders fills the same way whether or not a remainder was worked in
+/// between.
+///
+/// Mutation: draw `self.rng.next_f64()` at the top of
+/// `SimulatedBroker::work` — the next submission's fill id and the
+/// submitted count move ("working moved the venue's random stream").
+#[test]
+fn working_a_remainder_draws_nothing_from_the_venues_random_stream() -> Result<()> {
+    let settings = SimulationSettings::default()
+        .with_rejection_probability(0.3)?
+        .with_immediate_fill_fraction(dec!("0.5"))?;
+    let run = |work: bool| -> Result<Vec<String>> {
+        let mut broker = SimulatedBroker::new(settings, 11);
+        // The venue's own state is all that matters here: the submission
+        // draws, the working must not.
+        // Accepted or rejected, it consumed one draw either way.
+        let first = order("AAA", Side::Sell, "1000");
+        let _first = broker.submit(&first, now());
+        if work {
+            broker.work(&first, dec!("100"), now())?;
+        }
+        let mut outcomes = Vec::new();
+        for index in 0..200 {
+            let mut next = order(&format!("N{index}"), Side::Buy, "10");
+            next.order_id = OrderId::from_string(format!("next-{index}"));
+            outcomes.push(match broker.submit(&next, now()) {
+                Ok(fills) => format!("filled {}", fills.len()),
+                Err(_) => "rejected".to_string(),
+            });
+        }
+        Ok(outcomes)
+    };
+    assert_eq!(
+        run(false)?,
+        run(true)?,
+        "working moved the venue's random stream"
+    );
+    // Premise: the stream does reject sometimes, so equality is not vacuous.
+    assert!(run(false)?.iter().any(|outcome| outcome == "rejected"));
+    Ok(())
+}
+
+#[test]
+fn a_purchase_remainder_the_simulated_venue_never_works_does_not_refuse_a_sale_but_a_sale_remainder_refuses_a_buy()
+-> Result<()> {
+    // ADR 0472 against ADR 0424. The simulated venue fills a fraction of an
+    // order on submission and works the rest of a sale, never the rest of a
+    // purchase. A purchase's remainder therefore stays open on the desk and
+    // rests nowhere a sale could trade with it. The first cut of the
+    // self-trade refusal counted it anyway, and every kernel test that bought
+    // and later sold an instrument on the default venue was refused as a
+    // wash trade: the desk could never sell a partly filled purchase.
+    let partial = SimulationSettings::default()
+        .with_rejection_probability(0.0)
+        .and_then(|s| s.with_immediate_fill_fraction(dec!("0.6")))?;
+    let mut venue = SimulatedBroker::new(partial, 3);
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    // Limit orders priced through the market, so each fills its immediate
+    // fraction and leaves a remainder of a type that rests in a book.
+    let placed = |index: usize, object: &str, side: Side| {
+        let mut order = order(object, side, "10");
+        order.order_id = OrderId::from_string(format!("ord-{object}-{index}"));
+        order.order_type = OrderType::Limit {
+            price: match side {
+                Side::Buy => dec!("1000"),
+                Side::Sell => dec!("1"),
+            },
+        };
+        order
+    };
+
+    // Premise: a buy fills part and leaves an open remainder.
+    let result = submit(
+        &mut manager,
+        placed(0, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "premise: the buy was refused: {:?}",
+        result.refusal
+    );
+    let filled: Decimal = result
+        .fills
+        .iter()
+        .fold(Decimal::ZERO, |sum, fill| sum + fill.quantity);
+    assert!(
+        filled.is_positive() && filled < dec!("10"),
+        "premise: the buy should fill part, filled {filled}"
+    );
+    assert!(!venue.works_remainder(Side::Buy), "premise: ADR 0424");
+
+    // The sale goes: the purchase remainder rests nowhere.
+    let result = submit(
+        &mut manager,
+        placed(1, "AAA", Side::Sell),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "a sale was refused against a purchase remainder nobody works: {:?}",
+        result.refusal
+    );
+
+    // The sale's own remainder is worked by this venue, so a buy now would
+    // trade with it, and is refused before the venue is asked.
+    let submitted = venue.submitted_count();
+    let result = submit(
+        &mut manager,
+        placed(2, "AAA", Side::Buy),
+        &mut venue,
+        &controller,
+    );
+    match result.refusal.as_ref() {
+        Some(RefusalReason::SelfTrade { resting_order, .. }) => {
+            assert_eq!(resting_order, "ord-AAA-1");
+        }
+        other => panic!("expected a self-trade refusal against the sale, got {other:?}"),
+    }
+    assert_eq!(
+        venue.submitted_count(),
+        submitted,
+        "the refused buy reached the venue"
     );
     Ok(())
 }

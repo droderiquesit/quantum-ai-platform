@@ -70,7 +70,7 @@ const COGNITION_PATHS: [&str; 2] = ["/cognition/self-model", "/cognition/precede
 /// The keys `ROUTES-COGNITION.md` promises at the top level of each body.
 fn documented_keys(path: &str) -> &'static [&'static str] {
     match path {
-        "/cognition/self-model" => &["components", "minimum_sample"],
+        "/cognition/self-model" => &["components", "minimum_sample", "health"],
         "/cognition/precedents" => &["precedents"],
         other => panic!("{other} is not a cognition path"),
     }
@@ -560,5 +560,65 @@ fn a_precedent_reason_recorded_is_served_as_the_kernel_holds_it_and_in_its_order
             );
         }
     }
+    Ok(())
+}
+
+/// R12-WORLD-3036: the self-model's health reading is served, and served as
+/// the kernel holds it.
+///
+/// The failure this guards: the kernel wrote a health reading after every
+/// cycle — halted or not, and every §6.2 row that had gone stale — into the
+/// platform's account of itself, and no surface read it, so an operator
+/// could see a halted platform's component grades and not that it was
+/// halted. Before the first cycle there is no reading, and the body says
+/// `null` rather than an invented healthy one.
+///
+/// Mutation: build the body with `health: None` — the post-cycle assertion
+/// that the reading is present fails.
+#[test]
+fn the_self_models_health_reading_is_served_as_the_kernel_holds_it_and_null_before_one()
+-> Result<()> {
+    let rig = rig()?;
+    let (text, body) = body_of(rig.get("/cognition/self-model"));
+    assert_eq!(body["health"], serde_json::Value::Null, "{text}");
+
+    let held = rig.with_platform(|platform| {
+        platform.run_cycle(start());
+        platform.self_model().health().cloned()
+    })?;
+    // Premise: the cycle took a reading, and it names at least one row, so
+    // the comparison below is over something.
+    let held = held.expect("premise: a cycle records a health reading");
+    assert!(
+        !held.degraded.is_empty(),
+        "premise: a fresh platform's self-model reads stale, so a row is degraded"
+    );
+
+    let (text, body) = body_of(rig.get("/cognition/self-model"));
+    let health = &body["health"];
+    assert!(
+        health.is_object(),
+        "the reading the kernel holds was not served: {text}"
+    );
+    assert_eq!(
+        health["observed_at"],
+        serde_json::json!(held.observed_at.to_rfc3339())
+    );
+    assert_eq!(health["halted"], serde_json::json!(held.halted));
+    let expected: serde_json::Map<String, serde_json::Value> = held
+        .degraded
+        .iter()
+        .map(|(row, freshness)| {
+            (
+                row.as_str().to_string(),
+                serde_json::json!(freshness.as_str()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        health["degraded"],
+        serde_json::Value::Object(expected),
+        "{text}"
+    );
     Ok(())
 }

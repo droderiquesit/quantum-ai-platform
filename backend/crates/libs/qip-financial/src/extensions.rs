@@ -409,8 +409,19 @@ pub struct RepoDetails {
 pub struct FxDetails {
     pub base_currency: Currency,
     pub quote_currency: Currency,
+    /// When the instrument settles: a forward's one date, and a swap's far
+    /// leg.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement_date: Option<Timestamp>,
+    /// An `FxSwap`'s near leg, the exchange `settlement_date` reverses.
+    ///
+    /// `None` for a spot or an outright forward. A swap is two exchanges on
+    /// two dates, and a record holding one date could only be valued as a
+    /// forward on that date, which prices the far leg and drops the near
+    /// one — the swap points are the difference between the two legs, so a
+    /// swap with one date has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near_settlement_date: Option<Timestamp>,
     /// Forward points in pips over spot; zero for a spot pair.
     pub forward_points: f64,
     /// Interest rate differential implied by covered interest parity.

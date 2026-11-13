@@ -210,6 +210,15 @@ pub enum Decision {
         quote_unit: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fee: Option<String>,
+        /// The sequence of the cell's own [`Self::OrderSent`] entry for
+        /// `order_id` on this session's chain: the decision the fill rests
+        /// on, whose contributors are `shares` (ADR 0454). Optional and
+        /// skipped when absent for the reason `side` is, so every digest a
+        /// cell sealed before it existed stays where it was; an absent value
+        /// means the producer stated no decision, and the ledger books such
+        /// a fill at schema 1 only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision_sequence: Option<u64>,
     },
     /// A position was hedged by placing an offset order at a venue.
     ///
@@ -693,6 +702,28 @@ pub enum Decision {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decision: Option<crate::policy::DecisionOrigin>,
     },
+    /// The simulated venue reported that the fills on `order_id` settled on
+    /// `settlement_date` (ADR 0130 decision 2, ADR 0440).
+    ///
+    /// The venue observes settlement; the ledger never computes it. A ledger
+    /// that dated settlement itself would book a fact nobody observed, so the
+    /// only path from `in_settlement:` to `trading:` is this record, booked
+    /// once per order and refused when nothing on that order is in
+    /// settlement. `simulated` is the same paper fence a fill carries, and
+    /// the ledger refuses a `Settled` with it `false` exactly as it refuses a
+    /// live fill.
+    ///
+    /// Appended last, and a new variant rather than a field on
+    /// [`Self::Filled`], so no sealed entry's serialised form — and so no
+    /// digest — moves, and the locked shape of a `Filled` sample does not
+    /// change (owner decision 26 holds a `Filled` shape change for the
+    /// fabric versioning ADR).
+    Settled {
+        order_id: String,
+        venue: String,
+        settlement_date: Timestamp,
+        simulated: bool,
+    },
 }
 
 /// The id of the decision chain an order belongs to: the cell, the session
@@ -731,7 +762,8 @@ impl Decision {
             | Self::CycleRested { order_id, .. }
             | Self::RequoteWithdrawn { order_id, .. }
             | Self::OrderReplaced { order_id, .. }
-            | Self::ChainOpened { order_id, .. } => Some(order_id),
+            | Self::ChainOpened { order_id, .. }
+            | Self::Settled { order_id, .. } => Some(order_id),
             _ => None,
         }
     }
@@ -782,6 +814,7 @@ impl Decision {
             Self::OrderReplaced { .. } => "order_replaced",
             Self::DegradationChanged { .. } => "degradation_changed",
             Self::ChainOpened { .. } => "chain_opened",
+            Self::Settled { .. } => "settled",
         }
     }
 }

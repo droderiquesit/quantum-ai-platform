@@ -6423,20 +6423,19 @@ fn a_billing_budget_notifies_and_never_carries_a_programmatic_action() {
 }
 
 #[test]
-fn cost_anomalies_are_not_yet_journaled_to_fabric_tasks() {
-    // GAP PIN (FINOPS-018): budget alerts and cost-anomaly jobs must raise
-    // Fabric tasks, journaling project, labels, amount and threshold, with
-    // dedup. None of that exists. The previous version of this test said it
-    // "fails if any of these exist" and then asserted only that a billing
-    // budget did — it could not fail on any of the three things it named.
-    // It now asserts each absence, so the first piece to land fails it and
-    // it is replaced with the integration test the requirement asks for
-    // (a billing-export fixture in, one task out, a duplicate refused).
+fn no_scheduled_job_feeds_the_cost_anomaly_detector_yet() {
+    // GAP PIN (FINOPS-018, R12-FINOPS-10141). The detector and the task
+    // adapter landed on 2026-11-12 (`qip_observability::billing::detect`,
+    // `qip_kernel::cost_anomaly_tasks::journal`) and are proven below by the
+    // integration test the old pin asked for. What has not landed is the job:
+    // nothing schedules a read of the billing export, and no budget notifies
+    // a topic a job could listen on. This pin is the Terraform half of the
+    // test it replaces, kept unchanged, so the first piece of the job to land
+    // fails it and it is replaced with a test of the job.
     //
-    // Mutation: add `pub struct CostAnomalyTask;` to any crate's `src/` — the
-    // Rust assertion fires. Add a `google_bigquery_data_transfer_config` (a
-    // scheduled anomaly query) to any module — the Terraform assertion fires.
-    // Route the budget to a `pubsub_topic` — the notification assertion fires.
+    // Mutation: add a `google_bigquery_data_transfer_config` (a scheduled
+    // anomaly query) to any module — the Terraform assertion fires. Route the
+    // budget to a `pubsub_topic` — the notification assertion fires.
     let mut budget_count = 0usize;
     let mut tf_files = 0usize;
     for path in files_with_extension("infrastructure/terraform", "tf") {
@@ -6464,29 +6463,77 @@ fn cost_anomalies_are_not_yet_journaled_to_fabric_tasks() {
         budget_count >= 1,
         "premise: the budget that would feed the path exists"
     );
+}
 
-    // No Rust identifier in production code names a cost anomaly or a budget
-    // alert. Compared on identifiers with `_` removed and lowercased, so
-    // `CostAnomaly`, `cost_anomaly_task` and `BudgetAlertRaised` all match and
-    // prose in comments (dropped by `production_text`) does not.
-    let mut rust_files = 0usize;
-    for path in files_with_extension("backend/crates", "rs") {
-        if !path.display().to_string().contains("/src/") {
-            continue;
-        }
-        rust_files += 1;
-        let text =
-            qip_acceptance::production_text(&std::fs::read_to_string(&path).expect("readable"));
-        for identifier in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-            let folded = identifier.replace('_', "").to_lowercase();
-            assert!(
-                !folded.contains("costanomaly") && !folded.contains("budgetalert"),
-                "{} declares `{identifier}` — FINOPS-018's path may be landing",
-                path.display()
-            );
-        }
-    }
-    assert!(rust_files > 100, "premise: the Rust sources were walked");
+#[test]
+fn a_billing_export_fixture_raises_one_journaled_cost_anomaly_task_and_a_duplicate_is_refused() {
+    // FINOPS-018's integration test, as the pin it replaces described it: a
+    // billing-export fixture in, one task out, a duplicate refused. The
+    // failure it guards: a budget breach reached nobody's record, and a
+    // re-delivered export would raise the same breach twice.
+    use qip_core::Decimal;
+    use qip_core::time::{Duration, Timestamp};
+    use qip_events::log::EventLog;
+    use qip_events::topic::Topic;
+    use qip_kernel::cost_anomaly_tasks::{CostAnomalyTask, journal};
+    use qip_observability::billing::{BillingRow, SpendThreshold, detect};
+    use std::collections::BTreeMap;
+
+    let day = |n: i64| Timestamp::from_secs(1_798_761_600 + n * 86_400);
+    let labels = |team: &str| BTreeMap::from([("team".to_string(), team.to_string())]);
+    let row = |team: &str, cost: &str, at: Timestamp| BillingRow {
+        project: "qip-dev".to_string(),
+        service: "BigQuery".to_string(),
+        labels: labels(team),
+        cost: Decimal::parse(cost).expect("a decimal"),
+        currency: "USD".to_string(),
+        usage_start: at,
+        usage_end: at.saturating_add(Duration::from_hours(1)),
+    };
+    let export = vec![
+        row("research", "30.00", day(0)),
+        row("research", "45.00", day(1)),
+        row(
+            "research",
+            "80.00",
+            day(1).saturating_add(Duration::from_hours(6)),
+        ),
+        row("platform", "999.00", day(1)),
+    ];
+    let thresholds = [SpendThreshold {
+        project: "qip-dev".to_string(),
+        selector: labels("research"),
+        threshold: Decimal::parse("100.00").expect("a decimal"),
+        window: Duration::from_days(1),
+    }];
+    let anomalies = detect(&export, &thresholds).expect("the fixture is well formed");
+    assert_eq!(anomalies.len(), 1, "{anomalies:?}");
+    assert_eq!(
+        anomalies[0].amount,
+        Decimal::parse("125.00").expect("a decimal")
+    );
+
+    let mut log = EventLog::in_memory();
+    let first = journal(&mut log, &anomalies, day(2)).expect("journaled");
+    assert_eq!(first.written.len(), 1);
+    let again = journal(&mut log, &anomalies, day(2)).expect("journaled");
+    assert!(again.written.is_empty(), "{again:?}");
+    assert_eq!(again.duplicates.len(), 1);
+
+    let tasks = log.by_topic(Topic::SystemAlert);
+    assert_eq!(
+        tasks.len(),
+        1,
+        "one task per breach, however often it is reported"
+    );
+    let task: CostAnomalyTask =
+        serde_json::from_value(tasks[0].payload.clone()).expect("a cost-anomaly task");
+    assert_eq!(
+        (task.anomaly.project.as_str(), &task.anomaly.labels),
+        ("qip-dev", &labels("research"))
+    );
+    assert_eq!(task.anomaly.threshold, thresholds[0].threshold);
+    assert_eq!(log.verify_chain(), Ok(()));
 }
 
 // --- retention (FINOPS-014) --------------------------------------------------
@@ -13832,12 +13879,111 @@ fn the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuratio
         "the ledger's Spanner instance does not pin `edition = \"ENTERPRISE_PLUS\"`; a project \
          default is an edition nobody reviewed"
     );
+    // Since ADR 0393 the configuration is read from the placement decided for
+    // the writer's region, so the instance names the map's entry and the map
+    // holds the names. Every name in it must be a multi-region configuration.
+    // Google names a regional configuration `regional-<region>` and a
+    // multi-region one without that prefix (`nam3`, `eur5`, `nam-eur-asea1`);
+    // this said "contains a hyphen" until 2026-11-12, which `nam3` refutes.
     let config = hcl_field(global, "config").expect("the instance names a `config`");
-    let config = config.trim_matches('"');
     assert!(
-        config.contains('-') && !config.starts_with("regional-"),
-        "the ledger's instance config `{config}` is a single region, not a multi-region \
-         configuration; external consistency across regions needs one"
+        config.contains("local.spanner_placement.config"),
+        "the ledger's instance config `{config}` is not the placement ADR 0393 decides for the \
+         writer's region"
+    );
+    let placements = block_under(&data, "spanner_placements = {");
+    let configs: Vec<&str> = placements
+        .lines()
+        .filter_map(|line| line.split_once("config = \"")?.1.split_once('"'))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        !configs.is_empty(),
+        "premise: local.spanner_placements names no configuration, so nothing below is checked"
+    );
+    // ADR 0394: a name is admitted only if Google lists it as a multi-region
+    // configuration. Until 2026-11-12 this refused only the `regional-`
+    // prefix, which admitted a bare region (`us-east4`), a dual-region
+    // configuration, and a misspelling such as the `nam-eur-asea` the ledger
+    // was declared on for months — a string Google never published.
+    for config in configs {
+        assert!(
+            !config.starts_with("regional-"),
+            "the ledger's placement config `{config}` is a single region, not a multi-region \
+             configuration; external consistency across regions needs one"
+        );
+        assert!(
+            GOOGLE_SPANNER_MULTI_REGION_CONFIGS.contains(&config),
+            "the ledger's placement config `{config}` is not one of Google's multi-region Spanner \
+             configurations ({GOOGLE_SPANNER_MULTI_REGION_CONFIGS:?}); a single region, a \
+             dual-region configuration or a misspelt name is not the placement ADR 0394 admits"
+        );
+    }
+}
+
+/// Google's multi-region Spanner instance configurations, as the
+/// instance-configuration page
+/// (`docs.cloud.google.com/spanner/docs/instance-configurations`) listed them
+/// on 2026-11-12: the one-continent set and the two three-continent ones. The
+/// `dual-region-*` configurations and every `regional-*` one are left out on
+/// purpose (ADR 0394). A name Google adds later is admitted by adding it here
+/// in a reviewed change, not by a pattern that also admits what Google never
+/// published.
+const GOOGLE_SPANNER_MULTI_REGION_CONFIGS: &[&str] = &[
+    "asia1",
+    "asia2",
+    "eur3",
+    "eur5",
+    "eur6",
+    "eur7",
+    "nam3",
+    "nam6",
+    "nam7",
+    "nam8",
+    "nam9",
+    "nam10",
+    "nam11",
+    "nam12",
+    "nam13",
+    "nam14",
+    "nam15",
+    "nam16",
+    "nam22",
+    "nam23",
+    "nam24",
+    "nam-eur-asia1",
+    "nam-eur-asia3",
+];
+
+#[test]
+fn the_multi_region_list_admits_nam3_and_refuses_a_regional_a_single_region_and_a_misspelt_name() {
+    // The list is the guard above; this proves it has both halves. A list
+    // that admitted nothing would fail the placement test for the wrong
+    // reason, and one that admitted a bare region would pass it for one.
+    let admits = |name: &str| GOOGLE_SPANNER_MULTI_REGION_CONFIGS.contains(&name);
+    assert!(
+        admits("nam3"),
+        "nam3, ADR 0393's placement, is not admitted"
+    );
+    for refused in [
+        "regional-us-east4",
+        "regional-europe-west2",
+        "us-east4",
+        "europe-west1",
+        "dual-region-germany1",
+        "nam-eur-asea",
+        "",
+    ] {
+        assert!(
+            !admits(refused),
+            "`{refused}` is admitted as a multi-region Spanner configuration"
+        );
+    }
+    assert!(
+        GOOGLE_SPANNER_MULTI_REGION_CONFIGS
+            .iter()
+            .all(|name| !name.starts_with("regional-") && !name.starts_with("dual-region-")),
+        "the multi-region list holds a regional or dual-region configuration"
     );
 }
 

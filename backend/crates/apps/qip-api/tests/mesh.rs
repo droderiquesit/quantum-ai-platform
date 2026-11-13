@@ -63,6 +63,49 @@ fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
 
+/// ADR 0392: run the four promotion tests on `teacher`'s artifact over a
+/// recorded window of the two features every fixture here is fitted on —
+/// sixty later rows of the same process — and assert the premise that it
+/// passed them, so a refusal further on is about the promotion.
+fn tested(
+    registry: &mut qip_ai::registry::ModelRegistry,
+    teacher: &qip_training::local::TrainedTeacher,
+) -> qip_core::error::Result<()> {
+    use qip_training::serve::InTreeProvider;
+    let mut rows = Vec::new();
+    let mut targets = Vec::new();
+    let mut times = Vec::new();
+    for i in 200..260usize {
+        let a = (i as f64 * 0.37).sin();
+        let b = (i as f64 * 0.11).cos();
+        let residual = ((i * 7919) % 13) as f64 / 13.0 * 0.02 - 0.01;
+        rows.push(vec![a, b]);
+        targets.push(0.5 * a - 0.25 * b + 0.1 + residual);
+        times.push(start().saturating_add(qip_core::Duration::from_mins(i as i64)));
+    }
+    let recorded = qip_training::dataset::TrainingDataset::new(
+        format!("{}-recorded", teacher.name()),
+        teacher.feature_names().to_vec(),
+        rows,
+        targets,
+        times,
+    )?;
+    let artifact = InTreeProvider::pack(teacher)?;
+    let tests = qip_kernel::central::models::run_promotion_tests(
+        &InTreeProvider,
+        registry,
+        &artifact,
+        &recorded,
+        start(),
+    )?;
+    assert_eq!(
+        tests.gap(&artifact.digest),
+        None,
+        "premise: the fit passed its four promotion tests"
+    );
+    Ok(())
+}
+
 fn at(offset: Duration) -> Timestamp {
     start().saturating_add(offset)
 }
@@ -2670,6 +2713,17 @@ fn the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_t
         "mesh-tests",
         start(),
     )?;
+    tested(&mut registry, &teacher)?;
+    // ADR 0436: a training-pipeline candidate is promoted only out of a
+    // completed simulation or paper trial.
+    for round in 1..=i64::from(qip_ai::registry::MIN_TRIAL_ROUNDS) {
+        registry.record_trial_round(
+            &registration.reference,
+            qip_ai::registry::TrialVenue::Paper,
+            "staged by the test",
+            start().saturating_add(Duration::from_secs(round)),
+        )?;
+    }
     assert!(
         registration.passed,
         "premise: the fit cleared the skill bar"
@@ -3166,5 +3220,143 @@ fn a_running_backbone_stops_signing_with_the_shared_key_at_its_removal_date() ->
     mesh.bind_shared_key_to(qip_core::deployment::Deployment::Local);
     assert_eq!(mesh.dispatch_policy(pending(after), after).sent, 1);
     assert_eq!(mesh.broadcast_halt("drill", after).sent, 1);
+    Ok(())
+}
+
+/// R12-CAPITAL-10098 (ADR 0407): the centre's hedge narrowing reaches the
+/// cell over the real socket, signed under the envelope key the cell checks,
+/// with the target the plane derived from the cell's own stated book, and is
+/// sent once.
+///
+/// Until this producer existed `PolicyCourier::send_hedge` had no caller, so
+/// a hedge plan could not leave the centre however it was decided. Premise
+/// first: the cell's statement and the settled book agree on the instrument
+/// and its venue is granted, so the target below is the rule's and not an
+/// accident of a disputed book.
+#[test]
+fn a_hedge_narrowing_the_plane_derives_from_a_cells_book_reaches_the_cell_signed_and_is_sent_once()
+-> Result<()> {
+    use qip_api::mesh::PendingPolicy;
+    use qip_contracts::HedgePlan;
+    use qip_contracts::control::{
+        Exposure, HedgeInstrument, HedgeLiquidity, HedgePlanFields, HedgeRollback, HedgeSide,
+    };
+    use qip_contracts::wire::AdvisoryPosition;
+
+    let rig = rig(64)?;
+    {
+        let mut platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        grant_the_desk(platform.central_mut())?;
+    }
+    let mut stated = delta(1);
+    for order in &mut stated.orders {
+        order.venue = desk_venue();
+    }
+    for fill in &mut stated.fills {
+        fill.venue = desk_venue();
+    }
+    stated.positions = vec![AdvisoryPosition {
+        object_id: ObjectId::from_string("ACME"),
+        venue: desk_venue(),
+        quantity: Decimal::from_int(60),
+    }];
+    stated.positions_as_of = 1;
+    assert!(
+        uplink(&rig, "uplink-hedge")?
+            .publish(stated, start())?
+            .is_delivered()
+    );
+    let cycle = run_cycle(&rig)?;
+    assert_eq!(cycle["mesh"]["drained"]["absorbed"], 1, "{cycle}");
+
+    let plan = HedgePlan::new(HedgePlanFields {
+        schema_version: 1,
+        plan_id: "hedge-plan-1".to_string(),
+        exposures: vec![Exposure {
+            risk_factor: "equity-beta".to_string(),
+            amount: Decimal::from_int(6_000),
+        }],
+        scenarios_protected: vec!["credit-crisis-2008".to_string()],
+        instruments: vec![HedgeInstrument {
+            instrument: "ACME".to_string(),
+            venue: desk_venue(),
+            side: HedgeSide::Sell,
+            quantity: Decimal::from_int(30),
+        }],
+        cost: Decimal::from_int(10),
+        liquidity: HedgeLiquidity {
+            max_adv_share_bp: 5,
+            time_to_exit: Duration::from_hours(1),
+        },
+        rollback: HedgeRollback {
+            trigger: "equity beta below 0.2".to_string(),
+            steps: vec!["buy back ACME".to_string()],
+        },
+    })?;
+    let now = at(Duration::from_secs(5));
+    let distribution = {
+        let platform = rig
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        let book = platform
+            .central()
+            .advisory_book(CELL)
+            .ok_or_else(|| Error::not_found("the cell's stated book"))?;
+        assert!(
+            book.disagreements.is_empty(),
+            "premise: the statement agrees with the settled book: {:?}",
+            book.disagreements
+        );
+        platform
+            .central()
+            .hedge_narrowings(&plan, start(), [CELL], now)
+    };
+    assert_eq!(distribution.narrowings.len(), 1, "{:?}", distribution.lines);
+    let pending = || PendingPolicy {
+        hedges: distribution
+            .narrowings
+            .iter()
+            .map(|narrowing| (narrowing.cell.clone(), narrowing.clone()))
+            .collect(),
+        ..PendingPolicy::default()
+    };
+
+    let mut downlink = policy_downlink(&rig, "policy-hedge")?;
+    let first = rig
+        .mesh
+        .lock()
+        .map_err(|_| Error::invalid("the mesh lock is poisoned"))?
+        .dispatch_policy(pending(), now);
+    assert_eq!(first.hedges_sent, 1, "{:?}", first.errors);
+    let again = rig
+        .mesh
+        .lock()
+        .map_err(|_| Error::invalid("the mesh lock is poisoned"))?
+        .dispatch_policy(pending(), now);
+    assert_eq!(
+        again.hedges_sent, 0,
+        "a narrowing the cell already holds was sent again, to be refused as at-or-behind"
+    );
+
+    let batch = downlink.poll(at(Duration::from_secs(6)))?;
+    assert!(batch.refused.is_empty(), "{:?}", batch.refused);
+    assert_eq!(batch.hedges.len(), 1, "one narrowing, delivered once");
+    let hedge = &batch.hedges[0];
+    assert_eq!(hedge.plan_id(), "hedge-plan-1");
+    let target = hedge
+        .targets()
+        .first()
+        .ok_or_else(|| Error::not_found("a target"))?;
+    assert_eq!(target.venue, desk_venue());
+    assert_eq!(target.object_id.as_str(), "ACME");
+    assert_eq!(
+        target.target_net,
+        Decimal::from_int(30),
+        "the cell holds 60 and the plan sells 30 of it"
+    );
     Ok(())
 }

@@ -195,6 +195,12 @@ fn run() -> Result<()> {
                 qip_kernel::counterfactual_alternatives::CounterfactualAlternatives::committed()?,
             ),
     )?;
+    // The desk mandate's risk tolerance (ADR 0405): unset is the operator's
+    // limits exactly, and an unreadable value stops the process here, before
+    // a platform is assembled on it.
+    let (platform_config, tolerance_banner) =
+        with_desk_risk_tolerance_from(platform_config, &|name| std::env::var(name))?;
+    println!("  risk tolerance:   {tolerance_banner}");
     // A committed tape, opened before the platform exists because the
     // platform's clock has to be the tape's: opportunities expire at tape
     // time, and a router asked for a latency budget from the wall clock
@@ -263,11 +269,24 @@ fn run() -> Result<()> {
     // model is: the in-tree provider serves the four forms this platform
     // trains and nothing else, and the kernel's own constructor holds one
     // that serves nothing, so a platform a test builds promotes no model.
+    // The synthetic arm's demo exchange, built before the platform so the
+    // platform is assembled over the instruments it prices (R12-REASON-3057):
+    // the demo's dated future was observed on every cycle and listed in no
+    // universe the platform held, so the contract rule had nothing to read.
+    // The same environment becomes the evolution engine's adapter below.
+    let (platform_universe, mut synthetic_arm) = qip_deepbrain::reference::node_assembly(
+        catalogue.universe,
+        tape_feed.is_some(),
+        replay_path.is_some(),
+        platform_config.seed,
+        config.cycle_interval,
+        clock.now(),
+    )?;
     let mut platform = Platform::with_model_provider(
         platform_config,
         context,
         telemetry,
-        catalogue.universe,
+        platform_universe,
         limits,
         language_model.chain.clone(),
         Box::new(qip_training::serve::InTreeProvider),
@@ -591,29 +610,23 @@ fn run() -> Result<()> {
             }
         }
         (None, None) => {
-            // The bar interval must match the step, or a fast cadence
-            // closes a bar every sixty cycles and the node runs blind for
-            // hours while looking configured — the trap the fast brain's
-            // feed documents, walked into here once before this comment.
-            let synthetic = qip_market_ingestion::synthetic::EnvironmentConfig {
-                seed: platform.config().seed,
-                step: config.cycle_interval,
-                bar_interval: if config.cycle_interval < qip_core::Duration::from_mins(1) {
-                    qip_market::bar::Interval::Second
-                } else {
-                    qip_market::bar::Interval::Minute
-                },
-                ..qip_market_ingestion::synthetic::EnvironmentConfig::default()
-            };
             // One instrument list for prices and reference data alike, with
             // provenance and licensing stamped synthetic. Deriving the
             // universe from the environment rather than declaring a second
             // one is what keeps the two from drifting — a listing the
             // exchange does not price, or a price the universe does not
-            // list, would each turn the loop quietly off again.
+            // list, would each turn the loop quietly off again. The
+            // environment is the one the platform's universe was merged
+            // from above, so the two cannot disagree either.
+            let environment = synthetic_arm.take().ok_or_else(|| {
+                Error::invalid(
+                    "the synthetic arm's environment was not built before the platform; this is \
+                     an assembly defect, refusing to start on a second, different demo exchange",
+                )
+            })?;
             qip_deepbrain::evolution::EvolutionEngine::over_synthetic(
                 evolution_config,
-                qip_market_ingestion::synthetic::SyntheticEnvironment::demo(clock.now(), synthetic),
+                environment,
                 platform.config().seed,
                 clock.now(),
             )?
@@ -883,6 +896,15 @@ fn run() -> Result<()> {
     let research_config =
         qip_deepbrain::research::ResearchConfig::from_lookup(&|name| std::env::var(name).ok())
             .map_err(configuration)?;
+    println!(
+        "  opportunity sentinels: {} ({})",
+        if research_config.opportunity_sentinel {
+            "on"
+        } else {
+            "off"
+        },
+        qip_deepbrain::research::OPPORTUNITY_SENTINEL_VARIABLE
+    );
     println!(
         "  research:         {}",
         if research_config.every_cycles == 0 {
@@ -1750,6 +1772,46 @@ fn apply_survival_policy_from(
     Ok(policy.describe())
 }
 
+/// Read the desk mandate's risk tolerance into the platform's configuration
+/// (ADR 0405), returning the start-up line that says which limits are in
+/// force.
+///
+/// Unset is one: the operator's limit set exactly as written, which is what
+/// this binary ran before the setting existed. A value that is present and is
+/// not a fraction in `[0, 1]` stops the process with the variable named —
+/// see `qip_kernel::limit_narrowing::desk_risk_tolerance_from_setting`. It is
+/// never clamped, and never read as unset: a desk that believed it had
+/// narrowed its limits would otherwise be running the full ceiling.
+///
+/// Over any lookup, so the refusals are testable without touching the
+/// process environment. The kernel does not read this variable; it reads the
+/// tolerance back from the mandate registry this configuration builds.
+fn with_desk_risk_tolerance_from(
+    config: PlatformConfig,
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<(PlatformConfig, String)> {
+    use qip_kernel::limit_narrowing::{
+        DESK_RISK_TOLERANCE_VARIABLE, describe_desk_risk_tolerance,
+        desk_risk_tolerance_from_setting,
+    };
+    let setting = match lookup(DESK_RISK_TOLERANCE_VARIABLE) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(Error::invalid(format!(
+                "configuration: {DESK_RISK_TOLERANCE_VARIABLE} is not valid UTF-8; write a \
+                 fraction in [0, 1] such as 0.5, or unset it to run the operator's limits \
+                 exactly as written — an unreadable tolerance is not a tolerance of one"
+            )));
+        }
+    };
+    let tolerance = desk_risk_tolerance_from_setting(setting.as_deref())?;
+    Ok((
+        config.with_desk_risk_tolerance(tolerance),
+        describe_desk_risk_tolerance(tolerance, setting.is_some()),
+    ))
+}
+
 /// The reading half of [`apply_survival_policy`], over any lookup, so the
 /// refusals are testable without touching the process environment.
 fn survival_policy_from(
@@ -2309,5 +2371,80 @@ mod tests {
         super::apply_survival_policy_from(&mut platform, &|_| Err(std::env::VarError::NotPresent))
             .expect("the root installs the shipped policy");
         assert_eq!(platform.survival_policy(), &unset);
+    }
+    /// The root's own reading of `QIP_DESK_RISK_TOLERANCE` (ADR 0405), driven
+    /// through the function `main` calls rather than the kernel's parser
+    /// beside it: a test of the parser alone passes with the root's call
+    /// deleted. Mutations, each of which fired: return the configuration
+    /// without the tolerance installed; read a non-UTF-8 variable as unset;
+    /// swallow the parser's refusal to a tolerance of one.
+    fn only_desk_tolerance(
+        value: &'static str,
+    ) -> impl Fn(&str) -> std::result::Result<String, std::env::VarError> {
+        move |name: &str| {
+            if name == qip_kernel::limit_narrowing::DESK_RISK_TOLERANCE_VARIABLE {
+                Ok(value.to_string())
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        }
+    }
+
+    #[test]
+    fn an_unset_desk_tolerance_runs_the_operators_limits_a_stated_one_narrows_and_an_unreadable_one_stops_the_process()
+     {
+        // Absent: one, and the line says nothing was narrowed.
+        let (config, line) =
+            super::with_desk_risk_tolerance_from(qip_kernel::PlatformConfig::default(), &|_| {
+                Err(std::env::VarError::NotPresent)
+            })
+            .expect("an unset tolerance is the operator's limits");
+        assert_eq!(config.desk_risk_tolerance, qip_core::Decimal::ONE);
+        assert_eq!(config, qip_kernel::PlatformConfig::default());
+        assert!(
+            line.contains("unset") && line.contains("exactly as written"),
+            "{line}"
+        );
+
+        // Stated: it reaches the configuration the platform is assembled from.
+        let (config, line) = super::with_desk_risk_tolerance_from(
+            qip_kernel::PlatformConfig::default(),
+            &only_desk_tolerance("0.5"),
+        )
+        .expect("a fraction is a tolerance");
+        assert_eq!(config.desk_risk_tolerance, qip_core::dec!("0.5"));
+        assert!(line.contains("at 0.5 of its ceiling"), "{line}");
+
+        // Unreadable: the process does not start. Never one, never clamped.
+        for value in ["half", "", "50", "1.5", "-0.1"] {
+            let Err(error) = super::with_desk_risk_tolerance_from(
+                qip_kernel::PlatformConfig::default(),
+                &only_desk_tolerance(value),
+            ) else {
+                panic!("a desk tolerance of {value:?} was admitted");
+            };
+            assert!(
+                error
+                    .message()
+                    .contains(qip_kernel::limit_narrowing::DESK_RISK_TOLERANCE_VARIABLE)
+                    && error.message().contains("write a fraction"),
+                "{value:?}: {}",
+                error.message()
+            );
+        }
+        let Err(error) =
+            super::with_desk_risk_tolerance_from(qip_kernel::PlatformConfig::default(), &|_| {
+                Err(std::env::VarError::NotUnicode(std::ffi::OsString::from(
+                    "x",
+                )))
+            })
+        else {
+            panic!("an unreadable desk tolerance was read as unset");
+        };
+        assert!(
+            error.message().contains("not valid UTF-8"),
+            "{}",
+            error.message()
+        );
     }
 }

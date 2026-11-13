@@ -848,6 +848,48 @@ fn assert_refused_for(
 }
 
 #[test]
+fn a_journaled_rule_verdict_carrying_a_proof_step_the_pack_never_took_is_refused_on_replay()
+-> Result<()> {
+    // R12-REASON-1138. The failure this guards: the rule verdict is journaled
+    // with its proof trace, and replay is what makes that trace evidence.
+    // `rules.verified` is computed when the record is written, so it says
+    // nothing about the record read back; a trace edited afterwards to cite a
+    // rule that never fired would read as a proof unless replay re-derives
+    // it. The fixture's facts fire no rule, so the journaled trace is empty
+    // and any step in it is a fabrication.
+    let (platform, derivation) = journaled_derivation()?;
+    let Step::Derived(verdict) = &derivation.rules.verdict else {
+        panic!(
+            "premise: the rule pack derived a verdict: {:?}",
+            derivation.rules.verdict
+        );
+    };
+    assert!(
+        verdict.trace.is_empty(),
+        "premise: the fixture fires no rule, so a pushed step is not one the pack took: {:?}",
+        verdict.trace
+    );
+    let mut corrupted = derivation.clone();
+    if let Step::Derived(verdict) = &mut corrupted.rules.verdict {
+        verdict.trace.push(qip_reasoning_engine::rules::TraceStep {
+            rule: "r10-eligible".to_string(),
+            fact: "eligible".to_string(),
+            value: qip_reasoning_engine::rules::Value::Bool(true),
+        });
+    }
+    let refusal = symbolic_stage::verify(&corrupted, platform.world().causal())
+        .expect_err("a verdict with a fabricated proof step was accepted as reproducible");
+    assert!(
+        refusal
+            .message()
+            .contains("the claimed verdict differs from re-evaluation of the pack"),
+        "refused, but not for the rule verdict: {}",
+        refusal.message()
+    );
+    Ok(())
+}
+
+#[test]
 fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay()
 -> Result<()> {
     // R12-REASON-1133. The failure this guards: replay re-checked only the
@@ -1943,5 +1985,152 @@ fn a_cycle_with_a_macro_surprise_feeds_the_macro_member_and_a_cycle_without_one_
             .map(|a| a.proposition.clone())
             .collect::<Vec<_>>())
     );
+    Ok(())
+}
+
+/// R12-REASON-3055: the settlement lag the platform hands the timeline is
+/// walked in settlement days on the home jurisdiction's calendar. The failure
+/// this guards: the lag was the convention's count of calendar days, so a
+/// T+1 claim formed on a Friday read as settling on the Saturday and a claim
+/// due over the weekend was admitted as resolving after its trade settled.
+/// The fixture's start is a Thursday; this cycle runs a day later, on the
+/// Friday, so a one-day convention must cross the weekend. Mutation: hand
+/// `Duration::from_days(convention.days())` again in the platform's
+/// settlement member and the lag is one day, not three.
+#[test]
+fn a_friday_claims_settlement_lag_is_walked_in_settlement_days_across_the_weekend() -> Result<()> {
+    let friday = start().saturating_add(Duration::from_days(1));
+    // Premise: the fixture's start is a Thursday (Monday = 0), so this is a
+    // Friday and the next calendar day settles nothing.
+    assert_eq!(start().weekday(), 3, "the fixture start is a Thursday");
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(friday, config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(friday);
+    let derivations = symbolic_stage::replay(&platform)?;
+    let inputs = derivations
+        .first()
+        .and_then(|derivation| derivation.temporal.inputs.clone())
+        .expect("the Friday cycle formed a hypothesis and kept its timeline inputs");
+    let (convention, lag) = inputs
+        .settlement
+        .expect("the platform handed the subject's settlement convention");
+    assert_eq!(
+        inputs.formed_at.weekday(),
+        4,
+        "the claim was formed on the Friday"
+    );
+    assert_eq!(convention, "T+1", "the fixture's common stock settles T+1");
+    assert_eq!(
+        lag,
+        Duration::from_days(3),
+        "a Friday T+1 settles on the Monday, three calendar days on, not on the Saturday"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_journaled_derivation_carries_its_subject_as_a_closed_knowledge_graph_and_replay_refuses_an_edited_closure()
+-> Result<()> {
+    // R12-REASON-3054. The failure this guards: the cycle typed a subject
+    // against a list of names and could not say what followed from the
+    // type — that an equity is an instrument, that a hypothesis about an
+    // anomaly on it rests on it. Every fact below is one the cycle inferred
+    // rather than asserted, read back from the journal.
+    use qip_reasoning_engine::ontology::{Derivation, Fact};
+    let (platform, derivation) = journaled_derivation()?;
+    let knowledge = derivation
+        .knowledge
+        .as_ref()
+        .expect("the cycle journals a knowledge-graph part");
+    let Step::Derived(inference) = &knowledge.inference else {
+        panic!(
+            "the knowledge graph refused the cycle's facts: {:?}",
+            knowledge.inference
+        );
+    };
+    assert!(inference.is_consistent(), "{:?}", inference.violations);
+    let hypothesis = format!("hypothesis:{}", derivation.hypothesis_id);
+    let instrument = format!("instrument:{}", derivation.subject);
+    // Premise: neither fact is asserted, so holding them is inference.
+    let typed = Fact::instance(&instrument, "instrument");
+    let grounded = Fact::related(&hypothesis, "grounded_in", &instrument);
+    let inverse = Fact::related(&instrument, "concerned_by", &hypothesis);
+    for fact in [&typed, &grounded, &inverse] {
+        assert!(!knowledge.asserted.contains(fact), "{fact:?} was asserted");
+    }
+    assert!(matches!(
+        inference.derivation(&typed),
+        Some(Derivation::IsA { .. })
+    ));
+    assert!(matches!(
+        inference.derivation(&grounded),
+        Some(Derivation::Transitive { .. })
+    ));
+    assert!(matches!(
+        inference.derivation(&inverse),
+        Some(Derivation::Inverse { .. })
+    ));
+    // An equity is not a dated contract, so no claim outlives it.
+    assert!(!knowledge.outlived_by_claim(&derivation.hypothesis_id, &derivation.subject));
+
+    let mut edited = derivation.clone();
+    if let Some(k) = edited.knowledge.as_mut()
+        && let Step::Derived(i) = &mut k.inference
+    {
+        i.facts.retain(|(f, _)| f != &grounded);
+    }
+    assert_refused_for(&platform, &edited, "knowledge graph");
+    Ok(())
+}
+
+/// R12-WORLD-3049's population check, per scope part: the counterparty
+/// member's journaled review names every counterparty role — broker,
+/// exchange, custodian, bridge, settlement agent — that no counterparty held
+/// on the platform's own cycle. A platform declaring all of them reports
+/// none unmodelled; one omitting any single role reports exactly that one,
+/// so an absent part fails the check by name rather than reading as a
+/// network without it. The broker is the desk's own and is never absent.
+///
+/// Mutations: report every role as modelled; build the counterparty views
+/// without declared roles; drop `counterparty_unmodelled` from the review.
+#[test]
+fn the_counterparty_review_names_each_network_role_no_counterparty_held() -> Result<()> {
+    use federation_stage::{CounterpartyRole, DependencyKind};
+    let unmodelled = |omit: Option<CounterpartyRole>| -> Result<Vec<String>> {
+        let mut platform = platform()?;
+        for role in CounterpartyRole::ALL {
+            if Some(role) == omit || role == CounterpartyRole::Broker {
+                continue;
+            }
+            platform.declare_counterparty(&format!("cp-{}", role.as_str()), role)?;
+        }
+        // An edge's undeclared end is read as an exchange, so the edge is
+        // declared only when every role is.
+        if omit.is_none() {
+            platform.declare_counterparty_dependency(
+                "cp-exchange",
+                "cp-custodian",
+                DependencyKind::Custody,
+            )?;
+        }
+        platform.run_cycle(start());
+        let reviews = federation_stage::replay(&platform)?;
+        assert_eq!(reviews.len(), 1, "one review from the log");
+        Ok(reviews[0].counterparty_unmodelled.clone())
+    };
+    assert_eq!(unmodelled(None)?, Vec::<String>::new());
+    for role in CounterpartyRole::ALL {
+        if role == CounterpartyRole::Broker {
+            continue;
+        }
+        assert_eq!(
+            unmodelled(Some(role))?,
+            vec![role.as_str().to_string()],
+            "omitting {} was not reported",
+            role.as_str()
+        );
+    }
     Ok(())
 }

@@ -487,6 +487,8 @@ fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_o
         stamp("XPAR", 1),
         serde_json::json!([{
             "partition": xlon,
+            "venue": "XLON",
+            "instrument": "obj-ACME",
             "sequence": 1,
             "order_of_other": "unordered",
             "lag_ns": 2 * ONE_MS,
@@ -500,6 +502,8 @@ fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_o
         stamp("XPAR", 2),
         serde_json::json!([{
             "partition": xlon,
+            "venue": "XLON",
+            "instrument": "obj-ACME",
             "sequence": 1,
             "order_of_other": "before",
             "lag_ns": 3 * ONE_MS,
@@ -513,6 +517,8 @@ fn two_venues_ticks_within_combined_uncertainty_are_lake_stamped_unordered_and_o
         stamp("XLON", 2),
         serde_json::json!([{
             "partition": xpar,
+            "venue": "XPAR",
+            "instrument": "obj-ACME",
             "sequence": 2,
             "order_of_other": "unordered",
             "lag_ns": 2 * ONE_MS,
@@ -663,6 +669,157 @@ fn the_cross_partition_alignment_holds_at_most_its_bound_of_partitions() -> Resu
     assert!(
         last.iter().any(|name| name.starts_with("XV0001/")),
         "premise: only the one oldest partition had left when the last tick was aligned"
+    );
+    Ok(())
+}
+
+/// R12-TICK-2048, ADR 0438: two cells in two regions write one lake, and the
+/// reader every replay job uses hands each tick back with its typed sync
+/// record — the region and cell that captured it and the asset key it was
+/// aligned under — so the place lake lines from many cells meet can tell
+/// whose clock each instant is on.
+///
+/// Mutation: in `qip_storage::lake_history::decode_line`, set `sync` to
+/// `None` for the edge node's shape — every tick fails "carried no sync".
+#[test]
+fn two_regions_lines_read_back_with_their_typed_sync_record() -> Result<()> {
+    use qip_contracts::sync::ClockSource;
+    use qip_storage::lake::Lake;
+    use qip_storage::lake_history::HistoryQuery;
+    use std::collections::BTreeSet;
+
+    let lake = Arc::new(MemoryBlobStore::new());
+    let base = Timestamp::from_millis(venue_ms(0));
+    let at = |offset_ns: i64| Timestamp::from_nanos(base.as_nanos() + offset_ns);
+    for (cell, region, venue) in [
+        ("edge-lon", "europe-west2", "XLON"),
+        ("edge-nyc", "us-east4", "XNYS"),
+    ] {
+        let mut sink = LakeSink::new(
+            Arc::clone(&lake) as Arc<dyn BlobStore>,
+            cell,
+            region,
+            default_retention(),
+            SegmentCodec::Identity,
+        )?;
+        let records = vec![tick_at(venue, 1, at(0), at(ONE_MS))?];
+        delivered(&mut sink, &lake, 1, records)?;
+    }
+    let granted = BTreeSet::from([SIMULATED_DATASET.to_string()]);
+    let reader = Lake::new(lake.as_ref());
+    reader.pin_market_history(
+        "sync",
+        &HistoryQuery {
+            from_date: "2000-01-01".to_string(),
+            to_date: "2100-01-01".to_string(),
+            venues: BTreeSet::new(),
+            instruments: BTreeSet::new(),
+            granted: granted.clone(),
+            max_segments: 100,
+            max_ticks: 1_000,
+        },
+    )?;
+    let history = reader.read_market_history("sync", &granted, 1_000)?;
+    assert_eq!(
+        history.ticks.len(),
+        2,
+        "premise: both cells' ticks read back"
+    );
+    assert_eq!(history.unparsed, 0);
+    let mut regions = BTreeSet::new();
+    for tick in &history.ticks {
+        let sync = tick
+            .sync
+            .as_ref()
+            .unwrap_or_else(|| panic!("a tick carried no sync record: {tick:?}"));
+        assert_eq!(sync.venue(), tick.message.origin.venue.as_str());
+        assert_eq!(sync.instrument(), tick.message.object_id.as_str());
+        assert_eq!(sync.clock_source(), ClockSource::VenueStated);
+        let expected_cell = if sync.venue() == "XLON" {
+            "edge-lon"
+        } else {
+            "edge-nyc"
+        };
+        assert_eq!(sync.cell(), expected_cell);
+        regions.insert(sync.region().to_string());
+    }
+    assert_eq!(
+        regions,
+        BTreeSet::from(["europe-west2".to_string(), "us-east4".to_string()])
+    );
+    Ok(())
+}
+
+/// A lake line whose cross-partition stamp claims an order its own lag and
+/// uncertainty cannot support is not read as a tick: it is counted unparsed.
+/// The honest line it was forged from reads back; the forgery does not.
+///
+/// Mutation: in `SyncMetadata::validate` (via `PartitionAlignment`), skip
+/// the order check — the forged segment reads back with 2 ticks and 0
+/// unparsed.
+#[test]
+fn a_lake_line_whose_stamp_claims_an_unsupported_order_is_counted_unparsed() -> Result<()> {
+    use qip_storage::lake::Lake;
+    use qip_storage::lake_history::HistoryQuery;
+    use std::collections::BTreeSet;
+
+    let lake = Arc::new(MemoryBlobStore::new());
+    let mut sink = sink_over(&lake)?;
+    let base = Timestamp::from_millis(venue_ms(0));
+    let at = |offset_ns: i64| Timestamp::from_nanos(base.as_nanos() + offset_ns);
+    let lines = delivered(
+        &mut sink,
+        &lake,
+        1,
+        vec![
+            tick_at("XLON", 1, at(0), at(ONE_MS))?,
+            tick_at("XPAR", 1, at(2 * ONE_MS), at(3 * ONE_MS))?,
+        ],
+    )?;
+    assert_eq!(
+        lines[&("XPAR".to_string(), 1)]["cross_partition"][0]["order_of_other"],
+        "unordered",
+        "premise: the honest stamp is unordered"
+    );
+    let query = |name: &str| -> Result<qip_storage::lake_history::RecordedHistory> {
+        let granted = BTreeSet::from([SIMULATED_DATASET.to_string()]);
+        let reader = Lake::new(lake.as_ref());
+        reader.pin_market_history(
+            name,
+            &HistoryQuery {
+                from_date: "2000-01-01".to_string(),
+                to_date: "2100-01-01".to_string(),
+                venues: BTreeSet::new(),
+                instruments: BTreeSet::new(),
+                granted: granted.clone(),
+                max_segments: 100,
+                max_ticks: 1_000,
+            },
+        )?;
+        reader.read_market_history(name, &granted, 1_000)
+    };
+    let honest = query("honest")?;
+    assert_eq!((honest.ticks.len(), honest.unparsed), (2, 0), "premise");
+
+    let forged_key = lake
+        .list("lake/class=market/venue=XPAR/")?
+        .into_iter()
+        .find(|key| key.ends_with(".canonical"))
+        .expect("premise: XPAR's canonical segment exists");
+    let bytes = lake.get(&forged_key)?.expect("premise: segment readable");
+    let text = String::from_utf8(bytes).expect("segment is text");
+    let forged = text.replace(
+        "\"order_of_other\":\"unordered\"",
+        "\"order_of_other\":\"before\"",
+    );
+    assert_ne!(forged, text, "premise: the forgery changed the segment");
+    lake.put(&forged_key, forged.into_bytes())?;
+
+    let read = query("forged")?;
+    assert_eq!(
+        (read.ticks.len(), read.unparsed),
+        (1, 1),
+        "the forged order was read as a tick"
     );
     Ok(())
 }

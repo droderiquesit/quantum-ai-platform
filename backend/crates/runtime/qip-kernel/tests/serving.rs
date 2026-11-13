@@ -18,7 +18,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Context, ModelId, Timestamp};
 use qip_events::Topic;
 use qip_financial::universe::Universe;
-use qip_kernel::central::models::register_fit;
+use qip_kernel::central::models::{register_fit, run_promotion_tests};
 use qip_kernel::model_serving::MODEL_PROMOTION_ORIGIN;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
@@ -122,7 +122,57 @@ fn registered(registry: &mut ModelRegistry, teacher: &TrainedTeacher) -> Result<
         "premise: the fit cleared the skill bar ({:?})",
         registration.verdict
     );
+    // ADR 0392: the four promotion tests, run on the tail of the data the
+    // fit was held out on, so a refusal further on is not about them.
+    let (_, recorded) = dataset(teacher.dataset())?.split_at_fraction(0.25)?;
+    let tests = run_promotion_tests(
+        &InTreeProvider,
+        registry,
+        &InTreeProvider::pack(teacher)?,
+        &recorded,
+        start(),
+    )?;
+    assert_eq!(
+        tests.gap(&InTreeProvider::pack(teacher)?.digest),
+        None,
+        "premise: the fit passed its four promotion tests"
+    );
+    tried(registry, &registration.reference)?;
     Ok(registration.reference)
+}
+
+/// Register a real fit without the trial: what [`registered`] does before
+/// staging it, for the tests that exercise the trial gate itself.
+fn registered_untried(registry: &mut ModelRegistry, teacher: &TrainedTeacher) -> Result<String> {
+    let reference = registered(registry, teacher)?;
+    if let Some(card) = registry.get_mut(&reference) {
+        card.trial = None;
+    }
+    Ok(reference)
+}
+
+/// ADR 0436 (R12-MODEL-4022): a training-pipeline candidate is promoted only
+/// out of a completed simulation or paper trial. Staged here, dated before
+/// every promotion these tests make, so a refusal further on is not about it;
+/// a card re-registered with its trial already on record keeps it.
+fn tried(registry: &mut ModelRegistry, reference: &str) -> Result<()> {
+    if registry
+        .get(reference)
+        .is_some_and(|card| card.trial.is_some())
+    {
+        return Ok(());
+    }
+    for round in 1..=i64::from(qip_ai::registry::MIN_TRIAL_ROUNDS) {
+        registry.record_trial_round(
+            reference,
+            qip_ai::registry::TrialVenue::Paper,
+            "staged by the test",
+            start().saturating_sub(qip_core::Duration::from_secs(
+                i64::from(qip_ai::registry::MIN_TRIAL_ROUNDS) + 1 - round,
+            )),
+        )?;
+    }
+    Ok(())
 }
 
 fn promotion_records(platform: &Platform) -> usize {
@@ -302,6 +352,8 @@ fn an_artifact_whose_arity_disagrees_with_its_card_is_refused_before_anything_ch
     registry
         .register(card)
         .expect("a registry below its cap admits a card");
+    // Tried, so the refusal below is the arity and not the trial (ADR 0436).
+    tried(&mut registry, &teacher.reference())?;
     assert!(
         InTreeProvider.serve(&artifact).is_ok(),
         "premise: the provider serves the artifact on its own terms"
@@ -979,6 +1031,9 @@ fn every_accepted_model_makes_a_pack_naming_its_predecessor_and_delta_and_walkin
         !rejected.passed,
         "premise: the fit did not clear its bar, so its card holds no acceptance"
     );
+    // Tried, so its refusal below is the missing acceptance and not the
+    // missing trial (ADR 0436).
+    tried(&mut registry, &rejected.reference)?;
 
     let member = |entries: &[(&String, &String)]| -> BTreeMap<String, String> {
         entries
@@ -1460,5 +1515,167 @@ fn a_promotion_record_lists_its_stages_under_a_signature_an_edit_breaks() -> Res
     let mut unsigned = record;
     unsigned.signature = None;
     assert!(!platform.promotion_verifies(&unsigned));
+    Ok(())
+}
+
+/// R12-MODEL-4022 (ADR 0436): a training-pipeline candidate reaches decision
+/// eligibility only after a recorded simulation or paper trial, and one that
+/// skipped it, ran too few rounds of it, or carries a round dated after the
+/// promotion is refused with nothing changed. The completed trial is then
+/// admitted — so the gate is not one that refuses everything — and its stage
+/// line is on the signed promotion record.
+///
+/// Mutation: make the `TrainingPipeline` arm of `promote_model_from` push
+/// nothing — the untried candidate is promoted and the first `unwrap_err`
+/// panics. Mutation: make `TrialRecord::completed` true at any count — the
+/// short trial is promoted and the second `unwrap_err` panics. Mutation:
+/// delete the `last_round > now` arm of `require_completed_trial` — the
+/// trial dated after the promotion is admitted and the third `unwrap_err`
+/// panics.
+#[test]
+fn a_training_pipeline_candidate_that_skipped_its_paper_trial_is_refused_and_one_tried_is_eligible()
+-> Result<()> {
+    use qip_ai::registry::{MIN_TRIAL_ROUNDS, TrialVenue};
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let teacher = teacher("bar-linear-trial", "0.1.0")?;
+    let reference = registered_untried(&mut registry, &teacher)?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let minute = |n: i64| start().saturating_add(qip_core::Duration::from_mins(n));
+    assert!(
+        registry
+            .get(&reference)
+            .is_some_and(|card| card.trial.is_none()),
+        "premise: the candidate carries no trial"
+    );
+
+    let skipped = platform
+        .promote_model(&mut registry, &artifact, None, &[], minute(10))
+        .unwrap_err();
+    assert!(
+        skipped
+            .message()
+            .contains("it has no recorded simulation or paper trial"),
+        "{skipped}"
+    );
+    assert_eq!(
+        registry.get(&reference).map(|card| card.stage),
+        Some(ModelStage::Development),
+        "a refusal moved the card"
+    );
+    assert!(
+        registry
+            .require_for_decision(&reference, minute(10))
+            .is_err()
+    );
+
+    for round in 1..i64::from(MIN_TRIAL_ROUNDS) {
+        registry.record_trial_round(
+            &reference,
+            TrialVenue::Paper,
+            &format!("round {round}: paper fills against the simulated broker"),
+            minute(round),
+        )?;
+    }
+    let short = platform
+        .promote_model(&mut registry, &artifact, None, &[], minute(10))
+        .unwrap_err();
+    assert!(
+        short.message().contains(&format!(
+            "{} of the {MIN_TRIAL_ROUNDS} trial round(s) required",
+            MIN_TRIAL_ROUNDS - 1
+        )),
+        "{short}"
+    );
+
+    registry.record_trial_round(
+        &reference,
+        TrialVenue::Simulation,
+        "the last round: replayed against the market simulator",
+        minute(20),
+    )?;
+    let early = platform
+        .promote_model(&mut registry, &artifact, None, &[], minute(10))
+        .unwrap_err();
+    assert!(
+        early
+            .message()
+            .contains("a trial is evidence only once it has run"),
+        "{early}"
+    );
+    assert_eq!(promotion_records(&platform), 0, "a refusal reached the log");
+
+    platform.promote_model(&mut registry, &artifact, None, &[], minute(30))?;
+    assert!(
+        registry
+            .require_for_decision(&reference, minute(31))
+            .is_ok(),
+        "the tried candidate is decision-eligible"
+    );
+    let record = platform
+        .model_promotions()
+        .get(&reference)
+        .cloned()
+        .ok_or_else(|| Error::not_found("the promotion record"))?;
+    assert!(platform.promotion_verifies(&record), "{record:?}");
+    let trial = record
+        .stages
+        .first()
+        .ok_or_else(|| Error::not_found("a first stage"))?;
+    assert!(
+        trial.starts_with("trial since")
+            && trial.contains(&format!(
+                "{MIN_TRIAL_ROUNDS} round(s) in simulation and paper"
+            )),
+        "{trial}"
+    );
+    Ok(())
+}
+
+/// A quantum-informed candidate that beat its calibrated baseline on held-out
+/// rows is still refused without a trial (ADR 0436): beating a baseline is a
+/// statistic, and the trial is the behaviour under execution.
+///
+/// Mutation: delete the `require_completed_trial` push in the
+/// `QuantumInformed` arm of `promote_model_from` — the untried candidate is
+/// promoted and the `unwrap_err` panics.
+#[test]
+fn a_quantum_informed_candidate_that_beat_its_baseline_is_refused_without_a_paper_trial()
+-> Result<()> {
+    use qip_kernel::ModelProducer;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let candidate = teacher("bar-linear-qt", "0.1.0")?;
+    let reference = registered_untried(&mut registry, &candidate)?;
+    let artifact = InTreeProvider::pack(&candidate)?;
+    let baseline = teacher_on(
+        "bar-baseline-qt",
+        "0.1.0",
+        "bar-linear-qt-data",
+        WORSE_RIDGE,
+    )?;
+    let baseline_reference = baseline.reference();
+    let data = dataset("bar-baseline-qt-data")?;
+    let (fit_set, _) = data.split_at_fraction(0.25)?;
+    registered(&mut registry, &baseline.calibrated_on(&fit_set)?)?;
+    let informed = || ModelProducer::QuantumInformed {
+        baseline: baseline_reference.clone(),
+        workload: Some("PortfolioAllocation".to_string()),
+    };
+
+    let refused = platform
+        .promote_model_from(informed(), &mut registry, &artifact, None, &[], start())
+        .unwrap_err();
+    assert!(
+        refused
+            .message()
+            .contains("it has no recorded simulation or paper trial"),
+        "{refused}"
+    );
+    assert_eq!(promotion_records(&platform), 0, "a refusal reached the log");
+
+    tried(&mut registry, &reference)?;
+    platform.promote_model_from(informed(), &mut registry, &artifact, None, &[], start())?;
+    assert!(platform.model_promotions().contains_key(&reference));
     Ok(())
 }

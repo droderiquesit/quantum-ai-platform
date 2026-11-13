@@ -16,8 +16,8 @@ use qip_core::testing::approx_eq;
 use qip_core::time::{Duration, Timestamp};
 use qip_learning_engine::evaluation::{Evaluation, Verdict};
 use qip_learning_engine::self_model::{
-    CAPABILITY_WINDOW, CapabilityEstimate, ComponentKey, ComponentKind, DRIFT_TOLERANCE,
-    MAX_COMPONENTS, MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
+    BoundaryReading, CAPABILITY_WINDOW, Capability, CapabilityEstimate, ComponentKey,
+    ComponentKind, DRIFT_TOLERANCE, MAX_COMPONENTS, MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
 };
 
 fn start() -> Timestamp {
@@ -601,4 +601,69 @@ fn a_window_worse_by_less_than_the_tolerance_is_not_drifting_and_one_worse_by_mo
         "premise: the window is worse by 0.06, got {}",
         drift.worsening()
     );
+}
+
+/// R12-WORLD-3036: a self-model snapshot written before the health reading,
+/// the capability boundary and drift existed still loads, and loads as
+/// *unobserved* rather than as an observation nobody made.
+///
+/// The three fields were added with serde defaults so an old snapshot would
+/// not stop a restart, and nothing proved the defaults load or say what they
+/// should. The default that matters is the boundary's: an old snapshot must
+/// read `Undeclared`, because a default that loaded as an empty declared
+/// boundary would put every class outside and a default that loaded as
+/// inside would be permission nobody gave. Drift must load as none, so an old
+/// estimate keeps its window weight rather than a discount it never earned.
+///
+/// Mutation: give `SelfModel::boundary` a serde default of `Some(empty set)`
+/// — the old snapshot loads with every class `Outside` and the boundary
+/// assertion fails.
+#[test]
+fn a_snapshot_written_before_health_boundary_and_drift_existed_loads_as_unobserved() -> Result<()> {
+    let key = ComponentKey::detector("vol-spike")?;
+    let mut model = SelfModel::new();
+    for n in 0..MINIMUM_SAMPLE {
+        model.record(key.clone(), outcome(n, n % 2 == 0));
+    }
+    let written = serde_json::to_value(&model).expect("a self-model serialises");
+    // Premise: the snapshot has the pre-2026-10-25 shape, components only.
+    let fields: Vec<&String> = written
+        .as_object()
+        .expect("a self-model serialises as an object")
+        .keys()
+        .collect();
+    assert_eq!(
+        fields,
+        vec!["components"],
+        "premise: not an old-shape snapshot"
+    );
+
+    let loaded: SelfModel = serde_json::from_value(written).expect("an old snapshot loads");
+    assert!(
+        loaded.health().is_none(),
+        "an old snapshot loaded a health reading"
+    );
+    assert_eq!(
+        loaded.boundary_of("equity"),
+        BoundaryReading::Undeclared,
+        "an old snapshot loaded a boundary nobody declared"
+    );
+    assert_eq!(loaded.factor(&key), model.factor(&key));
+
+    let mut capability =
+        serde_json::to_value(model.estimate(&key)?).expect("a capability serialises");
+    let removed = capability
+        .as_object_mut()
+        .expect("a capability serialises as an object")
+        .remove("drift");
+    assert_eq!(
+        removed,
+        Some(serde_json::Value::Null),
+        "premise: no drift on this record"
+    );
+    let old: Capability =
+        serde_json::from_value(capability).expect("a capability with no drift field loads");
+    assert!(old.drift.is_none());
+    assert!(approx_eq(old.weight(), old.accuracy, 0.0));
+    Ok(())
 }

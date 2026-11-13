@@ -368,6 +368,8 @@ pub struct SensedCounts {
     pub fundamentals: usize,
     pub macro_observations: usize,
     pub books: usize,
+    /// Venue status changes, auction indications and book resets.
+    pub session: usize,
     pub alternative: usize,
     /// Records the vendor sent in *this* cycle that were not yet knowable at
     /// its poll instant. A difference of the adapters' cumulative counters,
@@ -392,6 +394,9 @@ impl SensedCounts {
                 SensedRecord::Fundamental(_) => counts.fundamentals += 1,
                 SensedRecord::Macro(_) => counts.macro_observations += 1,
                 SensedRecord::Book(_) => counts.books += 1,
+                SensedRecord::Status(_) | SensedRecord::Auction(_) | SensedRecord::Reset(_) => {
+                    counts.session += 1;
+                }
                 SensedRecord::AlternativeData(_) => counts.alternative += 1,
             }
         }
@@ -407,6 +412,7 @@ impl SensedCounts {
             + self.fundamentals
             + self.macro_observations
             + self.books
+            + self.session
             + self.alternative
     }
 
@@ -421,6 +427,7 @@ impl SensedCounts {
             (self.fundamentals, "fundamental"),
             (self.macro_observations, "macro release"),
             (self.books, "book"),
+            (self.session, "session fact"),
             (self.alternative, "alternative reading"),
         ];
         let listed: Vec<String> = parts

@@ -2016,6 +2016,25 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_FORECAST_SENTINEL",
+        "The forecast sentinel's switch (ADR 0432, R12-AMBIENT-3066), `on` by \
+         default and `on` or `off` only; anything else is refused at start-up. \
+         No manifest sets it because the default is the deployed posture: the \
+         variable exists so an operator can prove that turning the sentinel off \
+         removes its forecast-miss signals, not so a deployment ships it off.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_OPPORTUNITY_SENTINEL",
+        "The opportunity sentinels' switch (ADR 0434, R12-AMBIENT-3069), `on` \
+         by default and `on` or `off` only; anything else is refused at \
+         start-up. No manifest sets it because the default is the deployed \
+         posture: the variable exists so an operator can prove that turning \
+         the sentinels off removes their signals, not so a deployment ships \
+         them off.",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_EVOLUTION_CANDIDATES",
         THE_PACE_THE_PROBES_ASSUME,
     ),
@@ -2357,6 +2376,15 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_TICK_MEASURE_CODEC",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    // ADR 0438: the bound each capturing cell's clock holds against the
+    // reference. No figure for it has been stated, so no deployment sets
+    // one; unset, the tick desk computes no cross-region order and says so
+    // in `cross_region_withheld`, rather than ordering on an assumed bound.
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_CELL_CLOCK_BOUND_NS",
         THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
     ),
     // Round 2's node-local settings, each read by `qip-edge-node` and set by

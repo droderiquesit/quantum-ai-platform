@@ -821,6 +821,7 @@ mod tape_tests {
             macro_releases: Vec::new(),
             alternative_data: Vec::new(),
             dividend_declarations: Vec::new(),
+            listing_changes: Vec::new(),
         };
         let directory =
             std::env::temp_dir().join(format!("qip-fastbrain-tape-{name}-{}", std::process::id()));

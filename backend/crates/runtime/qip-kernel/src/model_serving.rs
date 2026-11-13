@@ -347,6 +347,59 @@ fn require_completed_shadow(registry: &ModelRegistry, reference: &str) -> Result
     }
 }
 
+/// The trial a training-pipeline or quantum-informed candidate must have
+/// completed, as one stage line, or the refusal (ADR 0436, R12-MODEL-4022).
+///
+/// Its stage line is pushed onto the promotion record's signed stages, so the
+/// trial a promotion rested on is in the log under the central plane's
+/// signature, not only on a card a later edit could change.
+fn require_completed_trial(
+    registry: &ModelRegistry,
+    reference: &str,
+    now: Timestamp,
+) -> Result<String> {
+    let card = registry
+        .get(reference)
+        .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+    match &card.trial {
+        // A round dated after the promotion is not evidence the promotion
+        // could have rested on: refused rather than read as a trial that
+        // already happened.
+        Some(trial) if trial.last_round > now => Err(Error::denied(format!(
+            "{reference} is not promoted: its last trial round is dated {}, after this \
+             promotion at {}; a trial is evidence only once it has run",
+            trial.last_round.as_secs(),
+            now.as_secs()
+        ))),
+        Some(trial) if trial.completed() => Ok(format!(
+            "trial since {}: {} round(s) in {} ({})",
+            trial.since.as_secs(),
+            trial.rounds,
+            trial
+                .venues
+                .iter()
+                .map(|venue| venue.as_str())
+                .collect::<Vec<_>>()
+                .join(" and "),
+            trial.evidence.join("; ")
+        )),
+        Some(trial) => Err(Error::denied(format!(
+            "{reference} is not promoted: a candidate completes its simulation or paper trial \
+             first, and it has run {} of the {MIN_TRIAL_ROUNDS} trial round(s) required",
+            trial.rounds
+        ))),
+        None => Err(Error::denied(format!(
+            "{reference} is not promoted: it has no recorded simulation or paper trial; run it \
+             in simulation or against the paper broker and record each round through \
+             ModelRegistry::record_trial_round first"
+        ))),
+    }
+}
+
+/// Trial rounds a candidate must complete before promotion: the registry's
+/// figure (ADR 0436).
+pub use qip_ai::registry::MIN_TRIAL_ROUNDS;
+
 impl EventBody for ModelPromotion {
     /// The Learn group, which the log never evicts, so a restarted process
     /// rebuilds its promoted set from every promotion it ever made. Told
@@ -977,6 +1030,27 @@ impl Platform {
         served
     }
 
+    /// Run the four promotion tests on `artifact` over a recorded window,
+    /// through this platform's provider, and write the results on its card
+    /// in `registry` (ADR 0392, R12-MODEL-10202). The promotion that follows
+    /// refuses without them. See
+    /// [`crate::central::models::run_promotion_tests`].
+    pub fn test_model_for_promotion(
+        &self,
+        registry: &mut ModelRegistry,
+        artifact: &ModelArtifact,
+        recorded: &qip_training::dataset::TrainingDataset,
+        now: Timestamp,
+    ) -> Result<qip_ai::registry::PromotionTests> {
+        crate::central::models::run_promotion_tests(
+            self.model_provider.as_ref(),
+            registry,
+            artifact,
+            recorded,
+            now,
+        )
+    }
+
     /// Every promotion this process holds, by reference, in reference order.
     /// Whether a promotion record carries the central plane's signature
     /// over its reference, digest and stages (R12-EXPAND-6070). False for a
@@ -1069,7 +1143,14 @@ impl Platform {
     /// Promote a model with its artifact: serve it first, promote a scratch
     /// registry, journal, then adopt (blueprint §21.2's promote stage).
     ///
-    /// Four refusals, each before anything changes. The provider cannot
+    /// Six refusals, each before anything changes. The candidate has no
+    /// completed simulation or paper trial on its card (ADR 0436,
+    /// R12-MODEL-4022): out-of-sample statistics say how a model predicts,
+    /// not how its decisions behave under execution. The card's four
+    /// promotion tests — replay, calibration, classical baseline, envelope
+    /// — are missing, failed or were run on other bytes (ADR 0392; the
+    /// registry's refusal, and [`Self::test_model_for_promotion`] is what
+    /// runs them). The provider cannot
     /// serve the artifact — ADR 0083's own sentence, and the reason this is
     /// on the platform: a model the process could not evaluate is not one
     /// it may act on. The served model's arity disagrees with the card's
@@ -1118,7 +1199,9 @@ impl Platform {
     ) -> Result<PublishedArtifact> {
         let mut stages = Vec::new();
         match &producer {
-            ModelProducer::TrainingPipeline => {}
+            ModelProducer::TrainingPipeline => {
+                stages.push(require_completed_trial(registry, &artifact.reference, now)?);
+            }
             ModelProducer::SelfFitted => {
                 stages.push(require_completed_shadow(registry, &artifact.reference)?);
             }
@@ -1156,6 +1239,9 @@ impl Platform {
                         error.message()
                     ))
                 })?;
+                // Beating the baseline on held-out rows is a statistic; the
+                // trial is the behaviour under execution (ADR 0436).
+                stages.push(require_completed_trial(registry, &artifact.reference, now)?);
             }
         }
         // A version names one artifact for good (MODEL-034). The log is the
@@ -1290,6 +1376,26 @@ impl Platform {
         // self-fitted candidate, checked above), the registry's evaluation,
         // the verifier society's verdict.
         stages.push(format!("evaluation: {evidence}"));
+        // ADR 0392 (R12-MODEL-10202): the four promotion tests the registry
+        // has just required, each on the signed record with what it
+        // measured. Read off the card and never taken from the caller, and a
+        // card that lost them between the registry's check and here is a
+        // refusal, not a record with four lines missing.
+        let tests = card.promotion_tests.as_ref().ok_or_else(|| {
+            Error::denied(format!(
+                "{} is not promoted: its card holds no promotion tests to record",
+                artifact.reference
+            ))
+        })?;
+        for name in qip_ai::registry::PROMOTION_TESTS {
+            let test = tests.results.get(name).ok_or_else(|| {
+                Error::denied(format!(
+                    "{} is not promoted: its card holds no {name} test to record",
+                    artifact.reference
+                ))
+            })?;
+            stages.push(format!("{name}: {} on {}", test.evidence, tests.window));
+        }
         stages.push(format!("verifier: {verified}"));
         let mut record = ModelPromotion {
             reference: artifact.reference.clone(),

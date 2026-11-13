@@ -24,8 +24,8 @@
   },
   {
     "id": "R12-MODEL-4002",
-    "status": "PARTIAL",
-    "current": "ADR 0138 implemented 2026-10-25: the hosted adapter (HuggingFaceModel, its config and token types) lives in services/qip-language-providers, which qip-deepbrain alone links. qip-reasoning-engine no longer holds it and no longer depends on qip-ai or qip-transport, so qip-kernel, qip-api, qip-fastbrain and qip-edge-node do not have the adapter in their link graph. A construction in any of them does not compile without adding the dependency, and that edge fails lane_placement.rs.",
+    "status": "COMPLETE",
+    "current": "ADR 0138 implemented 2026-10-25: the hosted adapter (HuggingFaceModel, its config and token types) lives in services/qip-language-providers, which qip-deepbrain alone links. qip-reasoning-engine no longer holds it and no longer depends on qip-ai or qip-transport, so qip-kernel, qip-api, qip-fastbrain and qip-edge-node do not have the adapter in their link graph. A construction in any of them does not compile without adding the dependency, and that edge fails lane_placement.rs. The remaining behavioural half is closed: a cycle assembled through Platform::with_language_model (the deep brain's seam) under a model that answers every request with 'buy everything at full conviction' and volunteers quantities sizes the same leg, sends the same order, books the same fill and records the same claim as the deterministic model, on a tape whose cycle sizes one leg.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/language.rs:1-10 only root building the hosted adapter",
       "backend/crates/edge/qip-edge/Cargo.toml no qip-ai dependency",
@@ -34,20 +34,21 @@
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs::the_hosted_language_providers_are_linked_by_the_deep_brain_alone_and_reach_no_fast_lane",
       "backend/crates/tests/qip-acceptance/tests/model_slow_lane_confinement.rs (construction site and edge manifests, repointed)",
       "docs/architecture/lane-placement.md qip-language-providers lane 3",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_fast_reflex_or_decision_crate_reaches_the_hosted_language_providers_by_any_resolved_edge (cargo metadata graph: target tables, renames and build edges)"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_fast_reflex_or_decision_crate_reaches_the_hosted_language_providers_by_any_resolved_edge (cargo metadata graph: target tables, renames and build edges)",
+      "backend/crates/runtime/qip-kernel/tests/model_text_reaches_no_size.rs::a_model_that_answers_every_request_with_buy_everything_changes_no_size_order_or_claim (premises: one sized leg, one order, one claim)"
     ],
-    "gap": "2026-10-25 (lane L2-INTEL): second in-lane skeptic REFUTED c7d8c332 on two counts. (1) model_gateway_boundary.rs's call matcher missed .complete_over_untrusted( and fully qualified LanguageModel::complete* calls; fixed and mutation-verified. (2) Still open: in the deep brain an agent may call the model through AgentRuntime (manifests grant CallLanguageModel), and an agent's finding sets a hypothesis's confidence, which DECIDE sizes. So model text could, in principle, reach a size through a finding's number, and no test drives a deep-brain cycle with an adversarial scripted model and shows sizes and orders unchanged. Today no agent makes a model call (grep shows calls only in qip-ai and the runtime), so nothing reaches a size on the default path; the remaining step is that behavioural test, mutation-verified, or a structural bar on a completion's text feeding a finding's direction or conviction.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test lane_placement --test model_slow_lane_confinement --test model_gateway_boundary --test egress",
+    "verification": "cd backend && cargo test -p qip-acceptance --test lane_placement --test model_slow_lane_confinement --test model_gateway_boundary --test egress && cargo test -p qip-kernel --test model_text_reaches_no_size",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code. 2026-10-25 L2-INTEL: mutation: add qip-language-providers to qip-fastbrain's [dependencies]; the closure test fails at lane_placement.rs:662 ('the crates that link the hosted language providers changed'); manifest restored by cp+cmp. 2026-10-25 L2-INTEL: mutations on qip-fastbrain/Cargo.toml (build-dependency; target-specific dependency; target-specific renamed package) each fail the resolved-graph test at architecture.rs:4258; manifest and Cargo.lock restored by cp+cmp. 2026-10-25 L2-INTEL: matcher mutations: 'ctx.complete_over_untrusted(&request)' and 'LanguageModel::complete(model, &request, now)' appended to qip-investment-agents/src/chief.rs each fail a_model_is_invoked_only_through_the_agent_runtime at model_gateway_boundary.rs:243; restored by cp+cmp."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code. 2026-10-25 L2-INTEL: mutation: add qip-language-providers to qip-fastbrain's [dependencies]; the closure test fails at lane_placement.rs:662 ('the crates that link the hosted language providers changed'); manifest restored by cp+cmp. 2026-10-25 L2-INTEL: mutations on qip-fastbrain/Cargo.toml (build-dependency; target-specific dependency; target-specific renamed package) each fail the resolved-graph test at architecture.rs:4258; manifest and Cargo.lock restored by cp+cmp. 2026-10-25 L2-INTEL: matcher mutations: 'ctx.complete_over_untrusted(&request)' and 'LanguageModel::complete(model, &request, now)' appended to qip-investment-agents/src/chief.rs each fail a_model_is_invoked_only_through_the_agent_runtime at model_gateway_boundary.rs:243; restored by cp+cmp. 2026-11-12 fw-d-01: closed the 2026-10-25 refutation's open point (2) with the hostile-model cycle test. Mutation in qip-agents/src/runtime.rs AgentHost::run, after analyse: call the host's model and, when its text says 'Conviction: 1.0', set the finding's conviction: to 1.0 the test fails at the recorded-claim assertion ('a recorded claim (and so a confidence) differs'); to 0.0 it fails at the proposal assertion ('a proposal (and so a size) differs', 25 model calls). runtime.rs restored by cp+cmp; the test passes. On the unmutated tree the hostile model is called zero times, which is the default path the row describes."
   },
   {
     "id": "R12-MODEL-4003",
@@ -300,19 +301,19 @@
   },
   {
     "id": "R12-MODEL-4014",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:401) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:560). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
     "evidence": [
       "backend/crates/services/qip-agency/src/engine.rs:401 execute",
       "backend/crates/services/qip-agency/src/engine.rs:560 counterfactually_supported; :1115 run_governed_with",
-      "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps",
+      "backend/crates/services/qip-agency/tests/agency.rs:3462 authority_is_used_only_over_a_plan_every_competing_model_agrees_helps (2026-11-11: passes; mutation fired)",
       "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "2026-10-31 owner ruling (REGRADE_TEXT): the requirement is read on the operator CLI (ADR 0146 decision 2: no deployed binary acts under authority), where engine::execute refuses a plan that no simulated branch supports, reached only through engine::run_governed_with from qip-cli agency.rs; integration beyond the CLI is out of scope by decision and is not a gap, and amending ADR 0146 d2 to let a deployed binary act would widen authority. Graded on authority_is_used_only_over_a_plan_every_competing_model_agrees_helps and its recorded mutation. Earlier: Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
+    "gap": "2026-11-11 (wave1111 fw-a-01): graded COMPLETE on the operator CLI under the owner's ruling of 2026-10-31: 'No deployed binary acts under authority, and the requirement is read on the operator CLI. There, engine::execute refuses a plan that no simulated branch supports (ADR 0146 decision 2). Integration beyond the CLI is out of scope by decision and is not a gap.' integrated is set because qip-cli, a composition root, reaches engine::execute through engine::run_governed_with; deployable stays false because qip-cli is not a deployed image. Earlier: 2026-10-31 owner ruling (REGRADE_TEXT): the requirement is read on the operator CLI (ADR 0146 decision 2: no deployed binary acts under authority), where engine::execute refuses a plan that no simulated branch supports, reached only through engine::run_governed_with from qip-cli agency.rs; integration beyond the CLI is out of scope by decision and is not a gap, and amending ADR 0146 d2 to let a deployed binary act would widen authority. Graded on authority_is_used_only_over_a_plan_every_competing_model_agrees_helps and its recorded mutation. Earlier: Integration beyond the CLI is not built, by decision (ADR 0146 decision 2): no deployed binary acts under authority; qip-deepbrain's ambient door only drafts and never runs engine::execute. Branches come from the request's declared structural models and, when the request declares a twin, qip-twin futures (qip-cli agency.rs TwinScenarios, a ScenarioSource). Corrected 2026-10-24.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -320,7 +321,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute. Owner ruling 2026-10-31 (REGRADE_TEXT): No deployed binary acts under authority, and the requirement is read on the operator CLI."
+    "notes": "Re-graded 2026-10-18 (lane L10): simulation-before-authority is met. 2026-10-24 lane T6-MODEL-AGENTS: gap rewritten per ADR 0146 (the twin-futures clause was stale: TwinScenarios exists); kept PARTIAL because no running deployed path acts under authority, which the ADR keeps true on purpose. Mutation fired earlier: reading only the first branch in counterfactually_supported lets the contested pass Execute. Owner ruling 2026-10-31 (REGRADE_TEXT): No deployed binary acts under authority, and the requirement is read on the operator CLI. 2026-11-11 independent verification (wave1111 fw-a-01): authority_is_used_only_over_a_plan_every_competing_model_agrees_helps passes, and qip-cli --test agency every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations passes. Mutation (the requirement's own: removing the evaluation): counterfactually_supported's refusal of a plan with no simulated branch disabled (`if false && results.is_empty()`) -> the test fails at tests/agency.rs:3478 'expected withheld, got Executed([Step { tool: \"quoter\" ..}])'; restored, passes. Graded COMPLETE."
   },
   {
     "id": "R12-MODEL-4015",
@@ -392,7 +393,7 @@
   },
   {
     "id": "R12-QUANT-4018",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family Foundry::platform() holds as Registered, a calibrated classical baseline card exists, and (since 2026-10-31) the candidate's latest holdout_rmse is strictly lower than the baseline's on the same dataset (central::models::require_beats_baseline). resume_model_promotions applies the same workload check to every quantum-informed record it restores and stops the restart on a failure. ADR 0150 decision 5 keeps the producer unbuilt; qip-acceptance arch_033 no_production_code_outside_the_promotion_seam_builds_a_quantum_informed_candidate fails on any production mention of the variant or its serde tag outside model_serving.rs's declaration and match arms.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/model_serving.rs::require_eligible_workload",
@@ -401,7 +402,7 @@
       "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_that_does_not_beat_its_baseline_is_refused_by_the_comparison (mutant: require_beats_baseline call removed, killed)",
       "backend/crates/runtime/qip-kernel/src/platform.rs::a_restored_quantum_informed_promotion_naming_an_unbuilt_family_is_refused_at_restart (mutant: require_restorable call in resume_model_promotions removed, killed)"
     ],
-    "gap": "Open: ADR 0150 decision 5 declines building the quantum-informed variant, so under bar part 4 the requirement's evaluation of quantum variants on eligible workloads stays unmet (no candidate exists to evaluate). The guard scan cannot see a ModelProducer deserialized from JSON assembled at runtime, nor benches/ or macro-generated code. Closed 2026-10-31 under decision 12: the seam compares the candidate against its baseline, and a restored promotion passes the live workload check.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -409,10 +410,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test serving; cargo test -p qip-kernel --lib a_restored_quantum_informed; cargo test -p qip-acceptance --test arch_033_quantum_path",
+    "verification": "cargo test -p qip-kernel --test serving (17 passed); cargo test -p qip-kernel --lib a_restored_quantum_informed_promotion_naming_an_unbuilt_family_is_refused_at_restart (1 passed); cargo test -p qip-acceptance --test arch_033_quantum_path (5 passed). Mutation-verified 2026-11-12, each restored byte-for-byte and re-run green: `if workload.is_some() { return Ok(()); }` at the top of require_eligible_workload fails serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built at its unwrap_err (an unbuilt family admitted) and the restart test at its expect_err; the QuantumInformed arm of require_restorable replaced by Ok(()) fails the restart test ('an unbuilt family was restored') and leaves serving green, so the restore seam is guarded on its own; `if true || candidate_error < baseline_error` in central::models::require_beats_baseline fails a_quantum_informed_candidate_that_does_not_beat_its_baseline_is_refused_by_the_comparison at its unwrap_err; the require_calibrated_baseline call replaced by Ok(()) fails a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached ('on record but never calibrated' admitted).",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. Owner ruling 2026-10-31 (IMPLEMENT): The requirement calls quantum variants optional. ADR 0150 decision 5 keeps them unbuilt until a family has a benefit record on a non-simulated provider. Handed to lane L4 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open. 2026-10-31 decision 12 (parent): not overruled; decision 10's proposed gap \"none open; producer optional and unbuilt by ADR 0150 d5\" is superseded by the skeptic's findings, which were closed as tightenings: the baseline comparison and the restore check. Rollback needs no check of its own: every record it reads passed the live seam in-process or the resume check at start. Test fixtures, 2026-10-31 (4eae3102): the two admitting serving tests (a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached, a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built) now fit their baseline on the candidate's own dataset with a worse ridge. This is not a loosened test: the rule got stricter (require_beats_baseline refuses a comparison across datasets and a candidate that does not beat its baseline), the old fixtures fitted identical models on different data and so could no longer be admitted, and every refusal those tests assert is unchanged. Accepted by the parent 2026-10-31."
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate. Owner ruling 2026-10-31 (IMPLEMENT): The requirement calls quantum variants optional. ADR 0150 decision 5 keeps them unbuilt until a family has a benefit record on a non-simulated provider. Handed to lane L4 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 L4-quant: guard landed per decision 10 hand-off (29a04235, then the scan fix); skeptic verdict REFUTED, so the row stays PARTIAL rather than the ruling's regrade to none open. 2026-10-31 decision 12 (parent): not overruled; decision 10's proposed gap \"none open; producer optional and unbuilt by ADR 0150 d5\" is superseded by the skeptic's findings, which were closed as tightenings: the baseline comparison and the restore check. Rollback needs no check of its own: every record it reads passed the live seam in-process or the resume check at start. Test fixtures, 2026-10-31 (4eae3102): the two admitting serving tests (a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached, a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built) now fit their baseline on the candidate's own dataset with a worse ridge. This is not a loosened test: the rule got stricter (require_beats_baseline refuses a comparison across datasets and a candidate that does not beat its baseline), the old fixtures fitted identical models on different data and so could no longer be admitted, and every refusal those tests assert is unchanged. Accepted by the parent 2026-10-31. 2026-11-12 lane fw-m-01: graded COMPLETE. The owner's 2026-10-31 ruling (decision 10) grades this row on the refusal at the one promotion door, since the requirement calls quantum variants optional and ADR 0150 decision 5 keeps the producer unbuilt; decision 12 held it PARTIAL only for the skeptic's two defects (no comparison against the baseline; a restored promotion skipping the workload check), and both are closed and each is now mutation-verified above. The 2026-10-31 gap's 'under bar part 4 the evaluation stays unmet' reads the requirement's 'evaluated' as requiring a producer, which the owner's ruling rejected; it is removed. Kept as a known limit of the guard scan, not of this bar: arch_033's scan does not see a ModelProducer deserialized from runtime-assembled JSON, benches/ or macro output — any such candidate still meets the same three refusals at promote_model_from and at restart."
   },
   {
     "id": "R12-MODEL-4019",
@@ -485,13 +486,16 @@
   {
     "id": "R12-MODEL-4022",
     "status": "PARTIAL",
-    "current": "Strategies climb HoldoutGate -> PaperGate -> ShadowGate -> PilotGate -> ScaledGate in qip-lifecycle; models are promoted on holdout evaluation only.",
+    "current": "ADR 0436: Platform::promote_model_from refuses a TrainingPipeline or QuantumInformed candidate whose card has no simulation or paper trial, fewer than MIN_TRIAL_ROUNDS rounds, or a last round dated after the promotion (require_completed_trial), before anything changes; the trial's stage line is signed onto the ModelPromotion record. The trial is ModelCard::trial (qip-ai TrialRecord), written only by ModelRegistry::record_trial_round on a two-arm TrialVenue {Simulation, Paper} with no arm that can name a live venue. SelfFitted keeps its shadow gate.",
     "evidence": [
-      "backend/crates/services/qip-lifecycle/src/gates.rs:130 HoldoutGate",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs require_completed_trial",
+      "backend/crates/libs/qip-ai/src/registry.rs TrialRecord, TrialVenue, ModelRegistry::record_trial_round",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs a_training_pipeline_candidate_that_skipped_its_paper_trial_is_refused_and_one_tried_is_eligible",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs a_quantum_informed_candidate_that_beat_its_baseline_is_refused_without_a_paper_trial",
+      "backend/crates/libs/qip-ai/tests/registry.rs a_trial_round_is_refused_when_blank_repeated_or_recorded_after_acceptance",
+      "docs/adr/0436-a-training-pipeline-or-quantum-informed-candidate-is-promoted-only-after-a-recorded-simulation-or-paper-trial.md"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): the gap above is stale. ModelStage::Shadow with MIN_SHADOW_ROUNDS = 3 exists, and the deep brain's own candidates (ModelProducer::SelfFitted) cannot be promoted without it (require_completed_shadow). Open: ModelProducer::TrainingPipeline, the producer Platform::promote_model uses, skips the shadow stage. Requiring it was tried and reverted unpushed: 21 kernel and qip-api tests promote TrainingPipeline fixtures, and nine of them assert exact card stages or exercise the shadow refusal itself, so each needs reworking rather than a shared helper. Shadow rounds also score rmse on later bars, not twin-priced paper fills, so whether the shadow is 'simulation and paper trading' stands under bar part 4.",
+    "gap": "2026-11-12 (lane t50-05): the kernel's promotion now refuses an untried TrainingPipeline or QuantumInformed candidate (ADR 0436, mutation-verified). Open: (1) ModelRegistry::promote and promote_artifact called directly do not read the trial, so a card can reach decision eligibility without one by that door; moving the gate into the registry touches about eighty call sites. (2) Nothing in production records a trial round, and a round's evidence is the caller's sentence: tying each round to simulated fills the event log holds is bar part 4. (3) SelfFitted candidates pass on the shadow stage, which scores rmse on later bars rather than paper fills.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -499,7 +503,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test serving (19 passed) and cargo test -p qip-ai --test registry (4 passed), 2026-11-12; seven mutations each failed the named test at its asserting line",
     "work_item": "",
     "size": "M",
     "notes": "2026-10-18 lane L06: not implemented; requiring a trial record nothing produces would stop every promotion. Left PARTIAL with the corrected gap."
@@ -563,7 +567,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1014 roll_back_degraded",
       "backend/crates/libs/qip-ai/src/registry.rs:336-361 decision_eligibility"
     ],
-    "gap": "A fill cannot be attributed to a model: FillScore (platform.rs) carries order, venue and instrument and no model reference, and Platform::evaluate_alternatives scores by order id, so there is no counterfactual score keyed by model for roll_back_degraded to read. Holding a degrading model on counterfactual performance needs the order-to-model attribution first (proposal -> model card), a kernel change.",
+    "gap": "A fill cannot be attributed to a model: FillScore (platform.rs) carries order, venue and instrument and no model reference, and Platform::evaluate_alternatives scores by order id, so there is no counterfactual score keyed by model for roll_back_degraded to read. Holding a degrading model on counterfactual performance needs the order-to-model attribution first (proposal -> model card), a kernel change. 2026-11-12 (wave580 fw-e-01): still blocked as stated — no model reference rides proposal, order or FillScore today, so the attribution chain is several kernel seams, and holding a model on counterfactual performance would also need a figure nobody gave (how much counterfactual shortfall, over how many scored fills, retires a model).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1499,15 +1503,17 @@
   {
     "id": "R12-ASSET-4067",
     "status": "PARTIAL",
-    "current": "Valuation confidence from illiquid marks narrows/refuses sizing; liquidity ladder computed per book; horizon pools armed by the central plane. Not held as one per-position record.",
+    "current": "Valuation confidence from illiquid marks narrows/refuses sizing; liquidity ladder computed per book; horizon pools armed by the central plane. Platform::position_holding joins confidence, horizon and liquidity per held position. Since 2026-11-12 the horizon survives a restart: construct_from journals a PositionHorizonRecorded (object, hypothesis, approved horizon, sized-at instant; Topic::PositionUpdated, producer kernel/position-horizon, retention Irreplaceable) once the proposal's capital is held, releasing the hold if the log refuses it, and assembly rebuilds position_horizons from the latest record per object (Platform::resume_position_horizons), so a resumed position states its horizon instead of refusing.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12557-12588 sizing_confidence",
       "backend/crates/runtime/qip-kernel/src/platform.rs:12626 arm_horizon_gate",
       "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:296 an_uncertain_mark_narrows_sizing_and_a_confident_one_does_not",
       "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::position_holding)",
-      "backend/crates/runtime/qip-kernel/tests/position_record.rs"
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs PositionHorizonRecorded, Platform::resume_position_horizons",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs a_held_position_record_carries_valuation_confidence_horizon_and_expected_liquidity (second process over the same log states the journalled horizon; mutations: drop resume_position_horizons at assembly, skip the journal write in construct_from)"
     ],
-    "gap": "2026-10-25: skeptic REFUTED: Platform::position_holding joins confidence, horizon and liquidity on demand, but the horizon lives only in the in-memory position_horizons written by construct_from, so after any restart every resumed position is refused 'no hypothesis horizon on record' and the record is never journaled or served; remaining step is to persist the horizon (and the record) through the event log and expose it on a default-path surface.",
+    "gap": "2026-11-12 (fw-f-01): persistence closed: the horizon is journalled and resumed, and the joined record is derived from it on demand rather than kept as a second record. Still open: no default-path surface serves the record. qip-api's /portfolio deliberately serves counts only ('position-level detail is served through the read model, not by reaching past a control'), so exposing per-position holdings needs the read-model or capability-gate route decided first, which this lane did not take in its time box.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1518,21 +1524,21 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted: sizing_confidence near platform.rs:15610, arm_horizon_gate near :15679. 2026-10-25: 0066923c adds position_holding and carries the thesis horizon; LEARN computes it per held object and counts it. Mutation: drop the horizon lookup in construct_from; the record test fails. Skeptic (security-engineer) REFUTED on persistence and exposure; the stale-confidence refusal half predates this commit (sizing_confidence)."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted: sizing_confidence near platform.rs:15610, arm_horizon_gate near :15679. 2026-10-25: 0066923c adds position_holding and carries the thesis horizon; LEARN computes it per held object and counts it. Mutation: drop the horizon lookup in construct_from; the record test fails. Skeptic (security-engineer) REFUTED on persistence and exposure; the stale-confidence refusal half predates this commit (sizing_confidence). 2026-11-12 fw-f-01: PositionHorizonRecorded journalled in construct_from and resumed at assembly. Mutations fired, each restored sha256-identical: drop the resume_position_horizons call (resumed holding refused, test fails); replace the journal_record call with a no-op (nothing resumed, test fails). The held-record test's tail asserted the resumed position was refused, which was the defect; it now asserts the resumed hypothesis, horizon and exit plan equal the first process's."
   },
   {
     "id": "R12-ASSET-4068",
-    "status": "PARTIAL",
-    "current": "Kernel keeps pending corporate actions, a CommitmentBook of private commitments and a per-cycle hedge review; they are not tied into one per-position record (PositionRecord's Declared::NoneApplicable is unused).",
+    "status": "COMPLETE",
+    "current": "Platform::position_obligations states, for every held position, its hedge relationship, pending corporate actions and commitments, each Declared::Present or NoneApplicable with a reason. Since 2026-11-12 the hedge relationship is resolved against the book: hedge_review::policies_relating_to takes the set of instruments held at a non-zero quantity, and a covering policy counts as the position's hedge only where its hedge instrument is held at a non-zero quantity; a covering policy whose hedge is not held is named in the NoneApplicable reason. LEARN journals the whole per-position record each cycle as PositionObligationsStated (Topic::RiskEvaluated, key position-obligations:<cycle>) beside the stage line's counts, so the log answers which position was unhedged and why. Whether a held hedge offsets its exposure by the declared beta is the hedge survey's measurement (HedgeSurveyed, journaled the same cycle), not this record's. Since the 2026-11-12 refutation: a covering policy whose hedge instrument is the covered position itself is returned as HedgeRelations::own and stated as no hedge ('with this position as its own hedge, which offsets nothing'), never as one — the declaration is kept, because the same fund is a real hedge for every other name in its bucket; and the reverse arm ('this position is the hedge for <axis> <bucket>') is Present only where another held position lies in that bucket, otherwise it is HedgeRelations::idle and named in the reason.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:995 corporate_actions_pending",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:693 commitments",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15662 hedge_review::review",
-      "backend/crates/libs/qip-financial/src/position_record.rs:25 Declared",
-      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::position_obligations)",
-      "backend/crates/runtime/qip-kernel/src/hedge_review.rs (policies_relating_to)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::position_obligations",
+      "backend/crates/runtime/qip-kernel/src/hedge_review.rs policies_relating_to, HedgeRelations",
+      "backend/crates/runtime/qip-kernel/src/position_register.rs PositionObligationsStated",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs::each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs::a_declared_hedge_whose_instrument_is_not_held_is_not_a_hedge_and_the_record_is_journalled",
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs::a_position_named_as_its_own_hedge_over_a_bucket_holding_nothing_else_states_no_hedge"
     ],
-    "gap": "2026-10-25: skeptic REFUTED: position_obligations resolves the hedge relationship from declared policies whose axis bucket covers the instrument (hedge_review::policies_relating_to), not from a hedge actually held, and LEARN discards the per-position record each cycle; remaining step is to resolve the hedge against an actual hedge holding and journal or serve the record.",
+    "gap": "2026-11-12 (fix-b-01): the three refuted parts are closed. (1) each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none now hedges tech-beta with a distinct obj-HEDGE the book buys through the desk control path: obj-AAA resolves Present to exactly 'tech-beta (hedged with obj-HEDGE ...)', and obj-HEDGE to exactly 'tech-beta (this position is the hedge for sector information_technology)' — not hedged by tech-beta although tech-beta covers it, and not the hedge for energy, where nothing is held. (2) a self-covering policy is stated as no hedge (HedgeRelations::own). (3) the reverse arm checks the book for another held position in the bucket (HedgeRelations::idle). Nothing in the repository remains; not deployed. Superseded: 2026-11-12 (orchestrator, independent verification of the 2026-11-12 grade): held PARTIAL. The record is journalled and 'none' is stated with its reason, and both stay. The hedge relationship is not yet resolved against a real holding. (1) The only test of the held-hedge arm (qip-kernel tests/position_record.rs each_held_position_states_its_hedge_corporate_actions_and_commitments_or_none) uses a position that hedges itself, and hedge_review.rs never checks that the hedge instrument differs from the covered one, so a position counts as its own hedge. (2) The reverse arm marks a held position as the hedge for its bucket without checking that any exposure in that bucket is held. Needed: a distinct held hedge instrument resolving to Present, a refusal of a self-hedge, and a reverse-arm check against held exposure, each mutation-verified. Earlier: ",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1540,10 +1546,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted (corporate_actions_pending near platform.rs:1180, commitments near :777, hedge_review::review call near :19064). 2026-10-25: b04dfb4f adds position_obligations (hedges, pending corporate actions, commitments, each Declared::Present or NoneApplicable with a reason). Mutation: NoneApplicable replaced by Present(vec![]); test fails. Skeptic (security-engineer) REFUTED as above."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: Evidence line numbers drifted (corporate_actions_pending near platform.rs:1180, commitments near :777, hedge_review::review call near :19064). 2026-10-25: b04dfb4f adds position_obligations (hedges, pending corporate actions, commitments, each Declared::Present or NoneApplicable with a reason). Mutation: NoneApplicable replaced by Present(vec![]); test fails. Skeptic (security-engineer) REFUTED as above. 2026-11-12 wave580 fw-e-01: both refuted points built — hedge resolved against the held instrument, record journaled. Mutations fired, restored byte for byte: held predicate replaced by |_| true -> the new test fails ('stated as [tech-beta (hedged with obj-HEDGE ...)] where none applies'); the PositionObligationsStated journal_record removed -> the new test fails (0 records against 1). The older test's tech-beta now hedges with the held obj-AAA, because one cycle of that fixture opens one position and a second name could not be opened in it. 2026-11-12 fix-b-01: mutations in hedge_review::policies_relating_to, each fired and restored byte for byte: own.push -> held.push fails both hedge tests (obj-HEDGE lists 'tech-beta (hedged with obj-HEDGE ...)'); exposed = true fails both (obj-HEDGE lists energy-beta); dropping other != instrument fails the self-hedge test; held.contains -> false fails the held-hedge test; held.contains -> true fails the unheld test. Graded COMPLETE; awaiting a second skeptic."
   },
   {
     "id": "R12-ASSET-4069",
@@ -1555,9 +1561,10 @@
       "backend/crates/libs/qip-financial/src/position_record.rs:65 ExitPlan",
       "docs/adr/0183-a-position-is-opened-only-with-an-exit-plan-its-instruments-stated-terms-admit.md",
       "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::exit_plan_for, position_exit_plan)",
-      "backend/crates/runtime/qip-kernel/tests/position_record.rs a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held"
+      "backend/crates/runtime/qip-kernel/tests/position_record.rs a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::dated_exit_plan (the one dating function construction and resume share), Platform::resume_position_horizons"
     ],
-    "gap": "2026-10-30: skeptic REFUTED: construct_from now dates an exit plan for every leg and refuses any leg whose plan falls inside a declared lockup (ADR 0183), but Platform::submit_order is public and checks no plan, resumed positions carry none, and the attribution half has no per-position reconciliation test; remaining step is the plan check inside submit_order, plans rebuilt on resume, and a per-position attribution test.",
+    "gap": "2026-11-12 (fw-f-01): plans are now rebuilt on resume: assembly re-dates each sized object's plan from its journalled PositionHorizonRecorded through the same lockup check construction ran (dated_exit_plan), refusing assembly where the universe now refuses that plan, proven by position_record.rs a_held_position_record_carries_valuation_confidence_horizon_and_expected_liquidity. Still open: Platform::submit_order is public and checks no plan (it has roughly a hundred direct callers across kernel, broker and acceptance tests and qip-api's start-up path, so the check moves every one of them and was more than this lane's time box), and the attribution half has no per-position reconciliation test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1568,7 +1575,7 @@
     "verification": "cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect. 2026-10-30: ADR 0183 decides the owner question under the 2026-10-24 delegation: a declared lockup is a term the exit plan respects, so a thesis shorter than a running lockup is refused at construction. Mutation: pass None for the lockup in exit_plan_for; the locked-up fund is sized and the test fails. Five mark-focused fixtures' lockups shortened to an expired one year; the ASSET-4067 held-record assertion moved from the lockup's dated return to the catalogue exit for an expired lockup (the running-lockup return stays tested in valuation_plane.rs); the skeptic counts that restatement as lost held-record coverage. Skeptic (security-engineer) REFUTED as in the gap."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect. 2026-10-30: ADR 0183 decides the owner question under the 2026-10-24 delegation: a declared lockup is a term the exit plan respects, so a thesis shorter than a running lockup is refused at construction. Mutation: pass None for the lockup in exit_plan_for; the locked-up fund is sized and the test fails. Five mark-focused fixtures' lockups shortened to an expired one year; the ASSET-4067 held-record assertion moved from the lockup's dated return to the catalogue exit for an expired lockup (the running-lockup return stays tested in valuation_plane.rs); the skeptic counts that restatement as lost held-record coverage. Skeptic (security-engineer) REFUTED as in the gap. 2026-11-12 fw-f-01: resumed exit plan asserted equal to the constructed one; mutation: drop the resume call at assembly, position_exit_plan is None on the second process and the test fails (fired, restored)."
   },
   {
     "id": "R12-ASSET-4070",
@@ -1598,20 +1605,22 @@
   },
   {
     "id": "R12-ASSET-4071",
-    "status": "PARTIAL",
-    "current": "LifeStage implements the nine stages with only legal edges and tests; it has no caller outside its crate. The kernel tracks PositionLifecycle (Opened/Held/Flagged/Unwinding/Closed) instead.",
+    "status": "COMPLETE",
+    "current": "Every desk position walks LifeStage discover to attribute at the kernel's booking seam (position_life.rs: fills open, resize, exit and flip a life through LifeStage::transition; settlement is scheduled from the venue calendar; LEARN settles due exits and attributes only lives at Settle). Since ADR 0424 (2026-11-12) this happens on the default path: the shipped simulated venue fills immediate_fill_fraction (0.6) of an order on submission, and at the start of every ACT stage the kernel works the remainder of each open sale down to the long held (Platform::work_open_sales, OrderManager::work_sales, Broker::work; SimulatedBroker::work fills it in full, draws nothing from the venue's random stream, and honours a limit). A whole sale therefore reaches flat on the next cycle with no borrow reading, the position reaches Exit, settles on the calendar and is attributed by the LEARN after settlement. A purchase's remainder and a sale's short part are never worked; a halted scope, an autonomy level that does not execute, a withdrawn venue and a non-simulated venue work nothing. Worked fills are booked through the one desk booking path (Platform::book_venue_fills, shared with capture_submission).",
     "evidence": [
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs:15-27 LifeStage",
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs:120-159 tests (exit_cannot_reach_attribute_without_settling_first)",
-      "backend/crates/runtime/qip-kernel/src/position_life.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::book_desk_fill, register_settlement, stage_learn settle_and_attribute)",
-      "backend/crates/runtime/qip-kernel/tests/position_life.rs an_exited_unsettled_position_is_not_attributed",
-      "backend/crates/libs/qip-portfolio/src/life_stage.rs exit_cannot_reach_attribute_without_settling_first"
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs LifeStage, tests (exit_cannot_reach_attribute_without_settling_first)",
+      "backend/crates/runtime/qip-kernel/src/position_life.rs PositionLives::on_fill, schedule_settlement, settle_and_attribute",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_act -> work_open_sales; book_venue_fills (shared by capture_submission)",
+      "backend/crates/services/qip-execution-engine/src/oms.rs OrderManager::work_sales, WorkedOrder",
+      "backend/crates/services/qip-execution-engine/src/broker.rs Broker::work (default: nothing), SimulatedBroker::work, fill_now",
+      "docs/adr/0424-the-simulated-venue-works-the-remainder-of-a-partial-sale-on-the-next-cycle-and-never-the-remainder-of-a-purchase.md",
+      "backend/crates/runtime/qip-kernel/tests/position_life.rs a_whole_sale_on_the_default_venue_reaches_flat_and_is_attributed_after_settling, an_exited_unsettled_position_is_not_attributed",
+      "backend/crates/services/qip-execution-engine/tests/execution.rs an_open_sale_is_worked_down_to_the_long_held_and_an_open_purchase_is_not, a_halted_scope_works_nothing, working_a_remainder_draws_nothing_from_the_venues_random_stream"
     ],
-    "gap": "2026-10-25: skeptic REFUTED on part 2: the kernel walks every desk position discover to attribute through LifeStage::transition and attributes only settled lives, but on the default simulated broker no position reaches Exit (immediate_fill_fraction 0.6 never takes a sale to flat, and a flip needs a borrow reading observe_borrow has no production caller for), so Exit/Settle/Attribute run only in a test; remaining step is a default-path way to exit in full (a fill rule that can reach flat or a production borrow source).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1619,7 +1628,7 @@
     "verification": "cargo test -p qip-kernel --test position_life; cargo test -p qip-portfolio life_stage",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. 2026-10-25: 8cbcf65a (merged in 1c07e5c0): fills advance a per-position LifeStage from the lot's signed quantity (open, resize via Monitor, exit, flip), settlement is scheduled from the venue calendar, LEARN settles due exits and attributes only lives at Settle; bounded (1024 exited, 64 attributed kept). Seven mutations each failed (LEARN attributing Exit, Settle disabled, calendar ignored, settle_and_attribute uncalled, flip suppressed, no-calendar read as settled, resize inventing a life). Skeptic (code-reviewer): unit proof and single writer hold; REFUTED on default path. 2026-11-12 lane fw-l-01: option (a) by ADR 0424 — the 2026-10-25 refutation (no position reaches Exit on the default simulated broker) is closed on the default path: the new position_life test uses the shipped SimulationSettings, no observe_borrow, and walks open -> partial sale -> next-cycle working to flat -> Exit -> LEARN before settlement (Exit held) -> LEARN after settlement (Attribute). Mutations, each fired and restored byte-for-byte: work_sales returns before working anything (\"the next cycle did not work the sale's remainder to flat\"); work purchases as well (the book holds 2, same assertion; the unit test's \"a purchase's remainder was worked\"); work the whole remainder past the long (\"a worked sale sold past flat\"); drop the kill-switch check (\"a halted scope's sale was worked\"); draw from the venue's rng in SimulatedBroker::work (\"working moved the venue's random stream\"). observe_borrow keeps no production caller: a borrow source is a data source whose licensing posture qip-data-finder must evaluate first, which is not this lane's to admit. Merge 2026-11-12: lane fw-i-01's read-only finding of the same day (each submission fills 0.6 of the remainder in fixed point and the remainder is never worked, so a sale converges geometrically without reaching flat) is the defect ADR 0424 closes; its gap text is superseded by this grade."
   },
   {
     "id": "R12-ASSET-4072",
@@ -2309,7 +2318,7 @@
       "backend/crates/libs/qip-compliance/src/model_risk.rs ModelRiskRegister::admit(models, explanation, regime, inputs, now) -> require_for_decision_in",
       "backend/crates/libs/qip-compliance/tests/model_risk.rs a_model_validated_only_in_calm_is_refused_by_the_model_risk_register_for_a_stressed_decision"
     ],
-    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.\n2026-10-31 (lane L1-MONEY): the cost router's reputation ranking now refuses a model outside the regimes its card was validated in. Remaining: ReputationBook has no production caller, so this guard is on no default path; ModelRiskRegister::evaluate still calls require_for_decision rather than require_for_decision_in, and also has no production caller; and the requirement's six named exposures (drift, calibration, regime mismatch, uncertainty, feature failure, adversarial inputs) have not each been shown with a measurement plus a limit or recorded finding driven by a test.\n2026-11-06 (lane L1-MONEY): ModelRiskRegister::admit now takes the decision's regime and inputs and evaluates through require_for_decision_in, so a model validated only in calm is refused for a stressed decision. Remaining: admit has no production caller (the compliance plane's own caveat says the control has been asked nothing), and the six per-exposure learning-round findings with reason classes (drift, calibration, regime mismatch, uncertainty, feature failure, adversarial input) and their tests in qip-deepbrain learning.rs are not built.",
+    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.\n2026-10-31 (lane L1-MONEY): the cost router's reputation ranking now refuses a model outside the regimes its card was validated in. Remaining: ReputationBook has no production caller, so this guard is on no default path; ModelRiskRegister::evaluate still calls require_for_decision rather than require_for_decision_in, and also has no production caller; and the requirement's six named exposures (drift, calibration, regime mismatch, uncertainty, feature failure, adversarial inputs) have not each been shown with a measurement plus a limit or recorded finding driven by a test.\n2026-11-06 (lane L1-MONEY): ModelRiskRegister::admit now takes the decision's regime and inputs and evaluates through require_for_decision_in, so a model validated only in calm is refused for a stressed decision. Remaining: admit has no production caller (the compliance plane's own caveat says the control has been asked nothing), and the six per-exposure learning-round findings with reason classes (drift, calibration, regime mismatch, uncertainty, feature failure, adversarial input) and their tests in qip-deepbrain learning.rs are not built. 2026-11-12 (fw-g-01): not built in this lane; giving ModelRiskRegister::admit a production caller first needs the in-repository decision of which decision seam asks it (no default path consults a model card at decision time), which is an ADR under decision 28, and the six per-exposure learning-round findings are a second slice beside it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2372,13 +2381,24 @@
   },
   {
     "id": "R12-RISK-4102",
-    "status": "PARTIAL",
-    "current": "shared_cause aggregates exposure by causal driver; causal stress in SIMULATE. No cross-region contagion model.",
+    "status": "COMPLETE",
+    "current": "Four named exposures, each measured in SIMULATE and read by DECIDE's survival kernel (survival::worst_world over the whole StressReport, sized at STRESS_LOSS_TOLERANCE before any order exists, withholding a stressed-liquidity reserve named for the failing world). Cross-asset contagion: tail::contagion_cascade carries one position's worst retained excursion two hops along absolute return correlation. Region contagion (2026-11-12): tail::region_contagion shocks every position whose country axis names a region at its own worst excursion at once and carries it along correlation into other regions; a position naming no region is charged in every region's shock. Counterparty contagion (2026-11-12): tail::counterparty_contagion fails each counterparty in turn, charging what it held COUNTERPARTY_LOSS_GIVEN_DEFAULT and carrying those instruments' worst excursions along correlation to positions held elsewhere; Platform::stress_the_book hands each TailPosition its country axis and the broker (the COUNTERPARTY_AXIS bucket its fills are charged to). Correlated causal mechanisms: shared_cause aggregates exposure by causal driver under the shipped causal-driver cap, and causal stress through the graph feeds the same worst_world. Every threshold is a figure already in the tree: STRESS_LOSS_TOLERANCE, COUNTERPARTY_LOSS_GIVEN_DEFAULT, UNMEASURED_EXCURSION.",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/tail.rs:894 contagion_cascade",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1045 region_contagion",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1087 counterparty_contagion",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:608 survival_worlds pushes both",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:21063 region and counterparty handed to TailPosition",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:518 worst_world",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:946 the_contagion_worlds_read_each_positions_region_and_counterparty_from_the_platform",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:917 a_paper_book_failing_the_region_contagion_world_withholds_a_reserve_named_for_it",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:927 a_paper_book_failing_the_counterparty_contagion_world_withholds_a_reserve_named_for_it",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1488 a_regional_shock_hits_every_name_in_the_region_and_crosses_regions_only_along_correlation",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:1581 a_counterparty_failure_spreads_to_correlated_positions_held_elsewhere",
       "backend/crates/libs/qip-risk/src/shared_cause.rs:1-15",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:1396-1440 StressReport.causal"
+      "backend/crates/libs/qip-risk/src/limits.rs:2102 causal-driver cap"
     ],
-    "gap": "Contagion model across regions/counterparties.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2386,10 +2406,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --lib tail; cargo test -p qip-kernel --test stress contagion; cargo test -p qip-risk --test shared_cause; cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-acceptance --test compliance_proof --test security",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-11-12: the desk book is held at one counterparty (the broker), so in the configured process counterparty-contagion reads exactly as counterparty-failure — the cascade spreads only once positions are held at more than one counterparty, which the unit test drives. The worlds are statistics (f64), as every tail world is; deployable stays false with the rest of the platform."
   },
   {
     "id": "R12-RISK-4103",
@@ -2580,16 +2600,17 @@
   },
   {
     "id": "R12-RISK-4111",
-    "status": "PARTIAL",
-    "current": "LEARN feeds the Brier score to the governor (backend/crates/runtime/qip-kernel/src/platform.rs:9183-9187); SurvivalGovernor::size multiplies the opportunity release by ConfidenceSignals::decide (survival.rs:769-776), contraction-only (confidence.rs:124, schedule floor). Platform::issue_capital narrows the grant through governor.grant_decision -> CentralPlane::issue_narrowed, refusing a factor outside (0,1] (platform.rs:7835-7846; central/plane.rs:1955-1975). Kernel tests drive both halves. The grant half never executes in a shipped binary: Platform::issue_capital is reached only from qip-api's capital-grant route, which first calls Principal::authentication_instant, and Principal::presence always returns Unattested (backend/crates/apps/qip-api/src/auth.rs:169-217; routes.rs:1902-1912), so every grant is refused before CentralPlane::issue_narrowed (platform.rs:7835-7846) is asked; no cell ever holds a narrowed grant until ADR 0065/0076's per-person credential exists.",
+    "status": "COMPLETE",
+    "current": "SurvivalGovernor::size releases opportunity capital times ConfidenceSignals::decide's multiplier (backend/crates/runtime/qip-kernel/src/survival.rs:923-926), contraction only; Platform::issue_capital passes the governor's grant narrowing to CentralPlane::issue_narrowed (backend/crates/runtime/qip-kernel/src/platform.rs:10263-10270). Kernel tests drive a decayed calibration through both and see the sizing release and the next grant fall by CALIBRATION_FLOOR. In a shipped binary the grant half is reached only from qip-api's capital-grant route, which refuses every request before it until attested operator presence (ADR 0120) exists.",
     "evidence": [
-      "runtime/qip-kernel/tests/stress.rs (decayed calibration narrows the release by CALIBRATION_FLOOR; multiplier <= 1)",
-      "runtime/qip-kernel/tests/central.rs::decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:7835-7846",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1955-1975",
-      "backend/crates/apps/qip-api/src/auth.rs:169-217"
+      "backend/crates/runtime/qip-kernel/src/survival.rs:923-926 released = opportunity_capital * confidence.multiplier",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10263-10270 issue_capital -> central.issue_narrowed(.., narrowing.multiplier, ..)",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:485 decayed_calibration_shrinks_allocation_through_the_gate (no trigger releases the whole deployable; decayed calibration releases stressed * CALIBRATION_FLOOR; every multiplier <= 1)",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:8066 decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant (grant = full * CALIBRATION_FLOOR, and full * OOD_FLOOR on a shift)",
+      "2026-11-12 lane fw-h-01: both tests ran, 1 passed each. Mutation `.checked_mul(confidence.multiplier)` -> `.checked_mul(Decimal::ONE)` in survival.rs fails the stress test (panicked at stress.rs:573); mutation `narrowing.multiplier` -> `Decimal::ONE` in the issue_narrowed call fails the central test (panicked at central.rs:8092); each restored byte for byte, both pass.",
+      "backend/crates/apps/qip-api/src/auth.rs Principal::presence (Unattested only): the deployed grant route stays unreachable, which is deployable false, not the kernel-test bar"
     ],
-    "gap": "Already decided by ADR 0120: Attested operator presence is decided (ADR 0120, per-person WebAuthn keys); the row's 'write ADR 0121' is stale and the code slice is left.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,

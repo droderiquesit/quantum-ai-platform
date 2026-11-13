@@ -371,6 +371,27 @@ impl AgentBrief {
         self
     }
 
+    /// Execute `agent_id`'s own procedure against a call leaning `present`:
+    /// find the procedure the brief carries under
+    /// [`crate::memory::procedure_name_for`], take its rule for the brief's
+    /// first object, and say whether `present` follows it. `None` where the
+    /// brief carries no such procedure, names no object, or the procedure
+    /// holds no rule for it.
+    pub fn check_procedure(&self, agent_id: &str, present: Direction) -> Option<ProcedureCheck> {
+        let name = crate::memory::procedure_name_for(agent_id);
+        let procedure = self.procedures.iter().find(|p| p.name == name)?;
+        let subject = self.objects.first()?.as_str();
+        let rule = procedure.rule_for(subject)?;
+        Some(ProcedureCheck {
+            name: procedure.name.clone(),
+            version: procedure.version,
+            subject: subject.to_string(),
+            procedure_lean: rule.lean.clone(),
+            present_lean: present.as_str().to_string(),
+            followed: rule.lean == present.as_str(),
+        })
+    }
+
     pub fn about_objects(mut self, objects: Vec<ObjectId>) -> Self {
         self.objects = objects;
         self
@@ -452,6 +473,41 @@ pub struct AgentFinding {
     /// Data the agent wanted and did not have. Surfaced rather than silently
     /// worked around, because a missing input is usually the whole story.
     pub missing_inputs: Vec<String>,
+    /// How the call sat against the agent's own procedure for the brief's
+    /// subject (R12-WORLD-3034). `None` where the brief carried no procedure
+    /// of this agent's, or the procedure holds no rule for the subject.
+    /// Read by nothing that computes a conviction: a procedure is the record
+    /// of what worked, and letting it pull a call toward itself would turn a
+    /// record of past success into a feedback loop that manufactures more.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub procedure: Option<ProcedureCheck>,
+}
+
+/// The step of an agent's procedure that applied to a brief, and whether the
+/// agent's present call followed it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureCheck {
+    /// The procedure, by name and version, as the brief delivered it.
+    pub name: String,
+    pub version: u32,
+    /// The subject the rule is for — the brief's first object.
+    pub subject: String,
+    /// The lean the procedure's correct calls took on the subject.
+    pub procedure_lean: String,
+    /// The lean the agent takes now.
+    pub present_lean: String,
+    /// Whether the present lean is the procedure's.
+    pub followed: bool,
+}
+
+impl ProcedureCheck {
+    /// The caveat an agent states when it departs from its own procedure.
+    pub fn departure(&self) -> String {
+        format!(
+            "departs from {} v{}: its correct calls on {} leaned {}, this one leans {}",
+            self.name, self.version, self.subject, self.procedure_lean, self.present_lean
+        )
+    }
 }
 
 impl AgentFinding {
@@ -477,6 +533,7 @@ impl AgentFinding {
             caveats: Vec::new(),
             follow_ups: Vec::new(),
             missing_inputs: Vec::new(),
+            procedure: None,
         }
     }
 

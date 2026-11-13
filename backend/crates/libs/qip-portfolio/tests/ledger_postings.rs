@@ -63,6 +63,7 @@ fn outcome(spec: &Spec) -> OutcomeRecord {
             side: spec.side,
             quote_unit: spec.quote_unit.clone(),
             fee: spec.fee.clone(),
+            decision_sequence: None,
         },
         digest: "digest-41".to_string(),
         version: ChainVersion::V2,
@@ -373,4 +374,63 @@ fn an_unreported_fee_is_marked_unreported_and_never_estimated() {
             "an unreported fee was posted: {p:?}"
         );
     }
+}
+
+/// R12-CONTRACT-7069 / ADR 0454: a fill whose cell stated the `OrderSent`
+/// entry it rests on books at schema 2, owned by that cell, with the chain
+/// from fill to order to decision to each contributor's share; one that
+/// stated none books at schema 1 and is never given a chain nobody stated.
+///
+/// Mutations: `post` books every fill at schema 1 (the `Some` arm returns
+/// the bare event) — the schema-2 assertions fail; `PaperFill::try_from`
+/// drops the decision sequence (always `None`) — likewise.
+#[test]
+fn a_fill_that_names_its_decision_books_under_its_cell_with_every_contributor() {
+    use qip_contracts::ledger::{ATTRIBUTED_SCHEMA, LEGACY_SCHEMA};
+
+    let mut record = outcome(&complete());
+    if let Decision::Filled {
+        decision_sequence, ..
+    } = &mut record.entry.decision
+    {
+        *decision_sequence = Some(38);
+    }
+    let fill = PaperFill::try_from(&record).expect("a complete fill");
+    assert_eq!(fill.decision_sequence(), Some(38));
+    let event = post(&fill).expect("books");
+    assert_eq!(event.schema(), ATTRIBUTED_SCHEMA);
+    assert_eq!(event.owner(), Some(CELL));
+    let chain = event.attribution().expect("a stated chain");
+    assert_eq!(chain.order_id, "ord-7");
+    assert_eq!(chain.decision_sequence, 38);
+    assert_eq!(
+        chain.contributors,
+        BTreeMap::from([
+            ("alpha".to_string(), dec("10")),
+            ("beta".to_string(), dec("20")),
+        ])
+    );
+    assert_eq!(
+        event.intent_ids(),
+        vec![format!("{CELL}/3/38/alpha"), format!("{CELL}/3/38/beta")]
+    );
+    // The round trip of a schema 2 event is `qip-contracts`'
+    // `tests/ledger_event.rs`; this crate does not take a JSON dependency for it.
+
+    // A decision that does not precede the fill is refused at posting.
+    let mut late = outcome(&complete());
+    if let Decision::Filled {
+        decision_sequence, ..
+    } = &mut late.entry.decision
+    {
+        *decision_sequence = Some(41);
+    }
+    let late = PaperFill::try_from(&late).expect("the record itself is well formed");
+    assert!(post(&late).is_err(), "a decision after its fill was booked");
+
+    // No stated decision: schema 1, no owner, no chain.
+    let bare = post(&PaperFill::try_from(&outcome(&complete())).expect("fill")).expect("books");
+    assert_eq!(bare.schema(), LEGACY_SCHEMA);
+    assert_eq!(bare.owner(), None);
+    assert_eq!(bare.attribution(), None);
 }

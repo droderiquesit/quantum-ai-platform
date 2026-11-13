@@ -154,13 +154,17 @@ fn a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_cl
 }
 
 /// R12-COVERAGE-5098 and -5103: an FX spot, a cash equivalent and a crypto
-/// spot assemble into the platform beside an equity, and an FX and a crypto
-/// order go through the full desk control path and fill at the simulated
-/// venue — paper, by the broker's own stamp.
+/// spot assemble into the platform beside an equity, and an FX, a cash and a
+/// crypto order go through the full desk control path and fill at the
+/// simulated venue — paper, by the broker's own stamp.
 ///
-/// Mutation: delete the `ForeignExchange` (or `DigitalAsset`, or `Cash`)
-/// record from `AssetClassRegistry::shipped` and `assemble` refuses the
-/// universe naming the instrument, so this test fails at its first `?`.
+/// Mutations that fired (2026-11-12): deleting the `ForeignExchange` record
+/// from `AssetClassRegistry::shipped` (and `Cash`'s hedge into it, which
+/// `shipped` would otherwise refuse first) stops `assemble` with
+/// "obj-EURUSD is a foreign_exchange and no record registers that class";
+/// deleting the `Cash` record (and FX's hedge into it) stops it with
+/// "obj-USD-CASH is a cash and no record registers that class". Dropping
+/// the cash order from the loop fails the `obj-USD-CASH` fill assertion.
 #[test]
 fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result<()> {
     let mut platform = assemble(universe_of(vec![
@@ -187,7 +191,7 @@ fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result
         );
     }
     let fills_before = platform.orders().fills().len();
-    for id in ["obj-EURUSD", "obj-BTC"] {
+    for id in ["obj-EURUSD", "obj-USD-CASH", "obj-BTC"] {
         let order = platform.order_for(
             ObjectId::from_string(id),
             qip_execution_engine::order::Side::Buy,
@@ -216,6 +220,7 @@ fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result
         .collect();
     assert!(filled.contains(&"obj-EURUSD"), "{filled:?}");
     assert!(filled.contains(&"obj-BTC"), "{filled:?}");
+    assert!(filled.contains(&"obj-USD-CASH"), "{filled:?}");
     assert!(
         fills.iter().all(|fill| fill.simulated),
         "a fill on the coverage path was not stamped simulated"
@@ -478,7 +483,9 @@ fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
         maturity,
         repo_rate: 0.045,
         haircut: 0.02,
-        is_reverse: false,
+        // The desk lends: ADR 0398 refuses an order in a repo whose record
+        // says it borrows, because the venue states no pledge.
+        is_reverse: true,
         counterparty: "cp-1".to_string(),
     }))
     .provenance(Provenance::synthetic("asset-class-test", start()))
@@ -564,6 +571,14 @@ fn a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_
         0,
         "premise: nothing filled"
     );
+    // ADR 0398: a repo order needs the Repo permission for its counterparty.
+    platform.declare_treasury(qip_kernel::treasury::TreasuryDeclaration {
+        permissions: vec![(
+            qip_treasury::treasury::FinancingFunction::Repo,
+            "cp-1".to_owned(),
+        )],
+        ..qip_kernel::treasury::TreasuryDeclaration::default()
+    })?;
     for id in ["obj-REPO-1M", "obj-IDX", "obj-BASKET"] {
         let order = platform.order_for(
             ObjectId::from_string(id),
@@ -816,5 +831,232 @@ fn a_private_fund_and_a_real_asset_assemble_and_trade_on_paper_and_withdrawing_e
             && message.contains("is a private_market and no record registers"),
         "{message}"
     );
+    Ok(())
+}
+
+/// A government bond, a corporate bond and a leveraged loan, with the
+/// extension records their types demand. Listed on the simulated venue the
+/// rest of this file trades on: these are paper instruments, not catalogue
+/// data.
+fn debt_instruments() -> Result<Vec<FinancialObject>> {
+    use qip_financial::extensions::{
+        BondDetails, CouponFrequency, CreditRating, DayCount, Extension, LoanDetails, Seniority,
+    };
+    let maturity = start().saturating_add(qip_core::time::Duration::from_days(3_652));
+    let bond = |id: &str, kind: InstrumentType, issuer: &str, rating: CreditRating| {
+        FinancialObject::builder(ObjectId::from_string(id), id, kind, liquidity())
+            .venue("XNYS")
+            .price(dec!("100"))
+            .extension(Extension::Bond(BondDetails {
+                issuer: issuer.into(),
+                coupon_rate: 0.0425,
+                coupon_frequency: CouponFrequency::SemiAnnual,
+                maturity,
+                issue_date: start(),
+                face_value: dec!("100"),
+                day_count: DayCount::ActualActual,
+                seniority: Seniority::SeniorUnsecured,
+                credit_rating: Some(rating),
+                yield_to_maturity: 0.0425,
+                modified_duration: 8.0,
+                convexity: 0.0,
+                option_adjusted_spread_bps: 0.0,
+                callable: false,
+                puttable: false,
+                inflation_index: None,
+            }))
+            .provenance(Provenance::synthetic("asset-class-test", start()))
+            .build(start())
+    };
+    let loan = FinancialObject::builder(
+        ObjectId::from_string("obj-LOAN"),
+        "obj-LOAN",
+        InstrumentType::Loan,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .price(dec!("98"))
+    .extension(Extension::Loan(LoanDetails {
+        borrower: "Paper Borrower".into(),
+        maturity,
+        commitment: dec!("50000000"),
+        drawn: dec!("50000000"),
+        spread_bps: 525.0,
+        benchmark: "SOFR".into(),
+        seniority: Seniority::SecuredFirstLien,
+        modified_duration: 0.25,
+        covenant_lite: false,
+        leverage_covenant: Some(6.0),
+        net_debt_to_ebitda: 3.0,
+        is_amortising: false,
+    }))
+    .provenance(Provenance::synthetic("asset-class-test", start()))
+    .build(start())?;
+    Ok(vec![
+        bond(
+            "obj-UST10",
+            InstrumentType::GovernmentBond,
+            "Sovereign",
+            CreditRating::Aaa,
+        )?,
+        bond(
+            "obj-CORP10",
+            InstrumentType::CorporateBond,
+            "Paper Corp",
+            CreditRating::Baa,
+        )?,
+        loan,
+    ])
+}
+
+/// R12-COVERAGE-5100: government debt, corporate debt and credit trade on
+/// paper beside the repo, and each of `FixedIncome`, `Credit` and `Rates` is
+/// refused by *its own* record's absence.
+///
+/// A government bond and a corporate bond (`FixedIncome`), a loan (`Credit`)
+/// and a reverse repo (`Rates`) assemble beside an equity; an order in each
+/// passes the desk control path and fills at the simulated venue, stamped
+/// simulated. Then each of the three classes is withdrawn on its own, with
+/// the offsets its siblings take into it, and its instrument is refused with
+/// the sentence that names its class — while the other two classes'
+/// instruments are still admitted by the same narrowed table, so the refusal
+/// is that record's and no other's.
+///
+/// The failure prevented: the repo test above withdraws `Rates` through
+/// `without`, which refuses because `FixedIncome` hedges with `Rates`, and it
+/// accepted that refusal — so no test showed that any of the three debt
+/// records is what admits its instruments, and nothing ordered a bond or a
+/// loan at all.
+///
+/// Mutation: in `AssetClassRegistry::withdrawing`, drop the
+/// `self.records.remove(&class)` line — the class stays registered and the
+/// test fails at `!narrowed.is_registered(class)`. Mutation, once per class:
+/// remove the `FixedIncome`, `Credit` or `Rates` record from
+/// `AssetClassRegistry::shipped` together with the offsets naming it —
+/// `assemble` refuses the universe naming obj-CORP10 as a `fixed_income`,
+/// obj-LOAN as a `credit`, obj-REPO-1M as a `rates`, each "no record
+/// registers that class".
+#[test]
+fn government_and_corporate_debt_and_credit_trade_on_paper_and_each_debt_class_is_refused_by_its_own_record()
+-> Result<()> {
+    let mut objects = vec![object("obj-AAA", InstrumentType::CommonStock, None)?];
+    objects.extend(debt_instruments()?);
+    let repo = financing_and_composite_instruments()?
+        .into_iter()
+        .find(|o| o.object_id.as_str() == "obj-REPO-1M")
+        .ok_or_else(|| qip_core::Error::invalid("the fixture holds the repo"))?;
+    objects.push(repo);
+    let catalogue = objects.clone();
+    let mut platform = assemble(universe_of(objects)?)?;
+    for (id, class) in [
+        ("obj-UST10", AssetClass::FixedIncome),
+        ("obj-CORP10", AssetClass::FixedIncome),
+        ("obj-LOAN", AssetClass::Credit),
+        ("obj-REPO-1M", AssetClass::Rates),
+    ] {
+        let instrument = catalogue
+            .iter()
+            .find(|o| o.object_id.as_str() == id)
+            .ok_or_else(|| qip_core::Error::invalid("fixture"))?;
+        assert_eq!(instrument.asset_class, class, "premise: {id}'s class");
+    }
+    assert_eq!(
+        platform.orders().fills().len(),
+        0,
+        "premise: nothing filled"
+    );
+    platform.declare_treasury(qip_kernel::treasury::TreasuryDeclaration {
+        permissions: vec![(
+            qip_treasury::treasury::FinancingFunction::Repo,
+            "cp-1".to_owned(),
+        )],
+        ..qip_kernel::treasury::TreasuryDeclaration::default()
+    })?;
+    let traded = ["obj-UST10", "obj-CORP10", "obj-LOAN", "obj-REPO-1M"];
+    for id in traded {
+        let order = platform.order_for(
+            ObjectId::from_string(id),
+            qip_execution_engine::order::Side::Buy,
+            dec!("10"),
+            dec!("100"),
+            "prop-coverage",
+            vec!["hyp-coverage".to_string()],
+            start(),
+        )?;
+        platform.submit_order(order, start())?;
+    }
+    let fills = platform.orders().fills();
+    let filled: Vec<&str> = fills
+        .iter()
+        .filter_map(|fill| {
+            platform
+                .orders()
+                .orders()
+                .find(|order| order.order_id == fill.order_id)
+                .map(|order| order.object_id.as_str())
+        })
+        .collect();
+    for id in traded {
+        assert!(filled.contains(&id), "{id} did not fill: {filled:?}");
+    }
+    assert!(
+        fills.iter().all(|fill| fill.simulated),
+        "a fill on the debt path was not stamped simulated"
+    );
+
+    let debt = [
+        (AssetClass::FixedIncome, "obj-UST10"),
+        (AssetClass::Credit, "obj-LOAN"),
+        (AssetClass::Rates, "obj-REPO-1M"),
+    ];
+    for (class, id) in debt {
+        // Premise: `without` cannot answer this — a sibling hedges into each.
+        assert!(
+            platform
+                .asset_class_registry()
+                .clone()
+                .without(class)
+                .is_err(),
+            "premise: {} is hedged into by a sibling",
+            class.as_str()
+        );
+        let narrowed = platform.asset_class_registry().clone().withdrawing(class)?;
+        assert!(!narrowed.is_registered(class));
+        for (other, other_id) in debt {
+            let instrument = catalogue
+                .iter()
+                .find(|o| o.object_id.as_str() == other_id)
+                .ok_or_else(|| qip_core::Error::invalid("fixture"))?;
+            if other == class {
+                let message = narrowed
+                    .admit(instrument)
+                    .err()
+                    .ok_or_else(|| {
+                        qip_core::Error::invalid(format!(
+                            "{id} was admitted with {} withdrawn",
+                            class.as_str()
+                        ))
+                    })?
+                    .message()
+                    .to_string();
+                assert!(
+                    message.contains(&format!(
+                        "{id} is a {} and no record registers that class",
+                        class.as_str()
+                    )),
+                    "{message}"
+                );
+            } else {
+                narrowed.admit(instrument).map_err(|error| {
+                    qip_core::Error::invalid(format!(
+                        "withdrawing {} refused {other_id}, a {}: {}",
+                        class.as_str(),
+                        other.as_str(),
+                        error.message()
+                    ))
+                })?;
+            }
+        }
+    }
     Ok(())
 }

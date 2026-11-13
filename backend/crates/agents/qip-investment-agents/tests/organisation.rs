@@ -90,9 +90,10 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    // Twenty-six: L2b's four probes, the Portfolio/Asset Brain (R12-ASSET-3019)
-    // and the Crypto/On-chain Brain (R12-ASSET-3017).
-    assert_eq!(roster.len(), 26, "the organisation is twenty-six agents");
+    // Twenty-seven: L2b's four probes, the Portfolio/Asset Brain
+    // (R12-ASSET-3019), the Crypto/On-chain Brain (R12-ASSET-3017) and the
+    // Company/Fundamental Brain (R12-REASON-3013).
+    assert_eq!(roster.len(), 27, "the organisation is twenty-seven agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -420,6 +421,31 @@ fn desk_holding_an_unmandated_position() -> Arc<Desk> {
 }
 
 fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Desk> {
+    desk_with_purpose(
+        claims,
+        if holding {
+            Held::Flagged
+        } else {
+            Held::Nothing
+        },
+        qip_investment_agents::desk::BookPurpose::default(),
+    )
+}
+
+/// What the fixture book holds: nothing, ACME flagged for want of a mandate
+/// (R12-ASSET-4066), or ACME being divested (R12-ASSET-1160).
+#[derive(Clone, Copy, PartialEq)]
+enum Held {
+    Nothing,
+    Flagged,
+    Unwinding,
+}
+
+fn desk_with_purpose(
+    claims: Vec<qip_world_model::CausalEdge>,
+    holding: Held,
+    purpose: qip_investment_agents::desk::BookPurpose,
+) -> Arc<Desk> {
     let mut universe = Universe::new();
     universe.insert(equity("ACME", "100")).unwrap();
     universe.insert(commodity("WTI", "80")).unwrap();
@@ -571,7 +597,7 @@ fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Des
                         dec!("10000000"),
                         now(),
                     );
-                    if holding {
+                    if holding != Held::Nothing {
                         let acme = equity("ACME", "100");
                         portfolio
                             .apply_fill(
@@ -583,11 +609,17 @@ fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Des
                                 None,
                             )
                             .unwrap();
+                        // The lifecycle table has no `Held -> Unwinding`
+                        // edge: a deliberate close is flagged first.
                         portfolio.flag_position(&object("ACME")).unwrap();
+                        if holding == Held::Unwinding {
+                            portfolio.begin_unwind(&object("ACME")).unwrap();
+                        }
                     }
                     portfolio
                 },
                 marks: BTreeMap::from([(object("ACME").as_str().to_string(), dec!("100"))]),
+                purpose,
             },
             RiskView {
                 state: RiskState::default(),
@@ -655,8 +687,8 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    // Twenty-five since the Crypto/On-chain Brain joined (R12-ASSET-3017).
-    assert_eq!(org.len(), 25);
+    // Twenty-six since the Company/Fundamental Brain joined (R12-REASON-3013).
+    assert_eq!(org.len(), 26);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -1095,6 +1127,7 @@ fn the_credit_analyst_refuses_to_assume_a_duration_it_does_not_have() -> Result<
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1163,6 +1196,7 @@ fn the_alternative_data_analyst_will_not_use_an_unlicensed_dataset() -> Result<(
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1257,6 +1291,7 @@ fn compliance_blocks_a_restricted_name_with_full_conviction() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1385,6 +1420,7 @@ fn the_construction_agent_respects_its_concentration_cap() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1524,6 +1560,7 @@ fn the_learning_agent_cannot_score_an_unresolved_episode() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1592,6 +1629,7 @@ fn the_learning_agent_reports_the_sample_size_behind_each_hit_rate() -> Result<(
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1942,6 +1980,7 @@ fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView { state, limits },
         ComplianceView::default(),
@@ -2617,6 +2656,160 @@ fn removing_the_portfolio_asset_brain_drops_portfolio_asset_from_coverage() -> R
     Ok(())
 }
 
+/// R12-ASSET-3019's remaining scope: horizons, hedges and the factor and
+/// causal-driver allocation (ADR 0468). The register's purpose record for
+/// the one held position — ACME, 1,000 at 100, sized twenty days ago on a
+/// ten-day hypothesis, hedged by one held policy, loading 1.2 on a market
+/// factor — must reach the chief as figures checked against the fixture,
+/// and a book whose purpose nobody stated must read as *undeclared* and
+/// *unattributed*, never as unhedged or as allocated.
+///
+/// Mutations (each fired, see the lane report): compare `elapsed < span`
+/// for past-horizon — the count reads zero; file `Hedged` under the
+/// unhedged count — hedged reads zero; drop the `purpose` assignment in
+/// the kernel's `brief_the_desk_on_book` — covered by the kernel test.
+#[test]
+fn the_portfolio_asset_brain_reports_horizons_hedges_and_driver_allocation() -> Result<()> {
+    use qip_investment_agents::desk::{BookPurpose, HedgeStanding, HeldHorizon};
+    let acme = object("ACME").as_str().to_string();
+    let declared = |hedge: Option<HedgeStanding>| {
+        let mut purpose = BookPurpose::default();
+        purpose.horizons.insert(
+            acme.clone(),
+            HeldHorizon {
+                hypothesis: "hyp-acme-margin".to_string(),
+                horizon: Duration::from_days(10),
+                sized_at: Some(now().saturating_sub(Duration::from_days(20))),
+            },
+        );
+        if let Some(hedge) = hedge {
+            purpose.hedges.insert(acme.clone(), hedge);
+        }
+        purpose
+            .factor_exposure
+            .insert("equity_market".to_string(), dec!("120000"));
+        purpose
+    };
+    let finding_for = |purpose: BookPurpose| -> Result<qip_agents::finding::AgentFinding> {
+        let mut org = organisation(desk_with_purpose(Vec::new(), Held::Flagged, purpose))?;
+        let report = org.dispatch(&brief(), now(), &lineage());
+        Ok(report
+            .findings
+            .iter()
+            .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+            .expect("premise: the Portfolio/Asset Brain reported on the held book")
+            .clone())
+    };
+
+    let hedged = finding_for(declared(Some(HedgeStanding::Hedged(vec![
+        "policy-equity-overlay".to_string(),
+    ]))))?;
+    assert_eq!(fact_value(&hedged, "positions_held"), Some(1.0), "premise");
+    assert_eq!(fact_value(&hedged, "positions_without_horizon"), Some(0.0));
+    assert_eq!(
+        fact_value(&hedged, "positions_horizon_age_unknown"),
+        Some(0.0)
+    );
+    assert_eq!(
+        fact_value(&hedged, "positions_past_horizon"),
+        Some(1.0),
+        "twenty days held on a ten-day horizon is past it"
+    );
+    let remaining =
+        fact_value(&hedged, "nearest_horizon_remaining_fraction").expect("a dated horizon");
+    assert!(
+        (remaining + 1.0).abs() < 1e-9,
+        "ten days past a ten-day horizon leaves -1 of it, not {remaining}"
+    );
+    assert_eq!(fact_value(&hedged, "positions_hedged"), Some(1.0));
+    assert_eq!(fact_value(&hedged, "positions_unhedged"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "positions_hedge_undeclared"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "causal_drivers_allocated"), Some(1.0));
+    assert_eq!(
+        fact_value(&hedged, "largest_causal_driver_gross_share"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&hedged, "unattributed_gross_share"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "factors_loaded"), Some(1.0));
+    let factor = fact_value(&hedged, "largest_factor_exposure_ratio").expect("equity is positive");
+    assert!(
+        (factor - 0.012).abs() < 1e-3,
+        "120,000 of factor exposure against about ten million of equity is not {factor}"
+    );
+
+    let unhedged = finding_for(declared(Some(HedgeStanding::Unhedged {
+        reason: "no hedge policy is declared for this deployment".to_string(),
+    })))?;
+    assert_eq!(fact_value(&unhedged, "positions_hedged"), Some(0.0));
+    assert_eq!(fact_value(&unhedged, "positions_unhedged"), Some(1.0));
+    assert_eq!(
+        fact_value(&unhedged, "positions_hedge_undeclared"),
+        Some(0.0)
+    );
+
+    let undeclared = finding_for(BookPurpose::default())?;
+    assert_eq!(
+        fact_value(&undeclared, "positions_held"),
+        Some(1.0),
+        "premise"
+    );
+    assert_eq!(
+        fact_value(&undeclared, "positions_hedge_undeclared"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&undeclared, "positions_unhedged"), Some(0.0));
+    assert_eq!(
+        fact_value(&undeclared, "positions_without_horizon"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&undeclared, "positions_past_horizon"), Some(0.0));
+    assert_eq!(
+        fact_value(&undeclared, "causal_drivers_allocated"),
+        Some(0.0)
+    );
+    assert_eq!(
+        fact_value(&undeclared, "unattributed_gross_share"),
+        Some(1.0),
+        "a position sized on no recorded hypothesis is unattributed, not allocated"
+    );
+    assert!(
+        fact_value(&undeclared, "nearest_horizon_remaining_fraction").is_none(),
+        "no horizon is on record, so none can be near"
+    );
+    assert!(fact_value(&undeclared, "largest_factor_exposure_ratio").is_none());
+    Ok(())
+}
+
+/// R12-ASSET-3019's divestment clause: a position the register marked
+/// unwinding (R12-ASSET-1160, `Platform::begin_deliberate_close` on every
+/// desk order that sells the whole long) is counted as divested, and not
+/// as flagged. The existing coverage test only ever saw zero here, which a
+/// brain that never counted would also report.
+///
+/// Mutation: count `Held` instead of `Unwinding` — the count reads zero.
+#[test]
+fn the_portfolio_asset_brain_counts_a_position_being_divested() -> Result<()> {
+    let desk = desk_with_purpose(
+        Vec::new(),
+        Held::Unwinding,
+        qip_investment_agents::desk::BookPurpose::default(),
+    );
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+        .expect("premise: the brain reported on the held book");
+    assert_eq!(fact_value(finding, "positions_held"), Some(1.0), "premise");
+    assert_eq!(fact_value(finding, "positions_unwinding"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "positions_flagged_without_mandate"),
+        Some(0.0)
+    );
+    Ok(())
+}
+
 /// An empty book is reported as no data, never as a clean one.
 #[test]
 fn the_portfolio_asset_brain_reports_an_empty_book_as_no_data() -> Result<()> {
@@ -2707,6 +2900,320 @@ fn the_crypto_onchain_brain_reports_an_unobserved_chain_as_no_data() -> Result<(
     );
     assert!(fact_value(finding, "chain_reorg_depth").is_none());
     assert!(!report.covered_scopes().contains(&Scope::CryptoOnChain));
+    Ok(())
+}
+
+// --- the Company/Fundamental Brain (R12-REASON-3013) ----------------------
+
+const ACME_ISSUER: &str = "ent-acme";
+
+fn days(n: i64) -> Duration {
+    Duration::from_days(n)
+}
+
+/// What the company slot and the world model hold about ACME's issuer.
+#[derive(Default)]
+struct CompanyFixture {
+    /// `(reported, consensus, period_end)` for ACME's revenue, absorbed
+    /// through the world model's own fundamental absorber.
+    revenue: Option<(&'static str, &'static str, Timestamp)>,
+    company: qip_investment_agents::desk::CompanyView,
+}
+
+/// ACME's issuer as the kernel links it: an `Issues` edge in the knowledge
+/// graph, the revenue absorbed by `WorldModel::absorb_fundamental` after the
+/// kernel's definition of the metric and its surprise, and `company` behind
+/// the company-reference gate.
+fn desk_with_company(fixture: CompanyFixture) -> Arc<Desk> {
+    use qip_world_model::relationship::{Relationship, RelationshipKind};
+    let mut world = WorldModel::new();
+    world.graph_mut().assert_fact(
+        qip_world_model::graph::Fact::new(
+            Relationship::new(
+                ACME_ISSUER,
+                object("ACME").as_str(),
+                RelationshipKind::Issues,
+                1.0,
+                "reference",
+            ),
+            now().saturating_sub(days(400)),
+            now().saturating_sub(days(400)),
+            1.0,
+        )
+        .unwrap(),
+    );
+    if let Some((reported, consensus, period_end)) = fixture.revenue {
+        for name in ["revenue", "revenue_surprise"] {
+            world.features_mut().define(
+                Feature::new(name, "reported fundamental", "fundamentals-vendor")
+                    .with_lag(days(30))
+                    .with_staleness(days(200)),
+            );
+        }
+        world.absorb_fundamental(&qip_financial::intelligence::FundamentalUpdate {
+            entity_id: ACME_ISSUER.to_string(),
+            metric: "revenue".to_string(),
+            value: Decimal::parse(reported).unwrap(),
+            unit: "USD".to_string(),
+            period_end,
+            period: qip_financial::intelligence::FiscalPeriod::Quarter,
+            consensus: Some(Decimal::parse(consensus).unwrap()),
+            prior_value: None,
+            is_restatement: false,
+            provenance: Provenance::synthetic("fundamentals-vendor", now().saturating_sub(days(5))),
+            quality: qip_financial::quality::DataQuality::default(),
+            evidence_unretrievable: false,
+        });
+    }
+    let mut desk = Desk::empty(now()).with_company(fixture.company);
+    desk.world = qip_agents::runtime::Gated::new(world, Capability::ReadWorldModel, "world-model");
+    Arc::new(desk)
+}
+
+fn guidance(
+    low: &str,
+    high: &str,
+    period_end: Timestamp,
+) -> qip_financial::company::ManagementGuidance {
+    qip_financial::company::ManagementGuidance::new(
+        ACME_ISSUER,
+        "revenue",
+        Decimal::parse(low).unwrap(),
+        Decimal::parse(high).unwrap(),
+        period_end,
+        now().saturating_sub(days(120)),
+        "investor-relations",
+    )
+    .unwrap()
+}
+
+/// Every source populated: revenue 121 against a consensus of 110 and
+/// management's 100-120 range, a dividend going ex in ten days, and a
+/// balance sheet of 100 debt, 20 cash, 40 EBITDA with 30 due in 100 days and
+/// 50 in 800.
+fn fully_reported_company() -> CompanyFixture {
+    let quarter_end = now().saturating_sub(days(40));
+    CompanyFixture {
+        revenue: Some(("121", "110", quarter_end)),
+        company: qip_investment_agents::desk::CompanyView {
+            corporate_actions_observed: true,
+            corporate_actions: vec![qip_market::corporate_action::CorporateAction {
+                object_id: object("ACME"),
+                ex_date: now().saturating_add(days(10)),
+                record_date: None,
+                payment_date: None,
+                kind: qip_market::corporate_action::CorporateActionKind::CashDividend {
+                    amount: dec!("0.5"),
+                },
+                announced_at: now().saturating_sub(days(2)),
+            }],
+            guidance: vec![guidance("100", "120", quarter_end)],
+            capital_structures: vec![
+                qip_financial::company::CapitalStructure::new(
+                    ACME_ISSUER,
+                    quarter_end,
+                    now().saturating_sub(days(5)),
+                    dec!("100"),
+                    dec!("20"),
+                    Some(dec!("40")),
+                    vec![
+                        qip_financial::company::DebtMaturity {
+                            due: now().saturating_add(days(100)),
+                            amount: dec!("30"),
+                        },
+                        qip_financial::company::DebtMaturity {
+                            due: now().saturating_add(days(800)),
+                            amount: dec!("50"),
+                        },
+                    ],
+                    "annual-filing",
+                )
+                .unwrap(),
+            ],
+        },
+    }
+}
+
+const COMPANY_SCOPES: [Scope; 5] = [
+    Scope::FinancialStatements,
+    Scope::Earnings,
+    Scope::CorporateEvents,
+    Scope::ManagementGuidance,
+    Scope::CapitalStructure,
+];
+
+fn company_finding(desk: Arc<Desk>) -> Result<qip_agents::finding::AgentFinding> {
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    Ok(report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::COMPANY_FUNDAMENTAL)
+        .expect("premise: the Company/Fundamental Brain answered the brief")
+        .clone())
+}
+
+/// R12-REASON-3013. The Company/Fundamental Brain is constructed in the
+/// production organisation (`Organisation::standard`), emits a finding for
+/// each of its five sub-scopes, and nobody else does: without it the
+/// organisation covers none of them. Each figure is checked against the
+/// fixture, not merely for presence.
+///
+/// Mutations: drop the analyst from `standard_agents` — the premise finding
+/// is missing; compute the guidance gap from the low instead of the
+/// midpoint — `guidance_gap` is 0.21, not 0.1; drop the capital-structure
+/// arm — the scope is not covered.
+#[test]
+fn removing_the_company_fundamental_brain_drops_its_five_scopes_from_coverage() -> Result<()> {
+    let desk = desk_with_company(fully_reported_company());
+    let finding = company_finding(desk.clone())?;
+    let close = |label: &str, want: f64| {
+        let got = fact_value(&finding, label).unwrap_or(f64::NAN);
+        assert!((got - want).abs() < 1e-9, "{label}: {got} != {want}");
+    };
+    close("statement_metrics_reported", 1.0);
+    close("revenue", 121.0);
+    close("earnings_surprise", 0.1);
+    close("corporate_actions_pending", 1.0);
+    close("next_ex_date_days", 10.0);
+    close("guidance_midpoint", 110.0);
+    close("guidance_gap", 0.1);
+    close("net_debt", 80.0);
+    close("net_leverage", 2.0);
+    close("debt_due_within_year", 0.3);
+    assert!(
+        finding.missing_inputs.is_empty(),
+        "{:?}",
+        finding.missing_inputs
+    );
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::COMPANY_FUNDAMENTAL)?;
+    for scope in COMPANY_SCOPES {
+        assert!(
+            with.contains(&scope),
+            "{scope:?} not covered with: {with:?}"
+        );
+        assert!(
+            !without.contains(&scope),
+            "{scope:?} covered without: {without:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A figure the brain read off the store is stamped observed with the
+/// store's record, not as the brain's own computation; guidance carries its
+/// issuer's record.
+///
+/// Mutation: stamp the earnings surprise with `computed` — the provenance is
+/// no longer observed and this fails.
+#[test]
+fn the_company_fundamental_brain_stamps_what_it_read_as_observed() -> Result<()> {
+    let finding = company_finding(desk_with_company(fully_reported_company()))?;
+    let provenance = |label: &str| {
+        finding
+            .facts
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.provenance.clone())
+            .expect("premise: the fact was reported")
+    };
+    match provenance("earnings_surprise") {
+        NumericProvenance::Observed { record_id, .. } => {
+            assert!(
+                record_id.starts_with("feature:revenue_surprise@ent-acme:"),
+                "{record_id}"
+            );
+        }
+        other => panic!("earnings surprise stamped {other:?}"),
+    }
+    match provenance("guidance_midpoint") {
+        NumericProvenance::Observed { source, .. } => assert_eq!(source, "investor-relations"),
+        other => panic!("guidance midpoint stamped {other:?}"),
+    }
+    Ok(())
+}
+
+/// What every deployed binary holds today: fundamentals the kernel absorbs,
+/// and no corporate-action feed, guidance or balance sheet. The brain covers
+/// statements and earnings and names the other three missing — never zero
+/// actions, never guidance met.
+///
+/// Mutation: report `corporate_actions_pending` without checking
+/// `corporate_actions_observed` — corporate events is covered by a zero
+/// nobody measured and this fails.
+#[test]
+fn the_company_fundamental_brain_names_a_source_it_lacks_missing_rather_than_zero() -> Result<()> {
+    let desk = desk_with_company(CompanyFixture {
+        revenue: Some(("121", "110", now().saturating_sub(days(40)))),
+        company: Default::default(),
+    });
+    let finding = company_finding(desk.clone())?;
+    assert!(fact_value(&finding, "corporate_actions_pending").is_none());
+    assert!(fact_value(&finding, "guidance_gap").is_none());
+    assert!(fact_value(&finding, "net_debt").is_none());
+    for prefix in [
+        "corporate events",
+        "management guidance",
+        "capital structure",
+    ] {
+        assert!(
+            finding.missing_inputs.iter().any(|m| m.starts_with(prefix)),
+            "{prefix} not named missing: {:?}",
+            finding.missing_inputs
+        );
+    }
+    let mut org = organisation(desk)?;
+    let covered = org.dispatch(&brief(), now(), &lineage()).covered_scopes();
+    assert!(covered.contains(&Scope::FinancialStatements));
+    assert!(covered.contains(&Scope::Earnings));
+    for scope in [
+        Scope::CorporateEvents,
+        Scope::ManagementGuidance,
+        Scope::CapitalStructure,
+    ] {
+        assert!(!covered.contains(&scope), "{scope:?}: {covered:?}");
+    }
+    Ok(())
+}
+
+/// Guidance is judged only against a figure for the period it guided: a
+/// revenue reported for another quarter leaves it outstanding.
+///
+/// Mutation: drop the `valid_at == period_end` filter — the other quarter's
+/// revenue is scored against this guidance and `guidance_gap` appears.
+#[test]
+fn guidance_is_judged_only_against_the_period_it_guided() -> Result<()> {
+    let mut fixture = fully_reported_company();
+    fixture.company.guidance = vec![guidance("100", "120", now().saturating_add(days(50)))];
+    let finding = company_finding(desk_with_company(fixture))?;
+    assert!(
+        fact_value(&finding, "guidance_midpoint").is_some(),
+        "premise: guidance was read"
+    );
+    assert!(fact_value(&finding, "guidance_gap").is_none());
+    assert_eq!(fact_value(&finding, "guidance_outstanding"), Some(1.0));
+    Ok(())
+}
+
+/// An instrument with no issuer on record is no data, and says that is why,
+/// rather than reading as a company with nothing reported.
+///
+/// Mutation: resolve a missing issuer to a placeholder instead of returning
+/// early — the finding is still no view, but its claim no longer names the
+/// missing issuer and this fails.
+#[test]
+fn the_company_fundamental_brain_reports_an_instrument_with_no_issuer_as_no_data() -> Result<()> {
+    let finding = company_finding(populated_desk())?;
+    assert_eq!(finding.status, FindingStatus::NoView);
+    assert!(finding.facts.is_empty());
+    assert!(
+        finding
+            .claim
+            .starts_with("no issuer is on record for obj-ACME"),
+        "{}",
+        finding.claim
+    );
     Ok(())
 }
 
@@ -3069,6 +3576,7 @@ fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> R
                     now(),
                 ),
                 marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),
@@ -3094,6 +3602,296 @@ fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> R
         "one instrument through the tape arm and one through the book arm: {finding:?}"
     );
     assert_eq!(fact_value(finding, "manipulation_findings"), Some(0.0));
+    Ok(())
+}
+
+/// R12-REASON-3023. The manipulation probe *emits* what each arm finds, not
+/// only that it looked. The examination test above counts instruments, and a
+/// probe that dropped either arm's findings while still marking the
+/// instrument examined passed it, because the fixture holds no manipulation
+/// shape: deleting `findings.extend(probe_book(..))` and keeping
+/// `looked = true` survived every test in this crate on 2026-11-12. Here the
+/// book-only instrument's book is crossed and the tape-only instrument's last
+/// bar carries nine times the tape's median volume on an unchanged close, so
+/// each arm contributes exactly one finding to the count the probe reports.
+///
+/// Mutations, both run on 2026-11-12: delete the book arm's
+/// `findings.extend(probe_book(..))` line, keeping `looked = true`, and
+/// `manipulation_findings` reads 1 where 2 was expected; replace the tape
+/// arm's `findings.extend(tape)` with nothing, and likewise. Each restored
+/// byte for byte.
+#[test]
+fn the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings() -> Result<()> {
+    let mut universe = Universe::new();
+    universe.insert(equity("WASH", "100")).unwrap();
+    universe.insert(equity("CROSS", "100")).unwrap();
+    let mut snapshot = MarketSnapshot::new(now());
+    let mut tape = bars("WASH", 12, 0.0);
+    let last = tape.last().cloned().expect("premise: the tape has bars");
+    let mut spike = last.clone();
+    spike.open_time = last.open_time.saturating_add(Duration::from_hours(1));
+    spike.open = last.close;
+    spike.high = last.close;
+    spike.low = last.close;
+    // The same close as the bar before: a zero-basis-point move.
+    spike.volume = dec!("9000000");
+    spike.vwap = Some(last.close);
+    tape.push(spike);
+    for bar in tape {
+        snapshot.apply_bar(bar);
+    }
+    snapshot.apply_book(OrderBook::from_levels(
+        object("CROSS"),
+        "XNYS",
+        now(),
+        vec![BookLevel::new(dec!("100.10"), dec!("500"))],
+        vec![BookLevel::new(dec!("100.05"), dec!("500"))],
+    ));
+    let desk = Arc::new(
+        Desk::new(
+            MarketView { snapshot, universe },
+            WorldModel::new(),
+            BookView {
+                portfolio: Portfolio::new(
+                    PortfolioId::from_string("pf-probe"),
+                    "probe",
+                    Currency::USD,
+                    Decimal::from_int(1_000_000),
+                    now(),
+                ),
+                marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
+            },
+            RiskView {
+                state: RiskState::default(),
+                limits: LimitSet::conservative_default(),
+            },
+            ComplianceView::default(),
+            ResearchMemory::new(),
+            SearchIndex::new(),
+        )
+        .with_executions(fixture_executions())
+        .with_models(fixture_models()),
+    );
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::MANIPULATION)
+        .expect("premise: the manipulation probe ran");
+    assert_eq!(
+        fact_value(finding, "instruments_examined"),
+        Some(2.0),
+        "premise: each instrument is examined through its one arm: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(finding, "manipulation_findings"),
+        Some(2.0),
+        "one finding from the crossed book and one from the wash tape: {finding:?}"
+    );
+    Ok(())
+}
+
+/// A desk holding only what the three probes below read: `snapshot` over
+/// `universe`, and the given models and executions. Every other view is
+/// empty, so a finding a probe reports comes from the fixture handed to it.
+fn adversary_desk(
+    snapshot: MarketSnapshot,
+    universe: Universe,
+    models: ModelsView,
+    executions: ExecutionView,
+) -> Arc<Desk> {
+    Arc::new(
+        Desk::new(
+            MarketView { snapshot, universe },
+            WorldModel::new(),
+            BookView {
+                portfolio: Portfolio::new(
+                    PortfolioId::from_string("pf-probe"),
+                    "probe",
+                    Currency::USD,
+                    Decimal::from_int(1_000_000),
+                    now(),
+                ),
+                marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
+            },
+            RiskView {
+                state: RiskState::default(),
+                limits: LimitSet::conservative_default(),
+            },
+            ComplianceView::default(),
+            ResearchMemory::new(),
+            SearchIndex::new(),
+        )
+        .with_executions(executions)
+        .with_models(models),
+    )
+}
+
+/// The finding `agent` reported when the standard organisation dispatched
+/// over `desk`.
+fn probe_finding(desk: Arc<Desk>, agent: &str) -> Result<qip_agents::finding::AgentFinding> {
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    Ok(report
+        .findings
+        .into_iter()
+        .find(|f| f.agent_id == agent)
+        .expect("premise: the standard organisation runs the probe"))
+}
+
+/// R12-REASON-3023. The regime-break probe *reports* a break, not only that
+/// it compared. The coverage test above runs it on a tape whose windows
+/// agree, so a probe that compared every instrument and then threw away
+/// every break read as working: deleting `breaks.push(..)` in
+/// `RegimeBreakProbe::analyse` survived every test in this crate until
+/// 2026-11-12. Here one instrument's last ten daily returns swing six times
+/// as wide as its prior thirty — a volatility ratio far past the 2.0 the
+/// default thresholds break at — so the probe must report one break.
+///
+/// Mutation, run 2026-11-12: delete the `breaks.push((instrument.to_string(),
+/// comparison));` line — `regime_break_findings` reads 0 where 1 was
+/// expected. Restored byte for byte.
+#[test]
+fn the_regime_break_probe_reports_a_tape_whose_recent_volatility_left_its_prior_band() -> Result<()>
+{
+    let mut universe = Universe::new();
+    universe.insert(equity("LOUD", "100")).unwrap();
+    let mut snapshot = MarketSnapshot::new(now());
+    let mut close = 100.0_f64;
+    for i in 0..41_i64 {
+        let open = close;
+        if i > 0 {
+            let wobble = if i % 2 == 0 { 1.0 } else { -1.0 };
+            let amplitude = if i <= 30 { 0.005 } else { 0.03 };
+            close = open * (1.0 + wobble * amplitude);
+        }
+        snapshot.apply_bar(Bar {
+            object_id: object("LOUD"),
+            venue: "XNYS".to_string(),
+            interval: Interval::Day,
+            open_time: now().saturating_sub(Duration::from_days(41 - i)),
+            open: Decimal::from_f64(open).unwrap(),
+            high: Decimal::from_f64(open.max(close)).unwrap(),
+            low: Decimal::from_f64(open.min(close)).unwrap(),
+            close: Decimal::from_f64(close).unwrap(),
+            volume: dec!("1000000"),
+            trade_count: 5_000,
+            vwap: Decimal::from_f64((open + close) / 2.0),
+            quality: qip_financial::quality::DataQuality::default(),
+        });
+    }
+    let desk = adversary_desk(snapshot, universe, fixture_models(), fixture_executions());
+    let finding = probe_finding(desk, ids::REGIME_BREAK)?;
+    assert_eq!(
+        fact_value(&finding, "instruments_scanned"),
+        Some(1.0),
+        "premise: the tape holds the closes two windows need: {finding:?}"
+    );
+    assert!(
+        fact_value(&finding, "max_volatility_ratio").is_some_and(|ratio| ratio >= 2.0),
+        "premise: the fixture's recent window is a volatility break: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "regime_break_findings"),
+        Some(1.0),
+        "the volatility break is reported: {finding:?}"
+    );
+    Ok(())
+}
+
+/// R12-REASON-3023. The model-failure probe reports each failing model, not
+/// only that it examined the registry: the coverage test above holds one
+/// forecaster in good standing and nothing drifted, so a probe that dropped
+/// every finding passed it. Here one forecaster scores a mean Brier of 0.31,
+/// worse than a coin's 0.25, and one production model is past its drift
+/// threshold, so the probe must report two.
+///
+/// Mutation, run 2026-11-12: in `ModelFailureProbe::analyse`, replace
+/// `probe_models(&models, &self.thresholds)` with an empty `Vec` —
+/// `model_failure_findings` reads 0 where 2 was expected. Restored byte
+/// for byte.
+#[test]
+fn the_model_failure_probe_reports_a_forecaster_worse_than_chance_and_a_drifted_model() -> Result<()>
+{
+    let models = ModelsView {
+        forecasters: vec![ForecasterHealth {
+            name: "detector:momentum".to_string(),
+            mean_brier: Some(0.31),
+            predicted_failure: 0.2,
+        }],
+        drifted: vec!["ridge-ACME@3".to_string()],
+    };
+    let desk = adversary_desk(
+        MarketSnapshot::new(now()),
+        Universe::new(),
+        models,
+        fixture_executions(),
+    );
+    let finding = probe_finding(desk, ids::MODEL_FAILURE)?;
+    assert!(
+        fact_value(&finding, "models_examined").is_some_and(|examined| examined >= 1.0),
+        "premise: the registry was examined: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "model_failure_findings"),
+        Some(2.0),
+        "the forecaster worse than chance and the drifted model are reported: {finding:?}"
+    );
+    Ok(())
+}
+
+/// R12-REASON-3023. The self-exploitation probe reports a flow the market
+/// could be reading, not only that it scanned the fills: the coverage test
+/// above holds a balanced flow, so a probe that dropped every finding passed
+/// it. Here twelve buys of distinct sizes each fill eight basis points above
+/// arrival — every fill adverse — so the probe must report the slippage.
+///
+/// Mutation, run 2026-11-12: in `SelfExploitationProbe::analyse`, replace
+/// `probe_self_exploitation(..)` with an empty `Vec` —
+/// `self_exploitation_findings` reads 0 where 1 was expected. Restored byte
+/// for byte.
+#[test]
+fn the_self_exploitation_probe_reports_fills_that_bled_against_arrival() -> Result<()> {
+    let bled = ExecutionView {
+        executions: (0..12_i64)
+            .map(|n| ExecutionRecord {
+                order_id: format!("ord-bled-{n}"),
+                object_id: object("ACME").as_str().to_string(),
+                side: TradeSide::Buy,
+                quantity: Decimal::from_int(100 + n),
+                arrival_price: dec!("100"),
+                fill_price: dec!("100.08"),
+                placed_at: now().saturating_sub(Duration::from_days(12 - n)),
+                filled_at: now().saturating_sub(Duration::from_days(12 - n)),
+                venue: "XSIM".to_string(),
+            })
+            .collect(),
+    };
+    let desk = adversary_desk(
+        MarketSnapshot::new(now()),
+        Universe::new(),
+        fixture_models(),
+        bled,
+    );
+    let finding = probe_finding(desk, ids::SELF_EXPLOITATION)?;
+    assert_eq!(
+        fact_value(&finding, "fills_scanned"),
+        Some(12.0),
+        "premise: every fill was scanned: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "adverse_fill_share"),
+        Some(1.0),
+        "premise: every fill landed worse than arrival: {finding:?}"
+    );
+    assert_eq!(
+        fact_value(&finding, "self_exploitation_findings"),
+        Some(1.0),
+        "the adverse slippage is reported: {finding:?}"
+    );
     Ok(())
 }
 
@@ -3202,5 +4000,85 @@ fn removing_the_commodities_analyst_drops_supply_chain_from_coverage() -> Result
     let (with, without) = scopes_with_and_without(desk, &brief, ids::COMMODITIES)?;
     assert!(with.contains(&Scope::SupplyChain), "{with:?}");
     assert!(!without.contains(&Scope::SupplyChain), "{without:?}");
+    Ok(())
+}
+
+/// R12-WORLD-3034: an analyst executes its own procedure. Briefed with a
+/// procedure whose rule for the brief's subject leans another way than the
+/// analyst's present call, the equity analyst's finding records the check as
+/// not followed and states the departure as a caveat. Direction and
+/// conviction are exactly what the analyst's arithmetic gave with no
+/// procedure at all, because a procedure is the record a call is held
+/// against and never an input that pulls the call toward past success. A
+/// procedure for another agent, or with no rule for the subject, gives no
+/// check. The followed arm is `qip-agents`'
+/// `a_brief_checks_a_call_against_its_agents_own_procedure_rule`.
+///
+/// Mutations (2026-11-12, t50-09): `build` in place of `build_against` in
+/// `EquityAnalyst::analyse` (no check on the finding); dropping the caveat
+/// push in `build_against` (no departure stated).
+#[test]
+fn an_analyst_checks_its_call_against_its_own_procedure_and_states_a_departure() -> Result<()> {
+    use qip_agents::finding::Direction;
+    use qip_agents::memory::{Procedure, ProcedureRule, procedure_name_for};
+    let analyst = "equity-analyst";
+    let equity_finding = |brief: &AgentBrief| -> Result<qip_agents::finding::AgentFinding> {
+        let mut org = organisation(populated_desk())?;
+        let report = org.dispatch(brief, now(), &lineage());
+        Ok(report
+            .findings
+            .into_iter()
+            .find(|f| f.agent_id == analyst)
+            .expect("the equity analyst answered"))
+    };
+    let bare = equity_finding(&brief())?;
+    assert!(bare.procedure.is_none(), "premise: no procedure, no check");
+    let present = bare.direction;
+    let other = if present == Direction::Positive {
+        "negative"
+    } else {
+        "positive"
+    };
+    let procedure = |owner: &str, subject: &str| Procedure {
+        name: procedure_name_for(owner),
+        version: 2,
+        steps: vec![format!("on {subject}: lean {other} (3 correct call(s))")],
+        supporting_episodes: Vec::new(),
+        learned_at: now(),
+        rules: vec![ProcedureRule {
+            subject: subject.to_string(),
+            lean: other.to_string(),
+            support: 3,
+        }],
+    };
+
+    let departed = equity_finding(&brief().with_procedures(vec![procedure(analyst, "obj-ACME")]))?;
+    let check = departed
+        .procedure
+        .clone()
+        .expect("the analyst checked its procedure");
+    assert_eq!(check.name, procedure_name_for(analyst));
+    assert_eq!(check.version, 2);
+    assert_eq!(check.subject, "obj-ACME");
+    assert_eq!(check.procedure_lean, other);
+    assert_eq!(check.present_lean, present.as_str());
+    assert!(!check.followed, "{check:?}");
+    assert!(
+        departed.caveats.contains(&check.departure()),
+        "no departure stated: {:?}",
+        departed.caveats
+    );
+    assert_eq!(departed.direction, bare.direction);
+    assert_eq!(departed.conviction.to_bits(), bare.conviction.to_bits());
+
+    for (owner, subject) in [("macro-analyst", "obj-ACME"), (analyst, "obj-OTHER")] {
+        let unchecked = equity_finding(&brief().with_procedures(vec![procedure(owner, subject)]))?;
+        assert!(
+            unchecked.procedure.is_none(),
+            "a procedure of {owner} on {subject} was checked: {:?}",
+            unchecked.procedure
+        );
+        assert_eq!(unchecked.caveats, bare.caveats);
+    }
     Ok(())
 }

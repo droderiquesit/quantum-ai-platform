@@ -440,59 +440,127 @@ fn exposures_of(state: &RiskState, universe: &Universe) -> Result<HedgeExposures
 ///
 /// An empty answer is returned as empty; saying *why* no policy applies is
 /// the caller's, which knows whether any policy was declared at all.
+///
+/// A covering policy counts as a hedge only where its hedge instrument is
+/// actually held (2026-11-12). Until then a policy that merely *covered* the
+/// position was reported as the position's hedge, so a book whose hedge leg
+/// was never bought read as hedged — a declaration standing in for a
+/// holding. A covering policy whose instrument is not held is returned in
+/// [`HedgeRelations::unheld`] instead, so the caller can say which declared
+/// hedge is missing.
+///
+/// Two further readings a declaration alone cannot make true (2026-11-12,
+/// after an independent check refuted the first):
+///
+/// - **A position is not its own hedge.** A sector policy hedged with a
+///   sector fund covers the fund itself, and a long cannot offset itself;
+///   such a policy is returned in [`HedgeRelations::own`] and stated as no
+///   hedge, never as one. Refusing the declaration would be wrong — the fund
+///   is a real hedge for every *other* name in its bucket.
+/// - **A position is the hedge for a bucket only where some other position
+///   in that bucket is held.** The reverse arm was asserted from the
+///   declaration, so a hedge leg whose exposure had been sold read as
+///   hedging something. Such a policy is returned in
+///   [`HedgeRelations::idle`].
+///
+/// `held` is every instrument the book holds at a non-zero quantity, by
+/// object id. A held instrument's own catalogue fields are classified as
+/// `instrument`'s are, so an unclassifiable held name is refused here as it
+/// is anywhere else.
 pub fn policies_relating_to(
     declarations: &[HedgePolicyDeclaration],
     instrument: &str,
     universe: &Universe,
-) -> Result<Vec<String>> {
-    let record = universe.get(&ObjectId::from_string(instrument));
-    let mut related = Vec::new();
+    held: &std::collections::BTreeSet<String>,
+) -> Result<HedgeRelations> {
+    let mut relations = HedgeRelations::default();
     for policy in declarations {
-        if policy.instrument.as_str() == instrument {
-            related.push(format!(
+        let hedge = policy.instrument.as_str();
+        if hedge == instrument {
+            let reverse = format!(
                 "{} (this position is the hedge for {} {})",
                 policy.name,
                 policy.axis.as_str(),
                 policy.bucket
-            ));
-        }
-        let covers = match (policy.axis, record) {
-            (HedgeAxis::Instrument, _) => policy.bucket == instrument,
-            (HedgeAxis::AssetClass, None) => policy.bucket == UNCLASSIFIED,
-            (_, None) => false,
-            (HedgeAxis::AssetClass, Some(record)) => policy.bucket == record.asset_class.as_str(),
-            (HedgeAxis::Sector, Some(record)) => policy.bucket == record.sector.as_str(),
-            (HedgeAxis::Country, Some(record)) => policy.bucket == record.geography,
-            (HedgeAxis::Currency, Some(record)) => policy.bucket == record.currency.as_str(),
-            (HedgeAxis::Issuer, Some(record)) => {
-                policy.bucket == record.issuer.as_deref().unwrap_or(record.symbol.as_str())
-            }
-            (HedgeAxis::Factor, Some(record)) => {
-                match record.risk.factor_exposures.loadings.get(&policy.bucket) {
-                    None => false,
-                    Some(loading) if !loading.is_finite() => {
-                        return Err(Error::invalid(format!(
-                            "{instrument} states a loading of {loading} on factor {}, which is \
-                             not a number; correct the reference record — a factor read as flat \
-                             is one no hedge policy can defend",
-                            policy.bucket
-                        )));
-                    }
-                    Some(loading) => *loading != 0.0,
+            );
+            let mut exposed = false;
+            for other in held {
+                if other.as_str() != instrument && covers(policy, other, universe)? {
+                    exposed = true;
+                    break;
                 }
             }
-        };
-        if covers {
-            related.push(format!(
+            if exposed {
+                relations.held.push(reverse);
+            } else {
+                relations.idle.push(reverse);
+            }
+        }
+        if covers(policy, instrument, universe)? {
+            let described = format!(
                 "{} (hedged with {} on {} {})",
                 policy.name,
-                policy.instrument.as_str(),
+                hedge,
                 policy.axis.as_str(),
                 policy.bucket
-            ));
+            );
+            if hedge == instrument {
+                relations.own.push(described);
+            } else if held.contains(hedge) {
+                relations.held.push(described);
+            } else {
+                relations.unheld.push(described);
+            }
         }
     }
-    Ok(related)
+    Ok(relations)
+}
+
+/// Whether `policy`'s axis and bucket name `instrument`'s own classification,
+/// read exactly as [`exposures_of`] reads it.
+fn covers(policy: &HedgePolicyDeclaration, instrument: &str, universe: &Universe) -> Result<bool> {
+    let record = universe.get(&ObjectId::from_string(instrument));
+    Ok(match (policy.axis, record) {
+        (HedgeAxis::Instrument, _) => policy.bucket == instrument,
+        (HedgeAxis::AssetClass, None) => policy.bucket == UNCLASSIFIED,
+        (_, None) => false,
+        (HedgeAxis::AssetClass, Some(record)) => policy.bucket == record.asset_class.as_str(),
+        (HedgeAxis::Sector, Some(record)) => policy.bucket == record.sector.as_str(),
+        (HedgeAxis::Country, Some(record)) => policy.bucket == record.geography,
+        (HedgeAxis::Currency, Some(record)) => policy.bucket == record.currency.as_str(),
+        (HedgeAxis::Issuer, Some(record)) => {
+            policy.bucket == record.issuer.as_deref().unwrap_or(record.symbol.as_str())
+        }
+        (HedgeAxis::Factor, Some(record)) => {
+            match record.risk.factor_exposures.loadings.get(&policy.bucket) {
+                None => false,
+                Some(loading) if !loading.is_finite() => {
+                    return Err(Error::invalid(format!(
+                        "{instrument} states a loading of {loading} on factor {}, which is \
+                         not a number; correct the reference record — a factor read as flat \
+                         is one no hedge policy can defend",
+                        policy.bucket
+                    )));
+                }
+                Some(loading) => *loading != 0.0,
+            }
+        }
+    })
+}
+
+/// What [`policies_relating_to`] found for one held position.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HedgeRelations {
+    /// Each in words; the position is hedged by a held instrument under it,
+    /// or is the hedge for a bucket in which another position is held.
+    pub held: Vec<String>,
+    /// Covering policies whose hedge instrument the book does not hold.
+    pub unheld: Vec<String>,
+    /// Covering policies whose hedge instrument is this position itself.
+    pub own: Vec<String>,
+    /// Policies whose hedge instrument is this position, over a bucket in
+    /// which no other held position lies.
+    pub idle: Vec<String>,
 }
 
 /// The hedge survey, as the log carries it.
