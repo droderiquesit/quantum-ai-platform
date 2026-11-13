@@ -85,10 +85,11 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::{Duration, Timestamp};
-use qip_edge::cell::{ExecutionReport, Placer, QuoteTerms, UnreleasedOrder};
+use qip_edge::cell::{ExecutionReport, Placer, QuoteTerms, SettlementReport, UnreleasedOrder};
 use qip_edge::dispersion::DEFAULT_DISPERSION_BOUND;
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::resume::VenueAccount;
+use qip_edge::settlement::SettlementTerms;
 use qip_execution_engine::broker::Broker;
 use qip_execution_engine::creation::{
     CreationAction, CreationAdmission, CreationPermissions, CreationRequest,
@@ -204,7 +205,28 @@ struct WorkingOrder {
     limit: Decimal,
 }
 
-/// The cell's paper gateway: one simulated venue, deterministically seeded.
+/// The variable naming the settlement terms the simulated venue settles on
+/// (ADR 0530): `instant`, `T+0`, `T+1` or `T+2` on the weekday calendar.
+pub const SETTLEMENT_VARIABLE: &str = "QIP_VENUE_SETTLEMENT";
+
+/// Read [`SETTLEMENT_VARIABLE`]. Unset or blank is `instant`, which is what
+/// the simulator was before it had a settlement clock and what every venue
+/// this node drives still is unless an operator states a cycle; anything
+/// [`SettlementTerms::parse`] does not accept stops the process naming the
+/// forms it does.
+pub fn parse_settlement(value: Option<&str>) -> Result<SettlementTerms> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(SettlementTerms::instant()),
+        Some(text) => SettlementTerms::parse(text).map_err(|error| {
+            Error::invalid(format!(
+                "configuration: {SETTLEMENT_VARIABLE}={text:?} is not `instant`, `T+0`, `T+1` or \
+                 `T+2`: {}",
+                error.message()
+            ))
+        }),
+    }
+}
+
 #[derive(Debug)]
 pub struct SimulatedGateway {
     exchange: SimulatedExchange,
@@ -252,6 +274,50 @@ struct Notices {
     /// the cell.
     unreleased: Vec<UnreleasedOrder>,
     statuses: BTreeMap<ObjectId, VenueStatus>,
+    /// The venue's settlement clock (ADR 0530).
+    settlement: SettlementClock,
+}
+
+/// When this venue settles what it filled, and what it has filled and not
+/// yet settled (ADR 0530).
+///
+/// The simulator's own fact, as its matching is: a venue on instant terms
+/// credits proceeds when it reports the fill and holds nothing here, which
+/// is what every simulated venue was before this record. A venue on a cycle
+/// remembers each order whose fills it has reported, and when the pass
+/// clock reaches the instant [`SettlementTerms::available_at`] gives for the
+/// order's latest fill it reports the order settled, once.
+///
+/// Keyed by the order and dated from its *latest* reported fill, so the
+/// earlier fills of an order that filled across days settle with the last
+/// one: cash late rather than early, never the reverse, and one `Settled`
+/// per order is what the ledger books (ADR 0440 decision 5). A fill on the
+/// order after its settlement starts a new entry, and a second `Settled`.
+/// Bounded by the orders filled inside one settlement cycle, which the
+/// terms' own roll bound limits; nothing here grows with history.
+#[derive(Debug, Default)]
+struct SettlementClock {
+    terms: Option<SettlementTerms>,
+    /// Order id, as the cell knows it, to the latest fill reported on it.
+    unsettled: BTreeMap<String, Timestamp>,
+    /// Settlements reported by a pass and not yet collected by the cell.
+    settled: Vec<SettlementReport>,
+}
+
+impl SettlementClock {
+    fn on_cycle(&self) -> Option<&SettlementTerms> {
+        self.terms.as_ref().filter(|terms| !terms.is_instant())
+    }
+
+    fn filled(&mut self, order_id: &str, at: Timestamp) {
+        if self.on_cycle().is_none() {
+            return;
+        }
+        let latest = self.unsettled.entry(order_id.to_string()).or_insert(at);
+        if at > *latest {
+            *latest = at;
+        }
+    }
 }
 
 /// The recorded permissions a gateway lists on demand under, and the
@@ -482,6 +548,36 @@ impl SimulatedGateway {
                 }
             }
         }
+        self.settle_due(now)
+    }
+
+    /// Report settled every unsettled order whose proceeds the venue's terms
+    /// make usable by `now` (ADR 0530).
+    ///
+    /// A date the terms cannot give — a calendar with no settlement day left
+    /// in its roll bound — stops the pass rather than leaving the order
+    /// unsettled in silence: an order that can never settle is cash held for
+    /// ever, and the place to find that out is the pass that tried.
+    fn settle_due(&mut self, now: Timestamp) -> Result<()> {
+        let clock = &mut self.notices.settlement;
+        let Some(terms) = clock.on_cycle().cloned() else {
+            return Ok(());
+        };
+        let mut due = Vec::new();
+        for (order_id, latest) in &clock.unsettled {
+            let settlement_date = terms.available_at(*latest)?;
+            if settlement_date <= now {
+                due.push((order_id.clone(), settlement_date));
+            }
+        }
+        for (order_id, settlement_date) in due {
+            clock.unsettled.remove(&order_id);
+            clock.settled.push(SettlementReport {
+                order_id,
+                venue: self.venue.clone(),
+                settlement_date,
+            });
+        }
         Ok(())
     }
 
@@ -493,6 +589,59 @@ impl SimulatedGateway {
     /// a real venue states its time on its own wire.
     pub fn now(&self) -> Timestamp {
         self.now
+    }
+
+    /// State when this venue settles what it fills (ADR 0530).
+    ///
+    /// Refused once the venue has accepted an order: a fill booked under one
+    /// calendar and settled under another would date its cash by terms the
+    /// cell never judged it against. A venue left unstated settles on the
+    /// fill, which is what [`Self::settlement_terms`] then reports.
+    pub fn install_settlement_terms(&mut self, terms: SettlementTerms) -> Result<()> {
+        if self.submitted_count() > 0 || self.held_count() > 0 {
+            return Err(Error::denied(format!(
+                "{} has already accepted orders under its current settlement terms; state the \
+                 terms before the first order, not after it",
+                self.venue.as_str()
+            )));
+        }
+        self.notices.settlement.terms = Some(terms);
+        Ok(())
+    }
+
+    /// The terms this venue settles on: instant unless
+    /// [`Self::install_settlement_terms`] stated a cycle. What the feed
+    /// states to the cell, so the cell's settlement gate and the venue's
+    /// clock read one fact.
+    pub fn settlement_terms(&self) -> SettlementTerms {
+        self.notices
+            .settlement
+            .terms
+            .clone()
+            .unwrap_or_else(SettlementTerms::instant)
+    }
+
+    /// Orders whose fills this venue has reported and not yet settled.
+    pub fn unsettled_count(&self) -> usize {
+        self.notices.settlement.unsettled.len()
+    }
+
+    /// Re-key an unsettled order from the id the venue filled it under to
+    /// the id the cell knows it by.
+    ///
+    /// The requoter's seam: a replacement child fills at the venue under its
+    /// own id and is reported to the cell under the parent's, and a
+    /// settlement naming the child would name an order the ledger holds
+    /// nothing for. Merged with any entry already under `to`, keeping the
+    /// later fill, for the reason [`SettlementClock`] dates from it.
+    pub fn relabel_unsettled(&mut self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+        let clock = &mut self.notices.settlement;
+        if let Some(at) = clock.unsettled.remove(from) {
+            clock.filled(to, at);
+        }
     }
 
     /// Orders held for an instant no pass has reached yet.
@@ -1020,7 +1169,17 @@ impl Placer for SimulatedGateway {
         for order_id in closed {
             self.working.remove(&order_id);
         }
+        // Every fill handed to the cell starts, or extends, its order's wait
+        // on a cycle venue. Recorded here, at the hand-over, so a settlement
+        // can never be reported for a fill the cell has not been told of.
+        for report in &reports {
+            self.notices.settlement.filled(&report.order_id, report.at);
+        }
         reports
+    }
+
+    fn settlements(&mut self) -> Vec<SettlementReport> {
+        std::mem::take(&mut self.notices.settlement.settled)
     }
 
     fn can_cancel(&self) -> bool {
@@ -1591,6 +1750,15 @@ impl Placer for NodeGateway {
             // The REST gateway holds nothing (see its `place`), so it has
             // nothing to have withdrawn.
             Self::Live(_) => Vec::new(),
+        }
+    }
+
+    fn settlements(&mut self) -> Vec<SettlementReport> {
+        match self {
+            Self::Simulated(gateway) => gateway.settlements(),
+            // The REST gateway's venue reports no settlement on any channel
+            // this process reads; delegated so the answer is its own.
+            Self::Live(gateway) => gateway.settlements(),
         }
     }
 

@@ -4241,23 +4241,28 @@
   {
     "id": "R12-FABRIC-9182",
     "status": "PARTIAL",
-    "current": "Single-node broker by design.",
+    "current": "The broker module is open to three brokers per region, one per zone, on C4/C4D (ADR 0111 Amendment 1 §3): google_compute_instance_from_template is for_each over broker_internal_addresses, each in local.broker_zone[address]; variables.tf refuses a fourth address, more than one address without managed_log (the Spanner lease), and any shape but C4/C4D; main.tf's preconditions refuse two brokers in one zone and a zone outside the region. Planned under the mock provider by tests/machine.tftest.hcl. The fabric's own policy still describes one seated broker (policy.rs), and no environment declares more than one address.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:136,320",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf google_compute_instance_from_template.event_fabric_broker (for_each, zone, preconditions)",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf broker_internal_addresses, machine_type, broker_zones validations",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl::three_brokers_behind_the_spanner_lease_are_three_machines",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl::three_brokers_are_placed_in_three_zones",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl::a_fourth_broker_in_a_region_is_refused",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl::a_c3_broker_shape_is_refused",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:136,320"
     ],
-    "gap": "Multi-instance fabric on a Spanner lease (ADR 0111): open the broker module to three C4/C4D instances, one per zone (ADR 0111 Amendment 1), and plan it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-11-13 (wave580 t5-03): the module half is met and planned under the mock provider (terraform 1.9.8 `terraform test`: 25 passed; mutations `<= 3` to `<= 2` and the instance's zone pinned to var.zone each fail their run and were restored). What remains is not code in this repository: a real plan and apply of three brokers behind a provisioned regional Spanner lease, which needs an environment declaring three addresses and managed_log (infrastructure/environments/** is protected) and the Spanner bill owner decision 5 has not taken (the same STAY_PARTIAL_DEPLOY ruling as R12-FABRIC-8096, 7035 and 9118).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "n/a",
+    "blocked_by": "deployment: Spanner lease bill (owner decision 5) and environment tfvars (protected)",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-11-13 lane t5-03: module bar proven by terraform test and two mutations; kept PARTIAL for the deployment."
   },
   {
     "id": "R12-GCP-9183",
