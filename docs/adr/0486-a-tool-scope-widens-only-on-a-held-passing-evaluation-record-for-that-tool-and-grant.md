@@ -50,6 +50,26 @@ which happened to be meaningful, but nothing in the registry made it so.
   before. What changed is that the registry now holds it as a record a
   reader can inspect, and the promotion cannot cite anything else.
 
+## What it costs
+
+- One more step for every caller that widens a tool: record the evaluation,
+  then promote citing it. The deep brain's assembly gained one call.
+- Up to three evaluation records per registered tool held in memory.
+- A failed evaluation is replaced, not kept, when the tool is re-evaluated,
+  so the registry does not hold a history of failed evaluations; it holds
+  the history of widenings, each citing the record that admitted it.
+
+## What would make this wrong
+
+- If an evaluation needs to be produced by something other than the caller
+  that promotes (an independent reviewer's signed record, say), this record
+  is still supplied by that caller and the door would need to verify who
+  made it. The deep brain's evaluation is the operator attestation it read
+  from a mounted file; the registry checks it is held, for this tool and
+  grant, and passed, and not who wrote it.
+- If one tool and grant need several evaluations in force at once (for
+  example per-environment), one record per pair is too narrow.
+
 ## What this leaves open (2026-11-12)
 
 The row covers seven capability kinds. This decision closes the tool door
