@@ -95,6 +95,15 @@ What the person promoting checks, and what is not yet automated:
   `envs/prod/`, so a failed check records nothing and `stage` is offered
   nothing. It reads configuration, not the image, and it has never been
   evaluated by a controller: see the next section.
+  Since ADR 0504 (R12-OBS-9156) `base/releasetask.yaml`'s
+  `verify-release-standing` also runs before `record-gate`, once for
+  `kernel` and once for `portfolio` (the planes `qip-images` carries). It
+  asks qip-api's `GET /api/v1/release/<plane>` and refuses on any answer but
+  exactly 200: a spent error budget (409), an undeclared plane (404), or no
+  answer at all. `releaseStandingURL` is empty and the
+  `qip-release-standing` Secret does not exist yet, so until both are set
+  every promotion out of `paper` is refused. That follows the ruling: a
+  standing that cannot be read refuses.
 
 ## Why `paper` has never received freight
 

@@ -745,6 +745,16 @@ pub const ROUTES: &[Route] = &[
         success: 200,
     },
     Route {
+        method: Method::Get,
+        pattern: "/release/:plane",
+        required_role: Role::Monitor,
+        summary: "one plane's release standing from its own error budgets (ADR 0504): 200 \
+                  when its promotion may proceed, 409 naming the objective whose budget is \
+                  spent, 404 for a plane no objective is declared on; each with the count \
+                  of the plane's objectives the answer rests on and the count it does not",
+        success: 200,
+    },
+    Route {
         method: Method::Post,
         pattern: "/venues/:venue/reinstatements",
         required_role: Role::Operator,
@@ -1974,6 +1984,42 @@ impl Api {
                     crate::venue_views::withdrawals(&platform, reinstatement_refusal),
                 );
                 Response::json(status, body)
+            }
+            // ADR 0504. Read-only, and the one route whose status is the
+            // answer: a Kargo promotion step reads the status before the
+            // body, so a refused release is a non-2xx and a standing that
+            // cannot be produced — an undeclared plane here, a poisoned lock
+            // above — is one too. Nothing on this arm can turn a refusal
+            // into a 200.
+            (Method::Get, "/release/:plane") => {
+                let Some(plane) = path_segment(&request.path, 1) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                match platform.release_standing(plane, now) {
+                    Ok(standing) => {
+                        let (status, decision, reason) = match &standing.decision {
+                            qip_observability::aiops::ReleaseDecision::Proceed => {
+                                (200, "proceed", "null".to_string())
+                            }
+                            qip_observability::aiops::ReleaseDecision::Refused { reason } => {
+                                (409, "refused", json::string(reason))
+                            }
+                        };
+                        Response::json(
+                            status,
+                            format!(
+                                r#"{{"plane":{},"decision":"{decision}","reason":{reason},"observed_objectives":{},"unobserved_objectives":{}}}"#,
+                                json::string(&standing.plane),
+                                standing.observed,
+                                standing.unobserved,
+                            ),
+                        )
+                    }
+                    Err(refusal) => Response::json(
+                        404,
+                        format!(r#"{{"error":{}}}"#, json::string(refusal.message())),
+                    ),
+                }
             }
             (Method::Post, "/venues/:venue/reinstatements") => {
                 let Some(venue) = path_segment(&request.path, 1) else {
