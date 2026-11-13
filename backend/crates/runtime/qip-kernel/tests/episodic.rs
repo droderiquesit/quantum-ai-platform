@@ -994,6 +994,103 @@ fn the_learn_pass_that_remembers_a_resolved_thesis_charges_its_analysts_to_resea
     Ok(())
 }
 
+/// R12-AMBIENT-3024: the Meta Brain says which analyst is reliable in which
+/// regime, and it can only say so if every call the kernel charges to research
+/// memory carries the regime it was made in. Each research episode must carry
+/// exactly the `{market}/{volatility}` key the resolved kernel episode was
+/// stamped with, and `reliability_by_regime` must then hold one cell per
+/// (analyst, regime) the resolved thesis named.
+///
+/// Mutation: write `regime: None` in `write_research_memory` — every research
+/// episode carries no regime and the per-regime record is empty.
+#[test]
+fn every_call_charged_to_research_memory_carries_the_regime_it_was_made_in() -> Result<()> {
+    use std::collections::BTreeSet;
+    let (t2, t3) = resolution_instants()?;
+    let (platform, _) = three_cycles(t2, t3)?;
+    let regimes: BTreeSet<String> = platform
+        .remembered_episodes(t3)
+        .filter(|episode| episode.outcome.is_some())
+        .map(|episode| format!("{}/{}", episode.regime.market, episode.regime.volatility))
+        .collect();
+    assert!(
+        !regimes.is_empty(),
+        "premise: a thesis resolved, so some kernel episode carries a regime"
+    );
+    let memory = platform.research_memory();
+    assert!(
+        memory.episode_count() > 0,
+        "premise: the resolved thesis charged its analysts to research memory"
+    );
+    for episode in memory.episodes() {
+        let regime = episode
+            .regime
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} was charged with no regime", episode.agent_id));
+        assert!(
+            regimes.contains(regime),
+            "{} was charged under {regime}, not a regime a resolved episode was stamped with \
+             ({regimes:?})",
+            episode.agent_id
+        );
+    }
+    let cells = memory.reliability_by_regime(t3);
+    assert!(!cells.is_empty(), "no per-regime record was formed");
+    for (agent, regime) in cells.keys() {
+        assert!(
+            regimes.contains(regime),
+            "{agent} has a record under {regime}, which no resolved episode carried"
+        );
+    }
+    let resolved: usize = cells.values().map(|record| record.resolved).sum();
+    assert_eq!(
+        resolved,
+        memory.episode_count(),
+        "every resolved call is counted once"
+    );
+    Ok(())
+}
+
+/// R12-AMBIENT-3024 at the kernel seam: the Meta Brain is constructed in the
+/// production organisation and runs in the REASON stage's dispatch, after the
+/// panel, under the regime in force for the brief's instrument — so by the
+/// third cycle, once a thesis has resolved and its analysts have been charged
+/// to research memory under their regime, its finding reports the record it
+/// read rather than a pooled rate.
+///
+/// Mutations: drop the `in_regime` call where `stage_reason` builds the brief
+/// — the claim reads "every regime, pooled"; drop `with_arbiters` from
+/// `Organisation::standard` — the meta brain never runs.
+#[test]
+fn the_reason_stage_runs_the_meta_brain_under_the_regime_in_force() -> Result<()> {
+    let (t2, t3) = resolution_instants()?;
+    let (platform, _) = three_cycles(t2, t3)?;
+    let runs = platform
+        .organisation()
+        .audit()
+        .for_agent(qip_investment_agents::ids::META);
+    assert!(
+        !runs.is_empty(),
+        "the meta brain never ran in a REASON dispatch"
+    );
+    let last = runs
+        .iter()
+        .filter_map(|run| run.finding.as_ref())
+        .next_back()
+        .expect("the meta brain's run produced a finding");
+    assert!(
+        !last.claim.contains("every regime, pooled"),
+        "the brief named no regime: {}",
+        last.claim
+    );
+    assert!(
+        last.claim.contains("; in ") && last.claim.contains('/'),
+        "the claim does not name a market/volatility regime: {}",
+        last.claim
+    );
+    Ok(())
+}
+
 /// R12-REASON-3109 at the kernel seam: a hypothesis the red team refuses on
 /// review never reaches DECIDE. The refusal was proven inside
 /// `qip-reasoning-engine`, where the review verdict is formed, and nothing

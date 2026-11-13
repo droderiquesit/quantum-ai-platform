@@ -307,6 +307,14 @@ fn research_pass(
     // trades at, or a delta no newer than the one held — is said, not
     // swallowed; the delta is still journaled below.
     outcome.side_failures.extend(round.admit_deltas(platform));
+    // Every fill-bias correction the sweep installed or withdrew is applied to
+    // the platform's paper fill model (R12-EXPAND-6050), so the venue's later
+    // paper fills are scored under the correction and a replay reproduces it.
+    // Like the deltas above, the act waits here for the `&mut Platform` the
+    // sweep did not hold.
+    outcome
+        .side_failures
+        .extend(round.admit_fill_bias(platform, now));
     // Every request the sweep launched goes to the discovery desk as a scout
     // job, in rank order (R12-AMBIENT-9033); the desk's next pass looks for
     // evidence on what the sweep paid to ask about.

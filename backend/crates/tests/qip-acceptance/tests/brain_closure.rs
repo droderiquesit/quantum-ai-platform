@@ -62,7 +62,11 @@ const RISK_BRAIN: [&str; 2] = ["qip-risk", "qip-risk-engine"];
 fn brains() -> BTreeMap<&'static str, BTreeSet<&'static str>> {
     BTreeMap::from([
         ("risk", BTreeSet::from(RISK_BRAIN)),
-        ("capital", BTreeSet::from(["qip-capital"])),
+        // ADR 0464: the survival kernel and the confidence governor, moved
+        // out of the runtime, govern the capital waterfall `qip-capital`
+        // holds, so they are the Capital Brain's second crate rather than a
+        // seventh brain — and so they meet the Risk Brain only in the kernel.
+        ("capital", BTreeSet::from(["qip-capital", "qip-survival"])),
         // ADR 0385: the Treasury Bank's crate, extracted from `qip-capital`.
         // Listed so the two-brains test refuses a service holding it beside
         // another brain; `treasury_boundary.rs` holds its own closure.
@@ -614,22 +618,24 @@ fn set(names: &[&str]) -> BTreeSet<String> {
 fn the_capital_brain_reaches_no_alpha_and_no_other_brain_and_nothing_below_the_kernel_depends_on_it()
  {
     let graph = workspace();
-    let (alpha, other, dependents) = edges("qip-capital", "capital", &graph);
-    assert!(
-        alpha.is_empty(),
-        "qip-capital can reach alpha crates {alpha:?}"
-    );
-    assert!(
-        other.is_empty(),
-        "the capital brain reaches another brain's {other:?}; a brain may meet another only \
-         through qip-contracts"
-    );
-    assert_eq!(
-        dependents,
-        BTreeSet::new(),
-        "a crate below the kernel depends on the capital brain directly. What it needs of the \
-         allocator's limits and plan is in qip_contracts::allocation (ADR 0385)"
-    );
+    // Both of the brain's crates, `qip-survival` since ADR 0464. Mutation:
+    // add `qip-risk.workspace = true` to qip-survival's `[dependencies]` and
+    // the second assertion fails naming it.
+    for root in ["qip-capital", "qip-survival"] {
+        let (alpha, other, dependents) = edges(root, "capital", &graph);
+        assert!(alpha.is_empty(), "{root} can reach alpha crates {alpha:?}");
+        assert!(
+            other.is_empty(),
+            "the capital brain's {root} reaches another brain's {other:?}; a brain may meet \
+             another only through qip-contracts"
+        );
+        assert_eq!(
+            dependents,
+            BTreeSet::new(),
+            "a crate below the kernel depends on the capital brain's {root} directly. What it \
+             needs of the allocator's limits and plan is in qip_contracts::allocation (ADR 0385)"
+        );
+    }
 }
 
 /// R12-CAPITAL-1095, ADR 0127 decision 5 for the Asset Brain
