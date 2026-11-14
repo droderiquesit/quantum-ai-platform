@@ -40,7 +40,6 @@ pub mod blueprint_objectives;
 pub mod breadth;
 pub mod bus_bridge;
 pub mod capacity_review;
-pub mod capital_score;
 pub mod causal_review;
 pub mod central;
 pub mod chain_settlement;
