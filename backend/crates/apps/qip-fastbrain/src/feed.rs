@@ -560,6 +560,7 @@ impl Feed {
             admission.check(until)?;
         }
         let source = self.descriptor().name;
+        let observation = self.is_observation_arm();
         let mut batch = Batch::default();
         // The connector's records come paired with the claim each rests on,
         // so the node can drop the ones the world fabric withholds after
@@ -578,6 +579,9 @@ impl Feed {
                 .collect(),
         };
         for (record, claim) in polled {
+            // Fail closed: only a market-data bar arm may be observed
+            // without evidence behind it (see `require_claim`).
+            let claim = require_claim(observation, &source, claim)?;
             let issues = record.validate();
             if issues.is_empty() {
                 batch.accepted.push(record);
@@ -593,6 +597,19 @@ impl Feed {
         Ok(batch)
     }
 
+    /// Whether this arm's records are venue or vendor market-data bars, an
+    /// observation and not an extracted claim, and so may reach `observe`
+    /// with no `EvidenceRecord` behind them. A closed, exhaustive match with
+    /// no wildcard: a new arm does not compile until somebody decides which
+    /// side of the line it is on, and the default for a new arm is to mint
+    /// evidence, not to be admitted unclaimed (owner decision 36).
+    pub fn is_observation_arm(&self) -> bool {
+        match self {
+            Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => true,
+            Self::Connector { .. } => false,
+        }
+    }
+
     /// The checked evidence the connector arm released since the last call,
     /// for `Platform::absorb_evidence` (R12-EVID-2031). Empty for every other
     /// arm: a synthetic, replayed or tape record is not a claim anybody made.
@@ -604,6 +621,27 @@ impl Feed {
             Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => Vec::new(),
         }
     }
+}
+
+/// Refuse a record with no claim id unless its arm is a market-data bar arm.
+///
+/// Without this an arm that stopped minting evidence (a connector whose
+/// evidence stage was bypassed) would hand `admit_world_records` a `None`,
+/// which it releases straight to `observe`: an assertion in the world model
+/// that nothing in the event log can attribute. The refusal names the arm.
+fn require_claim(
+    observation_arm: bool,
+    source: &str,
+    claim: Option<String>,
+) -> Result<Option<String>> {
+    if claim.is_none() && !observation_arm {
+        return Err(Error::denied(format!(
+            "{source} produced a record with no evidence claim, and only a \
+             market-data bar arm may be observed without one; mint an \
+             EvidenceRecord for it (R12-EVID-2031)"
+        )));
+    }
+    Ok(claim)
 }
 
 /// Where every catalogued source stands, one banner line each.
@@ -784,6 +822,50 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&directory);
+    }
+}
+
+#[cfg(test)]
+mod unclaimed_record_tests {
+    use super::*;
+
+    /// An unclaimed record from a non-bar arm reaching `observe` is the hole
+    /// owner decision 36 closes. Mutation: make `require_claim` return
+    /// `Ok(claim)` unconditionally; the refusal assertion fails.
+    #[test]
+    fn an_arm_outside_the_market_data_bar_set_is_refused_an_unclaimed_record() {
+        let refused = require_claim(false, "some-connector", None)
+            .expect_err("an unclaimed record from a non-bar arm was admitted");
+        assert!(
+            refused.message().contains("some-connector"),
+            "the refusal does not name the arm: {}",
+            refused.message()
+        );
+        assert_eq!(
+            require_claim(false, "some-connector", Some("c1".to_string()))
+                .expect("a claimed record is refused"),
+            Some("c1".to_string())
+        );
+        assert_eq!(
+            require_claim(true, "bars", None).expect("a bar arm record is refused"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_synthetic_arm_is_a_market_data_bar_arm_and_polls_unclaimed() {
+        let mut feed = Feed::synthetic(
+            7,
+            Duration::from_secs(1),
+            Timestamp::from_secs(1_760_000_000),
+        );
+        assert!(feed.is_observation_arm());
+        let batch = feed
+            .poll(Timestamp::from_secs(1_760_000_600), &mut |_| Ok(()))
+            .expect("a bar arm polls");
+        assert!(!batch.accepted.is_empty(), "the synthetic arm produced nothing");
+        assert_eq!(batch.accepted.len(), batch.claims.len());
+        assert!(batch.claims.iter().all(Option::is_none));
     }
 }
 
