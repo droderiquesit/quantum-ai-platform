@@ -1227,6 +1227,34 @@ impl LedgerStore {
                 ),
             );
         }
+        // The custody statement meets the same fence before the chain (ADR
+        // 0130 decision 6): a statement not marked simulated parks the cell
+        // as live, and nothing is compared against it. A statement that does
+        // not parse is held for the same reason a malformed fill is: the
+        // venue said something about the cell's holdings that nobody can read.
+        let custody = match &delivery.record {
+            P1Record::Outcome(outcome) => {
+                CustodyStatement::from_entry(cell, outcome.session, &outcome.entry)
+            }
+            P1Record::Span(_) => Ok(None),
+        };
+        if let Ok(Some(statement)) = &custody
+            && !statement.simulated
+        {
+            self.telemetry.live_fill_refused();
+            return self.park_cell(
+                delivery,
+                &cursor,
+                park,
+                ParkReason::LiveFill,
+                format!(
+                    "a custody statement from {} at sequence {} is not marked simulated; this \
+                     platform reconciles paper custody only (ADR 0130 decision 6)",
+                    statement.venue, statement.sequence
+                ),
+            );
+        }
+
         if let Some((Err(refusal), false)) = &fill {
             self.telemetry.live_fill_refused();
             return self.park_cell(
@@ -1408,6 +1436,16 @@ impl LedgerStore {
         // order and the fill that closes it are never committed apart.
         if let Some((key, row)) = &register {
             batch = batch.put_as(key.clone(), row)?;
+        }
+        // The statement is compared in the batch that advances the chain onto
+        // it (ADR 0494): the chain checks above proved every earlier entry of
+        // this session is applied, so the ledger side is complete, and the
+        // comparison and the tail move together or not at all.
+        let mut custody_breaks = None;
+        if let Some(statement) = &custody {
+            let (compared, breaks) = self.compare_custody(batch, statement)?;
+            batch = compared;
+            custody_breaks = Some(breaks);
         }
         // The pending row moves in the batch that books the event, so a
         // settlement and the row it closes are never committed apart.
