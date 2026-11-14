@@ -14,7 +14,7 @@ use qip_contracts::ambient::{ComputeResourceType, ModelReputation};
 use qip_contracts::control::ComputeBackend;
 use qip_core::{Decimal, Timestamp};
 use qip_expansion::meta::{
-    Decline, DomainResidual, MetaIntelligence, MetaPolicy, REALISATION_PRIOR_BP, ReputationBook,
+    AgentLimit, Decline, DomainResidual, MetaIntelligence, MetaPolicy, REALISATION_PRIOR_BP, ReputationBook,
     ReputationKey, Standing, UNINFORMED_REPUTATION_BP, WorkBid, WorkKind,
 };
 use std::collections::BTreeMap;
@@ -417,4 +417,144 @@ fn an_agent_bid_over_its_compute_budget_is_refused() {
             .is_err(),
         "a negative agent budget is refused, not read as zero"
     );
+}
+
+fn cpu_units(round: &qip_expansion::meta::AllocationRound, id: &str) -> Option<Decimal> {
+    round
+        .grant(id)
+        .and_then(|g| g.charged.get(&ComputeResourceType::Cpu).copied())
+}
+
+/// R12-AMBIENT-9034, decision 36: an agent with no stated line holds zero
+/// units and a zero weight ceiling, so an unlisted bidder is refused where
+/// `allocate_within` would have admitted it on the resource budgets alone.
+/// Mutation: in `allocate_core`, delete the `ceilings.is_some()` arm of the
+/// agent-budget match and the weight check above it, and `stranger` is
+/// granted.
+#[test]
+fn an_agent_with_no_stated_line_is_refused_and_a_listed_one_is_not() {
+    let listed = bid("listed", 9_000, 1, 2);
+    let mut stranger = bid("stranger", 9_000, 1, 2);
+    stranger.reputation = key("macro");
+    let bids = [listed, stranger];
+
+    let open = market().allocate(&bids, &cpu(100), now()).unwrap();
+    assert!(
+        cpu_units(&open, "stranger").is_some() && cpu_units(&open, "listed").is_some(),
+        "premise: with no limits both bids are granted: {open:?}"
+    );
+
+    let limits = BTreeMap::from([(
+        key("execution"),
+        AgentLimit {
+            budget: Decimal::from_int(5),
+            weight_ceiling_bp: UNINFORMED_REPUTATION_BP,
+        },
+    )]);
+    let round = market()
+        .allocate_limited(&bids, &cpu(100), &limits, now())
+        .unwrap();
+    assert_eq!(
+        cpu_units(&round, "listed"),
+        Some(Decimal::from_int(2)),
+        "{round:?}"
+    );
+    assert!(round.grant("stranger").is_none(), "{round:?}");
+    assert!(
+        round
+            .declined
+            .contains(&("stranger".to_string(), Decline::OverModelWeight)),
+        "{round:?}"
+    );
+}
+
+/// A bid priced on a weight above its agent's ceiling is refused and not
+/// priced lower; one at the ceiling is admitted. Mutation: change `>` to
+/// `>=` in the ceiling comparison and the at-ceiling bid is refused.
+#[test]
+fn a_bid_weighted_above_its_models_ceiling_is_refused_not_clamped() {
+    let bids = [bid("heavy", 9_000, 1, 1)];
+    let weight = market()
+        .reputation()
+        .standing(&bids[0].reputation)
+        .weight_bp();
+    assert!(weight > 0, "premise: the cell carries a weight to cap");
+    let at = |ceiling: u32| {
+        BTreeMap::from([(
+            key("execution"),
+            AgentLimit {
+                budget: Decimal::from_int(5),
+                weight_ceiling_bp: ceiling,
+            },
+        )])
+    };
+
+    let under = market()
+        .allocate_limited(&bids, &cpu(100), &at(weight - 1), now())
+        .unwrap();
+    assert!(under.grant("heavy").is_none(), "{under:?}");
+    assert!(
+        under
+            .declined
+            .contains(&("heavy".to_string(), Decline::OverModelWeight)),
+        "{under:?}"
+    );
+
+    let level = market()
+        .allocate_limited(&bids, &cpu(100), &at(weight), now())
+        .unwrap();
+    assert!(level.grant("heavy").is_some(), "{level:?}");
+
+    assert!(
+        market()
+            .allocate_limited(&bids, &cpu(100), &at(10_001), now())
+            .is_err(),
+        "a ceiling above 10000 bp is refused, not read as unlimited"
+    );
+}
+
+/// A zero budget line grants nothing even to a listed agent within its
+/// weight ceiling, and a QPU plan issued under a line carries it.
+/// Mutation: in `plan_for`, write `Decimal::ZERO` as the line budget and the
+/// plan fails its own contract check, so the grant errors.
+#[test]
+fn a_zero_budget_line_grants_nothing_and_a_granted_qpu_plan_carries_its_line() {
+    let mut qpu = bid("qpu", 9_000, 1, 1);
+    qpu.resource = ComputeResourceType::Qpu;
+    qpu.classical_baseline_cost = Some(Decimal::from_int(1));
+    let budget = BTreeMap::from([
+        (ComputeResourceType::Cpu, Decimal::from_int(10)),
+        (ComputeResourceType::Qpu, Decimal::from_int(10)),
+    ]);
+    let line = |units: i64| {
+        BTreeMap::from([(
+            key("execution"),
+            AgentLimit {
+                budget: Decimal::from_int(units),
+                weight_ceiling_bp: 10_000,
+            },
+        )])
+    };
+
+    let none = market()
+        .allocate_limited(&[qpu.clone()], &budget, &line(0), now())
+        .unwrap();
+    assert!(none.grant("qpu").is_none(), "{none:?}");
+    assert!(
+        none.declined
+            .contains(&("qpu".to_string(), Decline::OverAgentBudget)),
+        "{none:?}"
+    );
+
+    let round = market()
+        .allocate_limited(&[qpu], &budget, &line(4), now())
+        .unwrap();
+    let plan = round
+        .grant("qpu")
+        .and_then(|g| g.plan.as_ref())
+        .expect("a granted QPU unit carries a plan");
+    assert_eq!(plan.agent_lines.len(), 1);
+    assert_eq!(plan.agent_lines[0].agent, "execution/research/all");
+    assert_eq!(plan.agent_lines[0].budget, Decimal::from_int(4));
+    assert_eq!(plan.agent_lines[0].weight_ceiling_bp, 10_000);
 }

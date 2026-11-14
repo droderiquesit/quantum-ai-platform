@@ -52,7 +52,9 @@
 use qip_contracts::ambient::{
     ComputeAllocation, ComputeResourceType, MAX_SEVERITY_BP, ModelReputation,
 };
-use qip_contracts::control::{ComputeBackend, ComputeCandidate, ComputePlan, ComputePlanFields};
+use qip_contracts::control::{
+    AgentLine, ComputeBackend, ComputeCandidate, ComputePlan, ComputePlanFields,
+};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -378,6 +380,11 @@ pub enum Decline {
     /// The next unit would take the agent whose record weights the bid past
     /// the compute budget the plan gave that agent (R12-AMBIENT-9034).
     OverAgentBudget,
+    /// The reputation weight the bid is priced on is above the ceiling the
+    /// plan gave that agent's model (R12-AMBIENT-9034). Refused, never
+    /// clamped: a bid priced on a lower weight than its record earned is a
+    /// different bid.
+    OverModelWeight,
 }
 
 impl Decline {
@@ -389,8 +396,32 @@ impl Decline {
             Self::Outbid => "outbid",
             Self::NoClassicalBaseline => "no_classical_baseline",
             Self::OverAgentBudget => "over_agent_budget",
+            Self::OverModelWeight => "over_model_weight",
         }
     }
+}
+
+/// One agent's stated line for [`MetaIntelligence::allocate_limited`]
+/// (R12-AMBIENT-9034): the compute units it may be charged in a round and
+/// the highest reputation weight, in basis points, its bids may be priced
+/// on.
+///
+/// The restrictive default, which an agent without a line holds, is zero
+/// units and a zero ceiling, so an unlisted bidder is refused rather than
+/// admitted on the resource budgets alone. The owner raises a line per
+/// agent; decision 36 gives no other figure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AgentLimit {
+    pub budget: Decimal,
+    pub weight_ceiling_bp: u32,
+}
+
+impl AgentLimit {
+    /// Zero units and zero basis points: grants nothing.
+    pub const NONE: Self = Self {
+        budget: Decimal::ZERO,
+        weight_ceiling_bp: 0,
+    };
 }
 
 /// What one bid was granted.
@@ -541,6 +572,41 @@ impl MetaIntelligence {
         self.allocate_within(bids, budget, &BTreeMap::new(), now)
     }
 
+    /// One market round in which every agent is bounded by a stated
+    /// [`AgentLimit`], and an agent the map does not name holds
+    /// [`AgentLimit::NONE`]: its bids are declined
+    /// [`Decline::OverModelWeight`] (the ceiling is zero) and, were the
+    /// weight within it, [`Decline::OverAgentBudget`] (the budget is zero).
+    ///
+    /// The failure it prevents: [`Self::allocate_within`] leaves an
+    /// unnamed agent bounded by the resource budgets alone, so a new bidder
+    /// — or one whose key a typo changed — takes compute nobody gave it and
+    /// influences the round on a weight nobody capped. A bid whose
+    /// reputation weight is above its agent's ceiling is refused, not
+    /// priced lower. A QPU plan issued here carries the agent's line.
+    pub fn allocate_limited(
+        &mut self,
+        bids: &[WorkBid],
+        budget: &BTreeMap<ComputeResourceType, Decimal>,
+        limits: &BTreeMap<ReputationKey, AgentLimit>,
+        now: Timestamp,
+    ) -> Result<AllocationRound> {
+        let mut budgets = BTreeMap::new();
+        let mut ceilings = BTreeMap::new();
+        for (agent, limit) in limits {
+            if limit.weight_ceiling_bp > MAX_SEVERITY_BP {
+                return Err(Error::invalid(format!(
+                    "the model-weight ceiling for agent {}/{}/{} is {} bp, above \
+                     {MAX_SEVERITY_BP}; state a ceiling within range rather than have it clamped",
+                    agent.domain, agent.horizon, agent.regime, limit.weight_ceiling_bp
+                )));
+            }
+            budgets.insert(agent.clone(), limit.budget);
+            ceilings.insert(agent.clone(), limit.weight_ceiling_bp);
+        }
+        self.allocate_core(bids, budget, &budgets, Some(&ceilings), now)
+    }
+
     /// One market round in which each agent named in `agent_budgets` — the
     /// [`ReputationKey`] whose record weights its bids — may be charged at
     /// most its stated compute units across every resource, the QPU
@@ -557,6 +623,20 @@ impl MetaIntelligence {
         bids: &[WorkBid],
         budget: &BTreeMap<ComputeResourceType, Decimal>,
         agent_budgets: &BTreeMap<ReputationKey, Decimal>,
+        now: Timestamp,
+    ) -> Result<AllocationRound> {
+        self.allocate_core(bids, budget, agent_budgets, None, now)
+    }
+
+    /// The round itself. `ceilings` is `Some` only for
+    /// [`Self::allocate_limited`], where it also means that an agent absent
+    /// from `agent_budgets` and `ceilings` is refused.
+    fn allocate_core(
+        &mut self,
+        bids: &[WorkBid],
+        budget: &BTreeMap<ComputeResourceType, Decimal>,
+        agent_budgets: &BTreeMap<ReputationKey, Decimal>,
+        ceilings: Option<&BTreeMap<ReputationKey, u32>>,
         now: Timestamp,
     ) -> Result<AllocationRound> {
         for (agent, amount) in agent_budgets {
@@ -610,6 +690,15 @@ impl MetaIntelligence {
                     .push((bid.work_id.clone(), Decline::Retired { windows: *windows }));
                 continue;
             }
+            if let Some(ceilings) = ceilings {
+                let ceiling = ceilings.get(&bid.reputation).copied().unwrap_or(0);
+                if self.reputation.standing(&bid.reputation).weight_bp() > ceiling {
+                    round
+                        .declined
+                        .push((bid.work_id.clone(), Decline::OverModelWeight));
+                    continue;
+                }
+            }
             let value = self.marginal_value_bp(bid, 0);
             match best_by_subject.get(bid.subject.as_str()) {
                 Some(best)
@@ -625,6 +714,13 @@ impl MetaIntelligence {
         }
         for bid in bids {
             if self.retired.contains_key(&bid.work_id) {
+                continue;
+            }
+            if round
+                .declined
+                .iter()
+                .any(|(id, d)| id == &bid.work_id && *d == Decline::OverModelWeight)
+            {
                 continue;
             }
             match best_by_subject.get(bid.subject.as_str()) {
@@ -702,12 +798,20 @@ impl MetaIntelligence {
                 stopped[i] = Some(Decline::NoClassicalBaseline);
                 continue;
             }
-            if let Some(left) = agent_left.get_mut(&bid.reputation) {
-                if *left < own + baseline {
+            match agent_left.get_mut(&bid.reputation) {
+                Some(left) => {
+                    if *left < own + baseline {
+                        stopped[i] = Some(Decline::OverAgentBudget);
+                        continue;
+                    }
+                    *left -= own + baseline;
+                }
+                // An unlisted agent in a limited round holds a zero budget.
+                None if ceilings.is_some() => {
                     stopped[i] = Some(Decline::OverAgentBudget);
                     continue;
                 }
-                *left -= own + baseline;
+                None => {}
             }
             if let Some(left) = remaining.get_mut(&bid.resource) {
                 *left -= own;
@@ -747,7 +851,12 @@ impl MetaIntelligence {
                 // A QPU bid's own resource is the QPU, so the CPU slot is
                 // the baseline's alone.
                 charged.insert(ComputeResourceType::Cpu, baseline);
-                plan = Some(self.plan_for(bid, own, baseline)?);
+                let stated = agent_budgets.get(&bid.reputation).copied();
+                let ceiling = ceilings
+                    .and_then(|c| c.get(&bid.reputation))
+                    .copied()
+                    .unwrap_or(MAX_SEVERITY_BP);
+                plan = Some(self.plan_for(bid, own, baseline, stated, ceiling)?);
             }
             for (resource, amount) in &charged {
                 let slot = round.spent.entry(*resource).or_insert(Decimal::ZERO);
@@ -811,7 +920,18 @@ impl MetaIntelligence {
         Ok(round)
     }
 
-    fn plan_for(&mut self, bid: &WorkBid, qpu: Decimal, baseline: Decimal) -> Result<ComputePlan> {
+    /// `stated` is the agent's own budget line where the round had one; a
+    /// round without one (the unlimited [`Self::allocate`]) states the
+    /// plan's own budget and a full-range ceiling, which is the bound it
+    /// really held.
+    fn plan_for(
+        &mut self,
+        bid: &WorkBid,
+        qpu: Decimal,
+        baseline: Decimal,
+        stated: Option<Decimal>,
+        ceiling_bp: u32,
+    ) -> Result<ComputePlan> {
         self.plans_issued = self.plans_issued.saturating_add(1);
         let budget = qpu
             .checked_add(baseline)
@@ -841,6 +961,14 @@ impl MetaIntelligence {
             // the QPU's own cost is positive by `WorkBid::validate`.
             budget,
             verifier: "the objective re-evaluated classically against the baseline".to_string(),
+            agent_lines: vec![AgentLine {
+                agent: format!(
+                    "{}/{}/{}",
+                    bid.reputation.domain, bid.reputation.horizon, bid.reputation.regime
+                ),
+                budget: stated.unwrap_or(budget),
+                weight_ceiling_bp: ceiling_bp,
+            }],
         })
     }
 
