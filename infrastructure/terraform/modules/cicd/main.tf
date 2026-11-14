@@ -319,19 +319,41 @@ resource "google_project_iam_member" "infra_storage" {
 # and set; feed create, read, list, update and delete — and no table, job,
 # data or asset-search permission.
 #
-# Not checked against a live project (no apply has run since): a permission
-# missing here surfaces as a 403 naming it, which is the signal to add that
-# one permission and not a predefined role. The feed resource also sends its
-# `billing_project` as the quota project, which is `serviceusage.services.use`
-# and not a cloudasset permission; whether this account already holds it
-# through a role above is likewise unverified, and so is what
-# modules/data's `google_bigquery_default_service_account` read
-# (`projects.getServiceAccount`) asks of the caller.
+# Checked against a live project once, by the first apply that used it (infra
+# run 127, dev, 2026-11-14), which was refused three times:
+#
+#   Error creating ProjectFeed: googleapi: Error 403: Request denied by Cloud
+#   IAM. Missing required IAM permission on requested scope.   (both feeds)
+#
+#   Error when reading or editing Project "..." BigQuery service account:
+#   googleapi: Error 403: Access Denied: ... User does not have
+#   bigquery.jobs.create permission in project ...
+#
+# The second names its permission. `projects.getServiceAccount`, which
+# modules/data's `google_bigquery_default_service_account` calls to learn
+# which account the warehouse key must be granted to, is authorised by
+# `bigquery.jobs.create` and nothing narrower. The first does not name one;
+# Cloud Asset Inventory's access-control page does: creating a feed needs
+# `cloudasset.feeds.create` and, beside it, `cloudasset.assets.exportResource`
+# for a RESOURCE feed and `cloudasset.assets.exportIamPolicy` for an
+# IAM_POLICY one. That half is from the documentation and is proven only when
+# the next apply creates the feeds: the same refusal is also what a binding
+# seconds old looks like, and this role was bound by that same apply.
+#
+# So the three are added here, one permission each and no predefined role.
+# What they widen, said plainly: the account may now start a BigQuery job,
+# which reads nothing without a table-data permission it still lacks; and it
+# may export this project's resource metadata and IAM policies, both of which
+# it could already read one service at a time through the admin roles above.
+# Whether the feed's `billing_project` needs `serviceusage.services.use`
+# granted here is still unverified; the refusal above came from Cloud Asset
+# Inventory, past the point where a missing quota-project permission stops a
+# call, so nothing is added for it.
 resource "google_project_iam_custom_role" "infra_warehouse_and_feeds" {
   project     = var.project_id
   role_id     = "qipInfraWarehouseFeeds_${var.environment}"
   title       = "qip infrastructure warehouse and asset feeds (${var.environment})"
-  description = "Manage the research dataset, its access list and the asset-change feeds. No table data, jobs or inventory reads."
+  description = "Manage the research dataset, its access list and the asset-change feeds, with the three permissions those calls demand beside their own. No table data and no asset search."
 
   permissions = [
     "bigquery.datasets.create",
@@ -340,6 +362,12 @@ resource "google_project_iam_custom_role" "infra_warehouse_and_feeds" {
     "bigquery.datasets.getIamPolicy",
     "bigquery.datasets.setIamPolicy",
     "bigquery.datasets.update",
+    # `projects.getServiceAccount`, the read that names BigQuery's encryption
+    # account. Not a licence to query: no table permission is held.
+    "bigquery.jobs.create",
+    # Demanded of whoever creates a feed, by the feed's content type.
+    "cloudasset.assets.exportIamPolicy",
+    "cloudasset.assets.exportResource",
     "cloudasset.feeds.create",
     "cloudasset.feeds.delete",
     "cloudasset.feeds.get",
