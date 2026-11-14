@@ -8,7 +8,7 @@
 - **Reads**: ADR 0036 (promotion happens in Kargo), ADR 0093 (the control
   plane is suspended), ADR 0003 (paper only), `docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json`
   (the ruling, verbatim).
-- **Rows**: R12-OBS-9156 (stays PARTIAL; the gap is named below).
+- **Rows**: R12-OBS-9156 (COMPLETE in-tree 2026-11-14; what waits outside the repository is named below).
 
 ## Context
 
@@ -109,7 +109,7 @@ promotion step asking about `edges` would have read a green light for ever.
 - If the owner rules that "unobserved" must refuse, decision 4 would be
   reversed.
 
-## What remains (R12-OBS-9156 stays PARTIAL, 2026-11-13)
+## What remains outside the in-tree grade (2026-11-14)
 
 - **Most budgets cannot be spent yet.** Only `reconciliation-breaks-zero-unexplained`
   (`kernel`) and `netting-ratio` (`edge`) are fed, and both only from

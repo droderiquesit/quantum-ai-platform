@@ -26,7 +26,7 @@ use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, ManualClock, ObjectId, dec};
 use qip_financial::universe::Universe;
-use qip_kernel::central::CellReport;
+use qip_kernel::central::{BreakOrigin, CellReport, ReconciliationBreak};
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_mesh::delta::DeltaOrder;
@@ -99,6 +99,31 @@ impl Rig {
             .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
         for _ in 0..20 {
             platform.ingest_cell_report(thin_report(), start())?;
+        }
+        Ok(())
+    }
+
+    /// Spend the `kernel` plane's reconciliation budget: twenty reports, each
+    /// carrying an unexplained break, from twenty cells, since a break halts
+    /// the cell that reported it. `kernel` is the plane the `paper` stage
+    /// asks about for `qip-images`, so this is the budget whose spending
+    /// refuses a real promotion.
+    fn spend_the_kernel_budget(&self) -> Result<()> {
+        let mut platform = self
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        for cell in 0..20 {
+            let report = CellReport::new(format!("cell-break-{cell}"), start()).with_break(
+                ReconciliationBreak {
+                    instrument: "AAA".to_string(),
+                    cell_quantity: dec!("10"),
+                    external_quantity: dec!("4"),
+                    detail: "six lots the venue has no record of".to_string(),
+                    origin: BreakOrigin::Book,
+                },
+            );
+            platform.ingest_cell_report(report, start())?;
         }
         Ok(())
     }
@@ -243,5 +268,36 @@ fn the_release_route_refuses_an_unauthenticated_caller() -> Result<()> {
         peer: "127.0.0.1:1".to_string(),
     });
     assert_eq!(anonymous.status, 401);
+    Ok(())
+}
+
+/// The plane Kargo gates: a spent reconciliation budget refuses `kernel`'s
+/// promotion, and leaves `edge` — whose budget is untouched — proceeding.
+#[test]
+fn a_spent_kernel_budget_refuses_the_kernel_release_and_leaves_edge_proceeding() -> Result<()> {
+    let rig = rig()?;
+    assert_eq!(
+        rig.get("/release/kernel").status,
+        200,
+        "premise: nothing is spent yet"
+    );
+    rig.spend_the_kernel_budget()?;
+    let kernel = rig.get("/release/kernel");
+    assert_eq!(kernel.status, 409, "{:?}", body_of(&kernel));
+    let reason = body_of(&kernel)["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        reason.contains("reconciliation-breaks-zero-unexplained"),
+        "the refusal names the spent objective: {reason}"
+    );
+    for plane in ["edge", "edge-node", "strategy", "portfolio"] {
+        assert_eq!(
+            rig.get(&format!("/release/{plane}")).status,
+            200,
+            "`{plane}` is not refused by `kernel`'s budget"
+        );
+    }
     Ok(())
 }
