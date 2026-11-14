@@ -41,15 +41,38 @@ impl ConformalInterval {
         calibration: &TrainingDataset,
         alpha: f64,
     ) -> Result<Self> {
+        Self::of_predictions(
+            &teacher.predict_all(calibration)?,
+            calibration.targets(),
+            alpha,
+        )
+    }
+
+    /// Calibrate an interval from `predictions` made on calibration rows and
+    /// the `targets` those rows realised, whatever produced the predictions:
+    /// one teacher, or a blend of several ([`crate::Ensemble`]).
+    ///
+    /// The guarantee is the same and so is its condition: the predictor must
+    /// not have been fitted, or its weights chosen, on these rows. Refuses a
+    /// prediction count that differs from the target count, and everything
+    /// [`Self::calibrate`] refuses.
+    pub fn of_predictions(predictions: &[f64], targets: &[f64], alpha: f64) -> Result<Self> {
         if !alpha.is_finite() || alpha <= 0.0 || alpha >= 1.0 {
             return Err(Error::invalid(format!(
                 "a conformal miscoverage must lie strictly between 0 and 1, not {alpha}"
             )));
         }
-        let predictions = teacher.predict_all(calibration)?;
+        if predictions.len() != targets.len() {
+            return Err(Error::invalid(format!(
+                "{} prediction(s) against {} target(s); an interval is calibrated on whole rows, \
+                 not on whatever lines up",
+                predictions.len(),
+                targets.len()
+            )));
+        }
         let mut errors: Vec<f64> = predictions
             .iter()
-            .zip(calibration.targets())
+            .zip(targets)
             .map(|(prediction, target)| (prediction - target).abs())
             .collect();
         let n = errors.len();
