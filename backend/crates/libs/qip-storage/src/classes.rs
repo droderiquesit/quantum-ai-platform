@@ -32,6 +32,10 @@ pub const MODEL_ARTIFACTS_NAMESPACE: &str = "model-artifacts";
 pub const KNOWLEDGE_PACK_NAMESPACE: &str = "knowledge-packs";
 /// Signed reflex packages the research desk publishes.
 pub const REFLEX_PACKAGES_NAMESPACE: &str = "reflex-packages";
+/// Unsigned reflex package drafts awaiting the two-person `model-pack`
+/// publish (ADR 0535). A namespace of its own so nothing that reads the
+/// published packages can reach a draft.
+pub const REFLEX_PACKAGE_DRAFTS_NAMESPACE: &str = "reflex-package-drafts";
 /// The tick desk's model cards and opportunity maps.
 pub const TICK_DESK_NAMESPACE: &str = "tick-desk";
 /// The probe namespace [`crate::settings::StorageSettings::preflight`] writes.
@@ -140,6 +144,15 @@ pub const DECLARED: &[StorageClass] = &[
     StorageClass {
         name: "reflex packages",
         namespace: REFLEX_PACKAGES_NAMESPACE,
+        kind: StoreKind::Blob,
+        discipline: WriteDiscipline::Overwrite,
+        owner: "qip-deepbrain",
+        bucket: Some("artifacts"),
+        holds: Holds::ModelArtifacts,
+    },
+    StorageClass {
+        name: "reflex package drafts",
+        namespace: REFLEX_PACKAGE_DRAFTS_NAMESPACE,
         kind: StoreKind::Blob,
         discipline: WriteDiscipline::Overwrite,
         owner: "qip-deepbrain",

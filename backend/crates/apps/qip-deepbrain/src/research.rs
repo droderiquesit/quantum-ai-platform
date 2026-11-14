@@ -50,7 +50,7 @@
 //!   `ReflexPackage` (R12-REASON-7203, 3115). It is signed and published
 //!   only through an installed `PackageSigner` (ADR 0110); without one it is
 //!   held unsigned and, where a package store is configured, written as an
-//!   unsigned [`ReflexPackageDraft`] under [`REFLEX_DRAFTS_PREFIX`] for the
+//!   unsigned [`ReflexPackageDraft`] in [`REFLEX_PACKAGE_DRAFTS_NAMESPACE`] for the
 //!   two-person `model-pack` publish to sign (ADR 0131, ADR 0535). The
 //!   deployed deep brain installs no signer: it never holds that key.
 
@@ -342,10 +342,12 @@ pub const RETAINED: usize = 64;
 pub const ACQUISITION_BUDGET_BP: u32 = 20_000;
 /// The blob namespace signed reflex packages are published under.
 pub const REFLEX_PACKAGES_NAMESPACE: &str = qip_storage::classes::REFLEX_PACKAGES_NAMESPACE;
-/// Where, inside [`REFLEX_PACKAGES_NAMESPACE`], an unsigned draft is written
-/// (ADR 0535). A prefix of its own so a draft and a published package never
-/// share a key, and a loader listing published packages never reads one.
-pub const REFLEX_DRAFTS_PREFIX: &str = "drafts/";
+/// The blob namespace unsigned drafts are written to (ADR 0535). Its own
+/// store, not a prefix inside [`REFLEX_PACKAGES_NAMESPACE`]: anything that
+/// lists the published packages — a loader, an exit gate — never sees a
+/// draft, which a prefix inside the same store could not promise.
+pub const REFLEX_PACKAGE_DRAFTS_NAMESPACE: &str =
+    qip_storage::classes::REFLEX_PACKAGE_DRAFTS_NAMESPACE;
 
 /// Research acquisitions carried out, by `action` (the nine
 /// `AcquisitionAction` names) and `outcome` (`gathered`, `not_executable`).
@@ -1771,6 +1773,8 @@ pub struct ResearchLoop {
     compiler: CognitiveCompiler,
     signer: Option<Box<dyn PackageSigner + Send>>,
     package_store: Option<Arc<dyn BlobStore>>,
+    /// Where unsigned drafts go (ADR 0535); never the package store.
+    draft_store: Option<Arc<dyn BlobStore>>,
     campaign_policy: CampaignPolicy,
     /// When each started item started, by question. Bounded by the queue.
     started_at: BTreeMap<String, Timestamp>,
@@ -2028,6 +2032,7 @@ impl ResearchLoop {
             compiler: CognitiveCompiler::new(CompilerBounds::default())?,
             signer: None,
             package_store: None,
+            draft_store: None,
             campaign_policy: CampaignPolicy::default(),
             started_at: BTreeMap::new(),
             evaluated: BTreeMap::new(),
@@ -2282,6 +2287,14 @@ impl ResearchLoop {
 
     pub fn with_package_store(mut self, store: Arc<dyn BlobStore>) -> Self {
         self.package_store = Some(store);
+        self
+    }
+
+    /// The store an unsigned draft is written to (ADR 0535). Kept apart
+    /// from [`Self::with_package_store`] so a draft never sits where
+    /// published packages are read.
+    pub fn with_draft_store(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.draft_store = Some(store);
         self
     }
 
@@ -4728,26 +4741,26 @@ impl ResearchLoop {
             ),
             None => None,
         };
-        let outcome = match (&signed, &self.package_store) {
-            (Some(signed), Some(store)) => {
+        let outcome = match (&signed, &self.package_store, &self.draft_store) {
+            (Some(signed), Some(store), _) => {
                 store.put(
                     &format!("{}.json", signed.package.package_id),
                     signed.encode()?,
                 )?;
                 "published"
             }
-            (Some(_), None) => "signed",
-            (None, Some(store)) => {
+            (Some(_), None, _) => "signed",
+            (None, _, Some(drafts)) => {
                 // ADR 0535: the draft the two-person publish signs. Still
                 // `held_unsigned`: nothing a cell can load was written.
                 let draft = ReflexPackageDraft::new(compiled.package.clone())?;
-                store.put(
-                    &format!("{REFLEX_DRAFTS_PREFIX}{}.json", draft.package.package_id),
+                drafts.put(
+                    &format!("{}.json", draft.package.package_id),
                     draft.encode()?,
                 )?;
                 "held_unsigned"
             }
-            (None, None) => "held_unsigned",
+            (None, _, None) => "held_unsigned",
         };
         *round.packages.entry(outcome).or_default() += 1;
         metrics.count(REFLEX_PACKAGES, labels([("outcome", outcome)]));
