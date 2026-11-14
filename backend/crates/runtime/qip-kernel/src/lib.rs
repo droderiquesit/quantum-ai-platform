@@ -114,6 +114,7 @@ mod survival_limit;
 pub mod symbolic_stage;
 pub mod tactical_lane;
 pub mod tail;
+pub mod training_export;
 pub mod theory_revision;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
