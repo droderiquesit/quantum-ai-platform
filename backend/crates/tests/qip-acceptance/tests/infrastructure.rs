@@ -15645,3 +15645,97 @@ fn no_committed_use_discount_is_declared_before_a_sizing_record_measured_on_an_e
          in-process figure buys a year of a shape nobody measured"
     );
 }
+
+#[test]
+fn the_folder_holds_shielded_vms_and_the_us_and_eu_resource_locations() {
+    // R12-GOV-10004, owner decision 36. The platform root's copy of
+    // `compute.requireShieldedVm` is on a project, where a project owner can
+    // delete it; the folder copy cannot be removed from below. And
+    // `gcp.resourceLocations` was declared at no scope, so a resource could be
+    // created in any jurisdiction. Each is checked inside its own resource
+    // body, for the reason `organization_policy_disables_service_account_key_creation`
+    // gives: a file-wide match lets one policy stand in for another.
+    let foundation = without_comments(&read("infrastructure/foundation/main.tf"));
+    let policies = terraform_resources(&foundation, "google_org_policy_policy");
+    assert!(
+        policies.len() >= 3,
+        "premise: the foundation declares the boolean set, the external-address policy and \
+         the locations policy, found {}",
+        policies.len()
+    );
+
+    // Shielded VMs: a member of the boolean set, which enforces TRUE.
+    let boolean: Vec<&String> = policies
+        .iter()
+        .filter(|(name, _)| name == "boolean")
+        .map(|(_, body)| body)
+        .collect();
+    assert_eq!(boolean.len(), 1, "the foundation must declare one `boolean` policy set");
+    assert!(
+        boolean[0].lines().map(str::trim).any(|l| l == "enforce = \"TRUE\""),
+        "the folder boolean policies must enforce TRUE"
+    );
+    let keys = foundation
+        .split("boolean_policies = ")
+        .nth(1)
+        .and_then(|rest| rest.split("} : {}").next())
+        .expect("premise: boolean_policies is declared as a conditional map");
+    assert!(
+        keys.lines()
+            .map(str::trim)
+            .any(|l| l.starts_with("\"compute.requireShieldedVm\"")),
+        "boolean_policies must name compute.requireShieldedVm"
+    );
+
+    // Locations: its own resource, parented on the folder, allowing values.
+    let bodies: Vec<&String> = policies
+        .iter()
+        .filter(|(name, _)| name == "resource_locations")
+        .map(|(_, body)| body)
+        .collect();
+    assert_eq!(
+        bodies.len(),
+        1,
+        "the foundation must declare exactly one google_org_policy_policy \"resource_locations\""
+    );
+    let lines: Vec<&str> = bodies[0].lines().map(str::trim).collect();
+    assert!(
+        lines.iter().any(|l| l.starts_with("name")
+            && l.ends_with("/policies/gcp.resourceLocations\"")),
+        "resource_locations must name gcp.resourceLocations as its policy"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("parent") && l.contains("folders/${local.folder_id}")),
+        "resource_locations must be enforced on the folder"
+    );
+    assert!(
+        lines.contains(&"allowed_values = var.allowed_resource_locations"),
+        "resource_locations must allow exactly var.allowed_resource_locations"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("denied_values")),
+        "resource_locations must not carry denied_values beside the allow list"
+    );
+
+    // The committed value: the two groups and no third.
+    let variables = read("infrastructure/foundation/variables.tf");
+    let block = variables
+        .split("variable \"allowed_resource_locations\" {")
+        .nth(1)
+        .expect("premise: the foundation declares allowed_resource_locations")
+        .split("\n}\n")
+        .next()
+        .unwrap_or_default();
+    let default = block
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("default"))
+        .expect("allowed_resource_locations must carry a default");
+    let compact: String = default.split_whitespace().collect();
+    assert_eq!(
+        compact, "default=[\"in:us-locations\",\"in:eu-locations\"]",
+        "the default must be exactly the US and EU groups"
+    );
+}
