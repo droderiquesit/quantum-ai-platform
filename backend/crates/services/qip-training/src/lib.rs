@@ -145,6 +145,7 @@ pub mod job;
 pub mod labels;
 pub mod local;
 pub mod microstructure;
+pub mod representation;
 pub mod serve;
 pub mod store;
 pub mod vertex;
