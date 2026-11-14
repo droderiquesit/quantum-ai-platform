@@ -1680,7 +1680,7 @@ impl ResearchRound {
              {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
              acquisitions {:?}; campaigns {:?} ({} pack(s), {} refused); capability register \
              refused {:?}; reflex \
-             packages {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
+             packages {:?}; promotion lanes {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
              conflicts), theory deltas {}, cross-domain chains {} ({} raised); outputs \
              advisory, none promoted; capabilities are paper and shadow only",
             self.anomalies,
@@ -1710,6 +1710,7 @@ impl ResearchRound {
             self.experiment_packs_refused.len(),
             self.capabilities_refused,
             self.packages,
+            self.lanes,
             self.contested_claims,
             self.unexplained_subjects,
             self.knowledge_deltas,
