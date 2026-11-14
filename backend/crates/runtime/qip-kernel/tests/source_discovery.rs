@@ -26,7 +26,15 @@ use qip_financial::asset_class::{AssetClass, InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
+use qip_contracts::feature::FeatureKey;
+use qip_contracts::signal::{SignalKind, StrategyId};
+use qip_contracts::venue::VenueId;
+use qip_kernel::central::StrategyCandidate;
 use qip_kernel::config::PlatformConfig;
+use qip_lifecycle::trials::StrategyFamily;
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::compile::StrategyCompiler;
+use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_kernel::platform::Platform;
 use qip_kernel::source_discovery::DISCOVERY_SPIKE_MULTIPLE;
 use qip_learning_engine::{Outcome, ThesisClaim};
@@ -274,5 +282,71 @@ fn a_universe_entity_the_world_model_has_no_close_for_is_a_gap_until_a_bar_arriv
     }))]);
     assert_eq!(absorbed, 1, "the bar was not absorbed");
     assert_eq!(gaps(&platform), ["obj-BBB"]);
+    Ok(())
+}
+
+// --- R12-DATA-2015: a registered strategy's instrument is a target -----------
+
+/// A candidate compiled against subject `obj-<id>`, as the factory holds it.
+fn strategy_candidate(id: &str) -> Result<StrategyCandidate> {
+    let subject = ObjectId::from_string(format!("obj-{id}"));
+    let pressure = FeatureKey::new("book_pressure", subject.clone()).with("levels", 5);
+    let mut catalogue = FeatureCatalogue::new();
+    catalogue.declare(pressure.clone(), Type::Statistic)?;
+    let spec = StrategySpec::new(StrategyId::new(id), subject, Duration::from_millis(250))
+        .with_rule(Rule::new(
+            "enter",
+            SignalKind::Enter,
+            Expr::feature(pressure).greater_than(Expr::Statistic(0.4)),
+            Expr::Exact(Decimal::from_int(100)),
+            Expr::Statistic(0.62),
+            500,
+        ));
+    let mut compiler = StrategyCompiler::new(catalogue);
+    let compiled = compiler.compile(&spec)?;
+    StrategyCandidate::new(
+        compiled,
+        compiler.into_program(),
+        StrategyFamily::new("discovery-tests")?,
+        "cell-a",
+        VenueId::new("XNYS"),
+        start(),
+    )
+}
+
+/// Deleting the kernel's `strategy_coverage` feed left every finder-level
+/// test green, because those hand the finder a `StrategyCoverage` themselves.
+/// This registers a real candidate in the factory and reads the target back.
+#[test]
+fn a_registered_strategy_whose_instrument_no_source_covers_becomes_a_target_naming_it()
+-> Result<()> {
+    let mut platform = platform(Universe::new())?;
+    let now = start().saturating_add(Duration::from_secs(120));
+    // Premise: empty universe and empty window, so nothing but the strategy
+    // can produce a target, and none exists yet.
+    assert!(platform.discovery_targets(now)?.is_empty());
+
+    platform
+        .central_mut()
+        .factory_mut()
+        .register(strategy_candidate("strat-alpha")?)?;
+    assert_eq!(platform.central().factory().candidates().count(), 1);
+
+    let targets = platform.discovery_targets(now)?;
+    assert_eq!(targets.len(), 1, "{targets:?}");
+    assert_eq!(targets[0].entity, "obj-strat-alpha");
+    assert_eq!(
+        targets[0].reason,
+        TargetReason::StrategyGap {
+            strategy: "strat-alpha".to_string()
+        }
+    );
+
+    // A source registered for that instrument is cover: the target goes.
+    let mut probe = probe();
+    let assessment =
+        platform.assess_sources(vec![covering("obj-strat-alpha")?], &mut probe, now)?;
+    assert_eq!(assessment.registered(), 1, "{:?}", assessment.decisions);
+    assert!(platform.discovery_targets(now)?.is_empty());
     Ok(())
 }
