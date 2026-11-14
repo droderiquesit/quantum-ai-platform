@@ -55,13 +55,13 @@ and the module refuses more than two even during a replacement.
    revision is Ready and runs the attested digest before it records anything
    (`.github/workflows/deploy.yml:487-505`); a revision that is not Ready is a
    failed deployment, not a scaling problem.
-2. **Do not raise `max_instances` first.** Four is the module's default and
-   deliberately bounded: an unbounded ceiling turns a retry storm into a bill
+2. **Do not raise `max_instances` first.** Three is the API's ceiling (four
+   is the module's default) and it is deliberately bounded: an unbounded ceiling turns a retry storm into a bill
    (`modules/cloudrun/variables.tf:276-284`).
 3. Know what you are buying. Two things in the API are per-process and get
    worse with every instance:
-   * **Rate-limit counters.** Four instances means a caller's real allowance is
-     four times what one process believes it is enforcing.
+   * **Rate-limit counters.** Three instances means a caller's real allowance
+     is three times what one process believes it is enforcing.
    * **The cell registry.** A cell's report reaches whichever instance Cloud
      Run routed it to. The more instances, the smaller the share each one sees,
      and the likelier the console served by another calls a cell stale that is
