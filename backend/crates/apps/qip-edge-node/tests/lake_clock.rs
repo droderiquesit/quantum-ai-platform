@@ -823,3 +823,74 @@ fn a_lake_line_whose_stamp_claims_an_unsupported_order_is_counted_unparsed() -> 
     );
     Ok(())
 }
+
+/// A replay digest taken over what the lake's own reader hands back
+/// (R12-TICK-1122): `lake_history::decode_line` is the path every replay job
+/// reads through, and a digest over its `RecordedTick::clock` is the one a
+/// fabric replay can reproduce. The same session drained into two lakes
+/// reads back to one digest, and that digest is the hand-worked one.
+///
+/// Mutation: `decode_line` returns `clock: None` — the digest line for every
+/// tick reads `none` and the hand-worked comparison fails.
+#[test]
+fn the_digest_over_the_clock_the_lake_reader_returns_is_reproducible_and_hand_worked() -> Result<()> {
+    use qip_storage::lake::Lake;
+    use qip_storage::lake_history::HistoryQuery;
+    use std::collections::BTreeSet;
+
+    let read_digest = || -> Result<String> {
+        let lake = Arc::new(MemoryBlobStore::new());
+        drained_into(&lake)?;
+        let granted = BTreeSet::from([SIMULATED_DATASET.to_string()]);
+        let reader = Lake::new(lake.as_ref());
+        reader.pin_market_history(
+            "digest",
+            &HistoryQuery {
+                from_date: "2000-01-01".to_string(),
+                to_date: "2100-01-01".to_string(),
+                venues: BTreeSet::new(),
+                instruments: BTreeSet::new(),
+                granted: granted.clone(),
+                max_segments: 100,
+                max_ticks: 1_000,
+            },
+        )?;
+        let mut ticks = reader.read_market_history("digest", &granted, 1_000)?.ticks;
+        ticks.sort_by_key(|tick| tick.message.origin.sequence);
+        assert_eq!(ticks.len() as u64, TICKS, "premise: every tick read back");
+        let facts = ticks
+            .iter()
+            .map(|tick| match tick.clock {
+                Some(clock) => format!(
+                    "{}|{}|{}",
+                    tick.message.origin.sequence,
+                    clock.normalized_time.as_nanos(),
+                    clock.uncertainty.as_nanos()
+                ),
+                None => format!("{}|none", tick.message.origin.sequence),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(sha256_hex(facts.as_bytes()))
+    };
+    let first = read_digest()?;
+    assert_eq!(first, read_digest()?, "two replays read two clock digests");
+    let expected = (0..TICKS)
+        .map(|index| {
+            let venue = Timestamp::from_millis(venue_ms(index)).as_nanos();
+            let (normalized, uncertainty) = if index + 1 < MIN_SAMPLES {
+                (venue, OWN_UNCERTAINTY_NS)
+            } else {
+                (venue + ONE_MS, 2 * ONE_MS)
+            };
+            format!("{}|{normalized}|{uncertainty}", index + 1)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        first,
+        sha256_hex(expected.as_bytes()),
+        "the reader's clock digest is not the hand-worked one"
+    );
+    Ok(())
+}
