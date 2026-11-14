@@ -3287,9 +3287,12 @@
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move",
       "backend/crates/apps/qip-edge-node/src/replay.rs:1-3 (module doc only)",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_recorded_node_session_replayed_reproduces_every_journal_entry_fill_and_flag",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_replay_missing_one_recorded_control_frame_names_the_pass_and_position_rather_than_reproducing",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_recorded_journal_that_disagrees_with_its_own_inputs_is_caught_at_the_first_differing_entry"
     ],
-    "gap": "Implement the node replay (re-drive run_pass from recorded PassInputs and control frames over ManualClock, see R12-TICK-10184), then give main.rs an entry point that runs it; a deployed node.",
+    "gap": "2026-11-14 (independent read-only reader, no test run): Code leg is closed: replay.rs is now 1230 lines (replay() at :682), and main.rs:183 dispatches Some(\"replay\") to replay_command. Still open: the row's gap names \"a deployed node\". The statement is a Phase 1 exit (kind process, \"one reflex cell ... paper trading\"). Nothing is deployed: execution_nodes = {} in test, stage and prod, and dev has execution_nodes_enabled = false. The register row still says deployable=false, e2e=false, and its replay description is stale. I did not run the tests, so I cannot confirm they pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3300,7 +3303,7 @@
     "verification": "cargo test -p qip-edge-node",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the gap said replay had no binary caller, which understated it; there is no replay implementation to call. The triage closure (a QIP_REPLAY_TAPE entry in main.rs driving replay.rs) presupposed one. nothing deployed: execution_nodes = {} in every environment."
+    "notes": "Corrected 2026-10-18 by lane L09: the gap said replay had no binary caller, which understated it; there is no replay implementation to call. The triage closure (a QIP_REPLAY_TAPE entry in main.rs driving replay.rs) presupposed one. nothing deployed: execution_nodes = {} in every environment. 2026-11-14: an independent reader tried to refute that this row is fully met and could not be satisfied (DEPLOYMENT). Replay code and tests now exist (replay.rs 1230 lines, main.rs:183 dispatch). The register row's \"a deployed node\" gap is still open, since execution_nodes = {} in test, stage and prod, and dev has execution_nodes_enabled = false."
   },
   {
     "id": "R12-TICK-7138",
@@ -4958,7 +4961,7 @@
       "backend/crates/tests/qip-acceptance/tests/cell_refusal_learning.rs",
       "docs/adr/0448-a-cell-refusal-of-a-fully-reasoned-intent-carries-the-leg-it-proposed-so-learn-prices-cell-vetoes.md"
     ],
-    "gap": "2026-11-12 (lane t50-11): still not priced \u2014 cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
+    "gap": "2026-11-12 (lane t50-11): still not priced — cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
     "implemented": true,
     "tested": true,
     "integrated": true,
