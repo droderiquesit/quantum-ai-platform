@@ -4017,6 +4017,64 @@ fn removing_the_commodities_analyst_drops_supply_chain_from_coverage() -> Result
     Ok(())
 }
 
+/// R12-REASON-3016. The supply-chain read counts a weather claim as well as a
+/// logistics one, and counts only claims that land on the subject and were
+/// known at the brief's instant. Without the filters a claim recorded after
+/// the brief, or one landing on another instrument, would inflate the
+/// exposure the specialist states: a look-ahead leak and a misattribution.
+///
+/// Mutation: drop the `edge.recorded_at <= brief.as_of` or the
+/// `edge.effect == subject.as_str()` filter in `CommoditiesAnalyst::analyse`
+/// and the exposure reads above 0.2. Not run; this draft is uncompiled.
+#[test]
+fn the_supply_chain_read_counts_weather_and_ignores_late_and_misdirected_claims() -> Result<()> {
+    use qip_world_model::Mechanism;
+    let weather = causal_claim(
+        "weather:gulf-hurricane",
+        object("WTI").as_str(),
+        Mechanism::Weather,
+        0.4,
+        &["ev-weather"],
+    )
+    .with_confidence(0.5)
+    .unwrap();
+    let mut late = causal_claim(
+        "freight:late-closure",
+        object("WTI").as_str(),
+        Mechanism::Logistics,
+        0.9,
+        &["ev-late"],
+    )
+    .with_confidence(1.0)
+    .unwrap();
+    late.recorded_at = Timestamp::from_secs(1_760_000_000 + 86_400);
+    let elsewhere = causal_claim(
+        "freight:baltic-dry",
+        "ACME",
+        Mechanism::Logistics,
+        0.9,
+        &["ev-elsewhere"],
+    )
+    .with_confidence(1.0)
+    .unwrap();
+    let desk = desk_holding_causal_claims(vec![weather, late, elsewhere]);
+    let brief = AgentBrief::new("is WTI backwardated", now(), Duration::from_days(30))
+        .about_objects(vec![object("WTI")]);
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief, now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::COMMODITIES)
+        .expect("premise: the standard organisation runs the commodities analyst on a commodity");
+    let exposure = fact_value(finding, "supply_chain_exposure").expect("the fact is stated");
+    assert!(
+        (exposure - 0.2).abs() < 1e-9,
+        "only the weather claim counts: 0.4 at 0.5 confidence is 0.2, not {exposure}"
+    );
+    Ok(())
+}
+
 // --- the Meta Brain (R12-AMBIENT-3024, ADR 0466) -----------------------------
 
 /// A panel agent that leans one way at a fixed conviction, under a rostered
