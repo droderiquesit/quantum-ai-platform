@@ -1045,3 +1045,44 @@ fn a_weather_reading_carries_the_stations_published_coordinates_as_its_claim_loc
     assert!(seen > 0, "no rate claim reached the fabric");
     Ok(())
 }
+
+/// R12-EVID-1111. The weather arm's claims reach the fabric with a recorded
+/// location verdict, and a forged copy of a held station claim that puts the
+/// same station elsewhere at the same instant is detected rather than let
+/// through. Without the recorded verdict a claim read as location-checked
+/// while no check had run on the arm path.
+#[test]
+fn a_forged_station_position_against_a_held_weather_claim_is_flagged_as_a_geographic_conflict()
+-> Result<()> {
+    let (mut connector, mut emulator) = nws()?;
+    let mut runtime = runtime_for(&connector)?;
+    let admitted = runtime
+        .poll(&mut connector, &mut emulator, nws_horizon())?
+        .admitted;
+    assert!(!admitted.is_empty(), "the weather poll admitted nothing");
+    let fabric = runtime.evidence_fabric();
+    let held = fabric.lock().expect("the fabric lock is not poisoned");
+    let records: Vec<qip_evidence::EvidenceRecord> =
+        held.held().map(|h| h.record.clone()).collect();
+    assert!(!records.is_empty(), "no weather claim reached the fabric");
+    for record in &records {
+        assert!(
+            record.geographic_consistency.is_some(),
+            "the fabric admitted a claim without recording its location verdict"
+        );
+    }
+    let mut genuine = records[0].clone();
+    genuine
+        .metadata
+        .insert(qip_evidence::evidence::META_SUBJECT.to_string(), "station".into());
+    assert_eq!(genuine.location.as_deref(), Some("geo:41.98,-87.9"));
+    let mut forged = genuine.clone();
+    forged.id = format!("{}-forged", genuine.id);
+    forged.location = Some("geo:-33.9,18.4".to_string());
+    assert_eq!(
+        forged.check_geographic_consistency([&genuine]),
+        qip_evidence::GeographicConsistency::InternalGeographicConflict,
+        "a station reported in two places at one instant was let through"
+    );
+    Ok(())
+}
