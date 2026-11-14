@@ -3895,3 +3895,137 @@ fn a_venue_halt_reaches_the_centre_typed_and_the_next_book_is_read_under_it() ->
     );
     Ok(())
 }
+
+/// A tape that climbs `step` a day after `from`, steep enough that holding a
+/// position through any horizon the twin uses out-earns what its entry costs.
+fn climbing_bars_after(symbol: &str, from: Timestamp, days: i64, step: f64) -> Vec<SensedRecord> {
+    (1..=days)
+        .map(|day| {
+            let at = from.saturating_add(Duration::from_days(day));
+            let level = 100.0 + step * day as f64;
+            bar(symbol, at, level, level)
+        })
+        .collect()
+}
+
+/// Buy 700 and sell all 700 back at `start()`, so the sell divests the
+/// position. Returns the sell's order id.
+fn buy_then_close(platform: &mut Platform) -> Result<OrderId> {
+    fill_one(platform, "prop-held", start())?;
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Sell,
+        dec!("700"),
+        dec!("100"),
+        "prop-closed",
+        vec!["hyp-prop-closed".to_string()],
+        start(),
+    );
+    let order_id = order.order_id.clone();
+    platform.submit_order(order, start())?;
+    Ok(order_id)
+}
+
+/// The unwind arm of R12-MODEL-6004 (owner decision 36): a position the desk
+/// closed is priced by the twin as the unhedged hold marked to the same
+/// horizon, and a hold that out-earned the close is a regret.
+///
+/// The failure this guards: LEARN priced declined, filled and partly filled
+/// paths and no close at all, so a desk that sold winners early had no
+/// number saying so.
+///
+/// Mutation: in `Platform::submit_released`, drop the `queue_unwind` call;
+/// `unwound_awaiting_score` stays zero and the premise assertion fails.
+#[test]
+fn a_closed_position_is_priced_as_the_unhedged_hold_and_a_climbing_tape_is_a_regret() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(flat_bars_after(
+        "AAA",
+        start().saturating_sub(Duration::from_days(91)),
+        90,
+        100.0,
+    ));
+    let order_id = buy_then_close(&mut platform)?;
+
+    // Premise: the close is the one thing waiting, and nothing is priced.
+    assert_eq!(platform.unwound_awaiting_score(), 1);
+    assert!(platform.unwound_scores().is_empty());
+
+    // Before the horizon the twin has nothing to mark at.
+    platform.run_cycle(start());
+    assert_eq!(platform.unwound_awaiting_score(), 1);
+    assert!(platform.unwound_scores().is_empty());
+
+    platform.observe(climbing_bars_after("AAA", start(), 5, 5.0));
+    let later = platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let learn = later.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("unwound path(s) priced"),
+        "LEARN did not report pricing the close: {}",
+        learn.detail
+    );
+    assert_eq!(platform.unwound_awaiting_score(), 0);
+    let scores = platform.unwound_scores();
+    assert_eq!(scores.len(), 1);
+    assert_eq!(scores[0].order_id, order_id);
+    assert!(
+        scores[0].regret,
+        "holding through a climbing tape did not beat the close"
+    );
+    // Simulated by type: nothing reached the realised line.
+    assert_eq!(platform.outcomes().realised_pnl(), Decimal::ZERO);
+    Ok(())
+}
+
+/// Mutation: in `score_unwound`, set `regret` to `true` unconditionally; the
+/// flat-tape assertion fails.
+#[test]
+fn a_closed_position_on_a_flat_tape_is_priced_and_is_not_a_regret() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(flat_bars_after(
+        "AAA",
+        start().saturating_sub(Duration::from_days(91)),
+        90,
+        100.0,
+    ));
+    buy_then_close(&mut platform)?;
+    assert_eq!(platform.unwound_awaiting_score(), 1);
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scores = platform.unwound_scores();
+    assert_eq!(scores.len(), 1, "the close was not priced");
+    // A flat tape earns nothing before costs, and the hold's entry is
+    // charged, so the hold lost and the close was right.
+    assert!(
+        !scores[0].regret,
+        "holding on a flat tape beat the close: {:?}",
+        scores[0].held_would_have_earned
+    );
+    Ok(())
+}
+
+/// A trim keeps the position held (§35.1), so it is not an unwind and queues
+/// nothing.
+///
+/// Mutation: in `begin_deliberate_close`, return `true` for a sell smaller
+/// than the long; the queue then holds the trim and this fails.
+#[test]
+fn a_trim_that_leaves_the_position_held_queues_no_unwind() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(flat_bars_after(
+        "AAA",
+        start().saturating_sub(Duration::from_days(91)),
+        90,
+        100.0,
+    ));
+    fill_one(&mut platform, "prop-held", start())?;
+    sell(&mut platform, dec!("300"), "prop-trim", start())?;
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        2,
+        "the premise failed: the buy and the trim were not both filled"
+    );
+    assert_eq!(platform.unwound_awaiting_score(), 0);
+    Ok(())
+}

@@ -636,6 +636,14 @@ pub struct Platform {
     /// was from the venue's — most recent last, bounded by
     /// [`DECLINED_HISTORY`].
     fill_scores: Vec<FillScore>,
+    /// Deliberate closes the desk's venue accepted and the twin has not yet
+    /// priced the hold for, oldest first, bounded by [`DECLINED_HISTORY`]
+    /// under the same counted-not-evicted discipline as `filled`
+    /// (R12-MODEL-6004, owner decision 36).
+    unwound: Vec<UnwoundPath>,
+    /// What each priced close's unhedged hold would have earned, most recent
+    /// last, bounded by [`DECLINED_HISTORY`].
+    unwound_scores: Vec<UnwoundScore>,
     /// The twin's per-venue fill calibration (R12-TICK-2080): each fill
     /// error `score_filled` measures moves the venue's bias, and the next
     /// pricing on that venue uses a cost model carrying it. Before it, the
@@ -4319,6 +4327,47 @@ struct FilledPath {
     cell: Option<CellFillOrigin>,
 }
 
+/// One deliberate close the venue accepted, kept until the twin can price
+/// the alternative to it (R12-MODEL-6004, owner decision 36).
+///
+/// The alternative to an unwind is the unhedged hold: the same quantity kept
+/// long from the instant of the close, marked at the twin's horizon. It is
+/// deterministic and replayable from the bars the log holds, and
+/// conservative, because the twin charges the hold's entry as a purchase.
+#[derive(Clone, Debug, PartialEq)]
+struct UnwoundPath {
+    order_id: OrderId,
+    object_id: ObjectId,
+    venue: VenueId,
+    /// What the close sold, which is what the hold would have kept.
+    quantity: Decimal,
+    unwound_at: Timestamp,
+}
+
+/// What holding a position the desk closed would have earned, once the twin
+/// has priced it.
+///
+/// Simulated by type, as a [`DeclinedScore`] is: the figure is an alternative
+/// world's and cannot reach a realised line. A hedged path has no such score
+/// here, because no composition root declares a hedge policy (owner decision
+/// 7), so a hedge queue would price nothing on a default path.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UnwoundScore {
+    pub order_id: OrderId,
+    pub object_id: ObjectId,
+    pub unwound_at: Timestamp,
+    pub scored_at: Timestamp,
+    /// The unhedged hold, marked to the twin's horizon, net of the costs the
+    /// twin charges.
+    pub held_would_have_earned: Simulated<Decimal>,
+    /// Whether holding would have beaten the close, which realised nothing
+    /// the twin can price from the log. The bit that says whether the desk
+    /// sold something that kept earning.
+    pub regret: bool,
+    /// Whose estimate `held_would_have_earned` is, read off the twin's record.
+    pub method: EstimationMethod,
+}
+
 /// What a cell's fill carries that a desk fill reads from the outcome
 /// capture instead: who reported it, and how much traded.
 #[derive(Clone, Debug, PartialEq)]
@@ -6842,6 +6891,8 @@ impl Platform {
             cell_refusals_queued: CellFillsQueued::default(),
             cell_declined_scores: Vec::new(),
             fill_scores: Vec::new(),
+            unwound: Vec::new(),
+            unwound_scores: Vec::new(),
             fill_calibration: qip_twin::calibration::FillCalibration::default(),
             tactical: None,
             replay_divergence_holds: replay_divergence_resumed.0,
@@ -23410,9 +23461,24 @@ impl Platform {
         // busy cell can defer its own scoring and never the desk's.
         // Blueprint §17.2 asks whether the coordination rule was too
         // conservative, and a refusal nobody priced cannot say.
-        let (priced, problems, _) = self.score_cell_declined(
+        let (priced, problems, cell_attempted) = self.score_cell_declined(
             now,
             COUNTERFACTUALS_PER_CYCLE.saturating_sub(attempted + filled_attempted),
+        );
+        if let Some(priced) = priced {
+            let detail = format!("{}; {priced}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Last of all, the unhedged hold of each position the desk closed
+        // (R12-MODEL-6004, owner decision 36), under what the three passes
+        // above left of the one cap, so a close can defer its own scoring
+        // and never a veto's or a fill's.
+        let (priced, problems) = self.score_unwound(
+            now,
+            COUNTERFACTUALS_PER_CYCLE.saturating_sub(attempted + filled_attempted + cell_attempted),
         );
         if let Some(priced) = priced {
             let detail = format!("{}; {priced}", outcome.detail);
@@ -25411,7 +25477,7 @@ impl Platform {
         // further without that routing. `Router::determine` returns a type that
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
-        self.begin_deliberate_close(&order, to_flat);
+        let divests = self.begin_deliberate_close(&order, to_flat);
         let subject = order.object_id.as_str().to_string();
         let conditions = self.pretrade_conditions(&subject);
         self.pretrade_routing = Some(
@@ -25467,6 +25533,11 @@ impl Platform {
         );
 
         self.capture_submission(&result, &object_id, side, quantity, arrival, now);
+
+        if result.accepted && divests {
+            let sold = result.reduced_to.unwrap_or(quantity);
+            self.queue_unwind(&result.order_id, &object_id, sold, now);
+        }
 
         if result.accepted {
             // Stamped at acceptance, from what was in force at acceptance:
@@ -25534,9 +25605,13 @@ impl Platform {
     /// zero weight, which the ACT stage passes for such a leg; an order that
     /// arrives by any other route carries no target and is judged by its
     /// quantity alone.
-    fn begin_deliberate_close(&mut self, order: &Order, to_flat: bool) {
+    ///
+    /// Returns whether the order divests the position, so the submission can
+    /// queue the unhedged hold for the twin once the venue accepts it
+    /// (R12-MODEL-6004).
+    fn begin_deliberate_close(&mut self, order: &Order, to_flat: bool) -> bool {
         if !matches!(order.side, Side::Sell) {
-            return;
+            return false;
         }
         let long = self
             .capital
@@ -25544,7 +25619,7 @@ impl Platform {
             .get(order.object_id.as_str())
             .map_or(Decimal::ZERO, |lot| lot.quantity);
         if !long.is_positive() || (!to_flat && order.quantity < long) {
-            return;
+            return false;
         }
         let id = ObjectId::from_string(order.object_id.as_str());
         let moved = self
@@ -25560,6 +25635,39 @@ impl Platform {
                 error.message()
             ));
         }
+        true
+    }
+
+    /// Keep one accepted deliberate close for the twin to price the hold of.
+    ///
+    /// A full window is a refusal to queue, counted under its own reason and
+    /// never an eviction, as the filled queue is: dropping the oldest waiting
+    /// close would silently choose which unwind goes unexamined.
+    fn queue_unwind(
+        &mut self,
+        order_id: &OrderId,
+        object_id: &ObjectId,
+        quantity: Decimal,
+        now: Timestamp,
+    ) {
+        if self.unwound.len() >= DECLINED_HISTORY {
+            self.telemetry.metrics.count(
+                names::COUNTERFACTUALS_UNSCORED,
+                labels([("reason", "unwind_capacity")]),
+            );
+            self.capture_problems.push(format!(
+                "unwind {order_id} will not be priced: {DECLINED_HISTORY} unwound paths are \
+                 already waiting to be"
+            ));
+            return;
+        }
+        self.unwound.push(UnwoundPath {
+            order_id: order_id.clone(),
+            object_id: object_id.clone(),
+            venue: VenueId::new(self.broker.name()),
+            quantity,
+            unwound_at: now,
+        });
     }
 
     /// Why the desk may not send this order into the book its custodian
@@ -28811,6 +28919,171 @@ impl Platform {
     /// What the twin found about each priced fill, most recent last.
     pub fn fill_scores(&self) -> &[FillScore] {
         &self.fill_scores
+    }
+
+    /// What holding each closed position would have earned, most recent last.
+    pub fn unwound_scores(&self) -> &[UnwoundScore] {
+        &self.unwound_scores
+    }
+
+    /// How many deliberate closes are waiting for their horizon or their bars.
+    pub fn unwound_awaiting_score(&self) -> usize {
+        self.unwound.len()
+    }
+
+    /// The twin's alternative to one close: the unhedged hold, priced from
+    /// the queued path alone.
+    ///
+    /// The hold is the same quantity kept long from the instant of the
+    /// close, so it is a buy against the ask dated at the close, and its
+    /// `trade` arm — marked at the twin's horizon, entry costs charged — is
+    /// the figure. A close has no placement to look up beside it, and the
+    /// decision is named from the order and the instant so every replay of
+    /// the same log prices the same streams.
+    fn evaluate_unhedged_hold(
+        &self,
+        path: &UnwoundPath,
+        market: &mut TwinMarket,
+    ) -> Result<CounterfactualSet> {
+        let decision = Decision::new(
+            qip_core::ids::DecisionId::from_string(format!(
+                "unwind-hold:{}:{}",
+                path.order_id,
+                path.unwound_at.to_rfc3339()
+            )),
+            TraceId::new(format!("trace-unwind-hold-{}", path.order_id)),
+            CorrelationId::from_string(format!("unwind-hold-{}", path.order_id)),
+            path.unwound_at,
+            path.object_id.clone(),
+            Action::OrderPlaced {
+                order_id: path.order_id.clone(),
+                venue: path.venue.clone(),
+                side: BookSide::Ask,
+                quantity: path.quantity,
+                method: "unhedged_hold".to_string(),
+            },
+        )
+        .because(format!(
+            "the desk closed this position at {}; the twin prices keeping it, unhedged, to its horizon",
+            path.venue
+        ));
+        let actual = ActualTrade::new(
+            path.object_id.clone(),
+            BookSide::Ask,
+            path.quantity,
+            path.venue.clone(),
+            HOME_REGION,
+            path.unwound_at,
+        )?;
+        self.counterfactuals.evaluate(
+            market,
+            &decision,
+            &actual,
+            &RealisedOutcome::nothing_happened(path.unwound_at),
+        )
+    }
+
+    /// Price the unhedged hold of each closed position whose horizon has
+    /// passed, up to the budget (R12-MODEL-6004, owner decision 36).
+    ///
+    /// The unwind half of blueprint §12.3's last row. Same due rule as the
+    /// declined and filled passes: the twin's horizon has elapsed and a bar
+    /// has closed after it. A close the twin refuses leaves the queue counted
+    /// under `unscored{reason="refused"}`, because it will refuse it every
+    /// cycle. What the budget leaves is counted under
+    /// `qip_counterfactuals_deferred_total` and priced later. The hedged half
+    /// is deliberately absent: it waits for a declared hedge policy.
+    fn score_unwound(&mut self, now: Timestamp, budget: usize) -> (Option<String>, Vec<String>) {
+        let horizon = self.counterfactuals.horizon();
+        let due: Vec<OrderId> = self
+            .unwound
+            .iter()
+            .filter(|path| {
+                let marks_at = path.unwound_at.saturating_add(horizon);
+                marks_at <= now
+                    && self
+                        .bar_history
+                        .get(path.object_id.as_str())
+                        .and_then(|bars| bars.iter().map(Bar::close_time).max())
+                        .is_some_and(|last_close| last_close >= marks_at)
+            })
+            .map(|path| path.order_id.clone())
+            .collect();
+        if due.is_empty() {
+            return (None, Vec::new());
+        }
+        let deferred = due.len().saturating_sub(budget);
+        if deferred > 0 {
+            self.telemetry.metrics.increment(
+                names::COUNTERFACTUALS_DEFERRED,
+                labels([]),
+                deferred as u64,
+            );
+        }
+        let mut scored = 0usize;
+        let mut regrets = 0usize;
+        let mut problems = Vec::new();
+        for order_id in due.into_iter().take(budget) {
+            let Some(index) = self.unwound.iter().position(|path| path.order_id == order_id)
+            else {
+                continue;
+            };
+            let path = self.unwound.remove(index);
+            let priced = self
+                .counterfactual_bars(&path.object_id)
+                .and_then(|bars| {
+                    TwinMarket::new(
+                        bars,
+                        CostModel::liquid_equity(),
+                        COUNTERFACTUAL_IMPACT_WINDOW,
+                    )
+                })
+                .and_then(|mut market| self.evaluate_unhedged_hold(&path, &mut market));
+            match priced {
+                Ok(set) => {
+                    let hold = set.by_kind("trade");
+                    let regret = hold.is_some_and(Counterfactual::favours_the_alternative);
+                    let held_would_have_earned = hold.map_or(Simulated::ZERO, |entry| {
+                        entry.counterfactual_outcome.simulated_pnl()
+                    });
+                    let method = hold.map_or(EstimationMethod::Unrecorded, |entry| {
+                        entry.counterfactual_outcome.method()
+                    });
+                    if regret {
+                        regrets += 1;
+                    }
+                    scored += 1;
+                    self.unwound_scores.push(UnwoundScore {
+                        order_id,
+                        object_id: path.object_id,
+                        unwound_at: path.unwound_at,
+                        scored_at: now,
+                        held_would_have_earned,
+                        regret,
+                        method,
+                    });
+                    if self.unwound_scores.len() > DECLINED_HISTORY {
+                        let excess = self.unwound_scores.len() - DECLINED_HISTORY;
+                        self.unwound_scores.drain(..excess);
+                    }
+                }
+                Err(error) => {
+                    self.telemetry.metrics.count(
+                        names::COUNTERFACTUALS_UNSCORED,
+                        labels([("reason", "refused")]),
+                    );
+                    problems.push(format!(
+                        "unwind {order_id} could not be priced: {}",
+                        error.message()
+                    ));
+                }
+            }
+        }
+        let mut summary = format!("{scored} unwound path(s) priced, {regrets} regret(s)");
+        if deferred > 0 {
+            summary.push_str(&format!(", {deferred} deferred by the per-cycle cap"));
+        }
+        (Some(summary), problems)
     }
 
     /// The venue the desk's orders go to: the name its fills are
