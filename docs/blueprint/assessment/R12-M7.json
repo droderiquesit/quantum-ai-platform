@@ -161,7 +161,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack",
       "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs"
     ],
-    "gap": "No export pipeline from a training run to a packaged artifact consumed by a deployed runtime.",
+    "gap": "No export pipeline from a training run to a packaged artifact consumed by a deployed runtime. 2026-11-14 (wave580 t5-04, not built this batch): the in-tree pieces are a training run's distillate packed by qip_training::serve::pack_distilled, the kernel's release-pack gate (ADR 0480, qip-kernel/tests/microstructure_release.rs) and the cell compiler's worst-case-cost refusal (qip-acceptance/tests/model_reflex_evaluation.rs::a_model_whose_worst_case_cost_exceeds_the_reflex_budget_is_refused_at_compile). What remains in code: a distilled model's DistilledModelContract (memory_bytes, latency_micros) does not travel with the inline DistilledModel to the cell, so the reflex lane refuses on cost and never on memory or latency; and no composition root runs training-to-pack. What remains outside code: no runtime is deployed to consume a pack.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4951,7 +4951,7 @@
       "backend/crates/tests/qip-acceptance/tests/cell_refusal_learning.rs",
       "docs/adr/0448-a-cell-refusal-of-a-fully-reasoned-intent-carries-the-leg-it-proposed-so-learn-prices-cell-vetoes.md"
     ],
-    "gap": "2026-11-12 (lane t50-11): still not priced — cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
+    "gap": "2026-11-12 (lane t50-11): still not priced \u2014 cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
     "implemented": true,
     "tested": true,
     "integrated": true,
