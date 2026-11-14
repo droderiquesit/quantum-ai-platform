@@ -47,6 +47,15 @@ return on the cause's lagged return, used only for its sign.
    keeps, what `causal_beliefs` returns, and what `CausalFilter::propose`
    answers — so a regression in any one does not open it.
 5. **`CausalFilter` joins `NowBrain::standard`**, making seven.
+6. **Several parents are averaged, never summed.** Each edge's slope comes
+   from its own one-parent regression, so each parent is a separate
+   prediction of the same return. The first registration summed them, and
+   two correlated parents each fitted at 0.8 predicted 1.6 times a shared
+   move. On the shipped fast-brain tape that moved every causal child's
+   belief far enough that all ten sized theses fell on one side of the
+   self-model row, and `qip-fastbrain`'s tape test failed its premise. The
+   predictions are now combined by precision, with their spread added to
+   the variance, as the ensemble combines candidates.
 
 ## What it costs
 
