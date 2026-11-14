@@ -690,3 +690,46 @@ fn a_rejected_lesson_says_why() -> Result<()> {
     assert!(!report.rejected[0].1.is_empty(), "a refusal must say why");
     Ok(())
 }
+
+#[test]
+fn each_position_attributes_exactly_to_its_own_books_pnl_and_the_sources_sum_to_the_total() -> Result<()> {
+    // Reconciling only the book total lets two positions' errors cancel: one
+    // overstated by X and another understated by X still close to zero
+    // residual. Assert each position against its own independently computed
+    // P&L, and the by-source totals against the book total.
+    let positions = vec![
+        position("AAA", "100", "105"),
+        position("BBB", "50", "48"),
+        position("CCC", "200", "200"),
+    ];
+    // Premise: the positions earn different amounts, so a swap or a shared
+    // figure cannot pass by coincidence.
+    let own: Vec<Decimal> = positions
+        .iter()
+        .map(|p| total_of(std::slice::from_ref(p)))
+        .collect();
+    assert_eq!(own.len(), 3);
+    assert!(own[0] != own[1] && own[1] != own[2] && own[0] != own[2]);
+
+    let total = total_of(&positions);
+    let attribution =
+        Attributor::new().attribute(&positions, total, dec!("10000000"), start(), end())?;
+
+    assert_eq!(attribution.positions.len(), positions.len());
+    for (period, expected) in positions.iter().zip(&own) {
+        let entry = attribution
+            .positions
+            .iter()
+            .find(|entry| entry.object_id == period.object_id)
+            .expect("every position given is attributed");
+        assert_eq!(entry.total, *expected, "{} total", entry.object_id);
+        let sum = entry.components.values().fold(Decimal::ZERO, |a, b| a + *b);
+        assert_eq!(sum, *expected, "{} components", entry.object_id);
+    }
+    let by_source = attribution
+        .by_source
+        .values()
+        .fold(Decimal::ZERO, |a, b| a + *b);
+    assert_eq!(by_source, total);
+    Ok(())
+}
