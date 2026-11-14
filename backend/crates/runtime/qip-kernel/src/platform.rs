@@ -885,6 +885,10 @@ pub struct Platform {
     /// The pre-positioning score LEARN produced this cycle, for the cycle
     /// journal. Cleared at the top of LEARN like its siblings.
     cycle_pre_positioning: Option<PrePositioningJournal>,
+    /// The capital plan retained for scoring until its window closes, one at
+    /// a time for the reason `pending_pre_positioning` is (owner decision
+    /// 36). See `crate::capital_score`.
+    pending_capital_plan: Option<crate::capital_score::RetainedCapitalPlan>,
     /// Places the REASON stage's question on the intelligence ladder before
     /// the platform answers it.
     ///
@@ -6942,6 +6946,7 @@ impl Platform {
             pre_positioner,
             demand_history: BTreeMap::new(),
             pending_pre_positioning: None,
+            pending_capital_plan: None,
             cycle_pre_positioning: None,
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
@@ -7196,6 +7201,12 @@ impl Platform {
         // Each sized leg's thesis horizon and exit plan, so a resumed
         // position can state both (R12-ASSET-4067, R12-ASSET-4069).
         platform.resume_position_horizons()?;
+        // The routing book, rebuilt from the RoutingScored records the log
+        // holds. Before this seam a restart emptied the book while the log
+        // kept every score, so the record the book exists to hold was
+        // reproducible only by a reader and never by the process
+        // (R12-MODEL-10123, owner decision 36).
+        platform.resume_routing_reputation()?;
         // The desk's book is funded by the central treasury with the
         // platform's initial equity, and that funding is a financial fact the
         // ledger is the authority for (ADR 0123). Journaled once, so every
@@ -23331,6 +23342,16 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // The capital plan, scored against what the strategies it funded
+        // realised afterwards (R12-MODEL-10123, owner decision 36).
+        let (scored, problems) = self.score_capital_plan(now);
+        if let Some(scored) = scored {
+            let detail = format!("{}; {scored}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         // Score whatever resolved, and say how calibrated the platform is on
         // everything that has. This is the seam where the fact becomes known:
         // the platform's own series are the only source it holds for the
@@ -24323,6 +24344,104 @@ impl Platform {
             .collect();
         self.routing_judgements
             .retain(|hypothesis, _| open.contains(hypothesis.as_str()));
+        Ok(scored)
+    }
+
+    /// Rebuild the routing book from the log's `RoutingScored` records.
+    ///
+    /// One observation per hypothesis, so a record the log holds twice (the
+    /// idempotency key refuses it at write, and a replayed log is not trusted
+    /// to have been written once) cannot count a routing twice. A judgement
+    /// still in flight across the restart is not re-held: its decision-time
+    /// key is only in the process that minted it. Returns how many scores
+    /// were replayed.
+    fn resume_routing_reputation(&mut self) -> Result<usize> {
+        let mut seen = BTreeSet::new();
+        let mut replayed = 0usize;
+        for scored in self.routings_scored()? {
+            if !seen.insert(scored.hypothesis_id.clone()) {
+                continue;
+            }
+            self.routing_reputation
+                .observe(&scored.judgement, scored.correct);
+            replayed += 1;
+        }
+        Ok(replayed)
+    }
+
+    /// Score the retained capital plan once its window has closed, then
+    /// retain this cycle's plan in its place (owner decision 36).
+    ///
+    /// Nothing before the window closes, for the reason a pre-positioning
+    /// plan is not: scored early, a plan is judged on a world in which its
+    /// strategies have not yet traded. A plan with no funded line is not
+    /// retained, and one with nothing to judge is released unscored.
+    fn score_capital_plan(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let mut problems = Vec::new();
+        let mut sentence = None;
+        let outcomes = self.central.live_outcomes(now);
+        if let Some(pending) = &self.pending_capital_plan {
+            if now < crate::pre_positioning::window_closes_at(pending.plan.at, CAPITAL_HORIZON) {
+                return (None, problems);
+            }
+            if let Some(pending) = self.pending_capital_plan.take() {
+                match crate::capital_score::score_plan(&pending, &outcomes, self.cycle, now) {
+                    Some(record) => {
+                        sentence = Some(format!(
+                            "capital plan of {} scored: {} of {} funded line(s) earned, {} \
+                             unscored",
+                            pending.plan.at.to_rfc3339(),
+                            record.correct(),
+                            record.lines.len(),
+                            record.unscored
+                        ));
+                        if let Err(error) = self.journal_record(
+                            record,
+                            crate::capital_score::CAPITAL_SCORE_ORIGIN,
+                            now,
+                        ) {
+                            problems.push(format!(
+                                "the capital plan score was not journalled: {}",
+                                error.message()
+                            ));
+                        }
+                    }
+                    None => problems.push(format!(
+                        "the capital plan of {} had no realised return to be judged on and is \
+                         released unscored",
+                        pending.plan.at.to_rfc3339()
+                    )),
+                }
+            }
+        }
+        match self.central.allocate(self.drawdown(), now) {
+            Ok(plan) if !plan.allocations.is_empty() => {
+                self.pending_capital_plan =
+                    Some(crate::capital_score::RetainedCapitalPlan::retain(plan, &outcomes));
+            }
+            Ok(_) => {}
+            Err(error) => problems.push(format!(
+                "the capital plan could not be built for scoring: {}",
+                error.message()
+            )),
+        }
+        (sentence, problems)
+    }
+
+    /// Every capital plan the log records as scored, in log order.
+    pub fn capital_plans_scored(&self) -> Result<Vec<crate::capital_score::CapitalPlanScored>> {
+        let mut scored = Vec::new();
+        for record in self.event_log().records() {
+            if record.event.topic == Topic::ModelEvaluated
+                && record.event.lineage.producer == crate::capital_score::CAPITAL_SCORE_ORIGIN
+            {
+                scored.push(
+                    StreamEnvelope::from_frame(&record.event)?
+                        .decode::<crate::capital_score::CapitalPlanScored>()?
+                        .body,
+                );
+            }
+        }
         Ok(scored)
     }
 
