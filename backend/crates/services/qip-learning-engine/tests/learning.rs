@@ -499,6 +499,28 @@ fn calibration_does_not_flag_a_well_calibrated_platform() -> Result<()> {
     Ok(())
 }
 
+/// R12-WORLD-1156, "uncertainty": the report's Brier score is the arithmetic
+/// mean squared gap between stated confidence and outcome, not merely a number
+/// in `[0, 1]`. Ten claims at 0.8 confidence, six right: six misses of 0.2
+/// squared and four of 0.8 squared give (6 * 0.04 + 4 * 0.64) / 10 = 0.28.
+///
+/// Mutation: in `FeedbackEngine::calibrate`, report `0.0` for `brier_score` --
+/// the score no longer equals 0.28.
+#[test]
+fn the_calibration_report_carries_the_exact_brier_arithmetic() -> Result<()> {
+    let engine = FeedbackEngine::default();
+    let evaluations = batch(10, 6, 0.8, &["credit-analyst"]);
+    assert_eq!(evaluations.len(), 10, "premise: ten scoreable evaluations");
+    let report = engine.calibrate(&evaluations)?;
+    assert_eq!(report.evaluated, 10, "premise: every evaluation informs");
+    assert!(
+        (report.brier_score - 0.28).abs() < 1e-9,
+        "{}",
+        report.summarise()
+    );
+    Ok(())
+}
+
 #[test]
 fn a_rate_from_too_little_history_is_withheld_rather_than_reported() -> Result<()> {
     // Reporting a rate from four episodes would mislead.
