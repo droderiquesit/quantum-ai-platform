@@ -1027,6 +1027,11 @@ impl EvolutionEngine {
         self.priors = priors;
     }
 
+    /// The fused priors the engine will size its next rounds from.
+    pub const fn priors(&self) -> &BTreeMap<String, f64> {
+        &self.priors
+    }
+
     /// Whether a search round is due on `cycle`. The one statement of the
     /// cadence, read by [`Self::maybe_turn`] and by the run loop when it
     /// holds a due round in the research backlog instead (ADR 0214): two
