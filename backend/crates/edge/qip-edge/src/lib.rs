@@ -87,7 +87,7 @@ pub mod trust;
 
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
-    Cell, CellConfig, ConfirmedFill, CrossingInterval, DispositionLine, DispositionVerdict,
+    AdmittedReplacement, Cell, CellConfig, ConfirmedFill, CrossingInterval, DispositionLine, DispositionVerdict,
     ExecutionReport, GATE_AWAITING_RECONCILIATION, GATE_BORROW, GATE_CYCLE_RESTING,
     GATE_DARK_REGION, GATE_DISPOSITION, GATE_ENVELOPE_DRAWDOWN, GATE_ENVELOPE_LEVERAGE,
     GATE_ENVELOPE_LIQUIDITY, GATE_ENVELOPE_UNBOUNDED, GATE_FILL_DISPERSION, GATE_JUSTIFICATION,
