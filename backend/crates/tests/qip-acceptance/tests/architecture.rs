@@ -631,6 +631,90 @@ fn position_economics_reach_no_execution_venue_or_edge_crate() {
     }
 }
 
+/// The production half of a Rust source file: everything before its first
+/// test *module*. Production items carry `#[cfg(test)]` attributes too, so the
+/// boundary is the attribute followed by `mod`, not the attribute alone.
+fn production_half(source: &str) -> &str {
+    let boundary = ["\n#[cfg(test)]", "\nmod "].concat();
+    source.find(&boundary).map_or(source, |at| &source[..at])
+}
+
+/// ADR 0430, R12-RISK-3022: a hard limit is evaluated only against a witness
+/// the cost router minted.
+///
+/// `RiskMonitor::observe` takes a `qip_risk::gate::DeterministicGate`, and the
+/// only production code that may construct one is `qip-cost-router`'s
+/// `DeterministicRouting::gate`, minted from a routing `Router::determine`
+/// returned. Rust cannot restrict a public constructor to one other crate, so
+/// this scan is what makes the witness mean "the router determined this"
+/// rather than "somebody typed a rationale". Before ADR 0430 the kernel kept
+/// its routing as a record *beside* the monitor call, and a second call site
+/// written without asking the router compiled and evaluated the limits just as
+/// well; the witness in the signature is what closes that, and a forgery
+/// anywhere else in production would reopen it.
+///
+/// Tests (`tests/` directories and test modules) may mint one: a unit test of
+/// the monitor is not a path an order takes.
+///
+/// Mutation: mint a gate in `qip-kernel/src/platform.rs`'s
+/// `observe_book_under_routing` instead of calling `routing.gate()` — the scan
+/// names the kernel. Drop `gate: &DeterministicGate` from `observe` — the
+/// signature assertion fires.
+#[test]
+fn only_the_cost_router_mints_a_deterministic_gate() {
+    const MINTER: &str = "backend/crates/services/qip-cost-router/src/router.rs";
+    let call = ["minted_by_router_determination", "("].concat();
+    let definition = ["fn ", &call].concat();
+
+    let mut offenders = Vec::new();
+    let mut router_calls = 0;
+    for path in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let display = path.display().to_string();
+        let relative = display
+            .rsplit_once("backend/crates/")
+            .map_or(display.clone(), |(_, tail)| {
+                format!("backend/crates/{tail}")
+            });
+        // Production source only: a crate's `src/`, never its `tests/`.
+        if !relative.contains("/src/") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        let production = production_half(&source);
+        let calls = production.matches(&call).count() - production.matches(&definition).count();
+        if calls == 0 {
+            continue;
+        }
+        if relative == MINTER {
+            router_calls += calls;
+        } else {
+            offenders.push(relative);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these mint a deterministic gate in production code without being the cost router: \
+         {offenders:?}. Obtain one from `Router::determine(..)?.gate()` instead (ADR 0430)"
+    );
+    // The vacuity guards. The router must actually mint, or the witness has no
+    // source and every caller is holding something nobody produces; and the
+    // monitor must actually demand it, or the scan protects a type nothing
+    // reads.
+    assert_eq!(
+        router_calls, 1,
+        "the cost router mints the gate at {router_calls} sites, not one"
+    );
+    let monitor = qip_acceptance::read("backend/crates/services/qip-risk-engine/src/monitor.rs");
+    let signature = monitor
+        .find("pub fn observe(")
+        .map(|at| &monitor[at..at + monitor[at..].find(") ->").unwrap_or(0)])
+        .expect("premise: RiskMonitor::observe exists");
+    assert!(
+        signature.contains("gate: &DeterministicGate"),
+        "RiskMonitor::observe no longer demands the deterministic gate: {signature}"
+    );
+}
+
 #[test]
 fn nothing_outside_a_composition_root_holds_an_order_manager() {
     // The manifest rule above says which crates may *reach* the execution
@@ -1346,6 +1430,10 @@ const NO_SOLVER_AUTHORITY: &[&str] = &[
     // reserve floor, leverage decisions and the permission a financing
     // source needs. It says no to money, so no solver may reach it.
     "qip-treasury",
+    // The survival kernel and the confidence governor (ADR 0464, moved out of
+    // `qip-kernel`): the ceiling the survival limit vetoes against and the
+    // contraction a capital grant takes. It says no to money.
+    "qip-survival",
 ];
 
 /// The service crates that hold none of those four authorities.
@@ -3916,11 +4004,12 @@ fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
 /// resolved it on 2026-10-18, less the fabric's edge to `qip-capital`, which
 /// ADR 0385 removed on 2026-11-11, and the lifecycle's edge to
 /// `qip-simulation-engine`, which ADR 0386 removed the same day by moving the
-/// validation statistics to `qip-numerics`. Eleven edges, each a domain engine reading a
+/// validation statistics to `qip-numerics`, plus `qip-survival`'s edge to
+/// `qip-capital` (ADR 0464, 2026-11-12). Twelve edges, each a domain engine reading a
 /// *type* another engine publishes; none of them is a service reaching into
 /// another's mutable state. A new edge is a decision, so it is added here in
 /// the same change that adds it, with a reviewer reading why.
-const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 11] = [
+const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 12] = [
     ("qip-brokers", "qip-execution-engine"),
     ("qip-data-finder", "qip-market-ingestion"),
     ("qip-data-finder", "qip-mesh"),
@@ -3929,6 +4018,10 @@ const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 11] = [
     ("qip-execution-engine", "qip-risk-engine"),
     ("qip-portfolio-engine", "qip-optimization-engine"),
     ("qip-reasoning-engine", "qip-world-model"),
+    // ADR 0464: the survival kernel runs the capital waterfall
+    // (`CapitalSurvivalState`) and reads the ledger's obligations
+    // (`LedgerObligations`); both crates are the Capital Brain.
+    ("qip-survival", "qip-capital"),
     ("qip-twin", "qip-learning-engine"),
     ("qip-twin", "qip-simulation-engine"),
     ("qip-world-model", "qip-entity-resolution"),

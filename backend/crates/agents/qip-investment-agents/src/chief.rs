@@ -217,11 +217,67 @@ impl Agent for ChiefInvestmentIntelligence {
     }
 }
 
+/// What the panel said, as the second dispatch phase hands it to an
+/// [`Arbiter`] (R12-AMBIENT-3024, ADR 0466).
+///
+/// Handed by the organisation rather than reached through a desk gate: it is
+/// the brief's own answer so far, produced inside this dispatch, and no
+/// facility on the desk holds it. Empty outside the second phase.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PanelView {
+    /// The panel's informative findings, in dispatch order.
+    pub findings: Vec<AgentFinding>,
+    /// Whether the panel disagreed in direction ([`OrganisationReport::is_contested`]).
+    pub contested: bool,
+}
+
+/// An agent that runs after the panel, with the panel's findings in hand.
+///
+/// Every other agent sees the brief alone, by design: a specialist that read
+/// its colleagues would be a correlated second finding from one origin. The
+/// arbiter is the one exception, and the exception is bounded: it runs once,
+/// after every panel agent, never alongside them, so no panel finding was
+/// formed knowing what an arbiter would say.
+pub trait Arbiter: Agent {
+    fn arbitrate(
+        &self,
+        ctx: &mut AgentContext,
+        brief: &AgentBrief,
+        panel: &PanelView,
+    ) -> Result<AgentFinding>;
+}
+
+/// The arbiter's run as the host sees it: an [`Agent`] whose analysis is
+/// the arbitration over one panel. Lets the second phase go through
+/// [`AgentHost::run`] — capability checks, budget, audit — like every run.
+#[derive(Debug)]
+struct Arbitration<'a> {
+    arbiter: &'a dyn Arbiter,
+    panel: &'a PanelView,
+}
+
+impl Agent for Arbitration<'_> {
+    fn manifest(&self) -> &AgentManifest {
+        self.arbiter.manifest()
+    }
+
+    fn accepts(&self, brief: &AgentBrief) -> bool {
+        self.arbiter.accepts(brief)
+    }
+
+    fn analyse(&self, ctx: &mut AgentContext, brief: &AgentBrief) -> Result<AgentFinding> {
+        self.arbiter.arbitrate(ctx, brief, self.panel)
+    }
+}
+
 /// The assembled organisation: roster, agents, host and audit trail.
 #[derive(Debug)]
 pub struct Organisation {
     roster: Roster,
     agents: Vec<Arc<dyn Agent>>,
+    /// Agents run after the panel with its findings (ADR 0466). Rostered
+    /// like every agent; never run in the first phase.
+    arbiters: Vec<Arc<dyn Arbiter>>,
     host: AgentHost,
     audit: AuditTrail,
     /// Monotonic run counter, so run ids are deterministic across a replay.
@@ -269,11 +325,42 @@ impl Organisation {
         Ok(Self {
             roster,
             agents,
+            arbiters: Vec::new(),
             host,
             audit: AuditTrail::new(),
             sequence: 0,
             backlog,
         })
+    }
+
+    /// Add the agents that run after the panel (ADR 0466).
+    ///
+    /// Refused for an arbiter the roster does not hold, for the reason
+    /// [`Self::new`] refuses an unrostered agent; and for one also on the
+    /// panel, which would read findings it had itself just written.
+    pub fn with_arbiters(mut self, arbiters: Vec<Arc<dyn Arbiter>>) -> Result<Self> {
+        for arbiter in &arbiters {
+            let id = &arbiter.manifest().id;
+            if self.roster.get(id).is_none() {
+                return Err(qip_core::error::Error::invalid(format!(
+                    "arbiter {id} is not on the roster, so its manifest was never reviewed; add \
+                     it to manifests::roster or do not construct it"
+                )));
+            }
+            if self.agents.iter().any(|agent| &agent.manifest().id == id) {
+                return Err(qip_core::error::Error::invalid(format!(
+                    "{id} is both a panel agent and an arbiter, so it would arbitrate over its \
+                     own finding; construct it in one phase only"
+                )));
+            }
+        }
+        // The backlog bound counts every agent that can be refused a run.
+        let capacity = (self.agents.len() + arbiters.len()).max(1) * 2;
+        if self.backlog.is_empty() && self.backlog.capacity() < capacity {
+            self.backlog = AgentBacklog::new(capacity)?;
+        }
+        self.arbiters = arbiters;
+        Ok(self)
     }
 
     /// Replace the backlog, for a deployment or a test that wants a bound
@@ -304,12 +391,13 @@ impl Organisation {
             host = host.with_language_model(model);
         }
         let agents = standard_agents(
-            desk,
+            desk.clone(),
             reviewed_at,
             licensed_datasets,
             quantum_backend_available,
         );
-        Self::new(manifests::roster(reviewed_at), agents, host, now)
+        Self::new(manifests::roster(reviewed_at), agents, host, now)?
+            .with_arbiters(standard_arbiters(desk, reviewed_at))
     }
 
     pub fn roster(&self) -> &Roster {
@@ -320,12 +408,13 @@ impl Organisation {
         &self.audit
     }
 
+    /// Every agent the organisation runs, panel and arbiters.
     pub fn len(&self) -> usize {
-        self.agents.len()
+        self.agents.len() + self.arbiters.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.agents.is_empty()
+        self.agents.is_empty() && self.arbiters.is_empty()
     }
 
     /// Re-run the governance review, e.g. after time has passed and an
@@ -345,91 +434,179 @@ impl Organisation {
         now: Timestamp,
         lineage: &Lineage,
     ) -> OrganisationReport {
-        let mut runs = Vec::new();
-        let mut findings = Vec::new();
-        let mut deferred = Vec::new();
-        let mut failed = Vec::new();
-        let mut missing_inputs = Vec::new();
-        let mut backlogged = Vec::new();
-        let mut backlog_refused = Vec::new();
-
+        let mut collected = Collected::default();
         for agent in &self.agents {
-            if !agent.accepts(brief) {
-                deferred.push(agent.manifest().id.clone());
-                continue;
-            }
-            self.sequence += 1;
-            let run_id =
-                AgentRunId::from_string(format!("run-{}-{}", agent.manifest().id, self.sequence));
-            let record = self.host.run(
+            run_one(
+                &self.host,
+                &mut self.backlog,
+                &mut self.audit,
+                &mut self.sequence,
                 agent.as_ref(),
                 brief,
                 now,
-                lineage.relabel(agent.manifest().id.clone()),
-                run_id,
+                lineage,
+                &mut collected,
             );
+        }
 
-            match (&record.status, &record.finding) {
-                (RunStatus::Succeeded, Some(finding)) => {
-                    // The agent ran: whatever the backlog held for it is done
-                    // with, whether or not this finding is informative.
-                    self.backlog.retire(&finding.agent_id);
-                    for missing in &finding.missing_inputs {
-                        missing_inputs.push(format!("{}: {missing}", finding.agent_id));
-                    }
-                    match finding.status {
-                        FindingStatus::Deferred => deferred.push(finding.agent_id.clone()),
-                        _ if finding.status.is_informative() => findings.push(finding.clone()),
-                        _ => {}
-                    }
-                }
-                // The runtime could not run the agent: a manifest past
-                // review, or a budget it could not fund. The run degrades to
-                // the backlog and the dispatch goes on to the next agent; an
-                // execution that waited on this agent would be an execution
-                // dependency on the agent runtime, which R12-AGENCY-10063
-                // forbids. A `Failed` run is the agent's own error and is not
-                // retried: a bug is not work waiting for a runtime.
-                (RunStatus::Refused { reason }, _) => {
-                    let id = agent.manifest().id.clone();
-                    failed.push(id.clone());
-                    match self.backlog.defer(&id, brief, reason.as_str(), now) {
-                        Deferral::Queued | Deferral::Repeated { .. } => backlogged.push(id),
-                        Deferral::Refused { reason } => backlog_refused.push(reason),
-                    }
-                }
-                (RunStatus::Escalated { policy, to }, _) => {
-                    let id = agent.manifest().id.clone();
-                    failed.push(id.clone());
-                    let reason = match to {
-                        Some(to) => format!("budget exhausted; escalated to {to} under {policy:?}"),
-                        None => {
-                            format!("budget exhausted; escalation policy {policy:?} names nobody")
-                        }
-                    };
-                    match self.backlog.defer(&id, brief, reason, now) {
-                        Deferral::Queued | Deferral::Repeated { .. } => backlogged.push(id),
-                        Deferral::Refused { reason } => backlog_refused.push(reason),
-                    }
-                }
-                _ => failed.push(agent.manifest().id.clone()),
+        // The second phase (ADR 0466): every arbiter, after the whole panel,
+        // with the panel's informative findings and whether they disagree.
+        // Built from the first phase alone, so no arbiter reads another's.
+        if !self.arbiters.is_empty() {
+            let panel = PanelView {
+                findings: collected.findings.clone(),
+                contested: collected.is_contested(),
+            };
+            for arbiter in &self.arbiters {
+                let arbitration = Arbitration {
+                    arbiter: arbiter.as_ref(),
+                    panel: &panel,
+                };
+                run_one(
+                    &self.host,
+                    &mut self.backlog,
+                    &mut self.audit,
+                    &mut self.sequence,
+                    &arbitration,
+                    brief,
+                    now,
+                    lineage,
+                    &mut collected,
+                );
             }
-            self.audit.record(record.clone());
-            runs.push(record);
         }
 
         OrganisationReport {
             as_of: brief.as_of,
             question: brief.question.clone(),
-            runs,
-            findings,
-            deferred,
-            failed,
-            missing_inputs,
-            backlogged,
-            backlog_refused,
+            runs: collected.runs,
+            findings: collected.findings,
+            deferred: collected.deferred,
+            failed: collected.failed,
+            missing_inputs: collected.missing_inputs,
+            backlogged: collected.backlogged,
+            backlog_refused: collected.backlog_refused,
         }
     }
+}
+
+/// What a dispatch has gathered so far, across both phases.
+#[derive(Default)]
+struct Collected {
+    runs: Vec<AgentRunRecord>,
+    findings: Vec<AgentFinding>,
+    deferred: Vec<String>,
+    failed: Vec<String>,
+    missing_inputs: Vec<String>,
+    backlogged: Vec<String>,
+    backlog_refused: Vec<String>,
+}
+
+impl Collected {
+    /// The same test as [`OrganisationReport::is_contested`], over the
+    /// findings gathered so far.
+    fn is_contested(&self) -> bool {
+        let positive = self
+            .findings
+            .iter()
+            .any(|f| f.direction == Direction::Positive);
+        let negative = self
+            .findings
+            .iter()
+            .any(|f| f.direction == Direction::Negative);
+        positive && negative
+    }
+}
+
+/// Run one agent and file what came back.
+///
+/// Failure is isolated per agent: one agent erroring does not stop the
+/// others.
+#[allow(clippy::too_many_arguments)]
+fn run_one(
+    host: &AgentHost,
+    backlog: &mut AgentBacklog,
+    audit: &mut AuditTrail,
+    sequence: &mut u64,
+    agent: &dyn Agent,
+    brief: &AgentBrief,
+    now: Timestamp,
+    lineage: &Lineage,
+    out: &mut Collected,
+) {
+    if !agent.accepts(brief) {
+        out.deferred.push(agent.manifest().id.clone());
+        return;
+    }
+    *sequence += 1;
+    let run_id = AgentRunId::from_string(format!("run-{}-{}", agent.manifest().id, sequence));
+    let record = host.run(
+        agent,
+        brief,
+        now,
+        lineage.relabel(agent.manifest().id.clone()),
+        run_id,
+    );
+
+    match (&record.status, &record.finding) {
+        (RunStatus::Succeeded, Some(finding)) => {
+            // The agent ran: whatever the backlog held for it is done
+            // with, whether or not this finding is informative.
+            backlog.retire(&finding.agent_id);
+            for missing in &finding.missing_inputs {
+                out.missing_inputs
+                    .push(format!("{}: {missing}", finding.agent_id));
+            }
+            match finding.status {
+                FindingStatus::Deferred => out.deferred.push(finding.agent_id.clone()),
+                _ if finding.status.is_informative() => out.findings.push(finding.clone()),
+                _ => {}
+            }
+        }
+        // The runtime could not run the agent: a manifest past
+        // review, or a budget it could not fund. The run degrades to
+        // the backlog and the dispatch goes on to the next agent; an
+        // execution that waited on this agent would be an execution
+        // dependency on the agent runtime, which R12-AGENCY-10063
+        // forbids. A `Failed` run is the agent's own error and is not
+        // retried: a bug is not work waiting for a runtime.
+        (RunStatus::Refused { reason }, _) => {
+            let id = agent.manifest().id.clone();
+            out.failed.push(id.clone());
+            match backlog.defer(&id, brief, reason.as_str(), now) {
+                Deferral::Queued | Deferral::Repeated { .. } => out.backlogged.push(id),
+                Deferral::Refused { reason } => out.backlog_refused.push(reason),
+            }
+        }
+        (RunStatus::Escalated { policy, to }, _) => {
+            let id = agent.manifest().id.clone();
+            out.failed.push(id.clone());
+            let reason = match to {
+                Some(to) => format!("budget exhausted; escalated to {to} under {policy:?}"),
+                None => {
+                    format!("budget exhausted; escalation policy {policy:?} names nobody")
+                }
+            };
+            match backlog.defer(&id, brief, reason, now) {
+                Deferral::Queued | Deferral::Repeated { .. } => out.backlogged.push(id),
+                Deferral::Refused { reason } => out.backlog_refused.push(reason),
+            }
+        }
+        _ => out.failed.push(agent.manifest().id.clone()),
+    }
+    audit.record(record.clone());
+    out.runs.push(record);
+}
+
+/// The agents that run after the panel (ADR 0466): today the Meta Brain
+/// alone. Split from [`Organisation::standard`] for the reason
+/// [`standard_agents`] is, so a test can assemble the organisation without
+/// it and show the scopes it alone covers go uncovered.
+pub fn standard_arbiters(desk: Arc<Desk>, reviewed_at: Timestamp) -> Vec<Arc<dyn Arbiter>> {
+    vec![Arc::new(crate::meta_brain::MetaBrain::new(
+        manifests::meta_brain(reviewed_at),
+        desk,
+    ))]
 }
 
 /// Every agent of the standard organisation, each under its manifest, sharing

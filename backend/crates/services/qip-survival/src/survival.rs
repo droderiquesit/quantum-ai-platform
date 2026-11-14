@@ -34,7 +34,7 @@
 //! trait rather than as numbers a caller types in, because "a reserve typed in
 //! by a caller is not an account" (R12-CAPITAL-4087). The platform implements
 //! it over the cross-margin review it already runs every cycle
-//! (`crate::cross_margin`) **combined with the ledger of record** once one has
+//! (`qip-kernel`'s `cross_margin`) **combined with the ledger of record** once one has
 //! been observed ([`CombinedObligations`], fed by
 //! `Platform::observe_ledger_obligations` from `qip-ledgerd`'s balances): the
 //! ledger's booked margin where it exceeds the review's, its pledged
@@ -51,7 +51,7 @@
 //! have not yet traded, plus the hedge capacity, plus what this construction
 //! released**. The held term is the reservation accounting
 //! `LimitKind::MaxSurvivalGross` needed before it could ship in the kernel's
-//! limit set ([`install_survival_limit`]): without it a proposal approved on
+//! limit set (`install_survival_limit` (in `qip-kernel`, which composes this crate with the Risk Brain)): without it a proposal approved on
 //! one cycle and executed on a later one was sized inside a budget, held its
 //! capital in the reservation ledger, and was then vetoed by a ceiling that
 //! had been recomputed from a `free` balance that no longer counted that hold
@@ -95,11 +95,9 @@
 //! none can raise its output (R12-CAPITAL-7204).
 
 use crate::confidence::{ConfidenceDecision, ConfidenceSignals, ThesisView};
-use crate::platform::StressReport;
 use qip_capital::{CapitalSurvivalState, SurvivalReport};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
-use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use serde::{Deserialize, Serialize};
 
 /// The name the survival limit carries in every limit set the kernel runs.
@@ -107,7 +105,7 @@ pub const SURVIVAL_LIMIT_NAME: &str = "survival-gross";
 
 /// The bound the kernel's survival limit carries: gross may not exceed the
 /// ceiling the survival kernel released. One constant, so the limit the
-/// kernel installs and the one [`install_survival_limit`] will accept from a
+/// kernel installs and the one `install_survival_limit` (in `qip-kernel`, which composes this crate with the Risk Brain) will accept from a
 /// handed-in set cannot drift apart.
 pub const SURVIVAL_LIMIT_BOUND: f64 = 1.0;
 
@@ -137,79 +135,6 @@ pub const SHIPPED_HEDGE_CAPACITY_FRACTION: Decimal = Decimal::from_raw(50_000_00
 /// configured: five per cent of equity, never released to opportunity. A
 /// floor for the same reason as [`SHIPPED_HEDGE_CAPACITY_FRACTION`].
 pub const SHIPPED_EMERGENCY_RESERVE_FRACTION: Decimal = Decimal::from_raw(50_000_000);
-
-/// Put `LimitKind::MaxSurvivalGross` into `limits` unless a survival limit is
-/// already there.
-///
-/// The limit existed, evaluated deterministically, and was in no limit set
-/// any process ran: `LimitSet::conservative_default` does not carry it, so
-/// the survival ceiling the kernel computed every construction was a figure
-/// in a `RiskState` that nothing compared an order against (R12-RISK-7205).
-/// It is installed here — by the kernel, on whatever set the root hands in —
-/// rather than in the shipped default, because the ceiling it reads is a
-/// figure only this kernel produces: an edge gate or a library test holding
-/// the shipped set has no survival kernel behind it, and would refuse every
-/// order on the absent ceiling.
-///
-/// A bound of one: gross may not exceed the ceiling. Refuses a set that
-/// already carries a *different* limit under [`SURVIVAL_LIMIT_NAME`], because
-/// adding a second limit of that name would leave a rule review and a breach
-/// report unable to tell the two apart.
-pub fn install_survival_limit(limits: LimitSet) -> Result<LimitSet> {
-    // A survival limit already in the set is kept only if it is the one this
-    // function would install. This used to return early on *any*
-    // `MaxSurvivalGross`, whatever its bound: a handed-in set carrying one
-    // with a bound of 1000 left gross free to reach a thousand times the
-    // ceiling the survival kernel computed, and the kernel installed nothing
-    // because a limit of the right kind was "already there" — a ceiling that
-    // cannot fire, wearing the name of one that can. Refused rather than
-    // replaced, so the operator who wrote that bound learns it was not used.
-    let mut carried = false;
-    for limit in &limits.limits {
-        if let LimitKind::MaxSurvivalGross { limit: bound } = limit.kind {
-            if bound != SURVIVAL_LIMIT_BOUND {
-                return Err(Error::invalid(format!(
-                    "the limit set {} carries a survival-gross limit `{}` with a bound of \
-                     {bound}; the kernel's survival ceiling is enforced at \
-                     {SURVIVAL_LIMIT_BOUND} of what the survival kernel released, and a set \
-                     that states another bound is refused rather than trusted or silently \
-                     replaced — remove it, and the kernel installs its own",
-                    limits.name, limit.name
-                )));
-            }
-            carried = true;
-        }
-    }
-    if carried {
-        return Ok(limits);
-    }
-    if limits
-        .limits
-        .iter()
-        .any(|limit| limit.name == SURVIVAL_LIMIT_NAME)
-    {
-        return Err(Error::invalid(format!(
-            "the limit set {} already names a limit `{SURVIVAL_LIMIT_NAME}` that is not the \
-             survival ceiling; rename it, because the kernel installs its survival limit under \
-             that name",
-            limits.name
-        )));
-    }
-    Ok(limits.with(
-        Limit::new(
-            SURVIVAL_LIMIT_NAME,
-            LimitKind::MaxSurvivalGross {
-                limit: SURVIVAL_LIMIT_BOUND,
-            },
-        )
-        .with_rationale(
-            "the capital survival kernel stands behind no more gross than the book holds, \
-                 what is already held for approved proposals, the hedge capacity it withheld and \
-                 what its last construction released; an order past that is one the waterfall \
-                 never funded",
-        ),
-    ))
-}
 
 /// The operator's survival settings.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -360,43 +285,6 @@ pub trait CapitalObligations {
     fn settlement_due(&self) -> Result<Decimal>;
 }
 
-/// The cross-margin review the platform runs every cycle, as an obligation
-/// source.
-///
-/// * **Margin** is `maintenance_required`: the model's maintenance rate on the
-///   gross at *every* venue carrying it, observed or not, plus every observed
-///   debit. An unobserved venue is charged rather than skipped, because an
-///   account nobody has read must not read as one that needs nothing posted.
-/// * **Collateral** is zero, derived rather than assumed: every pledge this
-///   platform can attest is a pledge *into a margin domain* (see
-///   `crate::cross_margin::review`), so it is the cover for the margin above
-///   and not a second encumbrance. No pledge outside a margin domain is
-///   recorded anywhere in this platform; one would be the ledger's to report.
-/// * **Settlement** is zero: the review reads balances and exposure, not
-///   trade dates. Since R12-CAPITAL-4087 the platform withholds a desk sale's
-///   proceeds until the desk venue's T+1 calendar makes them usable, and the
-///   ledger's owed accruals, both through [`CombinedObligations`].
-impl CapitalObligations for crate::cross_margin::CrossMarginReview {
-    fn margin_required(&self) -> Result<Decimal> {
-        if self.maintenance_required.is_negative() {
-            return Err(Error::invalid(format!(
-                "the cross-margin review requires {} of maintenance, which is not an amount \
-                 anybody can post",
-                self.maintenance_required
-            )));
-        }
-        Ok(self.maintenance_required)
-    }
-
-    fn collateral_encumbered(&self) -> Result<Decimal> {
-        Ok(Decimal::ZERO)
-    }
-
-    fn settlement_due(&self) -> Result<Decimal> {
-        Ok(Decimal::ZERO)
-    }
-}
-
 /// The ledger of record as an obligation source (R12-CAPITAL-4087): margin
 /// booked, collateral pledged, and cash owed and not yet settled, folded from
 /// `qip-ledgerd`'s balances by [`qip_capital::LedgerObligations`]. See that
@@ -438,7 +326,7 @@ impl CapitalObligations for qip_capital::LedgerObligations {
 ///
 /// With no ledger observed this is the review alone — collateral and
 /// settlement read zero because nothing has been read, which the platform
-/// states on [`crate::Platform::observe_ledger_obligations`] rather than
+/// states on `Platform::observe_ledger_obligations` in `qip-kernel` rather than
 /// here.
 #[derive(Debug)]
 pub struct CombinedObligations<'a, R: CapitalObligations> {
@@ -512,32 +400,36 @@ impl TailResponse {
     }
 }
 
-/// The worst loss any world in `stress` produced, and its name: the library,
-/// the adversarial sequence, every causal driver, and the generated tail
-/// worlds — every number SIMULATE computed, and not a curated subset of them.
-pub fn worst_world(stress: &StressReport) -> Option<(String, f64)> {
-    let library = stress
-        .scenarios
+/// One world a stress priced, as SIMULATE reported it: its name and its loss
+/// as a positive fraction of equity (`f64`, a statistic).
+///
+/// Data rather than the kernel's `StressReport` (ADR 0464). That report is
+/// built from `qip-simulation-engine`'s types, and the simulation engine's
+/// closure holds `qip-strategy` and `qip-evolution`; a survival kernel that
+/// named the report would have an alpha crate in its closure. A record of two
+/// fields has no behaviour for a caller to substitute, which a trait object
+/// handed in by the kernel would (ADR 0127, "What would make this wrong").
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldLoss {
+    pub scenario: String,
+    pub loss_fraction: f64,
+}
+
+/// Every world one stress priced. The kernel assembles it from its stress
+/// report — the library, the adversarial sequence, every causal driver and
+/// the generated tail worlds, every number SIMULATE computed and not a
+/// curated subset of them (`StressReport::worlds` in `qip-kernel`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StressedWorlds {
+    pub worlds: Vec<WorldLoss>,
+}
+
+/// The worst loss any world in `stress` produced, and its name.
+pub fn worst_world(stress: &StressedWorlds) -> Option<(String, f64)> {
+    stress
+        .worlds
         .iter()
-        .map(|r| (r.scenario.clone(), r.loss_fraction));
-    let adversarial = stress.adversarial.iter().map(|sequence| {
-        (
-            qip_simulation_engine::scenario::ADVERSARIAL_SCENARIO_NAME.to_string(),
-            sequence.result.loss_fraction,
-        )
-    });
-    let causal = stress
-        .causal
-        .iter()
-        .map(|r| (r.scenario.clone(), r.loss_fraction));
-    let tail = stress
-        .tail_worlds
-        .iter()
-        .map(|w| (w.scenario.clone(), w.loss_fraction));
-    library
-        .chain(adversarial)
-        .chain(causal)
-        .chain(tail)
+        .map(|w| (w.scenario.clone(), w.loss_fraction))
         // A loss that is not a number is the worst loss there is: it is
         // carried as infinity so it wins the comparison and refuses below.
         .map(|(name, loss)| (name, if loss.is_nan() { f64::INFINITY } else { loss }))
@@ -556,7 +448,7 @@ pub fn worst_world(stress: &StressReport) -> Option<(String, f64)> {
 /// money — infinite, or past what a `Decimal` holds — refuses: a reserve that
 /// could not be computed must not be read as a reserve of zero.
 pub fn tail_response(
-    stress: Option<&StressReport>,
+    stress: Option<&StressedWorlds>,
     equity: Decimal,
     tolerance: f64,
 ) -> Result<Option<TailResponse>> {
@@ -798,7 +690,7 @@ impl SurvivalGovernor {
     pub fn size(
         &mut self,
         figures: LedgerFigures,
-        stress: Option<&StressReport>,
+        stress: Option<&StressedWorlds>,
         tolerance: f64,
         theses: &[ThesisView],
         now: Timestamp,
@@ -841,7 +733,7 @@ impl SurvivalGovernor {
     pub fn seed(
         &mut self,
         figures: LedgerFigures,
-        stress: Option<&StressReport>,
+        stress: Option<&StressedWorlds>,
         tolerance: f64,
         now: Timestamp,
     ) -> Result<Decimal> {
@@ -861,7 +753,7 @@ impl SurvivalGovernor {
     fn budget(
         &self,
         figures: LedgerFigures,
-        stress: Option<&StressReport>,
+        stress: Option<&StressedWorlds>,
         tolerance: f64,
         theses: &[ThesisView],
         now: Timestamp,
@@ -952,8 +844,8 @@ impl SurvivalGovernor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_contracts::regime::MarketRegime;
     use qip_core::dec;
-    use qip_cost_router::context::MarketRegime;
 
     fn at() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
@@ -995,24 +887,6 @@ mod tests {
         }
         fn settlement_due(&self) -> Result<Decimal> {
             Ok(self.settlement)
-        }
-    }
-
-    fn stress_with(worlds: Vec<crate::tail::TailWorld>) -> StressReport {
-        StressReport {
-            at: at(),
-            scenarios: Vec::new(),
-            modelled_positions: 0,
-            unmodelled_positions: 0,
-            decomposition: None,
-            adversarial: None,
-            causal: Vec::new(),
-            causal_drivers: 0,
-            causal_drivers_unconnected: 0,
-            tail_worlds: worlds,
-            advisory_worlds: Vec::new(),
-            advisory_reserve: None,
-            episodes: Vec::new(),
         }
     }
 
@@ -1370,192 +1244,5 @@ mod tests {
         assert!(SurvivalPolicy::from_settings(Some("0.6"), Some("0.5")).is_err());
         let raised = SurvivalPolicy::from_settings(Some(" 0.10 "), Some("0.05")).unwrap();
         assert_eq!(raised.hedge_capacity_fraction(), dec!("0.1"));
-    }
-
-    /// R12-RISK-7205: the survival limit is installed once, on any set, and a
-    /// set that already names something else `survival-gross` is refused.
-    /// Mutation: return `Ok(limits)` unchanged from `install_survival_limit`
-    /// and the first assertion fails.
-    #[test]
-    fn the_survival_limit_is_installed_once_and_a_name_collision_is_refused() {
-        let shipped = LimitSet::conservative_default();
-        assert!(
-            !shipped
-                .limits
-                .iter()
-                .any(|limit| matches!(limit.kind, LimitKind::MaxSurvivalGross { .. })),
-            "premise: the shipped set does not carry the survival limit"
-        );
-        let installed = install_survival_limit(shipped.clone()).unwrap();
-        assert_eq!(installed.len(), shipped.len() + 1);
-        let again = install_survival_limit(installed.clone()).unwrap();
-        assert_eq!(again.len(), installed.len(), "installed twice");
-        let clash = LimitSet::new("clash").with(Limit::new(
-            SURVIVAL_LIMIT_NAME,
-            LimitKind::MaxLeverage { limit: 1.0 },
-        ));
-        assert!(install_survival_limit(clash).is_err());
-    }
-
-    /// A handed-in survival limit with any bound but the kernel's own is
-    /// refused, naming it. Until round 3 any `MaxSurvivalGross` short-
-    /// circuited installation, so a set carrying one bound at 1000 made the
-    /// ceiling unable to fire.
-    /// Mutation: restore the early return on any `MaxSurvivalGross` and the
-    /// loose set is admitted.
-    #[test]
-    fn a_handed_in_survival_limit_with_another_bound_is_refused_rather_than_trusted() {
-        let loose = LimitSet::new("handed-in").with(Limit::new(
-            "operator-survival",
-            LimitKind::MaxSurvivalGross { limit: 1000.0 },
-        ));
-        let error = install_survival_limit(loose).expect_err("a bound of 1000 cannot fire");
-        assert!(
-            error
-                .message()
-                .contains("`operator-survival` with a bound of 1000"),
-            "the refusal names the limit and its bound: {}",
-            error.message()
-        );
-        // Premise and contrast: the kernel's own bound under another name is
-        // kept, and installed only once.
-        let own = LimitSet::new("handed-in").with(Limit::new(
-            "operator-survival",
-            LimitKind::MaxSurvivalGross {
-                limit: SURVIVAL_LIMIT_BOUND,
-            },
-        ));
-        let kept = install_survival_limit(own.clone()).unwrap();
-        assert_eq!(kept.len(), own.len());
-    }
-
-    /// The limit the kernel installs vetoes an order that carries gross past
-    /// the ceiling the governor computed, and admits one inside it — so a
-    /// survival kernel that releases less is a gate that admits less.
-    /// Mutation: write `None` for the ceiling and both orders are refused;
-    /// remove the installed limit and the large one passes.
-    #[test]
-    fn an_order_past_the_survival_ceiling_is_vetoed_by_the_installed_limit() {
-        let mut governor = SurvivalGovernor::default();
-        governor
-            .size(figures(dec!("850000")), None, 0.20, &views(), at())
-            .unwrap();
-        let ceiling = governor.gross_ceiling().unwrap();
-        let limits = install_survival_limit(LimitSet::new("survival-only")).unwrap();
-        let projected = |gross: Decimal| qip_risk::limits::RiskState {
-            equity: dec!("1000000"),
-            gross_exposure: gross,
-            gross_before_order: Some(dec!("400000")),
-            survival_gross_ceiling: Some(ceiling),
-            ..qip_risk::limits::RiskState::default()
-        };
-        assert!(
-            !limits.check(&projected(ceiling)).is_blocked(),
-            "an order to the ceiling is admitted"
-        );
-        assert!(
-            limits.check(&projected(ceiling + dec!("1"))).is_blocked(),
-            "an order past the ceiling is vetoed"
-        );
-    }
-
-    /// R12-RISK-4116..4120, 4123, 4124: each §14.3 world, on a book that does
-    /// not survive it, withholds a stressed reserve named for that world and
-    /// shrinks what is released — the recorded capital response. Mutation:
-    /// remove any one world from `tail::survival_worlds` and the `expect`
-    /// for that world fails; make `tail_response` return `Ok(None)` and the
-    /// reserve assertion fails.
-    #[test]
-    fn every_survival_world_the_book_fails_withholds_a_reserve_named_for_it() {
-        // A levered, volatile book with no ladder marks: it fails every
-        // world at a 2% tolerance, which is what makes each response
-        // observable.
-        let history = std::collections::BTreeMap::from([
-            (
-                "obj-AAA".to_string(),
-                vec![100.0, 108.0, 95.0, 104.0, 90.0, 99.0, 112.0, 97.0],
-            ),
-            (
-                "obj-BBB".to_string(),
-                vec![50.0, 52.0, 47.0, 51.0, 46.0, 49.0, 55.0, 48.0],
-            ),
-        ]);
-        let positions = vec![
-            crate::tail::TailPosition {
-                object: "obj-AAA".into(),
-                notional: 900_000.0,
-                days_to_liquidate: None,
-                region: None,
-                counterparty: None,
-            },
-            crate::tail::TailPosition {
-                object: "obj-BBB".into(),
-                notional: -700_000.0,
-                days_to_liquidate: Some(3.0),
-                region: None,
-                counterparty: None,
-            },
-        ];
-        let generated = crate::tail::survival_worlds(
-            &crate::tail::TailBook {
-                positions: &positions,
-                price_history: &history,
-                equity: 1_000_000.0,
-                seed: 42,
-            },
-            at(),
-        );
-        let ledger = LedgerFigures {
-            equity: dec!("1000000"),
-            held: Decimal::ZERO,
-            obligations: Decimal::ZERO,
-            deployable: dec!("1000000"),
-            gross: dec!("1600000"),
-            ..LedgerFigures::default()
-        };
-        let mut calm = SurvivalGovernor::default();
-        let unstressed = calm.size(ledger, None, 0.02, &views(), at()).unwrap();
-        let mut names: Vec<&str> = vec![
-            crate::tail::LIQUIDITY_FREEZE_DEPTH,
-            crate::tail::VENUE_OUTAGE,
-            crate::tail::GAP_MOVE,
-            crate::tail::CORRELATION_INVERSION,
-            crate::tail::DATA_POISONING,
-            crate::tail::MULTI_MARKET_SHOCK,
-        ];
-        names.extend(crate::tail::SYNTHETIC_WORLDS);
-        for name in names {
-            let world = generated
-                .iter()
-                .find(|world| world.scenario == name)
-                .unwrap_or_else(|| panic!("the {name} world was not generated"))
-                .clone();
-            assert!(
-                world.loss_fraction > 0.02,
-                "premise: the book fails {name} at the tolerance; it lost {}",
-                world.loss_fraction
-            );
-            let stress = stress_with(vec![world]);
-            let mut governor = SurvivalGovernor::default();
-            let Ok(budget) = governor.size(ledger, Some(&stress), 0.02, &views(), at()) else {
-                // A world so severe the reserve exceeds the book: the
-                // response is the refusal, and the ceiling falls to the gross
-                // already held.
-                assert_eq!(governor.gross_ceiling(), Some(dec!("1600000")), "{name}");
-                continue;
-            };
-            let tail = budget
-                .tail
-                .as_ref()
-                .expect("a stressed book has a response");
-            assert_eq!(tail.scenario, name);
-            assert!(!tail.survives(), "{name}");
-            assert!(budget.survival.stressed_liquidity_reserve.is_positive());
-            assert!(budget.released < unstressed.released, "{name}");
-            assert!(
-                budget.narrowing().iter().any(|line| line.contains(name)),
-                "{name} is not on the DECIDE line"
-            );
-        }
     }
 }
