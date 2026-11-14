@@ -3237,11 +3237,9 @@
     "current": "No google_spanner_backup_schedule or version_retention_period; backup module covers journal disk snapshots only.",
     "evidence": [
       "infrastructure/terraform/modules/backup/main.tf:66 journal_snapshots",
-      "infrastructure/terraform/modules/data/main.tf:397-411",
-      "infrastructure/terraform/modules/data/main.tf google_spanner_backup_schedule.positions_daily",
-      "infrastructure/terraform/modules/data/main.tf google_spanner_database.positions ddl version_retention_period"
+      "infrastructure/terraform/modules/data/main.tf:397-411"
     ],
-    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Declared in data module only. Needs terraform validate/plan showing the schedule and version_retention_period (not run), a tftest asserting them, and enable_spanner true in an environment; nothing applied. Retention figures (7d PITR, 30d backups, 03:00 cron) need owner confirmation.",
+    "gap": "Backup schedule + PITR.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3254,7 +3252,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": "2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
+    "notes": ""
   },
   {
     "id": "R12-LEDGER-8141",
