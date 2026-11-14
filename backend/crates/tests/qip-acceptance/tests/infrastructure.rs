@@ -15414,6 +15414,52 @@ fn the_infra_account_holds_the_permissions_the_first_warehouse_and_feed_apply_wa
     );
 }
 
+/// The API the console's sign-in gate is switched on through is enabled
+/// wherever the console exists. Terraform names no IAP resource for the Cloud
+/// Run door: `infra.yml` turns IAP on and writes the access list with gcloud,
+/// so the services module, which lists what Terraform's own resources need,
+/// did not list it. On a project where the API was off, the first grant
+/// (infra run 132, dev, 2026-11-14) was refused: "Cloud Identity-Aware Proxy
+/// API has not been used in project ... before or it is disabled".
+///
+/// Mutation: delete the `"iap.googleapis.com"` entry from modules/services
+/// and this fails naming the two workflow commands that call it.
+#[test]
+fn the_api_the_consoles_sign_in_gate_calls_is_enabled_wherever_the_console_exists() {
+    let infra = read(".github/workflows/infra.yml");
+    // Premise: the workflow still reaches IAP through gcloud, in both steps.
+    // If either moved into Terraform this test would be about nothing.
+    assert!(
+        infra.contains("gcloud iap web add-iam-policy-binding")
+            && infra.contains("gcloud run services update \"$service\""),
+        "premise: infra.yml no longer turns IAP on and grants the console's access list with \
+         gcloud, so what this test says about the API those commands call is stale"
+    );
+    let services = read("infrastructure/terraform/modules/services/main.tf");
+    let at = services
+        .find("var.enable_gitops ? {")
+        .expect("premise: modules/services enables a set of APIs under enable_gitops");
+    let block = &services[at..];
+    let block = &block[..block.find("} : {}").expect("the conditional set closes")];
+    let enabled: Vec<&str> = block
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('"'))
+        .filter_map(|line| line[1..].split('"').next())
+        .collect();
+    assert!(
+        enabled.contains(&"container.googleapis.com"),
+        "premise: the set read is the control plane's, so the console's switch is this one: \
+         {enabled:?}"
+    );
+    assert!(
+        enabled.contains(&"iap.googleapis.com"),
+        "modules/services does not enable iap.googleapis.com where the console exists, so \
+         `gcloud run services update --iap` and `gcloud iap web add-iam-policy-binding` in \
+         infra.yml are refused with SERVICE_DISABLED: {enabled:?}"
+    );
+}
+
 /// ADR 0240: the catalogue hands the deep brain the research dataset's name,
 /// its staging bucket and its location by computing them the way
 /// `modules/data` does, because reading that module's outputs would be a

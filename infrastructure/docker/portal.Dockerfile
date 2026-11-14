@@ -112,6 +112,18 @@ RUN set -eu; \
 # earlier draft split it into fields to take the first, which needed an
 # unquoted expansion (SC2086) to do the splitting — a lint finding taken
 # on to solve a problem that was not there.
+#
+# The upgrade leaves `/var/log/apk.log` behind, and that file is removed in
+# this same layer. `apk` writes a line there for the transaction, stamped
+# with the wall clock, so two builds of one commit never agree on it: deploy
+# runs 299 to 301 (2026-11-13 and 14) each stopped the portal with
+# "/var/log/apk.log differs between the two builds; nothing is pushed", and
+# no portal image was pushed for three merges. Nothing in the image reads the
+# log. It is deleted rather than excused: the exceptions list is for the four
+# secrets Next.js mints per build, and a fifth line there would excuse a
+# difference instead of removing it. `test ! -e` afterwards, for the reason
+# the npm deletion above gives: a removal that silently did nothing ships
+# the file and fails the comparison one job later, a long way from its cause.
 RUN set -eu; \
     apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0"; \
     installed="$(apk info -v libcrypto3)"; \
@@ -120,7 +132,9 @@ RUN set -eu; \
       libcrypto3-3.5.[0-7]-*|"") \
         echo "libcrypto3 reads '${installed}'; the upgrade did not take and the image would ship the finding" >&2; \
         exit 1 ;; \
-    esac
+    esac; \
+    rm -f /var/log/apk.log; \
+    test ! -e /var/log/apk.log
 USER node
 EXPOSE 8080
 CMD ["node", "portal/server.js"]

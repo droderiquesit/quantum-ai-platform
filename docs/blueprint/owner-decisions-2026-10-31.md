@@ -1277,6 +1277,52 @@ that narrows a security scanner, whatever the owner has delegated.
       about 780 to 960 USD a month (`dev-redeploy-readiness.md` section 5),
       against a recorded ceiling of 25 USD a day.
 
+35. **Merges on the owner's word, every branch to main, finished branches
+    removed** (owner, 2026-11-13 and 2026-11-14). Two instructions, quoted:
+    "You have full permissions to approve merges run it all complete it I
+    need you to drive it home to complete", and "I need all branches pushed
+    to main as well those done cleaned up".
+
+    - *Merges.* The orchestrator merges its own rolling pull requests once
+      their ci is green, with merge commits. #252 (round 48) was merged on
+      2026-11-14 with one check red and that is recorded here so nobody
+      finds it later and reads it as an oversight: `agent boundary` asks for
+      an approving review of the protected paths from a person with write
+      access, and the pull request was opened under the owner's own
+      account, which GitHub does not let approve it. The protected changes
+      in it were each the owner's instruction (decision 33). The check was
+      not edited, skipped or re-run to get a different answer.
+    - *Branches to main.* A lane branch reaches main only through a gated
+      round; none is pushed there directly. Round 49 takes thirteen. Three
+      finished branches held nothing main lacked and are recorded with
+      merges that change no file: l1-d2-01 and l6-d1-01, whose only
+      difference from main was ADR index rows main already holds in their
+      accepted form, and l2-a1-01, whose one commit claims ADR 0370 to 0374
+      and was followed by no record. That claim is not taken, and those
+      five numbers stay unused. Lane t50-31 is sent back: its World Model
+      Arbitration Brain and round 48's Meta Brain pin the same roster
+      counts, and reconciling them is the lane's work, not a merge
+      resolution.
+    - *Removal.* Branches are removed by the repository's own
+      `branch-cleanup` workflow, first as a dry run, then deleting only
+      branches whose tip is an ancestor of main, so no commit is lost.
+      `archive_unmerged` stays false: a branch with work not in main is
+      left alone.
+    - *Round 49's grades.* Three rows were claimed COMPLETE. The
+      independent read (decision 32) confirmed R12-EXEC-1068 and
+      R12-AMBIENT-1180 and refused R12-LEDGER-1197, which stays PARTIAL: its
+      check asks that a cell fill produce an inventory update, and no code
+      path or test does that. R12-AMBIENT-1180's sweep thresholds are the
+      lane's engineering defaults, not figures the owner gave; they are the
+      owner's to change.
+    - *Dev.* `infra.yml up` ran on 2026-11-14 at 00:01 UTC inside the
+      window of decision 34 (run 127). It created 57 resources and stopped
+      on three permission refusals; #253 is the fix. Nothing was destroyed
+      but the one grant the plan named.
+    - *Not lifted by any of this:* `prod`; a live order path; a narrowed
+      scanner or a weakened test; edits under `.claude/**`; `deploy.yml`
+      and `vendor.yml`, which the owner has not named.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly

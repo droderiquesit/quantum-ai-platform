@@ -385,7 +385,17 @@ impl Journal {
 // --- the ledger -----------------------------------------------------------------
 
 fn ledger_config(dir: &std::path::Path, fabric: &Fabric) -> LedgerConfig {
-    let variables: BTreeMap<String, String> = [
+    ledger_config_with(dir, fabric, &[])
+}
+
+/// [`ledger_config`] with `extra` variables set beside the required ones,
+/// read through the same `LedgerConfig::parse` the binary's `main` uses.
+fn ledger_config_with(
+    dir: &std::path::Path,
+    fabric: &Fabric,
+    extra: &[(&str, &str)],
+) -> LedgerConfig {
+    let mut variables: BTreeMap<String, String> = [
         (qip_ledgerd::config::ENVIRONMENT, "workstation".to_string()),
         (qip_ledgerd::config::DATA_DIR, dir.display().to_string()),
         (qip_ledgerd::config::LISTEN, "127.0.0.1:0".to_string()),
@@ -411,6 +421,9 @@ fn ledger_config(dir: &std::path::Path, fabric: &Fabric) -> LedgerConfig {
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect();
+    for (name, value) in extra {
+        variables.insert((*name).to_string(), (*value).to_string());
+    }
     LedgerConfig::parse(&variables).unwrap()
 }
 
@@ -853,6 +866,57 @@ fn fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close
             "the trial balance closes in {unit}"
         );
     }
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ADR 0530 through the composed path: a ledger started with
+/// `QIP_LEDGER_SETTLEMENT_CYCLE_VENUES` naming the venue books a paper fill
+/// there into `in_settlement:` and not into the trading book's cash, and one
+/// started without it books the same fill's cash at once.
+///
+/// The failure this prevents is the setting that is parsed and never
+/// reaches the store: `LedgerStore::with_settlement_cycle_venues` existed
+/// for a round with no caller in the binary, so every fill booked at the
+/// trade date whatever the venue's terms, and the node's `Settled` record
+/// would then park the cell as settling nothing. Mutation verified: drop
+/// the `.with_settlement_cycle_venues(..)` call in `qip_ledgerd::start` and
+/// the trading cash reads 1005 and the first assertion fails.
+#[test]
+fn a_ledger_started_naming_a_settlement_cycle_venue_holds_that_venues_fill_cash_in_settlement() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let fill = cell.fill("o-cycle", 10, "100.5", true);
+    fabric.produce(0, vec![fill]);
+
+    let dir = temp_dir("cycle-venue");
+    let config = ledger_config_with(
+        &dir,
+        &fabric,
+        &[(qip_ledgerd::config::SETTLEMENT_CYCLE_VENUES, VENUE)],
+    );
+    assert_eq!(config.settlement_cycle_venues, vec![VENUE.to_string()]);
+    let ledger = start(
+        &config,
+        Arc::new(SystemClock),
+        Arc::new(ThreadSleeper),
+        fabric.connect(),
+    )
+    .expect("the ledger starts against a running broker");
+    wait_until("the fill is booked", || {
+        ledger.store().events().unwrap().len() == 1
+    });
+    let address = ledger.address().to_string();
+    assert_eq!(
+        balance_over_http(&address, "trading:cell-a/alpha", UNIT),
+        Decimal::ZERO,
+        "a cycle venue's cash reached the book at the trade date"
+    );
+    assert_eq!(
+        balance_over_http(&address, "in_settlement:cell-a/alpha", UNIT),
+        dec("1005"),
+        "a sale's proceeds wait in settlement"
+    );
     ledger.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }

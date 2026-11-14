@@ -169,7 +169,7 @@ fn every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests(
     let review: NowReview = last(&platform, "now:");
     assert!(!review.deltas.is_empty());
     assert!(review.deltas.iter().all(|d| !d.manifests.is_empty()));
-    assert_eq!(review.ensemble.len(), 4, "four estimators registered");
+    assert_eq!(review.ensemble.len(), 6, "six estimators registered");
     let scopes: BTreeSet<&str> = review
         .variables_by_scope
         .keys()
@@ -402,7 +402,7 @@ fn an_estimator_outage_shrinks_the_ensemble_and_the_now_state_still_updates() {
     assert!(platform.now_brain_mut().remove_worker("particle-bootstrap"));
     platform.run_cycle(start());
     let review: NowReview = last(&platform, "now:");
-    assert_eq!(review.ensemble.len(), 3);
+    assert_eq!(review.ensemble.len(), 5);
     assert!(!review.deltas.is_empty());
 }
 
@@ -713,5 +713,60 @@ fn a_run_records_the_now_state_the_forecasts_and_the_calibration_objective_gauge
         gauge(&platform),
         Some(0.0),
         "the objective is met and the gauge says so"
+    );
+}
+
+/// R12-WORLD-3078 in the cycle: the neural state-space estimator competes
+/// with the filters on the latent return the lattice reads, and the dispute
+/// is journaled naming it. AAA's daily return accelerates by two points a
+/// day -- a trend in the return the local-level filters chase from behind
+/// and the network learns -- while BBB stays calm. Before the network has
+/// three reading means it abstains, so no early dispute names it; once it
+/// has, a journaled `ModelDisagreement` on AAA's return lists it among the
+/// views.
+///
+/// Mutation: make `NeuralFilter::propose` always abstain -- no journaled
+/// dispute names `neural-adaline`.
+#[test]
+fn the_neural_estimator_competes_in_the_cycle_and_its_dispute_is_journaled() {
+    let mut platform = platform();
+    platform.observe(calm_history());
+    let names_neural = |review: &NowReview| {
+        review.disagreements.iter().any(|d| {
+            d.disputed_propositions
+                .iter()
+                .any(|p| p.contains("obj-AAA") && p.contains("return"))
+                && d.views.iter().any(|v| v.id == "neural-adaline")
+        })
+    };
+    let mut close = 100.0;
+    let mut early = Vec::new();
+    let mut late = Vec::new();
+    for n in 1..=8_i64 {
+        // Statistic: the synthetic return accelerates by 0.02 a day.
+        let r = 0.01 + 0.02 * (n - 1) as f64;
+        close *= 1.0 + r;
+        platform.observe(vec![bar("AAA", day(n), close), bar("BBB", day(n), 100.0)]);
+        platform.run_cycle(day(n));
+        let review: NowReview = last(&platform, "now:");
+        assert!(
+            review.ensemble.iter().any(|id| id == "neural-adaline")
+                && review.ensemble.iter().any(|id| id == "symbolic-constraint"),
+            "premise: both new estimators are registered: {:?}",
+            review.ensemble
+        );
+        if n <= 2 {
+            early.push(names_neural(&review));
+        } else {
+            late.push(names_neural(&review));
+        }
+    }
+    assert!(
+        early.iter().all(|named| !named),
+        "premise: the network abstains while it warms up: {early:?}"
+    );
+    assert!(
+        late.iter().any(|named| *named),
+        "a journaled dispute on AAA's return names the network: {late:?}"
     );
 }

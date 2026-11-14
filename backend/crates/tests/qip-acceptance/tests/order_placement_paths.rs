@@ -964,6 +964,18 @@ const SITES: &[(&str, &str, &str, usize, Class)] = &[
             proof: DESK_TEST,
         },
     ),
+    // ADR 0526: the desk's requote withdraws the original and hands the
+    // replacement to `OrderManager::submit` whole, so every gate a new order
+    // meets, it meets; it adds no route of its own.
+    (
+        "services/qip-execution-engine/src/oms.rs",
+        ".submit(",
+        "replace",
+        1,
+        Class::Forwards {
+            to: "OrderManager::submit, the gated row above",
+        },
+    ),
     (
         "runtime/qip-kernel/src/platform.rs",
         ".submit(",

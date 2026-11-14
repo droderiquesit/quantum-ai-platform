@@ -1433,6 +1433,21 @@ pub struct UnreleasedOrder {
     pub refused: Option<String>,
 }
 
+/// A venue's report that the fills on one order settled (ADR 0130 decision
+/// 2, ADR 0440, ADR 0530).
+///
+/// The venue's statement, carried to the journal as it arrived: the cell
+/// does not date settlement, because a cell that computed a settlement date
+/// and journaled it would be booking a fact nobody observed, which is the
+/// exact claim ADR 0130 keeps the ledger from making. `settlement_date` is
+/// the instant the venue says the proceeds became usable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettlementReport {
+    pub order_id: String,
+    pub venue: VenueId,
+    pub settlement_date: Timestamp,
+}
+
 /// A fill the venue reported, attributed to the strategies whose intent the
 /// order carried (§43.4: the chain starts at the fill).
 ///
@@ -8229,6 +8244,26 @@ impl Cell {
                 confirmed.push(fill);
             }
         }
+        // What the venue says settled, after what it says filled: a gateway
+        // dates a settlement only from a fill it has already handed over, so
+        // the `Filled` entry a `Settled` names is always earlier in the
+        // chain (ADR 0530). Journaled as the venue stated it, with the
+        // paper fence read from the gateway that produced it, exactly as a
+        // fill's is; the ledger refuses one not marked simulated, and one
+        // naming an order with nothing in settlement parks the cell there
+        // (ADR 0440 decision 5) rather than being second-guessed here.
+        let simulated = gateway.is_simulated();
+        for settlement in gateway.settlements() {
+            self.journal.record(
+                Decision::Settled {
+                    order_id: settlement.order_id,
+                    venue: settlement.venue.as_str().to_string(),
+                    settlement_date: settlement.settlement_date,
+                    simulated,
+                },
+                now,
+            );
+        }
         confirmed
     }
 
@@ -13251,6 +13286,20 @@ pub trait Placer: std::fmt::Debug {
     /// synthesise a report from the order it was handed; the report is the
     /// venue's answer or it is nothing.
     fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        Vec::new()
+    }
+
+    /// Every settlement the venue has reported since the last call (ADR
+    /// 0530): one per order whose fills' proceeds the venue now says are
+    /// usable.
+    ///
+    /// Defaults to nothing, which is right for a venue that credits on the
+    /// fill — its cash is booked at the fill and nothing waits — and the
+    /// honest answer for a gateway with no settlement channel. A gateway
+    /// that wraps another must delegate, or the venue's settlements vanish
+    /// at the wrapper and every fill at a cycle venue is held in settlement
+    /// for ever.
+    fn settlements(&mut self) -> Vec<SettlementReport> {
         Vec::new()
     }
 
