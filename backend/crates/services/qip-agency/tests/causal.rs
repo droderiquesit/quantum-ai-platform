@@ -931,3 +931,85 @@ fn adjusting_for_a_collider_opens_the_path_it_was_meant_to_close() {
         "adjusting for the collider was read as identifying the effect: {collider:?}"
     );
 }
+
+/// R12-MODEL-4013: heterogeneity. The effect is reported per segment, each
+/// identified by the back-door set, and a confounded design abstains for all
+/// of them. Mutation: estimate every segment on the pooled rows and the two
+/// effects come out equal, failing the separation assertion.
+#[test]
+fn an_uplift_effect_is_estimated_per_segment_and_a_confounded_design_abstains_for_all() {
+    let link = |cause: &str, effect: &str, coefficient: f64| StructuralLink {
+        cause: cause.to_string(),
+        effect: effect.to_string(),
+        coefficient,
+    };
+    let model = StructuralModel::new(StructuralModelDecl {
+        name: "segmented".to_string(),
+        links: vec![link("u", "t", 1.0), link("u", "y", 3.0), link("t", "y", 2.0)],
+        variables: Vec::new(),
+        intercepts: BTreeMap::new(),
+        noise_variance: BTreeMap::new(),
+    })
+    .expect("an acyclic model is admitted");
+    let n = 400;
+    let u: Vec<f64> = (0..n)
+        .map(|i| ((i * 37) % 101) as f64 / 50.0 - 1.0)
+        .collect();
+    let t: Vec<f64> = (0..n)
+        .map(|i| {
+            if u[i] + ((i * 13) % 7) as f64 / 7.0 - 0.5 > 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let tau = if i < n / 2 { 2.0 } else { 5.0 };
+            tau * t[i] + 3.0 * u[i] + ((i * 29) % 11) as f64 / 110.0
+        })
+        .collect();
+    let segments = BTreeMap::from([
+        ("first".to_string(), (0..n / 2).collect::<Vec<usize>>()),
+        ("second".to_string(), (n / 2..n).collect::<Vec<usize>>()),
+    ]);
+    assert!(
+        segments.values().all(|rows| {
+            let on = rows.iter().filter(|&&i| t[i] > 0.5).count();
+            on > 0 && on < rows.len()
+        }),
+        "premise: both arms are populated in each segment"
+    );
+
+    let adjusted = BTreeMap::from([("u".to_string(), u.clone())]);
+    let per = estimate::backdoor_adjusted_by_segment(
+        &model, "t", "y", &adjusted, &t, &y, 10.0, &segments,
+    )
+    .expect("the adjusted design is identified");
+    assert_eq!(per.len(), 2);
+    let first = per["first"].effect();
+    let second = per["second"].effect();
+    assert!((first - 2.0).abs() < 0.5, "first segment effect {first}");
+    assert!((second - 5.0).abs() < 0.5, "second segment effect {second}");
+    assert!(second - first > 1.5, "the segments were not separated");
+
+    let refusal = estimate::backdoor_adjusted_by_segment(
+        &model,
+        "t",
+        "y",
+        &BTreeMap::new(),
+        &t,
+        &y,
+        10.0,
+        &segments,
+    )
+    .expect_err("a confounded design was estimated");
+    assert!(refusal.message().starts_with("abstains"), "{refusal:?}");
+
+    let stray = BTreeMap::from([("ghost".to_string(), vec![n])]);
+    assert!(
+        estimate::backdoor_adjusted_by_segment(&model, "t", "y", &adjusted, &t, &y, 10.0, &stray)
+            .is_err()
+    );
+}
