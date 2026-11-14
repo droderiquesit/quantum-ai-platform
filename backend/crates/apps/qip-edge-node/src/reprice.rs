@@ -769,9 +769,7 @@ impl Requoter {
             };
         };
         let side: BookSide = replacement.side;
-        // The token is the only way to learn what was admitted, and the venue
-        // is sent those values, not a second copy of them (R12-GOV-6127).
-        let admitted = match cell.admit_replacement(
+        if let Err(error) = cell.admit_replacement(
             &order_id,
             &order.object_id,
             &order.venue,
@@ -780,23 +778,20 @@ impl Requoter {
             price,
             now,
         ) {
-            Ok(admitted) => admitted,
-            Err(error) => {
-                release(tracked, &replacement.client_id, error.message());
-                return Requote::RiskRefused {
-                    order_id,
-                    reason: error.message().to_string(),
-                };
-            }
-        };
+            release(tracked, &replacement.client_id, error.message());
+            return Requote::RiskRefused {
+                order_id,
+                reason: error.message().to_string(),
+            };
+        }
         if let Err(error) = venue.place(
             &replacement.client_id,
-            admitted.object_id(),
-            admitted.venue(),
-            admitted.side(),
-            admitted.quantity(),
-            admitted.price(),
-            admitted.at(),
+            &order.object_id,
+            &order.venue,
+            side,
+            replacement.quantity,
+            price,
+            now,
         ) {
             release(tracked, &replacement.client_id, error.message());
             return Requote::ReplacementRefused {

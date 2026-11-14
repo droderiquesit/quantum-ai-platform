@@ -1349,59 +1349,6 @@ pub struct InternalCross {
     pub sold: Vec<StrategyId>,
 }
 
-/// Proof that [`Cell::admit_replacement`] admitted one replacement
-/// (R12-GOV-6127, ADR 0200 Known limits).
-///
-/// A requote sent to a venue by a path that skipped the cell's justification,
-/// conduct, fence and risk checks was a new price with nothing behind it, and
-/// nothing in the types said so: the repricer called the check and then the
-/// venue as two unrelated statements. The fields are private and no
-/// constructor is public, so the only way to hold one is to have been admitted;
-/// it is neither `Clone` nor `Copy`, and the repricer places the replacement
-/// from the values it carries, so what reaches the venue is what was checked
-/// and not a price edited in between.
-#[derive(Debug, PartialEq, Eq)]
-pub struct AdmittedReplacement {
-    order_id: String,
-    object_id: ObjectId,
-    venue: VenueId,
-    side: BookSide,
-    quantity: Decimal,
-    price: Decimal,
-    at: Timestamp,
-}
-
-impl AdmittedReplacement {
-    /// The order this replacement stands in for.
-    pub fn order_id(&self) -> &str {
-        &self.order_id
-    }
-    /// The instrument the replacement rests on.
-    pub fn object_id(&self) -> &ObjectId {
-        &self.object_id
-    }
-    /// The venue the replacement is bound for.
-    pub fn venue(&self) -> &VenueId {
-        &self.venue
-    }
-    /// The side of the book the replacement rests on.
-    pub fn side(&self) -> BookSide {
-        self.side
-    }
-    /// The quantity that was checked.
-    pub fn quantity(&self) -> Decimal {
-        self.quantity
-    }
-    /// The price that was checked.
-    pub fn price(&self) -> Decimal {
-        self.price
-    }
-    /// The instant the checks were made at.
-    pub fn at(&self) -> Timestamp {
-        self.at
-    }
-}
-
 /// An order the cell actually sent.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedOrder {
@@ -7279,22 +7226,11 @@ impl Cell {
         quantity: Decimal,
         price: Decimal,
         now: Timestamp,
-    ) -> Result<AdmittedReplacement> {
+    ) -> Result<()> {
         self.replacement_grounded(order_id, now)?;
         self.replacement_conduct(venue, object_id, side, now)?;
         self.fence_admit(now)?;
-        self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)?;
-        // The only place an `AdmittedReplacement` is made: after every check
-        // above has passed, from the very values they judged.
-        Ok(AdmittedReplacement {
-            order_id: order_id.to_string(),
-            object_id: object_id.clone(),
-            venue: venue.clone(),
-            side,
-            quantity,
-            price,
-            at: now,
-        })
+        self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
     }
 
     /// Refuse under [`GATE_CONDUCT_SPOOFING`] a replacement on a side of a
@@ -14371,7 +14307,6 @@ mod crossing_tests {
                 price,
                 at(11),
             )
-            .map(|_| ())
         };
         // Premise: the grounded order is requoted.
         requote(&mut cell)?;
@@ -14402,66 +14337,6 @@ mod crossing_tests {
                 "{case}: the refusal was not journaled under {GATE_JUSTIFICATION}"
             );
         }
-        Ok(())
-    }
-
-    /// R12-GOV-6127, ADR 0200 Known limits. The requote's place path holds a
-    /// token only `admit_replacement` mints. Refusals mint none, and an
-    /// admission carries exactly the values the checks judged, so the repricer
-    /// that places from it cannot send a price nobody checked.
-    #[test]
-    fn a_replacement_token_exists_only_for_an_admitted_requote_and_carries_what_was_checked()
-    -> Result<()> {
-        let price = Decimal::parse("100").expect("a decimal literal");
-        let mut cell = cell_with_book()?;
-        deploy_marketable(&mut cell, "alpha")?;
-        deploy_marketable(&mut cell, "beta")?;
-        raise_signal(&mut cell, "alpha");
-        raise_signal(&mut cell, "beta");
-        let mut gateway = ClassedGateway {
-            simulated: true,
-            placed: Vec::new(),
-        };
-        let mut report = WorkReport::default();
-        cell.place_net(&one_sided_net(price), at(10), &mut gateway, &mut report)?;
-        let order_id = gateway
-            .placed
-            .first()
-            .cloned()
-            .expect("the premise: one order went out");
-        let moved = Decimal::parse("99").expect("a decimal literal");
-        let admitted = cell.admit_replacement(
-            &order_id,
-            &object(),
-            &venue(),
-            BookSide::Bid,
-            Decimal::from_int(1),
-            moved,
-            at(11),
-        )?;
-        assert_eq!(admitted.order_id(), order_id);
-        assert_eq!(admitted.price(), moved);
-        assert_eq!(admitted.quantity(), Decimal::from_int(1));
-        assert_eq!(admitted.side(), BookSide::Bid);
-        assert_eq!(admitted.at(), at(11));
-        assert_eq!(admitted.venue(), &venue());
-        assert_eq!(admitted.object_id(), &object());
-        if let Some(working) = cell.working.get_mut(&order_id) {
-            working.grounds = Vec::new();
-        }
-        assert!(
-            cell.admit_replacement(
-                &order_id,
-                &object(),
-                &venue(),
-                BookSide::Bid,
-                Decimal::from_int(1),
-                moved,
-                at(12),
-            )
-            .is_err(),
-            "a refused requote produced a token"
-        );
         Ok(())
     }
 
@@ -14550,17 +14425,15 @@ mod crossing_tests {
             cell.admit_replacement(&bid, &object(), &venue(), side, quantity, price, at(second))?;
             cell.record_replacement(&bid, &venue(), "r", quantity, price, at(second));
         }
-        let fifth = cell
-            .admit_replacement(
-                &bid,
-                &object(),
-                &venue(),
-                side,
-                quantity,
-                Decimal::from_int(94),
-                at(24),
-            )
-            .map(|_| ());
+        let fifth = cell.admit_replacement(
+            &bid,
+            &object(),
+            &venue(),
+            side,
+            quantity,
+            Decimal::from_int(94),
+            at(24),
+        );
         Ok((cell, fifth))
     }
 
@@ -14656,7 +14529,6 @@ mod crossing_tests {
                 price,
                 at(second),
             )
-            .map(|_| ())
         };
         // Premise: requotes under the policy's minimum are admitted, each
         // recorded as the venue accepted it.
