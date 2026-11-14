@@ -467,3 +467,41 @@ fn a_filled_book_with_no_statement_is_charged_its_maintenance_in_the_ceiling() -
     );
     Ok(())
 }
+
+/// R12-CAPITAL-4086 through the platform: a plan that the ceiling alone
+/// would admit is refused once the ledger shows cash owed, because the
+/// obligation lowers the ceiling the Risk Gate reads. Without it the same
+/// order against the same book passes, so the refusal is the obligation's
+/// doing and not the order's size.
+///
+/// Mutation: drop the `ledger` argument from `survival_figures` (the
+/// obligation is ignored and the second order is admitted).
+#[test]
+fn a_plan_the_ceiling_would_admit_is_refused_once_the_ledger_shows_cash_owed() -> Result<()> {
+    use qip_contracts::ledger::Account;
+    // Premise: with nothing owed, a 9.8 million plan is inside ten million.
+    let mut clear = platform()?;
+    assert_eq!(clear.survival_gross_ceiling(), Some(dec!("10000000")));
+    buy(&mut clear, dec!("98000"))?;
+
+    let mut owing = platform()?;
+    let owed = qip_capital::LedgerObligations::from_balances(
+        &ledger_balances(&[(
+            Account::Accrual {
+                accrual_type: "funding".to_string(),
+            },
+            dec!("-250000"),
+        )]),
+        "USD",
+        start(),
+    )?;
+    owing.observe_ledger_obligations(owed)?;
+    assert_eq!(owing.survival_gross_ceiling(), Some(dec!("9750000")));
+    let refusal = buy(&mut owing, dec!("98000")).expect_err("a plan past the lowered ceiling");
+    assert!(
+        refusal.message().contains(SURVIVAL_LIMIT_NAME),
+        "the refusal does not name the survival limit: {}",
+        refusal.message()
+    );
+    Ok(())
+}
