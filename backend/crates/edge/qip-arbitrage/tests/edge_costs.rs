@@ -603,3 +603,48 @@ fn raising_the_unwind_cost_of_a_non_atomic_cycle_lowers_its_net_edge_until_the_s
     );
     Ok(())
 }
+
+/// MESH-5055. The net edge falls by exactly the named borrow, no more and no
+/// less. The earlier borrow test proves the `Funding` line is the hand-computed
+/// figure and that net moved down; it does not prove the deduction is the
+/// whole of the movement, so a borrow also subtracted twice (or leaking into an
+/// unrelated line) would pass it. Here every line other than the borrow must
+/// be unchanged except the uncertainty haircut and fill shortfall, which are
+/// proportional shares of what remains and so legitimately shrink with it.
+/// Mutation: omit the borrow deduction from `calculate`'s `before_fill` sum
+/// and the net differs from the hand-computed one.
+#[test]
+fn the_net_edge_falls_by_the_borrow_line_plus_only_the_shares_of_it_that_are_proportional()
+-> Result<()> {
+    let without = net_with(EdgeCosts::default())?;
+    let with = net_with(EdgeCosts {
+        borrow_rate_annual: d("0.10"),
+        ..EdgeCosts::default()
+    })?;
+    assert_eq!(with.deductions().len(), without.deductions().len());
+    assert_eq!(with.gross(), without.gross());
+    let borrow = line(&with, DeductionKind::Funding, "measured borrow")
+        .ok_or_else(|| qip_core::Error::invalid("no borrow line"))?;
+    assert!(borrow > Decimal::ZERO);
+    assert_eq!(
+        line(&without, DeductionKind::Funding, "measured borrow"),
+        Some(Decimal::ZERO)
+    );
+    let mut proportional = Decimal::ZERO;
+    for (after, before) in with.deductions().iter().zip(without.deductions()) {
+        assert_eq!(after.kind, before.kind);
+        if after.basis.starts_with("measured borrow") {
+            continue;
+        }
+        if after.amount != before.amount {
+            assert!(
+                matches!(after.kind, DeductionKind::Uncertainty | DeductionKind::Slippage),
+                "an unrelated line moved: {:?}",
+                after.kind
+            );
+            proportional += after.amount - before.amount;
+        }
+    }
+    assert_eq!(without.net() - with.net(), borrow + proportional);
+    Ok(())
+}
