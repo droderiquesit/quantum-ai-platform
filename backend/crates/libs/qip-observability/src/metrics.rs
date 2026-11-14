@@ -703,11 +703,6 @@ pub mod names {
     /// served, from 1 (all served) to 0 (none). Recorded by
     /// `Platform::record_refetch_health`.
     pub const DATA_REFETCH_HEALTH: &str = "qip_data_refetch_health";
-    /// Extents a re-fetch pass re-requested, by `outcome` (`served`,
-    /// `withdrawn`): the good/total split [`DATA_REFETCH_HEALTH`]' gauge
-    /// cannot carry, and the series the `data-refetch-health` objective is
-    /// evaluated on. Recorded by `Platform::record_refetch_health`.
-    pub const DATA_REFETCH_CHECKS: &str = "qip_data_refetch_checks_total";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
     // hypothesis the platform will act on", recorded where each fact becomes

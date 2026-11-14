@@ -283,15 +283,6 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
             names::RESEARCH_QUEUE_CHECKS,
             SourceRule::CounterOutcome { good: "within" },
         ),
-        // Source re-fetch health (R12-OBS-9163): out of every extent a
-        // re-fetch pass re-requested, the share the source still served.
-        // Declared with the same target as `default_slos`; read from a
-        // counter because the health gauge has no good/total split.
-        p(
-            Slo::availability("data-refetch-health", "data-plane", 0.99, SloWindow::Day),
-            names::DATA_REFETCH_CHECKS,
-            SourceRule::CounterOutcome { good: "served" },
-        ),
     ]
 }
 

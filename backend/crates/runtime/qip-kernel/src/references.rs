@@ -664,24 +664,6 @@ impl Platform {
             qip_observability::metrics::labels([("source", source_id)]),
             served,
         );
-        // The gauge carries no good/total split, so the objective reads this
-        // pair: without it `data-refetch-health` evaluated unmeasured.
-        let metrics = &self.telemetry().metrics;
-        let names = qip_observability::metrics::names::DATA_REFETCH_CHECKS;
-        if checked > unretrievable {
-            metrics.increment(
-                names,
-                qip_observability::metrics::labels([("outcome", "served")]),
-                (checked - unretrievable) as u64,
-            );
-        }
-        if unretrievable > 0 {
-            metrics.increment(
-                names,
-                qip_observability::metrics::labels([("outcome", "withdrawn")]),
-                unretrievable as u64,
-            );
-        }
         Ok(())
     }
 
