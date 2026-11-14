@@ -25,6 +25,7 @@ pub mod control_pack;
 pub mod demo;
 pub mod event_fabric;
 pub mod model_pack;
+pub mod reflex_package;
 pub mod registrations;
 pub mod replay;
 pub mod simulate;

@@ -336,3 +336,152 @@ impl LoadedReflex {
             .collect()
     }
 }
+
+/// A compiled package the deep brain writes unsigned, for the two-person
+/// `model-pack` publish to sign (ADR 0131 decision 1, ADR 0535).
+///
+/// The owner's 2026-10-31 ruling is that no running process signs a reflex
+/// package: the deep brain never holds the `model-pack` key. So what it
+/// writes is this draft, and the only way from a draft to something a cell
+/// loads is [`ReflexPackageDraft::publish`] with a signature produced over
+/// [`ReflexPackageDraft::signing_canonical`] by whoever does hold the key.
+/// A draft is not a [`PublishedReflexPackage`] and does not decode as one,
+/// so a loader handed the draft by mistake refuses it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReflexPackageDraft {
+    pub package: ReflexPackage,
+    /// [`Validated::digest`] of `package`, stated so the publish can be read
+    /// without recomputing it and refused when it does not match.
+    pub digest: String,
+}
+
+impl ReflexPackageDraft {
+    pub fn new(package: ReflexPackage) -> Result<Self> {
+        let digest = package.digest()?;
+        Ok(Self { package, digest })
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        serde_json::to_vec(self)
+            .map_err(|e| Error::invalid(format!("a reflex package draft did not serialise: {e}")))
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let draft: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a reflex package draft: {e}")))?;
+        draft.check_digest()?;
+        Ok(draft)
+    }
+
+    fn check_digest(&self) -> Result<()> {
+        let digest = self.package.digest()?;
+        if digest != self.digest {
+            return Err(Error::denied(format!(
+                "reflex package `{}` states digest {} and hashes to {digest}; it was altered \
+                 after it was drafted",
+                self.package.package_id, self.digest
+            )));
+        }
+        Ok(())
+    }
+
+    /// The bytes the `model-pack` key signs for this draft under
+    /// `publication`: a domain tag, the package digest and the publication
+    /// record, each length-prefixed. The publication is inside the signed
+    /// bytes, as it is in a [`crate::policy::ModelPack`], so a published
+    /// package cannot be re-attributed to two other people after signing.
+    pub fn signing_canonical(&self, publication: &crate::trust::Publication) -> Vec<u8> {
+        canonical(&self.digest, publication)
+    }
+
+    /// The draft with `signature` attached under `publication`. Refused for a
+    /// one-person publication, a digest that no longer matches, and a
+    /// signature that is not the text form [`crate::trust::ArtefactSignature`]
+    /// encodes. Whether the signature verifies is the loader's question,
+    /// asked against the trust bundle, not this one's.
+    pub fn publish(
+        self,
+        publication: crate::trust::Publication,
+        signature: String,
+    ) -> Result<PublishedReflexPackage> {
+        self.check_digest()?;
+        publication.validate()?;
+        crate::trust::ArtefactSignature::parse(&signature)?;
+        Ok(PublishedReflexPackage {
+            package: self.package,
+            digest: self.digest,
+            publication,
+            signature,
+        })
+    }
+}
+
+fn canonical(digest: &str, publication: &crate::trust::Publication) -> Vec<u8> {
+    let mut out = b"reflex-package/v1".to_vec();
+    out.extend_from_slice(&crate::policy::length_prefixed_bytes(digest.as_bytes()));
+    out.extend_from_slice(&publication.canonical());
+    out
+}
+
+/// A reflex package signed under the `model-pack` key by the two-person
+/// publish (ADR 0131 decision 1, ADR 0535): what a cell loads.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedReflexPackage {
+    pub package: ReflexPackage,
+    pub digest: String,
+    pub publication: crate::trust::Publication,
+    /// `ecdsa-p256-sha256:<key version>:<hex DER>` over
+    /// [`ReflexPackageDraft::signing_canonical`].
+    pub signature: String,
+}
+
+impl PublishedReflexPackage {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        serde_json::to_vec(self).map_err(|e| {
+            Error::invalid(format!("a published reflex package did not serialise: {e}"))
+        })
+    }
+
+    /// Decode, re-admit, recompute the digest, refuse a one-person
+    /// publication, verify the signature under a `model-pack` key the
+    /// verifier trusts at `now`, and refuse a package past its expiry. Every
+    /// arm refuses; a package whose signature verifies but whose publication
+    /// names one person is a one-person publish a compromised signer could
+    /// produce, and is refused for that.
+    pub fn load(
+        bytes: &[u8],
+        verifier: &dyn crate::trust::ArtefactVerifier,
+        now: Timestamp,
+    ) -> Result<LoadedReflex> {
+        let published: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a published ReflexPackage: {e}")))?;
+        let digest = published.package.digest()?;
+        if digest != published.digest {
+            return Err(Error::denied(format!(
+                "reflex package `{}` carries digest {} and hashes to {digest}; it was altered \
+                 after signing",
+                published.package.package_id, published.digest
+            )));
+        }
+        published.publication.validate()?;
+        verifier.verify(
+            crate::trust::ArtefactClass::ModelPack,
+            &canonical(&digest, &published.publication),
+            &published.signature,
+            now,
+        )?;
+        if now >= published.package.expires_at {
+            return Err(Error::denied(format!(
+                "reflex package `{}` expired at {}; a cell does not apply a package past its \
+                 expiry",
+                published.package.package_id,
+                published.package.expires_at.to_rfc3339()
+            )));
+        }
+        Ok(LoadedReflex {
+            package: published.package,
+        })
+    }
+}

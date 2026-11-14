@@ -1,0 +1,87 @@
+# ADR 0535 / R12-REASON-7203: protected-path change this lane may not make.
+# Adds a reflex-package kind to the two-person model-pack publish, calling the
+# qip reflex-package verbs. The path filter (data/model-packs/<name>.json) and the
+# pre-existing mismatch between this workflow's model-pack flags and qip-cli's
+# (--pack/--out/--signature-der vs positional/stdout/--der) are left for the owner.
+diff --git a/.github/workflows/model-pack-publish.yml b/.github/workflows/model-pack-publish.yml
+index ec90b68..0a47aeb 100644
+--- a/.github/workflows/model-pack-publish.yml
++++ b/.github/workflows/model-pack-publish.yml
+@@ -71,6 +71,14 @@ on:
+         description: "The reviewed pack, by repository path: data/model-packs/<name>.json, unsigned, its publication filled in by this run."
+         required: true
+         type: string
++      kind:
++        description: "What the reviewed file is: a model pack, or a reflex package draft the deep brain wrote (ADR 0131 d1, ADR 0535). Both sign under the model-pack key, two-person."
++        required: true
++        default: "model-pack"
++        type: choice
++        options:
++          - model-pack
++          - reflex-package
+ 
+ # Nothing by default; the one job asks for exactly what it uses.
+ permissions: {}
+@@ -237,6 +245,7 @@ jobs:
+           APPROVER: ${{ steps.approval.outputs.approver }}
+           APPROVED_AT: ${{ steps.approval.outputs.approved_at }}
+           KEY_VERSION: ${{ steps.identity.outputs.version }}
++          KIND: ${{ inputs.kind }}
+         run: |
+           set -euo pipefail
+           cargo build --release --locked -p qip-cli --bin qip
+@@ -244,10 +253,16 @@ jobs:
+             echo "qip has no model-pack subcommand. The signing message is qip_contracts::trust::signing_message over ModelPack::signing_payload and is built by that code, not re-implemented in shell; add 'qip model-pack signing-message|attach-signature|verify' to qip-cli first." >&2
+             exit 1
+           fi
+-          ./target/release/qip model-pack signing-message \
+-            --pack "../${PACK}" --author "$AUTHOR" --approver "$APPROVER" \
+-            --approved-at "$APPROVED_AT" --key-version "$KEY_VERSION" \
+-            --out "${RUNNER_TEMP}/signing-message.bin"
++          if [ "$KIND" = "reflex-package" ]; then
++            ./target/release/qip reflex-package signing-message "../${PACK}" \
++              --key-version "$KEY_VERSION" --author "$AUTHOR" --approver "$APPROVER" \
++              --approved-at "$APPROVED_AT" | xxd -r -p > "${RUNNER_TEMP}/signing-message.bin"
++          else
++            ./target/release/qip model-pack signing-message \
++              --pack "../${PACK}" --author "$AUTHOR" --approver "$APPROVER" \
++              --approved-at "$APPROVED_AT" --key-version "$KEY_VERSION" \
++              --out "${RUNNER_TEMP}/signing-message.bin"
++          fi
+           sha256sum "${RUNNER_TEMP}/signing-message.bin"
+ 
+       - name: authenticate as the publisher (workload identity, no key)
+@@ -290,15 +305,26 @@ jobs:
+           APPROVED_AT: ${{ steps.approval.outputs.approved_at }}
+           KEY_VERSION: ${{ steps.identity.outputs.version }}
+           BUNDLE: ${{ steps.identity.outputs.bundle }}
++          KIND: ${{ inputs.kind }}
+         run: |
+           set -euo pipefail
+-          ./target/release/qip model-pack attach-signature \
+-            --pack "../${PACK}" --author "$AUTHOR" --approver "$APPROVER" \
+-            --approved-at "$APPROVED_AT" --key-version "$KEY_VERSION" \
+-            --signature-der "${RUNNER_TEMP}/signature.der" \
+-            --out "${RUNNER_TEMP}/signed-pack.json"
+-          ./target/release/qip model-pack verify \
+-            --pack "${RUNNER_TEMP}/signed-pack.json" --trust-bundle "../${BUNDLE}"
++          if [ "$KIND" = "reflex-package" ]; then
++            ./target/release/qip reflex-package attach-signature "../${PACK}" \
++              --key-version "$KEY_VERSION" --author "$AUTHOR" --approver "$APPROVER" \
++              --approved-at "$APPROVED_AT" \
++              --der "$(xxd -p "${RUNNER_TEMP}/signature.der" | tr -d '\n')" \
++              > "${RUNNER_TEMP}/signed-pack.json"
++            ./target/release/qip reflex-package verify \
++              "${RUNNER_TEMP}/signed-pack.json" --trust-bundle "../${BUNDLE}"
++          else
++            ./target/release/qip model-pack attach-signature \
++              --pack "../${PACK}" --author "$AUTHOR" --approver "$APPROVER" \
++              --approved-at "$APPROVED_AT" --key-version "$KEY_VERSION" \
++              --signature-der "${RUNNER_TEMP}/signature.der" \
++              --out "${RUNNER_TEMP}/signed-pack.json"
++            ./target/release/qip model-pack verify \
++              --pack "${RUNNER_TEMP}/signed-pack.json" --trust-bundle "../${BUNDLE}"
++          fi
+ 
+       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+         with:
