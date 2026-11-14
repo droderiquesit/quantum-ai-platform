@@ -163,3 +163,31 @@ fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() 
         refused.message()
     );
 }
+
+/// R12-AGENCY-3028, ADR 0146 decision 3: the registry the node starts on
+/// refuses to be used without the Causal Agency Brain. Removing it leaves
+/// `intervention-planning` uncovered, and `require_coverage` -- which
+/// `standard` ends on -- refuses naming that scope, so a node cannot start
+/// running ambient agency plans that its own record does not mention.
+///
+/// Mutation: delete `INTERVENTION_PLANNING` from `REQUIRED_SCOPES` -- the
+/// `expect_err` fails because the registry without the agency is admitted.
+#[test]
+fn a_registry_without_the_causal_agency_brain_is_refused_naming_its_scope() {
+    use qip_deepbrain::brains::REQUIRED_SCOPES;
+    let platform = platform();
+    let registry = standard(platform.organisation().roster()).unwrap();
+    assert!(registry.get(CAUSAL_AGENCY).is_some(), "premise: registered");
+    assert!(REQUIRED_SCOPES.contains(&INTERVENTION_PLANNING));
+    assert!(registry.require_coverage().is_ok(), "premise: covered");
+
+    let refused = registry
+        .without(CAUSAL_AGENCY)
+        .require_coverage()
+        .expect_err("a registry without the causal agency brain is refused");
+    assert!(
+        refused.message().contains(INTERVENTION_PLANNING),
+        "{}",
+        refused.message()
+    );
+}
