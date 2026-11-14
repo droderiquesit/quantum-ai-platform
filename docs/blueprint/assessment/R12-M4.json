@@ -1668,27 +1668,29 @@
   },
   {
     "id": "R12-ASSET-4073",
-    "status": "PARTIAL",
-    "current": "qip-financial commerce.rs is a paper-only pipeline (SimulatedMerchant, inventory ledger, settlement) with tests; not composed into the kernel.",
+    "status": "COMPLETE",
+    "current": "A received paper unit is a real-asset position: `CommerceResearch::position_record` builds a `PositionRecord` carrying its landed cost and the inventory state read from the inventory ledger, on the receive path of the paper commerce plan. The plan is committed (data/breadth/dev-commerce-paper.json), carried by the catalogue's config_files arm and the dev deep brain's QIP_DEEPBRAIN_BREADTH_PLAN_PATH, and loaded by qip-deepbrain's breadth install.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/commerce.rs:1-12",
       "backend/crates/libs/qip-financial/tests/commerce.rs",
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs CommerceResearch::position_record; CommerceSimulated.positions",
       "backend/crates/libs/qip-financial/src/position_record.rs PositionRecord.inventory_state (RealAsset only)",
-      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledger_inventory_and_the_book_is_unchanged"
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_received_paper_unit_is_a_real_asset_position_carrying_landed_cost_and_ledger_inventory_and_the_book_is_unchanged",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs::the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml QIP_DEEPBRAIN_BREADTH_PLAN_PATH"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Paper commerce is composed into the kernel (qip-kernel src/commerce_research.rs, DISCOVER/SIMULATE) but runs only when QIP_DEEPBRAIN_BREADTH_PLAN (qip-deepbrain src/breadth.rs) is set, and no committed environment sets it (infrastructure/gitops/envs/*/deepbrain.yaml). By its own doc no commerce unit becomes a position in the kernel's book; PositionRecord.product_economics (LandedCost) is never built and the record has no inventory-state field. Needs a gitops deploy change for the breadth plan plus a decision (ADR 0021/0099 scope) letting paper commerce units enter the asset book; any real merchant stays BLOCKED by ADR 0021/0099.\n2026-10-31 (lane L1-MONEY, ruling decision 10): each received paper unit is now a RealAsset PositionRecord carrying the purchase's LandedCost and its inventory state read from the commerce ledger. It is held in the commerce research output, never in the desk's book. Remaining: commerce research runs only when the deep brain is given a breadth plan, and no committed environment gives it one. The ruling approves mounting a commerce-only breadth plan in dev (a plan file under data/, a catalogue.tf config_files entry and QIP_DEEPBRAIN_BREADTH_PLAN in infrastructure/gitops/envs/dev/deepbrain.yaml). That is not done yet, so bar part 2 is unmet.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --test breadth",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 lane L1-MONEY: mutation (literal Sold instead of the ledger read) fired, restored with cp+cmp. No skeptic was run: the row cannot be promoted until the dev mount lands. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'not composed into the kernel' is stale: commerce_research.rs runs scout, resolver, PurchaseExecutor(SimulatedMerchant), logistics plan, inventory Ledger and resale when a breadth plan is installed (tests: qip-kernel tests/breadth.rs, qip-deepbrain tests/commerce.rs). Owner ruling 2026-10-31 (IMPLEMENT): A physical position is a paper research record. Each unit the simulated merchant delivers becomes a RealAsset position carrying its landed cost, and its inventory state from the ledger. Handed to lane L1 (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-10-31 lane L1-MONEY: mutation (literal Sold instead of the ledger read) fired, restored with cp+cmp. No skeptic was run: the row cannot be promoted until the dev mount lands. 2026-10-31 lane L1-MONEY: data/breadth/dev-commerce-paper.json, the paper commerce plan dev is to mount under ruling decision 10, is committed. the_committed_paper_commerce_plan_runs_discovers_buys_lists_and_sells_and_journals_duty_and_tax (qip-kernel breadth suite) runs it through the cycle; the mutation duty_rate \"0\" fails it. The mount is not done: a protected root variable (variables.tf), dev's protected tfvars value, a catalogue.tf config_files entry with its per-file secret in modules/cloudrun, and a second volume in gitops/envs/dev/deepbrain.yaml. That needs a person or a lane with a terraform binary to plan it. Until then no committed deployment runs commerce research, so bar part 2 stays unmet and the row stays PARTIAL. 2026-11-14: regraded COMPLETE. Two independent read-only readers each tried to refute that the check (\"a physical position carries landed cost and inventory state from the inventory ledger\") is met and neither could; the mount the earlier gap named is committed. `cargo test -p qip-kernel --test breadth` then answered \"test result: ok. 26 passed; 0 failed\", both cited tests among them. No test was added for this regrade, so there was nothing new to mutation-verify. Stated limits, from the second reader: the inventory state is the receipt snapshot (Held only), the position sits outside the desk book by ruling, and nothing has been observed running in dev, so deployable and e2e stay false."
   },
   {
     "id": "R12-ASSET-4074",
@@ -2884,7 +2886,7 @@
       "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_counterparty_failure_world_withholds_a_reserve_named_for_it",
       "a_paper_book_failing_the_counterparty_failure_world_withholds_a_reserve_named_for_it"
     ],
-    "gap": "The stress suite asserts only that the counterparty-failure world is present. No test isolates that world and shows it sets a named reserve; the reserve asserted may come from another worst world.",
+    "gap": "2026-11-14 (second independent reader; the first found the row met): the isolating test drives a governor the test builds, with hand-set ledger figures and a 0.002 tolerance, not the DECIDE stage at the platform's own 0.20. No test runs a cycle in which this world is the worst one at production tolerance and asserts the recorded DECIDE detail names it, so removing the response where production applies it (the `governor.size` call in `construct_from`) would not fail a test tied to this world. That cycle-level test is what remains. The same objection would apply to the sister rows R12-RISK-4117 to 4120, 4123 and 4124, which share the helper and are graded COMPLETE; they have not been re-read against it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2895,7 +2897,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE after re-reading. A caveat that does not change the grade: in the integration test the worst world that drives the reserve may be a library scenario rather than this one; the unit test pins the counterparty arithmetic. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE after re-reading. A caveat that does not change the grade: in the integration test the worst world that drives the reserve may be a library scenario rather than this one; the unit test pins the counterparty arithmetic. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new test was then run and mutation-verified on 2026-11-14 (`cargo test -p qip-kernel --test stress a_paper_book_failing_the`: \"test result: ok. 12 passed; 0 failed\"). Mutation 1, the two worlds filtered out of `tail::worlds`: failed at stress.rs:796 \"the paper book was never stressed in the counterparty-failure world\". Mutation 2, the response removed (`with_stressed_liquidity_reserve(Decimal::ZERO)` in qip-survival survival.rs): all twelve per-world tests failed, this one on the waterfall refusing a balance that no longer reconciles. Both restored byte for byte (cmp) and green again. Two independent readers then split: the first found the requirement met; the second did not, and its objection is why this row stays PARTIAL."
   },
   {
     "id": "R12-RISK-4122",
@@ -2909,7 +2911,7 @@
       "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_model_failure_world_withholds_a_reserve_named_for_it",
       "a_paper_book_failing_the_model_failure_world_withholds_a_reserve_named_for_it"
     ],
-    "gap": "The stress suite asserts only that the model-failure world is present, and the unit tests in tail.rs cover its arithmetic. No test isolates that world and shows it sets a named reserve.",
+    "gap": "2026-11-14 (second independent reader; the first found the row met): the isolating test drives a governor the test builds, with hand-set ledger figures and a 0.002 tolerance, not the DECIDE stage at the platform's own 0.20. No test runs a cycle in which this world is the worst one at production tolerance and asserts the recorded DECIDE detail names it, so removing the response where production applies it (the `governor.size` call in `construct_from`) would not fail a test tied to this world. That cycle-level test is what remains. The same objection would apply to the sister rows R12-RISK-4117 to 4120, 4123 and 4124, which share the helper and are graded COMPLETE; they have not been re-read against it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2920,7 +2922,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE, with the same caveat as 4121. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE, with the same caveat as 4121. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new test was then run and mutation-verified on 2026-11-14 (`cargo test -p qip-kernel --test stress a_paper_book_failing_the`: \"test result: ok. 12 passed; 0 failed\"). Mutation 1, the two worlds filtered out of `tail::worlds`: failed at stress.rs:796 \"the paper book was never stressed in the model-failure world\". Mutation 2, the response removed (`with_stressed_liquidity_reserve(Decimal::ZERO)` in qip-survival survival.rs): all twelve per-world tests failed, this one on the waterfall refusing a balance that no longer reconciles. Both restored byte for byte (cmp) and green again. Two independent readers then split: the first found the requirement met; the second did not, and its objection is why this row stays PARTIAL."
   },
   {
     "id": "R12-RISK-4123",
