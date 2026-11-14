@@ -361,9 +361,11 @@
       "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::SupplyChain (supply_chain_exposure)",
       "backend/crates/agents/qip-investment-agents/tests/organisation.rs removing_the_commodities_analyst_drops_supply_chain_from_coverage (a port-closure claim at 0.5 strength and 0.8 confidence on WTI reads 0.4; removing the analyst drops SupplyChain from coverage)",
       "backend/crates/runtime/qip-kernel/src/platform.rs second_order_exposure",
-      "mutation 2026-10-31: supply_claims replaced with Vec::new() in CommoditiesAnalyst::analyse; test panicked at organisation.rs:2928 (0.4 of exposure expected); restored byte-identical (cmp); test result: ok. 1 passed"
+      "mutation 2026-10-31: supply_claims replaced with Vec::new() in CommoditiesAnalyst::analyse; test panicked at organisation.rs:2928 (0.4 of exposure expected); restored byte-identical (cmp); test result: ok. 1 passed",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_supply_chain_read_counts_weather_and_ignores_late_and_misdirected_claims",
+      "the_supply_chain_read_counts_weather_and_ignores_late_and_misdirected_claims"
     ],
-    "gap": "2026-10-31 (lane L2b; independent read-only skeptic REFUTED on bar parts 2, 4 and 1): the supply-chain read is unreachable on every deployed path because analyse returns no_data before it when the futures curve is missing and no absorb arm writes front_month_price; nothing outside tests records a Logistics or Weather edge; inventories, production constraints, shipping and logistics are not modelled and second-order exposure is the kernel's, not the specialist's; supplier_links is asserted only at zero and the Weather arm and the as_of / subject filters are untested. The exposure mutation (supply_claims emptied, test fails on the 0.4 value) holds. Closing it: move the supply-chain read ahead of the curve early-return, test supplier_links non-zero and a Weather claim, and give the scope a producer.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Supply-chain read still sits after the curve early-return in CommoditiesAnalyst::analyse, so no-curve desks state nothing; no producer records Logistics/Weather edges; supplier_links non-zero untested; inventories, production constraints, shipping not modelled. Weather arm and as_of/subject filters now tested (mutation not run).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -374,7 +376,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-investment-agents --test organisation removing_the_commodities_analyst_drops_supply_chain_from_coverage",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-31 lane L2b (wave580): supply-chain claim read added to CommoditiesAnalyst, Scope::SupplyChain added to coverage, mutation fired on the exposure value.  Skeptic (code-reviewer, read-only): REFUTED as the gap records; also caught the row claiming a supply_claims fact the finding builder does not emit — corrected."
+    "notes": "2026-10-31 lane L2b (wave580): supply-chain claim read added to CommoditiesAnalyst, Scope::SupplyChain added to coverage, mutation fired on the exposure value.  Skeptic (code-reviewer, read-only): REFUTED as the gap records; also caught the row claiming a supply_claims fact the finding builder does not emit — corrected. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-ASSET-3017",
@@ -665,9 +667,11 @@
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::route",
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, CAUSAL_AGENCY",
-      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::a_registry_without_the_causal_agency_brain_is_refused_naming_its_scope",
+      "a_registry_without_the_causal_agency_brain_is_refused_naming_its_scope"
     ],
-    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it. Same decision as R12-AMBIENT-3027: an Organisation agent has a Desk to read and the ambient agency reads a research sweep, so either the agency is wrapped as an agent whose finding is composed from AgencyRound (goal, candidates, gate verdicts) or coverage::Scope gains an ambient scope; the second changes the every-Scope-is-covered organisation test and needs an ADR. The BrainSpec registration the grader proposed already exists (brains.rs, ambient/causal-agency).",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Test proves the registry refuses to start without the Causal Agency Brain (ADR 0146 decision 3). Still open: the agency is not an Organisation agent emitting Findings, so coverage::covered_scopes cannot count it. Needs an AgencyRound-to-Finding wrapper or an ambient coverage::Scope with an ADR. Owner ruling keeps it PARTIAL until lane L2b closes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -678,7 +682,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (IMPLEMENT): ADR 0146 decision 3 stands: the Causal Agency Brain is registered by its BrainSpec in the deep brain's registry, which refuses to start without it. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (IMPLEMENT): ADR 0146 decision 3 stands: the Causal Agency Brain is registered by its BrainSpec in the deep brain's registry, which refuses to start without it. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-GOV-3029",
@@ -1664,9 +1668,11 @@
       "backend/crates/apps/qip-deepbrain/tests/research.rs:2642 a_widening_regional_gap_routes_one_precursor_before_any_anomaly_and_none_when_the_sentinel_is_off (mutations: drop the routing loop -> no attention event; read the switch as always on -> the disabled half raises one)",
       "backend/crates/apps/qip-deepbrain/tests/research.rs:2698 a_steady_regional_gap_raises_no_precursor_and_one_already_past_its_threshold_is_not_one (mutation: drop the threshold arm in observe -> the jump is raised and the sweep refuses its severity)",
       "backend/crates/apps/qip-deepbrain/tests/research.rs:2719 the_opportunity_sentinel_switch_reads_on_and_off_and_refuses_anything_else (mutation: accept `of` -> fails)",
-      "docs/adr/0434-an-opportunity-sentinel-raises-a-run-of-sub-threshold-scores-rising-toward-a-detectors-threshold-and-never-a-finished-anomaly.md"
+      "docs/adr/0434-an-opportunity-sentinel-raises-a-run-of-sub-threshold-scores-rising-toward-a-detectors-threshold-and-never-a-finished-anomaly.md",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_widening_leg_spread_routes_one_multi_leg_precursor_and_none_when_the_sentinel_is_off",
+      "a_widening_leg_spread_routes_one_multi_leg_precursor_and_none_when_the_sentinel_is_off"
     ],
-    "gap": "2026-11-12: (1) 'runs in production' needs a deployed qip-deepbrain, and none is deployed; (2) cross-region, physical-product and multi-leg are silent until a deployment names regional pairs, physical readings and leg sets, which main.rs does not yet read, and event is silent because the sweep's context carries no events; a deployed sentinel today watches cross-asset pairs only; (3) only cross-region is driven end to end through the sweep in a test; the other families are proven at the scoring and scanner seam.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Still open: no deployed qip-deepbrain; main.rs does not read regional pairs, physical readings or leg sets, so a deployment watches cross-asset only; event is silent because the sweep context carries no events; cross-asset, event and physical families are still proven only at the scoring and scanner seam, not through the sweep.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1677,7 +1683,7 @@
     "verification": "cargo test -p qip-deepbrain --test research; cargo test -p qip-opportunity-engine --lib precursor",
     "work_item": "",
     "size": "M",
-    "notes": "Lane t50-04, 2026-11-12: kept PARTIAL. Precursor definition chosen under ADR 0434."
+    "notes": "Lane t50-04, 2026-11-12: kept PARTIAL. Precursor definition chosen under ADR 0434. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-AMBIENT-3070",
@@ -2429,9 +2435,12 @@
     "evidence": [
       "backend/crates/services/qip-prediction/src/belief.rs:190 Branch",
       "backend/crates/services/qip-twin/src/futures.rs::Branch",
-      "backend/crates/libs/qip-contracts/src/world_model.rs::WorldBranchFields"
+      "backend/crates/libs/qip-contracts/src/world_model.rs::WorldBranchFields",
+      "backend/crates/services/qip-twin/src/futures.rs::Branch::validate_fields",
+      "backend/crates/services/qip-twin/tests/futures.rs::a_branch_missing_any_stated_field_is_refused_and_a_complete_one_is_not",
+      "a_branch_missing_any_stated_field_is_refused_and_a_complete_one_is_not"
     ],
-    "gap": "Impact is per instrument (Branch::impact_bps), not portfolio impact: FutureTree::grow takes no positions, so no branch can state one. Nothing refuses a branch missing a field: grow builds the baseline branch with empty evidence and propagation, and hedge_for returns no hedge whenever no instrument moves down, so an empty hedge list means both 'no hedge required' and 'not computed'. The only production caller, qip-deepbrain's TickDesk, runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment sets, so even a refusal would run on no default path.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Branch::validate_fields exists and refuses missing probability, assumptions, evidence, propagation, impact, but nothing calls it: grow's baseline branch has empty evidence and propagation, so wiring it needs a decision. Still missing: portfolio impact (grow takes no positions), a typed hedge requirement separating none-required from not-computed, and the tick desk enabled by default.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2444,7 +2453,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/futures.rs (Branch, to_world_branch, FutureTree::grow, hedge_for) and qip-deepbrain/src/main.rs (tick desk 'Off unless QIP_DEEPBRAIN_TICK_EVERY'); no code changed. Closing needs positions into grow (or a portfolio_outcomes pass, R12-TICK-10121), a typed hedge requirement distinguishing none-required from absent, a Branch::validate with one refusal test per field, and the tick desk on by default or committed."
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/futures.rs (Branch, to_world_branch, FutureTree::grow, hedge_for) and qip-deepbrain/src/main.rs (tick desk 'Off unless QIP_DEEPBRAIN_TICK_EVERY'); no code changed. Closing needs positions into grow (or a portfolio_outcomes pass, R12-TICK-10121), a typed hedge requirement distinguishing none-required from absent, a Branch::validate with one refusal test per field, and the tick desk on by default or committed. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-TICK-3100",

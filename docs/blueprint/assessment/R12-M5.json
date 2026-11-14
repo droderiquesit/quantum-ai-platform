@@ -1423,7 +1423,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:769 cycle_whitelist",
       "backend/crates/edge/qip-edge/src/reservation.rs:121"
     ],
-    "gap": "Central template discovery feeding cycle_whitelist; inventory prepositioning.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Owner ruling is ADR_THEN_IMPLEMENT: ADR must be claimed first (docs/adr is protected). Inventory prepositioning and capital grants for named regions are still unbuilt and span qip-contracts, kernel plane and edge. Whitelist derivation exists (cycle_whitelist_for); no change made.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1434,7 +1434,7 @@
     "verification": "kernel test producing a whitelist from discovery",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The centre discovers templates only inside what the operator signed. Slot 8 carries the operator's conversions narrowed to the cycles the centre finds over them, so stopping discovery empties it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered."
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The centre discovers templates only inside what the operator signed. Slot 8 carries the operator's conversions narrowed to the cycles the centre finds over them, so stopping discovery empties it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-MESH-5060",
@@ -2135,9 +2135,12 @@
       "backend/crates/services/qip-prediction/tests/access.rs:106",
       "backend/crates/services/qip-prediction/tests/access.rs:121",
       "backend/crates/services/qip-prediction/tests/access.rs:141",
-      "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit"
+      "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit",
+      "backend/crates/services/qip-prediction/tests/access.rs::an_event_market_cannot_be_created_at_a_wagering_venue_though_its_jurisdiction_permits",
+      "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit_event_creation",
+      "an_event_market_cannot_be_created_at_a_wagering_venue_though_its_jurisdiction_permits"
     ],
-    "gap": "2026-10-24: The wagering/event path separation and the age and jurisdiction controls are real and mutation-checked but run only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section, or the row is narrowed to the library. 2026-10-24 (AUDIT-5 verification): the guard is not on the only order path: the breadth plan's market_factory section creates event-contract markets and seeds resting order ladders (FactoryStage::install -> OrderManager::admit_ladder / MarketFactory::seed) and checks only admit_creation's jurisdiction, never policy.kind or entity eligibility. A factory venue recorded as Wagering gets event orders resting at it. The path is also behind QIP_DEEPBRAIN_BREADTH_PLAN, set by no committed environment. Closes when the seeding path calls the same admit as the order seams, with a test of the crossing.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Factory seeding path now refuses event markets at a non-Event venue (admit_event_creation, called in breadth.rs). Still open: no entity age/eligibility check on seeded ladders (factory has no entity); QIP_DEEPBRAIN_BREADTH_PLAN still set by no committed environment; no kernel-level test of the factory crossing; mutation not run (cannot compile).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2148,7 +2151,7 @@
     "verification": "cargo test -p qip-prediction --test access",
     "work_item": "",
     "size": "S",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the wagering/event separation and age and jurisdiction controls run only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the wagering/event separation and age and jurisdiction controls run only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-EVENT-5089",

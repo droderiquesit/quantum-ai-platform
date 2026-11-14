@@ -292,9 +292,12 @@
       "backend/crates/services/qip-agency/src/causal.rs StructuralModel::backdoor_open_path",
       "backend/crates/services/qip-agency/src/estimate.rs backdoor_adjusted",
       "backend/crates/services/qip-agency/tests/causal.rs::an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set",
-      "backend/crates/services/qip-agency/tests/causal.rs::adjusting_for_a_collider_opens_the_path_it_was_meant_to_close"
+      "backend/crates/services/qip-agency/tests/causal.rs::adjusting_for_a_collider_opens_the_path_it_was_meant_to_close",
+      "backend/crates/services/qip-agency/src/estimate.rs backdoor_adjusted_by_segment",
+      "backend/crates/services/qip-agency/tests/causal.rs::an_uplift_effect_is_estimated_per_segment_and_a_confounded_design_abstains_for_all",
+      "an_uplift_effect_is_estimated_per_segment_and_a_confounded_design_abstains_for_all"
     ],
-    "gap": "2026-10-30 (lane L2-INTEL): the unit clause is built; the in-lane skeptic HELD the PARTIAL status. Its one finding, that the moralisation and ancestral steps were untested, is closed by an M-bias test with both mutations firing. Open: no composition root calls backdoor_adjusted, and heterogeneity is not modelled (one effect per design, not per entity, audience, market or horizon).",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Per-segment back-door estimation exists as a library function, tested. Still open: no composition root or production caller invokes backdoor_adjusted or the per-segment variant; segments are caller-supplied row sets, not entity, audience, market or horizon dimensions wired from real data.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -305,7 +308,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": " 2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: backdoor_open_path short-circuited to None; its descendant check disabled. Each fails an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set. Also: the parent-marriage step disabled, and the moral graph built over the whole model instead of the ancestral set; each fails adjusting_for_a_collider_opens_the_path_it_was_meant_to_close."
+    "notes": "2026-10-30 L2-INTEL: mutations, each fired, restored by copy + cmp: backdoor_open_path short-circuited to None; its descendant check disabled. Each fails an_uplift_estimate_abstains_on_a_confounded_design_and_is_identified_by_the_back_door_set. Also: the parent-marriage step disabled, and the moral graph built over the whole model instead of the ancestral set; each fails adjusting_for_a_collider_opens_the_path_it_was_meant_to_close. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-MODEL-4014",
@@ -1570,9 +1573,11 @@
       "docs/adr/0183-a-position-is-opened-only-with-an-exit-plan-its-instruments-stated-terms-admit.md",
       "backend/crates/runtime/qip-kernel/src/platform.rs (Platform::exit_plan_for, position_exit_plan)",
       "backend/crates/runtime/qip-kernel/tests/position_record.rs a_short_thesis_on_a_fund_inside_its_lockup_is_refused_with_the_lockup_named_and_nothing_is_held",
-      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::dated_exit_plan (the one dating function construction and resume share), Platform::resume_position_horizons"
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::dated_exit_plan (the one dating function construction and resume share), Platform::resume_position_horizons",
+      "backend/crates/services/qip-learning-engine/tests/learning.rs each_position_attributes_exactly_to_its_own_books_pnl_and_the_sources_sum_to_the_total",
+      "each_position_attributes_exactly_to_its_own_books_pnl_and_the_sources_sum_to_the_total"
     ],
-    "gap": "2026-11-12 (fw-f-01): plans are now rebuilt on resume: assembly re-dates each sized object's plan from its journalled PositionHorizonRecorded through the same lockup check construction ran (dated_exit_plan), refusing assembly where the universe now refuses that plan, proven by position_record.rs a_held_position_record_carries_valuation_confidence_horizon_and_expected_liquidity. Still open: Platform::submit_order is public and checks no plan (it has roughly a hundred direct callers across kernel, broker and acceptance tests and qip-api's start-up path, so the check moves every one of them and was more than this lane's time box), and the attribution half has no per-position reconciliation test.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Platform::submit_order is public and checks no exit plan (about a hundred direct callers across kernel, broker and acceptance tests and qip-api start-up), so a position can still be opened without a plan on that path. Attribution test is at Attributor level; no kernel-level per-position reconciliation through Platform::last_attribution. New test not mutation-verified (no cargo).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1583,7 +1588,7 @@
     "verification": "cargo test -p qip-kernel --test position_record",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect. 2026-10-30: ADR 0183 decides the owner question under the 2026-10-24 delegation: a declared lockup is a term the exit plan respects, so a thesis shorter than a running lockup is refused at construction. Mutation: pass None for the lockup in exit_plan_for; the locked-up fund is sized and the test fails. Five mark-focused fixtures' lockups shortened to an expired one year; the ASSET-4067 held-record assertion moved from the lockup's dated return to the catalogue exit for an expired lockup (the running-lockup return stays tested in valuation_plane.rs); the skeptic counts that restatement as lost held-record coverage. Skeptic (security-engineer) REFUTED as in the gap. 2026-11-12 fw-f-01: resumed exit plan asserted equal to the constructed one; mutation: drop the resume call at assembly, position_exit_plan is None on the second process and the test fails (fired, restored)."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'platform.rs:15507 attribution periods' is stale: the kernel's attribution is Attributor, exposed through Platform::last_attribution. 2026-10-25: attempted in the asset lane and not committed: the exit-plan refusal fails four lockup tests in qip-kernel; the conflict is a product decision, not a code defect. 2026-10-30: ADR 0183 decides the owner question under the 2026-10-24 delegation: a declared lockup is a term the exit plan respects, so a thesis shorter than a running lockup is refused at construction. Mutation: pass None for the lockup in exit_plan_for; the locked-up fund is sized and the test fails. Five mark-focused fixtures' lockups shortened to an expired one year; the ASSET-4067 held-record assertion moved from the lockup's dated return to the catalogue exit for an expired lockup (the running-lockup return stays tested in valuation_plane.rs); the skeptic counts that restatement as lost held-record coverage. Skeptic (security-engineer) REFUTED as in the gap. 2026-11-12 fw-f-01: resumed exit plan asserted equal to the constructed one; mutation: drop the resume call at assembly, position_exit_plan is None on the second process and the test fails (fired, restored). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-ASSET-4070",
@@ -1990,9 +1995,11 @@
       "backend/crates/apps/qip-ledgerd/src/read_api.rs GET /api/v1/ledger/obligations; test the_obligations_route_answers_the_ledgers_fold_at_the_callers_instant",
       "backend/crates/apps/qip-api/src/ledger_obligations.rs LedgerObligationsReader (QIP_LEDGERD_URL, 1s timeouts, banner)",
       "backend/crates/apps/qip-api/src/routes.rs POST /cycle reads and installs the obligations before run_cycle",
-      "backend/crates/apps/qip-api/tests/ledger_obligations.rs qip_apis_cycle_reads_qip_ledgerds_obligations_at_the_cycle_instant_and_a_ledger_pledge_lowers_the_ceiling_the_next_order_is_vetoed_against, an_unreachable_ledger_installs_no_reading_and_the_cycle_still_runs"
+      "backend/crates/apps/qip-api/tests/ledger_obligations.rs qip_apis_cycle_reads_qip_ledgerds_obligations_at_the_cycle_instant_and_a_ledger_pledge_lowers_the_ceiling_the_next_order_is_vetoed_against, an_unreachable_ledger_installs_no_reading_and_the_cycle_still_runs",
+      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::a_plan_the_ceiling_would_admit_is_refused_once_the_ledger_shows_cash_owed",
+      "a_plan_the_ceiling_would_admit_is_refused_once_the_ledger_shows_cash_owed"
     ],
-    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.\n2026-10-31 (lane L1-MONEY): qip-ledgerd now serves its LedgerObligations fold at GET /api/v1/ledger/obligations?unit=&as_of=; the caller's instant is required, never defaulted. Remaining: a qip-api reader with an explicit timeout that calls it each cycle and feeds Platform::observe_ledger_obligations (qip-api has no ledgerd client today), the survival_gate.rs refusal test the closure names, and a default deployment of qip-ledgerd (variable \"ledgerd\" is null everywhere), so bar part 2 stays unmet.\n2026-11-07 (lane L1-MONEY): qip-api's root installs a LedgerObligationsReader from QIP_LEDGERD_URL (unset: a loud banner, nothing read); each POST /cycle reads /api/v1/ledger/obligations at the cycle's instant in USD and installs it before run_cycle; a timeout, non-200 or undecodable body installs nothing and is a cycle problem. Remaining (bar part 2): QIP_LEDGERD_URL is set by no environment and qip-ledgerd is deployed nowhere (ledgerd null everywhere); enabling it is an infrastructure/environments/** patch and a billed service. The closure's second survival_gate test (one plan over-committing balances, ignoring an obligation or breaching the hard limit is refused, reservation holds in one act) is not built.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Still unmet: QIP_LEDGERD_URL set by no environment and qip-ledgerd deployed nowhere (infrastructure/environments/** patch, billed service). Also no test showing reservation makes pass-and-hold one act, nor one over-committed-balances plan refused.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2006,7 +2013,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL. 2026-10-31 lane L1-MONEY: mutation (route arm unreachable, so 404) fired and was restored with cp+cmp. No skeptic was run: the row cannot be promoted without the reader and a deployment. 2026-11-07 lane L1-MONEY: mutation (remove the observe_ledger_obligations call from the cycle route) fails the test ('the reading was not installed'); restored with cp+cmp. qip-api 21 binaries, 283 passed, 0 failed; api_boundary allow-list gains observe_ledger_obligations and note_ledger_obligations_problem with their argument. Stays PARTIAL on bar part 2."
+    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL. 2026-10-31 lane L1-MONEY: mutation (route arm unreachable, so 404) fired and was restored with cp+cmp. No skeptic was run: the row cannot be promoted without the reader and a deployment. 2026-11-07 lane L1-MONEY: mutation (remove the observe_ledger_obligations call from the cycle route) fails the test ('the reading was not installed'); restored with cp+cmp. qip-api 21 binaries, 283 passed, 0 failed; api_boundary allow-list gains observe_ledger_obligations and note_ledger_obligations_problem with their argument. Stays PARTIAL on bar part 2. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-CAPITAL-4087",
@@ -2749,7 +2756,8 @@
       "backend/crates/runtime/qip-kernel/src/tail.rs tests a_generated_joint_world_lies_outside_every_library_world_for_a_hedged_pair, the_joint_world_stays_past_the_regime_flip_by_its_correlation_floor_on_a_diversified_book, a_joint_variance_that_overflows_is_an_infinite_loss_not_a_free_world",
       "backend/crates/runtime/qip-kernel/src/tail.rs joint_world (advisory, outside survival_worlds)",
       "backend/crates/runtime/qip-kernel/src/platform.rs StressReport.advisory_worlds/advisory_reserve, Platform::set_joint_tail_reserve_applied (off by default, no composition root sets it), Platform::applied_stress_reserve",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before"
+      "backend/crates/runtime/qip-kernel/tests/stress.rs a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before",
+      "every_cycle_running_composition_root_applies_the_joint_tail_reserve"
     ],
     "gap": "2026-10-30 (lane L1-MONEY, 89af653c, 8a6f1903): every cycle's SIMULATE now appends a generated joint world: regime-flip volatility times a seeded amplification, with every pair correlated against the book at a drawn magnitude in [0.75, 1]. It reaches the stress report through run_cycle on qip-api's default path. Kept PARTIAL on one skeptic round (REFUTED):\n- \"Outside the library's bounds\" is proven on a hedged pair and as a floor over the regime flip, not against the qip_simulation_engine factor library, nor for capped-long or single-position books.\n- The new world often becomes the worst world, so the survival governor withholds more capital. No limit value or threshold changed, but the owner must decide whether that counts as a risk-limit change.\n- The fail-open overflow path the skeptic found is fixed in 8a6f1903.\n2026-10-30, parent hold: applying the joint-tail reserve raises the survival reserve; owner authorisation required (decision pending). On the shipped default the joint world is computed every cycle and reported as advisory, with its would-be reserve, in the stress report, the SIMULATE stage detail and the stress gauge. The reserve actually applied, and hedge selection, read only the worlds applied before 89af653c. Applying it is Platform::set_joint_tail_reserve_applied, which no composition root calls.",
     "implemented": true,
@@ -2762,7 +2770,7 @@
     "verification": "cargo test -p qip-kernel --lib tail:: (\"ok. 15 passed; 0 failed\"); cargo test -p qip-kernel (1091 passed, 0 failed, on 89af653c); qip-kernel --test stress the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap ('continuous generation') is now partly closed: generation is per-cycle and seeded. The generated worlds are scalar amplifications of single-asset history. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 lane L1-MONEY: mutations fired, each restored with cp+cmp: calm-signed correlation (both tail tests); push removed (stress test); correlation range (0,0) (floor test); 0.0 for a non-finite variance (overflow test). Independent security-engineer skeptic REFUTED (see gap). Kept PARTIAL; owner decision needed on the reserve effect. 2026-10-30 hold: mutation \"apply_joint_tail_reserve defaults to true\" fails a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before (\"the joint world was not reported\"). It survived the first version, which set the flag to false explicitly; the test now uses the platform as built. Restored with cp+cmp. 2026-10-31 lane L1-MONEY: docs/blueprint/owner-decisions-2026-10-31.md (e0387e21) quotes the owner's general delegation (\"You can make all my decisions go\"). Its decision 6, the orchestrator's ruling under that delegation, not the owner's own words, allows the joint-tail reserve on the default path. The lane did not apply it. owner-decisions-2026-10-24.md lists \"No change to a financial risk limit, threshold or limit set\" among what a general delegation does not lift, and the 2026-10-31 record restates that exception as \"no weakening\", which is a rewording, not the owner's. Raising the survival reserve is a change to that control. Switch left off (Platform::set_joint_tail_reserve_applied unset in every composition root); row PARTIAL until the owner confirms decision 6 in their own words. Applying it then is one call per composition root, plus flipping a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before."
+    "notes": "Round-2 independent audit, 2026-10-11: Old gap ('continuous generation') is now partly closed: generation is per-cycle and seeded. The generated worlds are scalar amplifications of single-asset history. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-30 lane L1-MONEY: mutations fired, each restored with cp+cmp: calm-signed correlation (both tail tests); push removed (stress test); correlation range (0,0) (floor test); 0.0 for a non-finite variance (overflow test). Independent security-engineer skeptic REFUTED (see gap). Kept PARTIAL; owner decision needed on the reserve effect. 2026-10-30 hold: mutation \"apply_joint_tail_reserve defaults to true\" fails a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before (\"the joint world was not reported\"). It survived the first version, which set the flag to false explicitly; the test now uses the platform as built. Restored with cp+cmp. 2026-10-31 lane L1-MONEY: docs/blueprint/owner-decisions-2026-10-31.md (e0387e21) quotes the owner's general delegation (\"You can make all my decisions go\"). Its decision 6, the orchestrator's ruling under that delegation, not the owner's own words, allows the joint-tail reserve on the default path. The lane did not apply it. owner-decisions-2026-10-24.md lists \"No change to a financial risk limit, threshold or limit set\" among what a general delegation does not lift, and the 2026-10-31 record restates that exception as \"no weakening\", which is a rewording, not the owner's. Raising the survival reserve is a change to that control. Switch left off (Platform::set_joint_tail_reserve_applied unset in every composition root); row PARTIAL until the owner confirms decision 6 in their own words. Applying it then is one call per composition root, plus flipping a_default_cycle_reports_the_joint_tail_reserve_and_applies_the_one_it_applied_before. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-RISK-4117",
@@ -2872,7 +2880,9 @@
       "backend/crates/runtime/qip-kernel/src/tail.rs:122",
       "backend/crates/runtime/qip-kernel/src/platform.rs:14487",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate",
-      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::a_levered_book_does_not_survive_its_broker_and_an_unlevered_one_does"
+      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::a_levered_book_does_not_survive_its_broker_and_an_unlevered_one_does",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_counterparty_failure_world_withholds_a_reserve_named_for_it",
+      "a_paper_book_failing_the_counterparty_failure_world_withholds_a_reserve_named_for_it"
     ],
     "gap": "The stress suite asserts only that the counterparty-failure world is present. No test isolates that world and shows it sets a named reserve; the reserve asserted may come from another worst world.",
     "implemented": true,
@@ -2885,7 +2895,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE after re-reading. A caveat that does not change the grade: in the integration test the worst world that drives the reserve may be a library scenario rather than this one; the unit test pins the counterparty arithmetic. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
+    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE after re-reading. A caveat that does not change the grade: in the integration test the worst world that drives the reserve may be a library scenario rather than this one; the unit test pins the counterparty arithmetic. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-RISK-4122",
@@ -2895,7 +2905,9 @@
       "backend/crates/runtime/qip-kernel/src/tail.rs:122",
       "backend/crates/runtime/qip-kernel/src/tail.rs::tests::a_hedged_pair_the_factor_model_nets_still_loses_when_the_model_fails",
       "backend/crates/runtime/qip-kernel/src/tail.rs::tests::a_position_without_history_is_charged_rather_than_ignored",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate"
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_model_failure_world_withholds_a_reserve_named_for_it",
+      "a_paper_book_failing_the_model_failure_world_withholds_a_reserve_named_for_it"
     ],
     "gap": "The stress suite asserts only that the model-failure world is present, and the unit tests in tail.rs cover its arithmetic. No test isolates that world and shows it sets a named reserve.",
     "implemented": true,
@@ -2908,7 +2920,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE, with the same caveat as 4121. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
+    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE, with the same caveat as 4121. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-RISK-4123",
