@@ -261,3 +261,45 @@ fn a_contradicting_reaction_lowers_the_held_edges_confidence_and_keeps_the_edge(
         "the contradiction is not cited"
     );
 }
+
+/// R12-WORLD-3078: a Granger edge carries the regression's fitted slope, the
+/// number a state estimator may multiply a lagged parent's return by, and
+/// it is not the edge's strength (a partial R², a measure of fit). The
+/// effect is built as `-0.7 x cause[t-1]` plus noise, so the fitted slope
+/// is near -0.7 while the strength is a positive fraction. A hand-asserted
+/// edge carries no slope, and a NaN or zero slope is refused.
+///
+/// Mutations: drop `.with_slope(test.coefficient)` in
+/// `establish_temporal_precedence_controlling_for` -- the edge carries no
+/// slope; pass `test.partial_r_squared` instead -- the slope is positive.
+#[test]
+fn a_granger_edge_carries_its_fitted_slope_and_a_claimed_edge_carries_none() {
+    use qip_world_model::causal::CausalEdge;
+    let mut rng = Xoshiro256::seeded(4004);
+    let n = 300;
+    let cause: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
+    let mut effect = vec![0.0; n];
+    for t in 1..n {
+        effect[t] = -0.7 * cause[t - 1] + 0.3 * rng.normal();
+    }
+    let edge = establish_temporal_precedence("a", &cause, "b", &effect, daily_bars(), now())
+        .expect("well-formed input")
+        .expect("a strong inverted lag-1 relationship must clear the bar");
+    let slope = edge.slope.expect("a fitted edge carries its slope");
+    assert!((slope + 0.7).abs() < 0.1, "the fitted slope: {slope}");
+    assert!(edge.strength > 0.0, "premise: the strength is a fraction");
+
+    let claimed = CausalEdge::new(
+        "a",
+        "b",
+        Mechanism::CompetitiveSubstitution,
+        0.6,
+        daily_bars(),
+        now(),
+    )
+    .unwrap();
+    assert_eq!(claimed.slope, None);
+    assert!(claimed.clone().with_slope(f64::NAN).is_err());
+    assert!(claimed.clone().with_slope(0.0).is_err());
+    assert_eq!(claimed.with_slope(0.4).unwrap().slope, Some(0.4));
+}

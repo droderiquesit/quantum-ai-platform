@@ -1325,3 +1325,53 @@ fn a_resting_buy_and_a_resting_sale_of_one_instrument_are_not_netted_to_nothing(
     );
     Ok(())
 }
+
+/// ADR 0492 (R12-RISK-4095): a book over its gamma bound can be brought back
+/// inside. The projection carries the book's convexity before the order, so
+/// `MaxBookGamma` admits a sale that lowers the absolute figure while still
+/// refusing a purchase that raises it. Mutation: stop writing
+/// `convexity_before_order` in `PreTradeChecker::project` — the sale is
+/// refused on the 800 of gamma it leaves, and a book over its bound could
+/// never trade its way out.
+#[test]
+fn a_sale_that_lowers_book_gamma_is_admitted_by_a_gamma_bound_the_book_already_exceeds()
+-> Result<()> {
+    let checker = PreTradeChecker::new(LimitSet::new("gamma").with(Limit::new(
+        "book-gamma",
+        LimitKind::MaxBookGamma { limit: 500.0 },
+    )));
+    let mut current = state("10000000", "1000000");
+    let held = object("OPT").as_str().to_string();
+    current
+        .position_notionals
+        .insert(held.clone(), dec!("1000000"));
+    current.convexity.insert(
+        held,
+        qip_risk::limits::Convexity {
+            gamma_per_notional: 0.001,
+            vega_per_notional: 0.0,
+        },
+    );
+    let gamma = |quantity: &str| ProposedOrder {
+        object_id: object("OPT"),
+        quantity: Decimal::parse(quantity).unwrap(),
+        reference_price: dec!("100"),
+        axes: BTreeMap::new(),
+        scope: "momentum".to_string(),
+    };
+    // The premise: the book holds 1,000 of gamma against a bound of 500, and
+    // a purchase taking it to 1,100 is refused.
+    let buy = checker.check(&gamma("1000"), &current, Timestamp::from_secs(0))?;
+    assert!(
+        !buy.is_approved(),
+        "premise: a purchase raising gamma past the bound is refused"
+    );
+    // A sale taking it to 800 is still past the bound and lowers it.
+    let sale = checker.check(&gamma("-2000"), &current, Timestamp::from_secs(0))?;
+    assert!(
+        sale.is_approved(),
+        "a sale lowering gamma from 1,000 to 800 was refused: {:?}",
+        sale.decision
+    );
+    Ok(())
+}

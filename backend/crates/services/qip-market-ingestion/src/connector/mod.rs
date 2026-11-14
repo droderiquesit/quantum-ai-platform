@@ -104,8 +104,8 @@ pub use runtime::{
     ConnectorHealth, ConnectorRuntime, PollOutcome, PollReport, RuntimeConfig, RuntimeStats,
 };
 pub use transport::{
-    ContentDigest, HttpSourceTransport, RequestPurpose, SourceRequest, SourceResponse,
-    SourceTransport,
+    ContentDigest, DetachedSignature, HttpSourceTransport, RequestPurpose, SourceRequest,
+    SourceResponse, SourceTransport,
 };
 pub use validate::{SchemaGuard, SchemaOutcome, SchemaViolation};
 

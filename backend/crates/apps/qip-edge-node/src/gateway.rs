@@ -97,7 +97,7 @@ use qip_execution_engine::creation::{
 use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The finest step the synthetic listing trades in.
 ///
@@ -796,6 +796,29 @@ impl SimulatedGateway {
     /// clearing ledger — the number the cell's position is checked against.
     pub fn positions(&self) -> Vec<PositionSnapshot> {
         self.exchange.ledger().positions()
+    }
+
+    /// The venue's custody statement for the cell (ADR 0130 decision 4, ADR
+    /// 0494): the units its clearing ledger holds, per instrument, from
+    /// [`Self::positions`] — the venue's own record, never the cell's — and
+    /// the cash units it does not state custody of.
+    ///
+    /// The cash units are the clearing account's currency and the quote
+    /// currency of every instrument the venue lists that the statement
+    /// names: the ledger books a fill's cash leg in the listing's currency,
+    /// and a statement that left one out would read the cash leg as a
+    /// holding the venue denies.
+    pub fn custody_holdings(&self) -> (BTreeMap<String, Decimal>, BTreeSet<String>) {
+        let mut holdings = BTreeMap::new();
+        let mut cash = BTreeSet::new();
+        cash.insert(self.exchange.ledger().cash().currency.as_str().to_string());
+        for position in self.positions() {
+            if let Some(listing) = self.listing(&position.object_id) {
+                cash.insert(listing.currency.as_str().to_string());
+            }
+            holdings.insert(position.object_id.as_str().to_string(), position.quantity);
+        }
+        (holdings, cash)
     }
 
     /// Everything the venue has booked to the clearing account since the

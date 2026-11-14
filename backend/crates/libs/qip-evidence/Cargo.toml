@@ -11,6 +11,17 @@ repository.workspace = true
 serde.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
+# The issuer registry is committed JSON (ADR 0139); parsed here from text the
+# composition root read, so the library still performs no I/O.
+serde_json.workspace = true
+# `ring`, through the platform's one pin of it (ADR 0110), for the detached
+# signature verifier that alone constructs `VerifiedSignature` (ADR 0508).
+# Verification is pure computation over bytes in memory; qip-tls's sockets
+# are not used here.
+qip-tls.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

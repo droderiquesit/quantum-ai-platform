@@ -43,5 +43,10 @@ qip-evidence.workspace = true
 # journal's key-value port, and the tests that used it still do.
 qip-storage.workspace = true
 
+[dev-dependencies]
+# A test issuer's signer for the detached-signature path (ADR 0139); the
+# verifier is qip-evidence's, on the same pin.
+qip-tls.workspace = true
+
 [lints]
 workspace = true

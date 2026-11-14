@@ -67,7 +67,7 @@ fn token_positions<'a>(text: &'a str, token: &'a str) -> impl Iterator<Item = us
 /// breach", "Three consecutive observations" — and a test that can only match a
 /// numeral either misses those or, worse, matches something else that happens
 /// to be a digit. Both happened here.
-const CARDINALS: [&str; 29] = [
+const CARDINALS: [&str; 30] = [
     "zero",
     "one",
     "two",
@@ -97,6 +97,7 @@ const CARDINALS: [&str; 29] = [
     "twenty-six",
     "twenty-seven",
     "twenty-eight",
+    "twenty-nine",
 ];
 
 /// The same numbers as the ordinals a runbook writes a threshold with.

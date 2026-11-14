@@ -245,6 +245,30 @@ pub struct CompanyView {
     pub capital_structures: Vec<qip_financial::company::CapitalStructure>,
 }
 
+/// The World Model Federation's latest review as the UNDERSTAND stage
+/// journaled it (R12-WORLD-3025): every arbitration with its disagreement
+/// attached, and each live member's calibration as the federation scores it.
+///
+/// `observed` is false until the kernel has run a federation pass, which the
+/// World Model Arbitration Brain reports as no data rather than as a
+/// federation that agreed on everything. `cycle` and `journal_base` name the
+/// journaled `FederationReview` this view was copied from, so a finding the
+/// brain reports can be checked against the record it read.
+#[derive(Debug, Default)]
+pub struct ArbitrationView {
+    pub observed: bool,
+    /// The cycle whose UNDERSTAND pass produced the review.
+    pub cycle: u64,
+    /// The absolute journal position of the review's first federation event.
+    pub journal_base: usize,
+    /// Every arbitration of the pass, minority views included.
+    pub arbitrations: Vec<qip_world_model::federation::Arbitration>,
+    /// Each live member's calibration, by member id.
+    pub calibrations: BTreeMap<String, qip_world_model::federation::Calibration>,
+    /// Required scope families no live member covers.
+    pub uncovered: Vec<String>,
+}
+
 /// Trading restrictions by object id.
 ///
 /// Deterministic data rather than a model's reading of a policy document:
@@ -297,6 +321,11 @@ pub struct Desk {
     /// it feeds every REASON, and a test hands one in through
     /// [`Desk::with_company`].
     pub company: Gated<CompanyView>,
+    /// The World Model Federation's latest review (R12-WORLD-3025). Empty
+    /// from [`Desk::new`]; the kernel re-points this gate at the slot its
+    /// UNDERSTAND stage writes, and a test hands one in through
+    /// [`Desk::with_arbitration`].
+    pub arbitration: Gated<ArbitrationView>,
 }
 
 impl Desk {
@@ -349,6 +378,13 @@ impl Desk {
                 Capability::ReadReferenceData,
                 "company-reference",
             ),
+            // The federation's arbitrations are the world model's own
+            // record of how its members disagree: a world-model read.
+            arbitration: Gated::new(
+                ArbitrationView::default(),
+                Capability::ReadWorldModel,
+                "world-model-federation",
+            ),
         }
     }
 
@@ -356,6 +392,17 @@ impl Desk {
     /// capability and label [`Desk::new`] chose for it.
     pub fn with_company(mut self, company: CompanyView) -> Self {
         self.company = Gated::new(company, self.company.required(), self.company.label());
+        self
+    }
+
+    /// The desk with `arbitration` behind the world-model-federation gate,
+    /// under the capability and label [`Desk::new`] chose for it.
+    pub fn with_arbitration(mut self, arbitration: ArbitrationView) -> Self {
+        self.arbitration = Gated::new(
+            arbitration,
+            self.arbitration.required(),
+            self.arbitration.label(),
+        );
         self
     }
 

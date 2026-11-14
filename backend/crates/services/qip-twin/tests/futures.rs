@@ -1,13 +1,13 @@
 //! Synthetic future trees over a compact twin state (R12-TICK-7199;
 //! §9.9 R12-TICK-3096–3100), and the execution twin recalibrated from fills
-//! (R12-TICK-2080).
+//! (R12-TICK-2080), refitted from a recorded history (R12-MODEL-4008).
 
 #![allow(clippy::panic_in_result_fn, clippy::float_cmp)]
 
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
-use qip_simulation_engine::costs::CostModel;
-use qip_twin::calibration::FillCalibration;
+use qip_simulation_engine::costs::{CostModel, reference_daily_volatility};
+use qip_twin::calibration::{FillCalibration, RecordedFill};
 use qip_twin::futures::{
     Branch, BranchStatus, FutureTree, ObservedMoves, Provenance, TreeConfig, TwinState, WorldDriver,
 };
@@ -657,6 +657,189 @@ fn a_twin_wrong_only_about_size_reports_a_correction_at_the_venues_own_size() ->
         (venue.correction_bps() - expected).abs() < 1.0,
         "the correction {} is not the slope at the mean unit {expected}",
         venue.correction_bps()
+    );
+    Ok(())
+}
+
+/// What the twin charges to enter at `participation` under `model`, in basis
+/// points: its half-spread plus its impact coefficient times the fill's
+/// impact unit. The figure the cost error compares against reality's.
+fn entry_cost_bps(model: &CostModel, participation: f64) -> f64 {
+    model.half_spread_bps + model.impact_coefficient_bps * unit(participation)
+}
+
+/// The impact unit of a fill at `participation` at the reference
+/// volatility: what the base's impact coefficient is multiplied by. A
+/// participation with no unit reads as NaN, which `observe_cost` refuses, so
+/// a broken helper fails the test rather than fitting a made-up size.
+fn unit(participation: f64) -> f64 {
+    CostModel::liquid_equity()
+        .impact_unit(participation, reference_daily_volatility())
+        .unwrap_or(f64::NAN)
+}
+
+/// A venue that charges nine basis points more spread and twenty-five more
+/// impact per unit of root participation than the twin's base model, plus a
+/// few basis points of deterministic noise either way, so a calibrated twin
+/// has something to get right and something it never can.
+fn reality() -> CostModel {
+    let mut model = CostModel::liquid_equity();
+    model.half_spread_bps += 9.0;
+    model.impact_coefficient_bps += 25.0;
+    model
+}
+
+const NOISE_BPS: [f64; 7] = [1.5, -2.0, 0.5, -1.0, 2.0, -0.5, 1.0];
+const SIZES: [f64; 5] = [0.01, 0.04, 0.09, 0.16, 0.25];
+
+/// The `index`th fill at the venue: its impact unit and the twin's signed
+/// cost error against it under `twin` (negative: the twin is cheaper).
+fn fill(twin: &CostModel, index: usize) -> (f64, f64) {
+    let participation = SIZES[index % SIZES.len()];
+    let real = entry_cost_bps(&reality(), participation) + NOISE_BPS[index % NOISE_BPS.len()];
+    (
+        unit(participation),
+        entry_cost_bps(twin, participation) - real,
+    )
+}
+
+/// The root mean square and the mean absolute value of the twin's errors on
+/// the held-out fills: the width of its fill-error distribution about zero.
+fn spread_of(twin: &CostModel, held_out: std::ops::Range<usize>) -> (f64, f64) {
+    let errors: Vec<f64> = held_out.map(|index| fill(twin, index).1).collect();
+    let count = errors.len() as f64;
+    let rms = (errors.iter().map(|error| error * error).sum::<f64>() / count).sqrt();
+    let mean_abs = errors.iter().map(|error| error.abs()).sum::<f64>() / count;
+    (rms, mean_abs)
+}
+
+/// R12-MODEL-4008: the bar's second half — "the calibrated twin's
+/// fill-error distribution narrows". The impact and spread tests above show
+/// the twin's parameters move; neither showed the twin then *fills closer to
+/// reality*, which is the only reason to move them. A calibration whose
+/// parameters moved the wrong amount, or moved and were never read by
+/// `cost_model`, passes both of those and fails this.
+///
+/// The twin is fitted on sixty fills and judged on forty fills it never saw.
+/// Before calibration its errors sit near the venue's nine-basis-point spread
+/// shortfall plus the impact it under-charges; after, they sit within the
+/// noise the venue adds, which no calibration can remove.
+///
+/// Mutation: make `cost_model` leave the half-spread at the base (ignore
+/// `bias_bps`) — the calibrated twin still under-charges the spread by about
+/// nine basis points on every held-out fill and the narrowing assertion fails.
+#[test]
+fn a_calibrated_twins_fill_error_distribution_narrows_on_fills_it_never_saw() -> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut calibration = FillCalibration::default();
+    for index in 0..60 {
+        // Measured against the uncalibrated twin, as the kernel measures it
+        // (ADR 0450): a stationary target.
+        let (unit, error_bps) = fill(&base, index);
+        calibration.observe_cost("XLON", &base, error_bps, Some(unit))?;
+    }
+    let calibrated = calibration.cost_model(&base, "XLON");
+
+    let (before_rms, before_abs) = spread_of(&base, 100..140);
+    let (after_rms, after_abs) = spread_of(&calibrated, 100..140);
+    // Premise: the uncalibrated twin is visibly wrong, well beyond the noise.
+    assert!(
+        before_rms > 10.0,
+        "premise: the base twin's errors are wide, rms {before_rms}"
+    );
+    assert!(
+        after_rms < before_rms / 3.0 && after_abs < before_abs / 3.0,
+        "the calibrated twin's fill-error distribution did not narrow: rms {before_rms} -> \
+         {after_rms}, mean |error| {before_abs} -> {after_abs}"
+    );
+    // And it narrows to about the noise reality adds, not merely a bit.
+    let noise_rms = (NOISE_BPS.iter().map(|n| n * n).sum::<f64>() / NOISE_BPS.len() as f64).sqrt();
+    assert!(
+        after_rms < 2.5 * noise_rms,
+        "the calibrated twin is still wider than the venue's own noise: rms {after_rms} against \
+         noise {noise_rms}"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-4008: calibration "to historical replay". A twin rebuilt from
+/// recorded fills is the twin the live loop held after the same fills —
+/// exactly, because replay absorbs each record by the live rule — and its
+/// output differs from the uncalibrated twin's, which is the recalibration
+/// the bar asks a test to show changing twin output.
+///
+/// A history with one unreadable record refuses whole, names the record, and
+/// leaves the calibration it was replayed into untouched.
+///
+/// Mutation: make `replay` return the history's length without absorbing it
+/// — the replayed twin prices at the base and the first assertion fails.
+/// Mutation: drop the check-every-record-first loop in `replay` — the readable
+/// prefix is absorbed before the bad record refuses and the calibration no
+/// longer equals its snapshot.
+#[test]
+fn a_twin_refitted_from_a_recorded_history_is_the_twin_the_live_loop_held_and_prices_differently()
+-> Result<()> {
+    let base = CostModel::liquid_equity();
+    let mut live = FillCalibration::default();
+    let mut history = Vec::new();
+    for index in 0..40 {
+        let (unit, error_bps) = fill(&base, index);
+        live.observe_cost("XLON", &base, error_bps, Some(unit))?;
+        history.push(RecordedFill {
+            venue: "XLON".to_string(),
+            error_bps,
+            impact_unit: Some(unit),
+        });
+    }
+    // A venue recorded without sizes refits its spread alone.
+    for _ in 0..10 {
+        live.observe_cost("XPAR", &base, -6.0, None)?;
+        history.push(RecordedFill {
+            venue: "XPAR".to_string(),
+            error_bps: -6.0,
+            impact_unit: None,
+        });
+    }
+
+    let replayed = FillCalibration::from_history(
+        qip_twin::calibration::DEFAULT_LEARNING_RATE,
+        &base,
+        history.clone(),
+    )?;
+    assert_ne!(
+        replayed.cost_model(&base, "XLON"),
+        base,
+        "a twin refitted from forty recorded fills still prices at the base"
+    );
+    assert!(replayed.cost_model(&base, "XPAR").half_spread_bps > base.half_spread_bps + 4.0);
+    assert_eq!(
+        replayed, live,
+        "replaying the record did not rebuild the twin the live loop held"
+    );
+
+    let mut bad = history;
+    bad.insert(
+        25,
+        RecordedFill {
+            venue: "XLON".to_string(),
+            error_bps: f64::NAN,
+            impact_unit: Some(0.2),
+        },
+    );
+    let mut target = FillCalibration::default();
+    target.observe("XLON", -3.0)?;
+    let snapshot = target.clone();
+    let refused = target
+        .replay(&base, bad)
+        .expect_err("a NaN in the record is refused");
+    assert_eq!(
+        target, snapshot,
+        "a refused replay absorbed part of the record"
+    );
+    assert!(
+        refused.message().contains("recorded fill 25 of 51"),
+        "the refusal does not name the record: {}",
+        refused.message()
     );
     Ok(())
 }

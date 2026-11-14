@@ -2743,6 +2743,70 @@ fn the_opportunity_sentinel_switch_reads_on_and_off_and_refuses_anything_else() 
     assert!(read("of").is_err(), "a typo is refused");
 }
 
+/// R12-AMBIENT-10175: a signal's stated urgency is read, not discarded. A NOW
+/// surprise states its urgency as its severity (`now::surprise_signals`); the
+/// specialist it wakes is queued at that urgency, not at the half-scale floor
+/// the expiry alone gives a signal admitted the instant it was raised.
+///
+/// The failure prevented: `ResearchLoop::admit` recomputed urgency from the
+/// signal's expiry and ignored the field, so a ten-sigma surprise and a
+/// one-sigma one queued their specialists at the same urgency and
+/// `AmbientSignal::urgency_bp` had no production reader.
+///
+/// Mutation (2026-11-13): drop `.max(stated_urgency)` in `ResearchLoop::admit`
+/// — every woken item queues at the floor and the equality fails.
+#[test]
+fn a_woken_specialist_is_queued_at_the_urgency_its_surprise_stated_not_the_floor() {
+    use qip_deepbrain::research::URGENCY_FLOOR_BP;
+    let mut platform = platform();
+    let calm: Vec<SensedRecord> = (0..30_i64)
+        .map(|i| {
+            let close = if i % 2 == 0 { 100.1 } else { 99.9 };
+            bar(
+                "obj-N",
+                start().saturating_sub(Duration::from_days(30 - i)),
+                close,
+            )
+        })
+        .collect();
+    platform.observe(calm);
+    platform.run_cycle(start());
+    let mut loop_ = research(BTreeMap::new());
+    loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    platform.observe(vec![bar("obj-N", start(), 130.0)]);
+    let after = start().saturating_add(Duration::from_days(1));
+    platform.run_cycle(after);
+    let round = loop_
+        .sweep(&platform, after, &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(!round.woken.is_empty(), "premise: a surprise woke someone");
+    for (signal_id, specialist) in &round.woken {
+        let signal = round
+            .signals
+            .iter()
+            .find(|s| s.id() == signal_id)
+            .unwrap_or_else(|| panic!("the woken signal {signal_id} is on the round"));
+        assert!(
+            signal.urgency_bp() > URGENCY_FLOOR_BP,
+            "premise: the surprise states more than the floor: {signal:?}"
+        );
+        let question = &round.wake_items[specialist];
+        let entry = loop_
+            .desk()
+            .queue()
+            .entry(question)
+            .unwrap_or_else(|| panic!("the {specialist} item is queued"));
+        let stated = f64::from(signal.urgency_bp()) / 10_000.0;
+        assert!(
+            (entry.score().urgency - stated).abs() < 1e-9,
+            "{specialist} queued at urgency {}, not the {stated} its surprise stated",
+            entry.score().urgency
+        );
+    }
+}
+
 // --- R12-OBS-1172: triage and the autonomous test loop ----------------------
 
 /// A contained shift with nothing trading-facing in its window is minor and

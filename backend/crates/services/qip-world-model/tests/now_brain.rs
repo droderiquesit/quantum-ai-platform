@@ -983,6 +983,7 @@ fn a_causal_estimator_contributes_beside_the_kalman_and_their_disagreement_is_re
         vec![CausalParent {
             cause: "AAA".to_string(),
             transmission: 0.8,
+            lag: Duration::from_mins(60),
         }],
     )]));
     let t1 = later(t0(), 60);
@@ -1208,9 +1209,8 @@ fn a_share_read_past_its_bound_is_estimated_at_the_bound_by_the_symbolic_estimat
 }
 
 /// R12-WORLD-3078: the standard brain registers every kind the requirement
-/// names that has an in-tree estimator -- state-space, graph, neural and
-/// symbolic among them -- and not the causal one, whose edges are not yet
-/// slopes. Mutation: drop either new worker from `NowBrain::standard`.
+/// names -- state-space, graph, neural, causal and symbolic. Mutation: drop
+/// the neural, symbolic or causal worker from `NowBrain::standard`.
 #[test]
 fn the_standard_brain_registers_the_neural_and_symbolic_estimators() {
     let brain = NowBrain::standard(7).unwrap();
@@ -1222,10 +1222,10 @@ fn the_standard_brain_registers_the_neural_and_symbolic_estimators() {
         EstimatorKind::Graph,
         EstimatorKind::Neural,
         EstimatorKind::Symbolic,
+        EstimatorKind::Causal,
     ] {
         assert!(kinds.contains(&kind), "{kind:?} registered: {kinds:?}");
     }
-    assert!(!kinds.contains(&EstimatorKind::Causal));
 }
 
 /// R12-WORLD-3078: the neural estimator's transition is learned, not
@@ -1274,4 +1274,195 @@ fn the_neural_estimator_learns_the_transition_and_then_trusts_its_prediction() {
         "the network trusts a transition it has learned: {}",
         c.variance
     );
+}
+
+fn vol(id: &str, value: f64, at: Timestamp) -> Observation {
+    obs(
+        scope(ScopeKind::Instrument, id),
+        "realised_volatility",
+        Domain::Volatility,
+        "US",
+        value,
+        "s1",
+        at,
+    )
+}
+
+/// R12-WORLD-3078: the causal estimator reads a parent's belief as of the
+/// edge's lag, never a newer one, and proposes the regression's own
+/// prediction `slope x lagged parent`. AAA's return is +0.04 at t0 and
+/// -0.04 at t1; BBB's parent is AAA with slope 0.5 at a one-hour lag. At
+/// t1, an hour after t0, the parent belief the slope was fitted against is
+/// AAA's t0 belief, and BBB's causal candidate is positive although AAA's
+/// newest belief is negative. Before any AAA belief is an hour old (at t0)
+/// the causal estimator abstains.
+///
+/// Mutation: read the parent's newest belief instead of the lagged one in
+/// `NowBrain::causal_beliefs` -- the causal candidate turns negative and the
+/// ensemble's mean falls below the Kalman-alone answer.
+#[test]
+fn the_causal_estimator_reads_its_parent_as_of_the_fitted_lag_and_never_a_newer_belief() {
+    use qip_world_model::now::{CausalFilter, CausalParent};
+    let child = VariableKey::new(scope(ScopeKind::Instrument, "BBB"), "return").unwrap();
+    let parents = BTreeMap::from([(
+        "BBB".to_string(),
+        vec![CausalParent {
+            cause: "AAA".to_string(),
+            transmission: 0.5,
+            lag: Duration::from_mins(60),
+        }],
+    )]);
+    let mut brain = kalman_only().with_worker(Box::new(CausalFilter));
+    brain.set_causal_parents(parents.clone());
+    let mut alone = kalman_only();
+    let token = brain.lead();
+    let at = alone.lead();
+    let t1 = later(t0(), 60);
+    let tape = |t: Timestamp, aaa: f64| {
+        vec![
+            ret("AAA", "US", aaa, "s1", t),
+            ret("BBB", "US", 0.0, "s1", t),
+        ]
+    };
+    let first = brain.step(token, tape(t0(), 0.04), t0()).unwrap();
+    assert_eq!(
+        only(&first, &child).ensemble,
+        1,
+        "premise: no parent belief is an hour old yet, so the causal estimator abstains"
+    );
+    alone.step(at, tape(t0(), 0.04), t0()).unwrap();
+    let second = brain.step(token, tape(t1, -0.04), t1).unwrap();
+    let kalman = only(&alone.step(at, tape(t1, -0.04), t1).unwrap(), &child).mean;
+    let v = only(&second, &child);
+    assert_eq!(
+        v.ensemble, 2,
+        "the causal estimator contributed: {second:?}"
+    );
+    // The causal candidate is 0.5 x AAA's t0 belief (about +0.02): the
+    // ensemble mean is pulled above the Kalman answer, never below it.
+    assert!(
+        v.mean > kalman + 0.005,
+        "the lagged parent (+0.04) and not the newest one (-0.04) was read: {} vs {kalman}",
+        v.mean
+    );
+}
+
+/// R12-WORLD-3078: the causal estimator proposes only for returns. The
+/// graph's slopes are fitted on returns; a parent's volatility times a
+/// return slope estimates nothing, and fused by default it would bias every
+/// promoted volatility. With a parent stated and its volatility belief an
+/// hour old, BBB's volatility still has one estimator while its return,
+/// on the same tape, has two -- the premise that a parent was readable.
+///
+/// Mutation: drop all three `CAUSAL_VARIABLE` seams -- the check in
+/// `CausalFilter::propose`, the one in `NowBrain::causal_beliefs`, and the
+/// guard on what `NowBrain::update` keeps in the causal history -- and BBB's
+/// volatility gets a second, causal member. Dropping any one alone does not
+/// fire, because the other two still hold the restriction; it is enforced
+/// three times on purpose.
+#[test]
+fn the_causal_estimator_proposes_for_returns_only() {
+    use qip_world_model::now::{CausalFilter, CausalParent};
+    let child_ret = VariableKey::new(scope(ScopeKind::Instrument, "BBB"), "return").unwrap();
+    let child_vol =
+        VariableKey::new(scope(ScopeKind::Instrument, "BBB"), "realised_volatility").unwrap();
+    let mut brain = kalman_only().with_worker(Box::new(CausalFilter));
+    brain.set_causal_parents(BTreeMap::from([(
+        "BBB".to_string(),
+        vec![CausalParent {
+            cause: "AAA".to_string(),
+            transmission: 0.9,
+            lag: Duration::from_mins(60),
+        }],
+    )]));
+    let token = brain.lead();
+    let tape = |t: Timestamp| {
+        vec![
+            ret("AAA", "US", 0.04, "s1", t),
+            ret("BBB", "US", 0.0, "s1", t),
+            vol("AAA", 0.30, t),
+            vol("BBB", 0.10, t),
+        ]
+    };
+    brain.step(token, tape(t0()), t0()).unwrap();
+    let t1 = later(t0(), 60);
+    let step = brain.step(token, tape(t1), t1).unwrap();
+    assert_eq!(
+        only(&step, &child_ret).ensemble,
+        2,
+        "premise: the parent was readable at its lag"
+    );
+    assert_eq!(only(&step, &child_vol).ensemble, 1, "{step:?}");
+}
+
+/// R12-WORLD-3078: the causal estimator in the standard brain contributes
+/// beside the other six on a return, and its dispute with the tape is
+/// recorded naming it. Mutation: drop the causal worker from
+/// `NowBrain::standard`.
+#[test]
+fn in_the_standard_brain_the_causal_estimator_contributes_and_its_dispute_is_recorded() {
+    use qip_world_model::now::CausalParent;
+    let child = VariableKey::new(scope(ScopeKind::Instrument, "BBB"), "return").unwrap();
+    let mut brain = NowBrain::standard(7).unwrap();
+    brain.set_causal_parents(BTreeMap::from([(
+        "BBB".to_string(),
+        vec![CausalParent {
+            cause: "AAA".to_string(),
+            transmission: 0.9,
+            lag: Duration::from_mins(60),
+        }],
+    )]));
+    let token = brain.lead();
+    let tape = |t: Timestamp, aaa: f64| {
+        vec![
+            ret("AAA", "US", aaa, "s1", t),
+            ret("BBB", "US", 0.0, "s1", t),
+        ]
+    };
+    brain.step(token, tape(t0(), 0.05), t0()).unwrap();
+    let t1 = later(t0(), 60);
+    let step = brain.step(token, tape(t1, 0.0), t1).unwrap();
+    assert!(
+        dispute_views(&step, &child).contains("causal-parents"),
+        "{step:?}"
+    );
+}
+
+/// R12-WORLD-3078: two fitted parents are two predictions of one return,
+/// not two terms of it. Each edge's slope comes from its own one-parent
+/// regression, so two correlated parents that both rose 4% and were each
+/// fitted at 0.8 predict about 3.2%, not 6.4%. Found on the shipped
+/// fast-brain tape, where summing them moved every causal child's belief
+/// far enough to move which cycles a thesis was sized in.
+///
+/// Mutation: sum the per-parent predictions in `CausalFilter::propose` --
+/// the candidate reads 0.064.
+#[test]
+fn two_fitted_parents_are_averaged_as_two_predictions_and_never_summed() {
+    use qip_world_model::now::{CausalBelief, CausalFilter};
+    let key = VariableKey::new(scope(ScopeKind::Instrument, "CCC"), "return").unwrap();
+    let parent = |cause: &str| CausalBelief {
+        cause: cause.to_string(),
+        transmission: 0.8,
+        mean: 0.04,
+        variance: 1e-6,
+    };
+    let causal = [parent("AAA"), parent("BBB")];
+    let reading = [0.0];
+    let evidence = Evidence {
+        key: &key,
+        prior: None,
+        readings: &reading,
+        measurement_variance: 1e-4,
+        process_variance: 1e-6,
+        related: &[],
+        causal: &causal,
+        constraint: Constraint::Unbounded,
+    };
+    let c = CausalFilter
+        .propose(&evidence)
+        .unwrap()
+        .expect("it proposes");
+    assert!((c.mean - 0.032).abs() < 1e-12, "{}", c.mean);
+    assert!(c.variance > 0.0 && c.variance < 1e-5, "{}", c.variance);
 }

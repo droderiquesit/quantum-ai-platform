@@ -173,6 +173,12 @@ impl LimitKind {
             Self::MaxSurvivalGross { limit } => Self::MaxSurvivalGross {
                 limit: scale(*limit)?,
             },
+            Self::MaxBookGamma { limit } => Self::MaxBookGamma {
+                limit: scale(*limit)?,
+            },
+            Self::MaxBookVega { limit } => Self::MaxBookVega {
+                limit: scale(*limit)?,
+            },
             Self::MaxMarginUtilisation { limit } => Self::MaxMarginUtilisation {
                 limit: scale(*limit)?,
             },

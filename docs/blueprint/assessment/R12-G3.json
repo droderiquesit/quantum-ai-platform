@@ -2364,15 +2364,19 @@
   },
   {
     "id": "R12-TICK-10103",
-    "status": "PARTIAL",
-    "current": "Every filled order the twin prices in LEARN yields a FillScore whose trade_error_bps is the signed residual of the twin's simulated entry against the venue's fill on the side taken (platform.rs::score_filled, fill_error_bps). The score is charted by venue (VENUE_FILL_ERROR_BPS), fed to the per-venue fill calibration, and journaled whole in each cycle record through CounterfactualJournal::fill_outcomes. Resolved theses become Episodes in the same stage (remember_resolved). session_replay::replay reads the sealed ACT sessions (instruction against venue answer) and reports reconciliation breaks only; it prices nothing and has no predicted side.",
+    "status": "COMPLETE",
+    "current": "Every filled order the twin prices in LEARN yields a FillScore comparing the twin's predicted fill, slippage and outcome with the venue's: trade_error_bps (entry against fill on the side taken), predicted_slippage_bps against realised_slippage_bps (both against the arrival price), and predicted_outcome_bps against realised_outcome_bps marked at the twin's printed exit net of entry costs, with outcome_error_bps as the model residual (platform.rs::score_filled). The score is charted by venue (VENUE_FILL_ERROR_BPS), feeds the per-venue fill calibration, and is journaled whole in each cycle record (CounterfactualJournal::fill_outcomes). Episodes: a resolved thesis becomes an Episode in the same stage (remember_resolved), whose outcome lists every fill on an order that expressed the claim (fills_expressing), and since 2026-11-13 each EpisodeFill carries twin: Option<FillResidual>, the residuals copied from the order's FillScore (fill_residual) - so the episode, not only the journal, says how far the twin was from reality. None before LEARN prices the order, after its score ages out, or when the twin refused it: an absence, never a zero residual.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs::score_filled (fill_error_bps, fill_calibration.observe, fill_scores.push)",
       "backend/crates/runtime/qip-kernel/src/platform.rs::CounterfactualJournal::fill_outcomes",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18745 remember_resolved (EpisodeOutcome.fills = fills_expressing)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18800 fills_expressing twin: fill_residual; :18819 fill_residual; Platform::episode_fills",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs:438 EpisodeFill::twin; :453 FillResidual",
       "backend/crates/runtime/qip-kernel/tests/learning.rs::the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_filled_orders_learn_score_records_predicted_and_realised_slippage_and_the_outcome_residual",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_resolving_episode_carries_the_twins_predicted_fill_beside_the_venues_once_learn_priced_it"
     ],
-    "gap": "2026-10-25: skeptic REFUTED the first residual (it was the entry error rescaled); 7a10bf8c reworks it as predicted versus realised outcome net of entry costs, mutation-verified, but no second skeptic round has run and the episodes clause (a FillScore is a residual, not an episode) is unmet; handed to lane L3b with that step.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2380,10 +2384,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill. 2026-10-25 lane L3-DATA (wave580): residuals added. Mutation fired: recording outcome_error_bps as None - 'the horizon closed, so the outcome residual exists'. Not promoted (episodes not emitted); no skeptic run. 2026-10-25: skeptic (code-reviewer) REFUTED d51cad76: outcome_error marked two gross returns at one close, so it read zero whenever the twin's entry matched the fill. 7a10bf8c: both sides marked at the twin's printed exit, per unit, net of entry costs (SimulatedOutcome::simulated_entry_costs; FillScore predicted_outcome_bps, realised_outcome_bps). Mutations: drop the venue's costs (fails -2.999 vs -3.999 bps); drop the twin's entry costs (predicted equals gross). Row handed to L3b 2026-10-25."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill. 2026-10-25 lane L3-DATA (wave580): residuals added. Mutation fired: recording outcome_error_bps as None - 'the horizon closed, so the outcome residual exists'. Not promoted (episodes not emitted); no skeptic run. 2026-10-25: skeptic (code-reviewer) REFUTED d51cad76: outcome_error marked two gross returns at one close, so it read zero whenever the twin's entry matched the fill. 7a10bf8c: both sides marked at the twin's printed exit, per unit, net of entry costs (SimulatedOutcome::simulated_entry_costs; FillScore predicted_outcome_bps, realised_outcome_bps). Mutations: drop the venue's costs (fails -2.999 vs -3.999 bps); drop the twin's entry costs (predicted equals gross). Row handed to L3b 2026-10-25. Lane t5-05 2026-11-13: episodes clause closed - EpisodeFill carries the twin's FillResidual copied from the order's FillScore, so the episode a claim resolves into compares predicted with actual fill, slippage and outcome. Mutations, each fired and restored byte-for-byte (cmp): build EpisodeFill with twin: None ('LEARN priced the order, so the episode carries the twin's residual'); copy predicted_outcome_bps into outcome_error_bps in fill_residual (left Some(996.55) right Some(1000.55)). Graded COMPLETE for the second skeptic round; the 2026-10-25 refutation (entry error rescaled) was answered by 7a10bf8c and its two mutations. Limit stated, not hidden: an order LEARN has not priced when its claim resolves (the twin's horizon is its own) leaves its episode fill with twin None."
   },
   {
     "id": "R12-MODEL-10104",
@@ -2643,13 +2647,15 @@
   {
     "id": "R12-LEDGER-10114",
     "status": "PARTIAL",
-    "current": "Cell journal reaches P2 and fills reach P1 through the wired spool/drain, and ledgerd books Filled; Hedged outcomes are shipped but not posted and no cycle-level or missed/failed-cycle replay exists.",
+    "current": "Cell journal reaches P2 and intents, hedges, fills and withdrawals reach P1 through the wired spool/drain. ledgerd books Filled and Settled to the balances and, since ADR 0490, keeps an order register: OrderSent and Hedged open a row, fills and withdrawals move it in the batch that books them, and an intent or hedge not marked simulated parks its cell at the fourth paper fence. No cycle-level identity, no missed/failed-cycle replay.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open",
-      "backend/crates/apps/qip-ledgerd/src/store.rs:730 Decision::Filled only",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs is_outcome (Hedged and OrderSent on P1)",
+      "backend/crates/apps/qip-ledgerd/src/store.rs LedgerStore::register_move and live_intent",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs::a_hedge_opens_a_register_row_before_it_fills_and_its_fills_move_the_row_and_the_balances",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs::a_hedge_not_marked_simulated_parks_its_cell_and_opens_no_register_row",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs::the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once"
     ],
-    "gap": "Ledger posting for hedges; multi-region cycle events; replay of missed/failed cycles; node -> broker -> ledgerd in one test.",
+    "gap": "As of 2026-11-13 (session t50-32): no cycle id on P1 records, so the register cannot group a multi-region cycle's legs; no replay that evaluates a missed or failed cycle; no node -> broker -> ledgerd test of a two-region cycle with a hedge (the register is proven at the store contract only).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2663,7 +2669,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Only fills are ledgered; the requirement lists intents, hedges and outcomes of multi-region cycles and replay evaluation."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Only fills are ledgered; the requirement lists intents, hedges and outcomes of multi-region cycles and replay evaluation. 2026-11-13, session t50-32: ADR 0490 adds the ledger's order register and extends the fourth paper fence to intents and hedges; four store-contract tests, six mutations each fired. Stays PARTIAL on the gap above."
   },
   {
     "id": "R12-CICD-10115",
@@ -4124,9 +4130,11 @@
       "backend/crates/apps/qip-deepbrain/src/research.rs emit: urgency_bp(now, expiry, signal_ttl); urgency_bp; cheapest_viable; run_market",
       "backend/crates/apps/qip-deepbrain/src/research.rs tests a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero, a_gap_with_economic_value_launches_on_the_product_rank, a_raised_gaps_economic_value_reaches_the_signal_the_router_admits_by",
       "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero (another lane's test of the same emit fix, carried in from origin/ccr-116bbb27-osu8n8 at merge)",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
+      "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs::a_gap_carrying_economic_value_launches_an_information_request_on_the_product_rank (2026-11-13: a sweep over a platform that paper-filled 150 AAA, fills ~200 bp off the twin, launches an information request at or above MIN_VIABLE_BP; mutation: cheapest_viable returns None -> 'a priced gap launched no information request')",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_woken_specialist_is_queued_at_the_urgency_its_surprise_stated_not_the_floor (2026-11-13: ResearchLoop::admit reads AmbientSignal::urgency_bp as a floor under the deadline-derived urgency; mutation: drop .max(stated_urgency) -> 'adversarial queued at urgency 0.5, not the 1 its surprise stated')"
     ],
-    "gap": "2026-10-31 (lane L2b; independent read-only skeptic REFUTED on bar parts 1 and 4): the exit suite phase_16_exit.rs covers the compute market (units_granted > 0) and the compiler (held unsigned) and says itself that specialist proposal and value-of-information launch are not driven there, so two of the four deliverables have no exit test; urgency_bp(now, now + ttl, ttl) at emission always returns URGENCY_FLOOR_BP (a constant in disguise; nothing in production reads AmbientSignal::urgency_bp, and attention_value is severity x economic value), while the real deadline-based urgency is computed at desk admission (research.rs admit) and the exit suite does not prove it; and a specialist proposal produces only an Observation whose plan step is InstantiateSpecialist (qip-expansion plan.rs), gated on calibration >= MIN_EVALUATED, which no cycle fixture reaches, so recursive specialist creation is a proposal, not a creation. Closing it: an exit test per deliverable (a value-of-information launch on the product rank from a sweep; a specialist proposal that instantiates a specialist on the roster), and the signal's urgency computed from the deadline the launch is ranked against rather than restated at emission.",
+    "gap": "2026-11-13 (lane t50-37): value-of-information sensing now has its exit test (a priced residual gap launches an information request through sweep_over on the product rank), and AmbientSignal::urgency_bp now has a production reader (ResearchLoop::admit takes the signal's stated urgency as a floor under the deadline-derived figure, so a NOW surprise's severity-urgency reaches the desk queue). Remaining: recursive specialist creation is still a proposal, not a creation — an accepted specialist proposal yields an InstantiateSpecialist plan step (qip-expansion plan.rs) with no executor, the deep brain's roster is a reviewed static manifest (apps/qip-deepbrain/src/roster.rs manifests::roster), and no cycle fixture reaches calibration >= MIN_EVALUATED, so the exit suite has no test that puts a specialist on the roster. A gap the sweep raises from its own residual still states urgency at the floor at emission (whole window ahead), which is correct rather than a constant in disguise now that the field is read. Found, not fixed: run_market reads a priced gap's expected_economic_value through basis_points(v/100), so a gap worth more than 100 units is declined as invalid_value (seen in the new exit test's round: declined {invalid_value: 1}, units_granted 0) while admit saturates the same figure with economic_scale_bp; the most valuable gaps get no compute grant. Earlier: 2026-10-31 (lane L2b; independent read-only skeptic REFUTED on bar parts 1 and 4): the exit suite phase_16_exit.rs covers the compute market (units_granted > 0) and the compiler (held unsigned) and says itself that specialist proposal and value-of-information launch are not driven there, so two of the four deliverables have no exit test; urgency_bp(now, now + ttl, ttl) at emission always returns URGENCY_FLOOR_BP (a constant in disguise; nothing in production reads AmbientSignal::urgency_bp, and attention_value is severity x economic value), while the real deadline-based urgency is computed at desk admission (research.rs admit) and the exit suite does not prove it; and a specialist proposal produces only an Observation whose plan step is InstantiateSpecialist (qip-expansion plan.rs), gated on calibration >= MIN_EVALUATED, which no cycle fixture reaches, so recursive specialist creation is a proposal, not a creation. Closing it: an exit test per deliverable (a value-of-information launch on the product rank from a sweep; a specialist proposal that instantiates a specialist on the roster), and the signal's urgency computed from the deadline the launch is ranked against rather than restated at emission.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4140,7 +4148,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test phase_16_exit && cargo +1.94.1 test -p qip-deepbrain --lib a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L2b (wave580): the row said no phase exit test existed; phase_16_exit.rs does, now cited. The one literal left — urgency_bp: 0 on a signal-raised Detection — is replaced by the deadline-derived figure. Mutation fired: restoring `urgency_bp: 0` in ResearchLoop::emit -> \"left: 0 right: 5000\"; restored byte for byte (cmp), test ok. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records. The emission change and its test are kept (the literal zero is gone and the mutation fired), but they move no production behaviour; the row's claim is withdrawn to what the exit suite proves.  Merge 2026-10-31 with origin/ccr-116bbb27-osu8n8: upstream had the same urgency fix in emit with its own crate-level test and an older gap text (phase_16_exit drives neither a specialist proposal nor an information request, info_launched zero); this lane's refuted gap kept, upstream evidence appended."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L2b (wave580): the row said no phase exit test existed; phase_16_exit.rs does, now cited. The one literal left — urgency_bp: 0 on a signal-raised Detection — is replaced by the deadline-derived figure. Mutation fired: restoring `urgency_bp: 0` in ResearchLoop::emit -> \"left: 0 right: 5000\"; restored byte for byte (cmp), test ok. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records. The emission change and its test are kept (the literal zero is gone and the mutation fired), but they move no production behaviour; the row's claim is withdrawn to what the exit suite proves.  Merge 2026-10-31 with origin/ccr-116bbb27-osu8n8: upstream had the same urgency fix in emit with its own crate-level test and an older gap text (phase_16_exit drives neither a specialist proposal nor an information request, info_launched zero); this lane's refuted gap kept, upstream evidence appended. 2026-11-13 lane t50-37: two slices landed (VoI exit test; urgency reader), each mutation-verified and restored byte for byte (cmp). Grade stays PARTIAL on specialist instantiation."
   },
   {
     "id": "R12-ARCH-10176",
@@ -4410,13 +4418,18 @@
   {
     "id": "R12-LEDGER-10185",
     "status": "PARTIAL",
-    "current": "Ledger refold equals stored balances (test); node reconciles with venue drop copy and after restart; centre records reconciliation breaks by direction. Custody statements not ingested; Spanner absent.",
+    "current": "Ledger refold equals stored balances (test); node reconciles with venue drop copy and after restart; centre records reconciliation breaks by direction. Since ADR 0494 the node's pass journals the simulated venue's custody statement (its clearing-ledger positions) on the cell's chain after the fills it covers, it ships on P1, and qip-ledgerd compares it with the cell's booked fills in the batch that applies it: a difference is a custody_break note counted by direction (qip_ledger_custody_breaks_total{direction}), never an adjustment; a live statement parks the cell. Venue cash custody is not compared; Spanner absent.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:720 refolding_the_outcome_stream_from_its_first_record_equals_the_stored_balances",
-      "backend/crates/apps/qip-edge-node/tests/gateway.rs:215",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt"
+      "backend/crates/apps/qip-ledgerd/tests/store.rs refolding_the_outcome_stream_from_its_first_record_equals_the_stored_balances",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs a_seeded_divergence_between_the_venue_statement_and_the_ledger_is_one_journaled_break_counted_by_direction_and_never_an_adjustment",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs a_custody_statement_on_the_stream_that_agrees_with_the_booked_fills_records_no_break",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs a_custody_statement_not_marked_simulated_parks_the_cell_as_live_and_compares_nothing",
+      "backend/crates/tests/qip-acceptance/tests/custody_reconciliation.rs a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_ledger_finds_it_agrees",
+      "backend/crates/apps/qip-edge-node/tests/gateway.rs a_cell_order_reaches_the_matching_engine_and_reconciles_through_drop_copy",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt",
+      "docs/adr/0494-the-venues-custody-statement-is-a-journal-entry-on-the-cells-chain-journaled-when-the-venues-holdings-move-and-the-ledger-compares-it-as-it-applies-it.md"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the gateway's PositionSnapshot custody statement on P1 and the ledger's comparison, with a seeded-break test in qip-ledgerd/tests/store.rs.",
+    "gap": "2026-11-12 (lane t50-34): positions are rebuilt and verified against the venue's custody statement from the stream; cash is not. Left: the venue's cash balance as a statement and its comparison with trading:/in_settlement: cash (ADR 0442 names cash custody as a gap); the carrier from a custody_break to the centre's halt signer (R12-LEDGER-8139); CustodyMovement postings to custody:<venue> (ADR 0494 says why deferred); an authoritative deployed store (Spanner absent).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4426,10 +4439,10 @@
       "R12-LEDGER-10041"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store",
+    "verification": "cargo test -p qip-ledgerd --test store; cargo test -p qip-acceptance --test custody_reconciliation",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Custody statement ingestion; authoritative store."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Custody statement ingestion; authoritative store. 2026-11-13 lane t50-34 (wave580, ADR 0494): custody statement on the chain, compared on apply. Mutations, each fired and restored by cp + cmp: ledgerd side - dropping cash_units in from_entry (3 tests fail), skipping compare_custody in apply (3 fail), swapping compare's direction arms (divergence test fails), removing the chain-position filter (position test fails), removing the live-statement park (live test fails), reading an unparsable holding as zero (garbled test fails); producer side - dropping the pass's record_custody_statement call, emptying custody_holdings' cash units, removing the unchanged-statement check, removing the configured-venue check, journaling simulated:false - each fails the acceptance in-stream test. Graded PARTIAL: the statement asks for cash too."
   },
   {
     "id": "R12-RES-10186",

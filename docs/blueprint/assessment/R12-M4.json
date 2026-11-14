@@ -168,14 +168,14 @@
   {
     "id": "R12-MODEL-4008",
     "status": "PARTIAL",
-    "current": "The twin is recalibrated from the platform fills on the default path: Platform::score_filled (LEARN) feeds FillCalibration::observe one signed fill error per fill, FillCalibration::cost_model moves the twin half-spread by the per-venue bias, and the counterfactual alternatives are priced with the calibrated model. Proven in qip-twin by after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills and through the cycle by qip-kernel tests/learning.rs (the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue, a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue).",
+    "current": "The twin is refitted from the platform's fills on the default path: Platform::score_filled (LEARN) hands FillCalibration::observe_cost the uncalibrated model's charged cost for each venue fill less what the venue cost, in impact units (ADR 0450), moving the per-venue spread bias and fitting an impact slope; FillCalibration::cost_model prices the next counterfactuals with both. Narrowing (2026-11-13, ADR 0496): qip-twin tests/futures.rs a_calibrated_twins_fill_error_distribution_narrows_on_fills_it_never_saw fits the twin on sixty fills from a venue dearer in spread and impact plus noise; on forty held-out fills the twin's cost-error rms falls from 17.2 bps to under a third and within 2.5x the venue's noise. Historical replay (ADR 0496): FillCalibration::replay/from_history absorb a recorded history by the live rule, all or nothing with the bad record named; a_twin_refitted_from_a_recorded_history_is_the_twin_the_live_loop_held_and_prices_differently proves the replayed calibration equals the live one and moves output off the base.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/calibration.rs FillCalibration::observe, cost_model",
-      "backend/crates/runtime/qip-kernel/src/platform.rs fill_calibration field and the score_filled observe site",
-      "backend/crates/services/qip-twin/tests/futures.rs after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue"
+      "backend/crates/services/qip-twin/src/calibration.rs FillCalibration::observe_cost, replay, from_history, cost_model; RecordedFill; check_observation",
+      "backend/crates/runtime/qip-kernel/src/platform.rs score_filled observe_cost site",
+      "backend/crates/services/qip-twin/tests/futures.rs a_calibrated_twins_fill_error_distribution_narrows_on_fills_it_never_saw; a_twin_refitted_from_a_recorded_history_is_the_twin_the_live_loop_held_and_prices_differently; after_fills_with_a_systematic_size_dependent_error_the_twins_impact_coefficient_moves_toward_the_observed_fills",
+      "docs/adr/0496-the-execution-twins-fill-calibration-is-refitted-from-a-recorded-history-by-the-live-rule.md"
     ],
-    "gap": "Same remainder as R12-TICK-2080: only the half-spread moves. Impact needs the fill participation passed from score_filled into FillCalibration (a platform.rs change in a file other lanes own) and a per-venue impact term; latency has no input because the simulated venue does not time acknowledgements; queue position and opportunity decay are not in the twin CostModel. Calibration against historical replay (as opposed to live paper fills) has no caller.",
+    "gap": "2026-11-13: the verification bar (refit from recorded fills, narrowing, recalibration changing output) is met by mutation-verified qip-twin tests, but the requirement is not: (1) replay has no producer of records in the kernel — the cycle journal's FillScore carries the entry-price error ADR 0450 stopped fitting, not the cost error and impact unit observe_cost learns from, and adding them bumps a sealed body's schema; (2) no composition root refits on restart; (3) latency, queue position, opportunity decay and fill probability are not terms of the twin's CostModel and none is calibrated (latency has no input: the simulated venue does not time acknowledgements).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -186,7 +186,7 @@
     "verification": "cargo test -p qip-twin --test futures; cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": "2026-10-18 L22: the row text said nothing refits the twin, which stopped being true when R12-TICK-2080 landed FillCalibration; text corrected, no code changed. A parallel CostModel::recalibrate_from_fills would duplicate FillCalibration, so it was not added."
+    "notes": "2026-10-18 L22: the row text said nothing refits the twin, which stopped being true when R12-TICK-2080 landed FillCalibration; text corrected, no code changed. A parallel CostModel::recalibrate_from_fills would duplicate FillCalibration, so it was not added. 2026-11-13 t50-35: narrowing test, FillCalibration::replay/from_history and ADR 0496 added. A kernel refit from the journal's trade_error_bps was built and withdrawn when ADR 0450 showed that quantity is the one it stopped fitting."
   },
   {
     "id": "R12-MODEL-4009",
@@ -2212,13 +2212,16 @@
   {
     "id": "R12-RISK-4095",
     "status": "PARTIAL",
-    "current": "LimitKind covers volatility, VaR, expected shortfall, drawdown, daily loss and axis weights including factor/causal-driver axes; gap fills are charged at the fill price. No basis or Greeks.",
+    "current": "Price (MaxNetExposure, MaxPositionNotional), volatility (MaxVolatility, VaR, ES), factor and causal-driver (MaxAxisWeight on their axes) and Greeks are measured and limited. Since ADR 0492 (2026-11-13) book gamma and vega are measured from each catalogue record's extension Greeks (qip_kernel::hedge::convexity_of, one derivation read by RiskState::convexity and the Hedge Brain's BookGreeks) and gated by LimitKind::MaxBookGamma and MaxBookVega, which refuse a held or ordered instrument whose record states no usable Greeks and admit an order that lowers the absolute figure; delta is the net signed notional MaxNetExposure already limits. Neither convexity limit ships in a default set: no owner stated a bound.",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/limits.rs:157-165 MaxVolatility/VaR/ES/Drawdown/DailyLoss",
-      "backend/crates/libs/qip-risk/src/limits.rs:149 MaxAxisWeight",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:20113 gapped fill test"
+      "backend/crates/libs/qip-risk/src/limits.rs MaxBookGamma/MaxBookVega arms, RiskState::book_convexity (grep -n 'MaxBookGamma\\|fn book_convexity')",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs convexity_of / record_convexity (grep -n 'fn convexity_of\\|fn record_convexity')",
+      "backend/crates/runtime/qip-kernel/tests/market_risk_convexity.rs (3 tests through Platform::submit_order, mutation-verified)",
+      "backend/crates/libs/qip-risk/tests/limit_fixtures.rs gamma/vega pass and veto fixtures, unmeasured refusal, exemptions",
+      "backend/crates/services/qip-risk-engine/tests/risk_engine.rs a_sale_that_lowers_book_gamma_is_admitted_by_a_gamma_bound_the_book_already_exceeds",
+      "backend/crates/libs/qip-risk/src/limits.rs MaxVolatility/VaR/ES/Drawdown/DailyLoss and MaxAxisWeight arms"
     ],
-    "gap": "Book-level basis and Greeks exposures have no measurement to limit: BookGreeks carries delta (the book's net signed notional, already limited by MaxNetExposure) with gamma and vega None, because the risk aggregate holds signed notionals and no option sensitivities, and no book basis figure exists (basis_volatility is a per-hedge-candidate input, not a book measurement). A MaxNetDelta limit would duplicate MaxNetExposure and a MaxBasisExposure fed from ExposureSurvey could not fire. Needs per-instrument sensitivities on catalogue records and a hedge-pair basis in the aggregate before a limit can read them.",
+    "gap": "2026-11-13: basis and gap have neither a book measurement nor a recorded finding. basis_volatility is a per-hedge-candidate input (qip-risk/src/hedge_search.rs) and Universe::basis prices one future against its underlying; a book basis needs hedge pairs carried in the risk aggregate before a MaxBasisExposure limit could read it. A gapped fill is charged at its fill price and stress worlds price discontinuous moves, but no named gap-exposure figure reaches the gate or a journaled finding. Theta, rho, vanna and vomma are on the catalogue record and not aggregated. No shipped limits file names MaxBookGamma or MaxBookVega. Leads for the next lane: basis - qip_risk::hedge_search::HedgeMeasures::basis_risk already prices notional x basis_volatility x sqrt(holding days) x quantile per planned hedge; summing it over held hedge pairs from the position register would give the book figure a MaxBasisExposure limit could read. Gap - the stress library's tail-risk-event world (a two-day -40% equity move at 20x liquidity cost) already reaches ExposureSurvey::tail as a loss fraction journaled on HedgePlanned; naming it the gap measurement and gating it (e.g. a stress-loss limit keyed by world) is the remaining step.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2229,7 +2232,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Lane L24 2026-10-18 re-graded: the grader's closure (limits filled from ExposureSurvey Greeks/basis) names figures the survey does not hold; adding the limits first is the MaxExpectedShortfall defect. Kept PARTIAL."
+    "notes": "Lane L24 2026-10-18 re-graded: the grader's closure (limits filled from ExposureSurvey Greeks/basis) names figures the survey does not hold; adding the limits first is the MaxExpectedShortfall defect. Kept PARTIAL. Lane t50-33 2026-11-13: Greeks closed per ADR 0492 (catalogue Greeks were already on option extensions and the kernel ignored them); basis and gap remain, so PARTIAL."
   },
   {
     "id": "R12-RISK-4096",

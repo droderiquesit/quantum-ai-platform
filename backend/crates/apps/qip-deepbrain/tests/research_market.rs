@@ -13,8 +13,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::reflex_package::{
-    MAX_ADJUSTMENT_BPS, PackageSigner, PackageVerifier, ReflexInput, SignedReflexPackage,
+    MAX_ADJUSTMENT_BPS, PackageSigner, PackageVerifier, PublishedReflexPackage, ReflexInput,
+    ReflexPackageDraft, SignedReflexPackage,
 };
+use qip_contracts::trust::{ArtefactClass, Publication, TrustBundle, TrustedKey, sign_artefact};
 use qip_core::error::{Error, Result};
 use qip_core::{Context, Decimal, Duration, Timestamp};
 use qip_deepbrain::research::{
@@ -29,6 +31,7 @@ use qip_observability::Telemetry;
 use qip_observability::metrics::labels;
 use qip_risk::limits::LimitSet;
 use qip_storage::{BlobStore, MemoryBlobStore};
+use qip_transport::trust::{BundleVerifier, LocalSigner};
 use qip_world_model::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
 use qip_world_model::{EvidenceFabric, EvidenceRecord};
 use std::collections::{BTreeMap, BTreeSet};
@@ -222,16 +225,20 @@ fn a_fill_bias_found_by_research_is_promoted_and_published_as_a_loadable_reflex_
 }
 
 /// Without a signer the compiled package is held unsigned and nothing is
-/// written: there is no unsigned path to a cell. Mutation: write the
-/// unsigned package's encoding in the `(None, _)` arm — the store holds a
-/// key and the assertion fails.
+/// published: there is no unsigned path to a cell. The package store holds
+/// nothing; since ADR 0535 the one key written is the unsigned draft in the
+/// separate draft store, which neither load path accepts. Mutation: write
+/// the draft to the package store in the `(None, _, Some(_))` arm — the
+/// package store holds a key and the assertion fails.
 #[test]
 fn without_a_signer_a_compiled_package_is_held_and_nothing_is_published() {
     let platform = platform();
     let store = Arc::new(MemoryBlobStore::new());
+    let drafts = Arc::new(MemoryBlobStore::new());
     let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
         .unwrap()
-        .with_package_store(store.clone());
+        .with_package_store(store.clone())
+        .with_draft_store(drafts.clone());
     research
         .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
         .unwrap();
@@ -250,8 +257,131 @@ fn without_a_signer_a_compiled_package_is_held_and_nothing_is_published() {
         Some(&1),
         "premise: a package was compiled: {round:?}"
     );
-    assert!(store.list("").unwrap().is_empty());
+    assert!(
+        store.list("").unwrap().is_empty(),
+        "an unsigned package reached the store"
+    );
+    let keys = drafts.list("").unwrap();
+    assert_eq!(keys.len(), 1, "exactly the draft is written: {keys:?}");
+    let bytes = drafts.get(&keys[0]).unwrap().unwrap();
+    let later = t0().saturating_add(Duration::from_hours(1));
+    assert!(SignedReflexPackage::load(&bytes, &TestKey, later).is_err());
+    let key = LocalSigner::generate(ArtefactClass::ModelPack, "model-pack/1").unwrap();
+    let bundle = BundleVerifier::new(
+        TrustBundle::new(
+            vec![TrustedKey {
+                class: ArtefactClass::ModelPack,
+                key_version: "model-pack/1".to_string(),
+                public_key: key.public_key_hex(),
+                not_after: Timestamp::from_secs(4_000_000_000),
+            }],
+            BTreeSet::new(),
+        )
+        .unwrap(),
+    );
+    assert!(PublishedReflexPackage::load(&bytes, &bundle, later).is_err());
     assert!(research.packages().all(|p| p.signed.is_none()));
+}
+
+/// ADR 0535 / R12-REASON-7203: the deep brain holds no package signer; the
+/// two-person `model-pack` publish signs its draft. A draft the deep brain
+/// wrote, signed under a `model-pack` key with a two-person publication
+/// inside the signed bytes, loads and applies at the venue only; one
+/// re-attributed after signing, one signed by a key the bundle does not
+/// trust, and one published by one person are each refused.
+///
+/// Mutations, each verified: drop `publication.canonical()` from the
+/// signed bytes in `reflex_package::canonical` — the re-attributed package
+/// loads; drop the `publication.validate()` in `ReflexPackageDraft::publish`
+/// — the one-person publish is accepted.
+#[test]
+fn a_draft_the_deep_brain_writes_loads_only_once_the_two_person_model_pack_publish_signs_it() {
+    let platform = platform();
+    let store = Arc::new(MemoryBlobStore::new());
+    let drafts = Arc::new(MemoryBlobStore::new());
+    let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+        .unwrap()
+        .with_package_store(store.clone())
+        .with_draft_store(drafts.clone());
+    research
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    let later = t0().saturating_add(Duration::from_hours(1));
+    let round = research
+        .sweep_over(&platform, &fills(8), &[], later, &set(&[]), &set(&["US"]))
+        .unwrap();
+    assert_eq!(round.packages.get("held_unsigned"), Some(&1), "{round:?}");
+    assert!(
+        store.list("").unwrap().is_empty(),
+        "a draft reached the package store"
+    );
+    let keys = drafts.list("").unwrap();
+    assert_eq!(keys.len(), 1, "premise: one draft was written: {keys:?}");
+    let draft = ReflexPackageDraft::decode(&drafts.get(&keys[0]).unwrap().unwrap()).unwrap();
+
+    const KEY_VERSION: &str =
+        "projects/p/locations/l/keyRings/r/cryptoKeys/model-pack/cryptoKeyVersions/1";
+    let signer = LocalSigner::generate(ArtefactClass::ModelPack, KEY_VERSION).unwrap();
+    let trusted = BundleVerifier::new(
+        TrustBundle::new(
+            vec![TrustedKey {
+                class: ArtefactClass::ModelPack,
+                key_version: KEY_VERSION.to_string(),
+                public_key: signer.public_key_hex(),
+                not_after: Timestamp::from_secs(4_000_000_000),
+            }],
+            BTreeSet::new(),
+        )
+        .unwrap(),
+    );
+    let publication = Publication {
+        author: "author-login".to_string(),
+        approver: "approver-login".to_string(),
+        approved_at: later,
+    };
+    let signature = sign_artefact(
+        &signer,
+        ArtefactClass::ModelPack,
+        &draft.signing_canonical(&publication),
+    )
+    .unwrap();
+    let published = draft
+        .clone()
+        .publish(publication.clone(), signature.clone())
+        .unwrap();
+    let loaded = PublishedReflexPackage::load(&published.encode().unwrap(), &trusted, later)
+        .expect("the two-person publish loads");
+    let at = |venue: &str| {
+        BTreeMap::from([("venue".to_string(), ReflexInput::Label(venue.to_string()))])
+    };
+    assert_eq!(
+        loaded.evaluate(&at(VENUE)).get("twin_entry_bps"),
+        Some(&-40)
+    );
+    assert!(loaded.evaluate(&at("ELSEWHERE")).is_empty());
+
+    // Re-attributed to two other people after signing: refused.
+    let mut moved = published.clone();
+    moved.publication.approver = "someone-else".to_string();
+    assert!(PublishedReflexPackage::load(&moved.encode().unwrap(), &trusted, later).is_err());
+
+    // Signed under a key the bundle does not trust: refused.
+    let stranger = LocalSigner::generate(ArtefactClass::ModelPack, KEY_VERSION).unwrap();
+    let foreign = sign_artefact(
+        &stranger,
+        ArtefactClass::ModelPack,
+        &draft.signing_canonical(&publication),
+    )
+    .unwrap();
+    let foreign = draft.clone().publish(publication.clone(), foreign).unwrap();
+    assert!(PublishedReflexPackage::load(&foreign.encode().unwrap(), &trusted, later).is_err());
+
+    // One person in both roles: refused before anything is signed into it.
+    let alone = Publication {
+        approver: "Author-Login".to_string(),
+        ..publication
+    };
+    assert!(draft.publish(alone, signature).is_err());
 }
 
 /// ADR 0149 d6 (R12-EXPAND-6052): a promoted correction inside the reflex

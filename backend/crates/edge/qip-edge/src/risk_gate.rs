@@ -118,7 +118,12 @@ impl CellRiskGate {
             | LimitKind::MinCashBuffer { .. }
             // Statements and commitments are the desk's; a cell holds neither.
             | LimitKind::MaxMarginUtilisation { .. }
-            | LimitKind::MinFundingBuffer { .. } => false,
+            | LimitKind::MinFundingBuffer { .. }
+            // The catalogue's Greeks are the centre's; a cell holds no
+            // catalogue and fills no `RiskState::convexity`, so either limit
+            // would refuse every order there (ADR 0492).
+            | LimitKind::MaxBookGamma { .. }
+            | LimitKind::MaxBookVega { .. } => false,
         }
     }
 

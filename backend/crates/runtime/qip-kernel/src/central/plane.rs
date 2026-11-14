@@ -1128,6 +1128,7 @@ impl CentralPlane {
                 cycles: BTreeMap::new(),
                 conversions: Vec::new(),
                 start_sizes: BTreeMap::new(),
+                market_reference: Vec::new(),
             },
             outcome,
         };

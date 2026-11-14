@@ -1002,14 +1002,17 @@
   {
     "id": "R12-MESH-5042",
     "status": "PARTIAL",
-    "current": "ArbitrageDesk (backend/crates/edge/qip-edge/src/arbitrage.rs) holds scanner + whitelist; ArbitrageInstaller (backend/crates/apps/qip-edge-node/src/arbitrage.rs:439) installs from the payload's cycle_whitelist; test a_whitelisted_triangle_becomes_an_opportunity_once_its_books_are_read (tests/arbitrage.rs:313). The desk searches only the whitelisted graph; no distributed (multi-node) scanning.",
+    "current": "ArbitrageDesk (backend/crates/edge/qip-edge/src/arbitrage.rs) holds the scanner and the whitelist graph, and since ADR 0502 a discovery graph built from the operator's signed market reference (CycleWhitelist::market_reference, emitted by ArbitragePolicy::whitelist_for). ArbitrageDesk::discover searches every referenced book and returns DiscoveredCycle reports for cycles with an edge outside the whitelist; Cell::work journals each as Decision::CycleDiscovered and sends nothing on it. Only the whitelist graph's scan reaches the send path. No distributed (multi-node) scanning.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/arbitrage.rs:73 ArbitrageDesk",
       "backend/crates/apps/qip-edge-node/src/arbitrage.rs:439",
       "backend/crates/apps/qip-edge-node/tests/arbitrage.rs:313",
-      "backend/crates/apps/qip-edge-node/src/main.rs:620"
+      "backend/crates/apps/qip-edge-node/src/main.rs:620",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs::a_discovered_cycle_outside_the_whitelist_is_reported_and_never_sent",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs::dropping_a_whitelist_edge_leaves_no_opportunity_and_the_reference_reports_the_cycle_with_that_edge_outside",
+      "docs/adr/0502-discovery-proposes-and-the-operator-permits-a-cycle-outside-the-whitelist-is-reported-and-never-sent.md"
     ],
-    "gap": "Discovery outside the whitelist cannot be built from what the cell holds: a book is named by its instrument id and the cell has no market reference saying which instruments a market converts between (WhitelistedConversion.from/to come only from the signed whitelist), so a graph over every venue book has no edges to search. The installer already reports each tradable side with no edge (Installation::InstalledWithGaps, MESH-023). Closing it needs a signed market reference (market -> from/to instruments) in the policy payload, and an ADR if it widens what the centre permits; distributed scanning stays with the peer mesh switch.",
+    "gap": "2026-11-13 (t50-38): the local half of the bar is met and mutation-verified (a whitelisted triangle on dislocated books becomes an opportunity; a discovered cycle outside the whitelist is reported and never sent; dropping a whitelist edge leaves no opportunity). What remains: the requirement's 'distributed opportunities' half needs cross-node scanning over the peer mesh (ADR 0116), which needs a second node that owner decision 5 keeps unbought. Also, whitelist_for emits every operator market as both reference and conversion, so a deployed cell finds nothing outside the whitelist until R12-MESH-5059 narrows the whitelist; and no node is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1020,7 +1023,7 @@
     "verification": "cargo test -p qip-edge-node --test arbitrage",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Discovery proposes and the operator permits. The signed policy carries an operator-signed market reference, and the cell reports any cycle it finds outside the whitelist and sends nothing on it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered."
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): Discovery proposes and the operator permits. The signed policy carries an operator-signed market reference, and the cell reports any cycle it finds outside the whitelist and sends nothing on it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered. Lane t50-38, 2026-11-13: ADR 0502 written and implemented (market reference in slot 8, discovery graph, CycleDiscovered journal record, two mutation-verified tests). PARTIAL kept for the distributed half."
   },
   {
     "id": "R12-REFLEX-5043",

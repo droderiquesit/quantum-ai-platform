@@ -140,6 +140,12 @@ const PREFIX_CUSTODY: &str = "custody/";
 /// in settlement: a settlement deletes its order's row in the batch that
 /// books it.
 const PREFIX_PENDING: &str = "pending/";
+/// The order register (ADR 0490), keyed `order/<cell>/<session>/<order>`:
+/// one row per order or hedge a cell sent, opened by its `OrderSent` or
+/// `Hedged` record and moved by the fills and withdrawals that follow, in
+/// the batch that books them. It grows by one row per order, as the chain
+/// grows by one record per outcome, and nothing in it moves a balance.
+const PREFIX_ORDER: &str = "order/";
 const KEY_PROBE: &str = "meta/probe";
 
 /// How many key ranges a monotonic key family is spread over
@@ -205,6 +211,57 @@ impl P1Record {
             Self::Span(span) => &span.cell,
         }
     }
+}
+
+/// Whether a register row is an order the cell sent or a hedge it placed
+/// (ADR 0490).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderKind {
+    /// Opened by `Decision::OrderSent`: an intent the cell acted on.
+    Intent,
+    /// Opened by `Decision::Hedged`: an offset placed against a position
+    /// the cell already held. An open hedge row is a position the books
+    /// know is being taken even before any of it fills.
+    Hedge,
+}
+
+/// Where a register row stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderState {
+    /// Sent, and neither filled in full nor withdrawn.
+    Open,
+    /// Fills at least equal to the quantity sent have been booked.
+    Filled,
+    /// Withdrawn while open — expired, mass-cancelled or withdrawn from a
+    /// venue — with whatever filled before that still on the row.
+    Withdrawn,
+}
+
+/// One order or hedge a cell sent, as the ledger has seen it move
+/// (ADR 0490). A memo beside the balances: it moves no balance, and every
+/// fill it counts is booked to the balances by the same record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrderRow {
+    pub cell: String,
+    pub session: u64,
+    pub order_id: String,
+    pub kind: OrderKind,
+    pub venue: String,
+    /// The instrument, where the opening record names one: a hedge does,
+    /// an intent's `OrderSent` does not.
+    pub object: Option<String>,
+    pub quantity: Decimal,
+    /// The sum of the fill quantities booked against this order.
+    pub filled: Decimal,
+    pub state: OrderState,
+    /// The venue's answer to the withdrawal, when the row was withdrawn.
+    pub withdrawn: Option<String>,
+    /// The journal sequence that opened the row.
+    pub opened_at: u64,
+    /// The journal sequence that last moved it.
+    pub last_moved_at: u64,
 }
 
 /// A P1 record as the broker delivered it: where, and what it hashed to.
@@ -294,6 +351,11 @@ pub enum Disposition {
     /// This record filled a gap and was applied. The consumer must re-read
     /// the partition from `offset`, where the cell's held records start.
     ReReadFrom { offset: u64 },
+    /// The venue's custody statement advanced the chain and was compared with
+    /// the cell's booked fills in the same batch (ADR 0494). `breaks` units
+    /// disagreed; each was journaled as a `custody_break` note and counted by
+    /// direction, and the balances were not touched.
+    CustodyCompared { breaks: usize },
 }
 
 /// A durable note of a park, a gap filled, or a release, naming what an
@@ -621,6 +683,136 @@ impl LedgerStore {
         Ok(self
             .read::<Vec<LedgerEvent>>(&pending_key(cell, order_id))?
             .unwrap_or_default())
+    }
+
+    /// Every row of the order register (ADR 0490): each order and hedge a
+    /// cell sent, with what has filled against it and whether it was
+    /// withdrawn, ordered by cell, session and order id.
+    pub fn orders(&self) -> Result<Vec<OrderRow>> {
+        let mut rows = Vec::new();
+        for (_, value) in self.store.scan_prefix(PREFIX_ORDER)? {
+            rows.push(decode::<OrderRow>(value)?);
+        }
+        rows.sort_by(|a, b| {
+            (&a.cell, a.session, &a.order_id).cmp(&(&b.cell, b.session, &b.order_id))
+        });
+        Ok(rows)
+    }
+
+    /// The register row `outcome` writes, if it moves one.
+    ///
+    /// An intent or a hedge opens a row; a fill adds to the row of the
+    /// order it names; an expiry, a mass cancel or a venue withdrawal closes
+    /// an open row as withdrawn. A fill or withdrawal naming an order with
+    /// no row writes nothing here — the fill is still booked to the
+    /// balances, and an order the centre never saw sent is the central
+    /// plane's `unsent_fill` finding, not this register's to invent a row
+    /// for. An intent opening an order id already open in the same session
+    /// is refused: two rows for one order is two claims about one position.
+    fn register_move(&self, outcome: &OutcomeRecord) -> Result<Option<(String, OrderRow)>> {
+        let cell = outcome.cell.as_str();
+        let session = outcome.session;
+        let sequence = outcome.entry.sequence;
+        let opened = |kind, order_id: &str, venue: &str, object: Option<&str>, quantity: &str| {
+            let quantity = parse_quantity(order_id, "quantity", quantity)?;
+            Ok::<_, Error>(OrderRow {
+                cell: cell.to_string(),
+                session,
+                order_id: order_id.to_string(),
+                kind,
+                venue: venue.to_string(),
+                object: object.map(str::to_string),
+                quantity,
+                filled: Decimal::ZERO,
+                state: OrderState::Open,
+                withdrawn: None,
+                opened_at: sequence,
+                last_moved_at: sequence,
+            })
+        };
+        let row = match &outcome.entry.decision {
+            Decision::OrderSent {
+                order_id,
+                venue,
+                quantity,
+                ..
+            } => Some(opened(OrderKind::Intent, order_id, venue, None, quantity)?),
+            Decision::Hedged {
+                order_id,
+                venue,
+                object,
+                quantity,
+                ..
+            } => Some(opened(
+                OrderKind::Hedge,
+                order_id,
+                venue,
+                Some(object),
+                quantity,
+            )?),
+            _ => None,
+        };
+        if let Some(row) = row {
+            let key = order_key(cell, session, &row.order_id);
+            if self.read::<OrderRow>(&key)?.is_some() {
+                return Err(Error::invalid(format!(
+                    "order {} of session {session} on {cell} was opened again at sequence \
+                     {sequence}; the register holds one row per order",
+                    row.order_id
+                )));
+            }
+            return Ok(Some((key, row)));
+        }
+
+        let (order_id, movement) = match &outcome.entry.decision {
+            Decision::Filled {
+                order_id, quantity, ..
+            } => (
+                order_id,
+                Movement::Fill(parse_quantity(order_id, "fill quantity", quantity)?),
+            ),
+            Decision::OrderExpired {
+                order_id,
+                withdrawn,
+                ..
+            }
+            | Decision::MassCancelled {
+                order_id,
+                withdrawn,
+                ..
+            }
+            | Decision::VenueWithdrawn {
+                order_id,
+                withdrawn,
+                ..
+            } => (order_id, Movement::Withdraw(withdrawn)),
+            _ => return Ok(None),
+        };
+        let key = order_key(cell, session, order_id);
+        let Some(mut row) = self.read::<OrderRow>(&key)? else {
+            return Ok(None);
+        };
+        match movement {
+            Movement::Fill(filled) => {
+                row.filled = row.filled.checked_add(filled).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the filled quantity of order {} overflows",
+                        row.order_id
+                    ))
+                })?;
+                if row.filled >= row.quantity {
+                    row.state = OrderState::Filled;
+                }
+            }
+            Movement::Withdraw(withdrawn) => {
+                if row.state == OrderState::Open {
+                    row.state = OrderState::Withdrawn;
+                    row.withdrawn = Some(withdrawn.clone());
+                }
+            }
+        }
+        row.last_moved_at = sequence;
+        Ok(Some((key, row)))
     }
 
     /// `local` or `spanner`.
@@ -1009,6 +1201,60 @@ impl LedgerStore {
             },
             P1Record::Span(_) => None,
         };
+        // The same fence for an intent: an order or a hedge the cell says it
+        // sent to a live venue is refused before it opens a register row,
+        // because a register that records a live hedge as an ordinary open
+        // order is the books acknowledging a position no paper fence held
+        // (ADR 0490). Its fill would meet the fence above; the request must
+        // not slip past it merely because it carries no price.
+        if let P1Record::Outcome(outcome) = &delivery.record
+            && let Some(kind) = live_intent(&outcome.entry.decision)
+        {
+            self.telemetry.live_fill_refused();
+            return self.park_cell(
+                delivery,
+                &cursor,
+                park,
+                ParkReason::LiveFill,
+                format!(
+                    "{kind} {} is not marked simulated; this ledger books paper trading only \
+                     and refuses it as live (ADR 0003, ADR 0490)",
+                    outcome
+                        .entry
+                        .decision
+                        .order_id()
+                        .unwrap_or("with no order id")
+                ),
+            );
+        }
+        // The custody statement meets the same fence before the chain (ADR
+        // 0130 decision 6): a statement not marked simulated parks the cell
+        // as live, and nothing is compared against it. A statement that does
+        // not parse is held for the same reason a malformed fill is: the
+        // venue said something about the cell's holdings that nobody can read.
+        let custody = match &delivery.record {
+            P1Record::Outcome(outcome) => {
+                CustodyStatement::from_entry(cell, outcome.session, &outcome.entry)
+            }
+            P1Record::Span(_) => Ok(None),
+        };
+        if let Ok(Some(statement)) = &custody
+            && !statement.simulated
+        {
+            self.telemetry.live_fill_refused();
+            return self.park_cell(
+                delivery,
+                &cursor,
+                park,
+                ParkReason::LiveFill,
+                format!(
+                    "a custody statement from {} at sequence {} is not marked simulated; this \
+                     platform reconciles paper custody only (ADR 0130 decision 6)",
+                    statement.venue, statement.sequence
+                ),
+            );
+        }
+
         if let Some((Err(refusal), false)) = &fill {
             self.telemetry.live_fill_refused();
             return self.park_cell(
@@ -1094,6 +1340,19 @@ impl LedgerStore {
             return self.park_cell(delivery, &cursor, park, ParkReason::Integrity, detail);
         }
 
+        let custody = match custody {
+            Ok(custody) => custody,
+            Err(refusal) => {
+                return self.park_cell(
+                    delivery,
+                    &cursor,
+                    park,
+                    ParkReason::RefusedFill,
+                    refusal.message().to_string(),
+                );
+            }
+        };
+
         let mut pending: Option<(String, Option<Vec<LedgerEvent>>)> = None;
         let event = match fill {
             None => None,
@@ -1156,7 +1415,38 @@ impl LedgerStore {
             }
         };
 
+        let register = match &delivery.record {
+            P1Record::Outcome(outcome) => match self.register_move(outcome) {
+                Ok(register) => register,
+                Err(refusal) => {
+                    return self.park_cell(
+                        delivery,
+                        &cursor,
+                        park,
+                        ParkReason::Integrity,
+                        refusal.message().to_string(),
+                    );
+                }
+            },
+            P1Record::Span(_) => None,
+        };
+
         let mut batch = LedgerBatch::new();
+        // The register row moves in the batch that books the record, so an
+        // order and the fill that closes it are never committed apart.
+        if let Some((key, row)) = &register {
+            batch = batch.put_as(key.clone(), row)?;
+        }
+        // The statement is compared in the batch that advances the chain onto
+        // it (ADR 0494): the chain checks above proved every earlier entry of
+        // this session is applied, so the ledger side is complete, and the
+        // comparison and the tail move together or not at all.
+        let mut custody_breaks = None;
+        if let Some(statement) = &custody {
+            let (compared, breaks) = self.compare_custody(batch, statement)?;
+            batch = compared;
+            custody_breaks = Some(breaks);
+        }
         // The pending row moves in the batch that books the event, so a
         // settlement and the row it closes are never committed apart.
         match pending {
@@ -1231,15 +1521,23 @@ impl LedgerStore {
         self.store.commit(batch)?;
 
         self.telemetry.commit("success");
+        if let Some(breaks) = &custody_breaks {
+            for found in breaks {
+                self.telemetry.custody_break(found.direction.as_str());
+            }
+        }
         if reread.is_some() {
             self.record_parked_keys()?;
         }
-        Ok(match (reread, &event) {
-            (Some(offset), _) => Disposition::ReReadFrom { offset },
-            (None, Some(event)) => Disposition::Posted {
+        Ok(match (reread, &event, custody_breaks) {
+            (Some(offset), _, _) => Disposition::ReReadFrom { offset },
+            (None, Some(event), _) => Disposition::Posted {
                 postings: event.postings().len(),
             },
-            (None, None) => Disposition::Advanced,
+            (None, None, Some(breaks)) => Disposition::CustodyCompared {
+                breaks: breaks.len(),
+            },
+            (None, None, None) => Disposition::Advanced,
         })
     }
 
@@ -1395,6 +1693,29 @@ impl LedgerStore {
             return Ok(CustodyReconciliation::Pending);
         }
 
+        let (batch, breaks) = self.compare_custody(LedgerBatch::new(), statement)?;
+        self.store.commit(batch)?;
+        for found in &breaks {
+            self.telemetry.custody_break(found.direction.as_str());
+        }
+        Ok(match custody::halt_for(statement, &breaks) {
+            Some(halt) => CustodyReconciliation::Broken { breaks, halt },
+            None => CustodyReconciliation::Agrees,
+        })
+    }
+
+    /// The comparison itself, added to `batch` and not committed: the cell's
+    /// booked fills at or before the statement's position, per unit, against
+    /// the statement, with a `custody_break` note per disagreeing unit and the
+    /// mark that makes the same statement `Stale` next time. The caller holds
+    /// the writer lock, commits, and counts the breaks only once committed,
+    /// so a counter never names a break the journal does not hold.
+    fn compare_custody(
+        &self,
+        batch: LedgerBatch,
+        statement: &CustodyStatement,
+    ) -> Result<(LedgerBatch, Vec<CustodyBreak>)> {
+        let mark_key = format!("{PREFIX_CUSTODY}{}/{}", statement.cell, statement.venue);
         let mut ledger: BTreeMap<String, Decimal> = BTreeMap::new();
         for event in self.fill_events()? {
             let source = event.source();
@@ -1425,7 +1746,7 @@ impl LedgerStore {
         }
 
         let breaks = custody::compare(&ledger, statement);
-        let mut batch = LedgerBatch::new().put_as(
+        let mut batch = batch.put_as(
             mark_key,
             &CustodyMark {
                 session: statement.session,
@@ -1458,14 +1779,7 @@ impl LedgerStore {
                 },
             )?;
         }
-        self.store.commit(batch)?;
-        for found in &breaks {
-            self.telemetry.custody_break(found.direction.as_str());
-        }
-        Ok(match custody::halt_for(statement, &breaks) {
-            Some(halt) => CustodyReconciliation::Broken { breaks, halt },
-            None => CustodyReconciliation::Agrees,
-        })
+        Ok((batch, breaks))
     }
 
     // --- decisions --------------------------------------------------------
@@ -2022,6 +2336,49 @@ fn chain_position(key: &str) -> Result<(String, u64, u64)> {
 /// written as one value. Recorded here so it is a stated choice.
 fn pending_key(cell: &str, order_id: &str) -> String {
     format!("{PREFIX_PENDING}{}/{}", hex(cell), hex(order_id))
+}
+
+/// What a fill or a withdrawal does to the register row it names.
+enum Movement<'a> {
+    /// A fill of this quantity.
+    Fill(Decimal),
+    /// A withdrawal, carrying the venue's answer.
+    Withdraw(&'a String),
+}
+
+fn order_key(cell: &str, session: u64, order_id: &str) -> String {
+    format!(
+        "{PREFIX_ORDER}{}/{session:020}/{}",
+        hex(cell),
+        hex(order_id)
+    )
+}
+
+/// What an intent not marked simulated is called in its refusal, or `None`
+/// when `decision` is not an intent or is marked simulated.
+fn live_intent(decision: &Decision) -> Option<&'static str> {
+    match decision {
+        Decision::OrderSent {
+            simulated: false, ..
+        } => Some("order"),
+        Decision::Hedged {
+            simulated: false, ..
+        } => Some("hedge"),
+        _ => None,
+    }
+}
+
+/// A quantity from a journal record, refused unless it is a positive
+/// decimal: a register row sized by text nobody can read is a row whose
+/// fills can never be said to close it.
+fn parse_quantity(order_id: &str, what: &str, text: &str) -> Result<Decimal> {
+    match Decimal::parse(text) {
+        Some(quantity) if quantity > Decimal::ZERO => Ok(quantity),
+        _ => Err(Error::invalid(format!(
+            "the {what} {text:?} of order {order_id} is not a positive decimal; the register \
+             cannot size the order from it"
+        ))),
+    }
 }
 
 fn tail_key(cell: &str) -> String {

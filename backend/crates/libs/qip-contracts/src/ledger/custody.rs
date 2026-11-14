@@ -33,6 +33,7 @@
 //!   small, repeated error that is the commonest real break.
 
 use crate::policy::HaltCommand;
+use crate::reflex::{Decision, JournalEntry};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,59 @@ impl CustodyStatement {
         }
         self.cash_units.insert(unit);
         Ok(self)
+    }
+
+    /// The statement a journaled [`Decision::CustodyStatement`] carries, at
+    /// the entry's own chain position (ADR 0494). `None` for any other
+    /// decision.
+    ///
+    /// The position is the entry's: the venue took the statement after every
+    /// fill the cell had journaled and before anything journaled after it,
+    /// so the ledger side is exactly the fills at or before this sequence.
+    /// Refuses a holding that is not an exact decimal, and a unit stated
+    /// both as a holding and as cash or twice as a holding: a statement
+    /// that says two things about one unit cannot be compared with anything.
+    /// The `simulated` flag is carried, not judged: the ledger refuses a
+    /// live statement where it refuses a live fill.
+    pub fn from_entry(cell: &str, session: u64, entry: &JournalEntry) -> Result<Option<Self>> {
+        let Decision::CustodyStatement {
+            venue,
+            holdings,
+            cash_units,
+            simulated,
+        } = &entry.decision
+        else {
+            return Ok(None);
+        };
+        let mut statement = Self::new(
+            cell,
+            venue.as_str(),
+            session,
+            entry.sequence,
+            entry.at,
+            *simulated,
+        )?;
+        for unit in cash_units {
+            statement = statement.cash(unit.as_str())?;
+        }
+        for (unit, quantity) in holdings {
+            if statement.holdings.contains_key(unit) {
+                return Err(Error::invalid(format!(
+                    "custody statement at sequence {} states {unit} twice; one unit has one \
+                     holding",
+                    entry.sequence
+                )));
+            }
+            let quantity = Decimal::parse(quantity).ok_or_else(|| {
+                Error::invalid(format!(
+                    "custody statement at sequence {} states {unit} as {quantity:?}, which is \
+                     not an exact decimal; nothing is compared against a guess",
+                    entry.sequence
+                ))
+            })?;
+            statement = statement.holding(unit.as_str(), quantity)?;
+        }
+        Ok(Some(statement))
     }
 
     /// Whether the statement's chain position is at or before `(session,

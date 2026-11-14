@@ -28,7 +28,7 @@ use qip_contracts::market_event::MarketEvent;
 use qip_contracts::message::MarketMessage;
 use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
-use qip_contracts::venue::VenueId;
+use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::hash::sha256_hex;
 use qip_core::ids::ObjectId;
@@ -54,6 +54,7 @@ use qip_execution_engine::creation::{
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
+use qip_orderbook::venue::VenueState;
 use qip_storage::lake::Lake;
 use qip_storage::lake_codec::SegmentCodec;
 use qip_storage::lake_history::HistoryQuery;
@@ -255,10 +256,20 @@ struct Run {
     /// chosen for each signal and the candidates it was chosen from.
     journal: Vec<String>,
     journal_digest: String,
+    /// Every message the cell's decoder normalized the feed's bytes into,
+    /// in pass and decode order.
+    normalized: Vec<MarketMessage>,
+    /// The cell's book for the instrument at the session's end.
+    book: Option<String>,
 }
 
 impl Run {
-    fn of(cell: &Cell, decisions: Vec<String>, orders: usize) -> Self {
+    fn of(
+        cell: &Cell,
+        decisions: Vec<String>,
+        orders: usize,
+        normalized: Vec<MarketMessage>,
+    ) -> Self {
         let entries = cell.journal().entries();
         Self {
             decisions,
@@ -278,6 +289,8 @@ impl Run {
                 .last()
                 .map(|entry| entry.digest.clone())
                 .unwrap_or_default(),
+            normalized,
+            book: cell.book_digest(&venue(), &object()),
         }
     }
 }
@@ -285,7 +298,24 @@ impl Run {
 /// The original session: the cell's market view from the simulated venue,
 /// every pass's applied ticks sealed into `lake` by the drain's `LakeSink`.
 /// Returns what it decided and how many ticks it sealed.
+/// The cell discards its book at `second`, as an abandoned sequence gap
+/// would leave it — exogenous to both runs, like the venue's seeding.
+fn discard_at(cell: &mut Cell, discard: Option<i64>, second: i64) {
+    if discard == Some(second) {
+        let mut discarded = VenueState::aggregated(object(), venue(), VenueStatus::Open);
+        discarded.reset("a sequence gap was abandoned");
+        cell.track(discarded);
+    }
+}
+
 fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
+    original_session_discarding(lake, None)
+}
+
+fn original_session_discarding(
+    lake: &Arc<MemoryBlobStore>,
+    discard: Option<i64>,
+) -> Result<(Run, usize)> {
     let mut cell = cell()?;
     let mut gateway = simulated_venue()?;
     let mut feed = SimulatedFeed::new(venue());
@@ -301,8 +331,10 @@ fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
     let mut decisions = Vec::new();
     let mut orders = 0usize;
     let mut sealed = 0usize;
+    let mut normalized = Vec::new();
     for second in PASSES {
         seed(&mut gateway, second)?;
+        discard_at(&mut cell, discard, second);
         let outcome = run_pass(
             &mut cell,
             &mut gateway,
@@ -315,6 +347,7 @@ fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
             orders += report.orders.len();
         }
         decisions.push(decided(&outcome));
+        normalized.extend(feed.take_normalized());
         let applied = feed.take_captured();
         if !applied.is_empty() {
             sealed += applied.len();
@@ -325,7 +358,7 @@ fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
             )?;
         }
     }
-    Ok((Run::of(&cell, decisions, orders), sealed))
+    Ok((Run::of(&cell, decisions, orders, normalized), sealed))
 }
 
 /// Every tick `lake` retains, read back through `qip_storage::lake_history`
@@ -364,6 +397,13 @@ fn retained_history(
 /// the retained history, sending to a fresh simulator under the same seed
 /// and the same exogenous seeding.
 fn replayed_session(history: &BTreeMap<Timestamp, Vec<MarketMessage>>) -> Result<Run> {
+    replayed_session_discarding(history, None)
+}
+
+fn replayed_session_discarding(
+    history: &BTreeMap<Timestamp, Vec<MarketMessage>>,
+    discard: Option<i64>,
+) -> Result<Run> {
     let mut cell = cell()?;
     let mut gateway = simulated_venue()?;
     let mut feed = ReplayFeed::new(venue());
@@ -371,8 +411,10 @@ fn replayed_session(history: &BTreeMap<Timestamp, Vec<MarketMessage>>) -> Result
     let mut stats = PassStats::default();
     let mut decisions = Vec::new();
     let mut orders = 0usize;
+    let mut normalized = Vec::new();
     for second in PASSES {
         seed(&mut gateway, second)?;
+        discard_at(&mut cell, discard, second);
         let ticks = history.get(&t(second)).map_or(&[][..], Vec::as_slice);
         let outcome = run_replay_pass(
             &mut cell,
@@ -387,8 +429,9 @@ fn replayed_session(history: &BTreeMap<Timestamp, Vec<MarketMessage>>) -> Result
             orders += report.orders.len();
         }
         decisions.push(decided(&outcome));
+        normalized.extend(feed.take_normalized());
     }
-    Ok(Run::of(&cell, decisions, orders))
+    Ok(Run::of(&cell, decisions, orders, normalized))
 }
 
 /// R12-TICK-9006: replaying retained lake history through a fresh cell
@@ -453,6 +496,155 @@ fn replaying_retained_lake_history_through_a_fresh_cell_yields_the_same_decision
     assert_eq!(
         replay.journal_digest, original.journal_digest,
         "the replayed cell's hash-chained journal is not the original's"
+    );
+    Ok(())
+}
+
+/// R12-TICK-1201: the tick lake seals the events the cell normalized, and a
+/// replay from the lake reproduces them field for field.
+///
+/// The failure it prevents, found by an independent review on 2026-10-25:
+/// the lake sealed the publisher's messages, so the record the desk replays
+/// from was what the venue meant to say, and nothing proved it was what the
+/// cell read. A book rebuilt from the lake can match the cell's book and
+/// still not be the cell's events — a status, an order count or a stamp the
+/// decoder normalized differently leaves the book alone. So three sequences
+/// are compared whole, every field of every message: what the original
+/// cell's decoder produced from the bytes, what the lake retains, and what a
+/// fresh cell's decoder produces from the lake's lines.
+///
+/// Mutation: in `SimulatedFeed::capture` (src/feed.rs), stamp the payload's
+/// receive instant one nanosecond late (`now.saturating_add(1ns)`) — the
+/// capture check refuses every line, the lake retains nothing and the first
+/// premise fails. Mutation: drop the check (`Ok(event) =>` without the
+/// equality) and have `capture` write `order_count: Some(1)` on a level —
+/// the lake retains the publisher's message and the lake-against-cell
+/// comparison fails at message 0. (Dropping the check with the late stamp
+/// instead does not fire: the lake re-derives a line's receive instant from
+/// the event header, so that stamp is not a field the lake keeps.) Mutation: in
+/// `ReplayFeed::publish`, decode the frame at `now + 1ns` — the replay's
+/// normalized events differ from the original's in `capture_time`.
+#[test]
+fn the_lake_seals_the_events_the_cell_normalized_and_replay_from_it_reproduces_them_field_for_field()
+-> Result<()> {
+    let lake = Arc::new(MemoryBlobStore::new());
+    let (original, sealed) = original_session(&lake)?;
+    assert!(
+        sealed > 10,
+        "premise: the passes sealed ticks ({sealed}), so equal sequences are not two empty ones"
+    );
+    assert_eq!(
+        original.normalized.len(),
+        sealed,
+        "every message the cell normalized was sealed, and nothing else was"
+    );
+
+    let (history, retained) = retained_history(lake.as_ref())?;
+    assert_eq!(
+        retained, sealed,
+        "premise: the lake retains every sealed tick"
+    );
+    // The lake's order: by pass, and within a pass by the feed's sequence,
+    // which is the order the cell decoded the frame in.
+    let mut from_lake: Vec<MarketMessage> = Vec::new();
+    for ticks in history.values() {
+        let mut ticks = ticks.clone();
+        ticks.sort_by_key(|tick| tick.origin.sequence);
+        from_lake.extend(ticks);
+    }
+    assert_eq!(from_lake.len(), original.normalized.len());
+    for (index, (kept, read)) in from_lake.iter().zip(&original.normalized).enumerate() {
+        assert_eq!(
+            kept, read,
+            "message {index}: the lake retains an event the cell did not normalize"
+        );
+    }
+
+    let replay = replayed_session(&history)?;
+    assert_eq!(replay.normalized.len(), original.normalized.len());
+    for (index, (replayed, read)) in replay
+        .normalized
+        .iter()
+        .zip(&original.normalized)
+        .enumerate()
+    {
+        assert_eq!(
+            replayed, read,
+            "message {index}: the replay from the lake normalized an event the original cell \
+             did not"
+        );
+    }
+    Ok(())
+}
+
+/// R12-TICK-1201's resynchronisation case: a book the cell rebuilt from a
+/// snapshot is sealed in the lake, and a replay from the lake rebuilds it.
+///
+/// The failure it prevents, found by an independent review on 2026-11-14:
+/// `SimulatedFeed::publish` answered a snapshot request through
+/// `Cell::apply_snapshot`, past the decoder and past the capture, so a
+/// session with a resynchronisation left a lake that could not rebuild the
+/// book the cell traded on. A replayed cell asked for the same snapshot,
+/// was never answered, and refused every order against a book it held
+/// stale — and every earlier lake test passed, because none drove a resync.
+///
+/// Mutation: in `SimulatedFeed::publish` skip `record_snapshot` — the lake
+/// holds no snapshot ("the original session sealed no snapshot"). Mutation:
+/// make `ReplayFeed::answer_snapshots` return `Ok(0)` without applying —
+/// the replayed cell's book stays discarded and it decides differently on
+/// the resync pass ("pass 10: the replay decided differently").
+#[test]
+fn a_book_rebuilt_by_resynchronisation_is_sealed_in_the_lake_and_rebuilt_by_replay_from_it()
+-> Result<()> {
+    const DISCARD: i64 = 20;
+    let lake = Arc::new(MemoryBlobStore::new());
+    let (original, sealed) = original_session_discarding(&lake, Some(DISCARD))?;
+    assert!(sealed > 10, "premise: the passes sealed ticks ({sealed})");
+    let (history, retained) = retained_history(lake.as_ref())?;
+    assert_eq!(
+        retained, sealed,
+        "premise: the lake retains every sealed tick"
+    );
+    let snapshot: Vec<&MarketMessage> = history
+        .values()
+        .flatten()
+        .filter(|tick| tick.origin.partition == qip_edge_node::feed::SNAPSHOT_PARTITION)
+        .collect();
+    assert!(
+        snapshot.len() > 1,
+        "the original session sealed no snapshot, though its cell rebuilt a book from one: \
+         {snapshot:?}"
+    );
+    assert!(
+        snapshot.iter().all(|tick| tick.capture_time == t(DISCARD)),
+        "premise: the snapshot was answered on the pass the book was discarded"
+    );
+    let held = original
+        .book
+        .clone()
+        .expect("premise: the original cell holds the instrument's book");
+
+    let replay = replayed_session_discarding(&history, Some(DISCARD))?;
+    assert_eq!(
+        replay.book.as_deref(),
+        Some(held.as_str()),
+        "the replay from the lake did not rebuild the book the original cell held"
+    );
+    assert_eq!(replay.decisions.len(), original.decisions.len());
+    for (pass, (replayed, recorded)) in replay.decisions.iter().zip(&original.decisions).enumerate()
+    {
+        assert_eq!(
+            replayed, recorded,
+            "pass {pass}: the replay decided differently from the session it replays"
+        );
+    }
+    assert_eq!(
+        replay.journal_digest, original.journal_digest,
+        "the replayed cell's hash-chained journal is not the original's"
+    );
+    assert_eq!(
+        replay.normalized, original.normalized,
+        "the replay applied messages, snapshot included, that the original did not"
     );
     Ok(())
 }

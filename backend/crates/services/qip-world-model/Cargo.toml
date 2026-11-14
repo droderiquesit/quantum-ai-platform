@@ -24,3 +24,6 @@ workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# Test signers for the issuer-registry arm (ADR 0139); the verifier itself is
+# qip-evidence's, on the same pin.
+qip-tls.workspace = true

@@ -32,16 +32,20 @@
 //!
 //! # What this slice does not yet do
 //!
-//! `MarketEvent` holds its `Admission` as one value (R12-TICK-2053,
-//! 2026-11-12) and decodes its unchanged wire form back through the
-//! refusals, but it is not `Admitted<MarketMessage>`: producers stamp a
-//! payload's capture time and the header's receive time from two clocks,
-//! so [`Admitted::admit`]'s own-times rule would refuse ordinary events.
 //! A `SensedRecord` carries no header of its own; the kernel admits each
 //! record by the times it carries itself, with no entitlement and no source
-//! hash (see `Platform::absorb_records`). `Admission`'s own derived
-//! `Deserialize` re-runs none of [`Admission::new`]'s refusals. All three
-//! are named in R12-TICK-2053's gap.
+//! hash (see `Platform::absorb_records`). That is the one part of
+//! R12-TICK-2053's gap left.
+//!
+//! Closed on 2026-11-14: `MarketEvent` is its payload under
+//! [`Admitted`], built through [`Admitted::admit`] — its first production
+//! caller — because every producer in the tree stamps a payload's capture
+//! instant and the header's receive instant from one clock, which an
+//! earlier version of this paragraph said they did not; and [`Admission`]
+//! decodes through [`Admission::new`] and [`Admitted`] through
+//! [`Admitted::admit`]. `MarketEvent`'s own decoder holds a stored line with
+//! `Admitted::read_back`, deliberately, for the reason it does not re-run
+//! the order refusal either.
 
 use crate::governance::Entitlement;
 use qip_core::error::{Error, Result};
@@ -49,7 +53,15 @@ use qip_core::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// The header every admitted record carries. See the module documentation.
+///
+/// Decoded through [`Admission::new`] (R12-TICK-2053): a derived
+/// `Deserialize` built the header field by field and re-ran none of the
+/// refusals, so a stored or relayed header received before it happened, with
+/// a negative doubt, under a lapsed entitlement or naming no source hash was
+/// admitted by being read back, which is the one route the constructor was
+/// written to close. The wire form is unchanged; only the decoder refuses.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "AdmissionWire")]
 pub struct Admission {
     pub(crate) event_time: Timestamp,
     pub(crate) receive_time: Timestamp,
@@ -57,6 +69,33 @@ pub struct Admission {
     pub(crate) uncertainty: Duration,
     pub(crate) source_hash: String,
     pub(crate) entitlement: Entitlement,
+}
+
+/// [`Admission`]'s wire form, field for field, which exists only to be
+/// decoded back through [`Admission::new`].
+#[derive(Deserialize)]
+struct AdmissionWire {
+    event_time: Timestamp,
+    receive_time: Timestamp,
+    normalized_time: Timestamp,
+    uncertainty: Duration,
+    source_hash: String,
+    entitlement: Entitlement,
+}
+
+impl TryFrom<AdmissionWire> for Admission {
+    type Error = Error;
+
+    fn try_from(wire: AdmissionWire) -> Result<Self> {
+        Self::new(
+            wire.event_time,
+            wire.receive_time,
+            wire.normalized_time,
+            wire.uncertainty,
+            wire.source_hash,
+            wire.entitlement,
+        )
+    }
 }
 
 impl Admission {
@@ -180,10 +219,31 @@ impl Admissible for crate::message::MarketMessage {
 }
 
 /// A record under its admission header.
+///
+/// Decoded through [`Admitted::admit`], so a stored pair whose record's own
+/// times disagree with its header is refused on the way back in, as it was
+/// on the way in; the header itself decodes through [`Admission::new`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "AdmittedWire<T>")]
+#[serde(bound(deserialize = "T: Admissible + Deserialize<'de>"))]
 pub struct Admitted<T> {
     admission: Admission,
     record: T,
+}
+
+/// [`Admitted`]'s wire form, decoded back through [`Admitted::admit`].
+#[derive(Deserialize)]
+struct AdmittedWire<T> {
+    admission: Admission,
+    record: T,
+}
+
+impl<T: Admissible> TryFrom<AdmittedWire<T>> for Admitted<T> {
+    type Error = Error;
+
+    fn try_from(wire: AdmittedWire<T>) -> Result<Self> {
+        Self::admit(wire.record, wire.admission)
+    }
 }
 
 impl<T: Admissible> Admitted<T> {
@@ -214,11 +274,20 @@ impl<T: Admissible> Admitted<T> {
 }
 
 impl<T> Admitted<T> {
-    pub fn admission(&self) -> &Admission {
+    /// A stored pair held as it was written, without the own-times rule:
+    /// crate-private, for `MarketEvent`'s decoder alone, which leaves a line
+    /// whose payload and header disagree to the replay's counted knowability
+    /// exclusion rather than refusing it unread. Every writer goes through
+    /// [`Admitted::admit`].
+    pub(crate) fn read_back(record: T, admission: Admission) -> Self {
+        Self { admission, record }
+    }
+
+    pub const fn admission(&self) -> &Admission {
         &self.admission
     }
 
-    pub fn record(&self) -> &T {
+    pub const fn record(&self) -> &T {
         &self.record
     }
 

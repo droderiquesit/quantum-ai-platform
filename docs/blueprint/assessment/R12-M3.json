@@ -587,28 +587,32 @@
   },
   {
     "id": "R12-WORLD-3025",
-    "status": "PARTIAL",
-    "current": "Federation arbitration (four decisions with calibration) runs each UNDERSTAND pass and is journaled.",
+    "status": "COMPLETE",
+    "current": "A World Model Arbitration Brain on the production roster (manifests::world_model_arbitration_brain, built by chief::standard_agents) reads the FederationReview UNDERSTAND journals through a kernel-written desk slot carrying its cycle and journal position, decides each proposition itself from the scored views the record preserves under the federation's rule (decide_on) — branch, merge, abstain or request more data — names any recorded decision those views do not reproduce, keeps every disagreeing view in its count and states each member's calibration; removing it drops Scope::WorldModelArbitration from coverage, and the deep brain registry covers world-model-arbitration only through its roster-derived entry (ADR 0488).",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:362 Federation (in-process only; module doc says no composition root builds it)",
-      "backend/crates/services/qip-world-model/tests/federation.rs:243 arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output",
+      "backend/crates/agents/qip-investment-agents/src/world_model_brain.rs::WorldModelArbitrationAnalyst",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs::world_model_arbitration_brain (on roster)",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs::standard_agents",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::WorldModelArbitration",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::brief_the_desk_on_arbitration",
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation",
-      "backend/crates/apps/qip-deepbrain/src/brains.rs arbitration_spec, REQUIRED_SCOPES, BrainRegistry::require_coverage",
-      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage"
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs::removing_the_world_model_arbitration_brain_drops_world_model_arbitration_from_coverage",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::understand_briefs_the_desk_from_the_federation_review_it_journals_and_the_arbitration_brain_reports_it",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage",
+      "docs/adr/0488-the-world-model-arbitration-brain-is-an-organisation-specialist-reading-the-journaled-federation-review-from-a-kernel-written-slot.md"
     ],
-    "gap": "2026-10-25 (L4, commit 4f9bdc2d, skeptic REFUTED). Closed: the deep brain registry (brains::standard) carries a World Model Arbitration Brain entry over world-model-arbitration, and require_coverage refuses start when that scope is missing. Still open: the entry is a hand-written BrainSpec describing the kernel FederationStage, not a specialist constructed in the production organisation (the qip-investment-agents roster has none); removing it stops nothing but start-up, since FederationStage::run is independent of the registry and main.rs only prints the registry; the spec is not tied to the FederationReview the stage journals; the fast brain and qip-api build the same Platform with no registry or coverage check; and under ADR 0158 decision 8 a spec enters through the Cognitive Compiler or a reviewed spec, with calibration tracked, which this literal (calibration 0.0) is not.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test symbolic_federation; cargo test -p qip-deepbrain --test brains",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-25 (L4), commit 4f9bdc2d: two mutants killed (skip the register call; require_coverage always passes), restored sha256-identical. Skeptic REFUTED (gap). Stays PARTIAL. 2026-11-13 (t50-31, ADR 0488): graded COMPLETE by its own session against the verification field; awaits the independent skeptic. Mutants killed, each restored byte-for-byte: agent dropped from standard_agents; Abstain counted as Branch; one view counted per disagreement; observed guard removed; empty-pass guard removed; kernel slot writer call removed; manifest world-model-arbitration competency renamed (deep brain standard refuses naming the scope); recorded decision counted instead of decide_on's; reproduction comparison dropped. Residuals, outside the requirement text and verification field and recorded for the skeptic: member scoring (the composite) is computed by the kernel FederationStage in UNDERSTAND and the specialist decides on those scores; the registry entry's calibration is the organisation_spec literal 0.0 for every organisation agent; qip-fastbrain and qip-api build the same organisation but run no brain registry check; nothing in DECIDE reads the specialist's finding."
   },
   {
     "id": "R12-REASON-3026",
@@ -1860,8 +1864,8 @@
   },
   {
     "id": "R12-WORLD-3078",
-    "status": "PARTIAL",
-    "current": "NowBrain::standard registers six estimators: Kalman (state-space), particle, robust, the graph estimator GraphFilter, the neural state-space estimator NeuralFilter (an online-trained adaptive linear neuron over the variable's last two increments, EstimatorKind::Neural, abstaining for a three-reading warm-up) and the symbolic estimator SymbolicFilter (the declared constraint read as an estimate: the local-level posterior truncated to the admissible set, EstimatorKind::Symbolic, abstaining where the rule does not bind). Two estimators on one variable both contribute and their ModelDisagreement is recorded, for the graph, causal, neural and symbolic members each; in a full cycle the network's dispute on an accelerating return is journaled. CausalFilter exists and contributes when registered but is not in the standard set.",
+    "status": "COMPLETE",
+    "current": "NowBrain::standard registers seven estimators, one or more of every kind the requirement names: Kalman (Bayesian state-space), particle, robust, the graph estimator GraphFilter, the neural state-space estimator NeuralFilter (an online-trained adaptive linear neuron over the variable's last two increments, abstaining for a three-reading warm-up), the symbolic estimator SymbolicFilter (the declared constraint read as an estimate: the local-level posterior truncated to the admissible set, abstaining where the rule does not bind) and the causal estimator CausalFilter, which proposes slope x lagged parent belief on returns only, from edges whose regression recorded its fitted slope (CausalEdge::slope, set by establish_temporal_precedence) and read at the edge's own lag; hand-asserted edges carry no slope and are not passed. Two estimators on one variable both contribute and their ModelDisagreement is recorded for the graph, causal, neural and symbolic members each; in full cycles the network's and the causal estimator's disputes are journaled (the latter on an edge the cycle itself fitted) and the symbolic candidate is fused into the bounded halted belief.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/now.rs::GraphFilter",
       "backend/crates/services/qip-world-model/src/now.rs::RelatedBelief and Evidence::related",
@@ -1869,11 +1873,9 @@
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::new",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::the_graph_estimator_reads_the_containing_scopes_belief_and_disagrees_with_the_kalman_filter",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::two_estimators_on_one_variable_both_contribute_and_their_disagreement_is_recorded",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests (four estimators registered)",
       "backend/crates/services/qip-world-model/src/now.rs CausalFilter, CausalParent, NowBrain::set_causal_parents",
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::now_causal_parents",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::a_causal_estimator_contributes_beside_the_kalman_and_their_disagreement_is_recorded",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism",
       "backend/crates/services/qip-world-model/src/now.rs::NeuralFilter and NowBrain::standard",
       "backend/crates/services/qip-world-model/src/now.rs::SymbolicFilter, EstimatorKind::Symbolic and Evidence::constraint",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::the_neural_estimator_learns_a_trend_and_its_disagreement_with_the_kalman_filter_is_recorded",
@@ -1882,9 +1884,22 @@
       "backend/crates/services/qip-world-model/tests/now_brain.rs::a_share_read_past_its_bound_is_estimated_at_the_bound_by_the_symbolic_estimator",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::the_standard_brain_registers_the_neural_and_symbolic_estimators",
       "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_neural_estimator_competes_in_the_cycle_and_its_dispute_is_journaled",
-      "docs/adr/0498 (neural and symbolic estimators in the standard ensemble)"
+      "docs/adr/0498 (neural and symbolic estimators in the standard ensemble)",
+      "backend/crates/services/qip-world-model/src/causal.rs::CausalEdge::slope and CausalEdge::with_slope",
+      "backend/crates/services/qip-world-model/src/granger.rs::establish_temporal_precedence_controlling_for (records test.coefficient as the slope)",
+      "backend/crates/services/qip-world-model/src/now.rs::CausalParent::lag, CAUSAL_VARIABLE, NowBrain::causal_beliefs (lagged read) and NowBrain::standard (seven workers)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::now_causal_parents (fitted slope and lag only)",
+      "backend/crates/services/qip-world-model/tests/granger.rs::a_granger_edge_carries_its_fitted_slope_and_a_claimed_edge_carries_none",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_causal_estimator_reads_its_parent_as_of_the_fitted_lag_and_never_a_newer_belief",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_causal_estimator_proposes_for_returns_only",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::in_the_standard_brain_the_causal_estimator_contributes_and_its_dispute_is_recorded",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_by_their_fitted_slope_and_lag",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_causal_estimator_competes_in_the_cycle_on_a_fitted_edge_and_its_dispute_is_journaled",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_symbolic_estimator_is_in_the_fused_set_of_a_bounded_variable_in_the_cycle",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests (seven estimators registered)",
+      "docs/adr/0499 (fitted slope, lagged read, returns only, causal in standard)"
     ],
-    "gap": "2026-11-12 (t50-36, ADR 0498). Closed: EstimatorKind::Neural has an implementation (NeuralFilter) and a symbolic estimator (SymbolicFilter) proposes estimates from the constraint; both are registered in NowBrain::standard, and a full-cycle test journals the network's dispute. Still open: CausalFilter is not registered in NowBrain::standard, because the causal graph's edge strength is a Granger partial R2 (fit, not slope) without its lag, and fusing R2*parent by default would bias every promoted belief; it joins once edges carry a fitted coefficient used at its lag, restricted to return. No full-cycle test shows the causal or the symbolic candidate in a journaled dispute (the symbolic one's in-cycle disagreements on bounded variables stay under the half-scale threshold on the test tapes). So the causal model, one of the five named kinds, does not contribute on the default path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1894,10 +1909,10 @@
       "R12-WORLD-3075"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-world-model --test now_brain && cargo test -p qip-kernel --test now_lattice",
+    "verification": "cd backend && cargo test -p qip-world-model --test now_brain --test granger && cargo test -p qip-kernel --test now_lattice && cargo test -p qip-kernel --lib the_now_brain_is_told_each_instruments_causal_parents_by_their_fitted_slope_and_lag",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL. 2026-10-31 (L4): two mutants killed (CausalFilter always abstains; drop the mechanism sign), restored sha256-identical. Skeptic REFUTED and found the default registration would bias promoted beliefs; the filter was taken out of standard() in the follow-up commit. Stays PARTIAL. 2026-11-12 (t50-36): neural and symbolic estimators added and registered. Mutants killed, each restored sha256-identical: NeuralFilter always abstains (unit and cycle tests); NeuralFilter weight update zeroed (the learned-transition test: 38.5 vs 39); SymbolicFilter always abstains (two tests); untruncated mean (disagreement test); either worker dropped from standard(). Stays PARTIAL on the causal default registration."
+    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL. 2026-10-31 (L4): two mutants killed (CausalFilter always abstains; drop the mechanism sign), restored sha256-identical. Skeptic REFUTED and found the default registration would bias promoted beliefs; the filter was taken out of standard() in the follow-up commit. Stays PARTIAL. 2026-11-12 (t50-36): neural and symbolic estimators added and registered. Mutants killed, each restored sha256-identical: NeuralFilter always abstains (unit and cycle tests); NeuralFilter weight update zeroed (the learned-transition test: 38.5 vs 39); SymbolicFilter always abstains (two tests); untruncated mean (disagreement test); either worker dropped from standard(). Stays PARTIAL on the causal default registration. 2026-11-14 (t50-36, ADR 0499): Granger edges carry their fitted slope, the kernel passes only fitted edges with their lag, the brain reads a parent's belief as of the lag, the causal estimator is restricted to return and registered in standard(); the skeptic's objection (R2 is fit, not slope; no lag; would bias every belief) is answered by each of those. Mutants killed, each restored sha256-identical: no slope recorded; partial R2 recorded as the slope (slope 0.81 vs -0.7); newest parent belief read instead of the lagged one; all three return-only seams dropped (any one alone does not fire, by design); causal dropped from standard(); kernel passes mechanism-signed strength (-0.6 vs -0.35); kernel drops the slope filter (NVDA claimed edge passed); kernel passes no parent (cycle dispute test); SymbolicFilter always abstains (cycle halted test, ensemble 2 vs 3 expected). Graded COMPLETE."
   },
   {
     "id": "R12-AMBIENT-3079",
@@ -2029,15 +2044,19 @@
   {
     "id": "R12-WORLD-3084",
     "status": "PARTIAL",
-    "current": "LatticeHorizon::MicrosecondsMs.promotion_target() is LocalReflexOnly (lattice.rs:141-149). Population::admit refuses any other target (lattice.rs:225), and issue() refuses a lane the horizon is not served from (lattice.rs:400). Population::standard admits two members per row: a martingale and a drift follower on a price level. The kernel's lattice stage issues at the central rows every cycle (runtime/qip-kernel/src/lattice_stage.rs).",
+    "current": "Central side: LatticeHorizon::MicrosecondsMs.promotion_target() is LocalReflexOnly, Population::admit refuses any other target and issue() refuses the central lane at the row. Reflex side (ADR 0506): qip-contracts::reflex_forecast::ReflexForecast states the row's four outputs (fill probability, queue movement, adverse selection, executable edge) with a horizon refused outside 1..=999,999 µs, an expiry no later than the horizon, a distribution shaped to the target, nanosecond instants on the wire, and a promotion target that is the one-variant ReflexPromotion::LocalReflexOnly, so a record naming any other target does not decode. qip-edge::reflex_forecast::ReflexIssuer (reflex-frequency/1) issues them from the cell's observed outcomes over a bounded window and scores them (Brier, reliability, quantile coverage). The reflex_forecast_boundary acceptance suite refuses any production source outside qip-contracts, qip-edge and qip-edge-node naming the contract, and any qip-edge file but the issuer.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs:141",
-      "backend/crates/services/qip-world-model/src/lattice.rs:225",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::the_central_lane_may_not_issue_a_microsecond_forecast",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row"
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row",
+      "backend/crates/libs/qip-contracts/tests/reflex_forecast.rs::a_record_naming_any_promotion_target_but_the_local_reflex_does_not_decode",
+      "backend/crates/libs/qip-contracts/tests/reflex_forecast.rs::a_horizon_of_a_second_or_more_belongs_to_another_row_and_is_refused",
+      "backend/crates/libs/qip-contracts/tests/reflex_forecast.rs::a_sub_millisecond_forecast_keeps_its_issue_and_expiry_apart_on_the_wire",
+      "backend/crates/edge/qip-edge/tests/reflex_issuer.rs::the_nodes_fill_forecasts_are_calibrated_against_what_the_venue_then_did",
+      "backend/crates/edge/qip-edge/tests/reflex_issuer.rs::a_magnitude_forecasts_quantiles_cover_what_they_say_they_cover",
+      "backend/crates/tests/qip-acceptance/tests/reflex_forecast_boundary.rs::nothing_central_reads_a_reflex_forecast"
     ],
-    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: a ReflexForecast contract in qip-contracts and a node issuer with a calibration test.",
+    "gap": "2026-11-13 (session t50-40, ADR 0506): the ReflexForecast contract, the node-side issuer with a mutation-verified calibration test, and the nothing-central-reads-it suite landed. Remaining: the issuer is not fed from Cell::work nor hosted by qip-edge-node, so no deployed or test-driven pass issues a microsecond forecast yet; the centre's after-the-fact re-scoring of reflex forecasts (ADR 0133) and the qip_lattice_brier{horizon=\"microseconds_ms\"} series that waits on it are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2047,10 +2066,10 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-contracts --test reflex_forecast; cargo test -p qip-edge --test reflex_issuer; cargo test -p qip-acceptance --test reflex_forecast_boundary; cargo test -p qip-world-model --test forecast_lattice",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22)."
+    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22). Lane t50-40, 2026-11-13: ten contract/issuer mutations and two boundary mutations each failed the named test and were restored byte for byte; see ADR 0506."
   },
   {
     "id": "R12-WORLD-3085",

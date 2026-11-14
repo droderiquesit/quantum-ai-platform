@@ -49,7 +49,10 @@
 //!   formalised as a `SymbolicDerivation` and distilled into a bounded
 //!   `ReflexPackage` (R12-REASON-7203, 3115). It is signed and published
 //!   only through an installed `PackageSigner` (ADR 0110); without one it is
-//!   held unsigned and nothing is written.
+//!   held unsigned and, where a package store is configured, written as an
+//!   unsigned [`ReflexPackageDraft`] in [`REFLEX_PACKAGE_DRAFTS_NAMESPACE`] for the
+//!   two-person `model-pack` publish to sign (ADR 0131, ADR 0535). The
+//!   deployed deep brain installs no signer: it never holds that key.
 
 use qip_agents::registries::{CapabilityRegistry, OntologyRegistry};
 use qip_contracts::ambient::{
@@ -61,6 +64,7 @@ use qip_contracts::expansion::{
     CapabilityEntry, GapClass, OntologyPatch, OntologyTypeFamily, OntologyTypeSpec,
     SyntheticEpisode, SyntheticGenerator,
 };
+use qip_contracts::reflex_package::ReflexPackageDraft;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_expansion::campaigns::{self, TickCampaign, TickCampaignDetector, TickCampaignTrigger};
@@ -338,6 +342,12 @@ pub const RETAINED: usize = 64;
 pub const ACQUISITION_BUDGET_BP: u32 = 20_000;
 /// The blob namespace signed reflex packages are published under.
 pub const REFLEX_PACKAGES_NAMESPACE: &str = qip_storage::classes::REFLEX_PACKAGES_NAMESPACE;
+/// The blob namespace unsigned drafts are written to (ADR 0535). Its own
+/// store, not a prefix inside [`REFLEX_PACKAGES_NAMESPACE`]: anything that
+/// lists the published packages — a loader, an exit gate — never sees a
+/// draft, which a prefix inside the same store could not promise.
+pub const REFLEX_PACKAGE_DRAFTS_NAMESPACE: &str =
+    qip_storage::classes::REFLEX_PACKAGE_DRAFTS_NAMESPACE;
 
 /// Research acquisitions carried out, by `action` (the nine
 /// `AcquisitionAction` names) and `outcome` (`gathered`, `not_executable`).
@@ -1731,9 +1741,10 @@ pub struct ResearchLoop {
     coverage: BTreeMap<String, BTreeSet<String>>,
     /// Signals routed but not yet activated, by signal id, with each
     /// signal's expiry — the deadline its information request is urgent
-    /// against. Bounded by the router's hold queue: an entry leaves when its
+    /// against — and the urgency the signal stated at emission, the floor
+    /// `admit` ranks it at. Bounded by the router's hold queue: an entry leaves when its
     /// signal is activated, shed, expired or found below materiality.
-    pending: BTreeMap<String, (RaisedGap, Timestamp)>,
+    pending: BTreeMap<String, (RaisedGap, Timestamp, u32)>,
     /// NOW surprise signals routed but not yet activated, by signal id, with
     /// the specialist each would wake. Bounded like `pending`.
     pending_wakes: BTreeMap<String, qip_kernel::now_stage::Specialist>,
@@ -1763,6 +1774,8 @@ pub struct ResearchLoop {
     compiler: CognitiveCompiler,
     signer: Option<Box<dyn PackageSigner + Send>>,
     package_store: Option<Arc<dyn BlobStore>>,
+    /// Where unsigned drafts go (ADR 0535); never the package store.
+    draft_store: Option<Arc<dyn BlobStore>>,
     campaign_policy: CampaignPolicy,
     /// When each started item started, by question. Bounded by the queue.
     started_at: BTreeMap<String, Timestamp>,
@@ -2020,6 +2033,7 @@ impl ResearchLoop {
             compiler: CognitiveCompiler::new(CompilerBounds::default())?,
             signer: None,
             package_store: None,
+            draft_store: None,
             campaign_policy: CampaignPolicy::default(),
             started_at: BTreeMap::new(),
             evaluated: BTreeMap::new(),
@@ -2274,6 +2288,14 @@ impl ResearchLoop {
 
     pub fn with_package_store(mut self, store: Arc<dyn BlobStore>) -> Self {
         self.package_store = Some(store);
+        self
+    }
+
+    /// The store an unsigned draft is written to (ADR 0535). Kept apart
+    /// from [`Self::with_package_store`] so a draft never sits where
+    /// published packages are read.
+    pub fn with_draft_store(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.draft_store = Some(store);
         self
     }
 
@@ -3027,8 +3049,10 @@ impl ResearchLoop {
         }
         for (raised, signal) in routable {
             if let Some(raised) = raised {
-                self.pending
-                    .insert(signal.id().to_string(), (raised, signal.expiry()));
+                self.pending.insert(
+                    signal.id().to_string(),
+                    (raised, signal.expiry(), signal.urgency_bp()),
+                );
             }
             let events = self.router.route(&signal, now)?;
             round.signals.push(signal.clone());
@@ -3117,7 +3141,9 @@ impl ResearchLoop {
                             }
                             continue;
                         }
-                        let Some((gap, deadline)) = self.pending.remove(&event.signal_id) else {
+                        let Some((gap, deadline, stated_urgency)) =
+                            self.pending.remove(&event.signal_id)
+                        else {
                             continue;
                         };
                         // Irrefutable while attention has one authority: a
@@ -3130,6 +3156,7 @@ impl ResearchLoop {
                         self.admit(
                             gap,
                             deadline,
+                            stated_urgency,
                             event.pathway,
                             &event.feedback_link,
                             now,
@@ -3361,6 +3388,7 @@ impl ResearchLoop {
         &mut self,
         gap: RaisedGap,
         deadline: Timestamp,
+        stated_urgency: u32,
         pathway: Pathway,
         feedback_link: &str,
         now: Timestamp,
@@ -3384,7 +3412,16 @@ impl ResearchLoop {
         // a sweep ranks ahead of the same gap raised this instant. The same
         // figure ranks the desk's queue (R12-EXPAND-6048) and the request
         // below; the desk reads it as a fraction of the scale.
-        let urgency = urgency_bp(now, deadline, self.config.signal_ttl);
+        //
+        // The signal's own stated urgency is a floor under that figure, not
+        // ignored (R12-AMBIENT-10175): a NOW surprise states its urgency as
+        // its severity (`now::surprise_signals`), and until 2026-11-13 this
+        // line recomputed urgency from the expiry alone, so a ten-sigma
+        // surprise woke its specialist at the same half-scale urgency as a
+        // one-sigma one and `AmbientSignal::urgency_bp` had no reader. The
+        // deadline can only raise it: a signal the router deferred ages
+        // toward the full scale whatever its producer stated.
+        let urgency = urgency_bp(now, deadline, self.config.signal_ttl).max(stated_urgency);
         let admission = self.desk.offer_by_deadline(
             gap,
             f64::from(urgency) / f64::from(qip_contracts::ambient::MAX_SEVERITY_BP),
@@ -3676,6 +3713,7 @@ impl ResearchLoop {
         self.admit(
             raised,
             signal.expiry(),
+            signal.urgency_bp(),
             pathway,
             feedback_link,
             now,
@@ -4720,16 +4758,26 @@ impl ResearchLoop {
             ),
             None => None,
         };
-        let outcome = match (&signed, &self.package_store) {
-            (Some(signed), Some(store)) => {
+        let outcome = match (&signed, &self.package_store, &self.draft_store) {
+            (Some(signed), Some(store), _) => {
                 store.put(
                     &format!("{}.json", signed.package.package_id),
                     signed.encode()?,
                 )?;
                 "published"
             }
-            (Some(_), None) => "signed",
-            (None, _) => "held_unsigned",
+            (Some(_), None, _) => "signed",
+            (None, _, Some(drafts)) => {
+                // ADR 0535: the draft the two-person publish signs. Still
+                // `held_unsigned`: nothing a cell can load was written.
+                let draft = ReflexPackageDraft::new(compiled.package.clone())?;
+                drafts.put(
+                    &format!("{}.json", draft.package.package_id),
+                    draft.encode()?,
+                )?;
+                "held_unsigned"
+            }
+            (None, _, None) => "held_unsigned",
         };
         *round.packages.entry(outcome).or_default() += 1;
         metrics.count(REFLEX_PACKAGES, labels([("outcome", outcome)]));
@@ -5538,6 +5586,8 @@ mod tests {
                 .admit(
                     gap(domain),
                     deadline,
+                    // No stated urgency: this test ranks on the deadline alone.
+                    0,
                     Pathway::ResearchTask,
                     link,
                     now,

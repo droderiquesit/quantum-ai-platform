@@ -539,7 +539,9 @@ version = "0.1.0"
 dependencies = [
  "qip-contracts",
  "qip-core",
+ "qip-tls",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -789,6 +791,7 @@ dependencies = [
  "qip-orderbook",
  "qip-sequencing",
  "qip-storage",
+ "qip-tls",
  "qip-transport",
  "serde",
  "serde_json",
@@ -1162,6 +1165,7 @@ dependencies = [
  "qip-financial",
  "qip-market",
  "qip-numerics",
+ "qip-tls",
  "serde",
  "serde_json",
 ]

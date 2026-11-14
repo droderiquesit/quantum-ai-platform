@@ -340,7 +340,7 @@
 use qip_contracts::CapitalEnvelope;
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::{
-    CycleWhitelist, HoldingTerms, WhitelistedConversion, WhitelistedCosts,
+    CycleWhitelist, HoldingTerms, ReferencedMarket, WhitelistedConversion, WhitelistedCosts,
 };
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueClass, VenueId};
@@ -654,6 +654,14 @@ impl ArbitragePolicy {
             )));
         }
         let mut conversions = Vec::with_capacity(self.markets.len() * 2);
+        // ADR 0502: the operator's markets, each stated once with what it
+        // converts between, so the cell can search its books over them and
+        // report a cycle the whitelist does not carry. Today the whitelist
+        // is every one of these markets, so a cell finds nothing outside
+        // it; the reference and the whitelist part the day the centre
+        // narrows the whitelist to the cycles it discovers (R12-MESH-5059),
+        // and the reference is what keeps the cell able to see the rest.
+        let mut market_reference = Vec::with_capacity(self.markets.len());
         for market in &self.markets {
             let venue = VenueId::new(market.venue.as_str());
             if !envelope.permits_venue(&venue) {
@@ -679,6 +687,14 @@ impl ArbitragePolicy {
             // and is a conversion out of the base. `WhitelistedConversion`
             // documents the same convention: `Ask` buys `to`, `Bid` sells
             // `from`.
+            market_reference.push(ReferencedMarket {
+                venue: market.venue.clone(),
+                venue_class: terms.class,
+                market: market.market.clone(),
+                base: market.base.clone(),
+                quote: market.quote.clone(),
+                cost_fraction: terms.taker_cost,
+            });
             conversions.push(WhitelistedConversion {
                 venue: market.venue.clone(),
                 venue_class: terms.class,
@@ -714,6 +730,7 @@ impl ArbitragePolicy {
             cycles: BTreeMap::new(),
             conversions,
             start_sizes,
+            market_reference,
         })
     }
 }

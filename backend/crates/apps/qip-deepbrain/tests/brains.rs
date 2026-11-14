@@ -113,15 +113,19 @@ fn removing_an_ambient_brain_drops_its_scope_from_the_registry() {
     assert!(without_agency.scopes().contains(ATTENTION_ROUTING));
 }
 
-/// R12-WORLD-3025: the World Model Arbitration Brain is constructed in the
-/// production registry, and removing it drops its scope from coverage. The
-/// node then refuses to start, since `standard` requires the scope. Nothing
-/// else on record covers world-model arbitration, so the removal is
-/// observable.
+/// R12-WORLD-3025, ADR 0488: the World Model Arbitration Brain's registry
+/// entry is the one derived from the production organisation's roster — the
+/// platform's own organisation, not a hand-written spec — and removing it
+/// drops its scope from coverage. The node then refuses to start, since
+/// `standard` requires the scope. Nothing else on record covers world-model
+/// arbitration, so the removal is observable.
 ///
-/// Mutation: in `brains::standard`, skip `registry.register(arbitration_spec())`
-/// -- `standard` then refuses to build, naming the missing scope, and the
-/// first unwrap fails.
+/// Mutation: in `qip_investment_agents::manifests::world_model_arbitration_brain`,
+/// replace the `"world-model-arbitration"` competency with another string --
+/// `standard` then refuses to build, naming the missing scope, and the
+/// `standard(..).unwrap()` fails on that refusal. (Dropping the manifest from
+/// the roster instead fails earlier, at platform assembly, because
+/// `standard_agents` still builds an agent the roster does not name.)
 #[test]
 fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() {
     use qip_deepbrain::brains::{
@@ -133,6 +137,14 @@ fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() 
         .get(WORLD_MODEL_ARBITRATION_BRAIN)
         .expect("the arbitration brain is in the production registry");
     assert!(spec.validate().is_ok());
+    assert!(
+        platform
+            .organisation()
+            .roster()
+            .iter()
+            .any(|manifest| format!("organisation/{}", manifest.id) == spec.id),
+        "the arbitration entry is derived from a manifest on the running roster"
+    );
     assert!(registry.scopes().contains(WORLD_MODEL_ARBITRATION));
     assert!(REQUIRED_SCOPES.contains(&WORLD_MODEL_ARBITRATION));
     assert!(registry.require_coverage().is_ok(), "premise: covered");

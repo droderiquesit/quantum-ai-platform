@@ -145,6 +145,7 @@ fn a_poll_report_carries_no_packet_until_a_consumer_asks_for_one() -> Result<()>
         digest: _,
         unreferenced: _,
         refused_evidence: _,
+        signature_refusal: _,
         knowledge_delta: _,
         knowledge_pack: _,
         knowledge_footprint: _,
@@ -498,5 +499,176 @@ fn a_coinbase_print_numbered_after_another_but_dated_before_it_violates_event_or
         "{:?}",
         late.verdict.temporal
     );
+    Ok(())
+}
+
+/// A transport that serves the emulator's answers and adds a detached
+/// signature to the events body, the way a signing issuer's server would.
+#[derive(Debug)]
+struct Signing {
+    inner: SourceEmulator,
+    key_id: String,
+    signature: Vec<u8>,
+    signed: Vec<u8>,
+}
+
+impl SourceTransport for Signing {
+    fn describe(&self) -> String {
+        "a recorded fixture with a detached signature".to_string()
+    }
+
+    fn request(
+        &mut self,
+        request: &qip_market_ingestion::connector::SourceRequest,
+        at: Timestamp,
+    ) -> Result<qip_market_ingestion::connector::SourceResponse> {
+        let response = self.inner.request(request, at)?;
+        Ok(if request.target().contains("events") {
+            response.with_detached_signature(
+                self.key_id.clone(),
+                self.signature.clone(),
+                self.signed.clone(),
+            )
+        } else {
+            response
+        })
+    }
+}
+
+/// An Ed25519 signer and a committed registry naming its key `ts-1` for
+/// issuer `test-issuer`, covering `source` until 2027.
+#[allow(clippy::unwrap_used)] // a test fixture: a key that cannot be made is the failure report
+fn test_issuer(
+    source: &str,
+) -> (
+    qip_tls::ring::signature::Ed25519KeyPair,
+    Arc<qip_evidence::IssuerRegistry>,
+) {
+    use qip_tls::ring::signature::KeyPair;
+    let rng = qip_tls::ring::rand::SystemRandom::new();
+    let pkcs8 = qip_tls::ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let signer = qip_tls::ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let key: String = signer
+        .public_key()
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let registry = qip_evidence::IssuerRegistry::from_json(
+        &serde_json::json!({
+            "schema_version": 1,
+            "issuers": [{
+                "issuer": "test-issuer",
+                "domains": ["test-source.example"],
+                "sources": [source],
+                "keys": [{
+                    "key_id": "ts-1",
+                    "algorithm": "ed25519",
+                    "public_key_hex": key,
+                    "not_after": "2027-01-01T00:00:00Z",
+                }]
+            }]
+        })
+        .to_string(),
+        now(),
+    )
+    .unwrap();
+    (signer, Arc::new(registry))
+}
+
+/// ADR 0139 decision 2: the connector verifies a served detached signature
+/// against the committed registry and attaches the verifier's token to every
+/// claim from that body, so the fabric credits it; a signature under a key
+/// the registry does not hold is refused, reported, and earns nothing.
+/// Mutation: drop the token in `evidence_of` (never attach it) — the signed
+/// poll weighs the same as the unsigned one and the second assertion fails.
+#[test]
+#[allow(clippy::unwrap_used)]
+fn a_poll_whose_body_a_registered_issuer_signed_carries_the_verified_token_and_weighs_more()
+-> Result<()> {
+    let text = body(&[("e1", "2026-08-24T14:59:00Z", "101.25")]);
+    let (signer, registry) = test_issuer("test-source");
+    let signature = signer.sign(text.as_bytes()).as_ref().to_vec();
+
+    let poll = |key_id: &str| -> Result<PollReport> {
+        let mut transport = Signing {
+            inner: serving(&text),
+            key_id: key_id.to_string(),
+            signature: signature.clone(),
+            signed: text.as_bytes().to_vec(),
+        };
+        let mut runtime = ConnectorRuntime::new(
+            manifest(),
+            RuntimeConfig::seeded(7).with_issuer_registry(Arc::clone(&registry)),
+        )?;
+        let mut connector = TestConnector::new(manifest());
+        runtime.poll(&mut connector, &mut transport, now())
+    };
+    let mut unsigned_runtime = runtime(manifest(), None)?;
+    let mut emulator = serving(&text);
+    let unsigned =
+        unsigned_runtime.poll(&mut TestConnector::new(manifest()), &mut emulator, now())?;
+
+    let signed = poll("ts-1")?;
+    assert_eq!(signed.evidence.len(), 1, "premise: the claim was checked");
+    assert_eq!(unsigned.evidence.len(), 1, "premise: the copy was checked");
+    assert_eq!(signed.signature_refusal, None);
+    let token_attached = signed.evidence[0]
+        .record
+        .authenticity_signals
+        .iter()
+        .any(|s| matches!(s, qip_evidence::AuthenticitySignal::SignatureVerified { token } if token.issuer() == "test-issuer"));
+    assert!(token_attached, "no verified token reached the claim");
+    assert!(
+        signed.evidence[0].verdict.belief_weight > unsigned.evidence[0].verdict.belief_weight,
+        "a registered issuer's signature did not move the claim's weight: {:?}",
+        signed.evidence[0].verdict.authenticity
+    );
+
+    let unknown = poll("ts-unregistered")?;
+    assert_eq!(
+        unknown.evidence.len(),
+        1,
+        "premise: the claim still goes up"
+    );
+    assert!(
+        unknown
+            .signature_refusal
+            .as_deref()
+            .is_some_and(|reason| reason.contains("not in the committed issuer registry")),
+        "{:?}",
+        unknown.signature_refusal
+    );
+    assert_eq!(
+        unknown.evidence[0].verdict.belief_weight,
+        unsigned.evidence[0].verdict.belief_weight
+    );
+    Ok(())
+}
+
+/// The registry every connector feed installs is the committed file, and it
+/// admits today: a key that expired, an algorithm the verifier lacks or a
+/// duplicate key id in it would stop every feed from opening, and this is
+/// where a reviewer learns that before a deployment does. Every source an
+/// issuer covers must be one this build carries, or the entry verifies
+/// nothing and only reads as trust. Mutation: change the file's
+/// `schema_version` to 2 — the registry is refused and this fails.
+#[test]
+fn the_committed_issuer_registry_admits_and_covers_only_sources_this_build_carries() -> Result<()> {
+    use qip_market_ingestion::connector_feed::{KNOWN_SOURCES, committed_issuer_registry};
+    let registry = committed_issuer_registry(now())?;
+    assert!(
+        !KNOWN_SOURCES.is_empty(),
+        "premise: the build carries sources to compare against"
+    );
+    for issuer in registry.issuers() {
+        for source in &issuer.sources {
+            assert!(
+                KNOWN_SOURCES.contains(&source.as_str()),
+                "issuer {} covers {source}, which this build carries no connector for",
+                issuer.issuer
+            );
+        }
+    }
     Ok(())
 }

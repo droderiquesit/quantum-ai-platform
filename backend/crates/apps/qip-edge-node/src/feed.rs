@@ -124,6 +124,22 @@ pub const SIMULATED_FEED: &str = "simulated";
 /// key it beside the venue.
 pub const FEED_NAME: &str = "simulated-depth";
 
+/// The partition a resynchronisation snapshot is recorded on (R12-TICK-1201).
+///
+/// A snapshot is the venue's whole depth handed to `Cell::apply_snapshot`
+/// out of band: it never crossed the wire and has no place in the feed's
+/// sequence, so recording it on partition 0 would show the lake a sequence
+/// the venue never published. Until 2026-11-14 it was not recorded at all,
+/// so a book rebuilt by resynchronisation was in no lake and no replay could
+/// rebuild it. On its own partition, numbered by its own counter, each
+/// snapshot is a `Reset { reason: SNAPSHOT_REASON }` marker followed by the
+/// `LevelSet` edits the cell applied, and [`ReplayFeed`] answers a replayed
+/// cell's request from exactly those.
+pub const SNAPSHOT_PARTITION: u32 = 1;
+
+/// The reason a snapshot's leading `Reset` marker carries.
+pub const SNAPSHOT_REASON: &str = "resynchronisation snapshot";
+
 /// The dataset the simulated depth is captured under.
 pub const SIMULATED_DATASET: &str = "qip-simulated-depth";
 
@@ -258,6 +274,13 @@ pub struct SimulatedFeed {
     /// Counted rather than fatal: the pass has already applied the frame,
     /// and failing it now would make recording a reason to stop trading.
     capture_failures: u64,
+    /// The messages the cell's decoder normalized the last publication
+    /// into, until [`Self::take_normalized`] hands them on. One frame,
+    /// replaced on every publication, so bounded like `captured`.
+    normalized: Vec<MarketMessage>,
+    /// The last number written on [`SNAPSHOT_PARTITION`]: the snapshot
+    /// partition's own sequence, never the wire's.
+    snapshot_sequence: u64,
 }
 
 impl SimulatedFeed {
@@ -272,6 +295,8 @@ impl SimulatedFeed {
             captured: Vec::new(),
             last_frame: String::new(),
             capture_failures: 0,
+            normalized: Vec::new(),
+            snapshot_sequence: 0,
         }
     }
 
@@ -304,10 +329,11 @@ impl SimulatedFeed {
     /// first, leaving none. Each carries the venue's instant as its event
     /// time, this node's receipt instant as its receive time, and the
     /// feed's own sequence number in its origin — the three facts a tick
-    /// lake partition is read by. A resynchronisation snapshot is not here:
-    /// it is the venue's whole depth rebuilt out of band, with no place in
-    /// the feed's sequence, and a lake that recorded it as a tick would
-    /// show a sequence the venue never published.
+    /// lake partition is read by. A resynchronisation snapshot is here too,
+    /// first, on [`SNAPSHOT_PARTITION`] under its own counter rather than
+    /// the wire's sequence (R12-TICK-1201): it is the venue's whole depth
+    /// handed to the cell out of band, and on partition 0 it would show a
+    /// sequence the venue never published.
     pub fn take_captured(&mut self) -> Vec<MarketEvent> {
         std::mem::take(&mut self.captured)
     }
@@ -318,9 +344,17 @@ impl SimulatedFeed {
         &self.last_frame
     }
 
-    /// Lines the cell took that could not be captured as market events.
+    /// Lines the cell took that could not be captured as market events,
+    /// including a line whose captured message differs in any field from
+    /// the message the cell normalized it into.
     pub fn capture_failures(&self) -> u64 {
         self.capture_failures
+    }
+
+    /// Hand on the messages the cell's decoder normalized the last
+    /// publication into, in decode order, leaving none (R12-TICK-1201).
+    pub fn take_normalized(&mut self) -> Vec<MarketMessage> {
+        std::mem::take(&mut self.normalized)
     }
 
     fn capture(
@@ -453,6 +487,8 @@ impl SimulatedFeed {
         // stands and the book stays discarded, so `stale_book` keeps refusing
         // orders against it in the meantime.
         let gapped = cell.sequence_gap_open_at(&self.venue);
+        // What each snapshot applied, recorded for the lake (R12-TICK-1201).
+        let mut snapshots: Vec<MarketEvent> = Vec::new();
         for request in cell.snapshot_requests() {
             if gapped || request.venue != self.venue {
                 continue;
@@ -489,6 +525,16 @@ impl SimulatedFeed {
             }
             cell.apply_snapshot(&self.venue, &request.object_id, &edits, now)?;
             tick.resynchronised += 1;
+            // Recorded only once the cell has taken it, as the publication
+            // below records only frames the cell decoded.
+            self.record_snapshot(
+                cell,
+                gateway.now(),
+                now,
+                &request.object_id,
+                edits,
+                &mut snapshots,
+            );
         }
         let mut wire = Wire {
             frame: String::new(),
@@ -565,7 +611,12 @@ impl SimulatedFeed {
         let venue_time = wire.venue_time;
         let frame = wire.frame;
         self.captured.clear();
+        self.normalized.clear();
         self.last_frame.clear();
+        for event in snapshots {
+            self.normalized.push(event.payload().clone());
+            self.captured.push(event);
+        }
         if tick.messages > 0 {
             // The half-width of the clock error every event of this frame is
             // stored with (R12-RES-7103), asked of the cell rather than worked
@@ -598,7 +649,8 @@ impl SimulatedFeed {
             // narrower than the frame's own proof.
             let lead = venue_time.since(now).max(Duration::ZERO);
             let bound = cell.clock_uncertainty(&self.venue, lead);
-            let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
+            let normalized = cell.on_bytes_normalized(&self.key, frame.as_bytes(), now)?;
+            let decoded = normalized.len();
             if decoded != tick.messages {
                 // The decoder is this module's own; a frame it built that its
                 // decoder did not read back whole is a defect here, and it
@@ -613,12 +665,21 @@ impl SimulatedFeed {
             // tick the cell did not take is not a tick this pass applied,
             // and the record of what a pass applied is what replay and the
             // lake read.
+            //
+            // And captured only as the cell read it (R12-TICK-1201). Each
+            // line's event is kept only where its message equals, field for
+            // field, the message the cell's decoder normalized that line
+            // into — the lines and the decoded messages are in one order and
+            // of one count, checked above. A line the cell read differently
+            // is counted as a capture failure rather than sealed: a lake
+            // holding the publisher's intent beside a cell that traded on
+            // another reading would replay a session the cell never saw.
             match bound {
                 Ok(uncertainty) => {
-                    for line in wire.lines {
-                        match self.capture(&line, venue_time, now, uncertainty) {
-                            Ok(event) => self.captured.push(event),
-                            Err(_) => {
+                    for (line, read) in wire.lines.iter().zip(&normalized) {
+                        match self.capture(line, venue_time, now, uncertainty) {
+                            Ok(event) if event.payload() == read => self.captured.push(event),
+                            Ok(_) | Err(_) => {
                                 self.capture_failures = self.capture_failures.saturating_add(1);
                             }
                         }
@@ -636,8 +697,65 @@ impl SimulatedFeed {
                 }
             }
             self.last_frame = frame;
+            self.normalized.extend(normalized);
         }
         Ok(tick)
+    }
+
+    /// Record one snapshot the cell applied as market events on
+    /// [`SNAPSHOT_PARTITION`]: its `Reset` marker, then each edit, in the
+    /// order the cell applied them. Under the same clock bound the frame's
+    /// events are stored with; a snapshot whose bound the cell would not
+    /// give is counted as capture failures rather than written narrower.
+    fn record_snapshot(
+        &mut self,
+        cell: &Cell,
+        venue_time: Timestamp,
+        now: Timestamp,
+        object_id: &ObjectId,
+        edits: Vec<MessageBody>,
+        into: &mut Vec<MarketEvent>,
+    ) {
+        let bodies: Vec<MessageBody> = std::iter::once(MessageBody::Reset {
+            reason: SNAPSHOT_REASON.to_string(),
+        })
+        .chain(edits)
+        .collect();
+        let lead = venue_time.since(now).max(Duration::ZERO);
+        let Ok(uncertainty) = cell.clock_uncertainty(&self.venue, lead) else {
+            self.capture_failures = self.capture_failures.saturating_add(bodies.len() as u64);
+            return;
+        };
+        for body in bodies {
+            self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
+            let payload = MarketMessage::new(
+                object_id.clone(),
+                Origin::new(
+                    self.venue.clone(),
+                    FEED_NAME,
+                    SNAPSHOT_PARTITION,
+                    self.snapshot_sequence,
+                ),
+                body,
+                venue_time,
+                now,
+            );
+            let event = MarketEvent::hash_payload(&payload).and_then(|hash| {
+                MarketEvent::new(
+                    payload,
+                    venue_time,
+                    now,
+                    now,
+                    uncertainty,
+                    hash,
+                    simulated_entitlement(),
+                )
+            });
+            match event {
+                Ok(event) => into.push(event),
+                Err(_) => self.capture_failures = self.capture_failures.saturating_add(1),
+            }
+        }
     }
 }
 
@@ -652,13 +770,13 @@ impl SimulatedFeed {
 /// through `Cell::on_bytes` and the feed's own decoder. That is the same
 /// path [`SimulatedFeed::publish`] takes.
 ///
+/// A resynchronisation is reproduced: the snapshot the original feed handed
+/// `Cell::apply_snapshot` is in the lake on [`SNAPSHOT_PARTITION`], and a
+/// replayed cell awaiting that book is answered from it rather than left
+/// asking (R12-TICK-1201, 2026-11-14; until then this list began with it).
+///
 /// What it cannot reproduce, stated so a divergence is not a mystery:
 ///
-/// * **A resynchronisation.** A book the original cell discarded after a
-///   gap was rebuilt from the venue's whole depth by `Cell::apply_snapshot`.
-///   That is out of band and is not in the lake (see
-///   [`SimulatedFeed::take_captured`]). A replayed cell that asks for a
-///   snapshot keeps asking, and its book stays discarded.
 /// * **An instrument listed but never published.** The original feed began
 ///   tracking an instrument when the venue listed it. The replay begins
 ///   when the instrument's first tick appears.
@@ -670,6 +788,10 @@ pub struct ReplayFeed {
     venue: VenueId,
     key: FeedKey,
     tracked: std::collections::BTreeSet<String>,
+    /// The messages the replayed cell's decoder normalized the last frame
+    /// into, until [`Self::take_normalized`] hands them on: one frame,
+    /// replaced on every publication, so bounded.
+    normalized: Vec<MarketMessage>,
 }
 
 impl ReplayFeed {
@@ -679,7 +801,87 @@ impl ReplayFeed {
             key: FeedKey::new(venue.clone(), FEED_NAME),
             venue,
             tracked: std::collections::BTreeSet::new(),
+            normalized: Vec::new(),
         }
+    }
+
+    /// Answer the replayed cell's snapshot requests from the snapshots the
+    /// original session recorded on [`SNAPSHOT_PARTITION`] (R12-TICK-1201),
+    /// one per `Reset { reason: SNAPSHOT_REASON }` marker, with the edits
+    /// that follow it, through `Cell::apply_snapshot` as the original feed
+    /// answered them. Returns how many books were rebuilt.
+    ///
+    /// Refused, not skipped: a recorded snapshot for a book the replayed
+    /// cell is not awaiting is a replay that has diverged from the session
+    /// it replays, and a recorded snapshot that does not open with its
+    /// marker is not one this feed wrote.
+    fn answer_snapshots(
+        &mut self,
+        cell: &mut Cell,
+        ticks: &[&MarketMessage],
+        now: Timestamp,
+    ) -> Result<usize> {
+        let mut ordered: Vec<&MarketMessage> = ticks.to_vec();
+        ordered.sort_by_key(|tick| tick.origin.sequence);
+        let mut snapshots: Vec<(ObjectId, Vec<&MarketMessage>)> = Vec::new();
+        for tick in ordered {
+            if tick.origin.venue != self.venue || tick.origin.feed != FEED_NAME {
+                return Err(Error::invalid(format!(
+                    "a recorded snapshot of {}/{} cannot be answered as {}/{FEED_NAME}",
+                    tick.origin.venue, tick.origin.feed, self.venue
+                )));
+            }
+            match &tick.body {
+                MessageBody::Reset { reason } if reason == SNAPSHOT_REASON => {
+                    snapshots.push((tick.object_id.clone(), vec![tick]));
+                }
+                MessageBody::LevelSet { .. } => match snapshots.last_mut() {
+                    Some((object_id, edits)) if *object_id == tick.object_id => edits.push(tick),
+                    _ => {
+                        return Err(Error::invalid(format!(
+                            "recorded snapshot level {} of {} follows no snapshot marker for                              that instrument; it is not a snapshot this feed recorded",
+                            tick.origin.sequence, tick.object_id
+                        )));
+                    }
+                },
+                other => {
+                    return Err(Error::invalid(format!(
+                        "recorded snapshot tick {} carries {other:?}, which no snapshot holds",
+                        tick.origin.sequence
+                    )));
+                }
+            }
+        }
+        let mut rebuilt = 0usize;
+        for (object_id, recorded) in snapshots {
+            let awaited = cell
+                .snapshot_requests()
+                .iter()
+                .any(|request| request.venue == self.venue && request.object_id == object_id);
+            if !awaited {
+                return Err(Error::invalid(format!(
+                    "the recorded session rebuilt {object_id} at {} from a snapshot here, and the                      replayed cell is not awaiting one: the replay has diverged from the session                      it replays",
+                    self.venue
+                )));
+            }
+            let edits: Vec<MessageBody> = recorded
+                .iter()
+                .skip(1)
+                .map(|tick| tick.body.clone())
+                .collect();
+            cell.apply_snapshot(&self.venue, &object_id, &edits, now)?;
+            self.normalized
+                .extend(recorded.into_iter().map(|tick| (*tick).clone()));
+            rebuilt += 1;
+        }
+        Ok(rebuilt)
+    }
+
+    /// Hand on the messages the replayed cell's decoder normalized the last
+    /// publication into, in decode order, leaving none (R12-TICK-1201): what
+    /// a test compares, field for field, with what the original cell read.
+    pub fn take_normalized(&mut self) -> Vec<MarketMessage> {
+        std::mem::take(&mut self.normalized)
     }
 
     /// Bind the feed's decoder and the venue's settlement terms to `cell`,
@@ -704,7 +906,12 @@ impl ReplayFeed {
         ticks: &[MarketMessage],
         now: Timestamp,
     ) -> Result<FeedTick> {
-        let mut ordered: Vec<&MarketMessage> = ticks.iter().collect();
+        // A recorded snapshot is not a wire line: it is answered to the
+        // cell's request out of band, as the original feed answered it.
+        let (snapshot_ticks, wire_ticks): (Vec<&MarketMessage>, Vec<&MarketMessage>) = ticks
+            .iter()
+            .partition(|tick| tick.origin.partition == SNAPSHOT_PARTITION);
+        let mut ordered: Vec<&MarketMessage> = wire_ticks;
         ordered.sort_by_key(|tick| tick.origin.sequence);
         let mut frame = String::new();
         let mut instruments = std::collections::BTreeSet::new();
@@ -777,8 +984,12 @@ impl ReplayFeed {
             instruments: instruments.len(),
             ..FeedTick::default()
         };
+        self.normalized.clear();
+        tick.resynchronised = self.answer_snapshots(cell, &snapshot_ticks, now)?;
         if !ordered.is_empty() {
-            let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
+            let normalized = cell.on_bytes_normalized(&self.key, frame.as_bytes(), now)?;
+            let decoded = normalized.len();
+            self.normalized.extend(normalized);
             if decoded != ordered.len() {
                 return Err(Error::invalid(format!(
                     "the replay wrote {} recorded tick(s) and the cell decoded {decoded}; the \

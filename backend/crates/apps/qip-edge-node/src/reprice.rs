@@ -841,6 +841,14 @@ impl<'a> RequotingPlacer<'a> {
         Self { venue, requoter }
     }
 
+    /// The simulated venue underneath, for what it states about itself
+    /// rather than about an order: its custody statement (ADR 0494) names
+    /// instruments and quantities, never an order id, so no replacement id
+    /// needs mapping on the way out.
+    pub fn simulated(&self) -> &SimulatedGateway {
+        self.venue
+    }
+
     /// The venue's clearing-ledger fills, with replacement ids mapped to
     /// the cell's — the drop copy must name the order the cell knows, or
     /// every fill on a replacement reconciles as a fill on an order the cell

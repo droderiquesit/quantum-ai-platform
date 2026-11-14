@@ -953,6 +953,11 @@ fn run() -> Result<()> {
         config
             .storage
             .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
+    )
+    .with_draft_store(
+        config
+            .storage
+            .blobs(qip_deepbrain::research::REFLEX_PACKAGE_DRAFTS_NAMESPACE)?,
     );
     if let (Some(tally), qip_deepbrain::language::HostedDecision::Installed(hosted)) =
         (&language_model.replies, &language_model.hosted)
@@ -961,7 +966,8 @@ fn run() -> Result<()> {
     }
     println!(
         "  compiler:         promoted research is distilled into bounded reflex packages; no \
-         package signer is installed, so packages are held unsigned and none is published"
+         package signer is installed (ADR 0535), so each is held unsigned and written as a \
+         draft in its own store for the two-person model-pack publish to sign"
     );
     // The ambient journal (`ambient_journal.rs`): every sweep's signals and
     // attention events, on a hash-chained log as durable as the platform's.

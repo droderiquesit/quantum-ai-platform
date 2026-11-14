@@ -152,9 +152,9 @@ use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
-    BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk, ExecutionRecord,
-    ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView, ModelsView,
-    PoolReading, RiskView, TradeSide,
+    ArbitrationView, BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk,
+    ExecutionRecord, ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView,
+    ModelsView, PoolReading, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -1231,6 +1231,11 @@ pub struct Platform {
     /// (R12-REASON-3013, ADR 0458), rebuilt before every REASON by
     /// `brief_the_desk_on_company`.
     company_view: Upstream<CompanyView>,
+    /// The World Model Federation's latest review as the desk's World Model
+    /// Arbitration Brain reads it (R12-WORLD-3025, ADR 0488), rewritten by
+    /// UNDERSTAND from the review it journals, so REASON's panel reads the
+    /// pass that ran this cycle.
+    arbitration_view: Upstream<ArbitrationView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -3156,12 +3161,34 @@ pub struct RecordedPrediction {
     /// gradeable, because its confidence was never written down.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub claim: Option<ThesisClaim>,
+    /// The sources the claim stood on (R12-RES-7097): the origins of the
+    /// hypothesis's evidence, and the sources whose facts about the subject
+    /// the world model held when the claim was made. Recorded at the claim
+    /// rather than looked up later, because a quarantine retracts the
+    /// source's facts before anything asks what stood on them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub sources: BTreeSet<String>,
+    /// Why this claim was withdrawn, where it was. A withdrawn claim is
+    /// never scored: the platform's calibration is what it believes about
+    /// its own confidence, and grading a claim whose evidence has been
+    /// quarantined would teach it from a source it has stopped believing.
+    /// Kept on the record rather than deleted — what was claimed, and why it
+    /// was dropped, is the audit trail.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub withdrawn: Option<String>,
 }
 
 impl RecordedPrediction {
     /// Whether this prediction is still waiting for its horizon.
     pub fn is_open(&self) -> bool {
         self.verdict.is_none()
+    }
+
+    /// Whether any of the sources the claim stood on is `source`. Exact
+    /// equality on the identifier, never a substring: `feed-a` must not
+    /// withdraw a claim that stood on `feed-ab`.
+    pub fn cites(&self, source: &str) -> bool {
+        self.sources.contains(source)
     }
 
     /// Whether the claim was resolved and held.
@@ -3518,6 +3545,19 @@ pub struct SourceAssessment {
     /// finder. A registration the registry does not hold under its id is a
     /// catalogue problem, not a silent gap.
     pub entries: Vec<SourceRegistryView>,
+    /// Hypotheses whose open claim this pass withdrew because a source it
+    /// stood on was quarantined (R12-RES-7097). The world model's retraction
+    /// narrows only what is read afterwards; a claim the platform had
+    /// already made on the poisoned source's word would otherwise go on to
+    /// be graded, and the platform would calibrate its own confidence
+    /// against evidence it has stopped believing.
+    pub claims_invalidated: Vec<String>,
+    /// Hypotheses whose open claim this pass held at
+    /// `qip_world_model::world::STALE_SOURCE_CONFIDENCE` of its confidence
+    /// because a source it stood on was retired. A retirement is not a
+    /// finding that the evidence was false, so the claim stands — held less
+    /// firmly, the same rule the world model applies to the source's facts.
+    pub claims_downweighted: Vec<String>,
 }
 
 /// One Source Registry entry as a running path read it
@@ -6495,6 +6535,9 @@ impl Platform {
         desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
         let company_view = Upstream::new(CompanyView::default());
         desk.company = company_view.gate(desk.company.required(), desk.company.label());
+        let arbitration_view = Upstream::new(ArbitrationView::default());
+        desk.arbitration =
+            arbitration_view.gate(desk.arbitration.required(), desk.arbitration.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -6992,6 +7035,7 @@ impl Platform {
             models,
             chain_view,
             company_view,
+            arbitration_view,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -12587,6 +12631,37 @@ impl Platform {
         self.company_view.read()
     }
 
+    /// Write `review`'s arbitrations, its members' calibration and its
+    /// uncovered scopes into the slot the desk's World Model Arbitration
+    /// Brain reads (R12-WORLD-3025, ADR 0488). Called from UNDERSTAND with
+    /// the review it is about to journal, and only there: the slot is
+    /// replaced wholesale, so an arbitration that has resolved stops being
+    /// reported on the next pass.
+    fn brief_the_desk_on_arbitration(&self, review: &crate::federation_stage::FederationReview) {
+        let arbitrations = review.arbitrations.clone();
+        let calibrations: BTreeMap<String, qip_world_model::federation::Calibration> = review
+            .population
+            .iter()
+            .map(|member| (member.id.clone(), member.calibration))
+            .collect();
+        let uncovered = review.uncovered.clone();
+        let (cycle, journal_base) = (review.cycle, review.journal_base);
+        self.arbitration_view.update(|view| {
+            view.observed = true;
+            view.cycle = cycle;
+            view.journal_base = journal_base;
+            view.arbitrations = arbitrations;
+            view.calibrations = calibrations;
+            view.uncovered = uncovered;
+        });
+    }
+
+    /// The federation review the desk's World Model Arbitration Brain reads,
+    /// as UNDERSTAND last wrote it.
+    pub fn desk_arbitration_view(&self) -> Reading<'_, ArbitrationView> {
+        self.arbitration_view.read()
+    }
+
     /// The book the desk's Portfolio/Asset Brain reads, as REASON last wrote
     /// it.
     pub fn desk_book_view(&self) -> Reading<'_, BookView> {
@@ -16227,10 +16302,15 @@ impl Platform {
 
     /// Each priced instrument's causal parents among the priced instruments,
     /// from the causal graph's live edges known now (R12-WORLD-3078). The
-    /// transmission is the edge's strength, signed by whether its mechanism
-    /// preserves the sign. An edge from a cause the NOW brain holds no state
-    /// for (a factor, an event class) gives the estimator nothing to read and
-    /// is left out.
+    /// transmission is the edge's fitted slope — the regression coefficient
+    /// of the effect's return on the cause's, signed by the fit itself — and
+    /// the lag is the edge's own. An edge no regression fitted carries no
+    /// slope and is left out: its `strength` is a partial R² or a claimed
+    /// fraction, and the NOW Brain fuses what it is given into every
+    /// promoted return, so a measure of fit passed as a slope would bias the
+    /// belief the lattice reads. An edge from a cause the NOW brain holds no
+    /// state for (a factor, an event class) gives the estimator nothing to
+    /// read and is left out too.
     fn now_causal_parents(
         &self,
         now: Timestamp,
@@ -16243,15 +16323,14 @@ impl Platform {
                 if !self.price_history.contains_key(&edge.cause) || edge.cause == *effect {
                     continue;
                 }
-                let sign = if edge.mechanism.preserves_sign() {
-                    1.0
-                } else {
-                    -1.0
+                let Some(slope) = edge.slope else {
+                    continue;
                 };
                 parents.entry(effect.clone()).or_default().push(
                     qip_world_model::now::CausalParent {
                         cause: edge.cause.clone(),
-                        transmission: sign * edge.strength,
+                        transmission: slope,
+                        lag: edge.lag,
                     },
                 );
             }
@@ -16692,6 +16771,11 @@ impl Platform {
                 }
             }
         }
+        // Brief the desk's World Model Arbitration Brain from the very
+        // review about to be journaled, so what the specialist reports in
+        // REASON is the record a replay reads and not a second account of
+        // the same pass (R12-WORLD-3025, ADR 0488).
+        self.brief_the_desk_on_arbitration(&review);
         if let Err(error) = self.journal_record(review, "kernel/federation", now) {
             problems.push(format!(
                 "the world model federation's review was computed and not journalled: {}",
@@ -19111,11 +19195,39 @@ impl Platform {
             .into_iter()
             .filter(|fill| orders.contains(fill.order_id.as_str()))
             .map(|fill| qip_ai::memory::EpisodeFill {
+                twin: self.fill_residual(fill.order_id.as_str()),
                 order_id: fill.order_id.to_string(),
                 quantity: fill.quantity,
                 price: fill.price,
             })
             .collect()
+    }
+
+    /// The fills an episode resolving on `hypothesis` now would record, each
+    /// with the twin's residual for its order where LEARN has priced it — the
+    /// read of what [`Self::remember_resolved`] writes onto the episode.
+    pub fn episode_fills(&self, hypothesis: &str) -> Vec<qip_ai::memory::EpisodeFill> {
+        self.fills_expressing(hypothesis)
+    }
+
+    /// The twin's residual for `order_id`, copied from the latest
+    /// [`FillScore`] LEARN wrote for it. `None` before the order is priced,
+    /// after its score has aged out of the bounded history, or when the twin
+    /// refused it: an absence rather than a zero residual.
+    fn fill_residual(&self, order_id: &str) -> Option<qip_ai::memory::FillResidual> {
+        self.fill_scores
+            .iter()
+            .rev()
+            .find(|score| score.order_id.as_str() == order_id)
+            .map(|score| qip_ai::memory::FillResidual {
+                scored_at: score.scored_at,
+                trade_error_bps: score.trade_error_bps,
+                predicted_slippage_bps: score.predicted_slippage_bps,
+                realised_slippage_bps: score.realised_slippage_bps,
+                predicted_outcome_bps: score.predicted_outcome_bps,
+                realised_outcome_bps: score.realised_outcome_bps,
+                outcome_error_bps: score.outcome_error_bps,
+            })
     }
 
     /// Write one resolved episode into the research organisation's memory,
@@ -21024,6 +21136,25 @@ impl Platform {
         Ok(Some(outcome))
     }
 
+    /// The sources whose facts about `subject` the world model believes now
+    /// (R12-RES-7097).
+    ///
+    /// Read where a thesis is queued rather than where one is withdrawn: by
+    /// the time a source is quarantined its facts have already been
+    /// retracted, so asking the graph then would name nobody and every
+    /// queued thesis would survive a poisoning that had just emptied the
+    /// ground under it.
+    fn graph_sources_for(&self, subject: &str, now: Timestamp) -> BTreeSet<String> {
+        self.world
+            .read()
+            .graph()
+            .facts_at(now, now)
+            .iter()
+            .filter(|fact| fact.relationship.from == subject || fact.relationship.to == subject)
+            .map(|fact| fact.relationship.source.clone())
+            .collect()
+    }
+
     /// Write a hypothesis down as something a source can later contradict.
     ///
     /// The criterion is written against the same series the detector measured,
@@ -21124,6 +21255,20 @@ impl Platform {
             verdict: None,
             scored_at: None,
             claim: Some(claim),
+            // What the claim stood on, so a source quarantined after it was
+            // made can find it. The subject's graph sources are read here
+            // for the same reason the claim's confidence is written here:
+            // after a quarantine the facts are retracted and the question
+            // can no longer be asked.
+            sources: reasoned
+                .hypothesis
+                .evidence
+                .origins()
+                .into_iter()
+                .map(str::to_string)
+                .chain(self.graph_sources_for(&anomaly.subject, now))
+                .collect(),
+            withdrawn: None,
         });
         Ok(true)
     }
@@ -24743,6 +24888,15 @@ impl Platform {
         let state = self.with_margin_and_funding(state, figures);
         let state = self.with_custody_exposure(state);
         let state = self.with_twin_misfit(state);
+        // Each catalogue record's gamma and vega per unit of notional, for
+        // `LimitKind::MaxBookGamma` and `MaxBookVega` (ADR 0492,
+        // R12-RISK-4095). The same derivation the Hedge Brain's survey
+        // reports, so the gate and the desk read one figure. A record that
+        // states no Greeks gets no entry, and both limits refuse on that.
+        let state = RiskState {
+            convexity: crate::hedge::convexity_of(&self.market.read().universe),
+            ..state
+        };
         // Operational risk (R12-RISK-1162): the gross stranded at each venue
         // this platform has withdrawn for failing its order path, charged
         // from the counterparty axis the line above also reads.
@@ -26849,6 +27003,8 @@ impl Platform {
         // `source_lifecycle` for why a move the log does not hold must not
         // be reported as a pass.
         self.journal_source_transitions(&decisions, now)?;
+        let mut claims_invalidated = Vec::new();
+        let mut claims_downweighted = Vec::new();
         // A source policy stopped is a dataset the mesh must stop offering.
         // The catalogue is the one answer to "may this be read", and a
         // quarantine that reached the finder's registry and not the
@@ -26869,15 +27025,42 @@ impl Platform {
             // staleness said nothing false — so it leaves them standing, but
             // held less firmly: a stale source's beliefs are downweighted
             // rather than kept at the confidence a fresh one earned.
+            //
+            // What the graph no longer believes must not survive in a belief
+            // already formed from it: a thesis REASON queued before the
+            // quarantine is withdrawn from DECIDE's queue, and one queued
+            // before a retirement is held at the stale fraction of its
+            // conviction. Without this the retraction narrowed only reads
+            // made afterwards, and the next DECIDE sized the poisoned
+            // source's thesis at full conviction.
             if transition.action == LifecycleAction::Quarantined {
                 let source = transition.source_id.clone();
                 self.world
                     .update(|world| world.quarantine_source(&source, now));
+                for prediction in &mut self.predictions {
+                    if prediction.is_open() && prediction.cites(&source) {
+                        prediction.withdrawn = Some(format!(
+                            "source `{source}` quarantined: the claim stood on evidence the                              platform no longer believes"
+                        ));
+                        claims_invalidated.push(prediction.hypothesis.clone());
+                    }
+                }
             }
             if transition.action == LifecycleAction::Retired {
                 let source = transition.source_id.clone();
                 self.world
                     .update(|world| world.mark_source_stale(&source, now))?;
+                for prediction in &mut self.predictions {
+                    if !prediction.is_open() || prediction.withdrawn.is_some() {
+                        continue;
+                    }
+                    if prediction.cites(&source)
+                        && let Some(claim) = prediction.claim.as_mut()
+                    {
+                        claim.confidence *= qip_world_model::world::STALE_SOURCE_CONFIDENCE;
+                        claims_downweighted.push(prediction.hypothesis.clone());
+                    }
+                }
             }
             if matches!(
                 transition.action,
@@ -26979,6 +27162,8 @@ impl Platform {
             catalogued,
             catalogue_problems,
             entries,
+            claims_invalidated,
+            claims_downweighted,
         })
     }
 
@@ -27146,7 +27331,14 @@ impl Platform {
     ) -> Vec<(String, Verdict)> {
         let mut scored = Vec::new();
         for prediction in &mut self.predictions {
-            if !prediction.is_open() || prediction.proposition.resolves_at > now {
+            // A withdrawn claim is passed over rather than settled: its
+            // evidence was quarantined, and scoring it would calibrate the
+            // platform's confidence against a source it stopped believing
+            // (R12-RES-7097).
+            if !prediction.is_open()
+                || prediction.withdrawn.is_some()
+                || prediction.proposition.resolves_at > now
+            {
                 continue;
             }
             let verdict = prediction.proposition.criteria.evaluate(observations);
@@ -31389,6 +31581,7 @@ mod justification {
             }
         }
 
+        /// Record the evidence origins the thesis stood on.
         pub(super) fn thesis(&self) -> &ApprovedThesis {
             &self.thesis
         }
@@ -31746,36 +31939,65 @@ mod decide_tests {
         .expect("the platform assembles")
     }
 
-    /// R12-WORLD-3078: the NOW brain is told each priced instrument's causal
-    /// parents among the priced instruments, signed by mechanism. An edge
-    /// from a cause the brain holds no state for is left out.
+    /// R12-WORLD-3078: the NOW Brain is told each priced instrument's causal
+    /// parents with the slope a regression fitted and the lag it fitted it
+    /// at. A hand-asserted mechanism claim carries a strength and no slope,
+    /// and is not passed: fused by default its strength would be read as a
+    /// slope it is not. An edge from an unpriced cause is not passed either.
     ///
-    /// Mutation: in `now_causal_parents`, drop the sign -- the inverting
-    /// edge's transmission then reads positive.
+    /// Mutations: pass `edge.strength` signed by mechanism instead of the
+    /// slope -- the AAPL transmission reads -0.6 and the slope assertion
+    /// fails; drop the `edge.slope` filter -- the claimed edge from NVDA is
+    /// passed and the length assertion fails.
     #[test]
-    fn the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism() {
+    fn the_now_brain_is_told_each_instruments_causal_parents_by_their_fitted_slope_and_lag() {
         use qip_world_model::causal::{CausalEdge, Mechanism};
         let now = Timestamp::from_secs(1_760_000_100);
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
+        feed_history(&mut platform, "NVDA", 30);
         let edge = |cause: &str, mechanism: Mechanism| {
-            CausalEdge::new(cause, "MSFT", mechanism, 0.6, Duration::from_hours(1), now)
+            CausalEdge::new(cause, "MSFT", mechanism, 0.6, Duration::from_days(1), now)
                 .expect("a valid edge")
         };
         platform.world.update(|world| {
             world
-                .claim_causal(edge("AAPL", Mechanism::CompetitiveSubstitution))
+                .claim_causal(
+                    edge("AAPL", Mechanism::InverseTemporalPrecedence)
+                        .with_slope(-0.35)
+                        .expect("a fitted slope"),
+                )
                 .expect("the edge is claimed");
             world
-                .claim_causal(edge("FACTOR", Mechanism::TemporalPrecedence))
+                .claim_causal(edge("NVDA", Mechanism::CompetitiveSubstitution))
+                .expect("the edge is claimed");
+            world
+                .claim_causal(
+                    edge("FACTOR", Mechanism::TemporalPrecedence)
+                        .with_slope(0.4)
+                        .expect("a fitted slope"),
+                )
                 .expect("the edge is claimed");
         });
+        assert!(
+            platform
+                .world
+                .read()
+                .causal()
+                .incoming("MSFT", now)
+                .iter()
+                .any(|e| e.cause == "NVDA"),
+            "premise: the claimed edge is live"
+        );
         let parents = platform.now_causal_parents(now);
-        let msft = parents.get("MSFT").expect("MSFT has a priced parent");
-        assert_eq!(msft.len(), 1, "an unpriced cause was passed on: {msft:?}");
+        let msft = parents
+            .get("MSFT")
+            .expect("MSFT has a priced, fitted parent");
+        assert_eq!(msft.len(), 1, "only the fitted, priced parent: {msft:?}");
         assert_eq!(msft[0].cause, "AAPL");
-        assert!((msft[0].transmission + 0.6).abs() < 1e-12, "{msft:?}");
+        assert!((msft[0].transmission + 0.35).abs() < 1e-12, "{msft:?}");
+        assert_eq!(msft[0].lag, Duration::from_days(1));
         assert!(!parents.contains_key("AAPL"));
     }
 
@@ -36155,6 +36377,8 @@ mod retention_tests {
                 verdict: None,
                 scored_at: None,
                 claim: None,
+                sources: BTreeSet::new(),
+                withdrawn: None,
             });
         }
 

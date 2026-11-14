@@ -1176,6 +1176,10 @@ impl CellConfig {
 #[derive(Clone, Debug, Default)]
 pub struct WorkReport {
     pub signals: Vec<Signal>,
+    /// Cycles the arbitrage desk found over the operator's market reference
+    /// with an edge outside the signed whitelist (ADR 0502). Reported and
+    /// journaled as `Decision::CycleDiscovered`; never sent.
+    pub discovered_cycles: Vec<crate::arbitrage::DiscoveredCycle>,
     /// The feature vector this pass evaluated and every strategy sized
     /// against (ADR 0132 decision 4): carried out so the node can digest it
     /// per pass without a second evaluation that could disagree.
@@ -1898,6 +1902,11 @@ pub struct Cell {
     /// composition root can arm it, because only the composition root knows
     /// whether this process is a restart — see [`crate::resume`].
     resume: Option<ResumeDiscipline>,
+    /// The custody each configured venue last stated, as journaled (ADR
+    /// 0494): its holdings and the cash units it left out. A statement equal
+    /// to the last one is not journaled again. Bounded by the configured
+    /// venue list, because a statement for any other venue is refused.
+    custody_stated: BTreeMap<VenueId, (BTreeMap<String, Decimal>, BTreeSet<String>)>,
     /// When each venue's feed was last heard, on this cell's own clock.
     ///
     /// Written by [`Cell::on_bytes`] and [`Cell::feed_heartbeat`] and by
@@ -1907,6 +1916,11 @@ pub struct Cell {
     /// judge a book — presence, staleness, a usable mid — are the ones that
     /// apply to it.
     feed_heard: BTreeMap<VenueId, Timestamp>,
+    /// Armed by [`Cell::on_bytes_normalized`] for one call and filled by
+    /// [`Cell::on_bytes`] with the messages its decoder produced; `None`
+    /// otherwise, so the hot path copies nothing unless a capture asked.
+    /// One frame at most, taken before the call returns: bounded.
+    normalized_capture: Option<Vec<MarketMessage>>,
     /// The largest lead, per venue, its last batch stamped ahead of this
     /// cell's clock (zero when it stamped none ahead). A venue is skewed
     /// while its entry exceeds [`CellConfig::max_clock_skew`]; one with no
@@ -2068,7 +2082,9 @@ impl Cell {
             suspended: BTreeMap::new(),
             outlook: RegionOutlook::AllLit,
             resume: None,
+            custody_stated: BTreeMap::new(),
             feed_heard: BTreeMap::new(),
+            normalized_capture: None,
             clock_lead: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
             unwinding_breaks: BTreeMap::new(),
@@ -2536,6 +2552,80 @@ impl Cell {
         self.resume = Some(discipline);
         self.record_awaiting_reconciliation();
         Ok(())
+    }
+
+    /// Journal what a configured venue states it holds for this cell, as
+    /// that venue's custody statement on the cell's own chain (ADR 0130
+    /// decision 4, ADR 0494; R12-LEDGER-10185).
+    ///
+    /// The entry's chain position is the statement's: every fill the cell
+    /// journaled before it is in the venue's figure, and `qip-ledgerd`
+    /// compares the two when it applies the entry. Journaled only when the
+    /// venue's statement differs from the last one journaled for it — every
+    /// fill moves the venue's holdings, so every fill is followed by a
+    /// statement that covers it, and a quiet cell does not grow its chain by
+    /// a statement per pass. Answers the sequence journaled, or `None` when
+    /// nothing moved.
+    ///
+    /// A venue with no statement journaled yet that names no holding has not
+    /// moved either: holding nothing is where every chain starts. Journaling
+    /// it put a P1 outcome on a pass the capital gate had refused outright,
+    /// which `vertical_slice_cell_ledger` forbids — a refused pass books
+    /// nothing. Only the first statement is read this way: a venue that
+    /// stated a holding and now states none has moved, and that is journaled.
+    /// The cost is stated in ADR 0494 decision 2: a restarted cell's fresh
+    /// venue is compared at its first statement naming a holding, not at its
+    /// first pass.
+    ///
+    /// Always `simulated: true`, and there is no argument that says
+    /// otherwise: a cell is paper by construction, and a custody statement
+    /// it journals is a simulated venue's. Refuses a venue the cell was not
+    /// configured with, and a unit stated both as a holding and as cash.
+    pub fn record_custody_statement(
+        &mut self,
+        venue: &VenueId,
+        holdings: BTreeMap<String, Decimal>,
+        cash_units: BTreeSet<String>,
+        now: Timestamp,
+    ) -> Result<Option<u64>> {
+        if !self.config.venues.contains(venue) {
+            return Err(Error::invalid(format!(
+                "{} is not a venue this cell trades at, so it holds nothing there to state; a \
+                 custody statement names one of the cell's configured venues",
+                venue.as_str()
+            )));
+        }
+        if let Some(unit) = holdings.keys().find(|unit| cash_units.contains(*unit)) {
+            return Err(Error::invalid(format!(
+                "{unit} is stated both as a holding and as a cash unit of {}'s custody \
+                 statement; one unit is compared or left out, not both",
+                venue.as_str()
+            )));
+        }
+        let stated = (holdings, cash_units);
+        let unmoved = match self.custody_stated.get(venue) {
+            Some(last) => last == &stated,
+            None => stated.0.is_empty(),
+        };
+        if unmoved {
+            return Ok(None);
+        }
+        let entry = self.journal.record(
+            Decision::CustodyStatement {
+                venue: venue.as_str().to_string(),
+                holdings: stated
+                    .0
+                    .iter()
+                    .map(|(unit, quantity)| (unit.clone(), quantity.to_string()))
+                    .collect(),
+                cash_units: stated.1.iter().cloned().collect(),
+                simulated: true,
+            },
+            now,
+        );
+        let sequence = entry.sequence;
+        self.custody_stated.insert(venue.clone(), stated);
+        Ok(Some(sequence))
     }
 
     /// The discipline in force, if the cell is still reconciling.
@@ -4522,6 +4612,9 @@ impl Cell {
         // newer is accepted, so the reset reaches the books ahead of the
         // messages that were held behind it.
         self.expire_sequence_gaps(now)?;
+        if let Some(capture) = self.normalized_capture.as_mut() {
+            capture.clone_from(&decoded);
+        }
         let batch = self.sequencer.accept(decoded, now);
         self.absorb_sequenced(batch, Some(&feed.venue), now)?;
         // Bytes that decoded are a feed that is connected. Recorded after
@@ -4529,6 +4622,27 @@ impl Cell {
         // in the reconciliation entry as the stale book it left.
         self.feed_heartbeat(&feed.venue, now);
         Ok(count)
+    }
+
+    /// [`Self::on_bytes`], returning the messages the cell's decoder
+    /// normalized the bytes into, in decode order, as they were handed to
+    /// the sequencer (R12-TICK-1201).
+    ///
+    /// The capture path needs the cell's own reading of the frame, not the
+    /// publisher's: a tick lake that sealed what the venue meant to say
+    /// beside a cell that read something else would replay a session the
+    /// cell never saw. Separate from `on_bytes` so the hot path pays for no
+    /// copy it does not use; the copy here is one frame, so bounded.
+    pub fn on_bytes_normalized(
+        &mut self,
+        feed: &FeedKey,
+        bytes: &[u8],
+        now: Timestamp,
+    ) -> Result<Vec<MarketMessage>> {
+        self.normalized_capture = Some(Vec::new());
+        let read = self.on_bytes(feed, bytes, now);
+        let normalized = self.normalized_capture.take().unwrap_or_default();
+        read.map(|_| normalized)
     }
 
     /// The feed handler's statement that `venue`'s feed is connected and
@@ -9386,8 +9500,25 @@ impl Cell {
             // claiming an incremental update it does not make.
             self.metrics.edge_refresh(refresh);
             report.edge_refresh = Some(refresh);
-            desk.scan(&self.liquidity, now)
+            let scanned = desk.scan(&self.liquidity, now);
+            // ADR 0502: the market reference is searched beside the
+            // whitelist, and what it finds outside the whitelist is reported
+            // here and nowhere else. A `DiscoveredCycle` holds no leg, so
+            // nothing below can send one; `scanned` — the whitelist's scan —
+            // is the only thing the send loop reads.
+            report.discovered_cycles = desk.discover(&self.liquidity, now)?;
+            scanned
         };
+        for discovered in &report.discovered_cycles {
+            self.journal.record(
+                Decision::CycleDiscovered {
+                    cycle: discovered.label(),
+                    outside: discovered.outside.clone(),
+                    net: discovered.net.to_string(),
+                },
+                now,
+            );
+        }
 
         // §30.2's path router, over every cycle this scan found and in the
         // scan's own order (ADR 0068). Computed here, in one place, because

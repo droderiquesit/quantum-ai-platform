@@ -223,19 +223,7 @@ impl FillCalibration {
         error_bps: f64,
         impact_unit: Option<f64>,
     ) -> Result<Observed> {
-        if !error_bps.is_finite() {
-            return Err(Error::invalid(format!(
-                "a fill error of {error_bps} bps on {venue} is not a number the twin can learn from"
-            )));
-        }
-        if let Some(unit) = impact_unit
-            && !(unit.is_finite() && unit >= 0.0)
-        {
-            return Err(Error::invalid(format!(
-                "an impact unit of {unit} on {venue} is not a size the twin prices impact at; \
-                 the twin cannot learn a size law from it"
-            )));
-        }
+        check_observation(venue, error_bps, impact_unit)?;
         let rate = self.learning_rate;
         let entry = self.venues.entry(venue.to_string()).or_default();
         let mut refused = false;
@@ -287,6 +275,55 @@ impl FillCalibration {
         })
     }
 
+    /// Refit the twin from a recorded history of fills, oldest first, against
+    /// the same uncalibrated `base` the live observations were measured
+    /// against (R12-MODEL-4008): the calibration a restarted platform, or a
+    /// research desk asking what the twin would have learned from a window,
+    /// rebuilds from a record rather than from whatever was in memory.
+    ///
+    /// Every record is checked before any is absorbed, so a history with one
+    /// unreadable record refuses whole and leaves the calibration exactly as
+    /// it was. Absorbing the readable prefix and stopping would leave a twin
+    /// fitted to an arbitrary cut of the record, one no replay of the same
+    /// record could tell apart from a complete one. The refusal names the
+    /// record's position so the caller can find it.
+    ///
+    /// Each record is absorbed exactly as [`Self::observe_cost`] absorbs a
+    /// live fill, ceiling refusals included, so replaying the fills a
+    /// running platform saw yields the calibration that platform held: one
+    /// rule, not two that can drift apart. Returns how many fills were
+    /// absorbed; a correction the ceiling refused is counted on the venue's
+    /// [`VenueCalibration::refusals`] as it is live.
+    pub fn replay<I>(&mut self, base: &CostModel, history: I) -> Result<usize>
+    where
+        I: IntoIterator<Item = RecordedFill>,
+    {
+        let history: Vec<RecordedFill> = history.into_iter().collect();
+        for (position, fill) in history.iter().enumerate() {
+            check_observation(&fill.venue, fill.error_bps, fill.impact_unit).map_err(|error| {
+                Error::invalid(format!(
+                    "recorded fill {position} of {} cannot be replayed, and none was absorbed: {}",
+                    history.len(),
+                    error.message()
+                ))
+            })?;
+        }
+        for fill in &history {
+            self.observe_cost(&fill.venue, base, fill.error_bps, fill.impact_unit)?;
+        }
+        Ok(history.len())
+    }
+
+    /// A calibration at `learning_rate` fitted from `history` alone.
+    pub fn from_history<I>(learning_rate: f64, base: &CostModel, history: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = RecordedFill>,
+    {
+        let mut calibration = Self::new(learning_rate)?;
+        calibration.replay(base, history)?;
+        Ok(calibration)
+    }
+
     /// The calibration held for `venue`, if any fill has been observed there.
     pub fn venue(&self, venue: &str) -> Option<&VenueCalibration> {
         self.venues.get(venue)
@@ -307,4 +344,40 @@ impl FillCalibration {
         }
         model
     }
+}
+
+/// One fill as a record holds it, in the terms [`FillCalibration::observe_cost`]
+/// learns from (R12-MODEL-4008): the venue, the uncalibrated twin's charged
+/// cost for the venue's fill less what the venue actually cost in basis
+/// points (negative: the twin is cheaper than reality), and the fill's
+/// impact unit where the record carries one.
+///
+/// **Not** the kernel's `FillScore::trade_error_bps`, which is the entry
+/// price error ADR 0450 stopped fitting because it charged every cost twice.
+/// The cycle journal does not yet carry this quantity (ADR 0496).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecordedFill {
+    pub venue: String,
+    pub error_bps: f64,
+    #[serde(default)]
+    pub impact_unit: Option<f64>,
+}
+
+/// The one check a live fill and a replayed fill both pass, so the two
+/// cannot disagree about what the twin may learn from.
+fn check_observation(venue: &str, error_bps: f64, impact_unit: Option<f64>) -> Result<()> {
+    if !error_bps.is_finite() {
+        return Err(Error::invalid(format!(
+            "a fill error of {error_bps} bps on {venue} is not a number the twin can learn from"
+        )));
+    }
+    if let Some(unit) = impact_unit
+        && !(unit.is_finite() && unit >= 0.0)
+    {
+        return Err(Error::invalid(format!(
+            "an impact unit of {unit} on {venue} is not a size the twin prices impact at; \
+             the twin cannot learn a size law from it"
+        )));
+    }
+    Ok(())
 }

@@ -121,6 +121,17 @@ pub enum Decision {
         net: String,
         positive: bool,
     },
+    /// A cycle the desk found over the operator's market reference with at
+    /// least one edge outside the signed whitelist (ADR 0502). A report and
+    /// nothing else: no order is ever built from it. `cycle` names the path
+    /// as the desk walked it, `outside` names each edge the whitelist does
+    /// not carry, and `net` is the edge the scanner priced, so an operator
+    /// can decide from the record alone whether to permit the conversions.
+    CycleDiscovered {
+        cycle: String,
+        outside: Vec<String>,
+        net: String,
+    },
     /// An order was sent to a venue.
     ///
     /// `release_at` and `equalised` are ADR 0084's: the instant the gateway
@@ -724,6 +735,34 @@ pub enum Decision {
         settlement_date: Timestamp,
         simulated: bool,
     },
+    /// The simulated venue's statement of what it holds for this cell
+    /// (ADR 0130 decision 4, ADR 0442, ADR 0494; R12-LEDGER-10185).
+    ///
+    /// The venue is the custodian on a paper platform, and this is its
+    /// custody statement, journaled on the cell's own chain so that the
+    /// statement's position *is* the entry's position: every fill the venue
+    /// counted was journaled before it, and every fill journaled after it is
+    /// not in the venue's figure. `qip-ledgerd` compares it with the cell's
+    /// booked fills when it applies the entry — never earlier, so a fill in
+    /// flight is never read as a break — and a difference is a counted,
+    /// journaled break, never an adjustment.
+    ///
+    /// `holdings` is `(unit, signed quantity)` with the quantity a `Decimal`
+    /// rendered to text, as every quantity on this chain is; a unit absent
+    /// is a statement that the venue holds none. `cash_units` are the
+    /// currencies the statement does not state custody of, left out of the
+    /// comparison on both sides. `simulated` is the paper fence: the ledger
+    /// refuses a statement with it `false` exactly as it refuses a live fill
+    /// (ADR 0130 decision 6).
+    ///
+    /// Appended last, a new variant, so no sealed entry's serialised form —
+    /// and so no digest — moves.
+    CustodyStatement {
+        venue: String,
+        holdings: Vec<(String, String)>,
+        cash_units: Vec<String>,
+        simulated: bool,
+    },
 }
 
 /// The id of the decision chain an order belongs to: the cell, the session
@@ -781,6 +820,7 @@ impl Decision {
             Self::BookResynchronised { .. } => "book_resynchronised",
             Self::SignalRaised { .. } => "signal_raised",
             Self::EdgePriced { .. } => "edge_priced",
+            Self::CycleDiscovered { .. } => "cycle_discovered",
             Self::OrderSent { .. } => "order_sent",
             Self::Filled { .. } => "filled",
             Self::Hedged { .. } => "hedged",
@@ -815,6 +855,7 @@ impl Decision {
             Self::DegradationChanged { .. } => "degradation_changed",
             Self::ChainOpened { .. } => "chain_opened",
             Self::Settled { .. } => "settled",
+            Self::CustodyStatement { .. } => "custody_statement",
         }
     }
 }

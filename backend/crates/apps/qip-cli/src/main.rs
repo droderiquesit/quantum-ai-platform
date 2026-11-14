@@ -99,6 +99,14 @@ fn main() {
                 code
             })
         }
+        "reflex-package" => {
+            qip_cli::reflex_package::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
+                for line in lines {
+                    println!("{line}");
+                }
+                code
+            })
+        }
         other => Err(Error::invalid(format!(
             "unknown command: {other}. Run `qip help` for the list."
         ))),
@@ -138,6 +146,15 @@ fn print_help() {
     println!("  model-pack signing-message <pack.json> --key-version <name>");
     println!("  model-pack attach-signature <pack.json> --key-version <name> --der <hex>");
     println!("  model-pack verify <pack.json> --trust-bundle <path> [--now <rfc3339>]");
+    println!(
+        "  reflex-package signing-message <draft.json> --key-version <name> --author <a> \
+         --approver <b> --approved-at <rfc3339>"
+    );
+    println!(
+        "  reflex-package attach-signature <draft.json> --key-version <name> --author <a> \
+         --approver <b> --approved-at <rfc3339> --der <hex>"
+    );
+    println!("  reflex-package verify <published.json> --trust-bundle <path> [--now <rfc3339>]");
     println!("                    sign a draft release pack through KMS and check it loads");
     println!("  change-window --plan <plan.json> --policy <policy.json> [--now <rfc3339>]");
     println!("                    refuse a saved plan changing a core resource outside");

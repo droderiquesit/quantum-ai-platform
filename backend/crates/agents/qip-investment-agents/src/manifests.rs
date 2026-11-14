@@ -52,6 +52,7 @@ pub mod ids {
     pub const PORTFOLIO_ASSET: &str = "portfolio-asset-brain";
     pub const CRYPTO_ONCHAIN: &str = "crypto-onchain-brain";
     pub const COMPANY_FUNDAMENTAL: &str = "company-fundamental-brain";
+    pub const WORLD_MODEL_ARBITRATION: &str = "world-model-arbitration-brain";
     pub const SELF_EXPLOITATION: &str = "self-exploitation-probe";
     pub const REGIME_BREAK: &str = "regime-break-probe";
     pub const MANIPULATION: &str = "manipulation-probe";
@@ -195,6 +196,35 @@ pub fn crypto_onchain_brain(reviewed_at: Timestamp) -> AgentManifest {
          recorded it reports no data"
             .into(),
         "states no token economics or smart-contract risk: no source in the tree carries either"
+            .into(),
+    ])
+}
+
+/// R12-WORLD-3025, ADR 0488: reads the World Model Federation's latest
+/// review and reports how its members were scored, reconciled and arbitrated.
+/// Its first competency is the scope string the deep brain's registry
+/// requires (`world-model-arbitration`), so the registry entry derived from
+/// this manifest is what covers that scope there.
+pub fn world_model_arbitration_brain(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::WORLD_MODEL_ARBITRATION,
+        "World Model Arbitration Brain",
+        "reports how the world model federation scored and reconciled its competing members: each branch, merge, abstention and request for more data, with every disagreeing view kept and each member's calibration",
+        owners::RESEARCH,
+        reviewed_at,
+        &[],
+    )
+    .with_competencies(vec![
+        "world-model-arbitration".into(),
+        "disagreement-preservation".into(),
+        "calibration-tracking".into(),
+    ])
+    .with_limitations(vec![
+        "reads the federation's latest journaled review; it decides nothing the \
+         federation did not already decide"
+            .into(),
+        "until the kernel has run a federation pass, or while a pass arbitrated nothing, it \
+         reports no data"
             .into(),
     ])
 }
@@ -802,6 +832,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         portfolio_asset_brain(reviewed_at),
         crypto_onchain_brain(reviewed_at),
         company_fundamental_brain(reviewed_at),
+        world_model_arbitration_brain(reviewed_at),
         self_exploitation_probe(reviewed_at),
         regime_break_probe(reviewed_at),
         manipulation_probe(reviewed_at),

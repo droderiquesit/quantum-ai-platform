@@ -269,7 +269,10 @@ fn market_event_sample() -> MarketEvent {
             aggressor: Some(BookSide::Bid),
         },
         t(0),
-        t(0),
+        // The payload's capture instant is the header's receive instant
+        // below: `MarketEvent::new` admits through `Admitted::admit`, which
+        // refuses two accounts of one instant (R12-TICK-2053).
+        t(1),
     );
     let hash = MarketEvent::hash_payload(&payload).expect("the fixture payload hashes");
     MarketEvent::new(
@@ -377,6 +380,7 @@ fn policy_payload_sample() -> PolicyPayload {
                 to_terms: None,
             }],
             start_sizes: BTreeMap::from([("USD".to_string(), dec!("1000"))]),
+            market_reference: Vec::new(),
         },
         t(0),
     );
