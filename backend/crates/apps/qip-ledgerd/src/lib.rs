@@ -268,7 +268,13 @@ pub fn start_with_link(
 ) -> Result<Running> {
     let metrics = Arc::new(Metrics::new("qip-ledgerd"));
     let telemetry = LedgerTelemetry::new(metrics.clone());
-    let store = Arc::new(open_store(config, &clock, access, telemetry.clone())?);
+    // The settlement-cycle venues before the first delivery is booked: a
+    // fill booked at the fill date and then settled again by the venue's
+    // `Settled` would park the cell (ADR 0440 decision 5, ADR 0530).
+    let store = Arc::new(
+        open_store(config, &clock, access, telemetry.clone())?
+            .with_settlement_cycle_venues(config.settlement_cycle_venues.clone())?,
+    );
     let readiness = Arc::new(Readiness::default());
     if let Some(issued) = &issued {
         readiness.require_certificate(issued.status());

@@ -3,7 +3,9 @@
 use qip_agents::memory::PromotionPolicy;
 use qip_agents::registries::{CapabilityRegistry, CitedEvaluation, OntologyRegistry};
 use qip_agents::research::{ResearchRegistry, Screening, Verdict};
-use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
+use qip_agents::tools::{
+    EvaluationOutcome, ToolEvaluation, ToolKind, ToolName, ToolPermission, ToolRegistry,
+};
 use qip_contracts::expansion::{CapabilityEntry, CapabilityVerb};
 use qip_contracts::expansion::{OntologyTypeFamily, OntologyTypeSpec};
 
@@ -353,6 +355,9 @@ fn a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_gr
     assert!(registry.authorise(&parser, ToolPermission::Write).is_err());
 
     registry
+        .record_evaluation(passed("eval-2026-10-04", &parser, ToolPermission::Write))
+        .unwrap();
+    registry
         .promote(&parser, ToolPermission::Write, "eval-2026-10-04")
         .unwrap();
     registry.authorise(&parser, ToolPermission::Write).unwrap();
@@ -360,6 +365,180 @@ fn a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_gr
         registry
             .authorise(&parser, ToolPermission::LeaveSandbox)
             .is_err()
+    );
+}
+
+fn passed(id: &str, tool: &ToolName, grant: ToolPermission) -> ToolEvaluation {
+    ToolEvaluation::new(
+        id,
+        tool.clone(),
+        grant,
+        "behaviour and data handling read against the sandbox contract",
+        EvaluationOutcome::Passed,
+    )
+    .unwrap()
+}
+
+/// R12-EXPAND-6023, ADR 0486: a promotion resolves a held evaluation; text
+/// that names no record widens nothing.
+///
+/// The failure it prevents: `promote` took a free string and refused only a
+/// blank one, so the hosted endpoint left its sandbox on whatever text the
+/// caller passed, and "evaluated" meant "a caller typed something".
+#[test]
+fn a_promotion_citing_an_evaluation_the_registry_does_not_hold_is_refused() {
+    let mut registry = ToolRegistry::new();
+    let parser = ToolName::parse("parser-a").unwrap();
+    registry.register(parser.clone(), ToolKind::Parser).unwrap();
+
+    // Premise: nothing is held, and the text is not blank, so the old blank
+    // check alone would have admitted it.
+    assert!(
+        registry
+            .evaluation(&parser, ToolPermission::Write)
+            .is_none()
+    );
+    let refused = registry
+        .promote(&parser, ToolPermission::Write, "eval-never-recorded")
+        .unwrap_err();
+    assert!(
+        refused.message().contains("cites a held evaluation"),
+        "refused for the wrong reason: {}",
+        refused.message()
+    );
+    assert!(registry.authorise(&parser, ToolPermission::Write).is_err());
+    assert_eq!(registry.version(&parser), Some(1));
+
+    // A record is held for this tool and grant, and the citation names some
+    // other text: still refused, so holding *an* evaluation is not enough.
+    registry
+        .record_evaluation(passed("eval-held", &parser, ToolPermission::Write))
+        .unwrap();
+    let refused = registry
+        .promote(&parser, ToolPermission::Write, "eval-never-recorded")
+        .unwrap_err();
+    assert!(
+        refused.message().contains("is not the one held"),
+        "refused for the wrong reason: {}",
+        refused.message()
+    );
+    assert!(registry.authorise(&parser, ToolPermission::Write).is_err());
+}
+
+/// An evaluation of one tool, or of one grant, does not widen another, and a
+/// failed evaluation widens nothing.
+#[test]
+fn a_held_evaluation_widens_only_its_own_tool_and_grant_and_only_when_it_passed() {
+    let mut registry = ToolRegistry::new();
+    let parser = ToolName::parse("parser-a").unwrap();
+    let other = ToolName::parse("parser-b").unwrap();
+    registry.register(parser.clone(), ToolKind::Parser).unwrap();
+    registry.register(other.clone(), ToolKind::Parser).unwrap();
+    registry
+        .record_evaluation(passed("eval-a-write", &parser, ToolPermission::Write))
+        .unwrap();
+
+    // Another tool citing parser-a's evaluation.
+    assert!(
+        registry
+            .promote(&other, ToolPermission::Write, "eval-a-write")
+            .is_err()
+    );
+    // The same tool, a wider grant than the evaluation covered.
+    assert!(
+        registry
+            .promote(&parser, ToolPermission::LeaveSandbox, "eval-a-write")
+            .is_err()
+    );
+    assert!(registry.authorise(&other, ToolPermission::Write).is_err());
+    assert!(
+        registry
+            .authorise(&parser, ToolPermission::LeaveSandbox)
+            .is_err()
+    );
+
+    // A failed evaluation is held, cited by its own id, and still refused.
+    registry
+        .record_evaluation(
+            ToolEvaluation::new(
+                "eval-a-egress",
+                parser.clone(),
+                ToolPermission::LeaveSandbox,
+                "sends request bodies to an unnamed third party",
+                EvaluationOutcome::Failed,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let refused = registry
+        .promote(&parser, ToolPermission::LeaveSandbox, "eval-a-egress")
+        .unwrap_err();
+    assert!(
+        refused.message().contains("failed"),
+        "refused for the wrong reason: {}",
+        refused.message()
+    );
+    assert!(
+        registry
+            .authorise(&parser, ToolPermission::LeaveSandbox)
+            .is_err()
+    );
+
+    // The version cites the record it rested on.
+    registry
+        .promote(&parser, ToolPermission::Write, "eval-a-write")
+        .unwrap();
+    assert_eq!(
+        registry.at_version(&parser, 2).and_then(|v| v.evaluation()),
+        Some("eval-a-write")
+    );
+}
+
+/// A passing evaluation a promotion rests on cannot be swapped out from under
+/// it, and an evaluation of an unregistered tool is not held waiting for one.
+#[test]
+fn a_passing_evaluation_is_not_replaced_and_an_unregistered_tool_holds_none() {
+    let mut registry = ToolRegistry::new();
+    let parser = ToolName::parse("parser-a").unwrap();
+    assert!(
+        registry
+            .record_evaluation(passed("eval-early", &parser, ToolPermission::Write))
+            .is_err()
+    );
+    registry.register(parser.clone(), ToolKind::Parser).unwrap();
+    registry
+        .record_evaluation(passed("eval-1", &parser, ToolPermission::Write))
+        .unwrap();
+    assert!(
+        registry
+            .record_evaluation(passed("eval-2", &parser, ToolPermission::Write))
+            .is_err()
+    );
+    assert_eq!(
+        registry
+            .evaluation(&parser, ToolPermission::Write)
+            .map(ToolEvaluation::id),
+        Some("eval-1")
+    );
+    assert!(
+        ToolEvaluation::new(
+            " ",
+            parser.clone(),
+            ToolPermission::Write,
+            "x",
+            EvaluationOutcome::Passed
+        )
+        .is_err()
+    );
+    assert!(
+        ToolEvaluation::new(
+            "e",
+            parser,
+            ToolPermission::Write,
+            "  ",
+            EvaluationOutcome::Passed
+        )
+        .is_err()
     );
 }
 

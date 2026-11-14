@@ -7463,6 +7463,123 @@ fn the_paper_stage_cannot_promote_without_asserting_the_paper_trading_ceiling_fi
     }
 }
 
+/// The planes the central freight (`qip-images`: qip-api, qip-fastbrain,
+/// qip-deepbrain) carries, by ADR 0504. The cell's planes — `edge`,
+/// `edge-node`, `strategy` — are not here, because no Kargo freight carries
+/// qip-edge-node.
+const FREIGHT_PLANES: [&str; 2] = ["kernel", "portfolio"];
+
+#[test]
+fn the_paper_stage_refuses_a_spent_or_unreadable_release_standing_for_its_own_planes_only() {
+    // R12-OBS-9156: "a spent budget refuses a release for that plane only".
+    // qip-api's `/release/:plane` answers per plane (proved in
+    // qip-api/tests/release_routes.rs); this pins the half Kargo holds. Four
+    // properties, each one edit from gone: the check runs before anything is
+    // recorded; it is asked once per plane the freight carries and for no
+    // other plane; each plane asked is one the kernel declares objectives on,
+    // so a typo cannot become a check that always passes; and the task
+    // refuses on every answer but exactly 200, including no answer.
+    let declared = qip_kernel::blueprint_objectives::release_planes();
+    for plane in FREIGHT_PLANES {
+        assert!(
+            declared.contains(plane),
+            "`{plane}` is not a plane §49.1 declares; declared: {declared:?}"
+        );
+    }
+    for environment in ENVIRONMENTS {
+        let rendered = kargo_rendered(environment);
+        let stages = stages_by_name(&rendered);
+        let paper = &stages["paper"];
+        let steps = list_at(
+            &paper.value,
+            &["spec", "promotionTemplate", "spec", "steps"],
+        );
+        let record = steps
+            .iter()
+            .position(|step| text_at(step, &["task", "name"]).as_deref() == Some("record-gate"))
+            .unwrap_or_else(|| panic!("{environment}: {} records nothing", paper.describe()));
+        let standings: Vec<(usize, String, String)> = steps
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| {
+                text_at(step, &["task", "name"]).as_deref() == Some("verify-release-standing")
+            })
+            .map(|(index, step)| {
+                let var = |name: &str| {
+                    list_at(step, &["vars"])
+                        .iter()
+                        .find(|v| text_at(v, &["name"]).as_deref() == Some(name))
+                        .and_then(|v| text_at(v, &["value"]))
+                        .unwrap_or_default()
+                };
+                (index, var("plane"), var("releaseStandingURL"))
+            })
+            .collect();
+        let asked: BTreeSet<&str> = standings.iter().map(|(_, p, _)| p.as_str()).collect();
+        assert_eq!(
+            asked,
+            FREIGHT_PLANES.into_iter().collect::<BTreeSet<_>>(),
+            "{environment}: {} asks the release standing of {asked:?}; it must ask exactly the \
+             planes its freight carries, so another plane's spent budget refuses nothing here",
+            paper.describe()
+        );
+        assert_eq!(
+            standings.len(),
+            FREIGHT_PLANES.len(),
+            "{environment}: one invocation per plane"
+        );
+        for (index, plane, url) in &standings {
+            assert!(
+                index < &record,
+                "{environment}: the `{plane}` standing is read after record-gate has written"
+            );
+            assert_eq!(
+                url, "${{ vars.releaseStandingURL }}",
+                "{environment}: the `{plane}` check must take the stage's address"
+            );
+        }
+
+        let task = of_kind(&rendered, "PromotionTask")
+            .into_iter()
+            .find(|task| task.name() == "verify-release-standing")
+            .unwrap_or_else(|| panic!("{environment}'s chain declares no verify-release-standing"));
+        let task_steps = list_at(&task.value, &["spec", "steps"]);
+        let first = task_steps.first().expect("the task has steps");
+        assert_eq!(text_at(first, &["uses"]).as_deref(), Some("fail"));
+        let guard = text_at(first, &["if"]).unwrap_or_default();
+        assert!(
+            guard.contains(r#"vars.releaseStandingURL == """#),
+            "an unset address must refuse, not skip the check: `{guard}`"
+        );
+        let http: Vec<&&Value> = task_steps
+            .iter()
+            .filter(|step| text_at(step, &["uses"]).as_deref() == Some("http"))
+            .collect();
+        assert_eq!(http.len(), 1, "{environment}: one read of the standing");
+        let config = |key: &str| text_at(http[0], &["config", key]).unwrap_or_default();
+        assert_eq!(config("method"), "GET", "a standing is read, never written");
+        assert!(
+            config("url").ends_with("/api/v1/release/${{ vars.plane }}"),
+            "the check asks for its own plane and no other: `{}`",
+            config("url")
+        );
+        assert!(
+            !config("timeout").is_empty(),
+            "a call that leaves the process has a timeout"
+        );
+        assert_eq!(
+            config("successExpression"),
+            "response.status == 200",
+            "only exactly 200 lets a promotion through"
+        );
+        assert_eq!(
+            config("failureExpression"),
+            "response.status != 200",
+            "every other answer refuses at once rather than leaving the step to retry"
+        );
+    }
+}
+
 #[test]
 fn the_ceiling_the_paper_check_reads_is_paper_trading_in_every_manifest_it_could_roll_out() {
     // The other side of the check: the committed manifests satisfy it. Run

@@ -67,7 +67,9 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
-use qip_edge::cell::{Cell, ExecutionReport, OpenOrder, Placer, QuoteTerms, UnreleasedOrder};
+use qip_edge::cell::{
+    Cell, ExecutionReport, OpenOrder, Placer, QuoteTerms, SettlementReport, UnreleasedOrder,
+};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::priority::{Candidate, allocate, worth};
 use qip_edge::telemetry::CellMetrics;
@@ -904,10 +906,20 @@ impl Placer for RequotingPlacer<'_> {
         let mut reports = self.venue.execution_reports();
         if let Some(requoter) = self.requoter.as_deref_mut() {
             for report in &mut reports {
+                let filled_as = report.order_id.clone();
                 requoter.book(report);
+                // The venue's settlement clock heard the child's id; the
+                // cell and the ledger know the parent's (ADR 0530).
+                self.venue.relabel_unsettled(&filled_as, &report.order_id);
             }
         }
         reports
+    }
+
+    fn settlements(&mut self) -> Vec<SettlementReport> {
+        // Delegated, already in the cell's ids: the clock is re-keyed above
+        // as each fill is handed over, so nothing is mapped here.
+        self.venue.settlements()
     }
 
     fn quote_terms(&self, object_id: &ObjectId, venue: &VenueId) -> Option<QuoteTerms> {

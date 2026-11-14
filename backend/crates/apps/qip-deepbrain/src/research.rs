@@ -584,7 +584,18 @@ pub struct ResearchConfig {
     /// Held signals the router keeps; the least valuable is dropped past
     /// it. Default 256.
     pub attention_held_capacity: usize,
+    /// Whether the sweep runs the always-on ambient models — the one-step
+    /// forecast, the path simulation and the weak-signal scan
+    /// (`ambient_models.rs`, R12-AMBIENT-1180, ADR 0478) — each raising its
+    /// signals under a scheduled trigger that names it. On by default; set by
+    /// [`AMBIENT_MODELS_VARIABLE`]. With it off the sweep runs none and
+    /// [`ResearchRound::ambient_models`] is `None`, not an empty report.
+    pub ambient_models: bool,
 }
+
+/// The variable switching the always-on ambient models: `on` or `off`, on
+/// when unset. Anything else is refused at start-up.
+pub const AMBIENT_MODELS_VARIABLE: &str = "QIP_DEEPBRAIN_AMBIENT_MODELS";
 
 /// The variable switching the forecast sentinel (R12-AMBIENT-3066): `on` or
 /// `off`, on when unset. Anything else is refused at start-up, because a
@@ -649,6 +660,7 @@ impl Default for ResearchConfig {
             capital_horizon: CAPITAL_HORIZON,
             attention_budget_per_hour: 256,
             attention_held_capacity: 256,
+            ambient_models: true,
         }
     }
 }
@@ -723,6 +735,20 @@ impl ResearchConfig {
         }
         if let Some(raw) = lookup(AGENT_BUDGETS_VARIABLE) {
             config.agent_budgets = parse_agent_budgets(&raw)?;
+        }
+        if let Some(raw) = lookup(AMBIENT_MODELS_VARIABLE) {
+            // Refused rather than read as off, like the sentinels: a typo
+            // that silently stopped the models is a mesh that waits to be
+            // asked while appearing not to.
+            config.ambient_models = match raw.trim() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(Error::invalid(format!(
+                        "{AMBIENT_MODELS_VARIABLE} is {raw:?}; state `on` or `off`"
+                    )));
+                }
+            };
         }
         if let Some(raw) = lookup(OPPORTUNITY_SENTINEL_VARIABLE) {
             // Refused rather than read as off: a typo that silently
@@ -1045,6 +1071,12 @@ pub struct ResearchRound {
     /// The precursors the opportunity sentinels raised this sweep, each
     /// routed as one research-task signal (R12-AMBIENT-3069).
     pub precursors: Vec<Precursor>,
+    /// What the always-on ambient models found this sweep (R12-AMBIENT-1180):
+    /// their signals (also in [`Self::signals`], routed like every other),
+    /// the next step each forecast expects, each subject's simulated
+    /// drawdown share, and what they could not measure. `None` when
+    /// [`ResearchConfig::ambient_models`] is off.
+    pub ambient_models: Option<crate::ambient_models::AmbientModelReport>,
     /// Pre-positioning movements the sweep recommended and the router
     /// activated for capital preparation (R12-AMBIENT-3065/3072): advice for
     /// the treasury, never a transfer.
@@ -1696,6 +1728,8 @@ pub struct ResearchLoop {
     /// The opportunity sentinels' memory and what they watch (ADR 0434).
     precursors: PrecursorScanner,
     precursor_config: PrecursorConfig,
+    /// The thresholds the always-on ambient models judge by (ADR 0478).
+    ambient_model_config: crate::ambient_models::AmbientModelConfig,
     persistence: PersistenceTracker,
     /// The second persistence detector, over the federation's resolutions
     /// (ADR 0346).
@@ -1969,6 +2003,7 @@ impl ResearchLoop {
             detectors: DetectorRegistry::standard(),
             precursors: PrecursorScanner::new(),
             precursor_config: PrecursorConfig::default(),
+            ambient_model_config: crate::ambient_models::AmbientModelConfig::default(),
             persistence: PersistenceTracker::new(PERSIST_SWEEPS)?,
             beliefs: BeliefWatch::new()?,
             ticks: TickCampaignDetector::new()?,
@@ -2230,6 +2265,18 @@ impl ResearchLoop {
         config.validate()?;
         self.precursor_config = config;
         self.precursors = PrecursorScanner::new();
+        Ok(self)
+    }
+
+    /// The thresholds the always-on ambient models judge by. Refused when
+    /// [`crate::ambient_models::AmbientModelConfig::validate`] refuses them,
+    /// rather than run on thresholds nobody could have meant.
+    pub fn with_ambient_models(
+        mut self,
+        config: crate::ambient_models::AmbientModelConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        self.ambient_model_config = config;
         Ok(self)
     }
 
@@ -2889,6 +2936,31 @@ impl ResearchLoop {
                 precursor_signal(&found, now, self.config.signal_ttl, &mut self.issued)?,
             ));
             round.precursors.push(found);
+        }
+        // The always-on ambient models (R12-AMBIENT-1180, ADR 0478): a
+        // forecast, a path simulation and a weak-signal scan over the same
+        // windows the anomaly path read, every sweep, each signal under a
+        // scheduled trigger naming its model — nothing had to happen first.
+        if self.config.ambient_models {
+            let windows: BTreeMap<String, Vec<f64>> = platform
+                .price_history()
+                .iter()
+                .map(|(subject, prices)| {
+                    let from = prices.len().saturating_sub(SWEEP_PRICES);
+                    (subject.clone(), prices[from..].to_vec())
+                })
+                .collect();
+            let report = crate::ambient_models::run(
+                &self.ambient_model_config,
+                &windows,
+                now,
+                self.config.signal_ttl,
+                &mut self.issued,
+            )?;
+            for signal in &report.signals {
+                routable.push((None, signal.clone()));
+            }
+            round.ambient_models = Some(report);
         }
         // The capital sentinel (R12-AMBIENT-3072): the DECIDE stage's
         // pre-positioning plan, one capital-preparation signal per

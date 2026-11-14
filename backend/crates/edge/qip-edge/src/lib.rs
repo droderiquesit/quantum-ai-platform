@@ -92,7 +92,7 @@ pub use cell::{
     GATE_ENVELOPE_LIQUIDITY, GATE_ENVELOPE_UNBOUNDED, GATE_FILL_DISPERSION, GATE_JUSTIFICATION,
     GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET,
     MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle,
-    WorkReport,
+    SettlementReport, WorkReport,
 };
 pub use decomposition::{
     Completion, DEFAULT_MINIMUM_VIABLE_FRACTION, Decomposition, DecompositionPolicy, LegSize,

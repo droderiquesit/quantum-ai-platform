@@ -2354,3 +2354,303 @@ fn a_purchase_remainder_the_simulated_venue_never_works_does_not_refuse_a_sale_b
     );
     Ok(())
 }
+
+// --- the desk's requote path (ADR 0526, ADR 0285 decision 5) ----------------
+
+/// A venue at which a buy rests until it is withdrawn and a sale fills in
+/// full at its arrival price when `sales_fill` — the two sides of a
+/// layering pattern, one leaning on the book and one taking the benefit.
+/// Named, because since ADR 0472 the desk refuses a sale at the venue its
+/// own bids rest at, so the benefit is taken at another venue — which ADR
+/// 0285 decision 1 counts.
+#[derive(Debug)]
+struct LeaningBroker {
+    name: &'static str,
+    capabilities: SimulatedBroker,
+    sales_fill: bool,
+    submitted: usize,
+}
+
+impl LeaningBroker {
+    fn new(name: &'static str, sales_fill: bool) -> Self {
+        Self {
+            name,
+            capabilities: simulator(),
+            sales_fill,
+            submitted: 0,
+        }
+    }
+}
+
+impl Broker for LeaningBroker {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn is_simulated(&self) -> bool {
+        true
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> qip_execution_engine::broker::VenueCapabilities {
+        self.capabilities.capabilities()
+    }
+    fn submit(&mut self, order: &Order, at: Timestamp) -> Result<Vec<Fill>> {
+        self.submitted += 1;
+        if order.side == Side::Buy || !self.sales_fill {
+            return Ok(Vec::new());
+        }
+        Ok(vec![Fill {
+            fill_id: qip_core::ids::FillId::from_string(format!(
+                "fill-{}",
+                order.order_id.as_str()
+            )),
+            order_id: order.order_id.clone(),
+            at,
+            quantity: order.quantity,
+            price: order.arrival_price,
+            costs: Decimal::ZERO,
+            venue: self.name().to_string(),
+            simulated: true,
+        }])
+    }
+    fn cancel(&mut self, _order: &Order, _at: Timestamp) -> Result<()> {
+        Ok(())
+    }
+}
+
+fn limit_order(id: &str, side: Side, price: &str) -> Order {
+    let mut order = order("AAA", side, "10");
+    order.order_id = OrderId::from_string(id.to_string());
+    order.order_type = OrderType::Limit {
+        price: Decimal::parse(price).unwrap(),
+    };
+    order
+}
+
+fn requote(
+    manager: &mut OrderManager,
+    original: &str,
+    replacement: Order,
+    touch: Option<Decimal>,
+    venue: &mut LeaningBroker,
+    controller: &AutonomyController,
+) -> Result<qip_execution_engine::oms::SubmissionResult> {
+    manager.replace(
+        &OrderId::from_string(original.to_string()),
+        replacement,
+        touch,
+        venue,
+        controller,
+        &risk_state(),
+        BTreeMap::new(),
+        None,
+        now(),
+    )
+}
+
+/// Four buys rest at the best bid at one venue, a sale of the same
+/// instrument fills at a second venue when `sales_fill`, and the desk then
+/// requotes each buy one tick lower — further behind the touch at `touch`.
+/// Returns the result of each requote's replacement, the manager, the bids'
+/// venue and the offers' venue.
+fn layer_the_bids(
+    sales_fill: bool,
+    touch: Option<Decimal>,
+) -> Result<(
+    Vec<qip_execution_engine::oms::SubmissionResult>,
+    OrderManager,
+    LeaningBroker,
+    LeaningBroker,
+)> {
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    let mut venue = LeaningBroker::new("bids-venue", false);
+    let mut offers = LeaningBroker::new("offers-venue", sales_fill);
+    for index in 0..4 {
+        let result = submit(
+            &mut manager,
+            limit_order(&format!("bid-{index}"), Side::Buy, "99"),
+            &mut venue,
+            &controller,
+        );
+        assert!(
+            result.accepted && result.fills.is_empty(),
+            "premise: bid {index} did not rest: {:?}",
+            result.refusal
+        );
+    }
+    let sale = submit(
+        &mut manager,
+        limit_order("offer-0", Side::Sell, "101"),
+        &mut offers,
+        &controller,
+    );
+    assert!(
+        sale.accepted,
+        "premise: the sale was refused: {:?}",
+        sale.refusal
+    );
+    assert_eq!(
+        !sale.fills.is_empty(),
+        sales_fill,
+        "premise: the sale filled or rested against the case's intent"
+    );
+    let mut results = Vec::new();
+    for index in 0..4 {
+        results.push(requote(
+            &mut manager,
+            &format!("bid-{index}"),
+            limit_order(&format!("bid-{index}-r"), Side::Buy, "98"),
+            touch,
+            &mut venue,
+            &controller,
+        )?);
+    }
+    Ok((results, manager, venue, offers))
+}
+
+#[test]
+fn a_desk_that_requotes_its_bids_away_from_the_touch_while_its_offer_fills_is_refused_the_layering_bid()
+-> Result<()> {
+    // ADR 0285 decision 5. The layering arm read the desk's fills but never a
+    // desk requote, because the desk had no replace path — so the arm could
+    // not fire at the desk at all. Four bids requoted below the best bid while
+    // the offer fills — at another venue, which the arm counts (ADR 0285
+    // decision 1) — is the layering shape; the fourth requote's replacement
+    // is refused by the conduct gate, by the layering arm, and never reaches
+    // the venue.
+    let (results, mut manager, mut venue, mut offers) = layer_the_bids(true, Some(dec!("99")))?;
+    for (index, result) in results.iter().take(3).enumerate() {
+        assert!(
+            result.accepted,
+            "premise: requote {index} was refused before the pattern was complete: {:?}",
+            result.refusal
+        );
+    }
+    match results[3].refusal.as_ref() {
+        Some(RefusalReason::Conduct { venue: at, detail }) => {
+            assert_eq!(at, venue.name());
+            assert!(
+                detail.contains("requoted 4 of its last 4 buy order(s)")
+                    && detail.contains("away from the touch"),
+                "the refusal was not the layering arm's: {detail}"
+            );
+        }
+        other => panic!("expected the layering arm to refuse, got {other:?}"),
+    }
+    // Four bids and three replacements reached the bids' venue; the refused
+    // fourth replacement did not.
+    assert_eq!(
+        venue.submitted, 7,
+        "the refused replacement reached the venue"
+    );
+
+    // A fresh bid on the same side of the same book is refused too, while
+    // the offer side carries no pattern of its own.
+    let controller = AutonomyController::new();
+    let bid = submit(
+        &mut manager,
+        limit_order("bid-new", Side::Buy, "98"),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        matches!(bid.refusal, Some(RefusalReason::Conduct { .. })),
+        "a fresh bid continued the layering pattern: {:?}",
+        bid.refusal
+    );
+    let offer = submit(
+        &mut manager,
+        limit_order("offer-1", Side::Sell, "101"),
+        &mut offers,
+        &controller,
+    );
+    assert!(
+        offer.accepted,
+        "the offer side was refused for the bids' pattern: {:?}",
+        offer.refusal
+    );
+    Ok(())
+}
+
+#[test]
+fn the_same_desk_requotes_with_no_opposite_fill_are_admitted_because_the_cancel_ratio_alone_does_not_see_them()
+-> Result<()> {
+    // The twin of the layering test, and the reason the arm exists: with
+    // nothing filled on the other side, the four requotes are four
+    // withdrawals against eight placements, under the cancel-before-fill
+    // bound, so nothing refuses them. If this were refused, the layering test
+    // above would prove nothing about the arm.
+    let (results, _, _, _) = layer_the_bids(false, Some(dec!("99")))?;
+    for (index, result) in results.iter().enumerate() {
+        assert!(
+            result.accepted,
+            "requote {index} was refused: {:?}",
+            result.refusal
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_desk_requote_judged_against_no_touch_is_not_counted_as_away() -> Result<()> {
+    // ADR 0285 decision 4 carried to the desk: a requote nobody could judge
+    // against a touch is not evidence of a pattern, so even with the offer
+    // filling, four requotes with no touch are admitted.
+    let (results, _, _, _) = layer_the_bids(true, None)?;
+    for (index, result) in results.iter().enumerate() {
+        assert!(
+            result.accepted,
+            "requote {index} was refused: {:?}",
+            result.refusal
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_desk_requote_for_another_side_is_refused_before_the_original_is_withdrawn() -> Result<()> {
+    // A replacement on the other side is a new order, not a reprice. Refused
+    // before anything is withdrawn, so the original still rests — a refusal
+    // that cancelled first would leave the desk flat on a malformed request.
+    let mut manager = manager();
+    let controller = AutonomyController::new();
+    let mut venue = LeaningBroker::new("bids-venue", false);
+    let result = submit(
+        &mut manager,
+        limit_order("bid-0", Side::Buy, "99"),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        result.accepted,
+        "premise: the bid was refused: {:?}",
+        result.refusal
+    );
+    let refused = requote(
+        &mut manager,
+        "bid-0",
+        limit_order("bid-0-r", Side::Sell, "99"),
+        Some(dec!("99")),
+        &mut venue,
+        &controller,
+    );
+    assert!(
+        refused.is_err(),
+        "a side-changing replacement was taken as a requote"
+    );
+    let original = manager
+        .order(&OrderId::from_string("bid-0".to_string()))
+        .map(|order| order.state.is_open());
+    assert_eq!(
+        original,
+        Some(true),
+        "the refused requote withdrew the original"
+    );
+    assert_eq!(
+        venue.submitted, 1,
+        "the refused replacement reached the venue"
+    );
+    Ok(())
+}

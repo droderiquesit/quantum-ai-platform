@@ -10,7 +10,9 @@
 //! wrote down. The strategy ladder and the edge cell's capital envelope hold
 //! execution authority by other mechanisms and are not covered here.
 
-use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
+use qip_agents::tools::{
+    EvaluationOutcome, ToolEvaluation, ToolKind, ToolName, ToolPermission, ToolRegistry,
+};
 use qip_agents::{Capability, CapabilitySet};
 use std::collections::BTreeSet;
 
@@ -110,7 +112,21 @@ fn what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_p
                 ToolPermission::Write,
                 ToolPermission::LeaveSandbox,
             ][usize::try_from(rng.next() % 3).unwrap()];
-            tools.promote(&subject, grant, "evaluation").unwrap();
+            let evaluation = format!("evaluation-{round}-{step}");
+            tools
+                .record_evaluation(
+                    ToolEvaluation::new(
+                        &evaluation,
+                        subject.clone(),
+                        grant,
+                        "behaviour and data handling read",
+                        EvaluationOutcome::Passed,
+                    )
+                    .unwrap(),
+                )
+                .ok();
+            let held = tools.evaluation(&subject, grant).unwrap().id().to_string();
+            tools.promote(&subject, grant, &held).unwrap();
             granted.insert(grant);
             tools
                 .register(

@@ -1041,6 +1041,72 @@ fn compare(first: &std::path::Path, second: &std::path::Path) -> (i32, String) {
     )
 }
 
+/// The portal image keeps no package-manager log. `apk add` writes
+/// `/var/log/apk.log` with the wall clock in it, so two builds of one commit
+/// differ there and the reproducibility comparison refuses to push: deploy
+/// runs 299 to 301 each ended "/var/log/apk.log differs between the two
+/// builds; nothing is pushed", and no portal image was pushed for three
+/// merges. The removal has to be in the instruction that runs `apk`, because
+/// a later `RUN rm` hides the file in the final filesystem and leaves it in
+/// the layer beneath.
+///
+/// This reads the Dockerfile; only a build proves the image. What it holds
+/// is that the removal is not dropped from, or moved out of, that layer.
+///
+/// Mutation: delete the `rm -f /var/log/apk.log; \` line and this fails on
+/// the removal; move the two lines to a `RUN` of their own and it fails the
+/// same way, because that instruction no longer runs `apk`.
+#[test]
+fn every_portal_layer_that_runs_apk_removes_the_log_apk_leaves() {
+    let dockerfile = read(PORTAL_DOCKERFILE);
+    // One entry per instruction, continuation lines joined, comments dropped.
+    let mut instructions: Vec<String> = Vec::new();
+    let mut open = false;
+    for line in dockerfile.lines() {
+        let text = line.trim();
+        if text.starts_with('#') || text.is_empty() {
+            continue;
+        }
+        let body = text.trim_end_matches('\\').trim_end();
+        if open {
+            let last = instructions.last_mut().expect("an instruction is open");
+            last.push(' ');
+            last.push_str(body);
+        } else {
+            instructions.push(body.to_string());
+        }
+        open = text.ends_with('\\');
+    }
+    let with_apk: Vec<&String> = instructions
+        .iter()
+        .filter(|instruction| {
+            instruction.starts_with("RUN ")
+                && instruction
+                    .split(|c: char| c.is_whitespace() || c == ';')
+                    .any(|word| word == "apk")
+                && instruction.contains("apk add")
+        })
+        .collect();
+    assert!(
+        !with_apk.is_empty(),
+        "premise: no RUN instruction of portal.Dockerfile installs with apk, so this test \
+         reads nothing; the upgrade moved and the scan is stale"
+    );
+    for instruction in with_apk {
+        let install = instruction.find("apk add").expect("filtered on it");
+        let removal = instruction.find("rm -f /var/log/apk.log;");
+        assert!(
+            removal.is_some_and(|at| at > install),
+            "a portal layer installs with apk and does not remove /var/log/apk.log after it, \
+             so two builds of one commit differ and nothing is pushed: {instruction}"
+        );
+        assert!(
+            instruction.ends_with("test ! -e /var/log/apk.log"),
+            "the layer removes apk's log and does not check that it is gone: {instruction}"
+        );
+    }
+}
+
 #[test]
 fn the_portal_exceptions_list_names_exactly_the_four_per_build_secret_files() {
     // The list is what makes the check a check. A fifth line excuses a
