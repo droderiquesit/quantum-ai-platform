@@ -265,3 +265,118 @@ fn a_market_event_line_decodes_back_through_its_refusals_and_keeps_its_wire_form
     assert_eq!(early.receive_time(), t(5));
     Ok(())
 }
+
+/// R12-TICK-2053: a stored header decodes back through `Admission::new`, and
+/// a stored admitted record through `Admitted::admit`. A derived decoder
+/// built either field by field, so a header received before it happened, with
+/// a negative doubt, under a denied entitlement or naming no source hash — or
+/// a record whose own times disagree with its header — was admitted simply by
+/// being read back, the one route the constructors exist to close.
+///
+/// Mutation: derive `Deserialize` on `Admission` without
+/// `#[serde(try_from = "AdmissionWire")]` — "a header received before it
+/// happened was decoded". Mutation: drop `#[serde(try_from =
+/// "AdmittedWire<T>")]` from `Admitted` — "a record whose own times disagree
+/// with its header was decoded".
+#[test]
+fn a_stored_admission_and_an_admitted_record_decode_only_through_their_refusals() -> Result<()> {
+    let admission = Admission::new(
+        t(10),
+        t(20),
+        t(20),
+        Duration::from_millis(5),
+        "hash",
+        granted(),
+    )?;
+    let line = serde_json::to_value(&admission)?;
+    let back: Admission = serde_json::from_value(line.clone())?;
+    assert_eq!(back, admission, "premise: an honest header round-trips");
+
+    let mut early = line.clone();
+    early["event_time"] = serde_json::to_value(t(30))?;
+    assert!(
+        serde_json::from_value::<Admission>(early).is_err(),
+        "a header received before it happened was decoded"
+    );
+    let mut negative = line.clone();
+    negative["uncertainty"] = serde_json::to_value(Duration::from_nanos(-1))?;
+    assert!(
+        serde_json::from_value::<Admission>(negative).is_err(),
+        "a header with a negative doubt was decoded"
+    );
+    let mut denied = line.clone();
+    denied["entitlement"] = serde_json::to_value(Entitlement::Denied {
+        dataset: "xnys-itch".into(),
+        usage: Usage::Trade,
+        reason: "never licensed".into(),
+    })?;
+    assert!(
+        serde_json::from_value::<Admission>(denied).is_err(),
+        "a header under a denied entitlement was decoded"
+    );
+    let mut unhashed = line;
+    unhashed["source_hash"] = serde_json::to_value(" ")?;
+    assert!(
+        serde_json::from_value::<Admission>(unhashed).is_err(),
+        "a header naming no source hash was decoded"
+    );
+
+    let admitted = Admitted::admit(message(t(10), t(20)), admission)?;
+    let line = serde_json::to_value(&admitted)?;
+    let back: Admitted<MarketMessage> = serde_json::from_value(line.clone())?;
+    assert_eq!(
+        back, admitted,
+        "premise: an honest admitted record round-trips"
+    );
+    let mut disagreeing = line;
+    disagreeing["record"]["capture_time"] = serde_json::to_value(t(21))?;
+    assert!(
+        serde_json::from_value::<Admitted<MarketMessage>>(disagreeing).is_err(),
+        "a record whose own times disagree with its header was decoded"
+    );
+    Ok(())
+}
+
+/// R12-TICK-2053: a `MarketEvent` is its payload under `Admitted`, so the
+/// writer refuses a payload whose own venue or capture instant is not the
+/// header's — two accounts of one instant on one event, the second of which
+/// a reader would have to choose between. Until 2026-11-14 `MarketEvent::new`
+/// kept the payload and the header side by side and admitted both.
+///
+/// Mutation: build the event with `Admitted::read_back` instead of
+/// `Admitted::admit` in `MarketEvent::new` — the disagreeing receipt is
+/// admitted ("a payload captured at another instant than its header's receipt
+/// was admitted").
+#[test]
+fn a_market_event_whose_payload_and_header_give_two_accounts_of_one_instant_is_refused()
+-> Result<()> {
+    let build = |payload: MarketMessage| -> Result<MarketEvent> {
+        let hash = MarketEvent::hash_payload(&payload)?;
+        MarketEvent::new(
+            payload,
+            t(10),
+            t(20),
+            t(20),
+            Duration::from_millis(5),
+            hash,
+            granted(),
+        )
+    };
+    let agreeing = build(message(t(10), t(20)))?;
+    assert_eq!(
+        agreeing.admission().receive_time(),
+        agreeing.payload().capture_time,
+        "premise: an event whose payload agrees with its header is admitted"
+    );
+    let late_capture = build(message(t(10), t(21)));
+    assert!(
+        late_capture.is_err(),
+        "a payload captured at another instant than its header's receipt was admitted"
+    );
+    let other_venue_time = build(message(t(11), t(20)));
+    assert!(
+        other_venue_time.is_err(),
+        "a payload stamped by the venue at another instant than its header's event was admitted"
+    );
+    Ok(())
+}

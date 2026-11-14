@@ -16,7 +16,7 @@
 //! message and licensing it for use are one act instead of two acts that can
 //! silently fall out of step.
 
-use crate::admission::Admission;
+use crate::admission::{Admission, Admitted};
 use crate::governance::Entitlement;
 use crate::message::MarketMessage;
 use crate::venue::Origin;
@@ -49,8 +49,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(into = "MarketEventWire", try_from = "MarketEventWire")]
 pub struct MarketEvent {
-    payload: MarketMessage,
-    admission: Admission,
+    /// The payload under the header it was admitted under (ADR 0132,
+    /// R12-TICK-2053): one value, so the payload's own instants and the
+    /// header's cannot be two accounts of one fact on any event this
+    /// process built.
+    admitted: Admitted<MarketMessage>,
     /// sha256 of the bytes the venue put on the wire for this message, where
     /// the producer still holds them. The admission's source hash is over the
     /// canonical re-encoding of the decoded message, so it cannot answer "is
@@ -101,9 +104,9 @@ impl From<MarketEvent> for MarketEventWire {
             uncertainty,
             source_hash,
             entitlement,
-        } = event.admission;
+        } = event.admitted.admission().clone();
         Self {
-            payload: event.payload,
+            payload: event.admitted.into_record(),
             event_time,
             receive_time,
             normalized_time,
@@ -140,16 +143,23 @@ impl TryFrom<MarketEventWire> for MarketEvent {
                 wire.entitlement.dataset()
             )));
         }
+        // Held without the own-times rule on read, for the reason the order
+        // refusal is not re-run either: a line whose payload and header
+        // disagree is contamination the replay's knowability exclusion finds
+        // and counts, and refusing it here would turn a counted leak into an
+        // unparsed line. The writer refuses it ([`MarketEvent::new`]).
         Ok(Self {
-            payload: wire.payload,
-            admission: Admission {
-                event_time: wire.event_time,
-                receive_time: wire.receive_time,
-                normalized_time: wire.normalized_time,
-                uncertainty: wire.uncertainty,
-                source_hash: wire.source_hash,
-                entitlement: wire.entitlement,
-            },
+            admitted: Admitted::read_back(
+                wire.payload,
+                Admission {
+                    event_time: wire.event_time,
+                    receive_time: wire.receive_time,
+                    normalized_time: wire.normalized_time,
+                    uncertainty: wire.uncertainty,
+                    source_hash: wire.source_hash,
+                    entitlement: wire.entitlement,
+                },
+            ),
             native_hash: wire.native_hash,
         })
     }
@@ -187,14 +197,13 @@ impl MarketEvent {
             recomputed,
             entitlement,
         )?;
-        // Not `Admitted::admit(payload, admission)`: producers across the
-        // tree stamp a payload's `capture_time` and the header's receive
-        // time from two clocks (the venue's line and the node's receipt), so
-        // the own-times rule would refuse ordinary events. Named in
-        // R12-TICK-2053's gap.
+        // Through `Admitted::admit`, so a payload whose own venue or capture
+        // instant is not the header's is refused at the writer: two
+        // accounts of one instant (R12-TICK-2053). Every producer in the
+        // tree stamps both from one clock — the edge feed's `now`, the
+        // tape line's own two times — so an ordinary event agrees.
         Ok(Self {
-            payload,
-            admission,
+            admitted: Admitted::admit(payload, admission)?,
             native_hash: None,
         })
     }
@@ -202,7 +211,7 @@ impl MarketEvent {
     /// The admission header this event was admitted under (ADR 0132): the
     /// one the constructor, or the decoder, checked — held, not rebuilt.
     pub fn admission(&self) -> &Admission {
-        &self.admission
+        self.admitted.admission()
     }
 
     /// Record the venue's own bytes for this message, hashing them here so a
@@ -226,37 +235,37 @@ impl MarketEvent {
     }
 
     pub fn payload(&self) -> &MarketMessage {
-        &self.payload
+        self.admitted.record()
     }
 
     /// Where this event's payload came from — the venue, feed, partition and
     /// sequence a gap or an audit is measured against.
     pub fn origin(&self) -> &Origin {
-        &self.payload.origin
+        &self.admitted.record().origin
     }
 
     pub const fn event_time(&self) -> Timestamp {
-        self.admission.event_time
+        self.admitted.admission().event_time
     }
 
     pub const fn receive_time(&self) -> Timestamp {
-        self.admission.receive_time
+        self.admitted.admission().receive_time
     }
 
     pub const fn normalized_time(&self) -> Timestamp {
-        self.admission.normalized_time
+        self.admitted.admission().normalized_time
     }
 
     pub const fn uncertainty(&self) -> Duration {
-        self.admission.uncertainty
+        self.admitted.admission().uncertainty
     }
 
     pub fn source_hash(&self) -> &str {
-        &self.admission.source_hash
+        &self.admitted.admission().source_hash
     }
 
     pub fn entitlement(&self) -> &Entitlement {
-        &self.admission.entitlement
+        &self.admitted.admission().entitlement
     }
 
     /// The number of messages missing between `previous` and `self` on the
@@ -269,8 +278,8 @@ impl MarketEvent {
     /// with nothing lost either. Time is not evidence of a gap in either
     /// direction; only a hole in the venue's own sequence is.
     pub fn sequence_gap(&self, previous: &Self) -> Option<u64> {
-        let earlier = &previous.payload.origin;
-        let later = &self.payload.origin;
+        let earlier = &previous.admitted.record().origin;
+        let later = &self.admitted.record().origin;
         if later.stream_key() != earlier.stream_key() || later.sequence <= earlier.sequence {
             return None;
         }

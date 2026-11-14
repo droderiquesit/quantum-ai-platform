@@ -258,6 +258,10 @@ pub struct SimulatedFeed {
     /// Counted rather than fatal: the pass has already applied the frame,
     /// and failing it now would make recording a reason to stop trading.
     capture_failures: u64,
+    /// The messages the cell's decoder normalized the last publication
+    /// into, until [`Self::take_normalized`] hands them on. One frame,
+    /// replaced on every publication, so bounded like `captured`.
+    normalized: Vec<MarketMessage>,
 }
 
 impl SimulatedFeed {
@@ -272,6 +276,7 @@ impl SimulatedFeed {
             captured: Vec::new(),
             last_frame: String::new(),
             capture_failures: 0,
+            normalized: Vec::new(),
         }
     }
 
@@ -318,9 +323,17 @@ impl SimulatedFeed {
         &self.last_frame
     }
 
-    /// Lines the cell took that could not be captured as market events.
+    /// Lines the cell took that could not be captured as market events,
+    /// including a line whose captured message differs in any field from
+    /// the message the cell normalized it into.
     pub fn capture_failures(&self) -> u64 {
         self.capture_failures
+    }
+
+    /// Hand on the messages the cell's decoder normalized the last
+    /// publication into, in decode order, leaving none (R12-TICK-1201).
+    pub fn take_normalized(&mut self) -> Vec<MarketMessage> {
+        std::mem::take(&mut self.normalized)
     }
 
     fn capture(
@@ -565,6 +578,7 @@ impl SimulatedFeed {
         let venue_time = wire.venue_time;
         let frame = wire.frame;
         self.captured.clear();
+        self.normalized.clear();
         self.last_frame.clear();
         if tick.messages > 0 {
             // The half-width of the clock error every event of this frame is
@@ -598,7 +612,8 @@ impl SimulatedFeed {
             // narrower than the frame's own proof.
             let lead = venue_time.since(now).max(Duration::ZERO);
             let bound = cell.clock_uncertainty(&self.venue, lead);
-            let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
+            let normalized = cell.on_bytes_normalized(&self.key, frame.as_bytes(), now)?;
+            let decoded = normalized.len();
             if decoded != tick.messages {
                 // The decoder is this module's own; a frame it built that its
                 // decoder did not read back whole is a defect here, and it
@@ -613,12 +628,21 @@ impl SimulatedFeed {
             // tick the cell did not take is not a tick this pass applied,
             // and the record of what a pass applied is what replay and the
             // lake read.
+            //
+            // And captured only as the cell read it (R12-TICK-1201). Each
+            // line's event is kept only where its message equals, field for
+            // field, the message the cell's decoder normalized that line
+            // into — the lines and the decoded messages are in one order and
+            // of one count, checked above. A line the cell read differently
+            // is counted as a capture failure rather than sealed: a lake
+            // holding the publisher's intent beside a cell that traded on
+            // another reading would replay a session the cell never saw.
             match bound {
                 Ok(uncertainty) => {
-                    for line in wire.lines {
-                        match self.capture(&line, venue_time, now, uncertainty) {
-                            Ok(event) => self.captured.push(event),
-                            Err(_) => {
+                    for (line, read) in wire.lines.iter().zip(&normalized) {
+                        match self.capture(line, venue_time, now, uncertainty) {
+                            Ok(event) if event.payload() == read => self.captured.push(event),
+                            Ok(_) | Err(_) => {
                                 self.capture_failures = self.capture_failures.saturating_add(1);
                             }
                         }
@@ -636,6 +660,7 @@ impl SimulatedFeed {
                 }
             }
             self.last_frame = frame;
+            self.normalized = normalized;
         }
         Ok(tick)
     }
@@ -670,6 +695,10 @@ pub struct ReplayFeed {
     venue: VenueId,
     key: FeedKey,
     tracked: std::collections::BTreeSet<String>,
+    /// The messages the replayed cell's decoder normalized the last frame
+    /// into, until [`Self::take_normalized`] hands them on: one frame,
+    /// replaced on every publication, so bounded.
+    normalized: Vec<MarketMessage>,
 }
 
 impl ReplayFeed {
@@ -679,7 +708,15 @@ impl ReplayFeed {
             key: FeedKey::new(venue.clone(), FEED_NAME),
             venue,
             tracked: std::collections::BTreeSet::new(),
+            normalized: Vec::new(),
         }
+    }
+
+    /// Hand on the messages the replayed cell's decoder normalized the last
+    /// publication into, in decode order, leaving none (R12-TICK-1201): what
+    /// a test compares, field for field, with what the original cell read.
+    pub fn take_normalized(&mut self) -> Vec<MarketMessage> {
+        std::mem::take(&mut self.normalized)
     }
 
     /// Bind the feed's decoder and the venue's settlement terms to `cell`,
@@ -777,8 +814,11 @@ impl ReplayFeed {
             instruments: instruments.len(),
             ..FeedTick::default()
         };
+        self.normalized.clear();
         if !ordered.is_empty() {
-            let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
+            let normalized = cell.on_bytes_normalized(&self.key, frame.as_bytes(), now)?;
+            let decoded = normalized.len();
+            self.normalized = normalized;
             if decoded != ordered.len() {
                 return Err(Error::invalid(format!(
                     "the replay wrote {} recorded tick(s) and the cell decoded {decoded}; the \

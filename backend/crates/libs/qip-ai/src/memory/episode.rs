@@ -427,6 +427,42 @@ pub struct EpisodeFill {
     pub order_id: String,
     pub quantity: qip_core::Decimal,
     pub price: qip_core::Decimal,
+    /// What the twin predicted for this fill's order against what happened,
+    /// as LEARN priced it (R12-TICK-10103). `None` where the order had not
+    /// been priced when the claim resolved — its horizon is the twin's and
+    /// not the claim's — or where the twin refused it; an absence, never a
+    /// zero, because a zero residual is the finding that the twin was right.
+    /// Absent from episodes written before it existed, so their wire form is
+    /// unchanged.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub twin: Option<FillResidual>,
+}
+
+/// The twin's predicted fill, slippage and outcome for one order beside the
+/// venue's, carried on the episode whose claim the order expressed.
+///
+/// Without it an episode said what the platform claimed, what the market did
+/// and what the venue filled, and the comparison of the twin with reality
+/// lived only in a separate per-cycle journal keyed by order — a residual no
+/// episode pointed at, so recalling a precedent never recalled whether the
+/// twin that sized it had been wrong about the fill. Every figure is a
+/// statistic in signed basis points, never money, and is copied from the one
+/// score LEARN wrote rather than recomputed, so the episode and the journal
+/// cannot disagree about it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillResidual {
+    /// When LEARN priced the order — at or before the episode became
+    /// knowable, so the record holds nothing that was not known then.
+    pub scored_at: Timestamp,
+    /// The twin's entry against the venue's fill on the side taken;
+    /// negative means the twin filled better than reality.
+    pub trade_error_bps: Option<f64>,
+    pub predicted_slippage_bps: Option<f64>,
+    pub realised_slippage_bps: Option<f64>,
+    pub predicted_outcome_bps: Option<f64>,
+    pub realised_outcome_bps: Option<f64>,
+    /// `predicted_outcome_bps - realised_outcome_bps`.
+    pub outcome_error_bps: Option<f64>,
 }
 
 impl EpisodeOutcome {
