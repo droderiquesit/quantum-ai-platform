@@ -16109,21 +16109,6 @@ impl Platform {
                 ));
             }
         }
-        // The row specialists' catalyst and structural claims are read from
-        // the world model at this pass's instant, point-in-time on
-        // available_at (WORLD-3086). Without this the hours-days row never
-        // saw a macro surprise in the deployed cycle.
-        let signals = {
-            let subjects: Vec<String> = targets.iter().map(|t| t.subject.clone()).collect();
-            let world = self.world.read();
-            crate::lattice_stage::signals_from_world(
-                world.causal(),
-                &qip_world_model::now::macro_surprises(&world, now),
-                &subjects,
-                now,
-            )
-        };
-        self.lattice.set_signals(signals);
         let lattice = self.lattice.run(
             LatticeInputs {
                 cycle: self.cycle,
