@@ -2223,3 +2223,94 @@ fn understand_briefs_the_desk_from_the_federation_review_it_journals_and_the_arb
     );
     Ok(())
 }
+
+/// R12-REASON-1138. The failure this guards: the one cycle test that journals
+/// a derivation fires no rule, so the journaled proof trace was always empty
+/// and "recorded and reproducible" was proven only for a trace of nothing. On
+/// an expired future the pack does fire rules, so the trace the cycle
+/// journals is non-empty; replay must accept it, and must refuse it once a
+/// step the pack took is dropped. Every step must also agree with the facts
+/// the verdict ends with, so the trace is the path to the verdict and not a
+/// decoration beside it.
+///
+/// Mutation: in `RulePack::evaluate`, push no trace step -- the premise that
+/// the journaled trace is non-empty fails. Mutation: in `RulePack::verify`,
+/// do not compare the trace -- the dropped-step refusal fails.
+#[test]
+fn a_non_empty_proof_trace_journaled_by_the_cycle_is_accepted_on_replay_and_refused_once_a_step_is_dropped()
+-> Result<()> {
+    use qip_financial::extensions::{Extension, FutureDetails, SettlementStyle};
+
+    let mut universe = Universe::new();
+    universe
+        .insert(
+            FinancialObject::builder(
+                object("AAA"),
+                "AAA",
+                InstrumentType::Future,
+                fixture_liquidity(),
+            )
+            .venue("XCME")
+            .price(dec!("100"))
+            .contract_multiplier(Decimal::from_int(1))
+            .underlying(object("BBB"))
+            .extension(Extension::Future(FutureDetails {
+                underlying_object_id: "AAA-SPOT".into(),
+                expiry: start().saturating_sub(Duration::from_days(1)),
+                contract_size: Decimal::from_int(1),
+                tick_size: dec!("0.25"),
+                tick_value: dec!("0.25"),
+                initial_margin: Decimal::from_int(10),
+                maintenance_margin: Decimal::from_int(8),
+                settlement: SettlementStyle::Cash,
+                contract_month_index: 1,
+            }))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())
+            .expect("valid future"),
+        )
+        .expect("insertable");
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe, limits())?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let derivations = symbolic_stage::replay(&platform)?;
+    assert_eq!(derivations.len(), 1, "premise: one hypothesis on the future");
+    let derivation = &derivations[0];
+    let verdict = derivation
+        .rules
+        .verdict
+        .derived()
+        .expect("premise: the pack evaluated");
+    assert!(
+        !verdict.trace.is_empty(),
+        "premise: a rule fired, so the journaled trace is not empty"
+    );
+    // The trace is the path to the verdict: each step's value is the value
+    // the verdict holds for that fact once chaining has finished.
+    for step in &verdict.trace {
+        assert_eq!(
+            verdict.facts.get(&step.fact),
+            Some(&step.value),
+            "step {step:?} disagrees with the verdict's facts"
+        );
+    }
+    // Accepted on replay as journaled.
+    symbolic_stage::verify(derivation, platform.world().causal())?;
+
+    let mut dropped = derivation.clone();
+    if let Step::Derived(verdict) = &mut dropped.rules.verdict {
+        verdict.trace.pop();
+    }
+    let refusal = symbolic_stage::verify(&dropped, platform.world().causal())
+        .expect_err("a verdict missing a proof step was accepted as reproducible");
+    assert!(
+        refusal
+            .message()
+            .contains("the claimed verdict differs from re-evaluation of the pack"),
+        "refused, but not for the rule verdict: {}",
+        refusal.message()
+    );
+    Ok(())
+}
