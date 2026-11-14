@@ -893,3 +893,52 @@ fn a_branch_missing_any_stated_field_is_refused_and_a_complete_one_is_not() -> R
     }
     Ok(())
 }
+
+/// An observation every branch finds impossible (every likelihood underflows
+/// to zero) used to zero every probability and prune the whole tree with no
+/// problem recorded, leaving a dead tree standing. The weights are kept, the
+/// penalty is in the log score, and reality being outside every branch splits
+/// a new one. Mutation: restore the `else { 0.0 }` reweight (drop the
+/// `informative` guard) — `live` is zero and the first assertion fails.
+#[test]
+fn an_observation_impossible_under_every_branch_leaves_the_tree_alive_and_splits() -> Result<()> {
+    let state = TwinState::fit(&series(200), at(199))?;
+    let mut tree = FutureTree::grow(&state, &[driver()], config())?;
+    let before = tree.live().count();
+    assert!(before > 1, "premise: the tree has branches to lose");
+    let above_floor: Vec<String> = tree
+        .live()
+        .filter(|b| b.probability >= 0.01)
+        .map(|b| b.id.clone())
+        .collect();
+    assert!(
+        !above_floor.is_empty(),
+        "premise: some branch is above the floor"
+    );
+    let report = tree.observe(&ObservedMoves {
+        at: at(300),
+        moves_bps: BTreeMap::from([("obj-ACME".to_string(), 1.0e9)]),
+    })?;
+    assert!(report.live > 0, "the tree was pruned to nothing");
+    assert!(
+        report
+            .pruned
+            .iter()
+            .all(|id| tree.branches[id].probability < 0.01),
+        "only branches already under the floor are pruned"
+    );
+    assert!(
+        report.split.is_some(),
+        "reality outside every branch splits"
+    );
+    for id in &above_floor {
+        assert_eq!(
+            tree.branches[id].status,
+            BranchStatus::Live,
+            "{id} was pruned by an observation that told the tree nothing"
+        );
+    }
+    let mass: f64 = tree.live().map(|b| b.probability).sum();
+    assert!((mass - 1.0).abs() < 1e-9, "live mass {mass}");
+    Ok(())
+}
