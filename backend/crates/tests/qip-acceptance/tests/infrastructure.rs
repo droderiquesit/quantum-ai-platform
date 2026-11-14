@@ -14544,10 +14544,15 @@ fn no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_bench
 // --- the service contract: state owner, scaling, degraded mode ---------------
 
 /// The catalogue fields every workload owes beyond its identity
-/// (R12-ARCH-10061): who owns its state, how it scales, and what it does
-/// degraded. A service with none of these written down is one whose second
+/// (R12-ARCH-10061): who owns its state, how it scales, what it does
+/// degraded, and which peers it is connected to upstream and downstream. A service with none of these written down is one whose second
 /// instance, or whose loss, somebody discovers in production.
-const SERVICE_CONTRACT_FIELDS: [&str; 3] = ["state_owner", "scaling", "degraded_mode"];
+const SERVICE_CONTRACT_FIELDS: [&str; 4] = [
+    "state_owner",
+    "scaling",
+    "degraded_mode",
+    "connections",
+];
 
 /// The contract fields an entry leaves absent or blank.
 fn blank_contract_fields(body: &str) -> Vec<&'static str> {
