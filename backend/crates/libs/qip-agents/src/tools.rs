@@ -256,6 +256,83 @@ pub struct ToolRegistry {
     /// Versions per tool name, oldest first, never empty; the last is the
     /// one in force.
     tools: BTreeMap<String, Vec<ToolVersion>>,
+    /// The evaluation held for each tool and grant, at most one per pair
+    /// (R12-EXPAND-6023, ADR 0486). Bounded without a cap of its own: a
+    /// registered tool times the three permissions.
+    evaluations: BTreeMap<(String, ToolPermission), ToolEvaluation>,
+}
+
+/// What an evaluation of a tool found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationOutcome {
+    /// The evaluation looked and found the grant safe to make.
+    Passed,
+    /// The evaluation looked and found it was not.
+    Failed,
+}
+
+/// The record of one evaluation of one tool for one grant (R12-EXPAND-6023,
+/// ADR 0486).
+///
+/// The failure it prevents: `promote` took a free string and refused only a
+/// blank one, so "evaluated" meant "a caller typed something". A promotion
+/// now cites the id of a record the registry already holds, for that tool
+/// and that grant, whose outcome is `Passed`; an evaluation of another tool,
+/// of a narrower grant, or one that failed widens nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolEvaluation {
+    id: String,
+    tool: ToolName,
+    grant: ToolPermission,
+    evidence: String,
+    outcome: EvaluationOutcome,
+}
+
+impl ToolEvaluation {
+    /// An evaluation `id`, of `tool` for `grant`, resting on `evidence`.
+    /// A blank id or blank evidence is refused: a record nobody can cite or
+    /// that says nothing about what was looked at is not an evaluation.
+    pub fn new(
+        id: &str,
+        tool: ToolName,
+        grant: ToolPermission,
+        evidence: &str,
+        outcome: EvaluationOutcome,
+    ) -> Result<Self> {
+        if id.trim().is_empty() || id.trim() != id {
+            return Err(Error::invalid(
+                "an evaluation is cited by its id; give one with no surrounding whitespace",
+            ));
+        }
+        if evidence.trim().is_empty() {
+            return Err(Error::invalid(
+                "an evaluation names what was looked at; attach the evidence",
+            ));
+        }
+        Ok(Self {
+            id: id.to_string(),
+            tool,
+            grant,
+            evidence: evidence.to_string(),
+            outcome,
+        })
+    }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub const fn tool(&self) -> &ToolName {
+        &self.tool
+    }
+    pub const fn grant(&self) -> ToolPermission {
+        self.grant
+    }
+    pub fn evidence(&self) -> &str {
+        &self.evidence
+    }
+    pub const fn outcome(&self) -> EvaluationOutcome {
+        self.outcome
+    }
 }
 
 impl ToolRegistry {
@@ -344,9 +421,48 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Widen a tool's scope through a promotion. `evaluation` must name the
-    /// evaluation of the tool's behaviour and data handling; a blank one is
-    /// refused, so a grant cannot be made without having looked.
+    /// Hold `evaluation` so a promotion can cite it (R12-EXPAND-6023).
+    ///
+    /// The tool must be registered: an evaluation of a tool the registry does
+    /// not hold would wait to authorise whatever is registered under that
+    /// name later. One record is held per tool and grant. A failed one may be
+    /// replaced by a re-evaluation; a passed one may not, because it either
+    /// already widened the scope or is the evidence a promotion is about to
+    /// cite, and replacing it would change what that promotion rests on.
+    pub fn record_evaluation(&mut self, evaluation: ToolEvaluation) -> Result<()> {
+        let name = evaluation.tool.as_str().to_string();
+        if !self.tools.contains_key(&name) {
+            return Err(Error::not_found(format!(
+                "tool {name} is not registered; register it before recording its evaluation"
+            )));
+        }
+        let key = (name, evaluation.grant);
+        if let Some(held) = self.evaluations.get(&key) {
+            if *held == evaluation {
+                return Ok(());
+            }
+            if held.outcome == EvaluationOutcome::Passed {
+                return Err(Error::denied(format!(
+                    "tool {} already holds passing evaluation {} for {:?}; cite it rather than replacing it",
+                    evaluation.tool, held.id, evaluation.grant
+                )));
+            }
+        }
+        self.evaluations.insert(key, evaluation);
+        Ok(())
+    }
+
+    /// The evaluation held for `name` and `grant`, if any.
+    pub fn evaluation(&self, name: &ToolName, grant: ToolPermission) -> Option<&ToolEvaluation> {
+        self.evaluations.get(&(name.as_str().to_string(), grant))
+    }
+
+    /// Widen a tool's scope through a promotion. `evaluation` is the id of a
+    /// record [`Self::record_evaluation`] holds for this tool and this grant,
+    /// with outcome `Passed` (R12-EXPAND-6023, ADR 0486). Until then this
+    /// took a free string and refused only a blank one, so any text widened
+    /// any scope; now an id the registry does not hold, one held for another
+    /// tool or another grant, and a failed evaluation are each refused.
     ///
     /// A promotion that widens the scope is recorded as the next version,
     /// citing `evaluation`, and the version it supersedes stays readable
@@ -360,10 +476,22 @@ impl ToolRegistry {
         grant: ToolPermission,
         evaluation: &str,
     ) -> Result<()> {
-        if evaluation.trim().is_empty() {
-            return Err(Error::denied(
-                "a scope widens only through a promotion that cites its evaluation; attach the evaluation record",
-            ));
+        let Some(record) = self.evaluation(name, grant) else {
+            return Err(Error::denied(format!(
+                "a scope widens only through a promotion that cites a held evaluation; \
+                 record the evaluation of tool {name} for {grant:?} first"
+            )));
+        };
+        if record.id != evaluation {
+            return Err(Error::denied(format!(
+                "evaluation {evaluation} is not the one held for tool {name} and {grant:?}; cite {}",
+                record.id
+            )));
+        }
+        if record.outcome != EvaluationOutcome::Passed {
+            return Err(Error::denied(format!(
+                "evaluation {evaluation} of tool {name} for {grant:?} failed; a failed evaluation widens nothing"
+            )));
         }
         let versions = self
             .tools

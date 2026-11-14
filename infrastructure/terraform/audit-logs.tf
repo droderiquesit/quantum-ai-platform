@@ -115,9 +115,12 @@ resource "google_pubsub_topic_iam_member" "asset_changes_publisher" {
   depends_on = [google_project_service_identity.cloudasset]
 }
 
-# Every asset type, both content types. `asset_types` is left unset on
-# purpose: a list would admit exactly the resources somebody thought of, and
-# the change that matters is the one nobody did.
+# Every asset type, both content types. The API refuses a feed that selects
+# nothing by name or type ("Error 400: Must specify at least one of asset
+# names and asset types", infra run 129, 2026-11-14), so the selection is the
+# one expression that matches every type. A list of named types would admit
+# exactly the resources somebody thought of, and the change that matters is
+# the one nobody did; the acceptance suite refuses anything narrower.
 resource "google_cloud_asset_project_feed" "changes" {
   for_each = {
     resources    = "RESOURCE"
@@ -128,6 +131,7 @@ resource "google_cloud_asset_project_feed" "changes" {
   billing_project = var.project_id
   feed_id         = "qip-${var.environment}-${replace(each.key, "_", "-")}"
   content_type    = each.value
+  asset_types     = [".*"]
 
   feed_output_config {
     pubsub_destination {

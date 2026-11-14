@@ -399,6 +399,8 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::PlanBlocked { .. } => "blocked",
             AgencyRecord::Learned { .. } => "learned",
             AgencyRecord::LearningWithheld { .. } => "learning withheld",
+            AgencyRecord::ToolRevoked { .. } => "tool revoked",
+            AgencyRecord::ToolReauthorised { .. } => "tool reauthorised",
             AgencyRecord::PassConcluded { .. } => "concluded",
         })
         .collect();
@@ -1074,6 +1076,136 @@ fn a_tool_the_operator_revokes_is_refused_on_the_next_pass_and_the_refusal_is_jo
         err.contains("revokes `qouter`, which it does not register"),
         "{err}"
     );
+}
+
+/// ADR 0534 / R12-RES-7109: a revocation stands from the journal, not from
+/// the policy file. Before it, deleting `quoter` from `revoked_tools`
+/// readmitted the tool on the next start with no named operator, no reason
+/// and nothing on the journal saying it had been stopped. Now the deleted
+/// line readmits nothing; a reauthorisation with a blank operator, or one
+/// that contradicts a revocation in the same policy, stops the binary; and
+/// the one that names an operator and a reason restores the tool and is
+/// journaled once, ahead of the pass's tool decisions.
+///
+/// Mutations, each verified: in `Session::apply_standing`, skip re-revoking
+/// the tools the journal holds withdrawn — the pass after the deleted line
+/// is shadowed and exits zero; drop the `journaled.get(tool) ==
+/// Some(&change)` skip — the repeated policy is refused as reauthorising a
+/// tool that is not revoked.
+#[test]
+fn deleting_a_revocation_from_the_policy_readmits_nothing_and_only_a_named_reauthorisation_restores_the_tool()
+ {
+    let scratch = Scratch::new("standing");
+    let journal = scratch.dir.join("standing.jsonl");
+    let run = |name: &str, policy: &Value, window: u64| {
+        let policy = scratch.write(&format!("{name}-policy.json"), policy);
+        let pass = scratch.write(&format!("{name}-pass.json"), &request(window));
+        qip(
+            &[&policy, &journal, &pass],
+            &["--policy", "--journal", "--request"],
+            &[],
+        )
+    };
+    let standing = || {
+        records(&journal)
+            .into_iter()
+            .filter(|record| {
+                matches!(
+                    record,
+                    AgencyRecord::ToolRevoked { .. } | AgencyRecord::ToolReauthorised { .. }
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // Premise: the unrevoked policy shadows this pass on this journal.
+    let (out, err, code) = run("live", &policy_document(), 1);
+    assert_eq!(code, 0, "premise: stdout {out} stderr {err}");
+    assert!(out.contains("outcome: shadowed"), "{out}");
+    assert!(standing().is_empty(), "{:?}", standing());
+
+    let mut revoking = policy_document();
+    revoking["revoked_tools"] = json!(["quoter"]);
+    let (out, err, code) = run("revoking", &revoking, 2);
+    assert_eq!(code, 3, "the revoked pass was not withheld: {out} {err}");
+    assert!(out.contains("tool is revoked"), "{out}");
+    let revoked = AgencyRecord::ToolRevoked {
+        pass: 2,
+        tool: "quoter".into(),
+    };
+    assert_eq!(standing(), vec![revoked.clone()]);
+    // Journaled ahead of the refusal it causes, within the pass.
+    let pass_two: Vec<_> = records(&journal)
+        .into_iter()
+        .filter(|record| record.pass() == 2)
+        .collect();
+    let at = |wanted: fn(&AgencyRecord) -> bool| pass_two.iter().position(wanted);
+    let revocation = at(|r| matches!(r, AgencyRecord::ToolRevoked { .. }));
+    let decision = at(|r| matches!(r, AgencyRecord::ToolDecision { .. }));
+    assert!(revocation.is_some(), "{pass_two:?}");
+    assert!(
+        decision.is_none_or(|decision| revocation < Some(decision)),
+        "{pass_two:?}"
+    );
+
+    // The line deleted: the tool is still withdrawn, and nothing new is
+    // journaled about its standing.
+    let (out, err, code) = run("deleted", &policy_document(), 3);
+    assert_eq!(
+        code, 3,
+        "deleting the policy line readmitted the tool: {out} {err}"
+    );
+    assert!(out.contains("tool is revoked"), "{out}");
+    assert_eq!(standing(), vec![revoked.clone()]);
+
+    let reauthorising = |operator: &str, reason: &str| {
+        let mut policy = policy_document();
+        policy["reauthorisations"] =
+            json!([{"tool": "quoter", "operator": operator, "reason": reason}]);
+        policy
+    };
+    let (out, err, code) = run("anonymous", &reauthorising(" ", "quote limits reviewed"), 4);
+    assert_eq!(code, 1, "a reauthorisation naming nobody ran: {out} {err}");
+    assert!(
+        err.contains("reauthorises `quoter` and is refused"),
+        "{err}"
+    );
+    let (out, err, code) = run("unreasoned", &reauthorising("ops-dana", " "), 4);
+    assert_eq!(code, 1, "a reauthorisation with no reason ran: {out} {err}");
+    assert!(err.contains("states no reason"), "{err}");
+    let mut both = reauthorising("ops-dana", "quote limits reviewed");
+    both["revoked_tools"] = json!(["quoter"]);
+    let (out, err, code) = run("both", &both, 4);
+    assert_eq!(code, 1, "a contradictory policy ran: {out} {err}");
+    assert!(
+        err.contains("both revokes and reauthorises `quoter`"),
+        "{err}"
+    );
+    assert_eq!(
+        standing(),
+        vec![revoked.clone()],
+        "a refused start journaled"
+    );
+
+    let named = reauthorising("ops-dana", "quote limits reviewed");
+    let (out, err, code) = run("named", &named, 4);
+    assert_eq!(
+        code, 0,
+        "the named reauthorisation did not restore: {out} {err}"
+    );
+    assert!(out.contains("outcome: shadowed"), "{out}");
+    let restored = AgencyRecord::ToolReauthorised {
+        pass: 4,
+        tool: "quoter".into(),
+        operator: "ops-dana".into(),
+        reason: "quote limits reviewed".into(),
+    };
+    assert_eq!(standing(), vec![revoked.clone(), restored.clone()]);
+
+    // The same policy started again is the same decision read again.
+    let (out, err, code) = run("again", &named, 5);
+    assert_eq!(code, 0, "stdout {out} stderr {err}");
+    assert_eq!(standing(), vec![revoked, restored]);
 }
 
 /// R12-GOV-3030: the Conduct Brain re-checks a message after it was

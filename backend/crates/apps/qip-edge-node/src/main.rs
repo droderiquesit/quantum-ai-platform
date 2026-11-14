@@ -51,6 +51,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, Duration, SystemClock};
 use qip_edge::cell::{CellConfig, Placer, PricingPolicy};
 use qip_edge::fencing::Fence;
+use qip_edge::settlement::SettlementTerms;
 use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{
@@ -70,7 +71,7 @@ use qip_edge_node::event_fabric::relay::{JournalRelay, RelayConfig};
 use qip_edge_node::event_fabric::telemetry::OutboxTelemetry;
 use qip_edge_node::event_fabric::writer::{self, SpoolWriter, WriterConfig};
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
-use qip_edge_node::gateway::NodeGateway;
+use qip_edge_node::gateway::{NodeGateway, SETTLEMENT_VARIABLE, parse_settlement};
 use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::health::{self, HealthSnapshot};
 use qip_edge_node::mesh::MeshWorker;
@@ -281,6 +282,11 @@ struct NodeConfig {
     /// consults is a control that reads as one — see
     /// `qip_edge_node::reprice`.
     reprice: Option<RepricePolicy>,
+    /// When the simulated venue settles what it fills (ADR 0530). Instant
+    /// unless a cycle is stated; a cycle with no feed to run passes is
+    /// refused, because no pass would ever fill or settle under it — see
+    /// `qip_edge_node::gateway::parse_settlement`.
+    settlement: SettlementTerms,
     /// Which of this node's venues are abroad and under what discipline this
     /// region mirrors each instrument (§31.1). `None` is a cell all of whose
     /// venues are at home — every node deployed so far — and is announced at
@@ -454,6 +460,15 @@ impl NodeConfig {
             _ => None,
         };
         let reprice = parse_reprice(std::env::var(REPRICE_VARIABLE).ok().as_deref())?;
+        let settlement = parse_settlement(std::env::var(SETTLEMENT_VARIABLE).ok().as_deref())?;
+        if !settlement.is_instant() && feed.is_none() {
+            return Err(Error::invalid(format!(
+                "configuration: {SETTLEMENT_VARIABLE} states a settlement cycle and \
+                 {FEED_VARIABLE} is not set; a node that runs no pass fills nothing and settles \
+                 nothing, and a calendar nothing consults reads as a control. Set \
+                 {FEED_VARIABLE}={SIMULATED_FEED} or unset {SETTLEMENT_VARIABLE}"
+            )));
+        }
         // Read against the venue list and the region above, because both
         // refusals it carries need them: a venue placed abroad that this cell
         // may not trade, and a region that is the cell's own. Read here rather
@@ -528,6 +543,7 @@ impl NodeConfig {
             pricing,
             plan_path,
             reprice,
+            settlement,
             mirror,
             quote_limits,
             fabric,
@@ -769,10 +785,13 @@ fn replay_once(spool: Option<&str>) -> Result<qip_edge_node::replay::ReplayRepor
         &config_digest,
         &qip_edge_node::gateway::SimulatedGateway::default_settings(),
     );
-    let gateway =
+    let mut gateway =
         qip_edge_node::gateway::SimulatedGateway::new(gateway_venue.clone(), *seed, first)?;
+    // The calendar the recorded node ran on, so a replayed fill settles on
+    // the pass it settled on (ADR 0530).
+    gateway.install_settlement_terms(config.settlement.clone())?;
     let feed = SimulatedFeed::new(gateway_venue);
-    feed.attach(&mut cell)?;
+    feed.attach_settling(&mut cell, gateway.settlement_terms())?;
     let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
     // The requoter as `run` builds it, over the assembly's registry: a replay
     // without one would re-drive a node that configured none, and diverge on
@@ -1005,9 +1024,12 @@ fn run() -> Result<()> {
     // find that out.
     let feed = match config.feed {
         Some(FeedChoice::Simulated) => {
-            gateway.simulated_for_feed()?;
+            let simulated = gateway.simulated_for_feed()?;
+            // One statement of the venue's calendar, read by the venue's
+            // settlement clock and by the cell's settlement gate (ADR 0530).
+            simulated.install_settlement_terms(config.settlement.clone())?;
             let feed = SimulatedFeed::new(gateway_venue);
-            feed.attach(&mut cell)?;
+            feed.attach_settling(&mut cell, simulated.settlement_terms())?;
             Some(feed)
         }
         None => None,

@@ -165,12 +165,27 @@ fn asset_inventory_feeds_every_change_to_a_topic() {
         flat.contains("pubsub_destination{topic=google_pubsub_topic.asset_changes.id}"),
         "the asset feed does not publish to the asset-changes topic"
     );
+    // The selection is the one expression that matches every asset type. It
+    // was once no selection at all, which reads the same and which the API
+    // refuses: the first apply that reached the feeds (infra run 129) was
+    // told "Must specify at least one of asset names and asset types". So
+    // the line is pinned whole, and a named asset is refused beside it.
+    let selection: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("asset_types"))
+        .collect();
+    assert_eq!(
+        selection,
+        vec![r#"asset_types     = [".*"]"#],
+        "the asset feed does not select every asset type; a list admits exactly the resources \
+         somebody thought of, and the change that matters is the one nobody did"
+    );
     assert!(
         !body
             .lines()
-            .any(|line| line.trim_start().starts_with("asset_types")),
-        "the asset feed names asset types; a list admits exactly the resources somebody \
-         thought of, and the change that matters is the one nobody did"
+            .any(|line| line.trim_start().starts_with("asset_names")),
+        "the asset feed names assets, which narrows it to the ones somebody thought of"
     );
     // The publisher is Cloud Asset Inventory's own service agent, on that one
     // topic — not a project-wide grant and not a workload identity.

@@ -410,18 +410,30 @@ impl SimulatedFeed {
     /// delivered the moment it is delivered. Stated here rather than read
     /// from a variable because nothing else can drive this feed, and a
     /// variable that could only ever be `instant` would be a control that
-    /// reads as a choice. Left unstated, every venue this node drives would
+    /// reads as a choice. A gateway given cycle terms (ADR 0530) is attached
+    /// through [`Self::attach_settling`] instead. Left unstated, every venue this node drives would
     /// stand on `qip_edge_settlement_unprojected_venues` for ever — a
     /// healthy process running a fallback, which is the shape the manifest
     /// suite exists to refuse. A venue adapter with a settlement cycle
     /// (§34.1) states its own terms at its own seam; none exists yet.
     pub fn attach(&self, cell: &mut Cell) -> Result<()> {
+        self.attach_settling(cell, SettlementTerms::instant())
+    }
+
+    /// [`Self::attach`], stating the terms the simulated gateway settles on
+    /// (ADR 0530) rather than instant.
+    ///
+    /// The composition root passes [`SimulatedGateway::settlement_terms`]
+    /// here, so the terms the cell projects funding against and the terms
+    /// the venue's settlement clock dates `Settled` records by are one value
+    /// read from one place.
+    pub fn attach_settling(&self, cell: &mut Cell, terms: SettlementTerms) -> Result<()> {
         cell.protocols_mut().register(
             self.venue.clone(),
             FEED_NAME,
             Box::new(DepthDecoder::new(self.venue.clone())),
         )?;
-        cell.install_settlement(&self.venue, SettlementTerms::instant())
+        cell.install_settlement(&self.venue, terms)
     }
 
     /// Publish what changed at the venue since the last pass.

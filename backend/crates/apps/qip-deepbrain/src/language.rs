@@ -38,7 +38,9 @@
 
 use crate::attestation::ATTESTATION_PATH_VARIABLE;
 use crate::config::{DeepBrainConfig, HostedLanguageModel, LANGUAGE_MODEL_VARIABLE};
-use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
+use qip_agents::tools::{
+    EvaluationOutcome, ToolEvaluation, ToolKind, ToolName, ToolPermission, ToolRegistry,
+};
 use qip_ai::language::{DeterministicModel, FallbackChain, LanguageModel};
 /// The reply tally lives beside the port in `qip-ai`, so wrapping the hosted
 /// adapter adds no implementation of `LanguageModel` outside ADR 0117's list.
@@ -198,6 +200,11 @@ impl AssembledModel {
     }
 }
 
+/// The id the hosted endpoint's attestation is recorded under in the tool
+/// registry. One endpoint per process, so one id; the attestation text itself
+/// is the record's evidence.
+const HOSTED_ENDPOINT_EVALUATION: &str = "hosted-endpoint-terms-attestation";
+
 /// Assemble the chain the configuration describes.
 pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
     let deterministic: Arc<dyn LanguageModel> = Arc::new(DeterministicModel::new());
@@ -238,7 +245,22 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
             replies: None,
         }),
         Ok(met) => {
-            tools.promote(&endpoint, ToolPermission::LeaveSandbox, &met.attested)?;
+            // The attestation is recorded as the evaluation first and the
+            // promotion cites the record (R12-EXPAND-6023, ADR 0486): the
+            // registry widens a scope only on an evaluation it holds for this
+            // tool and this grant, never on a string handed to `promote`.
+            tools.record_evaluation(ToolEvaluation::new(
+                HOSTED_ENDPOINT_EVALUATION,
+                endpoint.clone(),
+                ToolPermission::LeaveSandbox,
+                &met.attested,
+                EvaluationOutcome::Passed,
+            )?)?;
+            tools.promote(
+                &endpoint,
+                ToolPermission::LeaveSandbox,
+                HOSTED_ENDPOINT_EVALUATION,
+            )?;
             let summary = HostedSummary {
                 model: hosted.model.clone(),
                 base_url: hosted.base_url.clone(),
@@ -450,6 +472,23 @@ mod tests {
             hosted.attested,
             "attested by A. Operator under https://example.test/terms read at \
              2026-09-04T00:00:00.000Z"
+        );
+        // R12-EXPAND-6023, ADR 0486: the endpoint left its sandbox on a
+        // record the registry holds, whose evidence is the attestation, and
+        // the version that widened it cites that record.
+        let endpoint = ToolName::parse(PINNED_MODEL).expect("the pinned model is a tool name");
+        let record = assembled
+            .tools
+            .evaluation(&endpoint, ToolPermission::LeaveSandbox)
+            .expect("the attestation is held as the endpoint's evaluation");
+        assert_eq!(record.evidence(), hosted.attested);
+        assert_eq!(record.outcome(), EvaluationOutcome::Passed);
+        assert_eq!(
+            assembled
+                .tools
+                .at_version(&endpoint, 2)
+                .and_then(|version| version.evaluation()),
+            Some(record.id())
         );
         assert_eq!(
             assembled.active_name(),

@@ -12194,6 +12194,17 @@ impl Platform {
         crate::blueprint_objectives::release_decision(&self.objectives, plane, now)
     }
 
+    /// One plane's release standing, refusing a plane no §49.1 objective is
+    /// declared on (ADR 0504). What `qip-api` serves to a promotion step. See
+    /// [`crate::blueprint_objectives::release_standing`].
+    pub fn release_standing(
+        &self,
+        plane: &str,
+        now: Timestamp,
+    ) -> Result<crate::blueprint_objectives::ReleaseStanding> {
+        crate::blueprint_objectives::release_standing(&self.objectives, plane, now)
+    }
+
     pub fn autonomy_mut(&mut self) -> &mut AutonomyController {
         &mut self.autonomy
     }
