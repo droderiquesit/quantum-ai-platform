@@ -978,3 +978,77 @@ fn a_cycles_source_scores_are_journaled_as_records_citing_their_window() {
         .validate()
         .expect("the journaled record validates");
 }
+
+/// R12-DATA-1105: a source-alpha desk switched off through the cadence
+/// variable's explicit `0` scores no round, so the journal gains no score
+/// record where the default desk, fed the same samples, journals one. This
+/// is the recorded outcome the disabling changes; without it a desk that
+/// silently stopped scoring would look identical to one with nothing to
+/// score. Mutation: make `source_alpha_every` ignore a set `0` (return the
+/// default) and the off desk scores, so the final assertion fails.
+#[test]
+fn a_source_alpha_desk_switched_off_journals_no_round_where_the_default_desk_journals_one() {
+    use qip_deepbrain::source_alpha::{SourceAlphaDesk, source_alpha_every};
+    use qip_market::quote::Tick;
+    let tick = |subject: &str, price: f64| {
+        let at = start();
+        SensedRecord::Tick(Tick {
+            object_id: ObjectId::from_string(subject),
+            venue: "TEST".to_string(),
+            at,
+            capture_time: at,
+            sequence: None,
+            price: Decimal::from_f64(price).unwrap_or_default(),
+            volume: Decimal::ZERO,
+            quality: DataQuality::default(),
+        })
+    };
+    let mut level = 100.0_f64;
+    let mut state = 7_u64;
+    let own: Vec<f64> = (0..41)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            level += ((state >> 33) % 200) as f64 / 100.0 - 1.0;
+            level
+        })
+        .collect();
+    let feed = |desk: &mut SourceAlphaDesk| {
+        for i in 0..40 {
+            desk.observe_own(&[tick("S", own[i])]);
+            desk.observe_source("leading", &[tick("S", own[i + 1])]);
+            desk.end_sense();
+        }
+    };
+    let on_every = source_alpha_every(&|_| None).unwrap_or_else(|e| panic!("{e}"));
+    let off_every =
+        source_alpha_every(&|_| Some("0".to_string())).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(on_every, 1, "premise: the default cadence scores every cycle");
+    assert_eq!(off_every, 0, "premise: an explicit 0 disables scoring");
+
+    let mut on = SourceAlphaDesk::new(on_every);
+    let mut off = SourceAlphaDesk::new(off_every);
+    feed(&mut on);
+    feed(&mut off);
+    let mut journal_on = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
+    let mut journal_off = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
+
+    let round_on = on
+        .maybe_score(1, start())
+        .unwrap_or_else(|| panic!("premise: the default desk scores on this data"));
+    assert_eq!(
+        journal_on.record_source_scores(1, &round_on, start()).unwrap(),
+        1,
+        "the default desk journals one score"
+    );
+    assert!(
+        off.maybe_score(1, start()).is_none(),
+        "a desk switched off scores no round"
+    );
+    assert!(
+        records(journal_off.log()).unwrap().is_empty(),
+        "the off desk's journal holds nothing"
+    );
+    assert_eq!(records(journal_on.log()).unwrap().len(), 1);
+}
