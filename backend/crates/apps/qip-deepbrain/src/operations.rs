@@ -776,6 +776,29 @@ fn in_memory_book() -> Result<RemediationJournal> {
     RemediationJournal::open_pair(None, None, Arc::new(qip_core::SystemClock))
 }
 
+/// The deployment entity key from the service, region and cell this process
+/// was configured with (ADR 0156 5.6). A blank part is refused, not
+/// defaulted: a key built from an empty region would join signals from every
+/// region onto one node and read as one healthy deployment. A part holding
+/// `/` is refused too, because `a/b` + `c` and `a` + `b/c` would collide.
+pub fn deployment_entity_key(service: &str, region: &str, cell: &str) -> Result<EntityKey> {
+    let mut parts = Vec::with_capacity(3);
+    for (name, value) in [("service", service), ("region", region), ("cell", cell)] {
+        if value.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "deployment {name} is blank; set it in the configuration"
+            )));
+        }
+        if value.contains('/') {
+            return Err(Error::invalid(format!(
+                "deployment {name} {value:?} contains '/', which separates the key's parts"
+            )));
+        }
+        parts.push(value);
+    }
+    Ok(EntityKey::new("deployment", parts.join("/")))
+}
+
 #[derive(Debug)]
 pub struct Operations {
     deployment: EntityKey,
@@ -819,6 +842,15 @@ impl Operations {
     /// journal fail at a chosen record. The book is in memory.
     pub fn journalled_to(started: Timestamp, sink: Box<dyn AuditSink>) -> Result<Self> {
         Self::build(started, Some(sink), in_memory_book()?)
+    }
+
+    /// Key this process's signals on `key` instead of the default literal
+    /// deployment, which two deployments of the same binary would share.
+    /// Build `key` with [`deployment_entity_key`].
+    #[must_use]
+    pub fn with_deployment(mut self, key: EntityKey) -> Self {
+        self.deployment = key;
+        self
     }
 
     /// The journal and outbox this loop writes samples, incident records and
