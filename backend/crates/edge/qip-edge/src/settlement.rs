@@ -53,52 +53,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// by a runtime string.
 pub const GATE_SETTLEMENT: &str = "settlement_reservation";
 
-/// How many settlement days after the value date proceeds are usable.
-///
-/// The same three arms as the centre's convention, spelled the same, so a
-/// value the centre ships per venue can be read here without translation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SettlementConvention {
-    /// The same settlement day, if the fill makes the cut-off.
-    T0,
-    /// The next settlement day.
-    T1,
-    /// Two settlement days on.
-    T2,
-}
-
-impl SettlementConvention {
-    pub const fn days(self) -> u32 {
-        match self {
-            Self::T0 => 0,
-            Self::T1 => 1,
-            Self::T2 => 2,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::T0 => "T+0",
-            Self::T1 => "T+1",
-            Self::T2 => "T+2",
-        }
-    }
-
-    /// Parse the spelling [`Self::as_str`] produces. Refuses anything else
-    /// rather than defaulting: a convention typed wrong is a venue whose
-    /// proceeds land on a day nobody chose.
-    pub fn parse(text: &str) -> Result<Self> {
-        match text.trim() {
-            "T+0" | "t+0" | "T0" | "t0" => Ok(Self::T0),
-            "T+1" | "t+1" | "T1" | "t1" => Ok(Self::T1),
-            "T+2" | "t+2" | "T2" | "t2" => Ok(Self::T2),
-            other => Err(Error::invalid(format!(
-                "settlement convention {other:?} is not one of T+0, T+1, T+2 or instant"
-            ))),
-        }
-    }
-}
+/// The shared convention, owned by `qip_contracts::settlement`: the same three
+/// arms the centre's calendar uses are now the same type, not a copy that
+/// could drift (R12-CAPITAL-1100).
+pub use qip_contracts::settlement::SettlementConvention;
 
 /// When one venue's proceeds become usable as funding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

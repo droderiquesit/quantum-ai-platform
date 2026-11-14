@@ -695,3 +695,35 @@ fn the_asset_brain_reaches_no_alpha_and_no_other_brain_and_its_one_dependent_is_
          the evolution service's call to attempt_promotion and no other"
     );
 }
+
+/// R12-CAPITAL-1100, owner decision 36: the two halves of the Settlement
+/// Brain share one `SettlementConvention`, owned by `qip_contracts`. Each half
+/// once defined its own enum, two claims about one fact; the centre and a cell
+/// could then disagree about the day proceeds land with both compiling.
+///
+/// Mutation: re-add `pub enum SettlementConvention { T0, T1, T2 }` to
+/// `qip-edge/src/settlement.rs` (replacing the `pub use`) — the edge half then
+/// defines its own and this test fails.
+#[test]
+fn both_settlement_halves_use_the_one_convention_qip_contracts_owns() {
+    let root = qip_acceptance::repository_root().join("backend/crates");
+    let owner = std::fs::read_to_string(root.join("libs/qip-contracts/src/settlement.rs")).unwrap();
+    assert!(
+        owner.contains("pub enum SettlementConvention"),
+        "premise: qip-contracts owns the definition"
+    );
+    for half in [
+        "services/qip-capital-fabric/src/settlement.rs",
+        "edge/qip-edge/src/settlement.rs",
+    ] {
+        let text = production(&root.join(half));
+        assert!(
+            text.contains("pub use qip_contracts::settlement::SettlementConvention;"),
+            "{half} re-exports the shared convention"
+        );
+        assert!(
+            !text.contains("enum SettlementConvention"),
+            "{half} defines its own SettlementConvention; the halves must share qip_contracts'"
+        );
+    }
+}

@@ -34,38 +34,9 @@ use qip_financial::calendar::MarketHours;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// How many settlement days after the value date funds arrive.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SettlementConvention {
-    /// Same settlement day, if the instruction makes the cut-off.
-    T0,
-    /// The next settlement day.
-    T1,
-    /// Two settlement days on — the equity and FX spot convention in most
-    /// markets, and the one that quietly turns a Thursday into a Monday.
-    T2,
-}
-
-impl SettlementConvention {
-    /// Settlement days added to the value date.
-    pub const fn days(&self) -> u32 {
-        match self {
-            Self::T0 => 0,
-            Self::T1 => 1,
-            Self::T2 => 2,
-        }
-    }
-
-    /// A stable label for logs and refusal messages.
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::T0 => "T+0",
-            Self::T1 => "T+1",
-            Self::T2 => "T+2",
-        }
-    }
-}
+/// The shared convention, owned by `qip_contracts::settlement` so this half and
+/// the cell's gate cannot disagree about what T+1 means (R12-CAPITAL-1100).
+pub use qip_contracts::settlement::SettlementConvention;
 
 /// When an instruction placed at a given instant produces usable funds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
