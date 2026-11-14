@@ -70,7 +70,10 @@ fn stamped_line(
         Origin::new(VenueId::new("XLON"), "itch-a", 0, sequence),
         body,
         at(ms),
-        at(ms),
+        // The payload's capture instant is the header's receive instant:
+        // `MarketEvent::new` admits through `Admitted::admit`, which refuses
+        // a payload and header that give two accounts of one instant.
+        at(ms + received_after_ms.max(0)),
     );
     let hash = MarketEvent::hash_payload(&message)?;
     // Admission refuses an event received before it happened by more than
