@@ -41,7 +41,7 @@ spec:
         - qip-stage-tz-application-identity
     scaling:
       minInstanceCount: 0
-      maxInstanceCount: 4
+      maxInstanceCount: 3
     maxInstanceRequestConcurrency: 80
     timeout: 300s
     executionEnvironment: EXECUTION_ENVIRONMENT_GEN2
