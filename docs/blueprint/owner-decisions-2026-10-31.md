@@ -2447,6 +2447,53 @@ that narrows a security scanner, whatever the owner has delegated.
         docs/blueprint/lanes/l5-edge-GOV-9075.patch`. That command is the
         whole remaining step.
 
+38. **Spend is approved for dev, the rows that waited on a figure are decided,
+    and the larger builds go to a team (2026-11-14).** Three instructions from
+    the owner on 2026-11-14, in the order given: "Deploy with spend I approve
+    200 a month spend I approve it"; "Decide on rest. For the 176 larger builds
+    get a team of 176 and build them all do this at the same time and complete
+    them"; and "Unlimited budget just deploy".
+
+    *Spend.* The cap on new spend is lifted for the dev environment. That is
+    the owner's approval of the cost; it does not lift the rule in "What the
+    delegation does not lift": the monthly cost of each billed resource is
+    still named before it is created, and a plan is still shown before it is
+    applied. Nothing here reaches test, stage or prod, and nothing here is a
+    live-order path: an execution node runs the simulated venue feed and
+    nothing else.
+
+    *The rows that waited on a figure or a reading.*
+    - R12-RISK-4121 and R12-RISK-4122. Three independent readers read them,
+      one for and two against. I do not settle that by reading the check more
+      kindly; a split is not a verification. The decision is the design one the
+      second reader named: the survival governor records a reserve line for
+      every world the book fails at the platform's tolerance, not only the
+      worst, while the amount withheld stays the worst world's. The rows are
+      then read again.
+    - R12-RISK-5044. The edge-after-cost gate is set at 25 basis points,
+      provisional. It is the restrictive direction (it refuses more, never
+      less) and it is the owner's to change.
+    - The dev paper commerce plan (R12-COMMERCE-5095, 5097, 1171). Its
+      insurance, consolidation and markdown terms are synthetic terms of a
+      synthetic plan: insurance at the full declared value for a premium of one
+      per cent of it, two shipments consolidated, markdown after one day on
+      market. Provisional, and built only after the commerce changes already
+      in flight have landed, because the plan file's mounted path is pinned by
+      its content.
+    - R12-COMMERCE-5094 is not decided. Its credential clause needs a second
+      source for a credential, which is a design this plane does not have.
+
+    *The team.* The 176 rows the draft pass judged too large for one draft are
+    grouped into lanes by the part of the tree they touch, five rows to a lane,
+    plus two lanes for the risk rows decided above: 38 lanes, every row with a
+    session working on it at once, each on its own machine. Not 176 sessions:
+    the account's usage limit stopped this work twice today at a third of that
+    many agents, and 176 branches editing one tree would not merge. The lanes'
+    brief is `docs/blueprint/lanes/b52-brief.md` and their rows are
+    `docs/blueprint/lanes/b52-rows.json`. A lane builds and reports; it does
+    not grade. A row is COMPLETE only after the pipeline passes with its
+    change and two independent readers fail to refute it.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly

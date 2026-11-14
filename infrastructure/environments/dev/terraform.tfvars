@@ -298,7 +298,7 @@ execution_nodes = {
 # and commit it beside uncommenting artefact_trust_bundle_file; then set
 # certificate_authority, plan, read, apply.
 google_tls_roots_file = "infrastructure/trust/google-roots.pem"
-# artefact_signing           = { bundle_not_after = "2027-10-31T00:00:00Z" }
+artefact_signing = { bundle_not_after = "2027-10-31T00:00:00Z" }
 # artefact_trust_bundle_file = "infrastructure/trust/dev.json"
 # certificate_authority      = { location = "us-east4", organization = "<the owner's legal name>" }
 
