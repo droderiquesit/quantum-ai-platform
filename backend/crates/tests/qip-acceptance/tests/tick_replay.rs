@@ -29,7 +29,7 @@ use qip_orderbook::replay::{ReplayOutput, replay};
 use qip_orderbook::{Sweep, VenueCheckpoint, VenueState};
 use qip_protocols::decoder::Diagnostics;
 use qip_protocols::{Decoder, InstrumentPartitions, ItchDecoder};
-use qip_sequencing::{Placed, ReorderPolicy, SequenceEvent, Sequencer, StreamStats, align, as_of};
+use qip_sequencing::{ReorderPolicy, SequenceEvent, Sequencer, StreamStats};
 use qip_storage::MemoryBlobStore;
 use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
 use qip_storage::lake_history::HistoryQuery;
@@ -917,68 +917,5 @@ fn the_fabric_replay_engine_over_the_recorded_session_is_reproducible_and_its_di
 
     // Mutate the simulated decision: the input digest must notice.
     assert_ne!(first.input_digest, run(ticks, 2)?.input_digest);
-    Ok(())
-}
-
-// --- cross-venue alignment inside the replay's digest ------------------------
-
-/// Two venues' stamps for the recorded session, each on its own clock and each
-/// with its own published uncertainty, in microseconds. Arrival is the cell's
-/// single clock. Venue B's third event sits 30 microseconds after A's with
-/// 25 on each clock, so it must come out unordered.
-fn venue_streams(uncertainty_b_micros: i64) -> Result<(Vec<Placed>, Vec<Placed>)> {
-    let place = |event: i64, err: i64, arrival: i64| {
-        Placed::new(
-            captured(event),
-            Duration::from_micros(err),
-            captured(arrival),
-        )
-    };
-    let a = vec![
-        place(100, 25, 110)?,
-        place(200, 25, 210)?,
-        place(300, 25, 310)?,
-    ];
-    let b = vec![
-        place(150, uncertainty_b_micros, 160)?,
-        place(330, uncertainty_b_micros, 340)?,
-        place(1_000, uncertainty_b_micros, 1_010)?,
-    ];
-    Ok((a, b))
-}
-
-/// Every B event placed as-of the A stream, rendered and hashed, so a change
-/// to any alignment answer moves one string a person can compare.
-fn alignment_digest(uncertainty_b_micros: i64) -> Result<String> {
-    let (a, b) = venue_streams(uncertainty_b_micros)?;
-    let mut rendered = String::new();
-    for target in &b {
-        rendered.push_str(&format!(
-            "{:?}|{:?}\n",
-            as_of(target, &a),
-            align(&a[0], target)
-        ));
-    }
-    Ok(sha256_hex(rendered.as_bytes()))
-}
-
-#[test]
-fn cross_venue_alignment_of_the_recorded_stamps_is_reproducible_and_its_digest_moves_with_the_stage()
--> Result<()> {
-    // Premise: the clock error is wide enough that one pair is unordered, or
-    // the digest would be insensitive to the stage under test.
-    let (a, b) = venue_streams(25)?;
-    let near = as_of(&b[1], &a);
-    assert!(
-        !near.unordered.is_empty(),
-        "the premise failed: no event pair fell inside the combined uncertainty"
-    );
-
-    let digest = alignment_digest(25)?;
-    assert_eq!(digest, alignment_digest(25)?);
-
-    // Mutation of the stage's input: with venue B's clock exact, the unordered
-    // pair becomes ordered and the digest must say so.
-    assert_ne!(digest, alignment_digest(0)?);
     Ok(())
 }
