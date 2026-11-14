@@ -4176,6 +4176,66 @@ fn a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else() -> 
     Ok(())
 }
 
+/// R12-ASSET-1160, divestment refused upstream of the register: a sale of the
+/// whole long that the wallet halt stops leaves the position `Held`.
+///
+/// The failure prevented: `begin_deliberate_close` recording the unwind
+/// before the wallet-halt refusal, so a divestment no order ever left for
+/// read as `Unwinding` in the register and the Portfolio/Asset Brain counted
+/// a divestment that never began.
+///
+/// Mutation: move the `begin_deliberate_close` call in
+/// `Platform::submit_released` above the `wallet_halt_for` check — the
+/// refused sell moves the position to `Unwinding` and the last assertion
+/// fails.
+#[test]
+fn a_whole_long_sell_the_wallet_halt_refuses_leaves_the_position_held() -> Result<()> {
+    use qip_portfolio::PositionLifecycle;
+    let at = start().saturating_add(Duration::from_secs(60));
+    let desk = VenueId::new("simulated-venue");
+    let mut held = platform(PlatformConfig::default())?;
+    trade(&mut held, Side::Buy, dec!("10"), dec!("100"), at)?;
+    let (long, _) = held
+        .positions_at_cost()
+        .get(INSTRUMENT)
+        .copied()
+        .expect("premise: the buy opened a position");
+    assert!(long.is_positive(), "premise: a long is held: {long}");
+    assert_eq!(
+        held.position_lifecycle(INSTRUMENT),
+        Some(PositionLifecycle::Held),
+        "premise: the opened position is held"
+    );
+    held.observe_statement(desk, INSTRUMENT, dec!("999"), dec!("1"), at)?;
+    held.run_cycle(at.saturating_add(Duration::from_secs(60)));
+    assert!(
+        held.wallet_halt_for(INSTRUMENT, Side::Sell).is_some(),
+        "premise: the halt names a sell of the instrument"
+    );
+    let (long, _) = held
+        .positions_at_cost()
+        .get(INSTRUMENT)
+        .copied()
+        .expect("premise: the position survived the cycle");
+    let refused = trade(
+        &mut held,
+        Side::Sell,
+        long,
+        dec!("100"),
+        at.saturating_add(Duration::from_secs(120)),
+    );
+    assert!(
+        refused.is_err(),
+        "premise: the sell of the whole long was refused"
+    );
+    assert_eq!(
+        held.position_lifecycle(INSTRUMENT),
+        Some(PositionLifecycle::Held),
+        "a refused divestment moved the position toward Closed"
+    );
+    Ok(())
+}
+
 fn subscriptions(platform: &Platform) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
     platform
         .pending_desk_operations()
