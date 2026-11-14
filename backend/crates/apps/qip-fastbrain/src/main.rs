@@ -249,12 +249,6 @@ fn run() -> Result<()> {
     // the survival ceiling the Risk Gate reads re-derived under them at once.
     let survival_banner = apply_survival_policy(&mut platform)?;
     println!("  survival:         {survival_banner}");
-    // Owner decision 36 (2026-11-14), provisional: the generated joint tail
-    // world sets the survival reserve alongside the library and synthetic
-    // worlds, the most restrictive reading. Left advisory, a joint world that
-    // outweighs the others was priced and reported while the reserve ignored
-    // it. It raises a reserve; no limit value or threshold changes.
-    platform.set_joint_tail_reserve_applied(true);
 
     // The trust root, before anything is served: install the operator's
     // envelope key when the deployment provides one, and refuse to run
