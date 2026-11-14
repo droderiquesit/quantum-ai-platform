@@ -1018,10 +1018,15 @@ impl Sink for LakeSink {
                 tick.payload().object_id.as_str().to_string(),
                 tick.entitlement().dataset().to_string(),
             );
-            if self
-                .retention
-                .get(tick.entitlement().dataset())
-                .is_some_and(|right| right.raw)
+            // A resynchronisation snapshot never crossed the wire, so it has
+            // no published bytes to keep and its absence from the raw slot is
+            // not a line that failed to re-encode (R12-TICK-1201).
+            let on_the_wire = tick.origin().partition != crate::feed::SNAPSHOT_PARTITION;
+            if on_the_wire
+                && self
+                    .retention
+                    .get(tick.entitlement().dataset())
+                    .is_some_and(|right| right.raw)
             {
                 let slot = raw_by_partition
                     .entry(key.clone())
