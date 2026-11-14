@@ -93,7 +93,7 @@ use qip_agency::engine::{
 use qip_agency::estimate::EstimateInput;
 use qip_agency::generate::ScenarioSource;
 use qip_agency::guard::{ActionGuard, GuardPolicy};
-use qip_agency::journal::{self, PassEntry, Provenance, WideningOutcome};
+use qip_agency::journal::{self, PassEntry, Provenance, StandingChange, WideningOutcome};
 use qip_agency::memory::ActionOutcomeMemory;
 use qip_agency::plan::{ActingIdentity, Step};
 use qip_agency::simulated;
@@ -176,8 +176,22 @@ pub struct AgencyPolicy {
     /// refused rather than ignored: a revocation that withdrew nothing is a
     /// typo that leaves the tool live. Each pass's journal entry carries the
     /// policy document's hash, so which revocations stood is on the record.
+    ///
+    /// A revocation is journaled with the first pass it applies to and from
+    /// then on stands from the journal (ADR 0534, R12-RES-7109). Deleting
+    /// the name from this list readmits nothing: before ADR 0534 it did, on
+    /// the next start, with no record of who decided the tool could act
+    /// again. Only an entry in [`Self::reauthorisations`] restores it.
     #[serde(default)]
     pub revoked_tools: Vec<String>,
+    /// Revoked tools restored, each naming the operator and the reason
+    /// (ADR 0534). Refused for a tool that is not revoked, for one this
+    /// policy also revokes, and for a blank operator or reason. Journaled
+    /// as `ToolReauthorised` beside the pass's tool decisions; an entry the
+    /// journal already holds verbatim, after the tool's last revocation, is
+    /// the same decision read again and is not journaled twice.
+    #[serde(default)]
+    pub reauthorisations: Vec<ReauthorisationDecl>,
     /// The evidence the operator holds (R12-AGENCY-1056 / 1057): every
     /// citation of every draft is resolved against these records, by id, for
     /// its recorded source and its recorded statement. The requester writes
@@ -195,6 +209,19 @@ pub struct AgencyPolicy {
     /// platform holds nothing; a binary that has positions lists them.
     #[serde(default)]
     pub holdings: Vec<String>,
+}
+
+/// One revoked tool restored, on whose authority and why (ADR 0534).
+///
+/// The operator is the name the policy's author writes. Nothing in this
+/// binary authenticates it, and ADR 0534 says so: what this closes is a
+/// readmission that left no name and no reason on the journal at all.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReauthorisationDecl {
+    pub tool: String,
+    pub operator: String,
+    pub reason: String,
 }
 
 /// A request to widen one class's policy, with the data to check it on.
@@ -410,6 +437,9 @@ pub struct Session {
     channels: BTreeSet<String>,
     /// Where the channel-health verdicts are recorded (R12-OBS-7132).
     metrics: Arc<Metrics>,
+    /// Revocations and reauthorisations this policy makes that the journal
+    /// does not hold yet (ADR 0534), journaled with the next pass.
+    standing: Vec<StandingChange>,
 }
 
 impl Session {
@@ -469,15 +499,12 @@ impl Session {
             .into_iter()
             .filter(|finding| !filed.contains(&(finding.fingerprint.clone(), finding.rule.clone())))
             .collect();
-        for tool in &policy.revoked_tools {
-            guard.revoke(tool).map_err(|error| {
-                Error::invalid(format!(
-                    "the agency policy revokes `{tool}`, which it does not register; a \
-                     revocation that withdraws nothing leaves the tool it meant live: {}",
-                    error.message()
-                ))
-            })?;
-        }
+        let standing = Self::apply_standing(
+            &mut guard,
+            &resumed.standing,
+            &policy.revoked_tools,
+            &policy.reauthorisations,
+        )?;
         Ok(Self {
             guard,
             register,
@@ -494,7 +521,88 @@ impl Session {
             post_release,
             channels,
             metrics: Arc::new(Metrics::new("qip-cli")),
+            standing,
         })
+    }
+
+    /// ADR 0534: withdraw every tool the journal holds revoked, then every
+    /// tool the policy revokes, then restore every tool the policy
+    /// reauthorises. Returns what the journal does not hold yet.
+    ///
+    /// The failure prevented: until this, `revoked_tools` was the only
+    /// record of a withdrawal, so deleting a line from the policy file
+    /// readmitted the tool on the next start with no named operator, no
+    /// reason and nothing on the journal saying it had ever been stopped.
+    fn apply_standing(
+        guard: &mut ActionGuard,
+        journaled: &BTreeMap<String, StandingChange>,
+        revoked_tools: &[String],
+        reauthorisations: &[ReauthorisationDecl],
+    ) -> Result<Vec<StandingChange>> {
+        let mut changes = Vec::new();
+        // A tool withdrawn on the journal and since dropped from the
+        // registrations is refused as unregistered anyway; it is not an
+        // error to start without it.
+        let journal_revoked: BTreeSet<&str> = journaled
+            .values()
+            .filter(|change| matches!(change, StandingChange::Revoked { .. }))
+            .map(StandingChange::tool)
+            .collect();
+        for tool in &journal_revoked {
+            if guard.registry().registration(tool).is_some() {
+                guard.revoke(tool)?;
+            }
+        }
+        for tool in revoked_tools {
+            guard.revoke(tool).map_err(|error| {
+                Error::invalid(format!(
+                    "the agency policy revokes `{tool}`, which it does not register; a \
+                     revocation that withdraws nothing leaves the tool it meant live: {}",
+                    error.message()
+                ))
+            })?;
+            if !journal_revoked.contains(tool.as_str()) {
+                changes.push(StandingChange::Revoked { tool: tool.clone() });
+            }
+        }
+        for decl in reauthorisations {
+            let tool = decl.tool.as_str();
+            if revoked_tools.iter().any(|revoked| revoked == tool) {
+                return Err(Error::invalid(format!(
+                    "the agency policy both revokes and reauthorises `{tool}`; remove one, so \
+                     the journal says which the operator meant"
+                )));
+            }
+            if decl.reason.trim().is_empty() {
+                return Err(Error::invalid(format!(
+                    "the reauthorisation of `{tool}` states no reason; a tool that was stopped \
+                     acts again only on a decision the journal can show"
+                )));
+            }
+            let change = StandingChange::Reauthorised {
+                tool: decl.tool.clone(),
+                operator: decl.operator.clone(),
+                reason: decl.reason.clone(),
+            };
+            if journaled.get(tool) == Some(&change) {
+                // Already journaled after the tool's last revocation: the
+                // same decision read again, not a second one.
+                continue;
+            }
+            guard.reauthorise(tool, &decl.operator).map_err(|error| {
+                Error::invalid(format!(
+                    "the agency policy reauthorises `{tool}` and is refused: {}",
+                    error.message()
+                ))
+            })?;
+            changes.push(change);
+        }
+        Ok(changes)
+    }
+
+    /// What this session will journal with its next pass (ADR 0534).
+    pub fn standing(&self) -> &[StandingChange] {
+        &self.standing
     }
 
     /// Record into `metrics` rather than the session's own registry, so a
@@ -746,12 +854,14 @@ impl Session {
                 acting_identity: &acting,
                 learning: Some(&learning),
                 post_release: &self.post_release,
+                standing: &self.standing,
                 at: now,
             },
         )?;
         // Filed once: a later pass of this invocation re-files nothing, and
         // a restart reads these back as already filed.
         self.post_release.clear();
+        self.standing.clear();
         self.next_pass += 1;
         // R12-OBS-7131: the pass is read back as one lineage before it is
         // reported. A journal that holds every record and cannot be folded

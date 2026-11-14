@@ -6,5 +6,6 @@ resources:
   - promotiontask.yaml
   - gatetask.yaml
   - papertask.yaml
+  - releasetask.yaml
   - warehouse.yaml
   - stages.yaml

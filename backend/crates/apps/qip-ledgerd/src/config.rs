@@ -121,6 +121,15 @@ pub const FABRIC_PARTITIONS: &str = "QIP_LEDGER_FABRIC_PARTITIONS";
 pub const FABRIC_TOKEN: &str = "QIP_LEDGER_FABRIC_TOKEN";
 /// Optional: how long a partition worker waits after an empty fetch.
 pub const POLL_MS: &str = "QIP_LEDGER_POLL_MS";
+/// Optional: comma-separated venues whose paper fills settle on a cycle
+/// (ADR 0440 decision 3, ADR 0530). A fill at one of them books its cash in
+/// settlement until that venue's `Settled` record arrives. Unset is every
+/// venue crediting at the fill, which is what every deployed simulated venue
+/// does while its `QIP_VENUE_SETTLEMENT` is unset; naming a venue here whose
+/// node settles instantly holds its cash in settlement for ever, and the
+/// other mismatch parks the cell on the first `Settled`, so the two settings
+/// move together.
+pub const SETTLEMENT_CYCLE_VENUES: &str = "QIP_LEDGER_SETTLEMENT_CYCLE_VENUES";
 
 /// The idle wait when none is stated.
 pub const DEFAULT_POLL_MS: u64 = 200;
@@ -171,6 +180,9 @@ pub struct LedgerConfig {
     pub fabric_partitions: u32,
     /// Idle wait between empty fetches, in milliseconds.
     pub poll_ms: u64,
+    /// [`SETTLEMENT_CYCLE_VENUES`]: the venues whose fills' cash waits on the
+    /// venue's `Settled` record. Empty books every venue's cash at the fill.
+    pub settlement_cycle_venues: Vec<String>,
 }
 
 fn required(variables: &BTreeMap<String, String>, name: &str, what: &str) -> Result<String> {
@@ -352,6 +364,28 @@ impl LedgerConfig {
                  the broker"
             )));
         }
+        // Split on commas with blanks between them refused, not skipped: a
+        // list written `XLON,,XNYS` is a list somebody mistyped, and reading
+        // it as two venues would hide the third they meant.
+        let settlement_cycle_venues: Vec<String> = match variables
+            .get(SETTLEMENT_CYCLE_VENUES)
+            .map(|v| v.trim())
+        {
+            None | Some("") => Vec::new(),
+            Some(list) => {
+                let venues: Vec<String> = list
+                    .split(',')
+                    .map(|venue| venue.trim().to_string())
+                    .collect();
+                if venues.iter().any(String::is_empty) {
+                    return Err(Error::invalid(format!(
+                        "{SETTLEMENT_CYCLE_VENUES} '{list}' names a blank venue; list the venues \
+                         whose fills settle on a cycle, comma-separated, or unset it"
+                    )));
+                }
+                venues
+            }
+        };
         Ok(Self {
             environment,
             deployment,
@@ -364,6 +398,7 @@ impl LedgerConfig {
             fabric_stream,
             fabric_partitions,
             poll_ms,
+            settlement_cycle_venues,
         })
     }
 
@@ -790,6 +825,54 @@ mod tests {
         assert!(
             LedgerConfig::parse(&cas).is_err(),
             "a ten-minute lifetime was accepted"
+        );
+    }
+
+    #[test]
+    fn the_settlement_cycle_venue_list_is_empty_unset_read_comma_separated_and_refused_with_a_blank()
+     {
+        // ADR 0530: unset is every venue crediting at the fill; a list is
+        // read as written; a blank between commas is a mistyped list, and
+        // reading it as the venues either side would hide the one meant.
+        // Mutation verified: skipping blank entries instead of refusing
+        // them reads `XLON,,XNYS` as two venues and fails the refusal.
+        let mut base = BTreeMap::new();
+        for (name, value) in [
+            (ENVIRONMENT, "workstation"),
+            (DATA_DIR, "/tmp/qip-ledgerd-settlement-config"),
+            (LISTEN, "127.0.0.1:0"),
+            (CONSUMER_GROUP, "ledger"),
+            (FABRIC_URL, "http://127.0.0.1:9"),
+            (FABRIC_STREAM, "outcomes"),
+            (FABRIC_PARTITIONS, "1"),
+            (DEPLOYMENT, "local"),
+            (qip_transport::tls::TLS_MODE_VARIABLE, "plaintext"),
+        ] {
+            base.insert(name.to_string(), value.to_string());
+        }
+        let unset = LedgerConfig::parse(&base).expect("a workstation configuration loads");
+        assert!(unset.settlement_cycle_venues.is_empty());
+        let mut listed = base.clone();
+        listed.insert(
+            SETTLEMENT_CYCLE_VENUES.to_string(),
+            " XLON , XNYS ".to_string(),
+        );
+        assert_eq!(
+            LedgerConfig::parse(&listed)
+                .expect("a list loads")
+                .settlement_cycle_venues,
+            vec!["XLON".to_string(), "XNYS".to_string()]
+        );
+        let mut blank = base;
+        blank.insert(
+            SETTLEMENT_CYCLE_VENUES.to_string(),
+            "XLON,,XNYS".to_string(),
+        );
+        let refusal = LedgerConfig::parse(&blank).expect_err("a blank venue is refused");
+        assert!(
+            refusal.message().contains("names a blank venue"),
+            "{}",
+            refusal.message()
         );
     }
 }

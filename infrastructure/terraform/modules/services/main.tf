@@ -113,6 +113,16 @@ locals {
       "container.googleapis.com"      = "the control-plane cluster in modules/gitops-control-plane"
       "gkehub.googleapis.com"         = "the fleet membership the cluster registers with, in modules/gitops-control-plane"
       "connectgateway.googleapis.com" = "infra.yml's bootstrap step, which applies the controller manifests through the gateway"
+      # The console's door (ADR 0095). Nothing in Terraform calls this API by
+      # a resource that would have named it here: infra.yml's `apps` action
+      # turns IAP on for the portal service and its `grant` action writes the
+      # portal's access list, both through gcloud. So the list above was
+      # complete for Terraform and one short for the environment, and the
+      # first grant on a project where the API was off (infra run 132, dev,
+      # 2026-11-14) was refused: "Cloud Identity-Aware Proxy API has not been
+      # used in project ... before or it is disabled". Under the same switch
+      # as the cluster because the console exists only where GitOps does.
+      "iap.googleapis.com" = "infra.yml's apps and grant actions, which turn IAP on for the console and write its access list"
     } : {},
   )
 
