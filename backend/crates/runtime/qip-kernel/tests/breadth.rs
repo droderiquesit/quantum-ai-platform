@@ -2025,3 +2025,39 @@ fn a_commerce_receipt_queued_and_not_yet_drained_before_a_restart_is_requeued_fr
     assert_eq!(ids.len(), requeued.len(), "a movement was queued twice");
     Ok(())
 }
+
+/// R12-COMMERCE-1171: shipping, insurance, duties, tax and the SKU identity
+/// are carried on every unit the cycle receives, from the plan's own terms.
+/// The committed test plan declines insurance, so no test showed an insured
+/// unit; a reader could not tell the insurance scope item from a literal.
+///
+/// Mutation: make the `insurance` attribute in `commerce_research.rs` always
+/// format the `Declined` arm and the insured assertion fails.
+#[test]
+fn every_received_unit_carries_its_sku_shipping_insurance_duty_and_tax_from_the_plan() -> Result<()>
+{
+    let coverage = dec!("100");
+    let premium = dec!("1");
+    let mut plan = commerce_plan()?;
+    plan.logistics.insurance = Some((coverage, premium));
+    plan.logistics.decline_reason = None;
+    plan.terms.customs.duty_rate = dec!("0.02");
+    plan.purchase_tax_rate = dec!("0.1");
+    let (platform, _) = first_simulated_run(plan)?;
+    let research = platform.commerce_research().expect("installed");
+    let units = research.ledger().units();
+    assert!(!units.is_empty(), "premise: a unit was received");
+    for unit in units.keys() {
+        let attributes = research.attributes(unit).expect("a record for every unit");
+        let text = |key: &str| match attributes.get(key) {
+            Some(qip_financial::commerce_resale::Attr::Value(text)) => text.clone(),
+            other => panic!("attribute {key} is not a value: {other:?}"),
+        };
+        assert!(!text("sku_identity").is_empty());
+        assert_eq!(text("insurance"), format!("insured for {coverage} at {premium}"));
+        assert!(text("shipping").ends_with(" via paper-carrier"), "{}", text("shipping"));
+        assert_eq!(text("customs_duties"), "duty rate 0.02");
+        assert_eq!(text("tax"), "purchase tax 0.1");
+    }
+    Ok(())
+}
