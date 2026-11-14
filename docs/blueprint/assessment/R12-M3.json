@@ -2029,15 +2029,19 @@
   {
     "id": "R12-WORLD-3084",
     "status": "PARTIAL",
-    "current": "LatticeHorizon::MicrosecondsMs.promotion_target() is LocalReflexOnly (lattice.rs:141-149). Population::admit refuses any other target (lattice.rs:225), and issue() refuses a lane the horizon is not served from (lattice.rs:400). Population::standard admits two members per row: a martingale and a drift follower on a price level. The kernel's lattice stage issues at the central rows every cycle (runtime/qip-kernel/src/lattice_stage.rs).",
+    "current": "Central side: LatticeHorizon::MicrosecondsMs.promotion_target() is LocalReflexOnly, Population::admit refuses any other target and issue() refuses the central lane at the row. Reflex side (ADR 0506): qip-contracts::reflex_forecast::ReflexForecast states the row's four outputs (fill probability, queue movement, adverse selection, executable edge) with a horizon refused outside 1..=999,999 µs, an expiry no later than the horizon, a distribution shaped to the target, nanosecond instants on the wire, and a promotion target that is the one-variant ReflexPromotion::LocalReflexOnly, so a record naming any other target does not decode. qip-edge::reflex_forecast::ReflexIssuer (reflex-frequency/1) issues them from the cell's observed outcomes over a bounded window and scores them (Brier, reliability, quantile coverage). The reflex_forecast_boundary acceptance suite refuses any production source outside qip-contracts, qip-edge and qip-edge-node naming the contract, and any qip-edge file but the issuer.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs:141",
-      "backend/crates/services/qip-world-model/src/lattice.rs:225",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::the_central_lane_may_not_issue_a_microsecond_forecast",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row"
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row",
+      "backend/crates/libs/qip-contracts/tests/reflex_forecast.rs::a_record_naming_any_promotion_target_but_the_local_reflex_does_not_decode",
+      "backend/crates/libs/qip-contracts/tests/reflex_forecast.rs::a_horizon_of_a_second_or_more_belongs_to_another_row_and_is_refused",
+      "backend/crates/libs/qip-contracts/tests/reflex_forecast.rs::a_sub_millisecond_forecast_keeps_its_issue_and_expiry_apart_on_the_wire",
+      "backend/crates/edge/qip-edge/tests/reflex_issuer.rs::the_nodes_fill_forecasts_are_calibrated_against_what_the_venue_then_did",
+      "backend/crates/edge/qip-edge/tests/reflex_issuer.rs::a_magnitude_forecasts_quantiles_cover_what_they_say_they_cover",
+      "backend/crates/tests/qip-acceptance/tests/reflex_forecast_boundary.rs::nothing_central_reads_a_reflex_forecast"
     ],
-    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: a ReflexForecast contract in qip-contracts and a node issuer with a calibration test.",
+    "gap": "2026-11-13 (session t50-40, ADR 0506): the ReflexForecast contract, the node-side issuer with a mutation-verified calibration test, and the nothing-central-reads-it suite landed. Remaining: the issuer is not fed from Cell::work nor hosted by qip-edge-node, so no deployed or test-driven pass issues a microsecond forecast yet; the centre's after-the-fact re-scoring of reflex forecasts (ADR 0133) and the qip_lattice_brier{horizon=\"microseconds_ms\"} series that waits on it are not built.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2047,10 +2051,10 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-contracts --test reflex_forecast; cargo test -p qip-edge --test reflex_issuer; cargo test -p qip-acceptance --test reflex_forecast_boundary; cargo test -p qip-world-model --test forecast_lattice",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22)."
+    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22). Lane t50-40, 2026-11-13: ten contract/issuer mutations and two boundary mutations each failed the named test and were restored byte for byte; see ADR 0506."
   },
   {
     "id": "R12-WORLD-3085",
