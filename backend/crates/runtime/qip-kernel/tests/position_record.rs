@@ -1084,6 +1084,111 @@ fn a_cycle_whose_tape_makes_construction_target_a_zero_weight_on_a_long_held_at_
     Ok(())
 }
 
+/// R12-ASSET-1160, the refused divestment: a sell the construction targeted
+/// at zero weight that the wallet halt stops before an order exists leaves
+/// the position `Held` and the long whole.
+///
+/// The failure prevented: the unwind was once recorded before the controls
+/// ruled, so a divestment the desk was not allowed to send still relabelled
+/// the position `Unwinding` — a register saying the book was being sold
+/// while the custodian disagreed about what the book held and nothing sold.
+///
+/// The borrow rule is the other refusal ahead of the unwind and cannot stop
+/// this sell: a zero-target sell is sized to the long and never past it, so
+/// it is never a short.
+///
+/// Mutation: call `begin_deliberate_close` before the wallet-halt check in
+/// `Platform::submit_released` — the position reads `Unwinding`.
+#[test]
+fn a_zero_target_sell_the_wallet_halt_refuses_leaves_the_position_held_and_the_long_whole()
+-> Result<()> {
+    use qip_capital_fabric::wallet::{Asset, ReconciliationOutcome, VenueAsset};
+    use qip_contracts::venue::VenueId;
+    let aaa = object("AAA");
+    let mut platform = platform_over(&log_path("zero-target-halted"), start())?;
+    // A statement the desk's own books cannot agree with, read by the first
+    // cycle's LEARN after its ACT opened the long.
+    platform.observe_statement(
+        VenueId::new("simulated-venue"),
+        aaa.as_str(),
+        dec!("999"),
+        dec!("1"),
+        start(),
+    )?;
+    platform.observe(tape("AAA"));
+    let report = platform.run_cycle(start());
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+    let (held, _) = platform
+        .positions_at_cost()
+        .get(aaa.as_str())
+        .copied()
+        .expect("premise: the first cycle opened a long in obj-AAA");
+    assert!(held.is_positive(), "premise: a long: {held}");
+    let key = VenueAsset {
+        venue: VenueId::new("simulated-venue"),
+        asset: Asset::new(aaa.as_str())?,
+    };
+    assert!(
+        platform
+            .fabric_state()
+            .reconciliations()
+            .get(&key)
+            .is_some_and(ReconciliationOutcome::is_halt),
+        "premise: the wallet reconciliation halted the position"
+    );
+
+    let mut price = 92.0_f64;
+    let mut bars = Vec::new();
+    for i in 0..10 {
+        let open = price;
+        price *= if i == 9 { 1.15 } else { 1.002 };
+        bars.push(bar(
+            "AAA",
+            start().saturating_add(Duration::from_days(i + 1)),
+            open,
+            price,
+        ));
+    }
+    platform.observe(bars);
+    let later = start().saturating_add(Duration::from_days(11));
+    let report = platform.run_cycle(later);
+    assert!(report.traversed_every_stage(), "{}", report.summarise());
+
+    assert!(
+        platform
+            .proposals()
+            .iter()
+            .flat_map(|proposal| proposal.legs.iter())
+            .any(|leg| {
+                leg.object_id == aaa
+                    && leg.target_weight == 0.0
+                    && matches!(leg.side, qip_portfolio_engine::proposal::Side::Sell)
+            }),
+        "premise: the second construction targeted obj-AAA at zero weight"
+    );
+    assert!(
+        report
+            .summarise()
+            .contains("halted by the wallet reconciliation"),
+        "premise: the wallet halt refused the divestment: {}",
+        report.summarise()
+    );
+    assert_eq!(
+        platform.position_lifecycle(aaa.as_str()),
+        Some(PositionLifecycle::Held),
+        "a divestment the wallet halt refused was still recorded as an unwind"
+    );
+    assert_eq!(
+        platform
+            .positions_at_cost()
+            .get(aaa.as_str())
+            .map(|(quantity, _)| *quantity),
+        Some(held),
+        "a refused divestment moved the long"
+    );
+    Ok(())
+}
+
 /// R12-ASSET-1015, the private-stages half: a capital call on a private
 /// fund's commitment moves its lifecycle from committed to funding, and the
 /// stage is read through the class's own lifecycle engine.
