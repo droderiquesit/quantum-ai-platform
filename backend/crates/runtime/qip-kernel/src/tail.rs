@@ -1960,4 +1960,125 @@ mod tests {
         assert!(composed_scenario(&library).is_none());
         assert!(composed_scenario(&[]).is_none());
     }
+
+    /// Moved here from `survival.rs` when the survival kernel left the runtime
+    /// (ADR 0464): it generates the worlds with this module, which
+    /// `qip-survival` cannot name.
+    ///
+    /// R12-RISK-4116..4120, 4123, 4124: each §14.3 world, on a book that does
+    /// not survive it, withholds a stressed reserve named for that world and
+    /// shrinks what is released — the recorded capital response. Mutation:
+    /// remove any one world from `tail::survival_worlds` and the `expect`
+    /// for that world fails; make `tail_response` return `Ok(None)` and the
+    /// reserve assertion fails.
+    #[test]
+    fn every_survival_world_the_book_fails_withholds_a_reserve_named_for_it() {
+        use crate::confidence::ThesisView;
+        use crate::survival::{LedgerFigures, SurvivalGovernor};
+        use qip_contracts::regime::MarketRegime;
+        use qip_core::{Decimal, dec};
+        let views = || {
+            vec![ThesisView {
+                hypothesis_id: "h".into(),
+                object_id: "obj-AAA".into(),
+                regime: MarketRegime::Trending,
+                reliability: None,
+            }]
+        };
+        // A levered, volatile book with no ladder marks: it fails every
+        // world at a 2% tolerance, which is what makes each response
+        // observable.
+        let history = std::collections::BTreeMap::from([
+            (
+                "obj-AAA".to_string(),
+                vec![100.0, 108.0, 95.0, 104.0, 90.0, 99.0, 112.0, 97.0],
+            ),
+            (
+                "obj-BBB".to_string(),
+                vec![50.0, 52.0, 47.0, 51.0, 46.0, 49.0, 55.0, 48.0],
+            ),
+        ]);
+        let positions = vec![
+            TailPosition {
+                object: "obj-AAA".into(),
+                notional: 900_000.0,
+                days_to_liquidate: None,
+                region: None,
+                counterparty: None,
+            },
+            TailPosition {
+                object: "obj-BBB".into(),
+                notional: -700_000.0,
+                days_to_liquidate: Some(3.0),
+                region: None,
+                counterparty: None,
+            },
+        ];
+        let generated = survival_worlds(
+            &TailBook {
+                positions: &positions,
+                price_history: &history,
+                equity: 1_000_000.0,
+                seed: 42,
+            },
+            at(),
+        );
+        let ledger = LedgerFigures {
+            equity: dec!("1000000"),
+            held: Decimal::ZERO,
+            obligations: Decimal::ZERO,
+            deployable: dec!("1000000"),
+            gross: dec!("1600000"),
+            ..LedgerFigures::default()
+        };
+        let mut calm = SurvivalGovernor::default();
+        let unstressed = calm.size(ledger, None, 0.02, &views(), at()).unwrap();
+        let mut names: Vec<&str> = vec![
+            LIQUIDITY_FREEZE_DEPTH,
+            VENUE_OUTAGE,
+            GAP_MOVE,
+            CORRELATION_INVERSION,
+            DATA_POISONING,
+            MULTI_MARKET_SHOCK,
+        ];
+        names.extend(SYNTHETIC_WORLDS);
+        for name in names {
+            let world = generated
+                .iter()
+                .find(|world| world.scenario == name)
+                .unwrap_or_else(|| panic!("the {name} world was not generated"))
+                .clone();
+            assert!(
+                world.loss_fraction > 0.02,
+                "premise: the book fails {name} at the tolerance; it lost {}",
+                world.loss_fraction
+            );
+            let stress = crate::survival::StressedWorlds {
+                worlds: vec![crate::survival::WorldLoss {
+                    scenario: world.scenario.clone(),
+                    loss_fraction: world.loss_fraction,
+                }],
+            };
+            let mut governor = SurvivalGovernor::default();
+            let Ok(budget) = governor.size(ledger, Some(&stress), 0.02, &views(), at()) else {
+                // A world so severe the reserve exceeds the book: the
+                // response is the refusal, and the ceiling falls to the gross
+                // already held.
+                assert_eq!(governor.gross_ceiling(), Some(dec!("1600000")), "{name}");
+                continue;
+            };
+            let tail = budget
+                .tail
+                .as_ref()
+                .expect("a stressed book has a response");
+            assert_eq!(tail.scenario, name);
+            assert!(!tail.survives(), "{name}");
+            assert!(budget.survival.stressed_liquidity_reserve.is_positive());
+            assert!(budget.released < unstressed.released, "{name}");
+            assert!(
+                budget.narrowing().iter().any(|line| line.contains(name)),
+                "{name} is not on the DECIDE line"
+            );
+        }
+    }
 }
