@@ -62,7 +62,7 @@ output "zones_with_external_egress" {
   value = sort(local.egress_zones)
 }
 
-output "nat_name" {
-  description = "The Cloud NAT translating for the zones above, or an empty string when no zone declared external egress and none was created."
-  value       = length(google_compute_router_nat.egress) > 0 ? google_compute_router_nat.egress[0].name : ""
+output "nat_names" {
+  description = "The Cloud NAT translating for each zone that declared external egress, keyed by zone. One gateway and one reserved address per zone, so no two zones leave from the same address. Empty when no zone declared external egress and none was created."
+  value       = { for zone, nat in google_compute_router_nat.egress : zone => nat.name }
 }

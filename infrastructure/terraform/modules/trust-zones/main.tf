@@ -526,33 +526,43 @@ resource "google_compute_router" "egress" {
 # addresses as the gateway scales, so a venue or data vendor that pinned one
 # would silently lose us (SEC-013). MANUAL_ONLY with reserved addresses is the
 # only allocation that makes the egress address a fact the desk can hand over.
+# One address and one gateway per egress zone, never one shared pair.
+#
+# The failure this prevents: the crawler zone and the venue zone translating
+# to one address. A counterparty allow-listing the address it saw from a venue
+# session would be allow-listing every source the crawlers visit, and a NAT log
+# line (or a source ban) could not be attributed to the zone that caused it.
+# One reservation per zone makes the outbound address an identity of that zone
+# alone (R12-SEC-9064, owner decision 36: scouts get network and egress
+# identity now, their own project with the second region).
 resource "google_compute_address" "nat" {
-  count = length(local.egress_zones) > 0 ? 1 : 0
+  for_each = toset(local.egress_zones)
 
   project      = var.project_id
-  name         = "qip-${var.environment}-tz-nat-ip"
+  name         = "qip-${var.environment}-tz-nat-ip-${each.key}"
   region       = var.region
   address_type = "EXTERNAL"
 }
 
 resource "google_compute_router_nat" "egress" {
-  count = length(local.egress_zones) > 0 ? 1 : 0
+  for_each = toset(local.egress_zones)
 
   project = var.project_id
-  name    = "qip-${var.environment}-tz-nat"
+  name    = "qip-${var.environment}-tz-nat-${each.key}"
   router  = google_compute_router.egress[0].name
   region  = var.region
 
   nat_ip_allocate_option = "MANUAL_ONLY"
-  nat_ips                = [google_compute_address.nat[0].self_link]
+  nat_ips                = [google_compute_address.nat[each.key].self_link]
 
   # Never ALL_SUBNETWORKS_ALL_IP_RANGES. That option is how a zone created
   # later acquires internet egress by existing, and the zone created later is
-  # the one whose paths nobody argued through.
+  # the one whose paths nobody argued through. Each gateway lists exactly one
+  # zone's subnet, so no two zones can share a translation.
   source_subnetwork_ip_ranges_to_nat = "LIST_OF_SUBNETWORKS"
 
   dynamic "subnetwork" {
-    for_each = toset(local.nat_zones)
+    for_each = contains(local.nat_zones, each.key) ? [each.key] : []
     content {
       name                    = google_compute_subnetwork.zone[subnetwork.value].id
       source_ip_ranges_to_nat = ["PRIMARY_IP_RANGE"]
@@ -566,8 +576,8 @@ resource "google_compute_router_nat" "egress" {
 
   lifecycle {
     precondition {
-      condition     = length(local.nat_zones) == length(local.egress_zones)
-      error_message = "One of the zones declaring external egress (${join(", ", local.egress_zones)}) is not in ${var.region}, and a Cloud NAT is regional. Give that region its own instance of this module rather than moving the zone: a zone NAT'd through another region's router is a zone whose egress leaves from an address the venue allowlist has never seen."
+      condition     = contains(local.nat_zones, each.key)
+      error_message = "The zone ${each.key} declares external egress but is not in ${var.region}, and a Cloud NAT is regional. Give that region its own instance of this module rather than moving the zone: a zone NAT'd through another region's router is a zone whose egress leaves from an address the venue allowlist has never seen."
     }
   }
 }

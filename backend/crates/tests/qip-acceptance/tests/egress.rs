@@ -2427,3 +2427,76 @@ fn the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an
     assert_eq!(found[0].1, found[1].1);
     assert_eq!((found[0].2, found[1].2), (false, true));
 }
+
+#[test]
+fn the_crawler_zone_leaves_from_an_address_and_gateway_no_other_zone_shares_and_only_it_holds_information_source()
+ {
+    // R12-SEC-9064 (owner decision 36): the scouts' own project waits for the
+    // second region (ADR 0113 section 4), but their network and egress identity
+    // are hardened now. Two ways that regresses while every plan stays green:
+    //
+    //   * the zone NAT goes back to one shared address and gateway, so crawler
+    //     traffic and any other zone's leave from one outbound identity and a
+    //     counterparty's allow-list for one is an allow-list for both;
+    //   * a second zone is given the `information-source` purpose, so the
+    //     crawler zone is no longer the only one that may visit sources.
+    let module = without_comments(&read("infrastructure/terraform/modules/trust-zones/main.tf"));
+    assert!(
+        module.contains("resource \"google_compute_address\" \"nat\" {"),
+        "premise: the zone module no longer reserves a NAT address, so this reads nothing"
+    );
+
+    let address = module
+        .split("resource \"google_compute_address\" \"nat\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("the address resource has a body");
+    let gateway = module
+        .split("resource \"google_compute_router_nat\" \"egress\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("the gateway resource has a body");
+    for (what, body) in [("address", address), ("gateway", gateway)] {
+        assert!(
+            sets(body, "for_each", "toset(local.egress_zones)"),
+            "the zone NAT {what} is not one per egress zone; zones would share an outbound identity"
+        );
+    }
+    assert!(
+        sets(
+            gateway,
+            "nat_ips",
+            "[google_compute_address.nat[each.key].self_link]"
+        ),
+        "a gateway translates to an address not keyed by its own zone"
+    );
+
+    // Only the crawler zone holds the purpose: exactly one zone's purpose list
+    // names it, and that zone is ingestion-discovery.
+    let purposes = module
+        .split("sanctioned_egress_purposes = {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  }\n").next())
+        .expect("the sanctioned egress purposes map has a body");
+    let holders: Vec<&str> = purposes
+        .lines()
+        .filter(|line| line.contains("\"information-source\""))
+        .collect();
+    assert_eq!(
+        holders.len(),
+        1,
+        "information-source is held by {} zones: {holders:?}",
+        holders.len()
+    );
+    assert!(
+        holders[0].trim_start().starts_with("\"ingestion-discovery\""),
+        "information-source is held by a zone other than ingestion-discovery: {holders:?}"
+    );
+
+    // The detector refuses the shared shape.
+    let shared = "resource \"google_compute_address\" \"nat\" {\n  count = 1\n}";
+    assert!(
+        !sets(shared, "for_each", "toset(local.egress_zones)"),
+        "the detector accepts a single shared address"
+    );
+}
