@@ -136,6 +136,10 @@ fn allow_lists() -> Vec<(&'static str, BTreeSet<String>)> {
                 "roles/iam.workloadIdentityUser",
                 "roles/logging.logWriter",
                 "roles/monitoring.metricWriter",
+                // Argo CD's SLO gate reads a qip-api canary's own series
+                // before the sync that put it on traffic may succeed
+                // (ADR 0452). Read only.
+                "roles/monitoring.viewer",
                 "roles/run.admin",
                 "roles/run.viewer",
                 "roles/secretmanager.secretAccessor",

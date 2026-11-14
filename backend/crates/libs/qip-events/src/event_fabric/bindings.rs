@@ -46,9 +46,13 @@ pub const REFLEX_PASS_MARKED: TopicBinding = TopicBinding {
 
 /// ADR 0132 decision 4: one feature digest per pass on the P2 row, bounded
 /// by the cell's registered instruments (R12-FABRIC-10102).
+///
+/// Version 2 (ADR 0428, under ADR 0429): the digest carries the pass's
+/// `MarketStatePack`, optional and absent on a pass that applied no event.
+/// Version 1 lines decode under version 2's type with the pack absent.
 pub const REFLEX_FEATURE_DIGESTED: TopicBinding = TopicBinding {
     topic: Topic::ReflexFeatureDigested,
-    schema_version: 1,
+    schema_version: 2,
     qos_class: QosClass::P2MarketJournal,
 };
 

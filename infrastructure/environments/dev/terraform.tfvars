@@ -79,6 +79,14 @@ secondary_region = null
 
 venue_adapter_type = "simulated"
 
+# The desk mandate's risk tolerance (ADR 0405, owner decision 33 of
+# 2026-11-13). "1" is the operator's limit set exactly as written: what every
+# binary already ran with the variable unset, now stated instead of defaulted.
+# It narrows nothing. A lower fraction multiplies every maximum and leaves
+# every minimum where it is; that figure is the desk's risk appetite and the
+# owner's to give. The roots refuse anything outside 0 to 1.
+desk_risk_tolerance = "1"
+
 # Development environment uses the simulated venue (in-process matching engine)
 # for fast iteration without requiring external venue connectivity (CICD-083, ADR 0003).
 # This makes the mock venue configuration explicit in tfvars rather than relying

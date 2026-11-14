@@ -615,6 +615,16 @@ resource "google_project_iam_member" "argocd_reads_run" {
   member  = "serviceAccount:${google_service_account.argocd.email}"
 }
 
+# Argo CD's SLO gate (envs/<env>/slo-gate.yaml, ADR 0452) reads a qip-api
+# canary revision's own pushed series from Cloud Monitoring before the sync
+# that put it on traffic may succeed. Read only: it writes no series, edits no
+# policy and moves no traffic; rollback stays a person's promotion.
+resource "google_project_iam_member" "argocd_reads_metrics" {
+  project = var.project_id
+  role    = "roles/monitoring.viewer"
+  member  = "serviceAccount:${google_service_account.argocd.email}"
+}
+
 # Each controller reads exactly the App credential that is its own, and no
 # other secret in the project. Scoped to the secret, like every accessor
 # grant in `modules/cloudrun`.

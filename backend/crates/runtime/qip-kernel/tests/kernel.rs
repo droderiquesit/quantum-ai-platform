@@ -473,13 +473,15 @@ fn the_agent_roster_validates_at_assembly() -> Result<()> {
     // The organisation the platform assembles is the standard one, counted
     // from the list that builds it rather than from a literal that went
     // stale every time a specialist was added.
-    let standard = qip_investment_agents::chief::standard_agents(
-        std::sync::Arc::new(qip_investment_agents::Desk::empty(start())),
-        start(),
-        Vec::new(),
-        false,
+    // The panel and, since ADR 0466, the arbiters that run after it.
+    let desk = std::sync::Arc::new(qip_investment_agents::Desk::empty(start()));
+    let standard =
+        qip_investment_agents::chief::standard_agents(desk.clone(), start(), Vec::new(), false);
+    let arbiters = qip_investment_agents::chief::standard_arbiters(desk, start());
+    assert_eq!(
+        platform.organisation().len(),
+        standard.len() + arbiters.len()
     );
-    assert_eq!(platform.organisation().len(), standard.len());
     let findings = platform.review_governance(start());
     let errors: Vec<_> = findings
         .iter()

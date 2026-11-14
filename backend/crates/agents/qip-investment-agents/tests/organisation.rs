@@ -90,10 +90,11 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    // Twenty-seven: L2b's four probes, the Portfolio/Asset Brain
-    // (R12-ASSET-3019), the Crypto/On-chain Brain (R12-ASSET-3017) and the
-    // Company/Fundamental Brain (R12-REASON-3013).
-    assert_eq!(roster.len(), 27, "the organisation is twenty-seven agents");
+    // Twenty-eight: L2b's four probes, the Portfolio/Asset Brain
+    // (R12-ASSET-3019), the Crypto/On-chain Brain (R12-ASSET-3017), the
+    // Company/Fundamental Brain (R12-REASON-3013) and the Meta Brain
+    // (R12-AMBIENT-3024).
+    assert_eq!(roster.len(), 28, "the organisation is twenty-eight agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -421,6 +422,31 @@ fn desk_holding_an_unmandated_position() -> Arc<Desk> {
 }
 
 fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Desk> {
+    desk_with_purpose(
+        claims,
+        if holding {
+            Held::Flagged
+        } else {
+            Held::Nothing
+        },
+        qip_investment_agents::desk::BookPurpose::default(),
+    )
+}
+
+/// What the fixture book holds: nothing, ACME flagged for want of a mandate
+/// (R12-ASSET-4066), or ACME being divested (R12-ASSET-1160).
+#[derive(Clone, Copy, PartialEq)]
+enum Held {
+    Nothing,
+    Flagged,
+    Unwinding,
+}
+
+fn desk_with_purpose(
+    claims: Vec<qip_world_model::CausalEdge>,
+    holding: Held,
+    purpose: qip_investment_agents::desk::BookPurpose,
+) -> Arc<Desk> {
     let mut universe = Universe::new();
     universe.insert(equity("ACME", "100")).unwrap();
     universe.insert(commodity("WTI", "80")).unwrap();
@@ -572,7 +598,7 @@ fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Des
                         dec!("10000000"),
                         now(),
                     );
-                    if holding {
+                    if holding != Held::Nothing {
                         let acme = equity("ACME", "100");
                         portfolio
                             .apply_fill(
@@ -584,11 +610,17 @@ fn desk_with(claims: Vec<qip_world_model::CausalEdge>, holding: bool) -> Arc<Des
                                 None,
                             )
                             .unwrap();
+                        // The lifecycle table has no `Held -> Unwinding`
+                        // edge: a deliberate close is flagged first.
                         portfolio.flag_position(&object("ACME")).unwrap();
+                        if holding == Held::Unwinding {
+                            portfolio.begin_unwind(&object("ACME")).unwrap();
+                        }
                     }
                     portfolio
                 },
                 marks: BTreeMap::from([(object("ACME").as_str().to_string(), dec!("100"))]),
+                purpose,
             },
             RiskView {
                 state: RiskState::default(),
@@ -656,8 +688,9 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    // Twenty-six since the Company/Fundamental Brain joined (R12-REASON-3013).
-    assert_eq!(org.len(), 26);
+    // Twenty-seven since the Meta Brain joined as the one arbiter
+    // (R12-AMBIENT-3024): twenty-six on the panel and one after it.
+    assert_eq!(org.len(), 27);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -1096,6 +1129,7 @@ fn the_credit_analyst_refuses_to_assume_a_duration_it_does_not_have() -> Result<
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1164,6 +1198,7 @@ fn the_alternative_data_analyst_will_not_use_an_unlicensed_dataset() -> Result<(
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1258,6 +1293,7 @@ fn compliance_blocks_a_restricted_name_with_full_conviction() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1386,6 +1422,7 @@ fn the_construction_agent_respects_its_concentration_cap() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1502,6 +1539,7 @@ fn the_learning_agent_cannot_score_an_unresolved_episode() -> Result<()> {
         conclusion: "yes".to_string(),
         evidence: vec!["doc-1".to_string()],
         conviction: 0.7,
+        regime: None,
         outcome: Some(EpisodeOutcome {
             resolved_at: now().saturating_add(Duration::from_days(20)),
             correct: true,
@@ -1525,6 +1563,7 @@ fn the_learning_agent_cannot_score_an_unresolved_episode() -> Result<()> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1569,6 +1608,7 @@ fn the_learning_agent_reports_the_sample_size_behind_each_hit_rate() -> Result<(
             conclusion: "yes".to_string(),
             evidence: vec!["doc-1".to_string()],
             conviction: 0.7,
+            regime: None,
             outcome: Some(EpisodeOutcome {
                 resolved_at: now().saturating_sub(Duration::from_days(20 - i)),
                 correct: i < correct,
@@ -1593,6 +1633,7 @@ fn the_learning_agent_reports_the_sample_size_behind_each_hit_rate() -> Result<(
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView {
             state: RiskState::default(),
@@ -1943,6 +1984,7 @@ fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
                 now(),
             ),
             marks: BTreeMap::new(),
+            purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
         RiskView { state, limits },
         ComplianceView::default(),
@@ -2312,7 +2354,7 @@ fn the_credit_analyst_abstains_on_a_brief_about_no_instrument() -> Result<()> {
 /// standard roster and the same host settings [`organisation`] uses.
 fn organisation_without(desk: Arc<Desk>, without: &str) -> Result<Organisation> {
     let agents: Vec<_> = qip_investment_agents::chief::standard_agents(
-        desk,
+        desk.clone(),
         now(),
         vec!["web-traffic".to_string()],
         false,
@@ -2320,12 +2362,19 @@ fn organisation_without(desk: Arc<Desk>, without: &str) -> Result<Organisation> 
     .into_iter()
     .filter(|agent| agent.manifest().id != without)
     .collect();
+    // The second phase too (ADR 0466): an arbiter is left out the same way,
+    // so removing the Meta Brain is one call like removing any specialist.
+    let arbiters: Vec<_> = qip_investment_agents::chief::standard_arbiters(desk, now())
+        .into_iter()
+        .filter(|arbiter| arbiter.manifest().id != without)
+        .collect();
     Organisation::new(
         manifests::roster(now()),
         agents,
         AgentHost::new(42).with_language_model(Arc::new(DeterministicModel::new())),
         now(),
-    )
+    )?
+    .with_arbiters(arbiters)
 }
 
 /// Dispatch `brief` to the standard organisation and to the same organisation
@@ -2615,6 +2664,160 @@ fn removing_the_portfolio_asset_brain_drops_portfolio_asset_from_coverage() -> R
     let (with, without) = scopes_with_and_without(desk, &brief(), ids::PORTFOLIO_ASSET)?;
     assert!(with.contains(&Scope::PortfolioAsset), "{with:?}");
     assert!(!without.contains(&Scope::PortfolioAsset), "{without:?}");
+    Ok(())
+}
+
+/// R12-ASSET-3019's remaining scope: horizons, hedges and the factor and
+/// causal-driver allocation (ADR 0468). The register's purpose record for
+/// the one held position — ACME, 1,000 at 100, sized twenty days ago on a
+/// ten-day hypothesis, hedged by one held policy, loading 1.2 on a market
+/// factor — must reach the chief as figures checked against the fixture,
+/// and a book whose purpose nobody stated must read as *undeclared* and
+/// *unattributed*, never as unhedged or as allocated.
+///
+/// Mutations (each fired, see the lane report): compare `elapsed < span`
+/// for past-horizon — the count reads zero; file `Hedged` under the
+/// unhedged count — hedged reads zero; drop the `purpose` assignment in
+/// the kernel's `brief_the_desk_on_book` — covered by the kernel test.
+#[test]
+fn the_portfolio_asset_brain_reports_horizons_hedges_and_driver_allocation() -> Result<()> {
+    use qip_investment_agents::desk::{BookPurpose, HedgeStanding, HeldHorizon};
+    let acme = object("ACME").as_str().to_string();
+    let declared = |hedge: Option<HedgeStanding>| {
+        let mut purpose = BookPurpose::default();
+        purpose.horizons.insert(
+            acme.clone(),
+            HeldHorizon {
+                hypothesis: "hyp-acme-margin".to_string(),
+                horizon: Duration::from_days(10),
+                sized_at: Some(now().saturating_sub(Duration::from_days(20))),
+            },
+        );
+        if let Some(hedge) = hedge {
+            purpose.hedges.insert(acme.clone(), hedge);
+        }
+        purpose
+            .factor_exposure
+            .insert("equity_market".to_string(), dec!("120000"));
+        purpose
+    };
+    let finding_for = |purpose: BookPurpose| -> Result<qip_agents::finding::AgentFinding> {
+        let mut org = organisation(desk_with_purpose(Vec::new(), Held::Flagged, purpose))?;
+        let report = org.dispatch(&brief(), now(), &lineage());
+        Ok(report
+            .findings
+            .iter()
+            .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+            .expect("premise: the Portfolio/Asset Brain reported on the held book")
+            .clone())
+    };
+
+    let hedged = finding_for(declared(Some(HedgeStanding::Hedged(vec![
+        "policy-equity-overlay".to_string(),
+    ]))))?;
+    assert_eq!(fact_value(&hedged, "positions_held"), Some(1.0), "premise");
+    assert_eq!(fact_value(&hedged, "positions_without_horizon"), Some(0.0));
+    assert_eq!(
+        fact_value(&hedged, "positions_horizon_age_unknown"),
+        Some(0.0)
+    );
+    assert_eq!(
+        fact_value(&hedged, "positions_past_horizon"),
+        Some(1.0),
+        "twenty days held on a ten-day horizon is past it"
+    );
+    let remaining =
+        fact_value(&hedged, "nearest_horizon_remaining_fraction").expect("a dated horizon");
+    assert!(
+        (remaining + 1.0).abs() < 1e-9,
+        "ten days past a ten-day horizon leaves -1 of it, not {remaining}"
+    );
+    assert_eq!(fact_value(&hedged, "positions_hedged"), Some(1.0));
+    assert_eq!(fact_value(&hedged, "positions_unhedged"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "positions_hedge_undeclared"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "causal_drivers_allocated"), Some(1.0));
+    assert_eq!(
+        fact_value(&hedged, "largest_causal_driver_gross_share"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&hedged, "unattributed_gross_share"), Some(0.0));
+    assert_eq!(fact_value(&hedged, "factors_loaded"), Some(1.0));
+    let factor = fact_value(&hedged, "largest_factor_exposure_ratio").expect("equity is positive");
+    assert!(
+        (factor - 0.012).abs() < 1e-3,
+        "120,000 of factor exposure against about ten million of equity is not {factor}"
+    );
+
+    let unhedged = finding_for(declared(Some(HedgeStanding::Unhedged {
+        reason: "no hedge policy is declared for this deployment".to_string(),
+    })))?;
+    assert_eq!(fact_value(&unhedged, "positions_hedged"), Some(0.0));
+    assert_eq!(fact_value(&unhedged, "positions_unhedged"), Some(1.0));
+    assert_eq!(
+        fact_value(&unhedged, "positions_hedge_undeclared"),
+        Some(0.0)
+    );
+
+    let undeclared = finding_for(BookPurpose::default())?;
+    assert_eq!(
+        fact_value(&undeclared, "positions_held"),
+        Some(1.0),
+        "premise"
+    );
+    assert_eq!(
+        fact_value(&undeclared, "positions_hedge_undeclared"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&undeclared, "positions_unhedged"), Some(0.0));
+    assert_eq!(
+        fact_value(&undeclared, "positions_without_horizon"),
+        Some(1.0)
+    );
+    assert_eq!(fact_value(&undeclared, "positions_past_horizon"), Some(0.0));
+    assert_eq!(
+        fact_value(&undeclared, "causal_drivers_allocated"),
+        Some(0.0)
+    );
+    assert_eq!(
+        fact_value(&undeclared, "unattributed_gross_share"),
+        Some(1.0),
+        "a position sized on no recorded hypothesis is unattributed, not allocated"
+    );
+    assert!(
+        fact_value(&undeclared, "nearest_horizon_remaining_fraction").is_none(),
+        "no horizon is on record, so none can be near"
+    );
+    assert!(fact_value(&undeclared, "largest_factor_exposure_ratio").is_none());
+    Ok(())
+}
+
+/// R12-ASSET-3019's divestment clause: a position the register marked
+/// unwinding (R12-ASSET-1160, `Platform::begin_deliberate_close` on every
+/// desk order that sells the whole long) is counted as divested, and not
+/// as flagged. The existing coverage test only ever saw zero here, which a
+/// brain that never counted would also report.
+///
+/// Mutation: count `Held` instead of `Unwinding` — the count reads zero.
+#[test]
+fn the_portfolio_asset_brain_counts_a_position_being_divested() -> Result<()> {
+    let desk = desk_with_purpose(
+        Vec::new(),
+        Held::Unwinding,
+        qip_investment_agents::desk::BookPurpose::default(),
+    );
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::PORTFOLIO_ASSET)
+        .expect("premise: the brain reported on the held book");
+    assert_eq!(fact_value(finding, "positions_held"), Some(1.0), "premise");
+    assert_eq!(fact_value(finding, "positions_unwinding"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "positions_flagged_without_mandate"),
+        Some(0.0)
+    );
     Ok(())
 }
 
@@ -3384,6 +3587,7 @@ fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> R
                     now(),
                 ),
                 marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),
@@ -3467,6 +3671,7 @@ fn the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings
                     now(),
                 ),
                 marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),
@@ -3521,6 +3726,7 @@ fn adversary_desk(
                     now(),
                 ),
                 marks: BTreeMap::new(),
+                purpose: qip_investment_agents::desk::BookPurpose::default(),
             },
             RiskView {
                 state: RiskState::default(),
@@ -3805,6 +4011,289 @@ fn removing_the_commodities_analyst_drops_supply_chain_from_coverage() -> Result
     let (with, without) = scopes_with_and_without(desk, &brief, ids::COMMODITIES)?;
     assert!(with.contains(&Scope::SupplyChain), "{with:?}");
     assert!(!without.contains(&Scope::SupplyChain), "{without:?}");
+    Ok(())
+}
+
+// --- the Meta Brain (R12-AMBIENT-3024, ADR 0466) -----------------------------
+
+/// A panel agent that leans one way at a fixed conviction, under a rostered
+/// manifest, so a test can hold the panel's shape fixed and vary only the
+/// record the Meta Brain reads.
+#[derive(Debug)]
+struct Leaning {
+    manifest: qip_agents::manifest::AgentManifest,
+    direction: Direction,
+    conviction: f64,
+}
+
+impl qip_agents::runtime::Agent for Leaning {
+    fn manifest(&self) -> &qip_agents::manifest::AgentManifest {
+        &self.manifest
+    }
+
+    fn analyse(
+        &self,
+        ctx: &mut qip_agents::runtime::AgentContext,
+        brief: &AgentBrief,
+    ) -> Result<qip_agents::finding::AgentFinding> {
+        qip_investment_agents::support::FindingBuilder::new(ctx, brief.as_of, "a fixed lean")
+            .direction(self.direction, self.conviction)
+            .fact(qip_investment_agents::support::computed(
+                ctx,
+                "fixed_lean",
+                self.direction.sign(),
+                "sign",
+                &["fixture"],
+            ))
+            .evidence(vec!["fixture".to_string()])
+            .falsifiers(vec!["the fixture leans the other way".to_string()])
+            .build()
+    }
+}
+
+const TRENDING: &str = "trending/high";
+const CALM: &str = "calm/low";
+
+/// Research memory where the macro analyst was right 9 of 10 times in a
+/// trending tape and 1 of 10 in a calm one, and the equity analyst the
+/// reverse: pooled, the two are identical; by regime, opposite.
+fn regime_memory() -> ResearchMemory {
+    let mut memory = ResearchMemory::new();
+    let mut n = 0i64;
+    for (agent, regime, correct) in [
+        (ids::MACRO, TRENDING, 9),
+        (ids::MACRO, CALM, 1),
+        (ids::EQUITY, TRENDING, 1),
+        (ids::EQUITY, CALM, 9),
+    ] {
+        for i in 0..10 {
+            n += 1;
+            memory.record_episode(Episode {
+                run_id: AgentRunId::from_string(format!("run-meta-{n}")),
+                agent_id: agent.to_string(),
+                occurred_at: now().saturating_sub(Duration::from_days(60)),
+                question: "which way".to_string(),
+                conclusion: "positive".to_string(),
+                evidence: vec![],
+                conviction: 0.5,
+                regime: Some(regime.to_string()),
+                outcome: Some(EpisodeOutcome {
+                    resolved_at: now().saturating_sub(Duration::from_days(30)),
+                    correct: i < correct,
+                    realised_bps: Some(10.0),
+                    explanation: "fixture".to_string(),
+                }),
+            });
+        }
+    }
+    memory
+}
+
+fn meta_desk() -> Arc<Desk> {
+    let mut desk = Desk::empty(now());
+    desk.memory = qip_agents::runtime::Gated::new(
+        regime_memory(),
+        desk.memory.required(),
+        desk.memory.label(),
+    );
+    Arc::new(desk)
+}
+
+/// Two leaning panel agents — macro positive, equity `equity` — and, when
+/// `with_meta`, the standard arbiters after them.
+fn leaning_organisation(
+    desk: Arc<Desk>,
+    equity: Direction,
+    with_meta: bool,
+) -> Result<Organisation> {
+    let agents: Vec<Arc<dyn qip_agents::runtime::Agent>> = vec![
+        Arc::new(Leaning {
+            manifest: manifests::macro_analyst(now()),
+            direction: Direction::Positive,
+            conviction: 0.6,
+        }),
+        Arc::new(Leaning {
+            manifest: manifests::equity_analyst(now()),
+            direction: equity,
+            conviction: 0.6,
+        }),
+    ];
+    let arbiters = if with_meta {
+        qip_investment_agents::chief::standard_arbiters(desk, now())
+    } else {
+        Vec::new()
+    };
+    Organisation::new(manifests::roster(now()), agents, AgentHost::new(42), now())?
+        .with_arbiters(arbiters)
+}
+
+fn meta_finding(
+    report: &qip_investment_agents::OrganisationReport,
+) -> &qip_agents::finding::AgentFinding {
+    report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::META)
+        .expect("the meta brain reported")
+}
+
+/// R12-AMBIENT-3024, the disagreement clause. The panel is one positive and
+/// one negative finding at equal conviction, so its own balance is zero. The
+/// Meta Brain, run after it with its findings, weighs each by its author's
+/// record in the regime the brief names: in a trending tape the macro analyst
+/// (9 of 10) outweighs the equity analyst (1 of 10) and the resolution is
+/// (0.9 - 0.1) / (0.9 + 0.1) = +0.8; in a calm one it is -0.8. Pooled, both
+/// are 10 of 20 and the resolution would be zero — the figure a regime-blind
+/// reading gives, and the one this test refuses.
+#[test]
+fn the_meta_brain_resolves_a_contested_panel_by_each_authors_record_in_the_regime() -> Result<()> {
+    for (regime, expected) in [(TRENDING, 0.8), (CALM, -0.8)] {
+        let mut org = leaning_organisation(meta_desk(), Direction::Negative, true)?;
+        let report = org.dispatch(&brief().in_regime(regime), now(), &lineage());
+        assert!(report.is_contested(), "premise: the panel disagrees");
+        assert!(
+            report.balance().abs() < 1e-9,
+            "premise: the panel's own balance is zero, got {}",
+            report.balance()
+        );
+        let meta = meta_finding(&report);
+        let balance = fact_value(meta, "reliability_weighted_balance")
+            .unwrap_or_else(|| panic!("no resolution in {regime}: {}", meta.claim));
+        assert!(
+            (balance - expected).abs() < 1e-9,
+            "{regime}: resolved to {balance}, expected {expected}"
+        );
+        assert_eq!(
+            fact_value(meta, "disagreement_weighed_findings"),
+            Some(2.0),
+            "{regime}"
+        );
+        // Attention follows the same record: 0.9 / 1.0 to whichever analyst
+        // has been right in this regime.
+        let (strong, weak) = if regime == TRENDING {
+            (ids::MACRO, ids::EQUITY)
+        } else {
+            (ids::EQUITY, ids::MACRO)
+        };
+        let weight = |agent: &str| fact_value(meta, &format!("attention_weight:{agent}"));
+        assert!(
+            (weight(strong).expect("strong") - 0.9).abs() < 1e-9,
+            "{regime}"
+        );
+        assert!((weight(weak).expect("weak") - 0.1).abs() < 1e-9, "{regime}");
+        // A fact, never a vote: the panel's balance is unchanged by it.
+        assert_eq!(meta.direction, Direction::Neutral);
+        assert!(is_exactly_zero(meta.effective_conviction()));
+    }
+    Ok(())
+}
+
+/// An uncontested panel has nothing to resolve, and the Meta Brain says
+/// nothing about resolution — attention and reliability are still reported.
+#[test]
+fn the_meta_brain_reports_no_resolution_for_a_panel_that_agrees() -> Result<()> {
+    let mut org = leaning_organisation(meta_desk(), Direction::Positive, true)?;
+    let report = org.dispatch(&brief().in_regime(TRENDING), now(), &lineage());
+    assert!(!report.is_contested(), "premise: the panel agrees");
+    let meta = meta_finding(&report);
+    assert_eq!(fact_value(meta, "reliability_weighted_balance"), None);
+    let scopes = report.covered_scopes();
+    assert!(
+        !scopes.contains(&Scope::DisagreementResolution),
+        "{scopes:?}"
+    );
+    assert!(scopes.contains(&Scope::AttentionAllocation), "{scopes:?}");
+    assert!(scopes.contains(&Scope::RegimeReliability), "{scopes:?}");
+    Ok(())
+}
+
+/// R12-AMBIENT-3024's integration clause: removing the Meta Brain drops
+/// attention allocation, regime reliability and disagreement resolution from
+/// coverage, because no other agent evidences any of the three.
+#[test]
+fn removing_the_meta_brain_drops_its_three_scopes_from_coverage() -> Result<()> {
+    let three = [
+        Scope::AttentionAllocation,
+        Scope::RegimeReliability,
+        Scope::DisagreementResolution,
+    ];
+    let mut whole = leaning_organisation(meta_desk(), Direction::Negative, true)?;
+    let mut less = leaning_organisation(meta_desk(), Direction::Negative, false)?;
+    assert_eq!(
+        less.len() + 1,
+        whole.len(),
+        "premise: only the meta brain is left out"
+    );
+    let with = whole
+        .dispatch(&brief().in_regime(TRENDING), now(), &lineage())
+        .covered_scopes();
+    let without = less
+        .dispatch(&brief().in_regime(TRENDING), now(), &lineage())
+        .covered_scopes();
+    for scope in three {
+        assert!(
+            with.contains(&scope),
+            "{scope:?} not covered with it: {with:?}"
+        );
+        assert!(
+            !without.contains(&scope),
+            "{scope:?} covered without it: {without:?}"
+        );
+    }
+
+    // And in the production organisation: `Organisation::standard` builds
+    // it, and removing it by id is what drops the reliability scope there.
+    let mut standard = organisation(meta_desk())?;
+    let mut lacking = organisation_without(meta_desk(), ids::META)?;
+    assert_eq!(
+        lacking.len() + 1,
+        standard.len(),
+        "premise: the standard organisation holds it"
+    );
+    let with = standard
+        .dispatch(&brief(), now(), &lineage())
+        .covered_scopes();
+    let without = lacking
+        .dispatch(&brief(), now(), &lineage())
+        .covered_scopes();
+    for scope in [Scope::AttentionAllocation, Scope::RegimeReliability] {
+        assert!(with.contains(&scope), "{scope:?}: {with:?}");
+        assert!(!without.contains(&scope), "{scope:?}: {without:?}");
+    }
+    Ok(())
+}
+
+/// The second phase admits only a rostered arbiter, and never one also on the
+/// panel: it would arbitrate over a finding it had just written.
+#[test]
+fn an_arbiter_on_the_panel_or_off_the_roster_does_not_assemble() -> Result<()> {
+    let desk = meta_desk();
+    let meta = qip_investment_agents::chief::standard_arbiters(desk.clone(), now());
+    let as_agent: Arc<dyn qip_agents::runtime::Agent> = Arc::new(
+        qip_investment_agents::meta_brain::MetaBrain::new(manifests::meta_brain(now()), desk),
+    );
+    let doubled = Organisation::new(
+        manifests::roster(now()),
+        vec![as_agent],
+        AgentHost::new(1),
+        now(),
+    )?
+    .with_arbiters(meta.clone());
+    assert!(doubled.is_err(), "an arbiter also on the panel assembled");
+    let unrostered = Organisation::new(
+        qip_agents::governance::Roster::from_manifests(
+            manifests::roster(now())
+                .iter()
+                .filter(|manifest| manifest.id != ids::META)
+                .cloned()
+                .collect(),
+        ),
+        Vec::new(),
+        AgentHost::new(1),
+        now(),
+    )?
+    .with_arbiters(meta);
+    assert!(unrostered.is_err(), "an unrostered arbiter assembled");
     Ok(())
 }
 

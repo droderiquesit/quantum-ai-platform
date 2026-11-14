@@ -506,7 +506,7 @@ fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
         .expect("the book is stressed")
         .clone();
     let (worst, loss) =
-        qip_kernel::survival::worst_world(&stress).expect("the stress applied worlds");
+        qip_kernel::survival::worst_world(&stress.worlds()).expect("the stress applied worlds");
     assert!(
         loss > 0.20,
         "premise: the book must fail a world at the 20% tolerance, or a reserve of zero proves \
@@ -550,7 +550,7 @@ fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
     assert_eq!(unstressed.released, figures.deployable);
 
     // The world the book fails withholds the excess as a reserve.
-    let stressed = governor.size(figures, Some(&stress), 0.20, &views, at)?;
+    let stressed = governor.size(figures, Some(&stress.worlds()), 0.20, &views, at)?;
     let tail = stressed
         .tail
         .as_ref()
@@ -569,7 +569,7 @@ fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
     governor
         .signals_mut()
         .observe_calibration(0.45, 60, [MarketRegime::Trending]);
-    let decayed = governor.size(figures, Some(&stress), 0.20, &views, at)?;
+    let decayed = governor.size(figures, Some(&stress.worlds()), 0.20, &views, at)?;
     assert_eq!(
         decayed.released,
         stressed.released * CALIBRATION_FLOOR,
@@ -820,7 +820,7 @@ fn a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(name: &str) -
     };
     let mut governor = SurvivalGovernor::default();
     let unstressed = governor.size(figures, None, tolerance, &[], at)?;
-    let stressed = governor.size(figures, Some(&alone), tolerance, &[], at)?;
+    let stressed = governor.size(figures, Some(&alone.worlds()), tolerance, &[], at)?;
     let tail = stressed
         .tail
         .as_ref()
@@ -1031,7 +1031,7 @@ fn the_contagion_worlds_read_each_positions_region_and_counterparty_from_the_pla
     };
     let mut governor = SurvivalGovernor::default();
     let unstressed = governor.size(figures, None, tolerance, &[], at)?;
-    let stressed = governor.size(figures, Some(&alone), tolerance, &[], at)?;
+    let stressed = governor.size(figures, Some(&alone.worlds()), tolerance, &[], at)?;
     let tail = stressed
         .tail
         .as_ref()
