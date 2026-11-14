@@ -2647,13 +2647,15 @@
   {
     "id": "R12-LEDGER-10114",
     "status": "PARTIAL",
-    "current": "Cell journal reaches P2 and fills reach P1 through the wired spool/drain, and ledgerd books Filled; Hedged outcomes are shipped but not posted and no cycle-level or missed/failed-cycle replay exists.",
+    "current": "Cell journal reaches P2 and intents, hedges, fills and withdrawals reach P1 through the wired spool/drain. ledgerd books Filled and Settled to the balances and, since ADR 0490, keeps an order register: OrderSent and Hedged open a row, fills and withdrawals move it in the batch that books them, and an intent or hedge not marked simulated parks its cell at the fourth paper fence. No cycle-level identity, no missed/failed-cycle replay.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open",
-      "backend/crates/apps/qip-ledgerd/src/store.rs:730 Decision::Filled only",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs is_outcome (Hedged and OrderSent on P1)",
+      "backend/crates/apps/qip-ledgerd/src/store.rs LedgerStore::register_move and live_intent",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs::a_hedge_opens_a_register_row_before_it_fills_and_its_fills_move_the_row_and_the_balances",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs::a_hedge_not_marked_simulated_parks_its_cell_and_opens_no_register_row",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs::the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once"
     ],
-    "gap": "Ledger posting for hedges; multi-region cycle events; replay of missed/failed cycles; node -> broker -> ledgerd in one test.",
+    "gap": "As of 2026-11-13 (session t50-32): no cycle id on P1 records, so the register cannot group a multi-region cycle's legs; no replay that evaluates a missed or failed cycle; no node -> broker -> ledgerd test of a two-region cycle with a hedge (the register is proven at the store contract only).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2667,7 +2669,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Only fills are ledgered; the requirement lists intents, hedges and outcomes of multi-region cycles and replay evaluation."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Only fills are ledgered; the requirement lists intents, hedges and outcomes of multi-region cycles and replay evaluation. 2026-11-13, session t50-32: ADR 0490 adds the ledger's order register and extends the fourth paper fence to intents and hedges; four store-contract tests, six mutations each fired. Stays PARTIAL on the gap above."
   },
   {
     "id": "R12-CICD-10115",

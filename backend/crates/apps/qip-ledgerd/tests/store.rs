@@ -13,7 +13,10 @@ use qip_contracts::reflex::{
 use qip_core::rng::Rng;
 use qip_core::testing::Property;
 use qip_core::{Clock, Decimal, ManualClock, Timestamp, Xoshiro256, sha256_hex};
-use qip_ledgerd::store::{Delivery, Disposition, GENESIS, LedgerStore, P1Record, ParkReason};
+use qip_ledgerd::store::{
+    Delivery, Disposition, GENESIS, LedgerStore, OrderKind, OrderRow, OrderState, P1Record,
+    ParkReason,
+};
 use qip_ledgerd::telemetry::LedgerTelemetry;
 use qip_observability::metrics::{MetricValue, Metrics, names};
 use qip_portfolio::ledger::{PaperFill, post};
@@ -1398,4 +1401,251 @@ fn a_blank_settlement_cycle_venue_is_refused() {
     let dir = temp_dir("settle-blank");
     let (store, _) = open(&dir);
     assert!(store.with_settlement_cycle_venues([String::new()]).is_err());
+}
+
+// --- the order register (ADR 0490) ------------------------------------------
+
+fn sent(order: &str, quantity: u64, simulated: bool) -> Decision {
+    Decision::OrderSent {
+        order_id: order.to_string(),
+        venue: VENUE.to_string(),
+        quantity: quantity.to_string(),
+        simulated,
+        release_at: None,
+        equalised: false,
+        grants: Vec::new(),
+        grounds: Vec::new(),
+    }
+}
+
+fn hedged(order: &str, quantity: u64, simulated: bool) -> Decision {
+    Decision::Hedged {
+        order_id: order.to_string(),
+        venue: VENUE.to_string(),
+        object: "OBJ-ACME".to_string(),
+        quantity: quantity.to_string(),
+        simulated,
+        grounds: vec!["evidence:journal:feed_silent:3".to_string()],
+    }
+}
+
+fn row(store: &LedgerStore, order: &str) -> OrderRow {
+    store
+        .orders()
+        .expect("orders")
+        .into_iter()
+        .find(|r| r.order_id == order)
+        .unwrap_or_else(|| panic!("no register row for {order}"))
+}
+
+#[test]
+fn a_hedge_opens_a_register_row_before_it_fills_and_its_fills_move_the_row_and_the_balances() {
+    // The failure this prevents: R12-LEDGER-10114's "unledgered hedges are
+    // positions the books do not know". Before ADR 0490 `Decision::Hedged`
+    // reached P1 and the ledger advanced past it writing nothing, so a hedge
+    // that had not yet filled existed nowhere in the central books.
+    // Mutation verified: deleting the `Decision::Hedged` arm of
+    // `register_move` fails on the missing row for `a-1`; deleting the fill
+    // arm's addition leaves the intent `Open` after its whole fill; dropping
+    // the register row from the batch fails on the first row read.
+    let dir = temp_dir("register");
+    let (store, _) = open(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    let mut offset = 0;
+    let mut records = Vec::new();
+    let mut deliver = |store: &LedgerStore, record: P1Record| {
+        let disposition = store.apply(&at(offset, &record)).expect("apply");
+        offset += 1;
+        records.push(record);
+        disposition
+    };
+
+    // An intent and its fill: the row opens, then closes as filled.
+    deliver(&store, j.outcome(sent("a-0", 10, true)));
+    assert_eq!(row(&store, "a-0").state, OrderState::Open);
+    assert_eq!(row(&store, "a-0").kind, OrderKind::Intent);
+    deliver(
+        &store,
+        j.outcome(fill("a-0", 10, "10", BookSide::Ask, true)),
+    );
+    let intent = row(&store, "a-0");
+    assert_eq!(intent.state, OrderState::Filled);
+    assert_eq!(intent.filled, Decimal::parse("10").unwrap());
+
+    // The hedge: known to the books the moment it is sent, before any fill.
+    let before_hedge = store.balances().expect("balances");
+    assert!(
+        !before_hedge.is_empty(),
+        "premise: the intent's fill was booked"
+    );
+    assert_eq!(
+        deliver(&store, j.outcome(hedged("a-1", 10, true))),
+        Disposition::Advanced
+    );
+    let hedge = row(&store, "a-1");
+    assert_eq!(hedge.kind, OrderKind::Hedge);
+    assert_eq!(hedge.state, OrderState::Open);
+    assert_eq!(hedge.object.as_deref(), Some("OBJ-ACME"));
+    assert_eq!(hedge.quantity, Decimal::parse("10").unwrap());
+    assert_eq!(hedge.filled, Decimal::ZERO);
+    assert_eq!(
+        store.balances().expect("balances"),
+        before_hedge,
+        "a hedge that has not filled moves no balance; the register is a memo"
+    );
+
+    // A partial fill of the hedge moves the balances and the row together.
+    deliver(&store, j.outcome(fill("a-1", 4, "10", BookSide::Bid, true)));
+    let partial = store.balances().expect("balances");
+    assert_ne!(partial, before_hedge, "the hedge's fill moved no balance");
+    let hedge = row(&store, "a-1");
+    assert_eq!(hedge.state, OrderState::Open);
+    assert_eq!(hedge.filled, Decimal::parse("4").unwrap());
+
+    deliver(&store, j.outcome(fill("a-1", 6, "10", BookSide::Bid, true)));
+    let hedge = row(&store, "a-1");
+    assert_eq!(hedge.state, OrderState::Filled);
+    assert_eq!(hedge.filled, Decimal::parse("10").unwrap());
+
+    // A hedge withdrawn before it filled closes as withdrawn, not filled.
+    deliver(&store, j.outcome(hedged("a-2", 5, true)));
+    deliver(
+        &store,
+        j.outcome(Decision::MassCancelled {
+            order_id: "a-2".to_string(),
+            venue: VENUE.to_string(),
+            withdrawn: "5".to_string(),
+        }),
+    );
+    let withdrawn = row(&store, "a-2");
+    assert_eq!(withdrawn.state, OrderState::Withdrawn);
+    assert_eq!(withdrawn.withdrawn.as_deref(), Some("5"));
+    assert_eq!(withdrawn.filled, Decimal::ZERO);
+    assert_eq!(
+        store.balances().expect("balances"),
+        refold(&records),
+        "the register changed nothing a refold of the stream disagrees with"
+    );
+
+    // A redelivery moves nothing, the register included.
+    let rows = store.orders().expect("orders");
+    let last = records.len() as u64 - 1;
+    assert_eq!(
+        store
+            .apply(&at(last, &records[last as usize]))
+            .expect("apply"),
+        Disposition::Duplicate
+    );
+    assert_eq!(store.orders().expect("orders"), rows);
+}
+
+#[test]
+fn a_hedge_not_marked_simulated_parks_its_cell_and_opens_no_register_row() {
+    // The failure this prevents: the fourth paper fence held for fills and
+    // settlements only, so a hedge sent to a live venue was advanced past
+    // as if it were noise and would have opened a register row as an
+    // ordinary open hedge. Mutation verified: removing the `Hedged` arm of
+    // `live_intent` lets the record advance (`Advanced`, not `Parked`) and
+    // opens a row, failing both assertions.
+    let dir = temp_dir("live-hedge");
+    let (store, metrics) = open(&dir);
+    let mut j = Journal::new("cell-a", 1);
+
+    // Premise: the same hedge marked simulated is admitted.
+    {
+        let paper_dir = temp_dir("paper-hedge");
+        let (paper, _) = open(&paper_dir);
+        let mut p = Journal::new("cell-a", 1);
+        assert_eq!(
+            paper
+                .apply(&at(0, &p.outcome(hedged("a-0", 3, true))))
+                .expect("apply"),
+            Disposition::Advanced
+        );
+        assert_eq!(paper.orders().expect("orders").len(), 1);
+    }
+
+    let live = j.outcome(hedged("a-0", 3, false));
+    assert_eq!(
+        store.apply(&at(0, &live)).expect("apply"),
+        Disposition::Parked {
+            reason: ParkReason::LiveFill
+        }
+    );
+    assert_eq!(counter(&metrics, names::LEDGER_LIVE_FILL_REFUSED), 1);
+    assert!(store.orders().expect("orders").is_empty());
+    assert_eq!(store.tail("cell-a").expect("tail"), None);
+    assert!(
+        store
+            .journal()
+            .expect("journal")
+            .iter()
+            .any(|n| n.event == "live_fill" && n.detail.contains("hedge a-0")),
+        "the refusal names the hedge"
+    );
+}
+
+#[test]
+fn an_order_sent_not_marked_simulated_parks_its_cell_and_opens_no_register_row() {
+    // The same fence for an intent. Mutation verified: removing the
+    // `OrderSent` arm of `live_intent` advances the record and fails this.
+    let dir = temp_dir("live-intent");
+    let (store, _) = open(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    assert_eq!(
+        store
+            .apply(&at(0, &j.outcome(sent("a-0", 3, false))))
+            .expect("apply"),
+        Disposition::Parked {
+            reason: ParkReason::LiveFill
+        }
+    );
+    assert!(store.orders().expect("orders").is_empty());
+}
+
+#[test]
+fn an_order_opened_twice_in_one_session_parks_the_cell_and_keeps_the_first_row() {
+    // The failure this prevents: a second opening silently replacing the
+    // first row would forget the fills booked against it, and the register
+    // would understate a position the balances hold. Mutation verified:
+    // removing the already-open check advances the record and overwrites
+    // the row's `filled` with zero, failing both assertions.
+    let dir = temp_dir("reopen");
+    let (store, _) = open(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    store
+        .apply(&at(0, &j.outcome(hedged("a-0", 5, true))))
+        .expect("apply");
+    store
+        .apply(&at(
+            1,
+            &j.outcome(fill("a-0", 2, "10", BookSide::Ask, true)),
+        ))
+        .expect("apply");
+    assert_eq!(
+        store
+            .apply(&at(2, &j.outcome(hedged("a-0", 5, true))))
+            .expect("apply"),
+        Disposition::Parked {
+            reason: ParkReason::Integrity
+        }
+    );
+    assert_eq!(row(&store, "a-0").filled, Decimal::parse("2").unwrap());
+
+    // The same order id in a later session is a different order: the cell
+    // numbers orders from one at every start.
+    let other_dir = temp_dir("reopen-session");
+    let (other, _) = open(&other_dir);
+    let mut first = Journal::new("cell-a", 1);
+    let mut second = Journal::new("cell-a", 2);
+    other
+        .apply(&at(0, &first.outcome(hedged("a-0", 5, true))))
+        .expect("apply");
+    assert_eq!(
+        other
+            .apply(&at(1, &second.outcome(hedged("a-0", 5, true))))
+            .expect("apply"),
+        Disposition::Advanced
+    );
+    assert_eq!(other.orders().expect("orders").len(), 2);
 }
