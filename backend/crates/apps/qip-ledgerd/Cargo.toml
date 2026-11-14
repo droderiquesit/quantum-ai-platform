@@ -17,7 +17,6 @@ qip-storage.workspace = true
 qip-transport.workspace = true
 qip-portfolio.workspace = true
 qip-observability.workspace = true
-qip-telemetry-drain.workspace = true
 
 [dev-dependencies]
 qip-streaming.workspace = true
