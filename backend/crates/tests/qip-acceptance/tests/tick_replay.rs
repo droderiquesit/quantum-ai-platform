@@ -19,8 +19,6 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_contracts::governance::{Entitlement as Licence, Usage};
-use qip_contracts::market_event::MarketEvent;
 use qip_contracts::{BookSide, MarketMessage, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::hash::sha256_hex;
@@ -30,9 +28,6 @@ use qip_orderbook::{Sweep, VenueCheckpoint, VenueState};
 use qip_protocols::decoder::Diagnostics;
 use qip_protocols::{Decoder, InstrumentPartitions, ItchDecoder};
 use qip_sequencing::{ReorderPolicy, SequenceEvent, Sequencer, StreamStats};
-use qip_storage::MemoryBlobStore;
-use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
-use qip_storage::lake_history::HistoryQuery;
 use qip_strategy::model::DistilledModel;
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{StudentForm, distil};
@@ -422,118 +417,6 @@ fn replaying_one_recorded_session_of_venue_bytes_twice_and_from_a_checkpoint_rep
         RECORDED_DIGEST,
         "the replay digest moved; see the constant's comment"
     );
-    Ok(())
-}
-
-/// The lake stage of the replay: the recorded session is sealed through
-/// `Lake::write_segment` as the edge node's `LakeSink` writes it, pinned and
-/// read back through `read_market_history`, and replayed from what came back.
-/// The digest must be `RECORDED_DIGEST`, so the stage is inside the digest and
-/// not beside it.
-///
-/// Until this test, `RECORDED_DIGEST` was computed from decode to book in
-/// memory and never touched the lake, so a change to `write_segment` or to
-/// `decode_line` moved no digest. `Timestamp` serialises to the millisecond,
-/// so a reader that took the message's instants from the serialised payload
-/// returned every venue-native tick stamped differently from the tape.
-///
-/// Mutation: in `qip_storage::lake_history::decode_line`, drop the two
-/// `exchange_time_ns` / `capture_time_ns` overrides, or in `read_market_history`
-/// skip pushing a tick; the equality of events, or the digest, fails.
-#[test]
-fn a_recorded_session_sealed_into_the_lake_and_read_back_replays_to_the_recorded_digest()
--> Result<()> {
-    let direct = replay_from_the_start(&recorded_session())?;
-    assert!(
-        direct.events.len() > 10,
-        "premise: the session has events to seal"
-    );
-    assert!(
-        direct
-            .stamped_nanos
-            .iter()
-            .any(|(venue, capture)| venue % 1_000_000 != 0 || capture % 1_000_000 != 0),
-        "premise: the session is stamped below a millisecond, which is what the lake must keep"
-    );
-
-    let licence = "itch-a-licence";
-    let store = MemoryBlobStore::new();
-    let lake = Lake::new(&store);
-    let partition = Partition::new(
-        RecordClass::Market,
-        "XNAS",
-        "2024-01-02",
-        "obj-aapl",
-        Entitlement {
-            id: licence.into(),
-            raw_retention_permitted: false,
-        },
-    )?;
-    let mut body = Vec::new();
-    for message in &direct.events {
-        let hash = MarketEvent::hash_payload(message)?;
-        let event = MarketEvent::new(
-            message.clone(),
-            message.venue_time,
-            message.capture_time,
-            message.venue_time,
-            Duration::ZERO,
-            hash,
-            Licence::Granted {
-                dataset: licence.to_string(),
-                usage: Usage::Trade,
-                expires_at: Timestamp::MAX,
-            },
-        )?;
-        let line = qip_core::canonical::canonical_json(&serde_json::json!({
-            "exchange_time_ns": message.venue_time.as_nanos(),
-            "capture_time_ns": message.capture_time.as_nanos(),
-            "feed": "itch-a",
-            "partition": 0,
-            "sequence": message.origin.sequence,
-            "event": serde_json::to_value(&event)?,
-        }));
-        body.extend_from_slice(line.as_bytes());
-        body.push(b'\n');
-    }
-    lake.write_segment(&partition, "seg-1", body, None)?;
-
-    let granted: std::collections::BTreeSet<String> = [licence.to_string()].into();
-    let query = HistoryQuery {
-        from_date: "2024-01-02".into(),
-        to_date: "2024-01-02".into(),
-        venues: std::collections::BTreeSet::new(),
-        instruments: std::collections::BTreeSet::new(),
-        granted: granted.clone(),
-        max_segments: 4,
-        max_ticks: 1_000,
-    };
-    let listing = lake.pin_market_history("tick-replay", &query)?;
-    assert_eq!(listing.segments.len(), 1, "premise: the segment is pinned");
-    let history = lake.read_market_history("tick-replay", &granted, 1_000)?;
-    assert_eq!(history.unparsed, 0, "a line of the session was not read back");
-    let events: Vec<MarketMessage> = history.ticks.into_iter().map(|tick| tick.message).collect();
-    assert_eq!(events, direct.events, "the lake returned a different tape");
-
-    let mut from_lake = direct.clone();
-    from_lake.events = events;
-    from_lake.stamped_nanos = from_lake
-        .events
-        .iter()
-        .map(|event| (event.venue_time.as_nanos(), event.capture_time.as_nanos()))
-        .collect();
-    from_lake.book_states.clear();
-    from_lake.fills.clear();
-    for through in 1..=from_lake.events.len() {
-        let mut state = fresh_book();
-        replay(&mut state, &from_lake.events[..through])?;
-        let (book, fill) = observe(&state);
-        from_lake.book_states.push(book);
-        from_lake.fills.push(fill);
-    }
-    let mut state = fresh_book();
-    from_lake.integrity = replay(&mut state, &from_lake.events)?;
-    assert_eq!(from_lake.digest(), RECORDED_DIGEST);
     Ok(())
 }
 

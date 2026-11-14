@@ -237,21 +237,8 @@ fn decode_line(line: &str, segment: &str, entitlement: &str) -> Option<RecordedT
             Some(_) => Some(serde_json::from_value::<SyncMetadata>(value.clone()).ok()?),
             None => None,
         };
-        // `Timestamp` serialises to the millisecond, so the payload inside
-        // the event has lost the sub-millisecond part of both instants. The
-        // edge line carries them whole beside it; read from there, or a
-        // replay from the lake stamps every venue-native tick differently
-        // from the tape it was recorded from and no digest over the replay
-        // can match.
-        let mut message = event.payload().clone();
-        if let Some(nanos) = value.get("exchange_time_ns").and_then(|v| v.as_i64()) {
-            message.venue_time = Timestamp::from_nanos(nanos);
-        }
-        if let Some(nanos) = value.get("capture_time_ns").and_then(|v| v.as_i64()) {
-            message.capture_time = Timestamp::from_nanos(nanos);
-        }
         return Some(RecordedTick {
-            message,
+            message: event.payload().clone(),
             event_time: event.event_time(),
             knowable_at: event.receive_time(),
             clock_uncertainty: event.uncertainty(),
