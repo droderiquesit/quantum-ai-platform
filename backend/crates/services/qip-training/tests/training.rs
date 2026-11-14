@@ -2096,3 +2096,151 @@ fn each_fidelity_bar_alone_refuses_a_student_that_misses_only_it() {
         );
     }
 }
+
+fn member(name: &str, family: ModelFamily, data: &TrainingDataset) -> Result<TrainedTeacher> {
+    LocalTrainer::new().fit(&spec(name, family), data, fitted_at())
+}
+
+/// R12-MODEL-4006. A blend of a linear and a boosted teacher predicts the
+/// share-weighted mean of its members, and an interval calibrated on the
+/// blend's own errors covers about nine in ten fresh outcomes. A blend whose
+/// prediction ignored its weights, or whose interval was a member's, would
+/// report an uncertainty for a function nobody evaluates.
+///
+/// Mutation: drop `share *` from the sum in `Ensemble::predict_all` — the
+/// blend is the members' total, and the weighted-mean assertion fails on the
+/// first row. Mutation: return the unnormalised weights from
+/// `Ensemble::weighted` — the shares are 3 and 1 and the share assertion
+/// fails.
+#[test]
+fn an_ensemble_predicts_the_share_weighted_mean_of_its_members_and_its_interval_covers_fresh_outcomes()
+-> Result<()> {
+    use qip_training::{ConformalInterval, Ensemble};
+    let sigma = 0.3;
+    let training = linear_dataset("train", 400, 0.1, &[1.5, -0.75], sigma, 401)?;
+    let linear = member(
+        "ridge-member",
+        ModelFamily::Linear { ridge: 0.0 },
+        &training,
+    )?;
+    let boosted = member("stump-member", ModelFamily::boosted(), &training)?;
+    let calibration = linear_dataset("calibration", 500, 0.1, &[1.5, -0.75], sigma, 402)?;
+    let fresh = linear_dataset("fresh", 4_000, 0.1, &[1.5, -0.75], sigma, 403)?;
+
+    let ensemble = Ensemble::weighted(vec![(linear.clone(), 3.0), (boosted.clone(), 1.0)])?;
+    let shares = ensemble.shares();
+    assert_eq!(shares.len(), 2);
+    assert!(approx_eq(shares[0].1, 0.75, 1e-12), "{shares:?}");
+    assert!(approx_eq(shares[1].1, 0.25, 1e-12), "{shares:?}");
+
+    let blended = ensemble.predict_all(&fresh)?;
+    let from_linear = linear.predict_all(&fresh)?;
+    let from_boosted = boosted.predict_all(&fresh)?;
+    // Premise: the members disagree, so a blend that returned either one
+    // alone would not pass the weighted-mean assertion by accident.
+    assert!(
+        from_linear
+            .iter()
+            .zip(&from_boosted)
+            .any(|(a, b)| (a - b).abs() > 1e-3),
+        "premise: the two classes predict differently somewhere"
+    );
+    for ((blend, a), b) in blended.iter().zip(&from_linear).zip(&from_boosted) {
+        assert!(approx_eq(*blend, 0.75 * a + 0.25 * b, 1e-9));
+    }
+
+    let interval = ConformalInterval::of_predictions(
+        &ensemble.predict_all(&calibration)?,
+        calibration.targets(),
+        0.1,
+    )?;
+    assert_eq!(interval.calibration_rows(), 500);
+    let covered = blended
+        .iter()
+        .zip(fresh.targets())
+        .filter(|(prediction, target)| {
+            let (low, high) = interval.around(**prediction);
+            low <= **target && **target <= high
+        })
+        .count();
+    let coverage = covered as f64 / fresh.len() as f64;
+    assert!(
+        coverage >= 0.87,
+        "a 90% interval covered {coverage:.3} of the blend's fresh outcomes"
+    );
+    assert!(interval.half_width() < 2.2 * sigma);
+    Ok(())
+}
+
+/// The members' disagreement is zero for one member and above zero for two
+/// that predict differently: it is the reading that says whether the blend
+/// holds any diversity at all.
+///
+/// Mutation: measure each member against its own prediction instead of the
+/// blend in `Ensemble::disagreement` — two differing members read zero and
+/// the second assertion fails.
+#[test]
+fn an_ensembles_disagreement_is_zero_for_one_member_and_positive_for_two_that_differ() -> Result<()>
+{
+    use qip_training::Ensemble;
+    let training = humped_dataset("train", 400, 411)?;
+    let linear = member(
+        "ridge-member",
+        ModelFamily::Linear { ridge: 0.0 },
+        &training,
+    )?;
+    let boosted = member("stump-member", ModelFamily::boosted(), &training)?;
+    let probe = humped_dataset("probe", 200, 412)?;
+
+    let alone = Ensemble::weighted(vec![(linear.clone(), 1.0)])?;
+    assert!(approx_eq(alone.disagreement(&probe)?, 0.0, 1e-12));
+    let both = Ensemble::weighted(vec![(linear, 1.0), (boosted, 1.0)])?;
+    // A hump no line fits: the two classes are far apart on it.
+    assert!(
+        both.disagreement(&probe)? > 0.1,
+        "two classes a hump separates read as agreeing: {}",
+        both.disagreement(&probe)?
+    );
+    Ok(())
+}
+
+/// An ensemble is refused, each for its own reason, when it has no member,
+/// a weight that is not above zero or not finite, one model twice, or
+/// members fitted on different features. Each would otherwise yield a blend
+/// that reads as diversity and is not.
+///
+/// Mutation: remove the repeated-reference check in `Ensemble::weighted` —
+/// the model blended with itself is admitted and that case's assertion
+/// fails. Mutation: remove the weight check — a zero weight is admitted.
+#[test]
+fn an_ensemble_refuses_no_member_a_weight_not_above_zero_a_repeated_member_and_other_features()
+-> Result<()> {
+    use qip_training::Ensemble;
+    let training = linear_dataset("train", 200, 0.0, &[1.0, 0.5], 0.1, 421)?;
+    let linear = member(
+        "ridge-member",
+        ModelFamily::Linear { ridge: 0.0 },
+        &training,
+    )?;
+    let boosted = member("stump-member", ModelFamily::boosted(), &training)?;
+    // Premise: the pair itself is admissible, so each refusal below is about
+    // the one thing changed.
+    assert!(Ensemble::weighted(vec![(linear.clone(), 1.0), (boosted.clone(), 2.0)]).is_ok());
+
+    let refused = Ensemble::weighted(Vec::new()).expect_err("an empty ensemble");
+    assert!(refused.message().contains("at least one member"));
+    for weight in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let refused = Ensemble::weighted(vec![(linear.clone(), 1.0), (boosted.clone(), weight)])
+            .expect_err("a weight not above zero");
+        assert!(refused.message().contains("above zero"), "{weight}");
+    }
+    let refused = Ensemble::weighted(vec![(linear.clone(), 1.0), (linear.clone(), 1.0)])
+        .expect_err("one model twice");
+    assert!(refused.message().contains("member twice"));
+    let wider = linear_dataset("wider", 200, 0.0, &[1.0, 0.5, 0.25], 0.1, 422)?;
+    let other = member("wide-member", ModelFamily::Linear { ridge: 0.0 }, &wider)?;
+    let refused =
+        Ensemble::weighted(vec![(linear, 1.0), (other, 1.0)]).expect_err("different features");
+    assert!(refused.message().contains("different features"));
+    Ok(())
+}

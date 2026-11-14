@@ -139,6 +139,7 @@ use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
 use qip_training::ConformalInterval;
+use qip_training::Ensemble;
 use qip_training::adversarial::PerturbationPolicy;
 use qip_training::campaign::{CampaignDraft, TrainingCampaign};
 use qip_training::dataset::TrainingDataset;
@@ -229,6 +230,38 @@ pub struct ClassChoice {
     /// "split" when the challenger leads in some and not all, so a regime
     /// win is not averaged into an overall ranking.
     pub standing: String,
+    /// Which classes the regime's precedent blended this round, and the
+    /// ensemble card registered for them, if one was (R12-MODEL-4006).
+    pub ensemble: EnsembleChoice,
+}
+
+/// What a round's ensemble selection came to.
+///
+/// The members are chosen by [`select_members`] from the board's row for the
+/// regime the platform classified, before the round's own outcomes join it.
+/// One member is not an ensemble and registers no card: the round's single
+/// teacher already carries its own interval.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnsembleChoice {
+    /// The family keys selected in this regime, baseline first.
+    pub members: Vec<&'static str>,
+    /// The registry reference of the ensemble's card, where two or more
+    /// members were blended and registered.
+    pub registered: Option<String>,
+    /// Why no card was registered, where none was.
+    pub unregistered: Option<String>,
+}
+
+impl EnsembleChoice {
+    pub fn describe(&self) -> String {
+        match (&self.registered, &self.unregistered) {
+            (Some(reference), _) => {
+                format!("ensemble {reference} of {}", self.members.join(" + "))
+            }
+            (None, Some(reason)) => format!("no ensemble: {reason}"),
+            (None, None) => "no ensemble".to_string(),
+        }
+    }
 }
 
 impl ClassChoice {
@@ -239,7 +272,8 @@ impl ClassChoice {
             None => "was not fitted".to_string(),
         };
         format!(
-            "registered {} in {} ({}); baseline {} the bar, challenger {}; standing by regime: {}",
+            "registered {} in {} ({}); baseline {} the bar, challenger {}; {}; standing by \
+             regime: {}",
             self.registered,
             self.regime,
             self.reason.as_str(),
@@ -249,6 +283,7 @@ impl ClassChoice {
                 "missed"
             },
             challenger,
+            self.ensemble.describe(),
             self.standing
         )
     }
@@ -278,6 +313,34 @@ fn choose_class(board: &Scoreboard, regime: &str) -> (ModelFamily, ClassReason) 
         (CHALLENGER_CLASS, ClassReason::PrecedentPrefersChallenger)
     } else {
         (BASELINE_CLASS, ClassReason::PrecedentBelowBaseline)
+    }
+}
+
+/// Which classes blend in `regime`, and the weight each carries
+/// (R12-MODEL-4006), read from the board before this round's own outcomes
+/// join it, as [`choose_class`] is.
+///
+/// A class is a member where its record in this regime is *established* (the
+/// board's own evidence band) and its shrunk score is above zero; its weight
+/// is that score. So the selection is the regime's: a class that has kept
+/// clearing the skill bar here carries more of the blend, one that never has
+/// carries none, and a regime the board has not seen blends nothing. No
+/// figure is chosen here — the band and the scores are the board's.
+///
+/// Fail-closed toward the baseline, as the class choice is: where no class
+/// qualifies the selection is the baseline alone, which is not an ensemble.
+fn select_members(board: &Scoreboard, regime: &str) -> Vec<(ModelFamily, f64)> {
+    let members: Vec<(ModelFamily, f64)> = [BASELINE_CLASS, CHALLENGER_CLASS]
+        .into_iter()
+        .filter_map(|class| {
+            let standing = board.score(class.as_str(), regime)?;
+            (standing.is_confident() && standing.score() > 0.0).then(|| (class, standing.score()))
+        })
+        .collect();
+    if members.is_empty() {
+        vec![(BASELINE_CLASS, 1.0)]
+    } else {
+        members
     }
 }
 
@@ -2647,6 +2710,10 @@ impl LearningDesk {
         // board, so a round cannot vote for itself: the class registered now
         // is decided by what earlier rounds in this regime showed.
         let (chosen, reason) = choose_class(&self.classes, regime);
+        // The blend's members are read at the same point, for the same
+        // reason: weights taken after this round's outcomes joined the board
+        // would be weights the round's own holdout had a vote in.
+        let selection = select_members(&self.classes, regime);
         // The class is in the model's name, so the registry reference a
         // strategy candidate carries says which function it is. Nothing
         // else on the card records the class: `register_fit` copies the
@@ -2731,11 +2798,23 @@ impl LearningDesk {
             self.classes
                 .observe(Outcome::binary(CHALLENGER_CLASS.as_str(), regime, skilled));
         }
+        let ensemble = self.register_ensemble(
+            subject,
+            regime,
+            &selection,
+            &baseline,
+            challenger.as_ref().ok(),
+            &holdout,
+            &evaluator,
+            (&lineage, &provenance, &dataset),
+            now,
+        )?;
         let teacher = match chosen {
             ModelFamily::Linear { .. } => baseline,
             ModelFamily::BoostedStumps { .. } => challenger?,
         };
         let choice = ClassChoice {
+            ensemble,
             regime: regime.to_string(),
             registered: chosen.as_str(),
             reason,
@@ -2831,6 +2910,157 @@ impl LearningDesk {
         });
 
         Ok((registration, distillation, distillation_refusal, choice))
+    }
+
+    /// Blend the classes the regime selected and register the blend's card
+    /// (R12-MODEL-4006).
+    ///
+    /// The card is the ensemble's own: its members and their shares, the
+    /// regime the shares were read under, how far the members stand apart on
+    /// the holdout, the evaluator's judgement of the *blend's* predictions,
+    /// and a conformal interval calibrated on the blend's own holdout errors
+    /// — not a member's interval, which describes a different function. The
+    /// weights come from earlier rounds' outcomes, so the holdout the
+    /// interval is calibrated on had no part in choosing them.
+    ///
+    /// It stays at development stage and is not offered for promotion: the
+    /// platform's provider serves the two teacher forms and a blend is
+    /// neither, and the card says so. One selected member, or a selected
+    /// class the trainer could not fit, registers nothing and says why.
+    #[allow(clippy::too_many_arguments)]
+    fn register_ensemble(
+        &mut self,
+        subject: &ObjectId,
+        regime: &str,
+        selection: &[(ModelFamily, f64)],
+        baseline: &TrainedTeacher,
+        challenger: Option<&TrainedTeacher>,
+        holdout: &TrainingDataset,
+        evaluator: &Evaluator,
+        (lineage, provenance, dataset): (
+            &FeatureLineage,
+            &Option<(String, String)>,
+            &TrainingDataset,
+        ),
+        now: Timestamp,
+    ) -> Result<EnsembleChoice> {
+        let members: Vec<&'static str> =
+            selection.iter().map(|(class, _)| class.as_str()).collect();
+        let unregistered = |reason: String| EnsembleChoice {
+            members: members.clone(),
+            registered: None,
+            unregistered: Some(reason),
+        };
+        if selection.len() < 2 {
+            return Ok(unregistered(format!(
+                "{regime} selects {} alone",
+                members.join(", ")
+            )));
+        }
+        let mut fitted = Vec::with_capacity(selection.len());
+        for (class, weight) in selection {
+            let teacher = match class {
+                ModelFamily::Linear { .. } => Some(baseline),
+                ModelFamily::BoostedStumps { .. } => challenger,
+            };
+            let Some(teacher) = teacher else {
+                return Ok(unregistered(format!(
+                    "{regime} selects {} and it could not be fitted this round",
+                    class.as_str()
+                )));
+            };
+            fitted.push((teacher.clone(), *weight));
+        }
+        let ensemble = Ensemble::weighted(fitted)?;
+        let predictions = ensemble.predict_all(holdout)?;
+        let judgement = evaluator.judge(&predictions, holdout.targets())?;
+
+        let mut metrics = BTreeMap::new();
+        metrics.insert("holdout_r2".to_string(), judgement.r2);
+        metrics.insert(
+            "holdout_rmse".to_string(),
+            rmse(&predictions, holdout.targets()),
+        );
+        metrics.insert(
+            "holdout_observations".to_string(),
+            judgement.observations as f64,
+        );
+        let name = format!("bar-ensemble-{}", subject.as_str());
+        let version = format!("0.{}.0", self.fits);
+        let mut card = ModelCard::new(
+            qip_core::ModelId::from_string(format!("{name}@{version}")),
+            name,
+            version,
+            "central-research",
+            now,
+        )
+        .with_features(baseline.feature_names().to_vec())
+        .with_training_data(vec![dataset.name().to_string()])
+        .with_benchmark(format!(
+            "holdout R-squared over the mean predictor on {}",
+            dataset.name()
+        ))
+        .with_purpose(format!(
+            "share-weighted blend of {} for the next bar's return on {}, members and shares \
+             selected by the class board in {regime}",
+            members.join(" and "),
+            subject.as_str()
+        ))
+        .with_limitation(
+            "a research-lane blend, not a served form: the provider serves a single teacher \
+             and this card is not offered for promotion",
+        );
+        if !judgement.skilled {
+            card = card.with_limitation("the blend did not clear the skill bar on its holdout");
+        }
+        card.parameters
+            .insert("ensemble_regime".to_string(), regime.to_string());
+        for (reference, share) in ensemble.shares() {
+            card.parameters
+                .insert(format!("ensemble_share:{reference}"), format!("{share}"));
+        }
+        card.parameters.insert(
+            "ensemble_disagreement".to_string(),
+            format!("{}", ensemble.disagreement(holdout)?),
+        );
+        match ConformalInterval::of_predictions(&predictions, holdout.targets(), CONFORMAL_ALPHA) {
+            Ok(interval) => {
+                card.parameters.insert(
+                    "conformal_alpha".to_string(),
+                    format!("{}", interval.alpha()),
+                );
+                card.parameters.insert(
+                    "conformal_half_width".to_string(),
+                    format!("{}", interval.half_width()),
+                );
+                card.parameters.insert(
+                    "conformal_calibration_rows".to_string(),
+                    interval.calibration_rows().to_string(),
+                );
+            }
+            Err(error) => card.limitations.push(format!(
+                "no calibrated prediction interval: {}",
+                error.message()
+            )),
+        }
+        card.evaluations.push(EvaluationRecord {
+            evaluated_at: now,
+            dataset: dataset.name().to_string(),
+            metrics,
+            passed: judgement.skilled,
+        });
+        lineage.record_on(&mut card);
+        record_validation_scope(&mut card, regime, dataset)?;
+        record_subject(&mut card, subject.as_str())?;
+        stamp_provenance(&mut card, provenance);
+        card.self_fitted = true;
+        let reference = card.reference();
+        self.registry.register(card)?;
+        Ok(EnsembleChoice {
+            members,
+            registered: Some(reference),
+            unregistered: None,
+        })
     }
 }
 
@@ -6092,6 +6322,149 @@ mod tests {
             choice.standing
         );
         assert!(round.describe().contains("standing by regime: split; "));
+        Ok(())
+    }
+
+    /// R12-MODEL-4006. The ensemble's members and shares are the regime's.
+    /// Where the board holds an established record for both classes the round
+    /// registers a blend whose shares follow each class's score *in that
+    /// regime*, with a conformal interval calibrated on the blend's own
+    /// holdout errors; a switch to a regime where the standings are reversed
+    /// reverses the shares; and a switch to a regime the board has never
+    /// seen selects the baseline alone and registers no ensemble.
+    ///
+    /// The failure this prevents: one blend carried across regimes. A share
+    /// earned where stumps kept clearing the bar says nothing about a regime
+    /// where they never have, and an interval for that blend would be a
+    /// calibrated statement about the wrong function.
+    ///
+    /// Mutation: have `select_members` return both classes at weight one
+    /// whatever the board says — the shares assertion fails in the first
+    /// regime (0.5 against 0.5). Mutation: read the board under a fixed
+    /// regime key instead of the round's — the reversed-regime assertion
+    /// fails. Mutation: delete `self.registry.register(card)?` in
+    /// `register_ensemble` — the card is not found.
+    #[test]
+    fn a_regime_switch_changes_which_classes_the_ensemble_blends_and_at_what_share() -> Result<()> {
+        const REVERSED: &str = "trend/turbulent";
+        let mut desk = learning_desk();
+        for round in 0..60 {
+            // In REGIME the challenger always cleared the bar and the
+            // baseline half the time; in REVERSED the other way round.
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, round % 2 == 0);
+            desk.observe_class(&BASELINE_CLASS, REVERSED, true);
+            desk.observe_class(&CHALLENGER_CLASS, REVERSED, round % 2 == 0);
+        }
+        // Premise: the third regime is one the board has never scored.
+        assert_eq!(
+            desk.class_board()
+                .score(BASELINE_CLASS.as_str(), OTHER_REGIME),
+            None
+        );
+        let bars = super::tests_support::learnable(400);
+        let both = vec![BASELINE_CLASS.as_str(), CHALLENGER_CLASS.as_str()];
+        let shares = |desk: &LearningDesk, reference: &str| -> Result<(f64, f64)> {
+            let card = desk
+                .registry()
+                .get(reference)
+                .ok_or_else(|| Error::not_found("the ensemble's card"))?;
+            let share_of = |class: &ModelFamily| -> Result<f64> {
+                let prefix = format!("ensemble_share:bar-{}-", class.as_str());
+                card.parameters
+                    .iter()
+                    .find(|(key, _)| key.starts_with(&prefix))
+                    .and_then(|(_, value)| value.parse().ok())
+                    .ok_or_else(|| Error::not_found("a member's share on the card"))
+            };
+            Ok((share_of(&BASELINE_CLASS)?, share_of(&CHALLENGER_CLASS)?))
+        };
+
+        // The first regime: both classes blend, the challenger the larger.
+        let first = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.class_choice)
+            .ok_or_else(|| Error::not_found("a class choice"))?
+            .ensemble;
+        assert_eq!(first.members, both);
+        let reference = first
+            .registered
+            .ok_or_else(|| Error::not_found("a registered ensemble"))?;
+        let (baseline_share, challenger_share) = shares(&desk, &reference)?;
+        assert!((baseline_share + challenger_share - 1.0).abs() < 1e-9);
+        assert!(
+            challenger_share > baseline_share && baseline_share > 0.0,
+            "in {REGIME} the challenger's record is the stronger: {baseline_share} against \
+             {challenger_share}"
+        );
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the ensemble's card"))?;
+        assert_eq!(card.stage, ModelStage::Development);
+        assert_eq!(
+            card.parameters.get("ensemble_regime").map(String::as_str),
+            Some(REGIME)
+        );
+        assert!(card.validated_regimes.contains(REGIME));
+        let half_width: f64 = card
+            .parameters
+            .get("conformal_half_width")
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| Error::not_found("the blend's conformal half-width"))?;
+        assert!(half_width.is_finite() && half_width > 0.0, "{half_width}");
+        assert_eq!(
+            card.parameters.get("conformal_alpha").map(String::as_str),
+            Some("0.1")
+        );
+        assert_eq!(card.evaluations.len(), 1, "the blend's own evaluation");
+
+        // The switch to the reversed regime reverses the shares.
+        let second = desk
+            .maybe_learn(&subject(), &bars, REVERSED, 2, at())?
+            .and_then(|round| round.class_choice)
+            .ok_or_else(|| Error::not_found("a class choice"))?
+            .ensemble;
+        assert_eq!(second.members, both);
+        let reversed = second
+            .registered
+            .ok_or_else(|| Error::not_found("a registered ensemble"))?;
+        assert_ne!(reversed, reference, "each round's blend is its own version");
+        let (baseline_share, challenger_share) = shares(&desk, &reversed)?;
+        assert!(
+            baseline_share > challenger_share && challenger_share > 0.0,
+            "in {REVERSED} the baseline's record is the stronger: {baseline_share} against \
+             {challenger_share}"
+        );
+
+        // The switch to an unseen regime selects the baseline alone.
+        let cards_before = desk.registry().len();
+        let third = desk
+            .maybe_learn(&subject(), &bars, OTHER_REGIME, 3, at())?
+            .and_then(|round| round.class_choice)
+            .ok_or_else(|| Error::not_found("a class choice"))?
+            .ensemble;
+        assert_eq!(third.members, vec![BASELINE_CLASS.as_str()]);
+        assert_eq!(third.registered, None);
+        assert!(
+            third
+                .unregistered
+                .as_deref()
+                .is_some_and(|reason| reason.contains(OTHER_REGIME)),
+            "{:?}",
+            third.unregistered
+        );
+        assert!(
+            desk.registry()
+                .iter()
+                .all(|card| !card.name.starts_with("bar-ensemble-")
+                    || !card.validated_regimes.contains(OTHER_REGIME)),
+            "an ensemble was registered in a regime that selects one class"
+        );
+        assert!(
+            desk.registry().len() > cards_before,
+            "premise: the round still registered"
+        );
         Ok(())
     }
 
