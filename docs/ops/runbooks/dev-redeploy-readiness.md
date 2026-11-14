@@ -41,6 +41,12 @@ None of these paths is in `scripts/agent-policy.json` `protected_paths`. The one
 
 3. **qip-infra role gaps.** In `infrastructure/terraform/modules/cicd/main.tf` `infra_roles`, nothing grants `bigquery.datasets.create`, `bigquery.datasets.setIamPolicy` or `cloudasset.feeds.*`; a grep for `bigquery|cloudasset` finds nothing. Add a custom role with exactly those permissions. The exact set has not been checked against live (UNVERIFIED). The first apply still races the grant, so owner step 3 (P1 or `scripts/bootstrap-deploy.sh dev`) covers it.
 
+   **What the first apply found (infra run 127, dev, 2026-11-14).** The custom role landed as `qipInfraWarehouseFeeds_<env>` and was three permissions short. The apply created 57 of its resources, the firewall policy among them, and was refused on the rest:
+   - both asset feeds: "Error 403: Request denied by Cloud IAM. Missing required IAM permission on requested scope". Cloud Asset Inventory's access-control page asks a feed's creator for `cloudasset.assets.exportResource` (RESOURCE) or `cloudasset.assets.exportIamPolicy` (IAM_POLICY) beside `cloudasset.feeds.create`.
+   - the read of BigQuery's encryption account: "User does not have bigquery.jobs.create permission".
+
+   The three are now in the role, the feeds wait for `module.cicd`, and `modules/data` waits for the binding, so that its read is deferred to the apply while the role is changing. That the feeds are then created is UNVERIFIED until the next `up`; the binding race in the paragraph above still applies to that one run, and its remedy is the same, dispatch `up` again.
+
 4. **Kargo promotion loop.** Why it loops:
    - `infrastructure/gitops/kargo/base/projectconfig.yaml:15` sets `autoPromotionEnabled: true` for dev.
    - The promotion's `git-commit` step pushes to `main`.
