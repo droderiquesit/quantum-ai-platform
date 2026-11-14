@@ -1356,3 +1356,13 @@ fn a_paper_book_failing_the_counterparty_failure_world_withholds_a_reserve_named
         qip_kernel::tail::COUNTERPARTY_FAILURE,
     )
 }
+
+/// R12-RISK-4122. A paper book that fails the model-failure world (every
+/// position takes its own worst adverse excursion, no netting) withholds a
+/// reserve named for that world. Mutation: delete the `MODEL_FAILURE` push in
+/// `tail::worlds` — the lookup panics rather than passing on a sibling's
+/// reserve.
+#[test]
+fn a_paper_book_failing_the_model_failure_world_withholds_a_reserve_named_for_it() -> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(qip_kernel::tail::MODEL_FAILURE)
+}
