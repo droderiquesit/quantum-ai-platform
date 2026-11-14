@@ -1874,3 +1874,35 @@ fn a_custody_statement_whose_holding_is_not_an_exact_decimal_parks_the_cell() {
     );
     assert!(custody_notes(&store).is_empty());
 }
+
+/// R12-LEDGER-8141. An export is only useful to an auditor if it can be
+/// compared with a replay of the stream; an export that was edited, or that
+/// is stale, must not verify as a faithful copy.
+///
+/// Mutation: make `verify_export` return `Ok(())` first and the two
+/// tampered exports verify, so the test fails.
+#[test]
+fn an_export_verifies_against_the_replayed_history_and_a_tampered_or_stale_one_is_refused() {
+    let mut a = Journal::new("cell-a", 1);
+    let a0 = a.outcome(fill("a-0", 100, "10.50", BookSide::Ask, true));
+    let a1 = a.outcome(fill("a-1", 50, "11.25", BookSide::Bid, true));
+    let dir = temp_dir("verify-export");
+    let (store, _) = open(&dir);
+    let partition = schedule(&[a0, a1]);
+    for delivery in &partition {
+        store.apply(delivery).expect("apply");
+    }
+    let exported = store.export_state().expect("export state");
+    assert!(!exported.balances.is_empty(), "premise: there are balances");
+    assert!(exported.chain_records_count > 0, "premise: there is a chain");
+    store.verify_export(&exported).expect("a faithful export verifies");
+
+    let mut edited = exported.clone();
+    let key = edited.balances.keys().next().expect("a key").clone();
+    edited.balances.insert(key, "123456789".to_string());
+    assert!(store.verify_export(&edited).is_err(), "edited balance refused");
+
+    let mut stale = exported.clone();
+    stale.chain_records_count -= 1;
+    assert!(store.verify_export(&stale).is_err(), "stale count refused");
+}

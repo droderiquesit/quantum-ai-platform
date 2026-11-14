@@ -2012,6 +2012,38 @@ impl LedgerStore {
         })
     }
 
+    /// Check a stored export against this ledger as its event history folds
+    /// it. This is the auditor's comparison: the export is never loaded
+    /// back (there is no import); the ledger replays its own stream and the
+    /// export must agree with that replay.
+    ///
+    /// Refuses, naming the difference, an export whose balances differ from
+    /// the refold in any key or amount, or whose chain record count differs.
+    /// An export that was edited after it was written, or taken from another
+    /// ledger, would otherwise read as a faithful copy.
+    pub fn verify_export(&self, export: &LedgerStateExport) -> Result<()> {
+        let refolded: BTreeMap<String, String> = self
+            .refold()?
+            .into_iter()
+            .map(|((account, unit), amount)| (format!("{}:{}", account, unit), amount.to_string()))
+            .collect();
+        if refolded != export.balances {
+            return Err(Error::invalid(
+                "the export's balances differ from the balances this ledger's history folds to; \
+                 the export is not a copy of this ledger and is refused",
+            ));
+        }
+        let held = self.chain_records()?.len() as u64;
+        if held != export.chain_records_count {
+            return Err(Error::invalid(format!(
+                "the export counts {} chain records and this ledger holds {held}; the export is \
+                 refused rather than read as current",
+                export.chain_records_count
+            )));
+        }
+        Ok(())
+    }
+
     /// The balance rows an event moves, each checked, or a refusal: a
     /// balance that would overflow, or a quantity-holding account
     /// ([`Account::holds_a_quantity`]) that would go below zero.
