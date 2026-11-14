@@ -1860,8 +1860,8 @@
   },
   {
     "id": "R12-WORLD-3078",
-    "status": "PARTIAL",
-    "current": "NowBrain::standard registers six estimators: Kalman (state-space), particle, robust, the graph estimator GraphFilter, the neural state-space estimator NeuralFilter (an online-trained adaptive linear neuron over the variable's last two increments, EstimatorKind::Neural, abstaining for a three-reading warm-up) and the symbolic estimator SymbolicFilter (the declared constraint read as an estimate: the local-level posterior truncated to the admissible set, EstimatorKind::Symbolic, abstaining where the rule does not bind). Two estimators on one variable both contribute and their ModelDisagreement is recorded, for the graph, causal, neural and symbolic members each; in a full cycle the network's dispute on an accelerating return is journaled. CausalFilter exists and contributes when registered but is not in the standard set.",
+    "status": "COMPLETE",
+    "current": "NowBrain::standard registers seven estimators, one or more of every kind the requirement names: Kalman (Bayesian state-space), particle, robust, the graph estimator GraphFilter, the neural state-space estimator NeuralFilter (an online-trained adaptive linear neuron over the variable's last two increments, abstaining for a three-reading warm-up), the symbolic estimator SymbolicFilter (the declared constraint read as an estimate: the local-level posterior truncated to the admissible set, abstaining where the rule does not bind) and the causal estimator CausalFilter, which proposes slope x lagged parent belief on returns only, from edges whose regression recorded its fitted slope (CausalEdge::slope, set by establish_temporal_precedence) and read at the edge's own lag; hand-asserted edges carry no slope and are not passed. Two estimators on one variable both contribute and their ModelDisagreement is recorded for the graph, causal, neural and symbolic members each; in full cycles the network's and the causal estimator's disputes are journaled (the latter on an edge the cycle itself fitted) and the symbolic candidate is fused into the bounded halted belief.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/now.rs::GraphFilter",
       "backend/crates/services/qip-world-model/src/now.rs::RelatedBelief and Evidence::related",
@@ -1869,11 +1869,9 @@
       "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::new",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::the_graph_estimator_reads_the_containing_scopes_belief_and_disagrees_with_the_kalman_filter",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::two_estimators_on_one_variable_both_contribute_and_their_disagreement_is_recorded",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests (four estimators registered)",
       "backend/crates/services/qip-world-model/src/now.rs CausalFilter, CausalParent, NowBrain::set_causal_parents",
       "backend/crates/runtime/qip-kernel/src/platform.rs Platform::now_causal_parents",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::a_causal_estimator_contributes_beside_the_kalman_and_their_disagreement_is_recorded",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism",
       "backend/crates/services/qip-world-model/src/now.rs::NeuralFilter and NowBrain::standard",
       "backend/crates/services/qip-world-model/src/now.rs::SymbolicFilter, EstimatorKind::Symbolic and Evidence::constraint",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::the_neural_estimator_learns_a_trend_and_its_disagreement_with_the_kalman_filter_is_recorded",
@@ -1882,9 +1880,22 @@
       "backend/crates/services/qip-world-model/tests/now_brain.rs::a_share_read_past_its_bound_is_estimated_at_the_bound_by_the_symbolic_estimator",
       "backend/crates/services/qip-world-model/tests/now_brain.rs::the_standard_brain_registers_the_neural_and_symbolic_estimators",
       "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_neural_estimator_competes_in_the_cycle_and_its_dispute_is_journaled",
-      "docs/adr/0498 (neural and symbolic estimators in the standard ensemble)"
+      "docs/adr/0498 (neural and symbolic estimators in the standard ensemble)",
+      "backend/crates/services/qip-world-model/src/causal.rs::CausalEdge::slope and CausalEdge::with_slope",
+      "backend/crates/services/qip-world-model/src/granger.rs::establish_temporal_precedence_controlling_for (records test.coefficient as the slope)",
+      "backend/crates/services/qip-world-model/src/now.rs::CausalParent::lag, CAUSAL_VARIABLE, NowBrain::causal_beliefs (lagged read) and NowBrain::standard (seven workers)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::now_causal_parents (fitted slope and lag only)",
+      "backend/crates/services/qip-world-model/tests/granger.rs::a_granger_edge_carries_its_fitted_slope_and_a_claimed_edge_carries_none",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_causal_estimator_reads_its_parent_as_of_the_fitted_lag_and_never_a_newer_belief",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_causal_estimator_proposes_for_returns_only",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::in_the_standard_brain_the_causal_estimator_contributes_and_its_dispute_is_recorded",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::decide_tests::the_now_brain_is_told_each_instruments_causal_parents_by_their_fitted_slope_and_lag",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_causal_estimator_competes_in_the_cycle_on_a_fitted_edge_and_its_dispute_is_journaled",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_symbolic_estimator_is_in_the_fused_set_of_a_bounded_variable_in_the_cycle",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests (seven estimators registered)",
+      "docs/adr/0499 (fitted slope, lagged read, returns only, causal in standard)"
     ],
-    "gap": "2026-11-12 (t50-36, ADR 0498). Closed: EstimatorKind::Neural has an implementation (NeuralFilter) and a symbolic estimator (SymbolicFilter) proposes estimates from the constraint; both are registered in NowBrain::standard, and a full-cycle test journals the network's dispute. Still open: CausalFilter is not registered in NowBrain::standard, because the causal graph's edge strength is a Granger partial R2 (fit, not slope) without its lag, and fusing R2*parent by default would bias every promoted belief; it joins once edges carry a fitted coefficient used at its lag, restricted to return. No full-cycle test shows the causal or the symbolic candidate in a journaled dispute (the symbolic one's in-cycle disagreements on bounded variables stay under the half-scale threshold on the test tapes). So the causal model, one of the five named kinds, does not contribute on the default path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1894,10 +1905,10 @@
       "R12-WORLD-3075"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-world-model --test now_brain && cargo test -p qip-kernel --test now_lattice",
+    "verification": "cd backend && cargo test -p qip-world-model --test now_brain --test granger && cargo test -p qip-kernel --test now_lattice && cargo test -p qip-kernel --lib the_now_brain_is_told_each_instruments_causal_parents_by_their_fitted_slope_and_lag",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL. 2026-10-31 (L4): two mutants killed (CausalFilter always abstains; drop the mechanism sign), restored sha256-identical. Skeptic REFUTED and found the default registration would bias promoted beliefs; the filter was taken out of standard() in the follow-up commit. Stays PARTIAL. 2026-11-12 (t50-36): neural and symbolic estimators added and registered. Mutants killed, each restored sha256-identical: NeuralFilter always abstains (unit and cycle tests); NeuralFilter weight update zeroed (the learned-transition test: 38.5 vs 39); SymbolicFilter always abstains (two tests); untruncated mean (disagreement test); either worker dropped from standard(). Stays PARTIAL on the causal default registration."
+    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL. 2026-10-31 (L4): two mutants killed (CausalFilter always abstains; drop the mechanism sign), restored sha256-identical. Skeptic REFUTED and found the default registration would bias promoted beliefs; the filter was taken out of standard() in the follow-up commit. Stays PARTIAL. 2026-11-12 (t50-36): neural and symbolic estimators added and registered. Mutants killed, each restored sha256-identical: NeuralFilter always abstains (unit and cycle tests); NeuralFilter weight update zeroed (the learned-transition test: 38.5 vs 39); SymbolicFilter always abstains (two tests); untruncated mean (disagreement test); either worker dropped from standard(). Stays PARTIAL on the causal default registration. 2026-11-14 (t50-36, ADR 0499): Granger edges carry their fitted slope, the kernel passes only fitted edges with their lag, the brain reads a parent's belief as of the lag, the causal estimator is restricted to return and registered in standard(); the skeptic's objection (R2 is fit, not slope; no lag; would bias every belief) is answered by each of those. Mutants killed, each restored sha256-identical: no slope recorded; partial R2 recorded as the slope (slope 0.81 vs -0.7); newest parent belief read instead of the lagged one; all three return-only seams dropped (any one alone does not fire, by design); causal dropped from standard(); kernel passes mechanism-signed strength (-0.6 vs -0.35); kernel drops the slope filter (NVDA claimed edge passed); kernel passes no parent (cycle dispute test); SymbolicFilter always abstains (cycle halted test, ensemble 2 vs 3 expected). Graded COMPLETE."
   },
   {
     "id": "R12-AMBIENT-3079",

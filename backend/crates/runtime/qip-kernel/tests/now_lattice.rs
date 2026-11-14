@@ -169,7 +169,7 @@ fn every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests(
     let review: NowReview = last(&platform, "now:");
     assert!(!review.deltas.is_empty());
     assert!(review.deltas.iter().all(|d| !d.manifests.is_empty()));
-    assert_eq!(review.ensemble.len(), 6, "six estimators registered");
+    assert_eq!(review.ensemble.len(), 7, "seven estimators registered");
     let scopes: BTreeSet<&str> = review
         .variables_by_scope
         .keys()
@@ -402,7 +402,7 @@ fn an_estimator_outage_shrinks_the_ensemble_and_the_now_state_still_updates() {
     assert!(platform.now_brain_mut().remove_worker("particle-bootstrap"));
     platform.run_cycle(start());
     let review: NowReview = last(&platform, "now:");
-    assert_eq!(review.ensemble.len(), 5);
+    assert_eq!(review.ensemble.len(), 6);
     assert!(!review.deltas.is_empty());
 }
 
@@ -769,4 +769,114 @@ fn the_neural_estimator_competes_in_the_cycle_and_its_dispute_is_journaled() {
         late.iter().any(|named| *named),
         "a journaled dispute on AAA's return names the network: {late:?}"
     );
+}
+
+/// R12-WORLD-3078 in the cycle: the causal estimator competes on the latent
+/// return, on an edge the cycle itself fitted. Eighty days in which BBB's
+/// return is 0.8 x AAA's from the day before let the temporal-precedence
+/// pass establish AAA -> BBB with its fitted slope and its one-day lag. On
+/// day one AAA rises 4%; on day two BBB does not follow. The causal
+/// candidate for BBB on day two reads AAA's day-one belief through the
+/// slope and disagrees with BBB's own flat tape, and the journaled dispute
+/// names it alongside the other six estimators in the review's ensemble.
+///
+/// Mutation: in `Platform::now_causal_parents`, pass no parent (`continue`
+/// on every edge) -- no journaled dispute names `causal-parents`.
+#[test]
+fn the_causal_estimator_competes_in_the_cycle_on_a_fitted_edge_and_its_dispute_is_journaled() {
+    let mut platform = platform();
+    // A deterministic, sign-alternating driver with varying size.
+    let driver = |i: i64| -> f64 {
+        let x = ((i * 7919 + 13) % 97) as f64 / 97.0 - 0.5;
+        0.03 * x
+    };
+    let mut history = Vec::new();
+    let (mut a, mut b) = (100.0_f64, 100.0_f64);
+    for i in 0..80_i64 {
+        let at = day(i - 79);
+        let ra = driver(i);
+        let rb = if i == 0 { 0.0 } else { 0.8 * driver(i - 1) };
+        a *= ra.exp();
+        b *= rb.exp();
+        history.push(bar("AAA", at, a));
+        history.push(bar("BBB", at, b));
+    }
+    platform.observe(history);
+    let names_causal = |review: &NowReview| {
+        review.disagreements.iter().any(|d| {
+            d.disputed_propositions
+                .iter()
+                .any(|p| p.contains("obj-BBB") && p.contains("return"))
+                && d.views.iter().any(|v| v.id == "causal-parents")
+        })
+    };
+    // Day one: AAA rises 4%, BBB follows yesterday's driver.
+    a *= 1.04;
+    b *= (0.8 * driver(79)).exp();
+    platform.observe(vec![bar("AAA", day(1), a), bar("BBB", day(1), b)]);
+    platform.run_cycle(day(1));
+    let first: NowReview = last(&platform, "now:");
+    assert!(
+        first.ensemble.iter().any(|id| id == "causal-parents"),
+        "premise: the causal estimator is registered: {:?}",
+        first.ensemble
+    );
+    assert!(
+        platform
+            .world()
+            .causal()
+            .incoming("obj-BBB", day(1))
+            .iter()
+            .any(|e| e.cause == "obj-AAA" && e.slope.is_some_and(|s| s > 0.5)),
+        "premise: the cycle fitted AAA -> BBB with its slope"
+    );
+    // Day two: BBB does not follow AAA's 4%.
+    platform.observe(vec![bar("AAA", day(2), a), bar("BBB", day(2), b)]);
+    platform.run_cycle(day(2));
+    let second: NowReview = last(&platform, "now:");
+    assert!(
+        names_causal(&second),
+        "a journaled dispute on BBB's return names the causal estimator: {:?}",
+        second.disagreements
+    );
+}
+
+/// R12-WORLD-3078 in the cycle: the symbolic estimator's candidate is in
+/// the fused set of a bounded variable the cycle observes. The kill-switch
+/// state is read every cycle as `halted` in `[0, 1]`, at zero on a running
+/// platform, so half of the local-level posterior lies below a bound the
+/// rule forbids and the rule binds. The promoted `halted` belief carries one
+/// more ensemble member than on an otherwise identical platform with the
+/// symbolic estimator removed -- the premise that the extra member is the
+/// symbolic one -- and it sits inside the unit interval.
+///
+/// Mutation: make `SymbolicFilter::propose` always abstain -- the two
+/// ensembles are the same size.
+#[test]
+fn the_symbolic_estimator_is_in_the_fused_set_of_a_bounded_variable_in_the_cycle() {
+    let halted = |platform: &Platform| -> (u32, f64) {
+        let store = platform.now_brain().brain().store();
+        store
+            .partitions()
+            .filter_map(|p| store.partition(p))
+            .flat_map(|vars| vars.values())
+            .find(|v| v.key.name == "halted")
+            .map(|v| (v.ensemble, v.mean))
+            .expect("the cycle promotes the halted state")
+    };
+    let mut with = platform();
+    with.observe(calm_history());
+    with.run_cycle(start());
+    let mut without = platform();
+    without.observe(calm_history());
+    assert!(without.now_brain_mut().remove_worker("symbolic-constraint"));
+    without.run_cycle(start());
+    let (members, mean) = halted(&with);
+    let (members_without, _) = halted(&without);
+    assert_eq!(
+        members,
+        members_without + 1,
+        "the symbolic candidate is fused into the halted belief"
+    );
+    assert!((0.0..=1.0).contains(&mean), "{mean}");
 }

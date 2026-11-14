@@ -309,6 +309,7 @@ pub fn establish_temporal_precedence_controlling_for(
             recorded_at,
         )?
         .with_confidence(confidence)?
+        .with_slope(test.coefficient)?
         .with_evidence(vec![evidence_id])
         .with_confounders(adjusted_for, suspected),
     ))

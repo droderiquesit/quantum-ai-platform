@@ -77,6 +77,10 @@ spread on no new evidence.
 
 ## What remains
 
+*Closed 2026-11-14 by ADR 0499: edges carry their fitted slope and the
+causal estimator joins the standard set on it, at its lag, on returns only.
+The paragraph below is kept as it was decided.*
+
 The causal estimator is still not standard. The causal graph's edge
 strength is a Granger partial R² without its lag, and fused by default it
 would bias every promoted belief toward `R²·parent`. It joins once edges

@@ -16262,10 +16262,15 @@ impl Platform {
 
     /// Each priced instrument's causal parents among the priced instruments,
     /// from the causal graph's live edges known now (R12-WORLD-3078). The
-    /// transmission is the edge's strength, signed by whether its mechanism
-    /// preserves the sign. An edge from a cause the NOW brain holds no state
-    /// for (a factor, an event class) gives the estimator nothing to read and
-    /// is left out.
+    /// transmission is the edge's fitted slope — the regression coefficient
+    /// of the effect's return on the cause's, signed by the fit itself — and
+    /// the lag is the edge's own. An edge no regression fitted carries no
+    /// slope and is left out: its `strength` is a partial R² or a claimed
+    /// fraction, and the NOW Brain fuses what it is given into every
+    /// promoted return, so a measure of fit passed as a slope would bias the
+    /// belief the lattice reads. An edge from a cause the NOW brain holds no
+    /// state for (a factor, an event class) gives the estimator nothing to
+    /// read and is left out too.
     fn now_causal_parents(
         &self,
         now: Timestamp,
@@ -16278,15 +16283,14 @@ impl Platform {
                 if !self.price_history.contains_key(&edge.cause) || edge.cause == *effect {
                     continue;
                 }
-                let sign = if edge.mechanism.preserves_sign() {
-                    1.0
-                } else {
-                    -1.0
+                let Some(slope) = edge.slope else {
+                    continue;
                 };
                 parents.entry(effect.clone()).or_default().push(
                     qip_world_model::now::CausalParent {
                         cause: edge.cause.clone(),
-                        transmission: sign * edge.strength,
+                        transmission: slope,
+                        lag: edge.lag,
                     },
                 );
             }
@@ -31890,36 +31894,65 @@ mod decide_tests {
         .expect("the platform assembles")
     }
 
-    /// R12-WORLD-3078: the NOW brain is told each priced instrument's causal
-    /// parents among the priced instruments, signed by mechanism. An edge
-    /// from a cause the brain holds no state for is left out.
+    /// R12-WORLD-3078: the NOW Brain is told each priced instrument's causal
+    /// parents with the slope a regression fitted and the lag it fitted it
+    /// at. A hand-asserted mechanism claim carries a strength and no slope,
+    /// and is not passed: fused by default its strength would be read as a
+    /// slope it is not. An edge from an unpriced cause is not passed either.
     ///
-    /// Mutation: in `now_causal_parents`, drop the sign -- the inverting
-    /// edge's transmission then reads positive.
+    /// Mutations: pass `edge.strength` signed by mechanism instead of the
+    /// slope -- the AAPL transmission reads -0.6 and the slope assertion
+    /// fails; drop the `edge.slope` filter -- the claimed edge from NVDA is
+    /// passed and the length assertion fails.
     #[test]
-    fn the_now_brain_is_told_each_instruments_causal_parents_signed_by_mechanism() {
+    fn the_now_brain_is_told_each_instruments_causal_parents_by_their_fitted_slope_and_lag() {
         use qip_world_model::causal::{CausalEdge, Mechanism};
         let now = Timestamp::from_secs(1_760_000_100);
         let mut platform = small_book_platform();
         feed_history(&mut platform, "AAPL", 30);
         feed_history(&mut platform, "MSFT", 30);
+        feed_history(&mut platform, "NVDA", 30);
         let edge = |cause: &str, mechanism: Mechanism| {
-            CausalEdge::new(cause, "MSFT", mechanism, 0.6, Duration::from_hours(1), now)
+            CausalEdge::new(cause, "MSFT", mechanism, 0.6, Duration::from_days(1), now)
                 .expect("a valid edge")
         };
         platform.world.update(|world| {
             world
-                .claim_causal(edge("AAPL", Mechanism::CompetitiveSubstitution))
+                .claim_causal(
+                    edge("AAPL", Mechanism::InverseTemporalPrecedence)
+                        .with_slope(-0.35)
+                        .expect("a fitted slope"),
+                )
                 .expect("the edge is claimed");
             world
-                .claim_causal(edge("FACTOR", Mechanism::TemporalPrecedence))
+                .claim_causal(edge("NVDA", Mechanism::CompetitiveSubstitution))
+                .expect("the edge is claimed");
+            world
+                .claim_causal(
+                    edge("FACTOR", Mechanism::TemporalPrecedence)
+                        .with_slope(0.4)
+                        .expect("a fitted slope"),
+                )
                 .expect("the edge is claimed");
         });
+        assert!(
+            platform
+                .world
+                .read()
+                .causal()
+                .incoming("MSFT", now)
+                .iter()
+                .any(|e| e.cause == "NVDA"),
+            "premise: the claimed edge is live"
+        );
         let parents = platform.now_causal_parents(now);
-        let msft = parents.get("MSFT").expect("MSFT has a priced parent");
-        assert_eq!(msft.len(), 1, "an unpriced cause was passed on: {msft:?}");
+        let msft = parents
+            .get("MSFT")
+            .expect("MSFT has a priced, fitted parent");
+        assert_eq!(msft.len(), 1, "only the fitted, priced parent: {msft:?}");
         assert_eq!(msft[0].cause, "AAPL");
-        assert!((msft[0].transmission + 0.6).abs() < 1e-12, "{msft:?}");
+        assert!((msft[0].transmission + 0.35).abs() < 1e-12, "{msft:?}");
+        assert_eq!(msft[0].lag, Duration::from_days(1));
         assert!(!parents.contains_key("AAPL"));
     }
 

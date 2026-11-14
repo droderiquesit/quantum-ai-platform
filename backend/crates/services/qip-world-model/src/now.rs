@@ -847,13 +847,32 @@ pub struct Evidence<'a> {
 }
 
 /// A causal parent of a scope, as the brain is told it each step: the parent
-/// scope's id and the signed transmission from it, in `[-1, 1]` (negative
-/// where the mechanism inverts the sign).
+/// scope's id, the fitted slope of this scope's return on the parent's
+/// return (signed: negative where the parent's move is answered by an
+/// opposite one), and the lag at which the slope was fitted.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CausalParent {
     pub cause: String,
     pub transmission: f64,
+    /// How long after the parent's return this scope's return answers it:
+    /// the estimator reads the parent's belief as of this long before the
+    /// child's reading, never a newer one.
+    pub lag: Duration,
 }
+
+/// The one variable the causal estimator proposes for (R12-WORLD-3078):
+/// the causal graph's slopes are fitted on returns, so they say what a
+/// parent's return implies for a child's return and nothing about its
+/// volatility, spread or any other variable.
+pub const CAUSAL_VARIABLE: &str = "return";
+
+/// How many promoted beliefs of each causal variable the brain keeps, so a
+/// parent's belief can be read as of its lag.
+const CAUSAL_HISTORY: usize = 16;
+
+/// One return variable's last promoted beliefs, `(observed_at, mean,
+/// variance)`, oldest first.
+type CausalHistory = std::collections::VecDeque<(Timestamp, f64, f64)>;
 
 /// A causal parent's promoted belief, as an estimator reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -1082,12 +1101,16 @@ impl StateFilter for GraphFilter {
 }
 
 /// A causal estimator (R12-WORLD-3078): what the scope's causal parents'
-/// promoted beliefs imply for it, `Σ t·m` over parents with signed
-/// transmission `t` and promoted mean `m`, with variance `Σ t²·v` plus the
-/// process variance. It reads no reading of the scope itself, so where the
-/// tape and the graph disagree its candidate and the filters' diverge and
-/// the ensemble records the disagreement. It abstains where no parent has a
-/// promoted belief.
+/// lagged beliefs imply for its return, `Σ b·m` over parents with fitted
+/// slope `b` and the parent's promoted mean `m` as of the edge's lag before
+/// this reading, with variance `Σ b²·v` plus the process variance — the
+/// regression's own prediction of the child's return from the parents'
+/// past, never a measure of fit multiplied into a level. It reads no reading
+/// of the scope itself, so where the tape and the graph disagree its
+/// candidate and the filters' diverge and the ensemble records the
+/// disagreement. It abstains on every variable but [`CAUSAL_VARIABLE`],
+/// where no parent has a belief old enough for its lag, and where no
+/// parent is stated.
 #[derive(Debug, Default)]
 pub struct CausalFilter;
 
@@ -1099,6 +1122,9 @@ impl StateFilter for CausalFilter {
         EstimatorKind::Causal
     }
     fn propose(&mut self, e: &Evidence<'_>) -> Result<Option<Candidate>> {
+        if e.key.name != CAUSAL_VARIABLE {
+            return Ok(None);
+        }
         let parents: Vec<&CausalBelief> = e
             .causal
             .iter()
@@ -1541,6 +1567,10 @@ pub struct NowBrain {
     /// Each scope id's causal parents, as the caller last stated them
     /// (R12-WORLD-3078). Replaced whole on every statement.
     causal_parents: BTreeMap<String, Vec<CausalParent>>,
+    /// The last [`CAUSAL_HISTORY`] promoted beliefs of each
+    /// [`CAUSAL_VARIABLE`], as `(observed_at, mean, variance)`, so a causal
+    /// parent is read as of its lag. Dropped with the variable on expiry.
+    causal_history: BTreeMap<(PartitionKey, VariableKey), CausalHistory>,
     /// Predictive-interval hits and trials per partition: how often the
     /// readings landed inside the prior's 80% interval.
     coverage: BTreeMap<PartitionKey, (u64, u64)>,
@@ -1562,26 +1592,28 @@ impl NowBrain {
             workers: Vec::new(),
             store: NowStore::default(),
             causal_parents: BTreeMap::new(),
+            causal_history: BTreeMap::new(),
             coverage: BTreeMap::new(),
             issued: 0,
         })
     }
 
-    /// The six in-tree filters over the standard catalogue: the three
+    /// The seven in-tree filters over the standard catalogue: the three
     /// single-variable filters, the graph estimator over the scope graph,
-    /// the neural state-space estimator and the symbolic estimator
-    /// (R12-WORLD-3078). The last two abstain where they would only repeat
-    /// the Kalman answer — the network until it has history to recur on, the
-    /// rule where it does not bind — so neither is counted as agreement it
-    /// did not earn.
+    /// the neural state-space estimator, the symbolic estimator and the
+    /// causal estimator (R12-WORLD-3078). The last three abstain where they
+    /// would only repeat the Kalman answer or would estimate nothing — the
+    /// network until it has history to recur on, the rule where it does not
+    /// bind, the causal model on every variable but [`CAUSAL_VARIABLE`] and
+    /// wherever no parent with a fitted slope has a belief as old as its lag
+    /// — so none is counted as agreement it did not earn.
     ///
-    /// [`CausalFilter`] is not registered here, deliberately. The causal
-    /// graph's edge strength is a Granger partial R², a measure of fit and
-    /// not a slope, and it carries a lag the filter does not apply. Fused by
-    /// default, its candidate would pull every promoted belief toward
-    /// `R²·parent`, volatility and spread included, which estimates nothing.
-    /// It joins the standard set once edges carry a fitted coefficient
-    /// (R12-WORLD-3078's open gap).
+    /// The causal estimator was kept out of this set until its edges carried
+    /// a fitted slope: an edge's `strength` is a Granger partial R², a
+    /// measure of fit, and fused by default `R²·parent` would have pulled
+    /// every promoted belief, volatility and spread included, toward a number
+    /// that estimates nothing. It joins on the regression's own coefficient,
+    /// applied at the regression's own lag, on returns only.
     pub fn standard(seed: u64) -> Result<Self> {
         Ok(Self::new(NowConfig::default(), Catalogue::standard()?)?
             .with_worker(Box::new(KalmanFilter))
@@ -1589,7 +1621,8 @@ impl NowBrain {
             .with_worker(Box::new(RobustFilter))
             .with_worker(Box::new(GraphFilter))
             .with_worker(Box::new(NeuralFilter::default()))
-            .with_worker(Box::new(SymbolicFilter)))
+            .with_worker(Box::new(SymbolicFilter))
+            .with_worker(Box::new(CausalFilter)))
     }
 
     /// State each scope id's causal parents for the steps that follow,
@@ -1598,9 +1631,22 @@ impl NowBrain {
         self.causal_parents = parents;
     }
 
-    /// The promoted belief of `key`'s variable at each of its scope's
-    /// causal parents, in the same partition and at the same scope kind.
-    fn causal_beliefs(&self, partition: &PartitionKey, key: &VariableKey) -> Vec<CausalBelief> {
+    /// The belief of `key`'s variable at each of its scope's causal parents,
+    /// in the same partition and at the same scope kind, as last promoted on
+    /// a reading observed no later than the parent's lag before `as_of` —
+    /// the regression that fitted the slope paired the child's return with
+    /// the parent's from one lag earlier, and a newer parent belief would
+    /// be a pairing it never fitted. Empty for every variable but
+    /// [`CAUSAL_VARIABLE`].
+    fn causal_beliefs(
+        &self,
+        partition: &PartitionKey,
+        key: &VariableKey,
+        as_of: Timestamp,
+    ) -> Vec<CausalBelief> {
+        if key.name != CAUSAL_VARIABLE {
+            return Vec::new();
+        }
         let Some(parents) = self.causal_parents.get(&key.scope.id) else {
             return Vec::new();
         };
@@ -1609,12 +1655,22 @@ impl NowBrain {
             .filter_map(|parent| {
                 let scope = Scope::new(key.scope.kind, parent.cause.as_str()).ok()?;
                 let parent_key = VariableKey::new(scope, key.name.clone()).ok()?;
-                let belief = self.store.get(partition, &parent_key)?;
+                if parent.lag <= Duration::ZERO {
+                    return None;
+                }
+                let cutoff = as_of.saturating_sub(parent.lag);
+                let (_, mean, variance) = self
+                    .causal_history
+                    .get(&(partition.clone(), parent_key))?
+                    .iter()
+                    .rev()
+                    .find(|(observed_at, _, _)| *observed_at <= cutoff)
+                    .copied()?;
                 Some(CausalBelief {
                     cause: parent.cause.clone(),
                     transmission: parent.transmission,
-                    mean: belief.mean,
-                    variance: belief.uncertainty,
+                    mean,
+                    variance,
                 })
             })
             .collect()
@@ -1768,6 +1824,7 @@ impl NowBrain {
             for w in &mut self.workers {
                 w.forget(&key);
             }
+            self.causal_history.retain(|(_, k), _| *k != key);
             out.expired += 1;
         }
         let mut groups: BTreeMap<(PartitionKey, VariableKey), Vec<Observation>> = BTreeMap::new();
@@ -1872,7 +1929,8 @@ impl NowBrain {
         let process_variance = (spec.drift_per_day * scale).powi(2) * elapsed_days;
         let prior = prior_var.as_ref().map(|p| (p.mean, p.uncertainty));
         let related = self.related(partition, key);
-        let causal = self.causal_beliefs(partition, key);
+        let as_of = obs.iter().map(|o| o.valid_at).max().unwrap_or(now);
+        let causal = self.causal_beliefs(partition, key, as_of);
         let evidence = Evidence {
             key,
             prior,
@@ -2036,6 +2094,16 @@ impl NowBrain {
             manifests,
         })?;
         self.store.promote(token, variable.clone())?;
+        if key.name == CAUSAL_VARIABLE {
+            let history = self
+                .causal_history
+                .entry((partition.clone(), key.clone()))
+                .or_default();
+            history.push_back((observed_at, mean, variance));
+            while history.len() > CAUSAL_HISTORY {
+                history.pop_front();
+            }
+        }
         out.promoted.push(variable);
         out.deltas.push(delta);
         Ok(())
