@@ -174,9 +174,59 @@ pub fn due(
         .collect()
 }
 
+/// The version of `domain` a reader may cite for the instant `at`: the
+/// highest version whose snapshot was taken at or before `at`. `None` when
+/// the domain had no snapshot yet. Without it "the causal graph the cycle
+/// decided on" named no version, and a snapshot taken after the decision
+/// could be cited for it; refusing later snapshots keeps the citation to
+/// what was already journaled.
+pub fn version_at(snapshots: &[WorldModelSnapshot], domain: &str, at: Timestamp) -> Option<u64> {
+    snapshots
+        .iter()
+        .filter(|snapshot| snapshot.domain == domain && snapshot.at <= at)
+        .map(|snapshot| snapshot.version)
+        .max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snap(domain: &str, version: u64, secs: u64) -> WorldModelSnapshot {
+        WorldModelSnapshot {
+            domain: domain.to_string(),
+            version,
+            at: Timestamp::from_secs(secs),
+            counts: BTreeMap::new(),
+            digest: format!("d{version}"),
+        }
+    }
+
+    /// A decision must cite the version in force when it was made, not a
+    /// later one, and not another domain's.
+    ///
+    /// Mutation: drop the `snapshot.at <= at` filter.
+    #[test]
+    fn a_citation_names_the_latest_version_of_its_own_domain_not_after_the_instant() {
+        let all = vec![
+            snap(CAUSAL_GRAPH, 1, 100),
+            snap(CAUSAL_GRAPH, 2, 200),
+            snap(KNOWLEDGE_GRAPH, 7, 150),
+        ];
+        assert_eq!(all.len(), 3, "premise: three snapshots");
+        assert_eq!(
+            version_at(&all, CAUSAL_GRAPH, Timestamp::from_secs(150)),
+            Some(1)
+        );
+        assert_eq!(
+            version_at(&all, CAUSAL_GRAPH, Timestamp::from_secs(200)),
+            Some(2)
+        );
+        assert_eq!(
+            version_at(&all, CAUSAL_GRAPH, Timestamp::from_secs(99)),
+            None
+        );
+    }
 
     /// A failed journal may still have left its record in the log, so the
     /// version it used is taken and never reused; its digest is not, so the
