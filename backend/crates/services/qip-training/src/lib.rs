@@ -146,6 +146,7 @@ pub mod job;
 pub mod labels;
 pub mod local;
 pub mod microstructure;
+pub mod regime_ensemble;
 pub mod representation;
 pub mod serve;
 pub mod store;
@@ -164,4 +165,5 @@ pub use local::{
     Calibration, FitDiagnostics, LocalTrainer, ModelFamily, SkillPolicy, Stump, TeacherForm,
     TrainedTeacher,
 };
+pub use regime_ensemble::{EnsembleReading, RegimeEnsembles};
 pub use vertex::{VertexAiConfig, VertexAiProvider, VertexWorkload, WorkloadIdentityBinding};

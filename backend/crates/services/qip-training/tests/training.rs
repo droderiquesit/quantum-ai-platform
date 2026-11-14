@@ -2244,3 +2244,67 @@ fn an_ensemble_refuses_no_member_a_weight_not_above_zero_a_repeated_member_and_o
     assert!(refused.message().contains("different features"));
     Ok(())
 }
+
+/// R12-MODEL-4006. The ensemble a caller reads is the one registered for the
+/// regime handed in: a switch of regime changes the members, shares and
+/// interval of the reading, a regime with none is refused, and an ensemble
+/// over the cap is refused. Without the regime key a calm-regime interval
+/// would be reported for a stressed market.
+///
+/// Mutation: look up a fixed regime key in `RegimeEnsembles::predict` — the
+/// reversed-regime assertions fail.
+#[test]
+fn a_regime_switch_changes_the_ensemble_a_reading_comes_from_and_an_unregistered_regime_is_refused()
+-> Result<()> {
+    use qip_training::{ConformalInterval, Ensemble, RegimeEnsembles};
+    let training = linear_dataset("train", 400, 0.1, &[1.5, -0.75], 0.3, 501)?;
+    let calibration = linear_dataset("calibration", 500, 0.1, &[1.5, -0.75], 0.3, 502)?;
+    let linear = member(
+        "ridge-member",
+        ModelFamily::Linear { ridge: 0.0 },
+        &training,
+    )?;
+    let boosted = member("stump-member", ModelFamily::boosted(), &training)?;
+    let calm = Ensemble::weighted(vec![(linear.clone(), 3.0), (boosted.clone(), 1.0)])?;
+    let stressed = Ensemble::weighted(vec![(boosted.clone(), 1.0)])?;
+    let calm_interval = ConformalInterval::of_predictions(
+        &calm.predict_all(&calibration)?,
+        calibration.targets(),
+        0.1,
+    )?;
+    let stressed_interval = ConformalInterval::of_predictions(
+        &stressed.predict_all(&calibration)?,
+        calibration.targets(),
+        0.1,
+    )?;
+    let mut set = RegimeEnsembles::new(2)?;
+    set.register("calm/low", calm, calm_interval)?;
+    set.register("stressed/high", stressed, stressed_interval)?;
+
+    let row = [0.8, -0.4];
+    let a = set.predict("calm/low", &row)?;
+    let b = set.predict("stressed/high", &row)?;
+    assert_eq!(a.members.len(), 2);
+    assert_eq!(b.members.len(), 1);
+    // Premise: the two regimes differ in what they say, so a lookup that
+    // ignored the key could not satisfy both assertions below.
+    assert!((a.point - b.point).abs() > 1e-6, "{a:?} {b:?}");
+    assert!(approx_eq(
+        a.high - a.low,
+        2.0 * calm_interval.half_width(),
+        1e-12
+    ));
+    assert!(approx_eq(
+        b.high - b.low,
+        2.0 * stressed_interval.half_width(),
+        1e-12
+    ));
+    assert_eq!(a.calibration_rows, 500);
+
+    assert!(set.predict("quiet/mid", &row).is_err());
+    let over = Ensemble::weighted(vec![(linear, 1.0), (boosted, 1.0)])?;
+    let mut tight = RegimeEnsembles::new(1)?;
+    assert!(tight.register("calm/low", over, calm_interval).is_err());
+    assert!(RegimeEnsembles::new(0).is_err());
+    Ok(())
+}

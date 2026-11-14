@@ -111,6 +111,16 @@ impl Ensemble {
         self.members.is_empty()
     }
 
+    /// The blend's prediction for one row of inputs: each member's calibrated
+    /// prediction times its share, summed.
+    pub fn predict(&self, inputs: &[f64]) -> Result<f64> {
+        let mut blended = 0.0;
+        for (teacher, share) in &self.members {
+            blended += share * teacher.predict(inputs)?;
+        }
+        Ok(blended)
+    }
+
     /// The blend's prediction for every row: each member's calibrated
     /// prediction times its share, summed.
     pub fn predict_all(&self, data: &TrainingDataset) -> Result<Vec<f64>> {
