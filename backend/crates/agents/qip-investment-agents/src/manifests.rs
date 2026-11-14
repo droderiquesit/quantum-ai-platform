@@ -56,6 +56,7 @@ pub mod ids {
     pub const REGIME_BREAK: &str = "regime-break-probe";
     pub const MANIPULATION: &str = "manipulation-probe";
     pub const MODEL_FAILURE: &str = "model-failure-probe";
+    pub const META: &str = "meta-brain";
 }
 
 /// Owning teams. Used by the governance rules to check independence, so these
@@ -219,6 +220,37 @@ pub fn company_fundamental_brain(reviewed_at: Timestamp) -> AgentManifest {
          recorded both are reported missing"
             .into(),
         "states no direction: the consensus surprise already reaches the forecast elsewhere"
+            .into(),
+    ])
+}
+
+/// R12-AMBIENT-3024 (ADR 0466): the specialist whose subject is the other
+/// specialists. Reads research memory, where the kernel writes every
+/// resolved call with its regime, and — run after the panel — the panel's
+/// findings. Publishes nothing and challenges nothing: its resolution of a
+/// contested panel is a fact REASON reads, never a vote. Owned by
+/// quantitative research rather than by any analyst team it scores.
+pub fn meta_brain(reviewed_at: Timestamp) -> AgentManifest {
+    AgentManifest::research(
+        ids::META,
+        "Meta Brain",
+        "measures which specialists are reliable in which regime, allocates research attention by that record, and resolves a contested panel by re-weighing its findings by their authors' records",
+        reviewed_at,
+    )
+    .with_capabilities(CapabilitySet::of([Capability::ReadResearchMemory]))
+    .with_owner(owners::QUANTITATIVE)
+    .escalating_to(ids::CHIEF)
+    .with_competencies(vec![
+        "per-(agent, regime) hit rates over resolved calls".into(),
+        "attention weights proportional to the record in the regime in force".into(),
+        "a reliability-weighted balance over a contested panel".into(),
+    ])
+    .with_limitations(vec![
+        "a specialist with no resolved call in the regime is named unmeasured and given no \
+         weight, never an even-chance prior"
+            .into(),
+        "casts no vote: its finding is neutral at zero conviction".into(),
+        "sees the panel only after it has reported, so no panel finding was formed knowing it"
             .into(),
     ])
 }
@@ -774,6 +806,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         regime_break_probe(reviewed_at),
         manipulation_probe(reviewed_at),
         model_failure_probe(reviewed_at),
+        meta_brain(reviewed_at),
     ])
 }
 
