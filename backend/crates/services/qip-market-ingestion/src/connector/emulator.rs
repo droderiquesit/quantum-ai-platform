@@ -133,6 +133,7 @@ impl RecordedAnswer {
             retry_after: None,
             etag: self.etag.clone(),
             content_digest: None,
+            detached_signature: None,
         };
         if let Some(declared) = &self.content_digest {
             response = response.with_declared_digest(declared.clone());

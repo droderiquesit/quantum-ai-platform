@@ -398,17 +398,31 @@ fn a_tls_domain_is_credited_for_the_sources_host_and_refused_as_spoofing_otherwi
     assert!(other.authenticity.spoofed);
 }
 
+/// A signature claim — a token that says a check happened, decoded from
+/// bytes rather than made by the verifier — is recorded and never credited.
+/// Until ADR 0139 the arm held a bare signer name and this test admitted
+/// that; the name can no longer be written, and a decoded token is the same
+/// claim in the new shape (ADR 0508).
 #[test]
 fn a_signature_claim_is_recorded_and_never_credited() {
+    let (signer, registry) = issuer();
+    let token = qip_evidence::verify_detached(
+        &registry,
+        "ecb",
+        "cb-1",
+        DOC,
+        signer.sign(DOC).as_ref(),
+        at(10),
+    )
+    .unwrap();
+    let decoded: qip_evidence::VerifiedSignature =
+        serde_json::from_str(&serde_json::to_string(&token).unwrap()).unwrap();
     let mut fabric = EvidenceFabric::default();
     let (verdict, _) = fabric
         .admit(
-            claim("sig", "https://s.example", "sig", "1", 0).with_authenticity_signal(
-                AuthenticitySignal::SignatureVerified {
-                    signer: "issuer".into(),
-                },
-            ),
-            None,
+            claim("sig", "ecb", "sig", "1", 0)
+                .with_authenticity_signal(AuthenticitySignal::SignatureVerified { token: decoded }),
+            Some(&qip_core::sha256_hex(DOC)),
             at(10),
         )
         .unwrap();
@@ -417,6 +431,103 @@ fn a_signature_claim_is_recorded_and_never_credited() {
     assert_eq!(
         verdict.authenticity.score,
         qip_world_model::fabric::UNSIGNED_AUTHENTICITY
+    );
+}
+
+const DOC: &[u8] = b"ECB policy rate 4.25 effective 2027-01-15";
+
+/// An Ed25519 signer and a committed registry naming its key as `cb-1` of
+/// issuer `central-bank`, covering source `ecb`.
+fn issuer() -> (
+    qip_tls::ring::signature::Ed25519KeyPair,
+    qip_evidence::IssuerRegistry,
+) {
+    use qip_tls::ring::signature::KeyPair;
+    let rng = qip_tls::ring::rand::SystemRandom::new();
+    let pkcs8 = qip_tls::ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let signer = qip_tls::ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let key: String = signer
+        .public_key()
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let registry = qip_evidence::IssuerRegistry::from_json(
+        &serde_json::json!({
+            "schema_version": 1,
+            "issuers": [{
+                "issuer": "central-bank",
+                "domains": ["ecb.example"],
+                "sources": ["ecb"],
+                "keys": [{
+                    "key_id": "cb-1",
+                    "algorithm": "ed25519",
+                    "public_key_hex": key,
+                    "not_after": at(100_000),
+                }]
+            }]
+        })
+        .to_string(),
+        at(0),
+    )
+    .unwrap();
+    (signer, registry)
+}
+
+/// R12-EVID-2034's verification: authenticity changes evidence weight. The
+/// same document reaches the fabric twice — once signed by an issuer whose
+/// key this repository committed, once as an unsigned copy — and the signed
+/// one weighs more, because a party other than the source vouched for
+/// exactly these bytes. Mutation: the fabric's credit for a verified token
+/// removed — the two weigh the same and this fails.
+#[test]
+fn a_verified_issuer_claim_outranks_an_unsigned_copy_of_the_same_document() {
+    let (signer, registry) = issuer();
+    let digest = qip_core::sha256_hex(DOC);
+    let token = qip_evidence::verify_detached(
+        &registry,
+        "ecb",
+        "cb-1",
+        DOC,
+        signer.sign(DOC).as_ref(),
+        at(10),
+    )
+    .unwrap();
+    // Premise: the token is about this document, from this issuer.
+    assert_eq!(token.digest(), digest);
+    assert_eq!(token.issuer(), "central-bank");
+
+    let mut fabric = EvidenceFabric::default();
+    let (unsigned, _) = fabric
+        .admit(
+            claim("copy", "ecb", "copy", "4.25", 0),
+            Some(&digest),
+            at(10),
+        )
+        .unwrap();
+    let (signed, _) = fabric
+        .admit(
+            claim("signed", "ecb", "signed", "4.25", 0)
+                .with_authenticity_signal(AuthenticitySignal::SignatureVerified { token }),
+            Some(&digest),
+            at(10),
+        )
+        .unwrap();
+    assert!(signed.admissible && unsigned.admissible);
+    assert_eq!(
+        signed.authenticity.credited.len(),
+        1,
+        "{:?}",
+        signed.authenticity
+    );
+    assert!(
+        signed.authenticity.score > unsigned.authenticity.score,
+        "a verified issuer's signature earned no authenticity: {:?}",
+        signed.authenticity
+    );
+    assert!(
+        signed.belief_weight > unsigned.belief_weight,
+        "authenticity from a verified signature does not move the belief weight"
     );
 }
 
