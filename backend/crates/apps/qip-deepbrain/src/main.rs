@@ -961,7 +961,8 @@ fn run() -> Result<()> {
     }
     println!(
         "  compiler:         promoted research is distilled into bounded reflex packages; no \
-         package signer is installed, so packages are held unsigned and none is published"
+         package signer is installed (ADR 0535), so each is held unsigned and written as a \
+         draft under drafts/ for the two-person model-pack publish to sign"
     );
     // The ambient journal (`ambient_journal.rs`): every sweep's signals and
     // attention events, on a hash-chained log as durable as the platform's.
