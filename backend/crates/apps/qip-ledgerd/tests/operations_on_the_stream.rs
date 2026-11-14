@@ -9,6 +9,8 @@ use qip_contracts::ledger_operation::{
     Book, LedgerOperation, LedgerOperationFields, OperationKind, Phase,
 };
 use qip_contracts::validated::Validated;
+use qip_core::rng::Rng;
+use qip_core::testing::Property;
 use qip_core::{Clock, Decimal, ManualClock, Timestamp, dec};
 use qip_ledgerd::store::{LedgerStore, OperationApplied, OperationDelivery};
 use qip_ledgerd::telemetry::LedgerTelemetry;
@@ -267,4 +269,88 @@ fn consecutive_commits_never_write_sequence_keys_that_sort_in_write_order() {
         shards.len() > 1,
         "every note landed in one key range: {keys:?}"
     );
+}
+
+/// The producer-side half of the idempotency property: however many times, in
+/// whatever order, and across however many restarts the broker redelivers a
+/// set of operations, the balances equal one delivery of each distinct id.
+///
+/// The failure this prevents: a duplicate booked because the held-id check
+/// and the cursor commit disagree after a restart, leaving the trading
+/// account long by one funding with nothing on it to say so.
+///
+/// Mutation: in `apply_operation`, treat `PlannedOperation::Duplicate` as a
+/// post — the balance exceeds the single-delivery sum and the property fails.
+#[test]
+fn for_any_redelivery_order_and_restart_the_operation_balances_equal_one_delivery_of_each_id() {
+    let mut saw_duplicate = false;
+    let mut saw_restart = false;
+    Property::new("redelivered operations book once each")
+        .cases(32)
+        .for_all(
+            |rng| {
+                let distinct = 1 + rng.below(5);
+                let mut schedule: Vec<(u64, i64)> = Vec::new();
+                for id in 0..distinct {
+                    let amount = 1 + rng.below(900) as i64;
+                    for _ in 0..(1 + rng.below(3)) {
+                        schedule.push((id, amount));
+                    }
+                }
+                // Fisher-Yates, so the redeliveries interleave arbitrarily.
+                for i in (1..schedule.len()).rev() {
+                    let j = rng.below(i as u64 + 1) as usize;
+                    schedule.swap(i, j);
+                }
+                let restart = rng.below(schedule.len() as u64 + 1) as usize;
+                (distinct, schedule, restart)
+            },
+            |(distinct, schedule, restart)| {
+                let mut once: std::collections::BTreeMap<u64, i64> = Default::default();
+                for (id, amount) in schedule {
+                    once.insert(*id, *amount);
+                }
+                if once.len() as u64 != *distinct {
+                    return Err("premise: every id appears at least once".to_string());
+                }
+                let expected: i64 = once.values().sum();
+                saw_duplicate |= schedule.len() as u64 > *distinct;
+
+                let dir = temp_dir("property");
+                let mut store = open(&dir);
+                let mut next = 0usize;
+                while next < schedule.len() {
+                    if next == *restart {
+                        saw_restart = true;
+                        drop(store);
+                        store = open(&dir);
+                        let resume = store.resume_offset(PARTITION).map_err(|e| e.to_string())?;
+                        if resume != next as u64 {
+                            return Err(format!("resume {resume} != next {next}"));
+                        }
+                    }
+                    let (id, amount) = schedule[next];
+                    let delivery = at(
+                        next as u64,
+                        &format!("h{next}"),
+                        funding(&format!("desk:treasury-funding:{id}"), Decimal::from(amount)),
+                    );
+                    store.apply_operation(&delivery).map_err(|e| e.to_string())?;
+                    next += 1;
+                }
+                let booked = store.balance(&trading(), "USD").map_err(|e| e.to_string())?;
+                let trial = store.trial_balance().map_err(|e| e.to_string())?;
+                drop(store);
+                let _ = std::fs::remove_dir_all(&dir);
+                if booked != Decimal::from(expected) {
+                    return Err(format!("booked {booked}, one delivery of each id is {expected}"));
+                }
+                if !trial.values().all(|total| total.is_zero()) {
+                    return Err(format!("trial balance not zero: {trial:?}"));
+                }
+                Ok(())
+            },
+        );
+    assert!(saw_duplicate, "premise: some case redelivered an operation");
+    assert!(saw_restart, "premise: some case restarted mid-stream");
 }
