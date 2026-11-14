@@ -2144,7 +2144,20 @@ impl ResearchLoop {
             family,
             name,
             version,
-            schema: r#"{"type":"object","candidate":true}"#.to_string(),
+            // Derived from the observation, not a bare shell: the subject
+            // and the observation text the schema could not explain travel
+            // in the schema itself, so a reader of the registry alone sees
+            // what the type was proposed for.
+            schema: serde_json::json!({
+                "type": "object",
+                "candidate": true,
+                "derived_from": {
+                    "subject": subject,
+                    "observation": raised.signal.observation,
+                    "gap_class": format!("{:?}", raised.signal.gap_class),
+                },
+            })
+            .to_string(),
             cited_observations: cited,
             rationale: format!(
                 "{} ({:?} gap raised by {:?}); no registered type explains it",
