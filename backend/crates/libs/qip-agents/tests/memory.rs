@@ -346,3 +346,28 @@ fn a_brief_checks_a_call_against_its_agents_own_procedure_rule() {
             .is_none()
     );
 }
+
+/// A regrade must not erase the first grade: the episode shows the latest
+/// outcome and the replaced one stays on record. Mutation: dropping the
+/// push in `resolve` empties the superseded list.
+#[test]
+fn a_regraded_episode_keeps_the_outcome_it_replaced_on_record() {
+    let outcome = |correct: bool, why: &str| qip_agents::memory::EpisodeOutcome {
+        resolved_at: now().saturating_add(Duration::from_days(1)),
+        correct,
+        realised_bps: None,
+        explanation: why.to_string(),
+    };
+    let mut memory = ResearchMemory::new();
+    memory.record_episode(episode(1, "macro"));
+    assert!(memory.superseded_outcomes(&run(1)).is_empty());
+    assert!(memory.resolve(&run(1), outcome(true, "first print")));
+    assert!(memory.superseded_outcomes(&run(1)).is_empty());
+    assert!(memory.resolve(&run(1), outcome(false, "revised print")));
+    let kept = memory.superseded_outcomes(&run(1));
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].correct);
+    assert_eq!(kept[0].explanation, "first print");
+    let current = memory.episodes()[0].outcome.as_ref().map(|o| o.correct);
+    assert_eq!(current, Some(false));
+}
