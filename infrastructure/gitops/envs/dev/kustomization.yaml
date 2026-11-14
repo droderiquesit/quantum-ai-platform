@@ -23,13 +23,13 @@ resources:
 images:
 - name: qip-api
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-api
-  digest: sha256:abf392d2925a8bfc4be340745d1b1b8ff922e4afd31717c89d8251e513c0105a
+  digest: sha256:7bdda4720d12b51acd99e4722fdc870c4cdbac9fc430039086b74f53df28af7e
 - name: qip-fastbrain
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-fastbrain
-  digest: sha256:c61ae84d8cab85caeb0eb7c3fcddbdb3c5aefe01e9aaff9a73812312b6150ca9
+  digest: sha256:6bf5a2022341337a14d6c11f5edb23a3878d4a293d2dc5dd86a7f36a63dd6c9a
 - name: qip-deepbrain
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-deepbrain
-  digest: sha256:3d1bd51e93a2d0efd23af257cd8b292d81646f5d4471876452d746aa3c4c4bcb
+  digest: sha256:b00f6946335e76312de4008e3f75d56c3d2919ebf8074f6c1bd5aaf0d0c5a92e
 # The console (ADR 0094). Pinned by hand to the first digest any run has
 # produced: deploy.yml run 268 (2026-10-13, commit 0053f401) built, scanned,
 # pushed and attested it — `docker push` reported this digest and the run's
@@ -38,9 +38,12 @@ images:
 # By hand, and not by Kargo, because wiring `qip-portal` into Kargo's
 # warehouse is ADR 0094's named follow-on and is still not done: until it
 # is, every later portal digest is a reviewed edit of this line.
+# Re-pinned by hand on 2026-11-14 to the digest deploy.yml run 303 pushed and
+# signed for commit 738f4d5e: the image pinned before it was a month old and
+# carried the OS findings that run's scan gate refuses.
 - name: qip-portal
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-portal
-  digest: sha256:11183f8dbfa530921c312acd4e75197511b7105b27f78059a1f75618ccb9f0f8
+  digest: sha256:a093c7134b46a6e21b79c4be19972b67dab4aa2f3390d127c1f24e8da9a33676
 - name: openobserve
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/vendor/openobserve
   digest: sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b

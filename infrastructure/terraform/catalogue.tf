@@ -313,8 +313,16 @@ locals {
       # the cell registry — is written down in
       # docs/operations/scaling-and-availability.md and is a degradation, not
       # a corruption.
+      #
+      # Three and not four since 2026-11-14. Cloud Run charges a region's CPU
+      # quota for every instance a service may scale to, whether or not one is
+      # running, and dev's five services asked for 28 vCPU at their ceilings:
+      # the first four came up at 20 and the telemetry store was refused with
+      # "Quota exceeded for total allowable CPU per project per region" (infra
+      # runs 135 and 136). At three the five ask for 19. The quota's own figure
+      # was not read, only bracketed between 20 and 27 by those two runs.
       min_instances           = 0
-      max_instances           = 4
+      max_instances           = 3
       always_on_justification = ""
       # What a cold start costs the caller, and why that is acceptable: the
       # counterpart of `always_on_justification` for a floor of zero. A reviewer

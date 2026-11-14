@@ -50,9 +50,15 @@ spec:
           external: projects/algorik-qip-dev/regions/us-east4/subnetworks/qip-dev-tz-management
         tags:
         - qip-dev-tz-management
+    # One instance and never more while the store is in local mode on disk
+    # (`ZO_LOCAL_MODE_STORAGE: disk`, below). Each instance keeps its own
+    # disk, so a second instance is a second store: a write lands in one and a
+    # query is answered by whichever the request reached. This read 4 until
+    # 2026-11-14, when its eight vCPU at that ceiling were also what Cloud
+    # Run's regional CPU quota refused (infra runs 135 and 136).
     scaling:
       minInstanceCount: 0
-      maxInstanceCount: 4
+      maxInstanceCount: 1
     maxInstanceRequestConcurrency: 20
     timeout: 300s
     executionEnvironment: EXECUTION_ENVIRONMENT_GEN2
