@@ -83,7 +83,7 @@ RUN set -eu; \
 #
 # Upgraded by name rather than by `apk upgrade`, which would move every
 # package in the image and make the diff between two builds of the same
-# commit unreviewable. Two packages move, both from the same source, and
+# commit unreviewable. Five packages move, four from the same source, and
 # the build asserts afterwards that they actually moved: an upgrade that
 # silently found nothing would ship the vulnerable bytes and pass this
 # stage, which is the failure the `test ! -e` above exists to prevent one
@@ -94,6 +94,31 @@ RUN set -eu; \
 # everything, reviewed by nobody, to fix two named packages; the digest
 # above stays the reviewed one and the two packages are named here where a
 # reader can see them.
+#
+# Run 302 (2026-11-14) failed this same gate again, and not on anything those
+# two packages address. The scan found a third source in the same image:
+# three HIGH with fixes published, all in Alpine 3.24.1's own runtime rather
+# than in npm — `musl` and `musl-utils` at 1.2.6-r2 against a fixed 1.2.6-r3
+# (CVE-2026-107891), and `zlib` at 1.3.2-r0 against a fixed 1.3.2-r1
+# (CVE-2026-85091). None is a dependency of the portal and none belongs to
+# npm: they are the libc and the compression library the base image ships,
+# which is why deleting npm and moving OpenSSL left them exactly where they
+# were. `--ignore-unfixed` means a fix exists for all three, and a HIGH with a
+# fix refuses the image exactly as the CRITICAL does.
+#
+# They are named and upgraded here for the reason above: `apk upgrade` would
+# move every package in the image, and bumping the base digest would move
+# every package while nobody reviewed which. Each is asserted below by the
+# version it must no longer be, because `apk add` reporting success is not
+# evidence that the bound was satisfiable.
+#
+# The npm tree's own findings — one CRITICAL and twelve HIGH, `tar`,
+# `brace-expansion`, `pacote`, `sigstore`, `picomatch`, `ip-address` — are not
+# named here because the stage above deletes `/usr/local/lib/node_modules/npm`
+# outright, and every one of them is reported at a path under it. Nothing in
+# the runtime image installs, fetches or resolves anything; the vulnerable
+# bytes are removed rather than excused, and a scan of the derived image — the
+# one the gate reads — does not see them.
 # `>=` rather than `=`: the constraint is the fix, not one build of it.
 # `apk` refuses the install outright if it cannot satisfy the bound, so the
 # floor is enforced by the package manager and a pin to one exact release
@@ -125,12 +150,36 @@ RUN set -eu; \
 # the npm deletion above gives: a removal that silently did nothing ships
 # the file and fails the comparison one job later, a long way from its cause.
 RUN set -eu; \
-    apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0"; \
+    apk add --no-cache \
+      "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0" \
+      "musl>=1.2.6-r3" "musl-utils>=1.2.6-r3" \
+      "zlib>=1.3.2-r1"; \
     installed="$(apk info -v libcrypto3)"; \
     echo "libcrypto3 is now ${installed}"; \
     case "${installed}" in \
       libcrypto3-3.5.[0-7]-*|"") \
         echo "libcrypto3 reads '${installed}'; the upgrade did not take and the image would ship the finding" >&2; \
+        exit 1 ;; \
+    esac; \
+    installed="$(apk info -v musl)"; \
+    echo "musl is now ${installed}"; \
+    case "${installed}" in \
+      musl-1.2.6-r[012]|"") \
+        echo "musl reads '${installed}'; the upgrade did not take and the image would ship CVE-2026-107891" >&2; \
+        exit 1 ;; \
+    esac; \
+    installed="$(apk info -v musl-utils)"; \
+    echo "musl-utils is now ${installed}"; \
+    case "${installed}" in \
+      musl-utils-1.2.6-r[012]|"") \
+        echo "musl-utils reads '${installed}'; the upgrade did not take and the image would ship CVE-2026-107891" >&2; \
+        exit 1 ;; \
+    esac; \
+    installed="$(apk info -v zlib)"; \
+    echo "zlib is now ${installed}"; \
+    case "${installed}" in \
+      zlib-1.3.2-r0|"") \
+        echo "zlib reads '${installed}'; the upgrade did not take and the image would ship CVE-2026-85091" >&2; \
         exit 1 ;; \
     esac; \
     rm -f /var/log/apk.log; \
