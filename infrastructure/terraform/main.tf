@@ -681,7 +681,14 @@ module "data" {
   source = "./modules/data"
 
   # Nothing here can be created before its API is on. See module "services".
-  depends_on = [module.services]
+  #
+  # And nothing here is read before the applying account may read it. The
+  # module asks BigQuery which account encrypts the warehouse, a call that
+  # needs a permission modules/cicd grants. Read at plan while that role is
+  # about to change, it is refused for what the plan was about to add (infra
+  # run 127); with this edge the read waits for the apply in exactly that
+  # case, and happens at plan as before in every other.
+  depends_on = [module.services, module.cicd.warehouse_and_feeds_grant]
 
   project_id  = var.project_id
   region      = var.region

@@ -39,3 +39,16 @@ output "deploy_attribute_condition" {
 
   value = google_iam_workload_identity_pool_provider.github.attribute_condition
 }
+
+output "warehouse_and_feeds_grant" {
+  description = <<-EOT
+    The binding that gives the infra account the research warehouse and asset
+    feed permissions. An output so that what needs those permissions can be
+    ordered after it, and so that a read needing one of them is deferred to
+    the apply whenever the role itself is about to change: read at plan, it
+    would be refused for the permission that same plan was about to add.
+  EOT
+  value       = google_project_iam_member.infra_warehouse_and_feeds.id
+
+  depends_on = [google_project_iam_custom_role.infra_warehouse_and_feeds]
+}
