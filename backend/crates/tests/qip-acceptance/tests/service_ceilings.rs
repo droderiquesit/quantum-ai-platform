@@ -86,3 +86,44 @@ fn a_service_with_no_ceiling_or_a_zero_one_is_refused() {
         vec!["no positive maxInstanceCount"]
     );
 }
+
+/// Whether a service document runs a store in local mode on its own disk:
+/// the `ZO_LOCAL_MODE_STORAGE` variable, on the line after its name, is
+/// `disk`. The whole line is matched, not a substring of it.
+fn keeps_data_on_local_disk(document: &str) -> bool {
+    let mut lines = document.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() == "- name: ZO_LOCAL_MODE_STORAGE" {
+            return lines
+                .next()
+                .is_some_and(|value| value.trim() == "value: disk");
+        }
+    }
+    false
+}
+
+// A store in local mode on disk keeps its data on the instance's own disk, so
+// a second instance is a second store: a write lands in one and a query is
+// answered by whichever the request reached. This has happened once: dev's
+// OpenObserve declared a ceiling of four until 2026-11-14 while in exactly
+// that mode.
+#[test]
+fn a_store_that_keeps_its_data_on_its_own_disk_is_never_more_than_one_instance() {
+    let local: Vec<(String, String)> = services()
+        .into_iter()
+        .filter(|(_, document)| keeps_data_on_local_disk(document))
+        .collect();
+    // Premise: the scan finds such a store, or the rule below checks nothing.
+    assert!(
+        !local.is_empty(),
+        "premise: no RunService sets ZO_LOCAL_MODE_STORAGE to disk"
+    );
+    for (file, document) in &local {
+        assert_eq!(
+            integer(document, "maxInstanceCount"),
+            Some(1),
+            "{file}: a store on its own disk may scale past one instance, and each instance \
+             would be a separate store"
+        );
+    }
+}

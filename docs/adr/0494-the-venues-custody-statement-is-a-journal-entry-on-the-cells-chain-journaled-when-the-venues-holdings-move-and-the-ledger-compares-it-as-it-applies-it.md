@@ -42,11 +42,25 @@ and with which chain position? When is one taken? Who compares it?
    the ledger reads P1 and a statement shed with P2 would leave a break
    unfound for as long as the stream was shedding.
 2. **The cell journals it, and only when the venue's statement moved.**
-   `Cell::record_custody_statement` journals the statement on the first
-   call and thereafter only when it differs from the last one journaled for
-   that venue. Every fill moves the venue's holdings, so every fill is
-   followed by a statement that covers it, and a quiet cell does not grow its
-   chain by a statement per pass. The method has no `simulated` argument:
+   `Cell::record_custody_statement` journals the statement only when it
+   differs from the last one journaled for that venue. A venue with no
+   statement journaled yet that names no holding has not moved: holding
+   nothing is where every chain starts, so that first statement is not
+   journaled, and the first one that names a holding is. Every fill moves
+   the venue's holdings, so every fill is followed by a statement that
+   covers it, and a quiet cell does not grow its chain by a statement per
+   pass. A venue that stated a holding and now states none has moved, and
+   that statement is journaled.
+
+   This was first written as "on the first call, and thereafter only when
+   it differs". That put a P1 outcome on a pass the capital gate had refused
+   outright, and `vertical_slice_cell_ledger` refuses exactly that: an
+   unfunded cell, and an order past the grant's per-order limit, book
+   nothing. The cost of the narrower rule is real and is this: a cell that
+   restarts against a fresh simulated venue no longer journals "holds
+   nothing" on its first pass, so a ledger still booking the earlier
+   session's holdings finds the disagreement at the first statement that
+   names a holding, and never if the cell does not fill again. The method has no `simulated` argument:
    a cell is paper by construction and the entry always says so. It refuses
    a venue the cell is not configured with, and a unit stated both as a
    holding and as cash. The node's pass calls it after the drop-copy

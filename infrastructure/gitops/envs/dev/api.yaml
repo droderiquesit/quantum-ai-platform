@@ -28,7 +28,7 @@ spec:
   binaryAuthorization:
     useDefault: true
   template:
-    revision: qip-dev-api-abf392d2925a
+    revision: qip-dev-api-7bdda4720d12
     serviceAccountRef:
       external: qip-api-dev@algorik-qip-dev.iam.gserviceaccount.com
     vpcAccess:
@@ -42,7 +42,7 @@ spec:
         - qip-dev-tz-application-identity
     scaling:
       minInstanceCount: 0
-      maxInstanceCount: 4
+      maxInstanceCount: 3
     maxInstanceRequestConcurrency: 80
     timeout: 300s
     executionEnvironment: EXECUTION_ENVIRONMENT_GEN2
@@ -256,10 +256,10 @@ spec:
   # revision is named `qip-<env>-api-<first twelve hex of its digest>`.
   traffic:
   - type: TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
-    revision: qip-dev-api-abf392d2925a
+    revision: qip-dev-api-7bdda4720d12
     percent: 100
     tag: stable
   - type: TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION
-    revision: qip-dev-api-abf392d2925a
+    revision: qip-dev-api-7bdda4720d12
     percent: 0
     tag: standby
