@@ -90,11 +90,12 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    // Twenty-eight: L2b's four probes, the Portfolio/Asset Brain
+    // Twenty-nine: L2b's four probes, the Portfolio/Asset Brain
     // (R12-ASSET-3019), the Crypto/On-chain Brain (R12-ASSET-3017), the
-    // Company/Fundamental Brain (R12-REASON-3013) and the Meta Brain
-    // (R12-AMBIENT-3024).
-    assert_eq!(roster.len(), 28, "the organisation is twenty-eight agents");
+    // Company/Fundamental Brain (R12-REASON-3013), the Meta Brain
+    // (R12-AMBIENT-3024) and the World Model Arbitration Brain
+    // (R12-WORLD-3025, ADR 0488).
+    assert_eq!(roster.len(), 29, "the organisation is twenty-nine agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -688,9 +689,11 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    // Twenty-seven since the Meta Brain joined as the one arbiter
-    // (R12-AMBIENT-3024): twenty-six on the panel and one after it.
-    assert_eq!(org.len(), 27);
+    // Twenty-eight dispatched since the Meta Brain joined as the one arbiter
+    // (R12-AMBIENT-3024) and the World Model Arbitration Brain joined the
+    // panel (R12-WORLD-3025, ADR 0488): twenty-seven on the panel and one
+    // after it.
+    assert_eq!(org.len(), 28);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -4374,5 +4377,367 @@ fn an_analyst_checks_its_call_against_its_own_procedure_and_states_a_departure()
         );
         assert_eq!(unchecked.caveats, bare.caveats);
     }
+    Ok(())
+}
+
+// --- the World Model Arbitration Brain (R12-WORLD-3025, ADR 0488) ---------
+
+fn scored(
+    model: &str,
+    probability: f64,
+    composite: Option<f64>,
+    uncertainty: f64,
+) -> qip_world_model::federation::ScoredView {
+    qip_world_model::federation::ScoredView {
+        model: model.to_string(),
+        probability,
+        evidence_fit: 0.5,
+        predictive_performance: composite,
+        causal_coherence: 0.5,
+        uncertainty,
+        composite,
+        lineage: qip_world_model::federation::ViewLineage {
+            parents: Vec::new(),
+            trigger: None,
+            depth: 0,
+        },
+    }
+}
+
+fn arbitration(
+    proposition: &str,
+    decision: qip_world_model::federation::Decision,
+    views: Vec<qip_world_model::federation::ScoredView>,
+    spread: f64,
+) -> qip_world_model::federation::Arbitration {
+    qip_world_model::federation::Arbitration {
+        proposition: proposition.to_string(),
+        at: now(),
+        decision,
+        reason: "fixture".to_string(),
+        disagreement: qip_world_model::federation::Disagreement { views, spread },
+        arbitrated_probability: None,
+        expired: Vec::new(),
+        research: None,
+    }
+}
+
+/// A desk whose arbitration slot holds a federation review with one
+/// arbitration of each kind, as the kernel's UNDERSTAND writes it: each
+/// recorded decision is the one the federation's rule reaches on its own
+/// views (two close scored views far apart branch; two that agree merge;
+/// two too uncertain abstain; one unscored view asks), eight views kept, the
+/// widest spread 0.6 on the branch, two members scored (one outside its
+/// claimed Brier) and one unscored.
+fn federation_review_arbitrations() -> Vec<qip_world_model::federation::Arbitration> {
+    use qip_world_model::federation::{Decision, InformationRequest};
+    vec![
+        arbitration(
+            "AAA:next-close-up@1",
+            Decision::Branch,
+            vec![
+                scored("momentum", 0.8, Some(0.60), 0.3),
+                scored("reversion", 0.2, Some(0.58), 0.3),
+            ],
+            0.6,
+        ),
+        arbitration(
+            "BBB:next-close-up@1",
+            Decision::Merge,
+            vec![
+                scored("momentum", 0.55, Some(0.60), 0.3),
+                scored("reversion", 0.50, Some(0.55), 0.3),
+            ],
+            0.05,
+        ),
+        arbitration(
+            "CCC:next-close-up@1",
+            Decision::Abstain,
+            vec![
+                scored("momentum", 0.7, Some(0.5), 0.9),
+                scored("reversion", 0.4, Some(0.5), 0.9),
+            ],
+            0.3,
+        ),
+        arbitration(
+            "DDD:next-close-up@1",
+            Decision::RequestMoreInformation(InformationRequest {
+                proposition: "DDD:next-close-up@1".to_string(),
+                models: vec!["macro".to_string()],
+            }),
+            vec![
+                scored("momentum", 0.7, Some(0.6), 0.3),
+                scored("macro", 0.4, None, 0.3),
+            ],
+            0.3,
+        ),
+    ]
+}
+
+fn desk_with_review(arbitrations: Vec<qip_world_model::federation::Arbitration>) -> Arc<Desk> {
+    use qip_investment_agents::desk::ArbitrationView;
+    use qip_world_model::federation::Calibration;
+    let calibrations = BTreeMap::from([
+        (
+            "momentum".to_string(),
+            Calibration::Brier {
+                score: 0.1,
+                resolved: 4,
+                within_claim: true,
+            },
+        ),
+        (
+            "reversion".to_string(),
+            Calibration::Brier {
+                score: 0.3,
+                resolved: 4,
+                within_claim: false,
+            },
+        ),
+        ("macro".to_string(), Calibration::Unscored),
+    ]);
+    Arc::new(Desk::empty(now()).with_arbitration(ArbitrationView {
+        observed: true,
+        cycle: 7,
+        journal_base: 40,
+        arbitrations,
+        calibrations,
+        uncovered: Vec::new(),
+    }))
+}
+
+fn desk_with_a_federation_review() -> Arc<Desk> {
+    desk_with_review(federation_review_arbitrations())
+}
+
+fn arbitration_finding(
+    report: &qip_investment_agents::OrganisationReport,
+) -> &qip_agents::finding::AgentFinding {
+    report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::WORLD_MODEL_ARBITRATION)
+        .expect("premise: the World Model Arbitration Brain answered the brief")
+}
+
+/// R12-WORLD-3025. The World Model Arbitration Brain is constructed in the
+/// production organisation (`standard_agents`, under the standard roster),
+/// emits a finding for its scope that names every branch, merge, abstention
+/// and request for more data the federation decided, keeps every disagreeing
+/// view in the count and states each member's calibration — and removing it
+/// drops world-model arbitration from coverage, because nobody else reports
+/// the federation's decisions.
+///
+/// Each figure is checked against the fixture rather than for presence, so a
+/// decision counted under the wrong arm, a minority view dropped, or an
+/// unscored member averaged in as a zero fails here.
+///
+/// Mutations: drop the `WorldModelArbitrationAnalyst` from `standard_agents`
+/// (the premise finding is missing); count `Decision::Abstain` under
+/// `branch` (the branch and abstain figures move); count one view per
+/// disagreement (eight becomes four).
+#[test]
+fn removing_the_world_model_arbitration_brain_drops_world_model_arbitration_from_coverage()
+-> Result<()> {
+    let desk = desk_with_a_federation_review();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = arbitration_finding(&report);
+    assert_eq!(finding.status, FindingStatus::Complete, "{}", finding.claim);
+    assert_eq!(fact_value(finding, "arbitrations_decided"), Some(4.0));
+    assert_eq!(fact_value(finding, "arbitrations_branch"), Some(1.0));
+    assert_eq!(fact_value(finding, "arbitrations_merge"), Some(1.0));
+    assert_eq!(fact_value(finding, "arbitrations_abstain"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "arbitrations_request_more_data"),
+        Some(1.0)
+    );
+    assert_eq!(
+        fact_value(finding, "arbitrations_not_reproduced"),
+        Some(0.0)
+    );
+    assert_eq!(fact_value(finding, "disagreeing_views_kept"), Some(8.0));
+    assert_eq!(fact_value(finding, "widest_disagreement_spread"), Some(0.6));
+    assert_eq!(fact_value(finding, "members_calibrated"), Some(2.0));
+    assert_eq!(fact_value(finding, "members_unscored"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "members_outside_calibration_claim"),
+        Some(1.0)
+    );
+    let mean = fact_value(finding, "mean_member_brier").expect("two members are scored");
+    assert!((mean - 0.2).abs() < 1e-12, "{mean}");
+    // The finding names the journaled review it read.
+    assert!(
+        finding
+            .claim
+            .contains("federation review of cycle 7 (journal position 40)"),
+        "{}",
+        finding.claim
+    );
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::WORLD_MODEL_ARBITRATION)?;
+    assert!(with.contains(&Scope::WorldModelArbitration), "{with:?}");
+    assert!(
+        !without.contains(&Scope::WorldModelArbitration),
+        "{without:?}"
+    );
+    Ok(())
+}
+
+/// No federation review is no data, never a federation that agreed.
+///
+/// Mutation: drop the `!view.observed` early return — an unobserved slot
+/// has no arbitrations and is then reported through the empty-pass arm,
+/// whose claim names a cycle that never ran, and the claim check fails.
+#[test]
+fn the_world_model_arbitration_brain_reports_an_unwritten_review_as_no_data() -> Result<()> {
+    let mut org = organisation(populated_desk())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = arbitration_finding(&report);
+    assert_eq!(finding.status, FindingStatus::NoView, "{}", finding.claim);
+    assert!(
+        finding
+            .claim
+            .contains("no world model federation review has been written"),
+        "{}",
+        finding.claim
+    );
+    assert!(fact_value(finding, "arbitrations_decided").is_none());
+    assert!(
+        !report
+            .covered_scopes()
+            .contains(&Scope::WorldModelArbitration)
+    );
+    Ok(())
+}
+
+/// A review that arbitrated nothing covers nothing: zero decisions is not a
+/// scope covered.
+///
+/// Mutation: drop the `view.arbitrations.is_empty()` early return — the
+/// brain reports `arbitrations_decided = 0` as a complete finding and the
+/// scope is covered by an empty record.
+#[test]
+fn a_federation_review_that_arbitrated_nothing_does_not_cover_world_model_arbitration() -> Result<()>
+{
+    use qip_investment_agents::desk::ArbitrationView;
+    let desk = Arc::new(Desk::empty(now()).with_arbitration(ArbitrationView {
+        observed: true,
+        cycle: 3,
+        ..ArbitrationView::default()
+    }));
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = arbitration_finding(&report);
+    assert_eq!(finding.status, FindingStatus::NoView, "{}", finding.claim);
+    assert!(
+        finding.claim.contains("cycle 3 arbitrated nothing"),
+        "{}",
+        finding.claim
+    );
+    assert!(
+        !report
+            .covered_scopes()
+            .contains(&Scope::WorldModelArbitration)
+    );
+    Ok(())
+}
+
+/// The brain decides each proposition from the views the record preserves,
+/// and does not repeat a recorded decision those views do not support. A
+/// review whose branch arbitration is recorded as a merge — two close
+/// composites far apart, which the federation's rule branches — is counted
+/// as a branch, flagged as not reproduced, and named in the finding's missing
+/// inputs, so a journal edited or written by a different rule is a finding
+/// rather than a figure.
+///
+/// Mutation: count the recorded `arbitration.decision` instead of the one
+/// `decide_on` reaches — the branch count drops to zero and merge rises to
+/// two; or drop the `decided != arbitration.decision` comparison — nothing
+/// is reported not reproduced.
+#[test]
+fn the_world_model_arbitration_brain_decides_from_the_preserved_views_and_names_a_record_they_do_not_reproduce()
+-> Result<()> {
+    let mut arbitrations = federation_review_arbitrations();
+    assert_eq!(
+        arbitrations[0].decision,
+        qip_world_model::federation::Decision::Branch,
+        "premise: the first fixture arbitration is the branch"
+    );
+    arbitrations[0].decision = qip_world_model::federation::Decision::Merge;
+    let mut org = organisation(desk_with_review(arbitrations))?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = arbitration_finding(&report);
+    assert_eq!(fact_value(finding, "arbitrations_branch"), Some(1.0));
+    assert_eq!(fact_value(finding, "arbitrations_merge"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "arbitrations_not_reproduced"),
+        Some(1.0)
+    );
+    assert_eq!(finding.status, FindingStatus::Partial, "{}", finding.claim);
+    assert!(
+        finding
+            .missing_inputs
+            .iter()
+            .any(|m| m.contains("AAA:next-close-up@1")),
+        "{:?}",
+        finding.missing_inputs
+    );
+    Ok(())
+}
+
+/// A family no live world-model member covers is reported as a fact and a
+/// caveat, never as a missing input: the specialist read the whole review,
+/// and the federation's coverage is what it found, not something it lacked.
+///
+/// The failure this guards happened (round 50, 2026-11-14): the uncovered
+/// families were filed in `missing_inputs`, the verifier society's
+/// missing-variable critic read them as evidence the explanation went ahead
+/// without, and every thesis on a platform with no on-chain or company
+/// member was refuted below the action bar.
+///
+/// Mutation: push the uncovered families onto `missing` — the finding turns
+/// `Partial` and `missing_inputs` is no longer empty.
+#[test]
+fn a_world_model_family_no_member_covers_is_a_fact_of_the_review_not_a_missing_input() -> Result<()>
+{
+    use qip_investment_agents::desk::ArbitrationView;
+    let desk = Arc::new(Desk::empty(now()).with_arbitration(ArbitrationView {
+        observed: true,
+        cycle: 9,
+        journal_base: 12,
+        arbitrations: federation_review_arbitrations(),
+        calibrations: BTreeMap::new(),
+        uncovered: vec![
+            "crypto/on-chain".to_string(),
+            "company/fundamental".to_string(),
+        ],
+    }));
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = arbitration_finding(&report);
+    assert_eq!(fact_value(finding, "families_uncovered"), Some(2.0));
+    assert!(
+        finding
+            .caveats
+            .iter()
+            .any(|c| c == "no live member covers crypto/on-chain, company/fundamental"),
+        "{:?}",
+        finding.caveats
+    );
+    assert_eq!(finding.status, FindingStatus::Complete, "{}", finding.claim);
+    assert!(
+        finding.missing_inputs.is_empty(),
+        "{:?}",
+        finding.missing_inputs
+    );
+    assert!(
+        !report
+            .missing_inputs
+            .iter()
+            .any(|m| m.starts_with(ids::WORLD_MODEL_ARBITRATION)),
+        "{:?}",
+        report.missing_inputs
+    );
     Ok(())
 }

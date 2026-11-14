@@ -41,10 +41,16 @@ pub const ATTENTION_ROUTING: &str = "attention-routing";
 /// The scope the causal agency brain covers, as a competency domain.
 pub const INTERVENTION_PLANNING: &str = "intervention-planning";
 
-/// The kernel's world-model federation stage, which `Platform::run_cycle`
-/// runs every cycle: it scores competing members, keeps every view, records
-/// contradictions and decides branch, merge, abstain or ask (R12-WORLD-3025).
-pub const WORLD_MODEL_ARBITRATION_BRAIN: &str = "kernel/world-model-arbitration";
+/// The registry id of the organisation's World Model Arbitration Brain
+/// (R12-WORLD-3025, ADR 0488): the entry [`organisation_spec`] derives from
+/// the roster manifest `qip_investment_agents::manifests::
+/// world_model_arbitration_brain`, whose first competency is
+/// [`WORLD_MODEL_ARBITRATION`]. Until ADR 0488 this was a hand-written entry,
+/// `kernel/world-model-arbitration`, describing the kernel's federation stage
+/// with no specialist in the organisation behind it; removing it stopped
+/// nothing but start-up. The scope is now covered only because the
+/// production organisation constructs that specialist.
+pub const WORLD_MODEL_ARBITRATION_BRAIN: &str = "organisation/world-model-arbitration-brain";
 
 /// The scope the arbitration brain covers, as a competency domain.
 pub const WORLD_MODEL_ARBITRATION: &str = "world-model-arbitration";
@@ -292,40 +298,9 @@ pub fn ambient_specs() -> Vec<BrainSpec> {
     ]
 }
 
-/// The kernel's world-model arbitration brain (R12-WORLD-3025, §9.1).
-pub fn arbitration_spec() -> BrainSpec {
-    BrainSpec {
-        id: WORLD_MODEL_ARBITRATION_BRAIN.to_string(),
-        name: "World Model Arbitration Brain".to_string(),
-        competency_domains: vec![
-            WORLD_MODEL_ARBITRATION.to_string(),
-            "disagreement-preservation".to_string(),
-            "calibration-tracking".to_string(),
-        ],
-        tools: vec!["qip-kernel::federation_stage::FederationStage".to_string()],
-        source_permissions: vec!["world-model-federation:read".to_string()],
-        memory_scope: "federation: live members, bounded branches, pending forecasts".to_string(),
-        model_stack: vec!["in-tree arbitration rules; no model consulted".to_string()],
-        evaluations: vec![
-            "qip-kernel tests/symbolic_federation.rs: every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_its_arbitrations"
-                .to_string(),
-        ],
-        abstention_rules: vec![
-            "abstains when the views' mean uncertainty is too high to say anything".to_string(),
-            "asks for more information while a member has no resolved forecast".to_string(),
-        ],
-        authority_envelope:
-            "advisory_only: records arbitrations and research requests; sizes and sends nothing"
-                .to_string(),
-        calibration: 0.0,
-        version: 1,
-        parent_version_id: None,
-    }
-}
-
 /// The registry this node starts on: every agent on the organisation's
-/// roster, the NOW specialists, the ambient brains and the world-model
-/// arbitration brain. Refuses to build if any entry is missing a declared
+/// roster — the World Model Arbitration Brain among them — the NOW
+/// specialists and the ambient brains. Refuses to build if any entry is missing a declared
 /// field, two share an id, or a [`REQUIRED_SCOPES`] entry is uncovered.
 pub fn standard(organisation: &Roster) -> Result<BrainRegistry> {
     let mut registry = BrainRegistry::new();
@@ -346,7 +321,6 @@ pub fn standard(organisation: &Roster) -> Result<BrainRegistry> {
     for spec in ambient_specs() {
         registry.register(spec)?;
     }
-    registry.register(arbitration_spec())?;
     registry.require_coverage()?;
     Ok(registry)
 }

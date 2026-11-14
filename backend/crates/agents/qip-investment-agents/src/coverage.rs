@@ -103,11 +103,15 @@ pub enum Scope {
     /// some dissenting author had a record: an uncontested panel has no
     /// disagreement to resolve.
     DisagreementResolution,
+    /// The world model federation's arbitration of its competing members:
+    /// branch, merge, abstain or request more data, with the disagreement
+    /// kept (R12-WORLD-3025).
+    WorldModelArbitration,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 22] = [
+    pub const ALL: [Scope; 23] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -130,6 +134,7 @@ impl Scope {
         Scope::AttentionAllocation,
         Scope::RegimeReliability,
         Scope::DisagreementResolution,
+        Scope::WorldModelArbitration,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -156,6 +161,7 @@ impl Scope {
             Self::AttentionAllocation => "attention_allocation",
             Self::RegimeReliability => "regime_reliability",
             Self::DisagreementResolution => "disagreement_resolution",
+            Self::WorldModelArbitration => "world_model_arbitration",
         }
     }
 
@@ -206,6 +212,7 @@ impl Scope {
             Self::AttentionAllocation => &["attention_allocated"],
             Self::RegimeReliability => &["regime_reliability_cells"],
             Self::DisagreementResolution => &["reliability_weighted_balance"],
+            Self::WorldModelArbitration => &["arbitrations_decided"],
         }
     }
 
