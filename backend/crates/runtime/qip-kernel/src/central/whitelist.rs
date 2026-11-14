@@ -720,6 +720,7 @@ impl ArbitragePolicy {
                 to_terms: market.quote_terms,
             });
         }
+        let conversions = cyclic_conversions(conversions);
         let mut start_sizes = self.start_sizes.clone();
         start_sizes.insert(self.funding_instrument.clone(), envelope.order_limit());
         Ok(CycleWhitelist {
@@ -733,6 +734,49 @@ impl ArbitragePolicy {
             market_reference,
         })
     }
+}
+
+/// Narrow `conversions` to those that lie on at least one directed cycle of
+/// instruments: the centre's discovery over what the operator signed.
+///
+/// Why: a whitelisted edge no cycle passes through can never be part of a
+/// round trip, so shipping it widens what the desk may price for no cycle's
+/// sake. Discovery only ever omits; nothing here constructs a conversion, so
+/// the result is always a subset of the operator's input, in input order.
+/// An edge `from -> to` is on a cycle exactly when `to` reaches `from`.
+pub fn cyclic_conversions(conversions: Vec<WhitelistedConversion>) -> Vec<WhitelistedConversion> {
+    let mut adjacent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for conversion in &conversions {
+        adjacent
+            .entry(conversion.from.as_str())
+            .or_default()
+            .insert(conversion.to.as_str());
+    }
+    let reaches = |start: &str, goal: &str| -> bool {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut stack = vec![start];
+        while let Some(node) = stack.pop() {
+            if node == goal {
+                return true;
+            }
+            if !seen.insert(node) {
+                continue;
+            }
+            if let Some(next) = adjacent.get(node) {
+                stack.extend(next.iter().copied());
+            }
+        }
+        false
+    };
+    let keep: Vec<bool> = conversions
+        .iter()
+        .map(|conversion| reaches(conversion.to.as_str(), conversion.from.as_str()))
+        .collect();
+    conversions
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(conversion, on_cycle)| on_cycle.then_some(conversion))
+        .collect()
 }
 
 /// Why a cell's whitelist carries what it carries.
@@ -884,6 +928,47 @@ mod tests {
             ],
             start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
         }
+    }
+
+    fn edge(from: &str, to: &str) -> WhitelistedConversion {
+        WhitelistedConversion {
+            venue: "XNYS".to_string(),
+            venue_class: VenueClass::Exchange,
+            market: format!("{from}-{to}"),
+            from: from.to_string(),
+            to: to.to_string(),
+            side: BookSide::Ask,
+            cost_fraction: dec!("0.0005"),
+            costs: None,
+            from_terms: None,
+            to_terms: None,
+        }
+    }
+
+    #[test]
+    fn discovery_keeps_only_conversions_that_lie_on_a_cycle() {
+        let input = vec![
+            edge("USD", "AAA"),
+            edge("AAA", "USD"),
+            edge("AAA", "BBB"),
+        ];
+        assert_eq!(input.len(), 3, "premise: three conversions offered");
+        let kept = cyclic_conversions(input);
+        let markets: Vec<&str> = kept.iter().map(|c| c.market.as_str()).collect();
+        assert_eq!(markets, vec!["USD-AAA", "AAA-USD"]);
+    }
+
+    #[test]
+    fn discovery_over_conversions_with_no_cycle_yields_an_empty_whitelist() {
+        let input = vec![edge("USD", "AAA"), edge("AAA", "BBB")];
+        assert_eq!(input.len(), 2, "premise: conversions were offered");
+        assert!(cyclic_conversions(input).is_empty());
+    }
+
+    #[test]
+    fn discovery_keeps_a_three_instrument_cycle_whole() {
+        let input = vec![edge("USD", "AAA"), edge("AAA", "BBB"), edge("BBB", "USD")];
+        assert_eq!(cyclic_conversions(input.clone()), input);
     }
 
     fn grant(venues: &[&str], order_limit: Decimal) -> CapitalEnvelope {
