@@ -149,11 +149,13 @@ fn names_any(crates: &Path, dirs: &[PathBuf], tokens: &[&str]) -> (usize, Vec<(S
 /// as it would appear in an app crate's production source: a socket the
 /// crate opens itself, or the mesh's raw publisher, which only
 /// `qip_mesh::spine` may drive.
-const RAW_SEND_TOKENS: [&str; 7] = [
+const RAW_SEND_TOKENS: [&str; 9] = [
     "TcpStream::connect",
     "TcpStream::connect_timeout",
     "UdpSocket",
     "UnixStream",
+    "UnixDatagram",
+    "UnixListener",
     "tokio::net",
     "MeshPublisher",
     "MeshTransport",
