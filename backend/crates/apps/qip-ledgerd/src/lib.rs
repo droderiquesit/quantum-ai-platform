@@ -50,6 +50,7 @@
 pub mod backend;
 pub mod config;
 pub mod consumer;
+pub mod openobserve;
 pub mod read_api;
 pub mod spanner;
 pub mod store;
