@@ -237,3 +237,47 @@ fn a_copy_goes_to_the_region_qualified_stream_and_two_sources_never_share_one() 
     assert!(region_qualified("", "c").is_err(), "an empty region");
     assert!(region_qualified("us-east4", " ").is_err(), "a blank stream");
 }
+
+/// A checkpoint that names a last batch before any offset was copied is a
+/// corrupt record of progress, and trusting it would skip the chain check at
+/// offset zero.
+///
+/// Mutation: delete `checkpoint.validate()?` in `plan_copy` — the corrupt
+/// checkpoint is accepted and the `expect_err` fires.
+#[test]
+fn a_checkpoint_at_offset_zero_naming_a_last_batch_is_refused() {
+    let rows = chain(2);
+    assert!(
+        plan_copy(&source(), &MirrorCheckpoint::default(), 2, rows.clone()).is_ok(),
+        "premise: the default checkpoint copies these rows"
+    );
+    let corrupt = MirrorCheckpoint {
+        next_offset: 0,
+        last_batch_hash: Some(rows[0].batch_hash.clone()),
+    };
+    let refused =
+        plan_copy(&source(), &corrupt, 2, rows).expect_err("a corrupt checkpoint was trusted");
+    assert!(
+        refused.message().contains("cannot name a last batch hash"),
+        "{}",
+        refused.message()
+    );
+}
+
+/// A fetch that returns nothing (the source link was down) leaves the
+/// checkpoint where it was, so the next fetch resumes rather than skips.
+///
+/// Mutation: reset `plan.checkpoint` to default at the start of `plan_copy` —
+/// the resumed checkpoint is lost and the final assertion fires.
+#[test]
+fn an_empty_fetch_leaves_the_checkpoint_unchanged() {
+    let rows = chain(3);
+    let first = plan_copy(&source(), &MirrorCheckpoint::default(), 3, rows[..2].to_vec()).unwrap();
+    assert_eq!(first.checkpoint.next_offset, 2, "premise: progress exists");
+
+    let idle = plan_copy(&source(), &first.checkpoint, 3, Vec::new()).unwrap();
+
+    assert!(idle.copies.is_empty());
+    assert!(idle.gaps.is_empty());
+    assert_eq!(idle.checkpoint, first.checkpoint);
+}
