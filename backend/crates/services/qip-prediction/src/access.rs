@@ -167,6 +167,26 @@ impl AccessBook {
         })
     }
 
+    /// Whether an event-contract market may be created at `venue` from
+    /// `jurisdiction`. Beyond [`Self::admit_creation`] it refuses a venue whose
+    /// policy is not an event venue: the factory seeds resting ladders, and a
+    /// ladder at a wagering venue would cross the two regulated paths.
+    pub fn admit_event_creation(
+        &self,
+        venue: &VenueId,
+        jurisdiction: &Jurisdiction,
+    ) -> Result<CreationPermit> {
+        let policy = self.any_policy(venue)?;
+        if policy.kind != VenueKind::Event {
+            return Err(Error::denied(format!(
+                "venue {venue} is a {:?} venue and an event-contract market is created \
+                 only at an Event venue",
+                policy.kind
+            )));
+        }
+        self.admit_creation(venue, jurisdiction)
+    }
+
     /// An order on an event-contract venue.
     pub fn admit_event_order(
         &self,

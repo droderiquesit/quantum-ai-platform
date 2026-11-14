@@ -229,3 +229,16 @@ fn a_price_is_the_same_whether_every_venue_is_available_to_the_entity_or_none_is
     assert_eq!(none.fair_values[&OutcomeId::new("yes")], dec("3"));
     assert_eq!(none.fair_values[&OutcomeId::new("no")], dec("7"));
 }
+
+#[test]
+fn an_event_market_cannot_be_created_at_a_wagering_venue_though_its_jurisdiction_permits() {
+    let b = book();
+    let evt = VenueId::new("EVT");
+    let wager = VenueId::new("WAGER");
+    // Premise: the plain creation check admits the wagering venue, so only
+    // the kind check can refuse it.
+    assert!(b.admit_creation(&wager, &jur("US-NY")).is_ok());
+    assert!(b.admit_event_creation(&evt, &jur("US-NY")).is_ok());
+    let refused = refusal(b.admit_event_creation(&wager, &jur("US-NY")));
+    assert!(refused.contains("Wagering"), "{refused}");
+}

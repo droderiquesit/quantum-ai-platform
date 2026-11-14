@@ -405,7 +405,7 @@ impl Platform {
                             market.product
                         ))
                     })?;
-                    book.admit_creation(
+                    book.admit_event_creation(
                         &VenueId::new(market.venue.as_str()),
                         &Jurisdiction::new(&market.jurisdiction)?,
                     )
