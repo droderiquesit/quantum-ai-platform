@@ -1322,6 +1322,1083 @@ that narrows a security scanner, whatever the owner has delegated.
     - *Not lifted by any of this:* `prod`; a live order path; a narrowed
       scanner or a weakened test; edits under `.claude/**`; `deploy.yml`
       and `vendor.yml`, which the owner has not named.
+36. **The rows that waited on an owner decision are decided, on the owner's
+    word** (owner, 2026-11-14: "For 157 decision make the decision write
+    it"). An audit of all 1,518 register rows on main `738f4d5e` that day
+    found 157 open rows whose remaining gap was a decision or a figure only
+    the owner could give. Each is decided below by the orchestrator under
+    the delegation of this file. The decisions were written from each row's
+    own requirement, gap and earlier rulings, by a quick reading and not by
+    a study of the code, so each is a starting position the owner can
+    overturn with one line here. What the delegation does not lift was held:
+    nothing below opens a live order path, commits money, or weakens a test,
+    a guard or a risk limit; a figure is the restrictive one and is marked
+    provisional; where an earlier ruling already decided a row it is
+    restated, not changed. Counts: 13 figures, 73 design choices, 56
+    deferred without spend, 8 refused, 7 left with the owner. No register
+    row is regraded by this decision: a decision removes the wait, and the
+    row closes only when what it names is built and verified.
+
+    - *A figure is set, provisional* (13):
+      - `R12-AMBIENT-1040`: Provisional: no cadence set.
+        QIP_DEEPBRAIN_REFETCH_EVERY stays 0 (off) in every committed
+        deployment until the owner names a connector. Do not wire
+        SourceWatcher on a default path. Row stays PARTIAL. Why:
+        Off-by-default is the restrictive value; a connector needs licensing
+        evaluation first. Next: Owner sets cadence and catalogued connector
+        in a committed deployment; then wire SourceWatcher.
+      - `R12-AMBIENT-9034`: Provisional defaults: per-agent budget 0 units
+        and model-weight ceiling 0 bp for any agent or model with no stated
+        line, so unlisted bidders are refused. Owner raises per line. Add
+        budget lines and ceiling to ComputePlan; allocator enforces. Why:
+        Most restrictive value fails closed; owner may change. Next: Add
+        fields to ComputePlanFields, enforce in allocate_within, set
+        defaults in committed environment.
+      - `R12-CAPITAL-1098`: Provisional: reserve floor, leverage ceiling and
+        financing permissions stay undeclared in deployments (refuse all
+        financing, leverage ceiling 1x, no permissions) until the owner
+        supplies figures. Paper only. Row stays PARTIAL. Why: Most
+        restrictive values; no capital is committed. Next: Owner supplies
+        figures; then compose grant path and an InternalFunding caller.
+      - `R12-COVERAGE-5105`: Keep the shipped MinLiquidity 5.0-day floor
+        unchanged; no exemption for non-continuously priced classes.
+        Provisional: private funds and real assets stay refused on paper
+        until the owner signs an ADR for a class-specific floor. Why:
+        Weakening a risk limit is not delegable; the most restrictive value
+        is the existing floor. Next: Row stays PARTIAL; owner ADR on
+        liquidity floor for these classes reopens it.
+      - `R12-COVERAGE-7157`: Composite stays PARTIAL until R12-CAPITAL-1098.
+        Provisional restrictive defaults: no financing permission, leverage
+        ceiling 1.0x (no leverage), reserve floor 100% of the treasury
+        balance, until the owner gives real figures. Why: Most restrictive
+        values fail closed; the owner gives actual risk figures. Next: Owner
+        confirms or replaces figures; then compose the grant path via the
+        ledger.
+      - `R12-DATA-2019`: Keep refusing future-dated payloads as
+        manipulation. Add a cross-probe signal, provisional: refuse any
+        candidate whose records are dated after the probe by even 1 second,
+        no tolerance. Discovery stays off in every committed environment.
+        Why: Most restrictive value; plaintext stays elevated, not relaxed.
+        Next: Owner may change the tolerance; enabling
+        deepbrain_discover_every stays a separate egress decision.
+      - `R12-DATA-6006`: Price of information, provisional: 0 per unit of
+        IC. Net score equals gross minus cost, delay-discounted, floored at
+        0, so no source is promoted on a priced gain. Inputs: SourceCost and
+        publication_delay_ms read from the manifest. Owner may replace the
+        figure. Why: Most restrictive value; no ADR states a price, so none
+        is invented upward. Next: Add manifest cost and delay inputs to the
+        desk; test duplicate near-zero, late discounted, costly discounted.
+      - `R12-GOV-10004`: Provisional allowed locations for
+        gcp.resourceLocations: United States and European Union only, as the
+        earlier ruling says. Declare it, and compute.requireShieldedVm, at
+        the folder as well as the project. ADR names the three value groups.
+        Why: Earlier ruling ADR_THEN_IMPLEMENT fixes the value; US plus EU
+        is the most restrictive that fits the multi-region US archive
+        bucket. Next: Write the ADR, add the location variable and folder
+        policies with an acceptance test per policy; owner applies
+        foundation root.
+      - `R12-LEDGER-8137`: Keys half is built. Autoscaling floor:
+        provisional minimum 100 processing units, the figure already in
+        tree, with no autoscale-up funded until ceiling ADR. Plan evidence
+        waits for enabled Spanner. Owner may change floor. Why: Most
+        restrictive value given by text; spend is deferred under decision 5.
+        Next: Plan with autoscaling_config after Spanner funding and deploy;
+        resize floor from measured close load.
+      - `R12-MESH-5056`: Provisional: every edge cost figure (duty,
+        logistics, settlement risk) defaults to the most restrictive value,
+        the highest in the cell's validated range, until the operator states
+        measured costs. Tax/duty estimate stays unmet: no jurisdictional
+        source in repo. Why: Unstated cost must not inflate net edge; tax
+        data needs an external source. Next: Wire the default into
+        CentralConfig::arbitrage; owner supplies a jurisdictional source to
+        close tax/duty.
+      - `R12-MODEL-4025`: Provisional counterfactual hold rule: hold a model
+        when mean counterfactual shortfall exceeds 0 bps over at least 100
+        scored fills; retire stays on drift. Most restrictive; owner may
+        change. Order-to-model attribution (proposal to model card) must be
+        built first. Why: Text gives no figure; strictest value holds a
+        model on any degradation with a sample floor. Next: Add model
+        reference to proposal, order and FillScore; then implement hold with
+        a test per path.
+      - `R12-RISK-4116`: Joint-tail survival reserve may be applied,
+        provisional, at the most restrictive reading: reserve set by the
+        worst of the library, synthetic and joint worlds. No limit value or
+        threshold changes. Stays PARTIAL until composition root calls
+        set_joint_tail_reserve_applied. Why: Earlier ruling item 6 allows
+        applying it; restrictive default fails closed; reserve is not a
+        limit change. Next: Wire set_joint_tail_reserve_applied at
+        composition roots; extend 'outside library bounds' proof to the
+        factor library and capped-long books.
+      - `R12-RISK-5044`: Net-edge margin: provisional 25 bp over
+        fixed_cost_fraction, armed in every composition root with
+        with_net_edge_margin_bp. Gate to also charge slippage and impact.
+        Entry signals with no stated expected edge are refused, not
+        admitted. Owner may change the figure. Why: A gate no binary arms
+        cannot fire; text gives no figure, so choose conservative
+        provisional value. Next: Arm margin in roots, add slippage and
+        impact terms, mutation-test the bypass, ADR 0155 s8 records the
+        figure.
+
+    - *A design or reading is chosen* (73):
+      - `R12-AGENCY-1065`: Restate earlier ruling: ADR 0146 decision 5
+        stands. No sentence classifier. Requirement not reworded.
+        Structured-claim check against the record stays; phrase floor
+        FALSE_CLAIM_PHRASES accepted with named paraphrase miss. Fails
+        closed, reproducible from log. Why: Earlier ruling already decides;
+        structural citation check is log-reproducible. Next: Row stays
+        PARTIAL; nothing to build.
+      - `R12-AGENCY-1069`: Restate earlier ruling: rumour stays structural
+        under ADR 0146 decision 5. Claim with no recorded counterpart or
+        unauthorised source is refused. RUMOUR_PHRASES stays a vocabulary
+        floor; paraphrase miss accepted. Why: Earlier ruling decides it;
+        structure beats phrase matching. Next: Row stays PARTIAL; nothing to
+        build.
+      - `R12-AGENCY-7027`: Restate earlier ruling: warm door is the
+        orchestrator (DraftingAdapter, guard, hash-chained outbox).
+        Simulation clause not built: ADR 0145 d4/d5 and ADR 0146 d11
+        refusals stand, no second warm door. Row stays PARTIAL. Why: Closing
+        needs reversing accepted refusals; fail closed keeps them. Next:
+        Revisit only if owner names a producer of declared plans via ADR.
+      - `R12-ARCH-7134`: Restate earlier ruling: requirement text and ADR
+        0143 stand. Row stays PARTIAL until phase 0 exits. No switches added
+        to the ten 'none' capabilities; ADR 0258 ratchet only shrinks and
+        refuses new ungated entries. Why: Earlier ruling decides; adding
+        switches would stop paper deploys. Next: Closes when phase 0 exits
+        (R12-ARCH-10159).
+      - `R12-CAPITAL-10097`: Keep ADR 0159 F: ForecastState stays advisory
+        with no capital, risk or hedge consumer. A consumer needs measured
+        calibration over a RISK-owned sample count (provisional: unset, so
+        nothing influences sizing) and a committed world-to-forecast table;
+        forecasts may never reduce reserves. Why: Fails closed; calibration
+        unmeasured so no influence. Next: Build only after
+        Calibration::Measured exists with direction-rule tests and
+        mutations.
+      - `R12-CAPITAL-1100`: Keep ADR 0127: settlement brain is a
+        closure-tested boundary across qip-capital-fabric and qip-edge
+        modules, not a single crate; requirement not reworded. Unify the two
+        SettlementConvention types in qip-contracts so both halves share one
+        term set. Why: Single shared contract is structural and replayable;
+        avoids a rewrite. Next: Move SettlementConvention to qip_contracts,
+        update both halves, extend brain_closure test with mutation.
+      - `R12-CICD-10168`: Restate earlier ruling: ADR 0102 not amended. The
+        eight-role fleet stands; requirement's roles map to the development
+        agents acting only via pull request. Exit test named. Stays PARTIAL
+        until phase 8 exits and phase 9 is entered. Why: Earlier ruling
+        decides; no new agent loop beyond CI gates. Next: Re-grade when
+        phase 8 exits.
+      - `R12-CICD-8117`: Restate earlier ruling: STAY_PARTIAL_DEPLOY. ADR
+        0114 D4 stands; Config Sync and Argo Rollouts stay declined, no
+        fifth controller. Requirement not narrowed; gitops.rs guard
+        unchanged. Dev evidence recorded only. Why: Earlier ruling decides;
+        keeps controller set minimal. Next: Closes only on a future ADR
+        admitting both mechanisms.
+      - `R12-CICD-9088`: Restating earlier ruling: algorik-app repository is
+        declined. Single repository, ownership by directory and CODEOWNERS
+        (ADR 0016 amendment, ADR 0101 C6). Keeps one event log and one gate.
+        Why: Earlier ruling already decides it; separate repos would split
+        the gate and reproducibility. Next: Nothing to build; row stays
+        BLOCKED as declined.
+      - `R12-CICD-9089`: Restating earlier ruling: algorik-models repository
+        declined. Single repository, directory ownership via CODEOWNERS (ADR
+        0016 amendment, ADR 0101 C6). Why: Earlier ruling stands; one
+        repository keeps one gate. Next: Nothing to build; row stays BLOCKED
+        as declined.
+      - `R12-CICD-9090`: Restating earlier ruling: algorik-infra repository
+        declined. Terraform stays under infrastructure/ in the single
+        repository with CODEOWNERS (ADR 0016, ADR 0101 C6). Why: Earlier
+        ruling stands; one repository keeps one gate. Next: Nothing to
+        build; row stays BLOCKED as declined.
+      - `R12-CICD-9091`: Restating earlier ruling: algorik-platform-config
+        repository declined. GitOps baseline stays under
+        infrastructure/gitops in the single repository with CODEOWNERS. Why:
+        Earlier ruling stands; one repository keeps one gate. Next: Nothing
+        to build; row stays BLOCKED as declined.
+      - `R12-CICD-9092`: Restating earlier ruling: algorik-env repository
+        declined. Desired state stays in infrastructure/gitops/envs in the
+        single repository with CODEOWNERS. Why: Earlier ruling stands; one
+        repository keeps one gate. Next: Nothing to build; row stays BLOCKED
+        as declined.
+      - `R12-CICD-9093`: Restating earlier ruling: algorik-schemas
+        repository declined. Schemas stay in qip-contracts plus
+        event_fabric_schema.lock in the single repository with CODEOWNERS.
+        Why: Earlier ruling stands; one repository keeps one gate. Next:
+        Nothing to build; row stays BLOCKED as declined.
+      - `R12-CICD-9094`: Restating earlier ruling: algorik-runbooks
+        repository declined. Runbooks and acceptance tests stay in docs/ops
+        and qip-acceptance in the single repository with CODEOWNERS. Why:
+        Earlier ruling stands; one repository keeps one gate. Next: Nothing
+        to build; row stays BLOCKED as declined.
+      - `R12-CICD-9107`: Restating earlier ruling: publish to rust_packages
+        and deployment_bundles via a deploy.yml step for the commit built;
+        do not remove the repositories. Removal is a destructive apply and
+        would rewrite the waiver test. Why: Earlier ruling decides it;
+        publishing is non-destructive and keeps digests immutable and
+        attributable. Next: Add deploy.yml publish step by digest, then
+        update pipeline_waivers.rs.
+      - `R12-CICD-9115`: Restating earlier ruling: O21 admitted narrowly.
+        Only a person-dispatched deploy.yml run moves Cloud Run traffic back
+        to the previous promoted revision when release_decision refuses or
+        cannot be read, and drafts an incident. No unattended controller.
+        Why: Earlier ruling decides it; person-dispatched and fail-closed on
+        unreadable decision. Next: Write ADR amending 0114, then wire
+        release_decision into deploy.yml.
+      - `R12-COVERAGE-7173`: Fail closed: unauthenticated, self-classified
+        cell episodes do not feed the evidence fabric or belief calibration.
+        Central store stays read by nothing that decides. Reopen only
+        through a new ADR defining signed, sequenced carriage. Why: The wire
+        authenticates nobody and mapping needs invented confidence; keeps
+        replay from the log honest. Next: Row stays PARTIAL; write ADR for
+        signed episode carriage before any KnowledgeDelta mapping.
+      - `R12-COVERAGE-7189`: Restating earlier ruling (REGRADE_TEXT): no
+        hold-out authorised, ADR 0145 stands. Unidentified ambient effects
+        update no world model, causal graph or ambient prior; only
+        action-policy and memory arm runs. Row stays PARTIAL. Why: Earlier
+        ruling decides it; updating from unidentified effects would break
+        attribution. Next: Reopens only via an ADR amending 0114 authorising
+        a control, plus a consumer under ADR 0141.
+      - `R12-DATA-2003`: Mount the candidate catalogue as a secret-volume
+        item: own Secret Manager container in local.secret_names, seed step
+        in infra.yml, volume item in deepbrain.yaml. This keeps the re-read
+        reproducible from the journal. Written as a proposal; the protected
+        paths are changed by the owner's dispatch. Why: Secrets reach
+        processes as files only; re-assessment needs a mounted catalogue.
+        Next: Owner dispatches the protected infra change; then a dev pass
+        re-assesses and journals quarantine.
+      - `R12-DATA-2021`: Restate the requirement to the
+        hand-written-connector model per ADR 0157 section 4 and ADR 0180 d3.
+        Sandbox output is held until a journaled promotion event; fail
+        closed, so unpromoted output is never ingested. Row stays PARTIAL
+        until a test proves it. Why: No generated adapters exist, so a gate
+        guards only hand-written arms; the journal makes it replayable.
+        Next: Write the promotion-gate test over hand-written connector
+        arms; mutation-verify it.
+      - `R12-DATA-2026`: Same catalogue-mount design as R12-DATA-2003: a
+        Secret Manager container, an infra.yml seed step and a
+        deepbrain.yaml secret volume. Promotion is journaled as
+        SourceLifecycleChanged, so it replays from the log. The row stays
+        PARTIAL until a dev pass runs. Why: Reproducible from the event log;
+        protected path needs owner dispatch. Next: Owner dispatches the
+        infra change; then show a journaled promote transition from a dev
+        pass.
+      - `R12-DATA-2027`: Same catalogue-mount design as R12-DATA-2003.
+        Throttle journals SourceLifecycleChanged and changes routing class
+        only. State that limit in the requirement text rather than claim
+        poll-rate reduction. Row stays PARTIAL. Why: Reproducible from the
+        journal; honest text avoids overclaiming a control. Next: Owner
+        dispatches infra change; then prove a journaled throttle in a dev
+        pass.
+      - `R12-DATA-2028`: Same catalogue-mount design as R12-DATA-2003.
+        Quarantine is fail-closed and journaled as SourceLifecycleChanged,
+        with the catalogue dataset quarantined too. Row stays PARTIAL. Why:
+        Restrictive, replayable from the log; protected path needs owner
+        dispatch. Next: Owner dispatches infra change; then prove a
+        journaled quarantine in a dev pass.
+      - `R12-DATA-2029`: Same catalogue-mount design as R12-DATA-2003.
+        Retire is journaled as SourceLifecycleChanged and retires the
+        catalogue entry. Row stays PARTIAL. Why: Replayable from the event
+        log; protected path needs owner dispatch. Next: Owner dispatches
+        infra change; then prove a journaled retire in a dev pass.
+      - `R12-DATA-3008`: Restate earlier ruling: the deep brain names where
+        it is blind or wrong on every research pass and journals targets,
+        same in every environment. Pass cadence stays off. Narrow the
+        R12-GCP-10144 guard only with a written argument, never by loosening
+        it silently. Why: Journaled targets are reproducible; no guard
+        weakened. Next: Owner picks: set cadence key in later environments
+        too, or narrow the guard with an argument.
+      - `R12-DATA-8131`: Restating earlier ruling ADR_THEN_IMPLEMENT:
+        Dataflow and Dataproc stay out (ADR 0011, everything in Rust). Row
+        scored against its Rust equivalent: a batch reprocessing job reading
+        only durable GCS/BigQuery, no live fabric subscription. Why: Earlier
+        ruling decides it; Rust batch job is reproducible from durable
+        sources and spends nothing new. Next: ADR for the Rust batch job,
+        then Terraform job resource, test that it reads GCS/BQ only, and a
+        real plan.
+      - `R12-EVID-2031`: Fail closed: an unclaimed record is not admitted by
+        default. Record in an ADR that only a named set of arms
+        (venue/vendor market-data bars) is an observation, not an extracted
+        claim; every other arm must mint evidence. A test refuses any arm
+        outside that set reaching observe with None. Why: Keeps every
+        world-model input attributable and reproducible from the event log.
+        Next: Write ADR, then the refusal test with mutation check;
+        fact-to-evidence link stays open.
+      - `R12-EXPAND-1174`: Restating ADR 0199 (confirming ADR 0151 d4):
+        RegionalEpisodes ride CellReport only when a central consumer names
+        the decision they feed, over the mesh spine (ADR 0128). No
+        SharedEpisode built. Row stays PARTIAL citing the
+        KnowledgeDeltaRecord. Why: A producer with no consumer is declined;
+        the one exchange with producer and reader is reproducible from the
+        log. Next: Build episode/lesson exchange only after a central
+        consumer is named in an ADR.
+      - `R12-EXPAND-6030`: Restate ADR 0158 d8 and ADR 0199: a specialist
+        proposal yields a reviewable BrainSpec with gap lineage only, never
+        an instantiated agent with tools, corpus or authority. Row stays
+        PARTIAL; fails closed. Why: Instantiating agents with authority
+        widens scope; keeps every step reproducible and reviewable. Next:
+        Requirement text change to drop 'instantiate' is the only closure;
+        build nothing.
+      - `R12-EXPAND-6036`: Restate ruling 24: this is a measurement, nothing
+        built. Parked research families stay parked until a committed note
+        shows a posed size above 22 and at most 24 (MAX_QUBITS). Portfolio
+        family keeps its classical baseline. Why: ADR 0150 A2, 0190, 0199
+        and ADR 0006 baseline rule; no measured benefit yet. Next: Write the
+        sizing note; land parked families only if a posed size lies in (22,
+        24].
+      - `R12-EXPAND-6062`: Keep the four reachable verbs (Sense, Reason,
+        Simulate, Operate). Trade, Settle, Hedge, Transfer, Purchase, Create
+        stay unpopulated per ADR 0158 d15 on a paper platform. Requirement
+        text narrows to the four; row stays PARTIAL until reworded. Why:
+        Populating money-moving verbs implies a live path; refuse by
+        construction. Next: Reword requirement; then journal the registry
+        and make a decision read from it.
+      - `R12-FABRIC-7039`: Restate O08 ruling: prost declined; no generated
+        Rust types. Schema lock from Rust types (ADR 0156 d1) stays the
+        source. Row stays PARTIAL on generated types, not reworded to pass.
+        Reopens only if an external wire format requires protobuf. Why:
+        Canonical JSON under hash chains is reproducible; no outside
+        protobuf consumer exists. Next: If reopened: ADR admitting prost
+        under ADR 0109 with protected allow-list patch.
+      - `R12-FABRIC-7045`: Restate O09 ruling: declined. No OpenTelemetry
+        exporter crate (ADR 0026 stands). No tokio on the fabric SDK path
+        until a committed measurement shows it is needed. Sync
+        producer/consumer and GroupCoordinator stay. Why: The SDK path is
+        reached by the edge node drain; tokio near the cell needs a
+        measurement first. Next: Write the measurement note; only then an
+        ADR for async subscriptions and OTel hooks.
+      - `R12-FABRIC-7048`: Restate: BLOCKED stays. Wire codec remains
+        canonical JSON under the schema lock. prost not admitted (ADR 0109,
+        ADR 0112 Amendment 1) until an external wire format requires
+        protobuf. Why: Earlier ruling stands; no external consumer demands
+        protobuf. Next: Nothing built; reopen via ADR 0109 allow-list patch
+        if an external format appears.
+      - `R12-FABRIC-7049`: Restate O10 ruling: blake3 declined (ADR 0104,
+        ADR 0043 s2), neither crate nor in-tree. SHA-256 plus CRC32C stays;
+        codec keeps refusing ContentHash::Blake3. Row stays PARTIAL on the
+        BLAKE3 wording, not reworded to pass. Why: Fewer hash primitives to
+        audit; refusal test already guards it. Next: Nothing built; owner
+        may reword requirement to SHA-256.
+      - `R12-FABRIC-8077`: Restate O08 ruling: no prost, no in-tree
+        generator, because Shape names only JSON kinds and cannot carry
+        contract types. Immutable IDs and the compatibility gate are met.
+        Row stays PARTIAL on typed binding generation. Why: Generated Rust
+        would be weaker than the hand-written types. Next: Reopen only if a
+        wire format outside this repository requires protobuf.
+      - `R12-GOV-6127`: Earlier ruling 11 stands: the arbitrage leg ground
+        rule decided there is restated, not changed. Profit alone, or a
+        standing mandate repeated every cycle, is never a sufficient ground.
+        Fail closed: a leg without a per-action evidence ground is refused.
+        Why: Earlier ruling decides it; fail-closed refusal keeps every step
+        reproducible from the log. Next: Build the per-action ground and the
+        token only Cell::admit_replacement mints, per ADR 0200 Known limits
+        2.
+      - `R12-LEDGER-5005`: Restate earlier ruling: REGRADE_TEXT. No
+        reservation is invented to give InventoryReservation a producer. ADR
+        0153 leaves unnamed kinds bookable with no producer. Row stays
+        PARTIAL. Fails closed: nothing posts a reservation nobody made. Why:
+        Earlier ruling decides it; an invented reservation would not be
+        reproducible from real events. Next: Reopen when a path really
+        reserves a unit; journal it whole at that seam with a read-back
+        test.
+      - `R12-LEDGER-5019`: Keep ADR 0153 d7: no TaxCharge producer. Kind
+        stays bookable and tested in qip-contracts; the test that nothing
+        else names OperationKind::TaxCharge stays. Row stays PARTIAL. Why:
+        Tax method, rate and jurisdiction are unknown and a paper platform
+        realises nothing taxable; inventing them breaks reproducibility.
+        Next: Owner supplies tax method, rate and jurisdiction facts if ever
+        needed, then a follow-on record adds a producer.
+      - `R12-LEDGER-5020`: Keep ADR 0153 decision 2: Draw and Release have
+        no producer. A real capital call is recorded by hand. Commit stage
+        stays produced (5006). Row stays PARTIAL. Why: No capital-call
+        observer exists, and a draw inferred from a cash-flow schedule is a
+        forecast, not a loggable event. Next: If a capital-call notice
+        becomes a universe record, a follow-on record adds the producer.
+      - `R12-LEDGER-5026`: Restate earlier ruling: IMPLEMENT stands with ADR
+        0153 decision 8. No warehouse statement is built, since a simulated
+        warehouse drawn from the same ledger agrees by construction and
+        proves nothing. Warehouse clause stays open; marketplace
+        reconciliation stays. Why: Earlier ruling decides it; a
+        self-agreeing statement is not independent evidence. Next: Reopen
+        when a real independent warehouse record exists; add a kernel test
+        seeding a break for the work_listed skip.
+      - `R12-MESH-5064`: Restate REGRADE_TEXT ruling: legs stay
+        risk-ordered, least reversible first, sequential per ADR 0154
+        decision 5. No Concurrent arm; it loosens a risk control.
+        Requirement text stands; row stays PARTIAL on concurrent clause.
+        Why: Earlier ruling; sequential ordering bounds a stranded leg and
+        is reproducible and fail-closed. Next: Reopens only via a RISK
+        record with the forfeited-edge measurement ADR 0154's dissent asks
+        for.
+      - `R12-MESH-5066`: Keep ADR 0153 d6: no cycle-completion record.
+        Per-leg Filled postings, balanced and proven by cycle_ledger.rs, are
+        the ledger evidence. Requirement title is read as met only under d6;
+        row stays PARTIAL until deployed broker hop and whitelist path
+        exist. Why: Avoids a second source of truth beside the event log and
+        ledger postings. Next: Deploy edge node with
+        QIP_ARBITRAGE_POLICY_PATH and broker hop; then re-test part 2.
+      - `R12-MODEL-10123`: Keep hedges unscored: no hedge policy is declared
+        (owner decision 7, ADR 0391 decision 7), and a default would add
+        target exposure. Next build, fail closed: score capital plans
+        against realised outcome, and rebuild routing judgements from
+        RoutingScored log records on restart. Why: Log-rebuild keeps scoring
+        reproducible; hedge scoring would score nothing on default path.
+        Next: Build capital-plan scoring and routing-book rebuild; hedges
+        reopen only if owner declares a hedge policy.
+      - `R12-MODEL-6002`: Build a unified training-data export from the
+        journaled event log, so every path is replayable, covering declined,
+        filled, partial, quote and agency paths. Hedge capture stays out,
+        held by owner decision 7. Row stays PARTIAL on hedges. Why: Export
+        from the event log keeps records reproducible; hedge path has
+        nothing to record by default. Next: Implement log-derived export
+        with a test failing when the declined capture is deleted.
+      - `R12-MODEL-6004`: Define the counterfactual for a hedged or unwound
+        path as the unhedged hold marked to the same horizon, priced by the
+        twin from log records. Hedge half stays held by owner decision 7 (no
+        declared hedge policy); unwind queue may be built. Row stays
+        PARTIAL. Why: Unhedged hold is deterministic, replayable from the
+        log, and conservative. Next: Build unwind queue and twin arm; hedge
+        queue waits for a declared hedge policy.
+      - `R12-MODEL-9030`: Keep the decline per ADR 0149/0140: no scoring
+        against ForecastState and no tournament-win promotion gate.
+        qip-evolution keeps its single path (deflated Sharpe and gates) with
+        the tournament record as read-only context. A strategy is admitted
+        only when it states direction and probability. Why: Accepted ADRs
+        decide it; one promotion path stays auditable. Next: Nothing to
+        build; row stays PARTIAL until a strategy states a Forecast and is
+        admitted.
+      - `R12-OBS-7115`: Restate earlier ruling: ADR 0156 §5.6 stands, row
+        stays PARTIAL. Each process keeps its own in-process graph; no push
+        or peer scrape. Build now: deployment key from service, region and
+        cell config values, blank refused. Ingestion join waits on a funded
+        collector. Why: Keeps scope per-process and fails closed on blank
+        keys; collector is billed and unpriced. Next: Lane builds key test
+        the_deployment_entity_key_carries_service_region_and_cell_and_a_blank_value_is_refused;
+        row closes after R12-OBS-10089 collector funded.
+      - `R12-OBS-9074`: Restate earlier ruling: ADR_THEN_IMPLEMENT. Runbook
+        set is signed by the image it compiles into, under the
+        deny-by-default Binary Authorization policy whose attestor key only
+        CI holds. No KMS artefact_signing bought. Write the ADR, then
+        implement. Why: Signer outside the build without billed KMS; reuses
+        the existing attestation and fails closed. Next: Write ADR accepting
+        the image attestation as runbook signature; then implement a
+        verifier refusing unsigned sets.
+      - `R12-QUANT-1077`: Keep GraphSearch not built. ADR 0150 A2 stands: no
+        family lands without a committed note showing real sizes above the
+        exact-enumeration limit and within the provider qubit ceiling.
+        Parked patch stays unlanded; no gate weakened. Row stays MISSING.
+        Why: Fails closed; no benefit note exists, and landing would bypass
+        the accepted gate. Next: Write the sizing note from real platform
+        problem sizes; if it passes, land the parked patch.
+      - `R12-QUANT-1078`: Keep FeatureEnsembleSelection not built, on
+        purpose under ADR 0150 A2. Parked patch stays unlanded until a
+        committed sizing note passes the A2 test. Row stays MISSING. Why: A2
+        gate is accepted and not weakened; no sizing note exists. Next:
+        Sizing note first; then land the parked feature-selection family
+        with its greedy baseline.
+      - `R12-QUANT-1079`: Keep KernelsAndVariationalModels not built. Parked
+        kernel patch stays unlanded until the ADR 0150 A2 sizing note exists
+        and passes. Row stays MISSING. Why: A2 gate holds; landing without
+        the note would skip the measured-benefit rule. Next: Commit the
+        sizing note; if sizes qualify, land the kernel family with ridge
+        baseline.
+      - `R12-QUANT-1080`: Keep ReservoirAndExtremeLearning not built. Parked
+        reservoir patch stays unlanded until the ADR 0150 A2 sizing note
+        exists and passes. Row stays MISSING. Why: A2 gate holds; no note
+        shows sizes above enumeration limit and within qubit ceiling. Next:
+        Commit the sizing note; then land the reservoir family with
+        echo-state or AR baseline.
+      - `R12-QUANT-1081`: Keep ScenarioHypothesisSelection not built. Parked
+        scenario patch stays unlanded until the ADR 0150 A2 sizing note
+        exists and passes. Row stays MISSING. Why: A2 gate holds; landing
+        now would bypass an accepted ADR. Next: Commit the sizing note; then
+        land the scenario-selection family with its baseline.
+      - `R12-QUANT-1145`: Keep both families not built.
+        ScenarioHypothesisSelection waits on the ADR 0150 A2 sizing note;
+        SymbolicCombinatorialSearch stays NotBuilt under A6. Row stays
+        MISSING. Why: Both accepted ADR gates stand; no guard is weakened.
+        Next: Sizing note for the scenario family; Symbolic needs an ADR
+        superseding A6.
+      - `R12-QUANT-1158`: Row stays PARTIAL. Five parked families stay
+        unlanded until the ADR 0150 A2 sizing note passes; no scope item is
+        counted built until then. Honest status is six families not built.
+        Why: A2 is accepted and unweakened; counting parked code as
+        delivered would be a false claim. Next: Write the sizing note; land
+        the families that qualify, each with named test and mutation
+        evidence.
+      - `R12-QUANT-4033`: Row stays MISSING. Conflict-graph QUBO stays
+        parked under ADR 0150 A2 until the sizing note passes. Benchmark
+        must also be against qip-arbitrage's own path router, not only
+        greedy-by-weight. Why: Gate holds; the current baseline is not the
+        classical path router the check names. Next: Sizing note, then land
+        the patch and add the qip-arbitrage router baseline comparison.
+      - `R12-QUANT-4035`: Keep FeatureEnsembleSelection not built per ADR
+        0150 A2. Do not land the parked patch. Precondition: a committed
+        size note showing problem sizes lie above the exact-enumeration
+        limit and at or below the provider qubit ceiling. No note, no code.
+        Why: A2 is accepted and restrictive; landing unevidenced families
+        would weaken a fail-closed gate. Next: Patch stays parked; revisit
+        when a size note is committed.
+      - `R12-QUANT-4036`: Kernel/variational family stays not built under
+        ADR 0150 A2. Parked patch not landed. Revisit only after the
+        committed size note exists, with the in-sample-chosen classical
+        baseline kept. Why: A2 requires a size note before any new family's
+        encoding, baseline or benchmark. Next: Parked patch applies once the
+        size note lands.
+      - `R12-QUANT-4037`: Reservoir/extreme-learning family stays not built
+        under ADR 0150 A2. Parked patch (with echo-state baseline) not
+        landed until the committed size note exists. Why: A2 gates new
+        families on a measured size note; none exists. Next: Patch stays
+        parked pending the size note.
+      - `R12-QUANT-4041`: Scenario/model selection stays unbuilt under A2.
+        When the size note exists, land ScenarioSelection::check, which
+        refuses a selection that drops every minority hypothesis. Extend it
+        to world-model members before closing. Why: A2 blocks it; the
+        minority refusal keeps uncertainty preserved and fails closed. Next:
+        Needs the size note, then the parked patch plus world-model member
+        coverage.
+      - `R12-QUANT-4054`: Quantum forecasting check stays blocked under ADR
+        0150 A2. Keep the parked patch's out-of-time MSE and 95% interval
+        coverage beside the classical model as the design, unlanded until
+        the size note exists. Why: No quantum path may land without the A2
+        size note; classical baseline is mandatory (ADR 0006). Next: Land
+        with the reservoir family after the size note.
+      - `R12-REASON-1132`: Restate ruling REGRADE_TEXT: neural coupling out
+        of scope per ADR 0150 decision 7. Causal graphs are recorded and
+        replay-verified. Row stays PARTIAL until the owner rewords the
+        requirement. Why: A neural output has no re-derivable trace; replay
+        must stay exact. Next: Closes only when the owner rewords the
+        requirement.
+      - `R12-REASON-1133`: Restate ruling IMPLEMENT: neural coupling stays
+        out under ADR 0150 decision 7. A derivation whose timeline cannot be
+        rebuilt is refused by name on replay, never reported identical. Why:
+        Fail closed: an unrebuildable timeline is not a proof. Next: Row
+        stays PARTIAL until the owner rewords the requirement.
+      - `R12-REASON-1134`: Restate ruling REGRADE_TEXT: probabilistic logic
+        is the journaled network posterior, recomputed on replay. Neural
+        coupling is out under ADR 0150 decision 7. Row stays PARTIAL pending
+        rewording. Why: Keeps every step reproducible from the log. Next:
+        Owner rewording of the requirement closes it.
+      - `R12-REASON-1136`: Restate ruling REGRADE_TEXT: the bounded in-tree
+        constraint solver is the constraint solver. No SAT/SMT/MILP crate
+        (decision 11); neural coupling out (decision 7). Row stays PARTIAL
+        pending rewording. Why: Avoids an unaudited dependency and keeps
+        replay deterministic. Next: Reopen only under decision 12's
+        measured-refusal path.
+      - `R12-REASON-1179`: Restate ruling REGRADE_TEXT: scope is what ADR
+        0150 fixed: bounded in-tree solver, no SMT/MILP (decision 11), no
+        neural-to-symbolic compilation (decision 7), no planner beyond the
+        hypothesis lifecycle (decision 9). Graph solvers named as causal
+        path enumeration. Why: Declined clauses are decided, not missing
+        work. Next: Row stays PARTIAL until the owner rewords the scope
+        list.
+      - `R12-REASON-3058`: Restate ruling REGRADE_TEXT: O12 declined. No
+        SMT/MILP crate, no long in-tree solver (ADR 0150 decision 11). Row
+        stays PARTIAL against the SMT/MILP clause; dependency allow-list
+        untouched. Why: The cycle poses few Boolean variables; a new crate
+        is unjustified. Next: Reopens only on decision 12's measured,
+        refused, real problem.
+      - `R12-RISK-4097`: Narrow the bridge clause, provisional: no bridge
+        limit while ADR 0021 forbids transfers, since an always-empty axis
+        is a limit that cannot fire. Record a finding instead. Add a bridge
+        axis only when an observed bridge statement source exists. Why: A
+        limit that cannot fire reads as protection; narrowing is honest and
+        fails closed. Next: Owner confirms the narrowed wording, or names a
+        bridge statement source.
+      - `R12-SEC-10002`: Restate earlier ruling: workforce IAP lists require
+        ^group: only; PAM keeps individual user: principals. No-org mode
+        fails closed, console unreachable there until a Cloud Identity group
+        exists. Acceptance test refuses user: in IAP lists. Why: Group-only
+        fails closed and blocks shared-account literals; earlier ruling
+        already decided. Next: Patch variables.tf validation and IAP modules
+        in a protected-path patch for orchestrator; add acceptance test.
+      - `R12-SEC-9064`: Restate earlier ruling and O17: ADR 0113 s4 stands.
+        Scouts get their own project with the second region, not before.
+        Node pools stay refused (ADR 0114 D4). Now harden the
+        ingestion-discovery zone network and egress identity only. Why:
+        Project split adds cost and IAM; earlier ruling already decided;
+        network isolation is available now. Next: Write ADR when second
+        region is scheduled; tighten the zone's default-deny and egress
+        identity now.
+      - `R12-SEC-9122`: Follow R12-SEC-10002 ruling: group-only workforce
+        IAP access, PAM keeps individual user: principals. Workload identity
+        stays one service account per workload. No separate change. Why:
+        Same human-access control as 10002; one decision avoids divergence;
+        group-only fails closed. Next: Closes with the 10002 patch and its
+        acceptance test.
+
+    - *Deferred: no money is committed* (56):
+      - `R12-AMBIENT-7202`: TPU budget stays Decimal::ZERO under owner
+        decision 5 (billed compute declined). Declined clause recorded, row
+        stays PARTIAL. Code gaps (composition-root acceptance test,
+        zero-value signal classes) remain build work, not owner choices.
+        Why: No TPU exists to bill; spending is not authorised. Next: Build
+        qip-acceptance test via new_for_node; revisit TPU only if billed
+        compute is approved.
+      - `R12-ARCH-1192`: QIP_DEEPBRAIN_TICK_EVERY stays unset and tick
+        entitlements are not added to the dev manifest. Licensing posture is
+        evaluated before use; no data licence is granted here. Row stays
+        PARTIAL. Why: A tick entitlement is a licence grant; evaluate before
+        use, no spend committed. Next: Revisit when the owner records a
+        licensing call for tick data.
+      - `R12-ARCH-9028`: Restate earlier ruling and O25: Vertex AI Agent
+        Engine not admitted. Paid managed runtime holding sessions and
+        memory outside the event log. Single in-process Rust runtime stays;
+        no AgentManifest runtime change. Why: Billed service declined; state
+        outside event log breaks reproducibility. Next: Revisit if billed
+        services are approved and an ADR keeps sessions in the log.
+      - `R12-COVERAGE-7156`: Experimental-learning clause stays declined.
+        Optimisation clause holds. Per ADR 0150 decision 2 and ADR 0199
+        decision 3, no research family is built. Reopen on a committed
+        benefit case measured against the classical baseline. Why: Earlier
+        owner refusal of the research-families patch stands; no spend on
+        quantum research. Next: Row stays PARTIAL; revisit only via ADR 0150
+        benefit case or R12-EXPAND-6036 sizing note.
+      - `R12-COVERAGE-7183`: Restating earlier decisions: symbolic-search
+        and scenario-selection quantum families stay parked (ADR 0150,
+        0190); no HypothesisSearch submitter is added. Reopen only via ADR
+        0150 committed benefit case or measurement. Why: Owner refused the
+        L4 research-families patch on 2026-10-31; no spend on parked
+        families. Next: Row stays PARTIAL; revisit on a measured benefit
+        against the classical baseline.
+      - `R12-DATA-10035`: Restating earlier ruling (STAY_PARTIAL_DEPLOY):
+        Bigtable stays declined under decision 5 (about $950-$1,300 a month
+        for an empty instance). Derived features stay in memory. Reopen only
+        via an ADR with a measured need, monthly ceiling and client. Why:
+        Earlier ruling stands; no money committed for an unused instance.
+        Next: Row stays PARTIAL; ADR under ADR 0101 C4 plus client ADR under
+        ADR 0109 would reopen it.
+      - `R12-DATA-10037`: Restate 2026-10-31 ruling: Knowledge Catalog
+        (Dataplex) stays declined under decision 5. Billed managed service,
+        no ADR 0101 C4 storage record, no priced ceiling. Nothing declared
+        in Terraform. Row stays MISSING. Why: Earlier ruling already
+        decides; billed service with no ceiling. Next: Reopens only via ADR
+        stating measured need, scope and monthly ceiling; then gated module,
+        lineage, real plan.
+      - `R12-DATA-10040`: Restate ruling: AlloyDB stays refused under ADR
+        0113 and decision 5 (O01 declined). No Postgres client admitted, no
+        cluster created. Workflow state stays on the journal. Row stays
+        PARTIAL. Why: Earlier ruling decides; billed cluster, no measured
+        need or ceiling. Next: Reopens via ADR superseding ADR 0113 AlloyDB
+        clause with measured need, monthly ceiling, plus client ADR under
+        0109.
+      - `R12-DATA-10080`: Restate ruling: declined with Bigtable under
+        decision 5. No fabric sink written against a store no ADR admits and
+        a client ADR 0109 does not admit. Row stays MISSING. Why: Earlier
+        ruling decides; depends on Bigtable decline and dependency ADR.
+        Next: Needs R12-DATA-10035 reopening ADR, client dependency ADR,
+        then fabricd sink, integration test, real plan.
+      - `R12-DATA-10206`: Restate ruling: three app profiles are built and
+        plan-tested, regrade to PARTIAL. No reader or writer names a
+        profile; that waits on the Bigtable decline (decision 5). No row
+        moves to COMPLETE. Why: Earlier REGRADE_TEXT ruling stands; Bigtable
+        stays off, no spend. Next: Reopens only via Bigtable ADR with
+        measured need and ceiling plus client ADR; then readers name
+        profiles.
+      - `R12-DATA-2023`: Timeliness scoring stays as built. Enabling
+        discovery probes through the egress proxy to candidate hosts is not
+        decided here. QIP_DEEPBRAIN_DISCOVER_EVERY stays null everywhere;
+        the row stays PARTIAL. Why: Probes are external egress and a
+        licensing posture decision; protected path. Next: Revisit when the
+        owner approves egress posture for discovery and sets the cadence.
+      - `R12-DATA-8006`: Restating earlier ruling STAY_PARTIAL_DEPLOY:
+        BigQuery is the only store switched on; Cloud Storage waits for its
+        first writer. Bigtable, Spanner Graph, Knowledge Catalog, Vertex
+        declined under decision 5. Row stays PARTIAL. Why: Earlier ruling
+        decides it; no spend before dev deploy; requirement text not read
+        down. Next: After dev deploy, one ADR per store with measured need
+        and monthly ceiling; Bigtable also needs gRPC client ADR.
+      - `R12-DATA-8015`: Restating earlier ruling STAY_PARTIAL_DEPLOY:
+        Spanner Graph declined under decision 5. Promoted knowledge stays in
+        central brains, rebuilt from event log. In-memory graph does not
+        stand in for K1. Row stays PARTIAL. Why: Earlier ruling decides it;
+        separate Spanner instance costs $2,705-$8,140 a month for ledger
+        config, graph unpriced. Next: After dev deploy, ADR with measured
+        graph load, ceiling and Spanner client under ADR 0109.
+      - `R12-DATA-8016`: Restating earlier ruling STAY_PARTIAL_DEPLOY:
+        Bigtable declined under decision 5; floor $950-$1,300 a month.
+        Derived features stay in memory in qip-feature-dag. No gRPC stack
+        admitted. Row stays MISSING. Why: Earlier ruling decides it; no
+        spend for an unfunded store. Next: After dev deploy, Bigtable store
+        ADR plus gRPC client ADR under ADR 0109; then adapter and emulator
+        test.
+      - `R12-DATA-8122`: Restating earlier ruling STAY_PARTIAL_DEPLOY: K0
+        stays in memory with bounded horizon and spills nowhere. Bigtable
+        declined under decision 5. Requirement not redefined to pass the
+        row. Row stays PARTIAL. Why: Earlier ruling decides it; Bigtable
+        floor $950-$1,300 a month unfunded. Next: Follows R12-DATA-10035
+        reopening and client ADRs; then spill code with test that state
+        beyond horizon spills, not drops.
+      - `R12-DATA-8126`: Restating earlier ruling STAY_PARTIAL_DEPLOY:
+        Bigtable declined under decision 5. Plan clause met in code (two
+        clusters, three app profiles). Nothing more built;
+        fabric-sink-bigtable waits. Row stays PARTIAL. Why: Earlier ruling
+        decides it; no spend on unfunded store, floor $950-$1,300 a month.
+        Next: After R12-DATA-10035 ADR and gRPC client ADR:
+        fabric-sink-bigtable, enable_bigtable flip, committed plan.
+      - `R12-DATA-8128`: Restating earlier ruling STAY_PARTIAL_DEPLOY:
+        Knowledge Catalog declined under decision 5. No lineage emitter for
+        a catalog that does not exist (ADR 0151 decision 1). Row stays
+        MISSING. Why: Earlier ruling decides it; producer with no consumer
+        forbidden; catalog unpriced. Next: ADR stating need, lineage and
+        evidence-contract scope, and monthly ceiling; then gated Terraform,
+        emitter, plan.
+      - `R12-DATA-8130`: Restating earlier ruling STAY_PARTIAL_DEPLOY: O01
+        declined for now. No PostgreSQL client admitted, no AlloyDB bought
+        before deploy. ADR 0113 refusal stands. Operational metadata stays
+        on journal and single-node engine store, never in ledger. Why:
+        Earlier ruling decides it; AlloyDB primary unpriced. Next: After dev
+        deploy, ADR reversing 0113 with measured need, ceiling, and ADR 0109
+        client record.
+      - `R12-DATA-9052`: Restating earlier ruling STAY_PARTIAL_DEPLOY:
+        Spanner Graph declined under decision 5. qip-mesh GraphStore port
+        stays caller-less. Promoted-only write gate comes with the Spanner
+        Graph ADR. Row stays PARTIAL. Why: Earlier ruling decides it;
+        separate instance unpriced, ledger config $2,705-$8,140 a month.
+        Next: After dev deploy, ADR with measured need and ceiling plus
+        Spanner client under ADR 0109; gate test mutation 'admit scratchpad
+        write' must fail.
+      - `R12-EXEC-1169`: Guarded-but-off factory is not accepted as delivery
+        by delegation. No default path creates markets; breadth plan stays
+        unset. Row stays PARTIAL. Why: Accepting scope delivery or enabling
+        market creation is the owner's call; off is the restrictive default.
+        Next: Closes when a committed deployment sets the breadth plan or
+        the owner accepts the factory as delivered.
+      - `R12-EXPAND-1119`: Umbrella cannot close. Stays MISSING, graded
+        against the one exchange record that exists (KnowledgeDeltaRecord).
+        No episode, residual or lesson exchange built, per ADR 0199. Why:
+        Depends on R12-EXPAND-1174 exchange, which ADR 0199 declines; no new
+        brain or cross-process path. Next: Reopens only if a central
+        consumer names the decision an exchange feeds.
+      - `R12-EXPAND-6027`: No billed egress path or hosted connector now.
+        Row stays PARTIAL. EvidencePolicy record not built; SourceScore is
+        the chosen artifact. Revisit when the owner funds Cloud NAT egress
+        and a connector is configured. Why: Hosted source needs billed zone
+        policy and Cloud NAT; no spend committed. Next: Keep SourceScore
+        path. Later: connector arm, then outcome-driven reputation and
+        adversarial detection.
+      - `R12-FINOPS-8041`: Spanner and Bigtable stay declined (decision 5);
+        no data-store bounds appear in a plan. 1/1 brain bounds are by
+        design. The Bigtable autoscaling assertion stays, unverified until
+        CI runs terraform test. Why: Enabling stores spends money; ruling
+        already fixed. Next: Revisit when an ADR with a ceiling enables
+        either store; then plan shows its autoscaling limits.
+      - `R12-FINOPS-9186`: Restate: BigQuery reservations declined for now;
+        warehouse stays on-demand. Row stays MISSING. Reopens with an ADR
+        naming the edition, slots for research, backtest and BI, and a
+        monthly ceiling. Why: One streaming writer and no measured query
+        load; reservations are billed. Next: Deploy dev warehouse, measure
+        contention, then ADR and modules/data reservations with a plan
+        harness.
+      - `R12-GCP-10009`: Restate: no NCC hub before the ADR superseding ADR
+        0035 with a second region and the hub's monthly cost. No hybrid
+        spoke before a circuit is ordered. Row stays MISSING. Every spoke
+        must carry a route filter. Why: Hub and circuit are billed; single
+        region today. Next: After the second-region ADR: amend parked patch
+        so star spokes are filtered, add a failing tftest, then apply.
+      - `R12-GCP-8037`: Restate decision 5: Spanner ledger, Knowledge
+        Catalog and managed model registry are not funded before dev runs.
+        The journaled signed-release registry stands in. Row stays PARTIAL.
+        Why: Managed stores are billed and no measured need exists. Next:
+        After dev runs, an ADR with measured need and monthly ceiling
+        enables each as one global resource; a plan shows each once.
+      - `R12-GCP-8051`: Restate earlier ruling: STAY_PARTIAL_DEPLOY. ADR
+        0113 section 4 stands, one project per environment. Engineering and
+        security projects arrive with the second-region record superseding
+        ADR 0035, under an owner-held organisation. Nothing built now. Why:
+        Earlier ruling decides it; extra projects and org are owner-held and
+        unneeded with one region. Next: Revisit on second-region ADR; then
+        amend ADR 0118, extend resource-hierarchy, add tftest.
+      - `R12-GCP-8053`: Keep separate VPCs, Shared VPC stays refused. NCC
+        hub, spokes and per-pair export filters wait for the record
+        superseding ADR 0035; ADR 0156 6c topology rule stands. Row stays
+        PARTIAL. Why: One region has nothing to join; hub and data transfer
+        are billed. Next: Revisit on second-region ADR naming hub monthly
+        cost; replace the refusal scan then.
+      - `R12-GCP-8056`: Restate earlier ruling: STAY_PARTIAL_DEPLOY.
+        Decision 4 of 2026-10-25 covers VPC spokes. No
+        google_network_connectivity_* resource declared;
+        l6-ncc-hubs-parked.patch stays parked; row stays MISSING. Why:
+        Earlier ruling decides it; spokes are billed and have nothing to
+        join in one region. Next: Apply patch only after the 8035 ADR
+        supersedes ADR 0035 and names hub cost.
+      - `R12-GCP-8057`: Restate earlier ruling: STAY_PARTIAL_DEPLOY.
+        Decision 4 stands; mesh hub patch not applied. The gcp_placement
+        guard changes only by the second-region record, never to let the
+        patch through. Why: Earlier ruling decides it; one region, hub
+        billed. Next: Apply l6-ncc-hubs-parked.patch after the second-region
+        ADR states hub cost.
+      - `R12-GCP-8058`: Restate earlier ruling: STAY_PARTIAL_DEPLOY.
+        Decision 4 stands for the star hub. No GKE service plane exists (ADR
+        0114 D4), so no central inspection hub is needed. Patch stays
+        parked. Why: Earlier ruling decides it; no traffic to inspect, hub
+        billed. Next: Revisit with the second-region ADR (8035, 8057) naming
+        monthly cost.
+      - `R12-GCP-8104`: Restate earlier ruling: STAY_PARTIAL_DEPLOY.
+        Requirement text stands, row stays PARTIAL. Portfolio brain stays
+        one warm Cloud Run writer to protect the hash-chained log; HPA
+        refused per ADR 0114 D4. Spanner waits on decision 5. Why: Earlier
+        ruling decides it; a second writer would fork the log, Spanner is
+        billed. Next: Reopen only on a measurement that Cloud Run cannot
+        meet the need, via ADR.
+      - `R12-GCP-8116`: Restate earlier ruling: STAY_PARTIAL_DEPLOY. Node
+        pools, taints and PriorityClasses refused per ADR 0114 D4. Research
+        stays in the deep brain process, with the shed-research runbook and
+        Cloud Run instance ceilings as the control. Why: Earlier ruling
+        decides it; a separate research Job is billed and unmeasured. Next:
+        If qip_deepbrain_iteration_ms shows starvation despite the runbook,
+        write an ADR for a Job with named cost.
+      - `R12-LEDGER-10041`: Restate earlier ruling: STAY_PARTIAL_DEPLOY.
+        Ledger of record goes to Spanner Enterprise Plus per ADR 0113 on
+        nam3 with us-east4 leading. enable_spanner stays false everywhere;
+        nothing enabled, no first run claimed from the in-process double.
+        Why: Earlier ruling decides it; the instance is billed at $2,705 to
+        $8,140 a month and needs a measured need. Next: After dev runs: ADR
+        with measured load and monthly ceiling, 8136 change, owner tfvars
+        patch, real-instance evidence.
+      - `R12-LEDGER-7009`: Restate 2026-10-31 ruling: ledger goes to Spanner
+        per ADR 0113, but no spend ($2,705-8,140/mo) until base deploy runs
+        and an ADR states measured need and ceiling. Row stays PARTIAL;
+        ledgerd keeps refusing local store when deployed. Why: Earlier
+        ruling decides it; largest bill; decision 5 stands. Next: Revisit
+        when owner enables billing and ceiling ADR lands; then verify config
+        name, plan, deploy.
+      - `R12-LEDGER-8007`: Restate earlier ruling: Spanner Enterprise Plus
+        is financial truth but unfunded until deploy runs and an ADR gives
+        measured need and ceiling. Positions, obligations, grants arrive as
+        ledger postings via R12-LEDGER-5004 read path. Row stays PARTIAL.
+        Why: Earlier ruling and decision 5 already decide it. Next: After
+        dev deploy: ceiling ADR, 8136 nam3 change, protected tfvars patch,
+        ledgerd boot image.
+      - `R12-LEDGER-8132`: Restate earlier ruling: requirement text stands,
+        not narrowed to module contract or mocked plan. enable_spanner stays
+        false until deploy runs and an ADR sets a ceiling within
+        $2,705-8,140/mo; nam3 change under 8136 lands first. Why: Earlier
+        ruling decides it; funding declined under decision 5. Next: Owner
+        sets enable_spanner in protected tfvars after ceiling ADR; then show
+        ENTERPRISE_PLUS multi-region plan.
+      - `R12-MESH-10075`: Restate earlier ruling: O07 decided, ADR 0112
+        section 4 stands, no QUIC crate or quinn admitted. TCP+mTLS not read
+        as meeting direct QUIC. Row stays PARTIAL until a second region is
+        decided and a TCP+TLS vs QUIC measurement shows a cost. Why: Earlier
+        ruling decides it; measurement needs second region ADR 0035 does not
+        run. Next: Reopens when a record supersedes ADR 0035 with a second
+        region; then commit the measurement.
+      - `R12-MESH-8003`: Restate earlier ruling as in R12-MESH-10075: ADR
+        0112 section 4 stands, no QUIC, no quinn. Text stands, TCP+mTLS not
+        read as meeting it, row stays PARTIAL until a second region is
+        decided and measured. Why: Earlier ruling decides it; second region
+        is parked under decision 4. Next: Reopens when a record supersedes
+        ADR 0035 with a second region and its cost.
+      - `R12-MODEL-10065`: Restate earlier ruling: GPU pool on GKE refused
+        (ADR 0114 D4), Vertex accelerator declined under decision 5. Row
+        stays BLOCKED; nothing built or deployed. Why: Earlier ruling
+        decides it; no measured accelerator consumer. Next: Reopens only via
+        an ADR citing a measured accelerator consumer and a monthly ceiling,
+        after paper deploy.
+      - `R12-MODEL-7007`: Restate earlier ruling: accelerators declined
+        under decision 5. ADR 0122 decision 4 stands: Vertex custom jobs
+        only, offline research lane, only after a committed CPU-inadequacy
+        measurement for a named experiment. Gpu and Tpu arms stay
+        undispatched. Why: Earlier ruling decides it; no measured need or
+        ceiling. Next: Reopens by an ADR with the measurement and monthly
+        accelerator ceiling; then a Vertex custom-job spec behind
+        enable_vertex_ai.
+      - `R12-QUANT-10066`: Restate earlier ruling: STAY_PARTIAL_DEPLOY. No
+        TPU rung, no TPU bought; row stays MISSING. Cite ADR 0158 d5, ADR
+        0122 d4, decision 5 of 2026-10-25. Reopen on an ADR with a measured
+        TPU need and monthly ceiling. Why: A rung no provider can serve is
+        never chosen; a gate over it measures nothing. Next: Revisit when an
+        ADR states measured need and ceiling and decides the ladder
+        cost-order change.
+      - `R12-QUANT-10067`: Restate earlier ruling: STAY_PARTIAL_DEPLOY.
+        Declined for now under decision 5. In-tree solver runs in-process
+        within ADR 0150 bounds. Row stays MISSING; no Spot job pool. Why: No
+        measured queue exists to scale by; a pool is billed. Next: After
+        deploy, ADR states measured queue depth and monthly ceiling; then
+        add Terraform job-pool module with reviewed plan.
+      - `R12-QUANT-10095`: Restate earlier ruling: STAY_PARTIAL_DEPLOY.
+        Fan-out stays across CPU baseline, quantum-inspired search and QPU
+        arm, each compared with the classical baseline. GPU and TPU arms
+        declined 'no device' (O04, decision 5, ADR 0122 d4). Row stays
+        PARTIAL. Why: No accelerator is bought; baseline comparison is kept
+        for every arm. Next: Reopen on an ADR amending ADR 0122 d4 with a
+        CPU-inadequacy measurement and monthly ceiling.
+      - `R12-QUANT-1013`: Restate earlier ruling: STAY_PARTIAL_DEPLOY. Route
+        eligible work only to compute that exists; GPU and TPU recorded as
+        declined with reason. No accelerator funded (decision 5). Evidence
+        line corrected to ambient.rs:1107. Row stays PARTIAL. Why: Four-way
+        placement would need billed accelerators the owner declined. Next:
+        After an accelerator ADR with measured need and ceiling, route
+        ComputeAllocation through Substrate verdicts.
+      - `R12-QUANT-10173`: Restate earlier ruling: STAY_PARTIAL_DEPLOY. Four
+        of five phase-14 deliverables stand; GPU/TPU7x pools declined (ADR
+        0114 D4, ADR 0122 d4, decision 5 of 2026-10-25). Phase exit stays
+        unmet; row stays PARTIAL. Why: GKE GPU pool refused by ADR; Vertex
+        accelerators are unfunded. Next: After deploy, ADR names measured
+        need and monthly ceiling; then add Gpu/Tpu arm with exit test.
+      - `R12-QUANT-4046`: O06 deferred: no IBM QPU account, credential,
+        egress route or budget admitted. Router keeps CPU, quantum-inspired
+        and simulated QPU. Hosted admission in compute_routing.rs stays off.
+        GPU/TPU arms stay declared-only, unbuilt. Why: QPU admission means
+        an external account and per-job spend; none is committed. Next:
+        Revisit when the owner funds a QPU account and a measured benefit
+        over the classical baseline exists.
+      - `R12-REASON-9005`: Dedicated compute declined (ADR 0002, owner
+        decision 5): no new billed infrastructure. Checker clause stays met
+        by symbolic_stage::verify and `qip replay`. Row stays PARTIAL until
+        the owner changes the requirement or funds compute. Why: Dedicated
+        compute costs money and needs an external solver. Next: Revisit if
+        the owner funds compute or drops the clause.
+      - `R12-REFLEX-7003`: Restate ruling STAY_PARTIAL_DEPLOY: O13 declined;
+        ADR 0082 stands, no libc/nix/unsafe for mlock or busy-poll. Pinning
+        and huge pages stay. mlock and busy-poll wait on R12-REFLEX-8066's
+        tuned-vs-untuned replay on the first funded node. Why: No node has
+        measured anything; unsafe code is forbidden. Next: Needs a funded
+        node and R12-REFLEX-8066 replay evidence.
+      - `R12-REFLEX-8065`: Restate ruling STAY_PARTIAL_DEPLOY: O13 declined
+        (no mlockall); local scratch SSD refused (billed -lssd shape, ADR
+        0211, decision 5). IRQ/RPS/XPS tuning is written only with
+        R12-REFLEX-8066's replay on the first funded node, boot refusing
+        unread masks. Why: Cost is unnamed and tuning must be measured
+        first. Next: Nothing lands before the funded-node replay.
+      - `R12-SEC-10031`: Mesh stays refused. mTLS for warm services stays
+        met via ADR 0112 hop table; CA Service issuance deferred, consistent
+        with owner decision 5. Revisit when the owner funds CA Service.
+        Reflex-outside-mesh remains tested. Why: CA Service is billed;
+        earlier owner decision declines it for now. Next: Reopen on owner
+        funding: CA issuance in Terraform and composition roots, plus
+        API-8113 IAM evidence.
+      - `R12-SEC-7014`: Restate earlier ruling: four HSM signing keys funded
+        under R12-SEC-9137 at about $11 a month, not counted again.
+        Deployment waits on owner. Owner sets bundle_not_after =
+        2027-04-30T00:00:00Z in the same protected edit that enables
+        artefact_signing. No agent edits dev tfvars. Why: Already decided
+        FUND_THEN_DEPLOY; no new spend committed here. Next: After owner's
+        protected edit and R12-SEC-10053 patch: dev plan showing four keys
+        with one-signer bindings.
+      - `R12-SEC-9127`: artefact_signing stays null everywhere until the
+        owner switches it on; funding already decided under R12-SEC-9137.
+        Attestation root HSM is handled in R12-SEC-10053. No scanner or gate
+        weakened. Why: Owner switch plus already-funded HSM keys; nothing
+        new committed. Next: Reopen when owner enables artefact_signing;
+        then a plan shows the package-signing keys.
+      - `R12-TICK-2065`: No code gap. QIP_DEEPBRAIN_TICK_EVERY stays unset
+        and tick desk off. No dataset entitlement is assumed. Each dataset
+        needs a licensing decision before QIP_DEEPBRAIN_TICK_ENTITLEMENTS is
+        set. Why: Licensing posture is evaluated before a source is used;
+        the text names no entitled dataset. Next: Revisit when owner
+        licenses a named dataset; then enable the desk and show deployment
+        evidence.
+      - `R12-TICK-7020`: Restate earlier ruling: replay pool is a Cloud Run
+        Job, ceiling about $105 a month, behind enable_replay_pool
+        defaulting false, built after the deploy and only on owner funding.
+        Nothing built or billed now. Why: New billed infrastructure; earlier
+        FUND_THEN_DEPLOY ruling stands. Next: After deploy and owner
+        funding: replay-job module, tftest proving it shares nothing with
+        serving, real plan.
+      - `R12-WORLD-8129`: Restate earlier ruling and O02: Spanner Graph
+        stays declined. BigQuery remains the one evidence store. No graph
+        writer is written. Revisit only via an ADR under ADR 0113 s1 stating
+        a measured need and a monthly ceiling. Why: Store not admitted by
+        ADR 0113; spend requires a ceiling the owner has not set. Next:
+        Reopen after dev runs and the ADR exists; then enable_spanner plan
+        and REST writer behind GraphStore port.
+
+    - *Refused: it would need live trading or an external action* (8):
+      - `R12-DATA-1101`: Continuous search is not built here. Restate ADR
+        0157 section 5 and ADR 0180 d3: no crawl or search stage; candidates
+        are written by an operator. Cadence stays null. Row stays PARTIAL.
+        Why: Open-ended external search is an external action; already ruled
+        out by ADR. Next: Only a new ADR superseding 0157 section 5 reopens
+        it; operator-written candidates remain.
+      - `R12-DATA-1104`: Scout-generated adapters are never built here.
+        Restate ADR 0157 section 4 ('A descriptor never polls') and ADR 0180
+        d3. Connectors stay hand-written and reviewed. Row stays MISSING.
+        Why: Earlier ADR ruling decides; generated adapters reach external
+        sources unreviewed. Next: Only a superseding ADR with per-source
+        licence records and egress routes reopens it.
+      - `R12-EXEC-1168`: Restating earlier ruling REGRADE_TEXT: O15
+        declined. Continuous quoting stays refused at Cell::send; quote_loop
+        keeps no path to an order. Row stays PARTIAL on continuous quoting.
+        Why: Lifting it removes a paper-boundary refusal and rewrites
+        pinning acceptance tests; no delegation may do that. Next: Reopens
+        only by the owner's own ADR; no lane work.
+      - `R12-EXEC-8068`: Restating earlier ruling: BLOCKED. No venue adapter
+        session is opened. ADR 0108 is not accepted and Stage 1 is not
+        authorised; QIP_VENUE_FEED other than simulated keeps stopping the
+        process (ADR 0003). Why: A direct venue session is a path toward
+        live orders; never built here. Next: Only ADR 0108 P2
+        endpoint-derived venue class pre-work (off-allow-list host is Live
+        and refused) may proceed.
+      - `R12-GCP-10030`: Restate: regional GKE Standard for warm services is
+        refused (ADR 0114 D4, Amendment 1). Warm binaries stay on Cloud Run;
+        the one GKE cluster stays the GitOps control plane running no
+        trading binary. Row stays BLOCKED. Why: Earlier ruling; no trading
+        workload on Kubernetes. Next: Nothing built; capabilities placed per
+        ADR 0114 Amendment 1.
+      - `R12-GCP-7006`: Restate: stateful services on GKE refused (ADR 0114
+        D4). Stateful processes stay on Compute Engine (fabricd, ledgerd)
+        with state in Spanner when funded (ADR 0111, 0113). Row stays
+        BLOCKED. Why: Earlier ruling; repository rule forbids Kubernetes
+        workloads. Next: Nothing built.
+      - `R12-GCP-8005`: Restate: GKE Standard service plane refused (ADR
+        0114 D4). Its capabilities are built on Cloud Run: evidence
+        EVID-8108, replay TICK-8110, sinks FABRIC-8109. Row stays BLOCKED.
+        Why: Earlier ruling; no workload on Kubernetes. Next: Nothing built;
+        track the Cloud Run capability rows.
+      - `R12-GCP-8115`: Restate earlier ruling: GKE Standard regional
+        service-plane clusters are refused per ADR 0114 D4 and Amendment 1.
+        Requirement stands unmet; Cloud Run serves warm services. Never
+        built here. Why: Earlier ruling decides it; ADR 0114 D4 refuses the
+        cluster. Next: Reopens only if ADR 0114 D4's own measurement
+        condition is met.
+
+    - *Left with the owner: it cannot be delegated* (7):
+      - `R12-API-9057`: Restate earlier ruling: STAY_PARTIAL_EXTERNAL. No
+        public edge, no hostname invented. Owner must name a hostname on a
+        domain they own, delegate it to Cloud DNS, and approve LB, Cloud
+        Armor and CDN cost in a priced ADR. Why: Domain ownership and
+        recurring spend cannot be delegated. Next: After owner action,
+        protected patch sets public_edge.hostnames in dev tfvars; owner
+        dispatches plan.
+      - `R12-CICD-10182`: O20 not taken. Prod reconciliation from Git stays
+        closed; ADR 0036/0093, deploy gate and gitops.rs refusals stand.
+        Reopening prod promotion needs the owner's own ADR and human
+        dispatch. Why: Production changes need explicit owner approval.
+        Next: Owner writes and accepts an ADR reopening prod promotion;
+        nothing built meanwhile.
+      - `R12-EVENT-5089`: Owner must choose which event markets the breadth
+        plan installs and set it in protected infrastructure/environments/
+        tfvars. Until then the plan stays unset and installs nothing, which
+        fails closed. Why: Market choice and protected tfvars are
+        owner-held; plane is built and tested. Next: Owner names markets and
+        edits tfvars; then QIP_DEEPBRAIN_BREADTH_PLAN deploy evidence closes
+        the row.
+      - `R12-GOV-9075`: Restate earlier ruling: APPLY_PATCH approved as
+        written. Learning agent writes only under docs/proposals/; guard
+        refuses edits to deploy workflow, promotion code and agent policy. A
+        person must apply docs/blueprint/lanes/l5-edge-GOV-9075.patch. Why:
+        Protected-path change needs a person to apply it; agents cannot.
+        Next: Owner applies the patch and approves the protected path; then
+        run the agent-guard test.
+      - `R12-OBS-9152`: Not wired by an agent. Setting strategy_plan_path in
+        protected dev tfvars activates a paper strategy on a billed
+        execution node, so the owner makes that flip. Emission and test stay
+        as built; row stays PARTIAL. Why: Protected tfvars plus billed node
+        (execution_nodes_enabled=false) is not delegable spend. Next: Owner
+        sets strategy_plan_path and enables the node in dev dispatch; then
+        show the series moving.
+      - `R12-SEC-10003`: Owner must write the real requester and approver
+        Cloud Identity groups into pam_entitlements in
+        infrastructure/environments/*/terraform.tfvars, run a plan against
+        the real project, and remove any live standing human grants. Agents
+        cannot invent identifiers. Why: Account identifiers and live-project
+        access are a person's; protected tfvars. Next: Stays PARTIAL until
+        owner supplies groups and a real plan shows the entitlement.
+      - `R12-SEC-9123`: Owner must name the requester and approver
+        principals and set pam_entitlements in protected tfvars for an
+        environment, then run a plan. Agents cannot choose named people.
+        Why: Named principals are a person's decision; protected path. Next:
+        Same closure as R12-SEC-10003; stays PARTIAL until a plan shows the
+        entitlement.
 
 ## Where this stopped (2026-11-01)
 
