@@ -1427,3 +1427,42 @@ fn in_the_standard_brain_the_causal_estimator_contributes_and_its_dispute_is_rec
         "{step:?}"
     );
 }
+
+/// R12-WORLD-3078: two fitted parents are two predictions of one return,
+/// not two terms of it. Each edge's slope comes from its own one-parent
+/// regression, so two correlated parents that both rose 4% and were each
+/// fitted at 0.8 predict about 3.2%, not 6.4%. Found on the shipped
+/// fast-brain tape, where summing them moved every causal child's belief
+/// far enough to move which cycles a thesis was sized in.
+///
+/// Mutation: sum the per-parent predictions in `CausalFilter::propose` --
+/// the candidate reads 0.064.
+#[test]
+fn two_fitted_parents_are_averaged_as_two_predictions_and_never_summed() {
+    use qip_world_model::now::{CausalBelief, CausalFilter};
+    let key = VariableKey::new(scope(ScopeKind::Instrument, "CCC"), "return").unwrap();
+    let parent = |cause: &str| CausalBelief {
+        cause: cause.to_string(),
+        transmission: 0.8,
+        mean: 0.04,
+        variance: 1e-6,
+    };
+    let causal = [parent("AAA"), parent("BBB")];
+    let reading = [0.0];
+    let evidence = Evidence {
+        key: &key,
+        prior: None,
+        readings: &reading,
+        measurement_variance: 1e-4,
+        process_variance: 1e-6,
+        related: &[],
+        causal: &causal,
+        constraint: Constraint::Unbounded,
+    };
+    let c = CausalFilter
+        .propose(&evidence)
+        .unwrap()
+        .expect("it proposes");
+    assert!((c.mean - 0.032).abs() < 1e-12, "{}", c.mean);
+    assert!(c.variance > 0.0 && c.variance < 1e-5, "{}", c.variance);
+}

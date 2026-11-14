@@ -1101,11 +1101,12 @@ impl StateFilter for GraphFilter {
 }
 
 /// A causal estimator (R12-WORLD-3078): what the scope's causal parents'
-/// lagged beliefs imply for its return, `Σ b·m` over parents with fitted
-/// slope `b` and the parent's promoted mean `m` as of the edge's lag before
-/// this reading, with variance `Σ b²·v` plus the process variance — the
-/// regression's own prediction of the child's return from the parents'
-/// past, never a measure of fit multiplied into a level. It reads no reading
+/// lagged beliefs imply for its return: each parent's `b·m`, its fitted
+/// slope `b` times its promoted mean `m` as of the edge's lag before this
+/// reading, at variance `b²·v` plus the process variance, and with several
+/// parents their precision-weighted mean -- each edge is its own one-parent
+/// regression's prediction, never a measure of fit multiplied into a
+/// level, and never summed with another's. It reads no reading
 /// of the scope itself, so where the tape and the graph disagree its
 /// candidate and the filters' diverge and the ensemble records the
 /// disagreement. It abstains on every variable but [`CAUSAL_VARIABLE`],
@@ -1138,12 +1139,42 @@ impl StateFilter for CausalFilter {
         if parents.is_empty() {
             return Ok(None);
         }
-        let mean = parents.iter().map(|b| b.transmission * b.mean).sum::<f64>();
-        let variance = parents
+        // Each edge's slope was fitted by its own one-parent regression, so
+        // each parent gives a separate prediction of the same return, not a
+        // separate term of one. Summing them counts a shared move once per
+        // parent that saw it: two correlated parents each fitted at 0.8
+        // would predict 1.6 times the move. The predictions are combined as
+        // the ensemble combines candidates -- weighted by precision, with
+        // the spread between them added to the variance.
+        let predictions: Vec<(f64, f64)> = parents
             .iter()
-            .map(|b| b.transmission.powi(2) * b.variance)
+            .map(|b| {
+                (
+                    b.transmission * b.mean,
+                    b.transmission.powi(2) * b.variance + e.process_variance,
+                )
+            })
+            .collect();
+        if predictions.iter().any(|(_, v)| *v <= 0.0) {
+            // A parent belief of no stated uncertainty and no process
+            // variance: weigh the predictions equally rather than divide by
+            // zero.
+            let k = predictions.len() as f64;
+            let mean = predictions.iter().map(|(m, _)| m).sum::<f64>() / k;
+            let variance = predictions
+                .iter()
+                .map(|(m, v)| v + (m - mean).powi(2))
+                .sum::<f64>()
+                / k;
+            return Ok(Some(Candidate { mean, variance }));
+        }
+        let total: f64 = predictions.iter().map(|(_, v)| 1.0 / v).sum();
+        let mean = predictions.iter().map(|(m, v)| m / v).sum::<f64>() / total;
+        let variance = predictions
+            .iter()
+            .map(|(m, v)| (v + (m - mean).powi(2)) / v)
             .sum::<f64>()
-            + e.process_variance;
+            / total;
         Ok(Some(Candidate { mean, variance }))
     }
 }
