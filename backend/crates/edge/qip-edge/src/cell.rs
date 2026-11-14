@@ -1892,6 +1892,11 @@ pub struct Cell {
     /// judge a book — presence, staleness, a usable mid — are the ones that
     /// apply to it.
     feed_heard: BTreeMap<VenueId, Timestamp>,
+    /// Armed by [`Cell::on_bytes_normalized`] for one call and filled by
+    /// [`Cell::on_bytes`] with the messages its decoder produced; `None`
+    /// otherwise, so the hot path copies nothing unless a capture asked.
+    /// One frame at most, taken before the call returns: bounded.
+    normalized_capture: Option<Vec<MarketMessage>>,
     /// The largest lead, per venue, its last batch stamped ahead of this
     /// cell's clock (zero when it stamped none ahead). A venue is skewed
     /// while its entry exceeds [`CellConfig::max_clock_skew`]; one with no
@@ -2054,6 +2059,7 @@ impl Cell {
             outlook: RegionOutlook::AllLit,
             resume: None,
             feed_heard: BTreeMap::new(),
+            normalized_capture: None,
             clock_lead: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
             unwinding_breaks: BTreeMap::new(),
@@ -4484,35 +4490,6 @@ impl Cell {
     /// precisely so that this call's cost is arithmetic and memory, never a
     /// storage system's availability.
     pub fn on_bytes(&mut self, feed: &FeedKey, bytes: &[u8], now: Timestamp) -> Result<usize> {
-        self.ingest(feed, bytes, now, false).map(|(count, _)| count)
-    }
-
-    /// [`Self::on_bytes`], returning the messages the cell's decoder
-    /// normalized the bytes into, in decode order, as they were handed to
-    /// the sequencer (R12-TICK-1201).
-    ///
-    /// The capture path needs the cell's own reading of the frame, not the
-    /// publisher's: a tick lake that sealed what the venue meant to say
-    /// beside a cell that read something else would replay a session the
-    /// cell never saw. Separate from `on_bytes` so the hot path pays for no
-    /// copy it does not use; the copy here is one frame, so bounded.
-    pub fn on_bytes_normalized(
-        &mut self,
-        feed: &FeedKey,
-        bytes: &[u8],
-        now: Timestamp,
-    ) -> Result<Vec<MarketMessage>> {
-        self.ingest(feed, bytes, now, true)
-            .map(|(_, normalized)| normalized)
-    }
-
-    fn ingest(
-        &mut self,
-        feed: &FeedKey,
-        bytes: &[u8],
-        now: Timestamp,
-        keep: bool,
-    ) -> Result<(usize, Vec<MarketMessage>)> {
         let (decoded, skipped) = {
             let decoder = self.protocols.decoder_mut(&feed.venue, &feed.feed)?;
             let decoded = decoder.decode(bytes, now)?;
@@ -4536,14 +4513,37 @@ impl Cell {
         // newer is accepted, so the reset reaches the books ahead of the
         // messages that were held behind it.
         self.expire_sequence_gaps(now)?;
-        let normalized = if keep { decoded.clone() } else { Vec::new() };
+        if let Some(capture) = self.normalized_capture.as_mut() {
+            capture.clone_from(&decoded);
+        }
         let batch = self.sequencer.accept(decoded, now);
         self.absorb_sequenced(batch, Some(&feed.venue), now)?;
         // Bytes that decoded are a feed that is connected. Recorded after
         // the batch is applied, so a resumption that opened a gap is counted
         // in the reconciliation entry as the stale book it left.
         self.feed_heartbeat(&feed.venue, now);
-        Ok((count, normalized))
+        Ok(count)
+    }
+
+    /// [`Self::on_bytes`], returning the messages the cell's decoder
+    /// normalized the bytes into, in decode order, as they were handed to
+    /// the sequencer (R12-TICK-1201).
+    ///
+    /// The capture path needs the cell's own reading of the frame, not the
+    /// publisher's: a tick lake that sealed what the venue meant to say
+    /// beside a cell that read something else would replay a session the
+    /// cell never saw. Separate from `on_bytes` so the hot path pays for no
+    /// copy it does not use; the copy here is one frame, so bounded.
+    pub fn on_bytes_normalized(
+        &mut self,
+        feed: &FeedKey,
+        bytes: &[u8],
+        now: Timestamp,
+    ) -> Result<Vec<MarketMessage>> {
+        self.normalized_capture = Some(Vec::new());
+        let read = self.on_bytes(feed, bytes, now);
+        let normalized = self.normalized_capture.take().unwrap_or_default();
+        read.map(|_| normalized)
     }
 
     /// The feed handler's statement that `venue`'s feed is connected and
