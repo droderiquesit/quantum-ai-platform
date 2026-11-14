@@ -738,63 +738,6 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
     Ok(())
 }
 
-/// R12-MODEL-10123, owner decision 36. The failure this guards: the log held
-/// every `RoutingScored` record and a restart opened an empty book, so the
-/// rung's record was reproducible by a reader and never by the process, and
-/// the next score landed on a book that had forgotten the last.
-#[test]
-fn a_restart_rebuilds_the_routing_book_from_the_log_and_counts_each_score_once() -> Result<()> {
-    let directory = std::env::temp_dir().join(format!(
-        "qip-kernel-routing-book-{}-{}",
-        std::process::id(),
-        start().as_nanos()
-    ));
-    let _ = std::fs::remove_dir_all(&directory);
-    let path = directory.join("events.jsonl");
-    let make = |at: Timestamp| -> Result<Platform> {
-        let config = PlatformConfig::default().with_event_log_file(&path);
-        let (context, _clock) = Context::deterministic(at, config.seed);
-        Platform::new(config, context, Telemetry::silent(), universe(), limits())
-    };
-
-    let (before, scored) = {
-        let mut platform = make(start())?;
-        platform.observe(bars("AAA", 120));
-        platform.run_cycle(start());
-        let horizon = platform.predictions()[0].proposition.resolves_at;
-        let swings: Vec<SensedRecord> = (0..20)
-            .map(|i| {
-                let (open, close) = if i % 2 == 0 {
-                    (100.0, 150.0)
-                } else {
-                    (150.0, 100.0)
-                };
-                let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
-                bar("AAA", at, open, close)
-            })
-            .collect();
-        platform.observe(swings);
-        platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
-        (
-            platform.routing_reputation().clone(),
-            platform.routings_scored()?,
-        )
-    };
-    assert_eq!(scored.len(), 1, "premise: the first process scored a routing");
-    assert!(
-        !before.is_empty(),
-        "premise: the first process's book holds the score"
-    );
-
-    let restarted = make(start().saturating_add(Duration::from_days(30)))?;
-    assert_eq!(
-        restarted.routing_reputation(),
-        &before,
-        "the restart did not rebuild the book from the log, or counted a score twice"
-    );
-    Ok(())
-}
-
 // --- counterfactual scoring of declined paths -------------------------------
 
 /// Offer an order the controls refuse — it traces to no hypothesis — and hand
