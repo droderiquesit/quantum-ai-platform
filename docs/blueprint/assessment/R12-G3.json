@@ -4416,13 +4416,18 @@
   {
     "id": "R12-LEDGER-10185",
     "status": "PARTIAL",
-    "current": "Ledger refold equals stored balances (test); node reconciles with venue drop copy and after restart; centre records reconciliation breaks by direction. Custody statements not ingested; Spanner absent.",
+    "current": "Ledger refold equals stored balances (test); node reconciles with venue drop copy and after restart; centre records reconciliation breaks by direction. Since ADR 0494 the node's pass journals the simulated venue's custody statement (its clearing-ledger positions) on the cell's chain after the fills it covers, it ships on P1, and qip-ledgerd compares it with the cell's booked fills in the batch that applies it: a difference is a custody_break note counted by direction (qip_ledger_custody_breaks_total{direction}), never an adjustment; a live statement parks the cell. Venue cash custody is not compared; Spanner absent.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:720 refolding_the_outcome_stream_from_its_first_record_equals_the_stored_balances",
-      "backend/crates/apps/qip-edge-node/tests/gateway.rs:215",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt"
+      "backend/crates/apps/qip-ledgerd/tests/store.rs refolding_the_outcome_stream_from_its_first_record_equals_the_stored_balances",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs a_seeded_divergence_between_the_venue_statement_and_the_ledger_is_one_journaled_break_counted_by_direction_and_never_an_adjustment",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs a_custody_statement_on_the_stream_that_agrees_with_the_booked_fills_records_no_break",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs a_custody_statement_not_marked_simulated_parks_the_cell_as_live_and_compares_nothing",
+      "backend/crates/tests/qip-acceptance/tests/custody_reconciliation.rs a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_ledger_finds_it_agrees",
+      "backend/crates/apps/qip-edge-node/tests/gateway.rs a_cell_order_reaches_the_matching_engine_and_reconciles_through_drop_copy",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt",
+      "docs/adr/0494-the-venues-custody-statement-is-a-journal-entry-on-the-cells-chain-journaled-when-the-venues-holdings-move-and-the-ledger-compares-it-as-it-applies-it.md"
     ],
-    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the gateway's PositionSnapshot custody statement on P1 and the ledger's comparison, with a seeded-break test in qip-ledgerd/tests/store.rs.",
+    "gap": "2026-11-12 (lane t50-34): positions are rebuilt and verified against the venue's custody statement from the stream; cash is not. Left: the venue's cash balance as a statement and its comparison with trading:/in_settlement: cash (ADR 0442 names cash custody as a gap); the carrier from a custody_break to the centre's halt signer (R12-LEDGER-8139); CustodyMovement postings to custody:<venue> (ADR 0494 says why deferred); an authoritative deployed store (Spanner absent).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4432,10 +4437,10 @@
       "R12-LEDGER-10041"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd --test store",
+    "verification": "cargo test -p qip-ledgerd --test store; cargo test -p qip-acceptance --test custody_reconciliation",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Custody statement ingestion; authoritative store."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Custody statement ingestion; authoritative store. 2026-11-13 lane t50-34 (wave580, ADR 0494): custody statement on the chain, compared on apply. Mutations, each fired and restored by cp + cmp: ledgerd side - dropping cash_units in from_entry (3 tests fail), skipping compare_custody in apply (3 fail), swapping compare's direction arms (divergence test fails), removing the chain-position filter (position test fails), removing the live-statement park (live test fails), reading an unparsable holding as zero (garbled test fails); producer side - dropping the pass's record_custody_statement call, emptying custody_holdings' cash units, removing the unchanged-statement check, removing the configured-venue check, journaling simulated:false - each fails the acceptance in-stream test. Graded PARTIAL: the statement asks for cash too."
   },
   {
     "id": "R12-RES-10186",

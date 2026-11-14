@@ -42,6 +42,7 @@ use crate::feed::{FeedTick, ReplayFeed, SimulatedFeed};
 use crate::gateway::SimulatedGateway;
 use crate::reprice::{Requote, Requoter, RequotingPlacer};
 use qip_contracts::message::MarketMessage;
+use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_edge::cell::{Cell, ConfirmedFill, WorkReport};
@@ -501,6 +502,16 @@ fn decide_act_reconcile(
         .map(|discrepancy| discrepancy.describe())
         .collect();
     stats.breaks = stats.breaks.saturating_add(breaks.len() as u64);
+
+    // The venue's custody statement, journaled after the pass's fills so its
+    // chain position covers every fill the venue counted (ADR 0130 decision
+    // 4, ADR 0494). The cell journals it only when the venue's holdings moved
+    // since the last statement, so every fill is followed by a statement that
+    // covers it and a quiet pass journals nothing. qip-ledgerd compares it
+    // with the fills it booked when it applies the entry.
+    let venue = VenueId::new(gateway.simulated().venue());
+    let (holdings, cash_units) = gateway.simulated().custody_holdings();
+    cell.record_custody_statement(&venue, holdings, cash_units, now)?;
 
     Ok(PassOutcome::Ran {
         feed: tick,
