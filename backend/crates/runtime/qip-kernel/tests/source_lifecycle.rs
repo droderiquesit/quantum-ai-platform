@@ -28,6 +28,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_kernel::source_lifecycle::SourceLifecycleChanged;
 use qip_observability::Telemetry;
+use qip_prediction::resolution::{Observation, Observations};
 use qip_risk::limits::LimitSet;
 
 fn start() -> Timestamp {
@@ -614,5 +615,431 @@ fn every_registration_carries_its_source_registry_entry_on_the_assessment() -> R
         first.entries.iter().any(|e| e.monthly_fee == Decimal::ZERO),
         "the free sources read as free"
     );
+    Ok(())
+}
+
+/// The fixture a thesis-queuing cycle needs: a priced, liquid instrument the
+/// detectors can find a jump in. `LiquidityProfile` has no `Default` on
+/// purpose — the controls that veto trading read exactly these two figures,
+/// so a fixture states them rather than inheriting a number nobody wrote.
+fn tradeable_universe(symbol: &str) -> Result<Universe> {
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    let mut universe = Universe::new();
+    universe.insert(
+        FinancialObject::builder(
+            traded(symbol),
+            symbol,
+            InstrumentType::CommonStock,
+            qip_financial::costs::LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue("XNYS")
+        .issuer("Acme Corporation")
+        .sector(Sector::InformationTechnology)
+        .price(Decimal::from_int(100))
+        .provenance(Provenance::synthetic("test", start()))
+        .build(start())?,
+    )?;
+    Ok(universe)
+}
+
+fn traded(symbol: &str) -> qip_core::ids::ObjectId {
+    qip_core::ids::ObjectId::from_string(format!("obj-{symbol}"))
+}
+
+/// A platform whose cycle reaches REASON's claim: a stated book, a
+/// leverage-only limit set and the same review floor `valuation_seam`'s
+/// suite states, so the fixture's own hypothesis is reviewed rather than
+/// rejected for a thinness that is the fixture's and not the platform's.
+/// The floor is a configured input, not a weakened control: the shipped
+/// default is untouched and every other limit here is the conservative one.
+fn platform_trading(symbol: &str) -> Result<Platform> {
+    use qip_risk::limits::{Limit, LimitKind};
+    let config = PlatformConfig {
+        initial_equity: Decimal::from_int(1_000_000),
+        review: qip_reasoning_engine::redteam::ReviewPolicy {
+            minimum_surviving_confidence: 0.10,
+            ..qip_reasoning_engine::redteam::ReviewPolicy::default()
+        },
+        ..PlatformConfig::default()
+    }
+    .with_owner("market-data");
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        tradeable_universe(symbol)?,
+        LimitSet::new("source-lifecycle-test").with(
+            Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
+                .with_rationale("gross exposure is capped at 2x equity"),
+        ),
+    )
+}
+
+/// A price series with a jump two thirds of the way through, so the detectors
+/// have a real displacement to find — the shape the kernel's own suites feed.
+fn bars(symbol: &str, count: usize) -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+    use qip_financial::quality::DataQuality;
+    use qip_market::bar::{Bar, Interval};
+    use qip_market_ingestion::adapter::SensedRecord;
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            // The displacement is the last bar, so the thesis is about a
+            // move the tape has not yet reverted.
+            let jump = if i + 1 == count { -0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            SensedRecord::Bar(Box::new(Bar {
+                object_id: traded(symbol),
+                venue: "XNYS".to_string(),
+                interval: Interval::Day,
+                open_time: at,
+                open: Decimal::from_f64(open).expect("a price"),
+                high: Decimal::from_f64(open.max(price) * 1.002).expect("a price"),
+                low: Decimal::from_f64(open.min(price) * 0.998).expect("a price"),
+                close: Decimal::from_f64(price).expect("a price"),
+                volume: Decimal::from_int(1_000_000),
+                trade_count: 5_000,
+                vwap: Decimal::from_f64((open + price) / 2.0),
+                quality: DataQuality::default(),
+            }))
+        })
+        .collect()
+}
+
+#[test]
+fn quarantining_a_source_withdraws_the_open_claims_that_stood_on_what_it_said() -> Result<()> {
+    // R12-RES-7097, the half the world model cannot reach. Retracting a
+    // poisoned source's facts narrows what is *read afterwards*. A claim the
+    // platform had already made on the poisoned source's word stayed open,
+    // was graded when its horizon passed, and the belief calibration learnt
+    // the platform's confidence from evidence the platform had stopped
+    // believing. A quarantine now withdraws it, and a withdrawn claim is
+    // never scored.
+    //
+    // Mutation: delete the `prediction.withdrawn = Some(..)` loop in
+    // `assess_sources` — the withdrawal assertion fails, naming the claim
+    // still open on the quarantined source.
+    let mut platform = platform_trading("AAA")?;
+    let mut probe = probe();
+    platform.assess_sources(candidates()?, &mut probe, start())?;
+    // What an ingestion path does: a fact about the instrument, stated by
+    // the source, absorbed through the kernel's own knowledge intake. The
+    // graph must hold it *before* the claim is made, because attribution is
+    // recorded where the claim is — by quarantine time the source's facts
+    // are already retracted, and asking the graph then would name nobody.
+    {
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let node = qip_world_model::graph::Node::entity(
+            "company:Acme Corporation",
+            qip_world_model::graph::EntityKind::Company,
+            "Acme Corporation",
+            start(),
+        );
+        let written = platform.absorb_knowledge(
+            vec![node],
+            vec![qip_kernel::evidence_intake::KnowledgeRelation {
+                relationship: Relationship::new(
+                    "company:Acme Corporation",
+                    traded("AAA").as_str(),
+                    RelationshipKind::Issues,
+                    1.0,
+                    "forger",
+                ),
+                valid_from: start(),
+                confidence: 0.9,
+            }],
+            start(),
+        )?;
+        assert_eq!(
+            written.relations, 1,
+            "premise: the source's fact about the instrument was not written"
+        );
+    }
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+
+    let open: Vec<_> = platform
+        .predictions()
+        .iter()
+        .filter(|claim| claim.is_open())
+        .cloned()
+        .collect();
+    assert!(
+        !open.is_empty(),
+        "premise: the cycle made no claim, so a withdrawal below would prove nothing:\n{}",
+        report.summarise()
+    );
+    assert!(
+        open.iter().any(|claim| claim.cites("forger")),
+        "premise: no open claim names the source about to be quarantined: {:?}",
+        open.iter().map(|c| c.sources.clone()).collect::<Vec<_>>()
+    );
+    // A clean source's claim must be left alone, or the assertion below
+    // would pass for a pass that withdrew everything.
+    assert!(
+        open.iter().all(|claim| !claim.cites("rising")),
+        "premise: the fixture's claims already name the clean source"
+    );
+
+    let assessment = platform.assess_sources(candidates()?, &mut probe, later())?;
+    assert!(
+        platform
+            .registered_sources()
+            .get("forger")
+            .is_some_and(|entry| entry.is_quarantined()),
+        "premise: policy quarantined forger on the second pass"
+    );
+    assert!(
+        !assessment.claims_invalidated.is_empty(),
+        "the assessment reports no withdrawn claim"
+    );
+    for claim in platform.predictions() {
+        if claim.cites("forger") {
+            assert!(
+                claim.withdrawn.is_some(),
+                "a claim standing on the quarantined source is still open: {claim:?}"
+            );
+        }
+    }
+    // Withdrawn, not deleted: what was claimed and why it was dropped is the
+    // record a reader needs.
+    assert!(
+        platform.predictions().iter().any(|claim| claim
+            .withdrawn
+            .as_deref()
+            .is_some_and(|why| { why.contains("`forger` quarantined") })),
+        "the withdrawal names neither the source nor the reason"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_withdrawn_claim_is_never_scored_so_calibration_reads_no_poisoned_evidence() -> Result<()> {
+    // The second half of the same rule: withdrawing a claim is only worth
+    // something if the scoring pass honours it. Before this a withdrawn
+    // claim would have been settled at its horizon like any other, and the
+    // belief calibration — which is what sizes later theses — would have
+    // learnt from the poisoned source after all.
+    //
+    // Mutation: drop the `prediction.withdrawn.is_some()` arm from
+    // `score_predictions` — the withdrawn claim is scored and the count
+    // assertion fails.
+    use qip_kernel::platform::RecordedPrediction;
+    let mut platform = platform_trading("AAA")?;
+    let mut probe = probe();
+    platform.assess_sources(candidates()?, &mut probe, start())?;
+    {
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        platform.absorb_knowledge(
+            vec![qip_world_model::graph::Node::entity(
+                "company:Acme Corporation",
+                qip_world_model::graph::EntityKind::Company,
+                "Acme Corporation",
+                start(),
+            )],
+            vec![qip_kernel::evidence_intake::KnowledgeRelation {
+                relationship: Relationship::new(
+                    "company:Acme Corporation",
+                    traded("AAA").as_str(),
+                    RelationshipKind::Issues,
+                    1.0,
+                    "forger",
+                ),
+                valid_from: start(),
+                confidence: 0.9,
+            }],
+            start(),
+        )?;
+    }
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let before: Vec<RecordedPrediction> = platform
+        .predictions()
+        .iter()
+        .filter(|claim| claim.is_open() && claim.cites("forger"))
+        .cloned()
+        .collect();
+    assert!(
+        !before.is_empty(),
+        "premise: no open claim on the source, so nothing below is tested"
+    );
+    platform.assess_sources(candidates()?, &mut probe, later())?;
+
+    // The premise the second half needs: a claim that did not stand on the
+    // quarantined source, settled by the same observations, IS scored — so
+    // the assertion below is about the withdrawal and not about a scoring
+    // pass that settles nothing. A cycle after the quarantine makes one: the
+    // source's facts are retracted by then, so nothing it said is cited.
+    platform.run_cycle(later());
+    let control = platform
+        .predictions()
+        .iter()
+        .find(|claim| claim.is_open() && claim.withdrawn.is_none() && !claim.cites("forger"))
+        .cloned();
+    assert!(
+        control.is_some(),
+        "premise: the fixture has no clean claim to compare the withdrawn one against"
+    );
+
+    // Long past every horizon, with an observation for every metric the open
+    // propositions name, so each one can actually settle.
+    let resolved = later().saturating_add(Duration::from_days(400));
+    let mut observations = Observations::at(resolved);
+    for claim in platform.predictions() {
+        for metric in claim.proposition.criteria.metrics() {
+            observations = observations.with(metric, Observation::Numeric(Decimal::ZERO));
+        }
+    }
+    let scored = platform.score_predictions(&observations, resolved);
+    assert!(
+        !scored.is_empty(),
+        "premise: the scoring pass settled nothing, so a withdrawn claim being \
+         unscored says nothing about the withdrawal"
+    );
+    if let Some(control) = control {
+        assert!(
+            scored
+                .iter()
+                .any(|(hypothesis, _)| hypothesis == &control.hypothesis),
+            "premise: a claim that was not withdrawn was not scored either"
+        );
+    }
+    for claim in &before {
+        assert!(
+            !scored
+                .iter()
+                .any(|(hypothesis, _)| hypothesis == &claim.hypothesis),
+            "a withdrawn claim was scored: {}",
+            claim.hypothesis
+        );
+    }
+    Ok(())
+}
+
+/// Absorb one fact about `symbol` stated by `source`, the way an ingestion
+/// path does, through the kernel's own knowledge intake. The graph must hold
+/// it before a claim is made: attribution is recorded at the claim, because
+/// a quarantine retracts the source's facts before anything can ask what
+/// stood on them.
+fn fact_about(platform: &mut Platform, source: &str, symbol: &str) -> Result<()> {
+    use qip_world_model::relationship::{Relationship, RelationshipKind};
+    let issuer = format!("company:{source}-issuer");
+    let written = platform.absorb_knowledge(
+        vec![qip_world_model::graph::Node::entity(
+            &issuer,
+            qip_world_model::graph::EntityKind::Company,
+            &issuer,
+            start(),
+        )],
+        vec![qip_kernel::evidence_intake::KnowledgeRelation {
+            relationship: Relationship::new(
+                &issuer,
+                traded(symbol).as_str(),
+                RelationshipKind::Issues,
+                1.0,
+                source,
+            ),
+            valid_from: start(),
+            confidence: 0.9,
+        }],
+        start(),
+    )?;
+    assert_eq!(
+        written.relations, 1,
+        "premise: {source}'s fact about {symbol} was not written"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_claim_standing_on_a_source_retired_as_stale_is_held_at_the_stale_confidence() -> Result<()> {
+    // R12-RES-7097, the stale half at the claim. A retirement is not a
+    // finding that the evidence was false, so the claim stands — but a claim
+    // the platform made on a feed that has since gone stale must not be
+    // graded, and must not size anything, at the confidence a fresh feed
+    // earned. Before this a retirement moved the source's facts in the graph
+    // and left every claim already made at its original confidence.
+    //
+    // Mutation: delete the `claim.confidence *= ..` line in
+    // `assess_sources` — the downweight assertion fails with the original
+    // confidence.
+    let mut platform = platform_trading("AAA")?;
+    let mut probe = probe();
+    platform.assess_sources(candidates()?, &mut probe, start())?;
+    fact_about(&mut platform, "fading", "AAA")?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+
+    let before: Vec<(String, f64)> = platform
+        .predictions()
+        .iter()
+        .filter(|claim| claim.is_open() && claim.cites("fading"))
+        .filter_map(|claim| {
+            claim
+                .claim
+                .as_ref()
+                .map(|stated| (claim.hypothesis.clone(), stated.confidence))
+        })
+        .collect();
+    assert!(
+        !before.is_empty(),
+        "premise: no open claim names the source about to be retired:\n{}",
+        report.summarise()
+    );
+    assert!(
+        before.iter().all(|(_, confidence)| *confidence > 0.0),
+        "premise: the claims were stated at zero confidence, so a downweight \
+         below would be unobservable: {before:?}"
+    );
+
+    let assessment = platform.assess_sources(candidates()?, &mut probe, later())?;
+    assert!(
+        !platform.registered_sources().contains_key("fading"),
+        "premise: policy retired fading on the second pass"
+    );
+    assert_eq!(
+        assessment.claims_downweighted,
+        before
+            .iter()
+            .map(|(hypothesis, _)| hypothesis.clone())
+            .collect::<Vec<_>>(),
+        "the assessment does not report the claims it held less firmly"
+    );
+    for (hypothesis, was) in &before {
+        let now_at = platform
+            .predictions()
+            .iter()
+            .find(|claim| &claim.hypothesis == hypothesis)
+            .and_then(|claim| claim.claim.as_ref())
+            .map(|stated| stated.confidence)
+            .ok_or_else(|| qip_core::error::Error::not_found(hypothesis.clone()))?;
+        let expected = was * qip_world_model::world::STALE_SOURCE_CONFIDENCE;
+        // The factor is a committed constant and both sides are the same
+        // arithmetic on the same f64, so the comparison is exact by
+        // construction rather than by luck; a tolerance here would admit a
+        // downweight by some other factor.
+        assert!(
+            (now_at - expected).abs() < f64::EPSILON,
+            "{hypothesis} is held at {now_at}, not at the stale fraction {expected} of its \
+             confidence"
+        );
+        // Stale, not false: the claim is still open and still gradeable.
+        assert!(
+            platform
+                .predictions()
+                .iter()
+                .any(|claim| &claim.hypothesis == hypothesis
+                    && claim.is_open()
+                    && claim.withdrawn.is_none()),
+            "{hypothesis} was withdrawn by a retirement, which is not a finding \
+             against the evidence"
+        );
+    }
     Ok(())
 }
