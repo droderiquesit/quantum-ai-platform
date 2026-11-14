@@ -1032,7 +1032,6 @@ fn a_source_alpha_desk_switched_off_journals_no_round_where_the_default_desk_jou
     feed(&mut on);
     feed(&mut off);
     let mut journal_on = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
-    let mut journal_off = AmbientJournal::open(&JournalDestination::InMemory).unwrap();
 
     let round_on = on
         .maybe_score(1, start())
@@ -1045,10 +1044,6 @@ fn a_source_alpha_desk_switched_off_journals_no_round_where_the_default_desk_jou
     assert!(
         off.maybe_score(1, start()).is_none(),
         "a desk switched off scores no round"
-    );
-    assert!(
-        records(journal_off.log()).unwrap().is_empty(),
-        "the off desk's journal holds nothing"
     );
     assert_eq!(records(journal_on.log()).unwrap().len(), 1);
 }
