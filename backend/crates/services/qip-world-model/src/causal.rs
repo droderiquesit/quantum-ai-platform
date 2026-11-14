@@ -294,6 +294,17 @@ pub struct CausalEdge {
     /// subject to immediate re-estimation or retirement.
     #[serde(default)]
     pub evidence_unretrievable: bool,
+    /// The fitted coefficient of the effect's return on the cause's return
+    /// one [`Self::lag`] earlier, where a regression produced this edge
+    /// (R12-WORLD-3078). Signed, and in units of effect return per unit of
+    /// cause return: what a state estimator may multiply a lagged parent's
+    /// return by. [`Self::strength`] is not that number — on a Granger edge
+    /// it is a partial R², a measure of fit — and multiplying a belief by it
+    /// estimates nothing. `None` on every edge no regression fitted, which
+    /// includes every hand-asserted mechanism claim, and on every edge
+    /// recorded before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slope: Option<f64>,
 }
 
 /// The consecutive condition failures an edge is currently accumulating in
@@ -445,7 +456,25 @@ impl CausalEdge {
             failure_run: None,
             retired: None,
             evidence_unretrievable: false,
+            slope: None,
         })
+    }
+
+    /// Record the fitted slope of the effect on the lagged cause, refusing
+    /// one that is not a finite, non-zero number. Refused rather than
+    /// dropped: a regression that produced a NaN or a zero coefficient
+    /// established no direction, and an edge carrying one would hand a state
+    /// estimator a transmission it could not have fitted.
+    pub fn with_slope(mut self, slope: f64) -> Result<Self> {
+        if !slope.is_finite() || slope == 0.0 {
+            return Err(Error::invalid(format!(
+                "the fitted slope of {} on {} is {slope}; a slope is a finite, non-zero \
+                 coefficient, and an edge with none should carry no slope at all",
+                self.effect, self.cause
+            )));
+        }
+        self.slope = Some(slope);
+        Ok(self)
     }
 
     /// Refuse a fraction that is not a real number in `[0, 1]`.
