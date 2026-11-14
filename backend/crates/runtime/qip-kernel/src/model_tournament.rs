@@ -2841,6 +2841,75 @@ mod tests {
         );
     }
 
+    /// ADR 0347's respawn guard: a respawn reuses the forecaster id, so a
+    /// question opened at or before the spawn's instant carries the
+    /// predecessor's forecast under that id and must not be scored as the
+    /// new branch's. Only a question opened strictly after counts.
+    /// Mutation: `>=` in place of `>` in `measure_branch`'s opened filter
+    /// makes the same-instant arm record a measurement and the first
+    /// assertion fail.
+    #[test]
+    fn a_question_opened_at_or_before_the_spawn_is_not_measured_as_the_branchs_own() {
+        let spawned_at = Timestamp::from_secs(1_760_000_000);
+        let id = format!("{TEMPORARY_PREFIX}obj-AAA");
+        let mut stage = TournamentStage::new();
+        stage.temporaries.insert(
+            "obj-AAA".to_string(),
+            TemporarySpecialist {
+                id: id.clone(),
+                expires_at: spawned_at.saturating_add(TEMPORARY_LIFETIME),
+                ups: 1,
+                observed: 1,
+                branch: format!("{id}@2"),
+                spawned_at,
+                measured: BranchTally::default(),
+            },
+        );
+        let pending = |opened_at: Option<Timestamp>| PendingQuestion {
+            subject: "obj-AAA".to_string(),
+            reference: 100.0,
+            resolves_at: spawned_at.saturating_add(Duration::from_days(5)),
+            opened_at,
+            aggregate_up: Some(0.3),
+            equal_up: None,
+            weights_earned: false,
+        };
+        let scores = vec![ScoredForecast {
+            forecaster: id,
+            forecast_id: "f-1".to_string(),
+            question: "q-1".to_string(),
+            regime: "trend/calm".to_string(),
+            outcome: UP.to_string(),
+            brier: Some(0.5),
+            log_loss: None,
+            hit: None,
+            tail: None,
+            pinball: None,
+            economic: None,
+            information_value: None,
+            calibration_points: Vec::new(),
+            cost: None,
+            cost_meter: CostMeter::default(),
+            latency_ms: None,
+        }];
+        let now = spawned_at.saturating_add(Duration::from_days(1));
+
+        // Premise: nothing is measured yet.
+        assert!(stage.review.branch_measurements.is_empty());
+        stage.measure_branch(&pending(Some(spawned_at)), true, &scores, now);
+        stage.measure_branch(&pending(None), true, &scores, now);
+        assert!(
+            stage.review.branch_measurements.is_empty(),
+            "a question opened at the spawn, or with no opening, was counted: {:?}",
+            stage.review.branch_measurements
+        );
+
+        let after = spawned_at.saturating_add(Duration::from_mins(1));
+        stage.measure_branch(&pending(Some(after)), true, &scores, now);
+        assert_eq!(stage.review.branch_measurements.len(), 1);
+        assert_eq!(stage.review.branch_measurements[0].questions, 1);
+    }
+
     /// A one-bar hypothesis on `obj-AAA` and the pieces a question needs,
     /// for the card-entrant tests (ADR 0390).
     fn card_fixture(
