@@ -54,7 +54,8 @@ pub use hedge::{
     HedgeProposal, HedgeRefusal, HedgeSide, propose_hedge,
 };
 pub use limits::{
-    Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, Narrowing, RiskState, Severity,
+    BookConvexity, Convexity, Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, Narrowing,
+    RiskState, Severity,
 };
 pub use metrics::{DrawdownProfile, RiskMetrics, TailRisk};
 pub use operational::{OPERATIONAL_FAILURE_AXIS, with_operational_failure};

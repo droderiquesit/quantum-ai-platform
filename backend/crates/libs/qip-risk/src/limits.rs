@@ -279,6 +279,64 @@ pub enum LimitKind {
     /// no funding to buffer and a reassuring ratio would be a number nobody
     /// had a question about.
     MinFundingBuffer { limit: f64 },
+    /// Maximum absolute book gamma: the sum over held positions of the
+    /// catalogue's per-unit gamma times the units held, in the catalogue's
+    /// own units (change in underlying delta per unit move of the
+    /// underlying), with the order under check charged (ADR 0492,
+    /// R12-RISK-4095).
+    ///
+    /// Read through [`RiskState::book_convexity`] from
+    /// [`RiskState::convexity`], which the kernel fills from each catalogue
+    /// record's Greeks. **A book or an order whose convexity the catalogue
+    /// cannot state refuses**, as an absent survival ceiling does: an option
+    /// held with no Greeks has a gamma nobody measured, and passing the
+    /// limit on it would be the `MaxExpectedShortfall` defect — a control
+    /// reading as protection while comparing nothing. **An order that does
+    /// not raise the absolute figure is never refused by it**, so a book
+    /// over its bound can always be brought back inside; and an order that
+    /// does not raise gross is never refused on an unmeasured book, so a
+    /// position whose Greeks are missing can still be closed.
+    ///
+    /// Not in [`LimitSet::conservative_default`]: no owner has stated a
+    /// gamma bound, and a figure nobody stated is not one this crate
+    /// invents.
+    MaxBookGamma { limit: f64 },
+    /// Maximum absolute book vega as a fraction of equity: the sum over held
+    /// positions of the catalogue's per-unit vega — the value change for a
+    /// one-point move in implied volatility — times the units held, over
+    /// equity (ADR 0492, R12-RISK-4095). The same refusals and exemptions as
+    /// [`LimitKind::MaxBookGamma`], read through the same
+    /// [`RiskState::book_convexity`], and for the same reason not shipped in
+    /// a default set.
+    MaxBookVega { limit: f64 },
+}
+
+/// One instrument's option sensitivities per unit of signed notional, as
+/// the risk state carries them (ADR 0492).
+///
+/// Per unit of notional rather than per contract because notional is what
+/// every projection in this crate moves: `PreTradeChecker::project` updates
+/// `position_notionals`, and a book figure recomputed from the projected
+/// notionals charges the order under check with no second projection of
+/// its own. The producer scales the catalogue's per-unit Greeks to one
+/// contract and divides by the notional the state books for one contract,
+/// so `notional * gamma_per_notional` is the position's gamma whatever
+/// convention the producer books notional in. A linear instrument carries
+/// zeros: its convexity is measured, and zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Convexity {
+    pub gamma_per_notional: f64,
+    pub vega_per_notional: f64,
+}
+
+/// The book's gamma and vega, summed over held positions (ADR 0492).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BookConvexity {
+    /// Units held times per-unit gamma, summed, signed.
+    pub gamma: f64,
+    /// Units held times per-unit vega, summed, signed, in currency per one
+    /// point of implied volatility.
+    pub vega: f64,
 }
 
 impl LimitKind {
@@ -306,6 +364,8 @@ impl LimitKind {
             Self::MaxSurvivalGross { .. } => "max_survival_gross",
             Self::MaxMarginUtilisation { .. } => "max_margin_utilisation",
             Self::MinFundingBuffer { .. } => "min_funding_buffer",
+            Self::MaxBookGamma { .. } => "max_book_gamma",
+            Self::MaxBookVega { .. } => "max_book_vega",
         }
     }
 
@@ -348,6 +408,8 @@ impl LimitKind {
             | Self::MaxSurvivalGross { limit }
             | Self::MaxMarginUtilisation { limit }
             | Self::MinFundingBuffer { limit }
+            | Self::MaxBookGamma { limit }
+            | Self::MaxBookVega { limit }
             | Self::MinCashBuffer { limit } => *limit,
             Self::MinLiquidity { fraction, .. } => *fraction,
         }
@@ -452,6 +514,8 @@ impl LimitKind {
             Self::MaxSurvivalGross { .. } => Self::MaxSurvivalGross { limit: bound },
             Self::MaxMarginUtilisation { .. } => Self::MaxMarginUtilisation { limit: bound },
             Self::MinFundingBuffer { .. } => Self::MinFundingBuffer { limit: bound },
+            Self::MaxBookGamma { .. } => Self::MaxBookGamma { limit: bound },
+            Self::MaxBookVega { .. } => Self::MaxBookVega { limit: bound },
         })
     }
 
@@ -502,7 +566,11 @@ impl LimitKind {
             // Both are figures the kernel measured from statements and
             // commitments before the order; the order changes neither.
             | Self::MaxMarginUtilisation { .. }
-            | Self::MinFundingBuffer { .. } => false,
+            | Self::MinFundingBuffer { .. }
+            // Gamma's bound is absolute and vega's denominator is equity,
+            // which the order does not move.
+            | Self::MaxBookGamma { .. }
+            | Self::MaxBookVega { .. } => false,
         }
     }
 
@@ -957,9 +1025,85 @@ pub struct RiskState {
     /// of equity, read by [`LimitKind::MinFundingBuffer`]. `None` when no
     /// commitment stands.
     pub funding_buffer: Option<f64>,
+    /// Option sensitivities per unit of signed notional, keyed by
+    /// instrument, read by [`LimitKind::MaxBookGamma`] and
+    /// [`LimitKind::MaxBookVega`] through [`Self::book_convexity`] (ADR
+    /// 0492).
+    ///
+    /// **An instrument absent from this map is unmeasured, not linear.** The
+    /// kernel writes an entry for every catalogue record whose convexity it
+    /// can state — zeros for a linear instrument, the record's own Greeks for
+    /// an option — and none for a record whose Greeks are missing or not
+    /// finite. Reading an absent key as zero is how an option nobody priced
+    /// would pass a gamma limit, so the two limits refuse on it instead.
+    pub convexity: BTreeMap<String, Convexity>,
+    /// The book's convexity before the order under check, written by the
+    /// pre-trade projection when the pre-order book was measurable, so the
+    /// two convexity limits can tell an order that adds gamma or vega from
+    /// one that sheds it. `None` on a state that is not a projection, and on
+    /// a projection of a book that was itself unmeasured.
+    pub convexity_before_order: Option<BookConvexity>,
 }
 
 impl RiskState {
+    /// The book's gamma and vega from [`Self::position_notionals`] and
+    /// [`Self::convexity`], or the first held instrument (in key order) the
+    /// map holds no sensitivities for.
+    ///
+    /// A position of zero notional contributes nothing and needs no entry: a
+    /// closed position has no convexity left to measure. The `Decimal` →
+    /// `f64` crossing is here because Greeks are statistics, not money; the
+    /// notional is read once per position and never written back.
+    pub fn book_convexity(&self) -> std::result::Result<BookConvexity, String> {
+        let mut book = BookConvexity {
+            gamma: 0.0,
+            vega: 0.0,
+        };
+        for (instrument, notional) in &self.position_notionals {
+            if notional.is_zero() {
+                continue;
+            }
+            let Some(sensitivity) = self.convexity.get(instrument) else {
+                return Err(instrument.clone());
+            };
+            let notional = notional.to_f64();
+            book.gamma += notional * sensitivity.gamma_per_notional;
+            book.vega += notional * sensitivity.vega_per_notional;
+        }
+        Ok(book)
+    }
+
+    /// Evaluate one convexity limit: `pick` chooses the figure and `scale`
+    /// turns it into the limit's units. Shared by both arms so the gamma and
+    /// vega limits cannot drift apart in what they exempt.
+    fn convexity_reading(
+        &self,
+        pick: impl Fn(&BookConvexity) -> f64,
+        scale: impl Fn(f64) -> f64,
+    ) -> ConvexityReading {
+        match self.book_convexity() {
+            Ok(after) => {
+                let observed = scale(pick(&after).abs());
+                // An order that does not raise the absolute figure is how a
+                // book over its bound comes back inside, and is never refused
+                // by it. Only a projection carries a "before".
+                let sheds = self
+                    .convexity_before_order
+                    .is_some_and(|before| pick(&after).abs() <= pick(&before).abs());
+                if sheds {
+                    ConvexityReading::Exempt
+                } else {
+                    ConvexityReading::Measured(observed)
+                }
+            }
+            // A book that cannot be measured may still be wound down: an
+            // order that does not raise gross is the way out of a position
+            // whose Greeks are missing, and refusing it would trap the book.
+            Err(_) if self.sheds_gross() => ConvexityReading::Exempt,
+            Err(instrument) => ConvexityReading::Unmeasured(instrument),
+        }
+    }
+
     /// Whether this state is a projection of an order that does not raise
     /// gross. Only a projection can say so: a bare state carries no "before".
     fn sheds_gross(&self) -> bool {
@@ -2003,6 +2147,54 @@ impl LimitSet {
                     );
                 }
             }
+            LimitKind::MaxBookGamma { limit: bound } => {
+                match state.convexity_reading(|book| book.gamma, |gamma| gamma) {
+                    ConvexityReading::Exempt => {}
+                    ConvexityReading::Measured(gamma) => record(
+                        gamma,
+                        *bound,
+                        None,
+                        "absolute book gamma from the catalogue's per-unit Greeks".into(),
+                    ),
+                    ConvexityReading::Unmeasured(instrument) => record(
+                        f64::NAN,
+                        *bound,
+                        Some(instrument.clone()),
+                        format!(
+                            "book gamma cannot be measured: the catalogue states no Greeks for \
+                             {instrument}, and an unmeasured gamma is not a flat one"
+                        ),
+                    ),
+                }
+            }
+            LimitKind::MaxBookVega { limit: bound } => {
+                let equity = state.equity;
+                let over_equity = |vega: f64| {
+                    if equity.is_positive() {
+                        vega / equity.to_f64()
+                    } else {
+                        f64::INFINITY
+                    }
+                };
+                match state.convexity_reading(|book| book.vega, over_equity) {
+                    ConvexityReading::Exempt => {}
+                    ConvexityReading::Measured(vega) => record(
+                        vega,
+                        *bound,
+                        None,
+                        "absolute book vega per volatility point as a fraction of equity".into(),
+                    ),
+                    ConvexityReading::Unmeasured(instrument) => record(
+                        f64::NAN,
+                        *bound,
+                        Some(instrument.clone()),
+                        format!(
+                            "book vega cannot be measured: the catalogue states no Greeks for \
+                             {instrument}, and an unmeasured vega is not a flat one"
+                        ),
+                    ),
+                }
+            }
         }
         out
     }
@@ -2269,4 +2461,14 @@ impl LimitSet {
         // venue it names; with an absent venue now refused, shipping it
         // without one would refuse every order instead.
     }
+}
+
+/// What a convexity limit read from a state.
+enum ConvexityReading {
+    /// The order sheds the figure, or sheds gross on an unmeasured book.
+    Exempt,
+    /// The figure in the limit's own units.
+    Measured(f64),
+    /// The held instrument the catalogue states no sensitivities for.
+    Unmeasured(String),
 }

@@ -24839,6 +24839,15 @@ impl Platform {
         let state = self.with_margin_and_funding(state, figures);
         let state = self.with_custody_exposure(state);
         let state = self.with_twin_misfit(state);
+        // Each catalogue record's gamma and vega per unit of notional, for
+        // `LimitKind::MaxBookGamma` and `MaxBookVega` (ADR 0492,
+        // R12-RISK-4095). The same derivation the Hedge Brain's survey
+        // reports, so the gate and the desk read one figure. A record that
+        // states no Greeks gets no entry, and both limits refuse on that.
+        let state = RiskState {
+            convexity: crate::hedge::convexity_of(&self.market.read().universe),
+            ..state
+        };
         // Operational risk (R12-RISK-1162): the gross stranded at each venue
         // this platform has withdrawn for failing its order path, charged
         // from the counterparty axis the line above also reads.

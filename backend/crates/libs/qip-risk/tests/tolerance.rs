@@ -67,10 +67,12 @@ fn every_kind() -> Vec<LimitKind> {
         LimitKind::MaxSurvivalGross { limit: 1.0 },
         LimitKind::MaxMarginUtilisation { limit: 0.8 },
         LimitKind::MinFundingBuffer { limit: 0.1 },
+        LimitKind::MaxBookGamma { limit: 5_000.0 },
+        LimitKind::MaxBookVega { limit: 0.01 },
     ]
 }
 
-const KINDS: usize = 22;
+const KINDS: usize = 24;
 
 fn position(kind: &LimitKind) -> usize {
     match kind {
@@ -96,6 +98,8 @@ fn position(kind: &LimitKind) -> usize {
         LimitKind::MaxSurvivalGross { .. } => 19,
         LimitKind::MaxMarginUtilisation { .. } => 20,
         LimitKind::MinFundingBuffer { .. } => 21,
+        LimitKind::MaxBookGamma { .. } => 22,
+        LimitKind::MaxBookVega { .. } => 23,
     }
 }
 
