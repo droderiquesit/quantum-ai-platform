@@ -2561,11 +2561,21 @@ impl Cell {
     /// The entry's chain position is the statement's: every fill the cell
     /// journaled before it is in the venue's figure, and `qip-ledgerd`
     /// compares the two when it applies the entry. Journaled only when the
-    /// venue's statement differs from the last one journaled for it, and on
-    /// the first call — every fill moves the venue's holdings, so every fill
-    /// is followed by a statement that covers it, and a quiet cell does not
-    /// grow its chain by a statement per pass. Answers the sequence journaled,
-    /// or `None` when nothing moved.
+    /// venue's statement differs from the last one journaled for it — every
+    /// fill moves the venue's holdings, so every fill is followed by a
+    /// statement that covers it, and a quiet cell does not grow its chain by
+    /// a statement per pass. Answers the sequence journaled, or `None` when
+    /// nothing moved.
+    ///
+    /// A venue with no statement journaled yet that names no holding has not
+    /// moved either: holding nothing is where every chain starts. Journaling
+    /// it put a P1 outcome on a pass the capital gate had refused outright,
+    /// which `vertical_slice_cell_ledger` forbids — a refused pass books
+    /// nothing. Only the first statement is read this way: a venue that
+    /// stated a holding and now states none has moved, and that is journaled.
+    /// The cost is stated in ADR 0494 decision 2: a restarted cell's fresh
+    /// venue is compared at its first statement naming a holding, not at its
+    /// first pass.
     ///
     /// Always `simulated: true`, and there is no argument that says
     /// otherwise: a cell is paper by construction, and a custody statement
@@ -2593,7 +2603,11 @@ impl Cell {
             )));
         }
         let stated = (holdings, cash_units);
-        if self.custody_stated.get(venue) == Some(&stated) {
+        let unmoved = match self.custody_stated.get(venue) {
+            Some(last) => last == &stated,
+            None => stated.0.is_empty(),
+        };
+        if unmoved {
             return Ok(None);
         }
         let entry = self.journal.record(

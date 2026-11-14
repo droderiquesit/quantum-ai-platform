@@ -650,3 +650,61 @@ fn a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_le
     );
     Ok(())
 }
+
+/// A venue that has stated nothing and holds nothing has not moved, and one
+/// that held something and now holds nothing has.
+///
+/// This has already failed once: the first statement was journaled whatever
+/// it named, so a pass the capital gate refused outright still put a P1
+/// outcome on the stream, and `vertical_slice_cell_ledger` went red on two
+/// tests in CI. The second half is the guard on the fix: reading *every*
+/// empty statement as "nothing moved" would hide a venue that stopped holding
+/// what the ledger still books.
+///
+/// Mutations, each run and restored: journal the first statement whatever it
+/// names (the `None` arm answering `false`) — "a venue holding nothing was
+/// journaled"; treat any statement with no holdings as unmoved — "a venue
+/// that stopped holding was not journaled".
+#[test]
+fn a_venue_that_never_held_anything_journals_no_statement_and_one_that_stopped_holding_does()
+-> Result<()> {
+    let (mut node, gateway, _feed) = funded_node()?;
+    let (holdings, cash) = gateway.custody_holdings();
+    assert!(
+        holdings.is_empty(),
+        "premise: no pass has run, so the venue holds nothing: {holdings:?}"
+    );
+    assert!(!cash.is_empty(), "premise: the venue names a cash unit");
+    assert_eq!(
+        node.cell
+            .record_custody_statement(&venue(), BTreeMap::new(), cash.clone(), t(1))?,
+        None,
+        "a venue holding nothing was journaled"
+    );
+    // Asked again, the answer is the same: the unjournaled statement was not
+    // remembered as if it had been journaled.
+    assert_eq!(
+        node.cell
+            .record_custody_statement(&venue(), BTreeMap::new(), cash.clone(), t(2))?,
+        None,
+        "a venue holding nothing was journaled on the second call"
+    );
+    let mut held = BTreeMap::new();
+    held.insert(object().as_str().to_string(), dec!("5"));
+    let first = node
+        .cell
+        .record_custody_statement(&venue(), held, cash.clone(), t(3))?
+        .expect("the first statement naming a holding was not journaled");
+    let emptied = node
+        .cell
+        .record_custody_statement(&venue(), BTreeMap::new(), cash.clone(), t(4))?
+        .expect("a venue that stopped holding was not journaled");
+    assert!(emptied > first, "{emptied} does not follow {first}");
+    assert_eq!(
+        node.cell
+            .record_custody_statement(&venue(), BTreeMap::new(), cash, t(5))?,
+        None,
+        "an unchanged empty statement was journaled again"
+    );
+    Ok(())
+}
