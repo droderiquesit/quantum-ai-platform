@@ -37,7 +37,9 @@
 use qip_agents::memory::MemoryRegistry;
 use qip_agents::registries::{CapabilityRegistry, CitedEvaluation, OntologyRegistry};
 use qip_agents::research::{ResearchRegistry, Verdict};
-use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
+use qip_agents::tools::{
+    EvaluationOutcome, ToolEvaluation, ToolKind, ToolName, ToolPermission, ToolRegistry,
+};
 use qip_ai::registry::{ModelCard, ModelRegistry};
 use qip_contracts::expansion::{
     BrainSpec, CapabilityEntry, CapabilityVerb, MemoryEntry, MemoryKind, OntologyTypeFamily,
@@ -403,6 +405,27 @@ fn a_tool_promotion_is_the_next_version_with_its_predecessor_readable_and_a_dupl
         Some(BTreeSet::from([ToolPermission::Read]))
     );
 
+    // ADR 0486: the promotion cites an evaluation the registry holds. With
+    // none on record the same citation is refused and no version is minted.
+    assert!(
+        registry
+            .promote(&name, ToolPermission::Write, "eval-2026-11-11")
+            .is_err(),
+        "a tool was promoted on the name of an evaluation nobody recorded"
+    );
+    assert_eq!(registry.version(&name), Some(1));
+    registry
+        .record_evaluation(
+            ToolEvaluation::new(
+                "eval-2026-11-11",
+                name.clone(),
+                ToolPermission::Write,
+                "parses filings into its own cache and writes nowhere else",
+                EvaluationOutcome::Passed,
+            )
+            .unwrap(),
+        )
+        .unwrap();
     registry
         .promote(&name, ToolPermission::Write, "eval-2026-11-11")
         .unwrap();
@@ -431,9 +454,19 @@ fn a_tool_promotion_is_the_next_version_with_its_predecessor_readable_and_a_dupl
     // The registry numbers versions itself, so a stale or equal version
     // cannot be offered; what can be offered is a grant already held, and
     // that mints no version.
+    // Offered again under the evaluation it holds, the grant mints nothing.
+    // Offered under another id it is refused outright (ADR 0486): until
+    // round 49 this line cited "eval-2026-11-12", an evaluation that never
+    // existed, and the registry accepted it because the grant was held.
     registry
-        .promote(&name, ToolPermission::Write, "eval-2026-11-12")
+        .promote(&name, ToolPermission::Write, "eval-2026-11-11")
         .unwrap();
+    assert!(
+        registry
+            .promote(&name, ToolPermission::Write, "eval-2026-11-12")
+            .is_err(),
+        "a grant already held was re-offered under an evaluation the registry does not hold"
+    );
     assert_eq!(registry.version(&name), Some(2));
     assert_eq!(registry.history(&name).len(), 2);
     assert_eq!(
