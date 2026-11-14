@@ -1362,7 +1362,7 @@
   },
   {
     "id": "R12-ARCH-10061",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "catalogue.tf holds one entry per Cloud Run workload (binary, plane, trust zone, traffic, variables, secrets) with acceptance tests on parity; no degraded-mode or scaling-model field, and VMs/managed stores are outside it.",
     "evidence": [
       "infrastructure/terraform/catalogue.tf:1-30 workload catalogue",
@@ -1371,7 +1371,7 @@
       "infrastructure/terraform/catalogue.tf state_owner/scaling/degraded_mode on api, fastbrain, deepbrain",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode"
     ],
-    "gap": "",
+    "gap": "The check needs each service contract to declare its connections. The enforced contract fields are state owner, scaling and degraded mode; the catalogue has no upstream or downstream field and no test requires one.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1382,7 +1382,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure -- state_owner pinned_to_one blanked_contract; cd infrastructure/terraform && terraform init -backend=false && terraform validate",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18: the three fields are written on every Cloud Run catalogue entry, a second test refuses prose that contradicts max_instances (capped at one yet described as horizontal, or the reverse), and a third runs the scan on mutated copies. `terraform validate` on the root: `Success! The configuration is valid.` Mutation, restored: fastbrain's degraded_mode blanked failed the first test naming the workload. OpenObserve is instantiated outside the catalogue and is not covered."
+    "notes": "2026-10-18: the three fields are written on every Cloud Run catalogue entry, a second test refuses prose that contradicts max_instances (capped at one yet described as horizontal, or the reverse), and a third runs the scan on mutated copies. `terraform validate` on the root: `Success! The configuration is valid.` Mutation, restored: fastbrain's degraded_mode blanked failed the first test naming the workload. OpenObserve is instantiated outside the catalogue and is not covered. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
   },
   {
     "id": "R12-FABRIC-10062",
