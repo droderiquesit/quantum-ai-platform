@@ -352,6 +352,10 @@ pub struct TickRound {
     pub model_card: Option<ModelCard>,
     pub card_refused: Option<String>,
     pub fused_events: usize,
+    /// Every measured reaction the fusion produced, so the depth and
+    /// imbalance the desk filled from the replayed book can be checked on
+    /// the output rather than inferred from a count.
+    pub reactions: Vec<qip_kernel::fusion::MeasuredReaction>,
     pub mismatches: usize,
     pub map: Option<OpportunityMap>,
     pub shipped_to: BTreeSet<String>,
@@ -983,6 +987,11 @@ impl TickDesk {
         priors.truncate(MAX_OUTSIDE_PRIORS);
         self.outside_priors = priors;
         round.fused_events = fused.events.len();
+        round.reactions = fused
+            .events
+            .iter()
+            .flat_map(|event| event.reactions.iter().cloned())
+            .collect();
         round.mismatches = fused.mismatches().len();
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;
         for region in &self.config.map_regions {
