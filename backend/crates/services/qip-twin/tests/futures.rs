@@ -843,3 +843,53 @@ fn a_twin_refitted_from_a_recorded_history_is_the_twin_the_live_loop_held_and_pr
     );
     Ok(())
 }
+
+fn complete_branch() -> Branch {
+    Branch {
+        id: "b-complete".to_string(),
+        parent: None,
+        family: "f".to_string(),
+        provenance: Provenance::Synthetic,
+        probability: 0.25,
+        assumptions: BTreeMap::from([("shock_sigma".to_string(), 2.0)]),
+        evidence: vec!["awaiting print".to_string()],
+        propagation: vec![qip_twin::futures::PropagationStep {
+            from: "obj-ACME".to_string(),
+            to: "obj-BETA".to_string(),
+            coefficient: 0.5,
+        }],
+        impact_bps: BTreeMap::from([("obj-ACME".to_string(), -120.0)]),
+        hedges: Vec::new(),
+        status: BranchStatus::Live,
+        beyond_history: false,
+    }
+}
+
+#[test]
+fn a_branch_missing_any_stated_field_is_refused_and_a_complete_one_is_not() -> Result<()> {
+    complete_branch().validate_fields()?;
+    let mut cases: Vec<(&str, Branch)> = Vec::new();
+    let mut b = complete_branch();
+    b.probability = 0.0;
+    cases.push(("probability", b));
+    let mut b = complete_branch();
+    b.assumptions.clear();
+    cases.push(("assumptions", b));
+    let mut b = complete_branch();
+    b.evidence.clear();
+    cases.push(("evidence", b));
+    let mut b = complete_branch();
+    b.propagation.clear();
+    cases.push(("propagation", b));
+    let mut b = complete_branch();
+    b.impact_bps.clear();
+    cases.push(("impact", b));
+    assert_eq!(cases.len(), 5);
+    for (name, branch) in cases {
+        assert!(
+            branch.validate_fields().is_err(),
+            "a branch without {name} was admitted"
+        );
+    }
+    Ok(())
+}
