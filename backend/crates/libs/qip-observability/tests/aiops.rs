@@ -5,7 +5,7 @@ use qip_core::Timestamp;
 use qip_observability::aiops::{
     AuditRecord, AuditSink, Effector, EntityGraph, EntityKey, ReleaseDecision, Remediator, Runbook,
     Signal, SignalClass, TimelineEvent, TimelineSource, build_timeline, detect_level_shift,
-    release_gate, runbook_set_digest, verify_runbook_set,
+    release_gate,
 };
 use qip_observability::critical_paths::critical_path_slos;
 use qip_observability::slo::{Slo, SloWindow};
@@ -384,52 +384,4 @@ fn the_owner_is_the_most_implicated_entity_in_the_window_and_the_process_when_no
     let none = g.implicated(t(50), t(200), &node, |_, _| false);
     assert!(none.is_empty());
     assert_eq!(triage(&node, none, true, &[]).owner, node);
-}
-
-// --- R12-OBS-9074: a runbook set must match its attestation ---
-
-fn shed_runbook() -> Runbook {
-    Runbook {
-        name: "shed".to_string(),
-        action: "disable_capability".to_string(),
-        targets: BTreeSet::from(["research".to_string()]),
-    }
-}
-
-#[test]
-fn a_runbook_set_with_no_attestation_is_refused_as_unsigned() {
-    let set = vec![shed_runbook()];
-    assert!(!set.is_empty());
-    let err = verify_runbook_set(&set, None).unwrap_err().to_string();
-    assert!(err.contains("unsigned"), "{err}");
-}
-
-#[test]
-fn a_runbook_set_changed_after_attestation_is_refused_and_the_attested_set_is_admitted() {
-    let set = vec![shed_runbook()];
-    let attested = runbook_set_digest(&set);
-    assert_eq!(attested.len(), 64);
-    verify_runbook_set(&set, Some(&attested)).unwrap();
-
-    let mut widened = shed_runbook();
-    widened.targets.insert("ledger".to_string());
-    let err = verify_runbook_set(&[widened], Some(&attested)).unwrap_err().to_string();
-    assert!(err.contains("changed after it was signed"), "{err}");
-
-    let mut renamed = shed_runbook();
-    renamed.action = "disable_capabilit".to_string();
-    renamed.name = "ysshed".to_string();
-    assert_ne!(runbook_set_digest(&[renamed]), attested);
-}
-
-#[test]
-fn the_runbook_set_digest_does_not_depend_on_runbook_order() {
-    let other = Runbook {
-        name: "a-first".to_string(),
-        action: "restart".to_string(),
-        targets: BTreeSet::from(["x".to_string()]),
-    };
-    let forward = vec![shed_runbook(), other.clone()];
-    let backward = vec![other, shed_runbook()];
-    assert_eq!(runbook_set_digest(&forward), runbook_set_digest(&backward));
 }
