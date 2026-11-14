@@ -496,6 +496,7 @@ fn every_slot_produced(sequence: u64, issued: Timestamp) -> PolicyPayload {
             cycles: map("usd>eur>usd", "digest-1"),
             conversions: Vec::new(),
             start_sizes: BTreeMap::new(),
+            market_reference: Vec::new(),
         },
         issued,
     );

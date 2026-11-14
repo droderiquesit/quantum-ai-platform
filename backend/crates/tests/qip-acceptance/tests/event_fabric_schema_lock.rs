@@ -380,6 +380,7 @@ fn policy_payload_sample() -> PolicyPayload {
                 to_terms: None,
             }],
             start_sizes: BTreeMap::from([("USD".to_string(), dec!("1000"))]),
+            market_reference: Vec::new(),
         },
         t(0),
     );

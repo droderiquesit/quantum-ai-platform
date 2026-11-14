@@ -834,6 +834,43 @@ pub struct CycleWhitelist {
     /// empty for the same reason as `conversions`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub start_sizes: BTreeMap<String, Decimal>,
+    /// The operator's market reference (ADR 0502, R12-MESH-5042): which
+    /// instruments each book the operator knows of converts between.
+    ///
+    /// Discovery proposes and the operator permits. A book is named by its
+    /// own instrument id and carries no from/to, so a cell holding a book
+    /// the whitelist does not mention could not tell which conversion it
+    /// offers, and no cycle through it could be formed. This is that answer,
+    /// signed in the same slot and under the same digest as the whitelist.
+    /// The cell searches its books over it and **reports** every cycle with
+    /// an edge outside `conversions`; it never sends on one, because a
+    /// reference entry is knowledge and not permission. Only `conversions`
+    /// reaches the send path.
+    ///
+    /// Additive on the same terms as `conversions`: skipped when empty, so a
+    /// payload signed before the field existed keeps its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub market_reference: Vec<ReferencedMarket>,
+}
+
+/// One book in the operator's market reference: at `venue`, the book
+/// `market` quotes `base` against `quote`. Both conversions it offers follow
+/// from that — consuming the asks turns `quote` into `base`, consuming the
+/// bids turns `base` into `quote` — exactly the convention
+/// [`WhitelistedConversion`] states, so the reference names a book once
+/// rather than twice and cannot state its two sides inconsistently.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferencedMarket {
+    pub venue: String,
+    /// What the venue is, for the planner's settlement assumptions.
+    pub venue_class: VenueClass,
+    /// The book, by its own instrument id.
+    pub market: String,
+    pub base: String,
+    pub quote: String,
+    /// Proportional cost of taking either side, a fraction in `[0, 1)`.
+    pub cost_fraction: Decimal,
 }
 
 /// The risk envelope as shipped.

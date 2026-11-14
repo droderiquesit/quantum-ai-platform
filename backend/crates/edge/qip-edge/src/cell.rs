@@ -1176,6 +1176,10 @@ impl CellConfig {
 #[derive(Clone, Debug, Default)]
 pub struct WorkReport {
     pub signals: Vec<Signal>,
+    /// Cycles the arbitrage desk found over the operator's market reference
+    /// with an edge outside the signed whitelist (ADR 0502). Reported and
+    /// journaled as `Decision::CycleDiscovered`; never sent.
+    pub discovered_cycles: Vec<crate::arbitrage::DiscoveredCycle>,
     /// The feature vector this pass evaluated and every strategy sized
     /// against (ADR 0132 decision 4): carried out so the node can digest it
     /// per pass without a second evaluation that could disagree.
@@ -9482,8 +9486,25 @@ impl Cell {
             // claiming an incremental update it does not make.
             self.metrics.edge_refresh(refresh);
             report.edge_refresh = Some(refresh);
-            desk.scan(&self.liquidity, now)
+            let scanned = desk.scan(&self.liquidity, now);
+            // ADR 0502: the market reference is searched beside the
+            // whitelist, and what it finds outside the whitelist is reported
+            // here and nowhere else. A `DiscoveredCycle` holds no leg, so
+            // nothing below can send one; `scanned` — the whitelist's scan —
+            // is the only thing the send loop reads.
+            report.discovered_cycles = desk.discover(&self.liquidity, now)?;
+            scanned
         };
+        for discovered in &report.discovered_cycles {
+            self.journal.record(
+                Decision::CycleDiscovered {
+                    cycle: discovered.label(),
+                    outside: discovered.outside.clone(),
+                    net: discovered.net.to_string(),
+                },
+                now,
+            );
+        }
 
         // §30.2's path router, over every cycle this scan found and in the
         // scan's own order (ADR 0068). Computed here, in one place, because

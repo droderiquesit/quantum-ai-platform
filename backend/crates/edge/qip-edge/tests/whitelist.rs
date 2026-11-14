@@ -35,6 +35,7 @@ fn a_payload_signed_before_the_structured_whitelist_existed_still_verifies() -> 
         cycles: BTreeMap::from([("eth-triangle".to_string(), "1".to_string())]),
         conversions: Vec::new(),
         start_sizes: BTreeMap::new(),
+        market_reference: Vec::new(),
     };
     let mut payload = PolicyPayload::unproduced(7, CELL, t(10));
     payload.cycle_whitelist = Slot::produced(whitelist, t(10));

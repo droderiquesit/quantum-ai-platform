@@ -110,6 +110,7 @@ fn the_three_p0_control_frames_each_register_under_their_own_topic() -> qip_core
             cycles: BTreeMap::from([("c1".to_string(), "p1".to_string())]),
             conversions: vec![],
             start_sizes: BTreeMap::from([("USD".to_string(), dec!("1000000"))]),
+            market_reference: Vec::new(),
         },
         now,
     );
