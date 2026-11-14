@@ -738,12 +738,8 @@ resource "google_spanner_database" "positions" {
   # The leader is a database option, set by DDL; the provider has no
   # attribute for it. Unset, Spanner chooses the configuration's default
   # leader, which is a choice nobody recorded.
-  #
-  # version_retention_period is the point-in-time recovery window (seven days
-  # is Spanner's maximum). Unset it is one hour, so a bad write found the next
-  # morning, as the failures needing a restore usually are, is unrecoverable.
   ddl = local.spanner_placement == null ? [] : [
-    "ALTER DATABASE `positions` SET OPTIONS (default_leader = '${local.spanner_placement.default_leader}', version_retention_period = '7d')",
+    "ALTER DATABASE `positions` SET OPTIONS (default_leader = '${local.spanner_placement.default_leader}')",
   ]
 
   encryption_config {
@@ -751,33 +747,6 @@ resource "google_spanner_database" "positions" {
   }
 
   deletion_protection = var.deletion_protection
-}
-
-# A scheduled full backup of the ledger database. Point-in-time recovery covers
-# a week; a backup outlives it, so a corruption found after the window closes
-# still has something to restore from. Encrypted under the database's own key
-# so a backup is never weaker than the data it copies.
-resource "google_spanner_backup_schedule" "positions_daily" {
-  count = var.enable_spanner ? 1 : 0
-
-  project  = var.project_id
-  instance = google_spanner_instance.global[0].name
-  database = google_spanner_database.positions[0].name
-  name     = "positions-daily"
-
-  retention_duration = "2592000s" # 30 days
-
-  spec {
-    cron_spec {
-      text = "0 3 * * *"
-    }
-  }
-
-  full_backup_spec {}
-
-  encryption_config {
-    encryption_type = "USE_DATABASE_ENCRYPTION"
-  }
 }
 
 # --- Access -----------------------------------------------------------------
