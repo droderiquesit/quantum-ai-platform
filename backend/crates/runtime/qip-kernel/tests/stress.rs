@@ -1366,3 +1366,231 @@ fn a_paper_book_failing_the_counterparty_failure_world_withholds_a_reserve_named
 fn a_paper_book_failing_the_model_failure_world_withholds_a_reserve_named_for_it() -> Result<()> {
     a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(qip_kernel::tail::MODEL_FAILURE)
 }
+
+// --- the two failure worlds, through the cycle's own DECIDE -----------------
+
+/// `STRESS_LOSS_TOLERANCE` in `platform.rs`, which is private. Each test below
+/// checks it against the tolerance DECIDE recorded on its own tail response,
+/// so a platform that moved the figure fails here rather than being judged
+/// against a stale copy.
+const PLATFORM_STRESS_TOLERANCE: f64 = 0.20;
+
+/// One real cycle that reaches DECIDE's construction over a book long BBB.
+///
+/// AAA is quiet until it drops nine percent on its last bar, which the panel
+/// reads as a long worth proposing, so `stage_decide` has a thesis and
+/// `construct_from` sizes it — the only path on which the survival governor is
+/// handed SIMULATE's worlds. AAA is not held, so the stressed book is BBB
+/// alone and `held` (BBB's daily log returns) decides which world is worst.
+/// Returns the platform and DECIDE's recorded detail line.
+fn a_cycle_that_sizes_a_thesis_beside_a_book_long_bbb(
+    held: &[f64],
+    quantity: Decimal,
+) -> Result<(Platform, String)> {
+    let count = held.len();
+    let mut quiet: Vec<f64> = (0..count)
+        .map(|i| ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008)
+        .collect();
+    quiet[count - 1] -= 0.09;
+    // `capital.rs`'s review bar, so the red team lets the drop through to a
+    // thesis. It governs REASON's review alone; no stress or survival figure
+    // reads it.
+    let config = PlatformConfig {
+        review: qip_reasoning_engine::redteam::ReviewPolicy {
+            minimum_surviving_confidence: 0.10,
+            ..qip_reasoning_engine::redteam::ReviewPolicy::default()
+        },
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    platform.observe(bars_from_returns("AAA", &quiet, count));
+    platform.observe(bars_from_returns("BBB", held, count));
+    buy(&mut platform, "BBB", quantity, start())?;
+    let report = platform.run_cycle(start());
+    let decide = report
+        .stage(Stage::Decide)
+        .expect("premise: the cycle reached DECIDE");
+    assert!(
+        decide.detail.contains("1 leg(s) proposed"),
+        "premise: DECIDE sized a thesis this cycle: {}",
+        decide.detail
+    );
+    Ok((platform, decide.detail.clone()))
+}
+
+/// BBB's tape for the two tests: a narrow daily noise, so every
+/// volatility-priced world stays small beside the two under test.
+fn narrow_returns(count: usize) -> Vec<f64> {
+    (0..count)
+        .map(|i| ((i as f64 * 0.7548776662 + 0.31) % 1.0 - 0.5) * 0.004)
+        .collect()
+}
+
+/// R12-RISK-4121, at the cycle's own DECIDE and the platform's own tolerance.
+/// The paper book survives the counterparty-failure world, and DECIDE's
+/// recorded sizing judged that world by name to say so.
+///
+/// This is the surviving branch of the check, because the failing one cannot
+/// be reached honestly: the world costs 20% of gross over equity, the
+/// tolerance is 20% of equity, and the Risk Gate refuses an order that takes
+/// gross above what the survival kernel released (the first assertion). So
+/// the proof is that DECIDE read this world — the worst this book is priced
+/// in — against its own tolerance and withheld nothing because the book
+/// survives it. The helper above it isolates the world at a 0.002 tolerance
+/// in a governor the test builds, which the production seam never touches.
+///
+/// Mutation: pass `None` for the stress worlds in `construct_from`'s
+/// `self.governor.size(..)` — DECIDE records no tail response and the lookup
+/// panics.
+#[test]
+fn a_cycle_sizing_beside_a_book_whose_worst_world_is_counterparty_failure_records_that_world_as_survived()
+-> Result<()> {
+    let name = qip_kernel::tail::COUNTERPARTY_FAILURE;
+    {
+        let mut levered = platform()?;
+        levered.observe(bars_from_returns("BBB", &narrow_returns(120), 120));
+        let refused = buy(&mut levered, "BBB", dec!("110000"), start())
+            .expect_err("premise: gross above equity is refused, so this world cannot be failed");
+        assert!(
+            refused.message().contains("survival-gross"),
+            "premise: the survival ceiling is what refuses the leverage: {}",
+            refused.message()
+        );
+    }
+    let (platform, detail) =
+        a_cycle_that_sizes_a_thesis_beside_a_book_long_bbb(&narrow_returns(120), dec!("60000"))?;
+    let stress = platform
+        .stress_report()
+        .expect("premise: an open book with history is stressed");
+    let world = stress
+        .tail_worlds
+        .iter()
+        .find(|world| world.scenario == name)
+        .unwrap_or_else(|| panic!("the paper book was never stressed in the {name} world"));
+    assert!(
+        world.loss_fraction > 0.0 && world.loss_fraction <= PLATFORM_STRESS_TOLERANCE,
+        "premise: the book loses something in {name} and survives it: {}",
+        world.loss_fraction
+    );
+    let priced = stress.worlds();
+    assert!(
+        priced.worlds.len() > 1
+            && priced
+                .worlds
+                .iter()
+                .all(|other| other.loss_fraction <= world.loss_fraction),
+        "premise: {name} is the worst world this book is priced in: {:?}",
+        priced.worlds
+    );
+
+    let budget = platform
+        .sizing_budget()
+        .expect("premise: DECIDE constructed, so the governor holds its budget");
+    let tail = budget
+        .tail
+        .as_ref()
+        .expect("DECIDE sized without reading any stressed world");
+    assert_eq!(tail.scenario, name, "DECIDE judged the book in this world");
+    assert_eq!(
+        tail.loss_fraction.to_bits(),
+        world.loss_fraction.to_bits(),
+        "at the loss SIMULATE priced"
+    );
+    assert_eq!(
+        tail.tolerance.to_bits(),
+        PLATFORM_STRESS_TOLERANCE.to_bits(),
+        "DECIDE judged at the platform's tolerance"
+    );
+    assert!(
+        tail.survives() && budget.survival.stressed_liquidity_reserve.is_zero(),
+        "a book that survives {name} had capital withheld for it: {budget:?}"
+    );
+    assert!(
+        !detail.contains("stressed-liquidity reserve"),
+        "DECIDE recorded a reserve for a world the book survives: {detail}"
+    );
+    Ok(())
+}
+
+/// R12-RISK-4122, at the cycle's own DECIDE and the platform's own tolerance.
+/// A paper book that fails the model-failure world has a stressed-liquidity
+/// reserve withheld by the cycle that covers what that world alone demands,
+/// and DECIDE's detail line records it.
+///
+/// The line cannot name model-failure and this test does not pretend it does.
+/// The governor withholds for the worst world, and `synthetic-1` charges each
+/// position the same worst excursion amplified by at least 1.25, so it
+/// outranks model-failure for every book with a measured excursion (asserted
+/// as a premise, so a change that lets model-failure rank worst fails here
+/// and this test is rewritten to demand its name). What is proven is the
+/// response: the reserve DECIDE withheld is sized on a loss no smaller than
+/// model-failure's, at the same tolerance.
+///
+/// Mutation: pass `None` for the stress worlds in `construct_from`'s
+/// `self.governor.size(..)` — DECIDE records no tail response and the lookup
+/// panics.
+#[test]
+fn a_cycle_sizing_beside_a_book_that_fails_the_model_failure_world_withholds_a_reserve_covering_it()
+-> Result<()> {
+    let name = qip_kernel::tail::MODEL_FAILURE;
+    // BBB once fell by more than half and came back: the worst excursion its
+    // retained history holds, which the model-failure world charges in full.
+    let mut held = narrow_returns(120);
+    held[20] -= 0.9;
+    held[21] += 0.9;
+    let (platform, detail) =
+        a_cycle_that_sizes_a_thesis_beside_a_book_long_bbb(&held, dec!("80000"))?;
+    let stress = platform
+        .stress_report()
+        .expect("premise: an open book with history is stressed");
+    let loss_in = |scenario: &str| {
+        stress
+            .tail_worlds
+            .iter()
+            .find(|world| world.scenario == scenario)
+            .unwrap_or_else(|| panic!("the paper book was never stressed in the {scenario} world"))
+            .loss_fraction
+    };
+    let loss = loss_in(name);
+    assert!(
+        loss.is_finite() && loss > PLATFORM_STRESS_TOLERANCE,
+        "premise: the paper book fails {name} at the platform's tolerance; it lost {loss}"
+    );
+    assert!(
+        loss_in(qip_kernel::tail::SYNTHETIC_WORLDS[0]) > loss,
+        "premise: a generated world outranks {name}, so DECIDE cannot name it"
+    );
+
+    let budget = platform
+        .sizing_budget()
+        .expect("premise: DECIDE constructed, so the governor holds its budget");
+    let tail = budget
+        .tail
+        .as_ref()
+        .expect("DECIDE sized without reading any stressed world");
+    assert_eq!(
+        tail.tolerance.to_bits(),
+        PLATFORM_STRESS_TOLERANCE.to_bits(),
+        "DECIDE judged at the platform's tolerance"
+    );
+    assert!(
+        tail.loss_fraction >= loss,
+        "the reserve is sized on {} in {}, less than {name}'s {loss}",
+        tail.loss_fraction,
+        tail.scenario
+    );
+    assert!(!tail.survives(), "failing {name} withheld nothing");
+    assert_eq!(
+        budget.survival.stressed_liquidity_reserve, tail.reserve,
+        "the waterfall withholds the reserve the worst world demanded"
+    );
+    assert!(
+        detail.contains(&format!(
+            "so {} is withheld as stressed-liquidity reserve",
+            tail.reserve
+        )),
+        "DECIDE's detail records the reserve: {detail}"
+    );
+    Ok(())
+}
