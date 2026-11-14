@@ -2855,7 +2855,7 @@
   },
   {
     "id": "R12-RISK-4121",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "tail::worlds (backend/crates/runtime/qip-kernel/src/tail.rs:122) computes COUNTERPARTY_FAILURE: 20% of custodied gross is lost. stress_the_book adds it every cycle (backend/crates/runtime/qip-kernel/src/platform.rs:14487). Reached from a binary: qip-fastbrain main.rs:359 node::run -> node.rs:139 Platform::run_cycle -> stage_simulate (backend/crates/runtime/qip-kernel/src/platform.rs:14152) -> stress_the_book (backend/crates/runtime/qip-kernel/src/platform.rs:14355), which extends tail_worlds with tail::survival_worlds at backend/crates/runtime/qip-kernel/src/platform.rs:14502 seeded by self.cycle; DECIDE's construct_from (backend/crates/runtime/qip-kernel/src/platform.rs:13526, called from stage_decide at backend/crates/runtime/qip-kernel/src/platform.rs:14800) sizes through SurvivalGovernor::size (backend/crates/runtime/qip-kernel/src/platform.rs:13636), whose tail_response (backend/crates/runtime/qip-kernel/src/survival.rs:430) withholds a stressed-liquidity reserve for the worst world (backend/crates/runtime/qip-kernel/src/survival.rs:390 worst_world reads stress.tail_worlds). tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate runs a real cycle, asserts the world is in the StressReport (backend/crates/runtime/qip-kernel/tests/stress.rs:403-416), then shows the governor withholds a reserve and lowers the release and gross ceiling against that report (:436-452).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/tail.rs:122",
@@ -2863,7 +2863,7 @@
       "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate",
       "backend/crates/runtime/qip-kernel/src/tail.rs::tests::a_levered_book_does_not_survive_its_broker_and_an_unlevered_one_does"
     ],
-    "gap": "",
+    "gap": "The stress suite asserts only that the counterparty-failure world is present. No test isolates that world and shows it sets a named reserve; the reserve asserted may come from another worst world.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2874,11 +2874,11 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE after re-reading. A caveat that does not change the grade: in the integration test the worst world that drives the reserve may be a library scenario rather than this one; the unit test pins the counterparty arithmetic."
+    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE after re-reading. A caveat that does not change the grade: in the integration test the worst world that drives the reserve may be a library scenario rather than this one; the unit test pins the counterparty arithmetic. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
   },
   {
     "id": "R12-RISK-4122",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "tail::worlds (backend/crates/runtime/qip-kernel/src/tail.rs:122) computes MODEL_FAILURE: each position takes its own worst retained adverse excursion with no netting, and an unmeasured position is charged 50%. It reaches the cycle the same way as 4121 (backend/crates/runtime/qip-kernel/src/platform.rs:14487). Reached from a binary: qip-fastbrain main.rs:359 node::run -> node.rs:139 Platform::run_cycle -> stage_simulate (backend/crates/runtime/qip-kernel/src/platform.rs:14152) -> stress_the_book (backend/crates/runtime/qip-kernel/src/platform.rs:14355), which extends tail_worlds with tail::survival_worlds at backend/crates/runtime/qip-kernel/src/platform.rs:14502 seeded by self.cycle; DECIDE's construct_from (backend/crates/runtime/qip-kernel/src/platform.rs:13526, called from stage_decide at backend/crates/runtime/qip-kernel/src/platform.rs:14800) sizes through SurvivalGovernor::size (backend/crates/runtime/qip-kernel/src/platform.rs:13636), whose tail_response (backend/crates/runtime/qip-kernel/src/survival.rs:430) withholds a stressed-liquidity reserve for the worst world (backend/crates/runtime/qip-kernel/src/survival.rs:390 worst_world reads stress.tail_worlds).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/tail.rs:122",
@@ -2886,7 +2886,7 @@
       "backend/crates/runtime/qip-kernel/src/tail.rs::tests::a_position_without_history_is_charged_rather_than_ignored",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate"
     ],
-    "gap": "",
+    "gap": "The stress suite asserts only that the model-failure world is present, and the unit tests in tail.rs cover its arithmetic. No test isolates that world and shows it sets a named reserve.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2897,7 +2897,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE, with the same caveat as 4121."
+    "notes": "Round-2 independent audit, 2026-10-11: Carried COMPLETE, with the same caveat as 4121. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
   },
   {
     "id": "R12-RISK-4123",

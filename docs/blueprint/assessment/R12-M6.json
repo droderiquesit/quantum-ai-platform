@@ -3001,7 +3001,7 @@
   },
   {
     "id": "R12-GOV-6125",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "backend/crates/libs/qip-contracts/src/action.rs:158 AuthorityLevel orders the classes and :168 permits admits a class only at its own level or above; :393 check_authority refuses an intent whose class needs more authority than is present, naming the level required. AuthorityLevel is an unsigned value and check_authority has no caller outside unit tests.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/action.rs:158 AuthorityLevel; :168 permits; :393 check_authority",
@@ -3010,7 +3010,7 @@
       "2026-11-12 lane fw-h-01: cargo test -p qip-contracts --lib an_action_intent_of_a_class_requiring_capital_authority: 2 passed. Mutation `if authority.permits(..)` -> `if true` at :394 fails :1090 (panicked at action.rs:1100); mutation adding `(AuthorityLevel::Capital, ActionClass::Capital) => false` before the Capital arm of permits fails :1110 (panicked at action.rs:1121); each restored byte for byte, 2 passed.",
       "2026-11-12 lane fw-h-01 bar: the requirement and its unit verification ask for a stronger authority class, not a signed or attested one; the attested-approval work (ADR 0120 verifier, an unconstructible attestation token, a Capital-class caller of check_authority) is beyond the bar and stays in integrated false"
     ],
-    "gap": "",
+    "gap": "The owner ruling reads the requirement as authority bound to an attested WebAuthn approval (ADR 0121). `check_authority` has only test callers and no attested approval type exists in the tree.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3021,7 +3021,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 L12: no code changed. The triage closure presumed Presence::Attested at auth.rs:130 exists; it does not. Closing this row is an M-size build behind ADR 0120, not the S the triage assumed."
+    "notes": "2026-10-18 L12: no code changed. The triage closure presumed Presence::Attested at auth.rs:130 exists; it does not. Closing this row is an M-size build behind ADR 0120, not the S the triage assumed. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
   },
   {
     "id": "R12-GOV-6126",
