@@ -20,8 +20,7 @@ use qip_contracts::trust::{ArtefactClass, Publication, TrustBundle, TrustedKey, 
 use qip_core::error::{Error, Result};
 use qip_core::{Context, Decimal, Duration, Timestamp};
 use qip_deepbrain::research::{
-    FillObservation, META_MARGINAL_VALUE, PromotionLane, REFLEX_DRAFTS_PREFIX, ResearchConfig,
-    ResearchLoop,
+    FillObservation, META_MARGINAL_VALUE, PromotionLane, ResearchConfig, ResearchLoop,
 };
 use qip_expansion::desk::CloseReason;
 use qip_expansion::meta::{ReputationKey, Standing};
@@ -226,18 +225,20 @@ fn a_fill_bias_found_by_research_is_promoted_and_published_as_a_loadable_reflex_
 }
 
 /// Without a signer the compiled package is held unsigned and nothing is
-/// published: there is no unsigned path to a cell. Since ADR 0535 the one
-/// key written is the unsigned draft under `drafts/`, which neither load
-/// path accepts. Mutation: write the unsigned package's encoding outside
-/// `drafts/` in the `(None, Some(_))` arm — the store holds a key outside
-/// the prefix and the assertion fails.
+/// published: there is no unsigned path to a cell. The package store holds
+/// nothing; since ADR 0535 the one key written is the unsigned draft in the
+/// separate draft store, which neither load path accepts. Mutation: write
+/// the draft to the package store in the `(None, _, Some(_))` arm — the
+/// package store holds a key and the assertion fails.
 #[test]
 fn without_a_signer_a_compiled_package_is_held_and_nothing_is_published() {
     let platform = platform();
     let store = Arc::new(MemoryBlobStore::new());
+    let drafts = Arc::new(MemoryBlobStore::new());
     let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
         .unwrap()
-        .with_package_store(store.clone());
+        .with_package_store(store.clone())
+        .with_draft_store(drafts.clone());
     research
         .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
         .unwrap();
@@ -256,10 +257,13 @@ fn without_a_signer_a_compiled_package_is_held_and_nothing_is_published() {
         Some(&1),
         "premise: a package was compiled: {round:?}"
     );
-    let keys = store.list("").unwrap();
+    assert!(
+        store.list("").unwrap().is_empty(),
+        "an unsigned package reached the store"
+    );
+    let keys = drafts.list("").unwrap();
     assert_eq!(keys.len(), 1, "exactly the draft is written: {keys:?}");
-    assert!(keys[0].starts_with(REFLEX_DRAFTS_PREFIX), "{keys:?}");
-    let bytes = store.get(&keys[0]).unwrap().unwrap();
+    let bytes = drafts.get(&keys[0]).unwrap().unwrap();
     let later = t0().saturating_add(Duration::from_hours(1));
     assert!(SignedReflexPackage::load(&bytes, &TestKey, later).is_err());
     let key = LocalSigner::generate(ArtefactClass::ModelPack, "model-pack/1").unwrap();
@@ -294,9 +298,11 @@ fn without_a_signer_a_compiled_package_is_held_and_nothing_is_published() {
 fn a_draft_the_deep_brain_writes_loads_only_once_the_two_person_model_pack_publish_signs_it() {
     let platform = platform();
     let store = Arc::new(MemoryBlobStore::new());
+    let drafts = Arc::new(MemoryBlobStore::new());
     let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
         .unwrap()
-        .with_package_store(store.clone());
+        .with_package_store(store.clone())
+        .with_draft_store(drafts.clone());
     research
         .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
         .unwrap();
@@ -305,9 +311,13 @@ fn a_draft_the_deep_brain_writes_loads_only_once_the_two_person_model_pack_publi
         .sweep_over(&platform, &fills(8), &[], later, &set(&[]), &set(&["US"]))
         .unwrap();
     assert_eq!(round.packages.get("held_unsigned"), Some(&1), "{round:?}");
-    let keys = store.list(REFLEX_DRAFTS_PREFIX).unwrap();
+    assert!(
+        store.list("").unwrap().is_empty(),
+        "a draft reached the package store"
+    );
+    let keys = drafts.list("").unwrap();
     assert_eq!(keys.len(), 1, "premise: one draft was written: {keys:?}");
-    let draft = ReflexPackageDraft::decode(&store.get(&keys[0]).unwrap().unwrap()).unwrap();
+    let draft = ReflexPackageDraft::decode(&drafts.get(&keys[0]).unwrap().unwrap()).unwrap();
 
     const KEY_VERSION: &str =
         "projects/p/locations/l/keyRings/r/cryptoKeys/model-pack/cryptoKeyVersions/1";
