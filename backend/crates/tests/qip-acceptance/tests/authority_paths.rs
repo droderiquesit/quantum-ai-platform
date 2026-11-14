@@ -22,7 +22,9 @@
 
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::plan::ActingIdentity;
-use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
+use qip_agents::tools::{
+    EvaluationOutcome, ToolEvaluation, ToolKind, ToolName, ToolPermission, ToolRegistry,
+};
 use qip_ai::registry::ModelRegistry;
 use qip_contracts::action::Method;
 use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation, Identification};
@@ -144,13 +146,34 @@ fn every_authority_widening_path_refuses_without_a_measured_value_record() {
     // the refusals above are the checks and not a seam that refuses everything.
     assert!(widening.widen(&identified(), &approver()).is_ok());
     assert_eq!(widening.authority(), Authority::NarrowReversible);
+    // Since ADR 0486 a citation is the id of an evaluation the registry
+    // holds, for this tool and this grant, that passed. Until round 49 this
+    // line promoted on a sentence somebody typed, and passed: the seam it was
+    // written to prove admits complete evidence was admitting any text. So
+    // the same id is refused first, while nothing is on record, and admitted
+    // once the record is.
     assert!(
         tools
-            .promote(
-                &fetch,
+            .promote(&fetch, ToolPermission::Write, "eval-2026-10-18")
+            .is_err(),
+        "a tool's scope widened on the name of an evaluation nobody recorded"
+    );
+    assert!(tools.authorise(&fetch, ToolPermission::Write).is_err());
+    tools
+        .record_evaluation(
+            ToolEvaluation::new(
+                "eval-2026-10-18",
+                fetch.clone(),
                 ToolPermission::Write,
-                "eval-2026-10-18: reads and writes only its own cache"
+                "reads and writes only its own cache",
+                EvaluationOutcome::Passed,
             )
+            .expect("a complete evaluation record is built"),
+        )
+        .expect("an evaluation of a registered tool is recorded");
+    assert!(
+        tools
+            .promote(&fetch, ToolPermission::Write, "eval-2026-10-18")
             .is_ok()
     );
     assert!(tools.authorise(&fetch, ToolPermission::Write).is_ok());
