@@ -264,6 +264,36 @@ run "the_simulation_bucket_bounds_outputs_and_keeps_campaigns_and_manifests" {
   }
 }
 
+run "the_model_artifact_bucket_holds_a_retention_and_never_deletes" {
+  command = plan
+
+  assert {
+    condition     = google_storage_bucket.artifacts[0].retention_policy[0].retention_period == 2592000
+    error_message = "The model-artifact bucket must carry a thirty-day retention policy (R12-DATA-7013)."
+  }
+
+  assert {
+    condition     = google_storage_bucket.artifacts[0].retention_policy[0].is_locked == false
+    error_message = "The model-artifact retention policy must stay unlocked."
+  }
+
+  assert {
+    condition = length([
+      for rule in google_storage_bucket.artifacts[0].lifecycle_rule : rule
+      if anytrue([for a in rule.action : a.type == "SetStorageClass"])
+    ]) == 1
+    error_message = "Model artifacts must move to a colder class with age (R12-DATA-7013)."
+  }
+
+  assert {
+    condition = length([
+      for rule in google_storage_bucket.artifacts[0].lifecycle_rule : rule
+      if anytrue([for a in rule.action : a.type == "Delete"])
+    ]) == 0
+    error_message = "No lifecycle rule may delete a model artifact or a version a model card names."
+  }
+}
+
 run "cloud_storage_disabled_plans_neither_bucket" {
   command = plan
 
