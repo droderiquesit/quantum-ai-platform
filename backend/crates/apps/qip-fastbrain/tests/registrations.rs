@@ -613,3 +613,95 @@ fn a_fast_brain_step_observes_only_what_the_world_fabric_released() -> Result<()
     );
     Ok(())
 }
+
+/// A fresh platform with an empty world fabric, built as the step test above
+/// builds it, so the two compare like with like.
+fn empty_platform() -> Result<qip_kernel::Platform> {
+    let config = PlatformConfig::default();
+    let clock: Arc<dyn qip_core::Clock> = Arc::new(qip_core::ManualClock::new(streaming_instant()));
+    let context = qip_core::Context::new(clock, config.seed);
+    let platform = qip_kernel::Platform::new(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        qip_financial::universe::Universe::new(),
+        qip_risk::limits::LimitSet::conservative_default(),
+    )?;
+    assert_eq!(platform.evidence_held(), 0, "premise: an empty fabric");
+    Ok(platform)
+}
+
+/// R12-DATA-2021 under the hand-written-connector model (ADR 0157 section 4,
+/// ADR 0180 decision 3; owner decision 36): a connector arm's output reaches
+/// the world fabric only while the licensing gate that admitted its source
+/// still grants. A source the gate does not admit is held back whole, and the
+/// step fails closed rather than observing what it fetched.
+///
+/// Without this, the only test of the standing gate polled the feed directly,
+/// so a node step that observed records past a refused gate would have passed
+/// every test in the tree. Both halves run on the same feed and server, so the
+/// refusal is the gate and not a feed that never produced anything.
+///
+/// Mutation: in `Feed::poll` (feed.rs), delete the `admission.check(wall)?`
+/// line of the connector arm — the second step then succeeds, the fabric holds
+/// three claims, and the refusal assertions fail.
+#[test]
+fn a_fast_brain_step_whose_source_is_no_longer_admitted_puts_nothing_in_the_world_fabric()
+-> Result<()> {
+    let server = RateServer::serving(RATE_TABLE);
+    let opened = streaming_instant();
+    let expiry = opened.saturating_add(Duration::from_days(3));
+    let expiring = vec![CatalogueEntry {
+        source_id: KEYLESS_SOURCE,
+        expected_class: LicensingClass::Public,
+        posture: LicensingPosture::declared(
+            SourceLicense::new("terms-with-an-end-date", [Usage::Derive, Usage::Trade])?
+                .expiring_at(expiry),
+        ),
+    }];
+    let registrations = PlatformConfig::default().registration_registry()?;
+    let mut feed = Feed::connector_admitted_by(
+        &expiring,
+        &registrations,
+        &keyless_settings(&server.url),
+        opened,
+    )?;
+
+    // Premise: while admitted, the step does feed the fabric.
+    let mut admitted = empty_platform()?;
+    qip_fastbrain::node::step(
+        &mut admitted,
+        &mut feed,
+        opened.saturating_add(Duration::from_days(1)),
+        Duration::from_secs(5),
+    )?;
+    assert_eq!(
+        admitted.evidence_held(),
+        3,
+        "premise: an admitted source must reach the fabric, or the refusal below proves nothing"
+    );
+    let served = server.served();
+    assert!(served >= 1, "premise: the admitted source opened no socket");
+
+    // The same feed once the gate no longer grants, into a platform that has
+    // never seen the source.
+    let mut held_back = empty_platform()?;
+    let refusal = qip_fastbrain::node::step(&mut held_back, &mut feed, expiry, Duration::from_secs(5))
+        .expect_err("a step over a source the gate no longer admits went on observing");
+    assert!(
+        refusal.message().contains("expired"),
+        "the refusal does not say the licence expired: {}",
+        refusal.message()
+    );
+    assert_eq!(
+        held_back.evidence_held(),
+        0,
+        "records from a source the gate refused reached the world fabric"
+    );
+    assert_eq!(
+        server.served(),
+        served,
+        "a refused step still opened a socket, so the gate ran after the transport"
+    );
+    Ok(())
+}
