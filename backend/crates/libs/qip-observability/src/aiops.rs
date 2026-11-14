@@ -429,6 +429,52 @@ pub const PERMITTED_ACTIONS: &[&str] = &[
     "disable_capability",
 ];
 
+/// The digest a runbook set is signed under: SHA-256 over a canonical text of
+/// every runbook, ordered by name, with targets in `BTreeSet` order.
+///
+/// Why it exists: the set is compiled into the image, and the image carries
+/// the Binary Authorization attestation only CI can issue. A digest of the set
+/// lets that attestation name exactly which runbooks it covers, so a set
+/// edited after attestation no longer matches it. Fields are length-prefixed
+/// so moving a character between `name` and `action` changes the digest.
+pub fn runbook_set_digest(runbooks: &[Runbook]) -> String {
+    let mut sorted: Vec<&Runbook> = runbooks.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut text = String::new();
+    for r in sorted {
+        text.push_str(&format!("{}:{}|{}:{}|", r.name.len(), r.name, r.action.len(), r.action));
+        for t in &r.targets {
+            text.push_str(&format!("{}:{}|", t.len(), t));
+        }
+        text.push('\n');
+    }
+    sha256_hex(text.as_bytes())
+}
+
+/// Refuses a runbook set that no attestation vouches for.
+///
+/// `attested` is the digest read from outside the build (the image's
+/// attestation, ADR_THEN_IMPLEMENT decision 36). A digest the same build
+/// embeds would let a tampered build vouch for itself, so there is no default:
+/// `None` is refused as unsigned and a differing digest as tampered.
+pub fn verify_runbook_set(runbooks: &[Runbook], attested: Option<&str>) -> Result<()> {
+    let Some(attested) = attested else {
+        return Err(Error::denied(
+            "the runbook set carries no attestation, so it is unsigned; supply the digest the \
+             image attestation names or run no remediation",
+        ));
+    };
+    let actual = runbook_set_digest(runbooks);
+    if attested.trim() != actual {
+        return Err(Error::denied(format!(
+            "the runbook set digests to {actual} but the attestation names {}; the set was \
+             changed after it was signed",
+            attested.trim()
+        )));
+    }
+    Ok(())
+}
+
 /// What carries out an approved action. Implemented by a composition root.
 pub trait Effector {
     fn apply(&mut self, action: &str, target: &str) -> Result<String>;
