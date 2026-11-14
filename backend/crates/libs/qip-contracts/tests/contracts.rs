@@ -3234,3 +3234,19 @@ fn contract_008_distilled_models_serialize_and_deserialize_round_trip() -> Resul
 
     Ok(())
 }
+
+#[test]
+fn a_distilled_model_over_the_runtime_memory_or_latency_ceiling_is_refused() -> Result<()> {
+    let model = DistilledModelContract {
+        name: "tree_v1".to_string(),
+        memory_bytes: 4096,
+        latency_micros: 500,
+        reflex_compatible: true,
+        worst_case_cost: 256,
+    };
+    // Premise: the model is valid and fits exactly at its own bounds.
+    model.validate_within(4096, 500)?;
+    assert!(model.validate_within(4095, 500).is_err());
+    assert!(model.validate_within(4096, 499).is_err());
+    Ok(())
+}

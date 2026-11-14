@@ -557,3 +557,34 @@ fn the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_t
     assert_eq!(saturation.observations, 2);
     assert!((saturation.achieved - 0.5).abs() < 1e-12, "{saturation:?}");
 }
+
+#[test]
+fn the_reconciliation_objective_is_declared_once_with_a_daily_window_and_a_zero_tolerance_target() {
+    // Premise: the set is non-empty, so the filter below cannot pass on an
+    // empty vector.
+    let declared = blueprint_slos();
+    assert!(!declared.is_empty(), "§49.1 declares no objectives at all");
+
+    // Exact-name match, not `contains`: "reconciliation" is a substring of
+    // other names and a loose match would let a renamed objective stand in.
+    let matching: Vec<&Slo> = declared
+        .iter()
+        .filter(|slo| slo.name == "reconciliation-breaks-zero-unexplained")
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "exactly one reconciliation objective must be declared; none means a \
+         target nothing can miss, two means one of them is unreviewed"
+    );
+    let slo = matching[0];
+    assert!(
+        (slo.target - 1.0).abs() < 1e-12,
+        "any break is severity one"
+    );
+    assert_eq!(
+        slo.window,
+        SloWindow::Day,
+        "a window stretched to a month lets a day of breaks average away"
+    );
+}

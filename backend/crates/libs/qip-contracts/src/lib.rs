@@ -60,6 +60,7 @@ pub mod regional_episode;
 pub mod replay;
 pub mod routing;
 pub mod schema;
+pub mod settlement;
 pub mod signal;
 pub mod sync;
 pub mod time;

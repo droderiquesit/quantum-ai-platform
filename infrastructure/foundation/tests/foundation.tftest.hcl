@@ -160,6 +160,16 @@ run "the_folder_refuses_service_account_keys_and_the_other_baseline_policies" {
   }
 
   assert {
+    condition     = google_org_policy_policy.boolean["compute.requireShieldedVm"].spec[0].rules[0].enforce == "TRUE"
+    error_message = "The folder does not require Shielded VMs."
+  }
+
+  assert {
+    condition     = length(google_org_policy_policy.resource_locations) == 1 && toset(google_org_policy_policy.resource_locations[0].spec[0].rules[0].values[0].allowed_values) == toset(["in:us-locations", "in:eu-locations"])
+    error_message = "The folder does not restrict resource locations to the US and EU groups."
+  }
+
+  assert {
     condition     = length(google_org_policy_policy.allowed_member_domains) == 0
     error_message = "Domain-restricted sharing is set without any customer id; it is optional and off by default."
   }

@@ -2841,6 +2841,188 @@ mod tests {
         );
     }
 
+    /// ADR 0347's respawn guard: a respawn reuses the forecaster id, so a
+    /// question opened at or before the spawn's instant carries the
+    /// predecessor's forecast under that id and must not be scored as the
+    /// new branch's. Only a question opened strictly after counts.
+    /// Mutation: `>=` in place of `>` in `measure_branch`'s opened filter
+    /// makes the same-instant arm record a measurement and the first
+    /// assertion fail.
+    #[test]
+    fn a_question_opened_at_or_before_the_spawn_is_not_measured_as_the_branchs_own() {
+        let spawned_at = Timestamp::from_secs(1_760_000_000);
+        let id = format!("{TEMPORARY_PREFIX}obj-AAA");
+        let mut stage = TournamentStage::new();
+        stage.temporaries.insert(
+            "obj-AAA".to_string(),
+            TemporarySpecialist {
+                id: id.clone(),
+                expires_at: spawned_at.saturating_add(TEMPORARY_LIFETIME),
+                ups: 1,
+                observed: 1,
+                branch: format!("{id}@2"),
+                spawned_at,
+                measured: BranchTally::default(),
+            },
+        );
+        let pending = |opened_at: Option<Timestamp>| PendingQuestion {
+            subject: "obj-AAA".to_string(),
+            reference: 100.0,
+            resolves_at: spawned_at.saturating_add(Duration::from_days(5)),
+            opened_at,
+            aggregate_up: Some(0.3),
+            equal_up: None,
+            weights_earned: false,
+        };
+        let scores = vec![ScoredForecast {
+            forecaster: id,
+            forecast_id: "f-1".to_string(),
+            question: "q-1".to_string(),
+            regime: "trend/calm".to_string(),
+            outcome: UP.to_string(),
+            brier: Some(0.5),
+            log_loss: None,
+            hit: None,
+            tail: None,
+            pinball: None,
+            economic: None,
+            information_value: None,
+            calibration_points: Vec::new(),
+            cost: None,
+            cost_meter: CostMeter::default(),
+            latency_ms: None,
+        }];
+        let now = spawned_at.saturating_add(Duration::from_days(1));
+
+        // Premise: nothing is measured yet.
+        assert!(stage.review.branch_measurements.is_empty());
+        stage.measure_branch(&pending(Some(spawned_at)), true, &scores, now);
+        stage.measure_branch(&pending(None), true, &scores, now);
+        assert!(
+            stage.review.branch_measurements.is_empty(),
+            "a question opened at the spawn, or with no opening, was counted: {:?}",
+            stage.review.branch_measurements
+        );
+
+        let after = spawned_at.saturating_add(Duration::from_mins(1));
+        stage.measure_branch(&pending(Some(after)), true, &scores, now);
+        assert_eq!(stage.review.branch_measurements.len(), 1);
+        assert_eq!(stage.review.branch_measurements[0].questions, 1);
+    }
+
+    /// R12-MODEL-7198: a temporary specialist the tournament will not hold
+    /// is dropped rather than kept live.
+    ///
+    /// The failure this prevents: a spawned temporary stayed in `temporaries`
+    /// after a full tournament refused its admission, so it blocked a
+    /// respawn on its subject and was refused again at every question until
+    /// it expired, with the population never learning it had no entrant.
+    /// Mutation: delete the `self.temporaries.remove(&subject)` in the
+    /// refusal arm of `observe_reasoning` — the live-temporary assertion
+    /// fails.
+    #[test]
+    fn a_temporary_specialist_a_full_tournament_refuses_is_dropped_and_the_refusal_is_recorded() {
+        use qip_core::ids::ObjectId;
+        use qip_market::bar::Interval;
+
+        let at = Timestamp::from_secs(1_760_000_000);
+        let horizon = Duration::from_days(5);
+        let mut stage = TournamentStage::new();
+        let reference = observe_card_question(&mut stage, "hyp-1-obj-AAA", horizon, at);
+        let aggregate = stage.review.opened[0]
+            .aggregate_up
+            .expect("premise: the question formed an aggregate");
+        let missed_up = aggregate < 0.5;
+        let close = if missed_up {
+            reference * 1.1
+        } else {
+            reference * 0.9
+        };
+        let px = |v: f64| Decimal::from_f64(v).expect("a price");
+        let bars = BTreeMap::from([(
+            "obj-AAA".to_string(),
+            vec![Bar {
+                object_id: ObjectId::from_string("obj-AAA"),
+                venue: "XNYS".to_string(),
+                interval: Interval::Day,
+                open_time: at.saturating_add(horizon),
+                open: px(reference),
+                high: px(reference.max(close)),
+                low: px(reference.min(close)),
+                close: px(close),
+                volume: Decimal::from_int(1_000),
+                trade_count: 10,
+                vwap: None,
+                quality: qip_financial::quality::DataQuality::default(),
+            }],
+        )]);
+        let resolved_at = at.saturating_add(Duration::from_days(6));
+        let review = stage
+            .learn(&bars, None, 2, resolved_at)
+            .expect("learns")
+            .expect("a resolution is a record");
+        assert_eq!(
+            review.spawned.len(),
+            1,
+            "premise: the miss spawned {review:?}"
+        );
+        let temporary = format!("{TEMPORARY_PREFIX}obj-AAA");
+        assert!(
+            stage.temporaries.contains_key("obj-AAA"),
+            "premise: the temporary is live before its first question"
+        );
+        assert!(!stage.tournament.is_admitted(&temporary));
+
+        // Fill the tournament with standing specialists that never expire.
+        let band = LatticeHorizon::HoursDays;
+        let mut refused_at_capacity = false;
+        for i in 0..=qip_learning_engine::tournament::MAX_FORECASTERS {
+            let admitted = stage.tournament.admit(
+                ForecasterSpec {
+                    id: format!("filler-{i}"),
+                    kind: ForecasterKind::Specialist,
+                    horizon: band,
+                    lane: band.admitted_lane(),
+                },
+                resolved_at,
+            );
+            if admitted.is_err() {
+                refused_at_capacity = true;
+                break;
+            }
+        }
+        assert!(
+            refused_at_capacity,
+            "premise: the tournament reached its cap"
+        );
+
+        let next = resolved_at.saturating_add(Duration::from_mins(1));
+        observe_card_question(&mut stage, "hyp-3-obj-AAA", horizon, next);
+        assert!(
+            !stage.review.opened[0].forecasts.is_empty(),
+            "premise: the admitted detector still forecast"
+        );
+        assert!(
+            !stage.review.opened[0].forecasts.contains_key(&temporary),
+            "{:?}",
+            stage.review.opened[0].forecasts
+        );
+        assert!(!stage.tournament.is_admitted(&temporary));
+        assert!(
+            !stage.temporaries.contains_key("obj-AAA"),
+            "a refused temporary stayed live and would be refused at every question"
+        );
+        assert!(
+            stage
+                .review
+                .refused
+                .iter()
+                .any(|r| r.contains(&temporary) && r.contains("none has expired")),
+            "{:?}",
+            stage.review.refused
+        );
+    }
+
     /// A one-bar hypothesis on `obj-AAA` and the pieces a question needs,
     /// for the card-entrant tests (ADR 0390).
     fn card_fixture(

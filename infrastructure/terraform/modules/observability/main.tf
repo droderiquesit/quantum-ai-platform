@@ -560,3 +560,51 @@ resource "google_monitoring_alert_policy" "belief_calibration" {
     mime_type = "text/markdown"
   }
 }
+
+# The event fabric lost (R12-RES-10125, owner ruling 2026-10-31). Two ways to
+# lose it, both charted: the broker stops serving or stops reporting (an
+# absent series is the broker being gone, which a `< 1` test alone would read
+# as healthy), and the archive falling behind with no sign of catching up, so
+# a restore would replay from an ever-older segment. Gated like every other
+# policy: nothing has been shown to scrape fabricd, and a policy naming a
+# descriptor Cloud Monitoring has never ingested is refused.
+resource "google_monitoring_alert_policy" "fabric_serving" {
+  count = var.workload_metrics_exist ? 1 : 0
+
+  project      = var.project_id
+  display_name = "qip ${var.environment}: the event fabric is not serving or its archive is falling behind"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "fabric broker not serving, or not reporting"
+
+    condition_prometheus_query_language {
+      query               = "absent(qip_event_fabric_serving) or min_over_time(qip_event_fabric_serving[5m]) < 1"
+      duration            = "0s"
+      evaluation_interval = "60s"
+    }
+  }
+
+  conditions {
+    display_name = "fabric archive lag rising for half an hour"
+
+    condition_prometheus_query_language {
+      query               = "min_over_time(qip_event_fabric_archive_lag_segments[30m]) > 0 and deriv(qip_event_fabric_archive_lag_segments[30m]) > 0"
+      duration            = "0s"
+      evaluation_interval = "60s"
+    }
+  }
+
+  notification_channels = var.notification_channels
+
+  documentation {
+    content   = <<-EOT
+      Either the event fabric broker is not accepting requests (or has stopped
+      reporting at all, which is the same loss seen from outside), or the
+      archive has had unarchived segments for half an hour and the backlog is
+      growing. Restore the broker, then replay the local spools and the GCS
+      segments; the archive lag shows how far back that replay must reach.
+    EOT
+    mime_type = "text/markdown"
+  }
+}

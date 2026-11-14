@@ -1680,7 +1680,7 @@ impl ResearchRound {
              {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
              acquisitions {:?}; campaigns {:?} ({} pack(s), {} refused); capability register \
              refused {:?}; reflex \
-             packages {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
+             packages {:?}; promotion lanes {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
              conflicts), theory deltas {}, cross-domain chains {} ({} raised); outputs \
              advisory, none promoted; capabilities are paper and shadow only",
             self.anomalies,
@@ -1710,6 +1710,7 @@ impl ResearchRound {
             self.experiment_packs_refused.len(),
             self.capabilities_refused,
             self.packages,
+            self.lanes,
             self.contested_claims,
             self.unexplained_subjects,
             self.knowledge_deltas,
@@ -2144,7 +2145,20 @@ impl ResearchLoop {
             family,
             name,
             version,
-            schema: r#"{"type":"object","candidate":true}"#.to_string(),
+            // Derived from the observation, not a bare shell: the subject
+            // and the observation text the schema could not explain travel
+            // in the schema itself, so a reader of the registry alone sees
+            // what the type was proposed for.
+            schema: serde_json::json!({
+                "type": "object",
+                "candidate": true,
+                "derived_from": {
+                    "subject": subject,
+                    "observation": raised.signal.observation,
+                    "gap_class": format!("{:?}", raised.signal.gap_class),
+                },
+            })
+            .to_string(),
             cited_observations: cited,
             rationale: format!(
                 "{} ({:?} gap raised by {:?}); no registered type explains it",
@@ -4339,8 +4353,11 @@ impl ResearchLoop {
                 Some(bp) => Ok(*bp),
                 None => basis_points(entry.item().expected_information_value),
             };
+            // Saturating like `emit` and `admit`: a gap worth more than the
+            // 100-unit scale is the most valuable kind, and declining it as
+            // invalid left it with no compute grant.
             let economic_value_bp =
-                basis_points(entry.item().expected_economic_value.to_f64() / 100.0);
+                economic_scale_bp(entry.item().expected_economic_value.to_f64());
             let (Ok(information_value_bp), Ok(economic_value_bp)) =
                 (information_value_bp, economic_value_bp)
             else {
@@ -5238,6 +5255,21 @@ const fn class_str(class: qip_contracts::expansion::GapClass) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A priced gap worth more than the scale's 100 units saturates at the
+    /// scale's end; `run_market` once declined such a gap as invalid.
+    #[test]
+    fn an_economic_value_past_the_scale_saturates_and_a_negative_one_is_refused() {
+        assert_eq!(
+            economic_scale_bp(50.0).ok(),
+            Some(qip_contracts::ambient::MAX_SEVERITY_BP / 2)
+        );
+        assert_eq!(
+            economic_scale_bp(5_000.0).ok(),
+            Some(qip_contracts::ambient::MAX_SEVERITY_BP)
+        );
+        assert!(economic_scale_bp(-1.0).is_err());
+    }
     use qip_contracts::ambient::AcquisitionStatus;
 
     /// The router admits held signals by severity x economic value, and the

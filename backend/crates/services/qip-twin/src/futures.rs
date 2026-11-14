@@ -265,6 +265,39 @@ pub struct Branch {
 }
 
 impl Branch {
+    /// Refuse a branch that does not state all of probability, causal
+    /// assumptions, unresolved evidence, market propagation and impact.
+    /// Without it an empty `evidence` or `propagation` (as the baseline
+    /// branch carries) reads as "nothing to say" and not as "never computed",
+    /// and the branch crosses between brains incomplete. Hedge requirement
+    /// is not checked: an empty `hedges` still means both "none required" and
+    /// "not computed" until it has a typed form. Portfolio impact is not
+    /// checked either: `grow` takes no positions.
+    pub fn validate_fields(&self) -> Result<()> {
+        let missing = |field: &str| {
+            Err(Error::invalid(format!(
+                "branch {} states no {field}; a branch must carry all of its fields",
+                self.id
+            )))
+        };
+        if !self.probability.is_finite() || self.probability <= 0.0 || self.probability > 1.0 {
+            return missing("probability in (0, 1]");
+        }
+        if self.assumptions.is_empty() {
+            return missing("causal assumptions");
+        }
+        if self.evidence.is_empty() {
+            return missing("unresolved evidence");
+        }
+        if self.propagation.is_empty() {
+            return missing("market propagation");
+        }
+        if self.impact_bps.is_empty() {
+            return missing("impact");
+        }
+        Ok(())
+    }
+
     /// This branch as the §24.9 [`qip_contracts::WorldBranch`] contract, the
     /// form a branch crosses between brains in. Its causal deltas are the
     /// propagation the branch assumed, in signed basis points of a unit

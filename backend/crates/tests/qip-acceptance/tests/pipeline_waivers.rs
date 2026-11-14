@@ -369,3 +369,150 @@ fn top_level_block<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
         .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
         .collect()
 }
+
+// --- CICD-9107: a repository the pipeline never writes to ---------------------
+
+/// The `repository_id` a registry resource declares, with the module's
+/// `${var.environment}` rewritten to the workflow's `${TARGET_ENVIRONMENT}`.
+fn registry_repository_id(terraform: &str, resource: &str) -> String {
+    let header = format!("resource \"google_artifact_registry_repository\" \"{resource}\"");
+    let body = terraform
+        .split(&header)
+        .nth(1)
+        .unwrap_or_else(|| panic!("{resource} is not declared in the registry module"))
+        .split("\nresource ")
+        .next()
+        .unwrap_or("");
+    let line = body
+        .lines()
+        .find(|l| l.trim_start().starts_with("repository_id"))
+        .unwrap_or_else(|| panic!("{resource} declares no repository_id"));
+    let quoted = line
+        .split('"')
+        .nth(1)
+        .unwrap_or_else(|| panic!("{resource}'s repository_id is not a quoted string"));
+    quoted.replace("${var.environment}", "${TARGET_ENVIRONMENT}")
+}
+
+/// Whether `token` occurs in `text` as a whole name: the character after it
+/// is not one a repository id can continue with. `qip-rust-${X}` must not be
+/// satisfied by `qip-rust-${X}-secondary`.
+fn contains_name(text: &str, token: &str) -> bool {
+    text.match_indices(token).any(|(at, _)| {
+        text[at + token.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    })
+}
+
+/// Whether workflow text publishes to a repository: a generic upload, the
+/// repository named as a whole token, and the by-digest evidence (the
+/// bundle's `@${digest}` references and a hash of each file). Comment lines
+/// are dropped first, so prose describing a publish is not one.
+fn publishes_to(workflow: &str, repository_id: &str) -> bool {
+    let code: String = workflow
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    code.contains("artifacts generic upload")
+        && code.contains("sha256sum")
+        && code.contains("@${digest}")
+        && contains_name(&code, repository_id)
+}
+
+/// The lines a protected patch adds, without the diff's `+` marker.
+fn added_lines(patch: &str) -> String {
+    patch
+        .lines()
+        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+        .map(|l| &l[1..])
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// CICD-9107, the decision's half that is about the check itself: it must be
+/// able to tell a publish from its absence.
+///
+/// A check that every workflow satisfies guards nothing, and the real test
+/// below reads a file that today carries no publish step at all.
+#[test]
+fn the_publish_check_tells_a_publish_from_prose_a_neighbour_and_nothing() {
+    let publish = "run: |\n  h=$(sha256sum f)\n  echo \"x@${digest}\"\n  \
+                   gcloud artifacts generic upload --repository=\"qip-rust-${TARGET_ENVIRONMENT}\" \
+                   --version=v\n";
+    assert!(
+        publishes_to(publish, "qip-rust-${TARGET_ENVIRONMENT}"),
+        "premise: a real publish was not recognised"
+    );
+    assert!(
+        !publishes_to(publish, "qip-deployments-${TARGET_ENVIRONMENT}"),
+        "a publish to one repository was read as a publish to another"
+    );
+    let neighbour = publish.replace(
+        "qip-rust-${TARGET_ENVIRONMENT}",
+        "qip-rust-${TARGET_ENVIRONMENT}-secondary",
+    );
+    assert!(
+        !publishes_to(&neighbour, "qip-rust-${TARGET_ENVIRONMENT}"),
+        "a longer repository name satisfied the shorter one"
+    );
+    let prose: String = publish.lines().map(|l| format!("# {l}\n")).collect();
+    assert!(
+        !publishes_to(&prose, "qip-rust-${TARGET_ENVIRONMENT}"),
+        "a commented-out publish was read as a publish"
+    );
+    let by_tag = publish.replace("@${digest}", ":latest");
+    assert!(
+        !publishes_to(&by_tag, "qip-rust-${TARGET_ENVIRONMENT}"),
+        "a publish that names no digest was accepted"
+    );
+}
+
+/// CICD-9107 (owner decision 36, 2026-11-14): every registry repository the
+/// module declares has a workflow step that publishes to it, by digest.
+///
+/// `modules/registry` declares `rust_packages` and `deployment_bundles` with a
+/// writer grant for CI, and nothing wrote to either, so two repositories
+/// claimed to hold what a build and a deployment are reproduced from while
+/// holding nothing. The decision is to publish, not to remove them: removal
+/// is a destructive apply that also rewrites the waiver test above.
+///
+/// Until a person applies `docs/blueprint/lanes/cicd-9107-protected.patch`
+/// (`.github/**` is protected, so the step could not be written in the lane
+/// that built this test), the step is read from that patch's added lines.
+/// Once `deploy.yml` carries it, the first arm is the live one and the patch
+/// should be deleted with the fallback.
+///
+/// Mutation: delete the `deployment-bundle` publish call (or rename
+/// `qip-deployments-` there) in `deploy.yml`, or in the patch while
+/// `deploy.yml` lacks the step: this test fails naming the repository.
+#[test]
+fn every_registry_repository_has_a_workflow_that_publishes_to_it() {
+    let terraform = read("infrastructure/terraform/modules/registry/main.tf");
+    let repositories = [
+        registry_repository_id(&terraform, "rust_packages"),
+        registry_repository_id(&terraform, "deployment_bundles"),
+    ];
+    assert!(
+        repositories
+            .iter()
+            .all(|r| r.contains("${TARGET_ENVIRONMENT}") && r.starts_with("qip-")),
+        "premise: both repository ids were read from the module and name the environment: {repositories:?}"
+    );
+
+    let deploy = read(".github/workflows/deploy.yml");
+    let patch = std::fs::read_to_string(
+        repository_root().join("docs/blueprint/lanes/cicd-9107-protected.patch"),
+    )
+    .map(|p| added_lines(&p))
+    .unwrap_or_default();
+    for repository in &repositories {
+        assert!(
+            publishes_to(&deploy, repository) || publishes_to(&patch, repository),
+            "nothing publishes to {repository} by digest: deploy.yml has no generic upload \
+             naming it, and the protected patch does not carry one"
+        );
+    }
+}

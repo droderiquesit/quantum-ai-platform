@@ -731,3 +731,99 @@ fn every_draft_the_node_writes_is_executed_under_the_one_registered_identity() {
         assert_ne!(draft.execution.executor, draft.promoted_by);
     }
 }
+
+/// R12-AGENCY-1025: the no-action counterfactual is the subject's reading
+/// when the draft was written, not the reading at the follow-up. The shared
+/// fixture reads a subject at 1 on both sweeps, so a counterfactual taken
+/// from the follow-up (every draft filed as a zero effect) passed it. Here the
+/// two readings differ (5 drafted, 9 followed up), so the premise is asserted
+/// first and the counterfactual must be 5 and the effect 4. Mutation: in
+/// `learn_stages`, set `no_action_counterfactual: Some(observed)` instead of
+/// `Some(pending.reading)` — the counterfactual becomes 9 and the effect 0.
+#[test]
+fn a_draft_is_measured_against_the_reading_it_was_written_on_not_the_follow_up_reading() {
+    fn reading(id: &str, secs: i64, value: i64) -> qip_contracts::ambient::AmbientSignal {
+        qip_contracts::ambient::AmbientSignal::new(
+            id,
+            qip_contracts::ambient::SignalClass::Opportunity,
+            "EURUSD",
+            9_000,
+            qip_contracts::ambient::Trigger::Event("world-model-updated".into()),
+            Timestamp::from_secs(secs),
+            qip_contracts::ambient::Detection {
+                observed_deviation: qip_core::Decimal::from_int(value),
+                expected_baseline: qip_core::Decimal::ZERO,
+                horizon: Duration::ZERO,
+                novelty_bp: 5_000,
+                affected_entities: vec!["EURUSD".into()],
+                urgency_bp: 4_000,
+                wake_targets: vec![qip_contracts::ambient::Pathway::ResearchTask],
+                evidence_ids: vec!["ev-1".into()],
+                expiry: Timestamp::from_secs(100_000),
+            },
+        )
+        .unwrap()
+    }
+    let telemetry = Telemetry::silent();
+    let mut agency = AmbientAgency::over(EventLog::in_memory()).unwrap();
+
+    let drafted = reading("sig-1", 100, 5);
+    let policy =
+        qip_contracts::ambient::RoutingPolicy::standard(4_000, 10, Duration::from_secs(60), 4)
+            .unwrap();
+    let mut router = qip_contracts::ambient::AttentionRouter::new(policy);
+    let events = router.route(&drafted, Timestamp::from_secs(110)).unwrap();
+    assert_eq!(events.len(), 1, "premise: the signal was answered");
+    assert_eq!(events[0].disposition, Disposition::Activated, "premise");
+    let first = qip_deepbrain::research::ResearchRound {
+        signals: vec![drafted],
+        attention_events: events,
+        ..Default::default()
+    };
+    let done = agency
+        .route(
+            1,
+            &first,
+            None,
+            Timestamp::from_secs(110),
+            &telemetry.metrics,
+        )
+        .unwrap();
+    assert_eq!(done.drafted, 1, "premise: a draft was written");
+    assert_eq!(agency.awaiting(), 1, "premise: it awaits a follow-up");
+
+    let followed = reading("sig-2", 170, 9);
+    assert_ne!(
+        followed.observed_deviation(),
+        qip_core::Decimal::from_int(5),
+        "premise: the follow-up reading differs from the drafted one"
+    );
+    let second = qip_deepbrain::research::ResearchRound {
+        signals: vec![followed],
+        ..Default::default()
+    };
+    let done = agency
+        .route(
+            2,
+            &second,
+            None,
+            Timestamp::from_secs(170),
+            &telemetry.metrics,
+        )
+        .unwrap();
+    assert_eq!(done.learned, 1, "{:?}", done.learning_withheld);
+
+    let all = learnings(agency.learning_log()).unwrap();
+    assert_eq!(all.len(), 1);
+    let kept = all[0].learned.as_ref().unwrap();
+    assert_eq!(
+        kept.outcome.no_action_counterfactual,
+        qip_core::Decimal::from_int(5),
+        "the baseline is the reading when drafted"
+    );
+    assert_eq!(
+        kept.outcome.actual_observations,
+        qip_core::Decimal::from_int(9)
+    );
+    assert_eq!(kept.effect, qip_core::Decimal::from_int(4));
+}

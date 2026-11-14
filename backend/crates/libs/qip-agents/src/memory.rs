@@ -305,7 +305,15 @@ pub struct ResearchMemory {
     /// Versions per procedure name, oldest first, never empty.
     procedures: BTreeMap<String, VecDeque<Procedure>>,
     by_agent: BTreeMap<String, VecDeque<usize>>,
+    /// Outcomes a later `resolve` replaced, per run id, oldest first. An
+    /// episode shows its latest outcome; this keeps what it showed before, so
+    /// a regrade is a recorded contradiction and not a silent overwrite.
+    superseded: BTreeMap<String, VecDeque<EpisodeOutcome>>,
 }
+
+/// Replaced outcomes kept per episode; past this the oldest is given up, so
+/// a source that regrades forever cannot grow the memory without bound.
+pub const MAX_SUPERSEDED_OUTCOMES: usize = 8;
 
 impl Default for ResearchMemory {
     fn default() -> Self {
@@ -316,6 +324,7 @@ impl Default for ResearchMemory {
             lessons: Vec::new(),
             procedures: BTreeMap::new(),
             by_agent: BTreeMap::new(),
+            superseded: BTreeMap::new(),
         }
     }
 }
@@ -356,6 +365,7 @@ impl ResearchMemory {
                     self.by_agent.remove(&oldest.agent_id);
                 }
             }
+            self.superseded.remove(oldest.run_id.as_str());
             self.evicted += 1;
         }
         let position = self.evicted + self.episodes.len();
@@ -384,12 +394,35 @@ impl ResearchMemory {
     }
 
     /// Attach an outcome to a recorded episode.
+    ///
+    /// A second outcome replaces the first as the episode's current one, but
+    /// the first is kept in [`ResearchMemory::superseded_outcomes`] rather
+    /// than overwritten unseen: a regrade that flips `correct` is a
+    /// contradiction the desk should be able to see.
     pub fn resolve(&mut self, run_id: &AgentRunId, outcome: EpisodeOutcome) -> bool {
         let Some(episode) = self.episodes.iter_mut().find(|e| &e.run_id == run_id) else {
             return false;
         };
-        episode.outcome = Some(outcome);
+        if let Some(previous) = episode.outcome.replace(outcome) {
+            let kept = self
+                .superseded
+                .entry(run_id.as_str().to_string())
+                .or_default();
+            kept.push_back(previous);
+            while kept.len() > MAX_SUPERSEDED_OUTCOMES {
+                kept.pop_front();
+            }
+        }
         true
+    }
+
+    /// Outcomes `resolve` replaced for this run, oldest first; empty when the
+    /// episode was resolved at most once.
+    pub fn superseded_outcomes(&self, run_id: &AgentRunId) -> Vec<&EpisodeOutcome> {
+        self.superseded
+            .get(run_id.as_str())
+            .map(|kept| kept.iter().collect())
+            .unwrap_or_default()
     }
 
     /// Held episodes, oldest first.

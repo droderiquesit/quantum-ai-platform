@@ -1185,3 +1185,38 @@ fn the_desk_relates_two_regions_ticks_only_beyond_the_stated_cell_clock_bound() 
     );
     Ok(())
 }
+
+/// Mutation: in `TickDesk::round`, set the `TracePoint` `depth` or `imbalance`
+/// to `None` (or drop the fill) - the fused reaction loses its depth ratio or
+/// flow reading and this fails. The desk's fill from the replayed book was
+/// otherwise visible only as a count.
+#[test]
+fn the_desk_fills_depth_and_imbalance_from_the_replayed_book_into_the_fused_reaction() -> Result<()>
+{
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let outputs = Arc::new(MemoryBlobStore::new());
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::clone(&outputs) as Arc<dyn BlobStore>,
+    );
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert_eq!(round.fused_events, 1, "premise: the strike was fused");
+    assert!(
+        !round.reactions.is_empty(),
+        "premise: a reaction was measured"
+    );
+    let reaction = &round.reactions[0];
+    assert_eq!(reaction.instrument, "obj-ACME");
+    let depth = reaction.depth_ratio.expect("depth came from the book");
+    assert!(depth.is_finite() && depth > 0.0, "depth ratio {depth}");
+    let flow = reaction
+        .flow_imbalance
+        .expect("imbalance came from the book");
+    assert!(
+        flow.abs() > 0.0 && flow.abs() <= 1.0,
+        "the quotes are lopsided, so imbalance is nonzero: {flow}"
+    );
+    Ok(())
+}

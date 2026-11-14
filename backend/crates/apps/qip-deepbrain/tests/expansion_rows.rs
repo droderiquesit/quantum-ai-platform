@@ -1790,3 +1790,31 @@ fn an_anomalous_subject_the_causal_graph_explains_raises_no_causal_link_gap() {
         ["obj-B", "obj-C"].map(String::from).into()
     );
 }
+
+/// A candidate type's schema carries the subject the observation was about
+/// and is valid JSON, so a registry reader sees what it was proposed for
+/// rather than an empty object shell. Mutation: restore the constant shell
+/// schema and the `derived_from` assertion fails.
+#[test]
+fn a_candidate_types_schema_names_the_subject_it_was_derived_from() {
+    let platform = reference_surprised();
+    let mut research = deployed(BTreeMap::new());
+    let (licensed, eligible) = deployed_bounds();
+    let round = research
+        .sweep(&platform, t0(), &licensed, &eligible)
+        .unwrap();
+    assert_eq!(
+        round.ontology_patches.len(),
+        1,
+        "premise: one patch: {:?}",
+        round.ontology_patches
+    );
+    let patch = &round.ontology_patches[0];
+    let schema: serde_json::Value =
+        serde_json::from_str(&patch.schema).expect("the schema is JSON");
+    assert_eq!(
+        schema["derived_from"]["subject"],
+        serde_json::json!("obj-A/shares_outstanding"),
+        "{schema}"
+    );
+}

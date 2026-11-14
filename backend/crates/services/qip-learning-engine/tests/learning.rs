@@ -499,6 +499,28 @@ fn calibration_does_not_flag_a_well_calibrated_platform() -> Result<()> {
     Ok(())
 }
 
+/// R12-WORLD-1156, "uncertainty": the report's Brier score is the arithmetic
+/// mean squared gap between stated confidence and outcome, not merely a number
+/// in `[0, 1]`. Ten claims at 0.8 confidence, six right: six misses of 0.2
+/// squared and four of 0.8 squared give (6 * 0.04 + 4 * 0.64) / 10 = 0.28.
+///
+/// Mutation: in `FeedbackEngine::calibrate`, report `0.0` for `brier_score` --
+/// the score no longer equals 0.28.
+#[test]
+fn the_calibration_report_carries_the_exact_brier_arithmetic() -> Result<()> {
+    let engine = FeedbackEngine::default();
+    let evaluations = batch(10, 6, 0.8, &["credit-analyst"]);
+    assert_eq!(evaluations.len(), 10, "premise: ten scoreable evaluations");
+    let report = engine.calibrate(&evaluations)?;
+    assert_eq!(report.evaluated, 10, "premise: every evaluation informs");
+    assert!(
+        (report.brier_score - 0.28).abs() < 1e-9,
+        "{}",
+        report.summarise()
+    );
+    Ok(())
+}
+
 #[test]
 fn a_rate_from_too_little_history_is_withheld_rather_than_reported() -> Result<()> {
     // Reporting a rate from four episodes would mislead.
@@ -688,5 +710,49 @@ fn a_rejected_lesson_says_why() -> Result<()> {
     assert!(report.promoted.is_empty());
     assert!(!report.rejected.is_empty());
     assert!(!report.rejected[0].1.is_empty(), "a refusal must say why");
+    Ok(())
+}
+
+#[test]
+fn each_position_attributes_exactly_to_its_own_books_pnl_and_the_sources_sum_to_the_total()
+-> Result<()> {
+    // Reconciling only the book total lets two positions' errors cancel: one
+    // overstated by X and another understated by X still close to zero
+    // residual. Assert each position against its own independently computed
+    // P&L, and the by-source totals against the book total.
+    let positions = vec![
+        position("AAA", "100", "105"),
+        position("BBB", "50", "48"),
+        position("CCC", "200", "200"),
+    ];
+    // Premise: the positions earn different amounts, so a swap or a shared
+    // figure cannot pass by coincidence.
+    let own: Vec<Decimal> = positions
+        .iter()
+        .map(|p| total_of(std::slice::from_ref(p)))
+        .collect();
+    assert_eq!(own.len(), 3);
+    assert!(own[0] != own[1] && own[1] != own[2] && own[0] != own[2]);
+
+    let total = total_of(&positions);
+    let attribution =
+        Attributor::new().attribute(&positions, total, dec!("10000000"), start(), end())?;
+
+    assert_eq!(attribution.positions.len(), positions.len());
+    for (period, expected) in positions.iter().zip(&own) {
+        let entry = attribution
+            .positions
+            .iter()
+            .find(|entry| entry.object_id == period.object_id)
+            .expect("every position given is attributed");
+        assert_eq!(entry.total, *expected, "{} total", entry.object_id);
+        let sum = entry.components.values().fold(Decimal::ZERO, |a, b| a + *b);
+        assert_eq!(sum, *expected, "{} components", entry.object_id);
+    }
+    let by_source = attribution
+        .by_source
+        .values()
+        .fold(Decimal::ZERO, |a, b| a + *b);
+    assert_eq!(by_source, total);
     Ok(())
 }

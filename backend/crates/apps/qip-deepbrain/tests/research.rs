@@ -2695,6 +2695,65 @@ fn a_widening_regional_gap_routes_one_precursor_before_any_anomaly_and_none_when
     );
 }
 
+/// R12-AMBIENT-3069: the multi-leg family is driven through the sweep, not
+/// only the scorer. A two-leg structure (long one listing, short the other)
+/// whose weighted log spread widens across three sweeps below its threshold
+/// reaches the attention router as one multi-leg precursor on the third;
+/// with the sentinel off the same tape routes none.
+///
+/// The failure this prevents: four of five families proven only at the
+/// scoring seam, so a break in the sweep's wiring of the leg sets would pass.
+/// Mutation: drop the leg-set loop in the scorer (precursor.rs) - no multi-leg
+/// precursor appears and the first assertion fails.
+#[test]
+fn a_widening_leg_spread_routes_one_multi_leg_precursor_and_none_when_the_sentinel_is_off() {
+    let widening = [0.0021, 0.0024, 0.0027];
+    let build = |on: bool| {
+        let config = ResearchConfig {
+            opportunity_sentinel: on,
+            ..ResearchConfig::default()
+        };
+        ResearchLoop::new(config, BTreeMap::new())
+            .and_then(|l| {
+                l.with_precursors(qip_opportunity_engine::PrecursorConfig {
+                    leg_sets: vec![qip_opportunity_engine::LegSet {
+                        name: "AAA-spread".to_string(),
+                        legs: vec![("AAA".to_string(), 1.0), ("AAA.EU".to_string(), -1.0)],
+                    }],
+                    ..qip_opportunity_engine::PrecursorConfig::default()
+                })
+            })
+            .unwrap_or_else(|e| panic!("the research loop assembles: {e}"))
+    };
+    let multi_leg = |round: &qip_deepbrain::research::ResearchRound| {
+        round
+            .precursors
+            .iter()
+            .filter(|p| p.family == qip_opportunity_engine::PrecursorFamily::MultiLeg)
+            .count()
+    };
+
+    let mut on = build(true);
+    let rounds = sweep_listings(&mut on, &widening);
+    assert_eq!(rounds.len(), 3, "premise: three sweeps");
+    assert_eq!(multi_leg(&rounds[0]) + multi_leg(&rounds[1]), 0);
+    assert_eq!(multi_leg(&rounds[2]), 1, "{:?}", rounds[2].precursors);
+    assert!(
+        precursor_events(&rounds[2]).contains(&"precursor:multi_leg:AAA-spread".to_string()),
+        "the multi-leg precursor reaches the attention router: {:?}",
+        precursor_events(&rounds[2])
+    );
+
+    let mut off = build(false);
+    let quiet = sweep_listings(&mut off, &widening);
+    assert!(
+        quiet
+            .iter()
+            .all(|r| r.precursors.is_empty() && precursor_events(r).is_empty()),
+        "a disabled sentinel raises nothing"
+    );
+}
+
 /// The other half of the bar: a gap that holds still is no precursor, and
 /// one that jumps past the threshold is the anomaly path's and not a
 /// precursor. Mutation: drop the `reading.score >= reading.threshold` arm

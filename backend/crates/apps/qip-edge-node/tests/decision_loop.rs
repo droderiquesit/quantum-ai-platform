@@ -241,6 +241,18 @@ fn rig_with(
     handoff_capacity: usize,
 ) -> Result<Rig> {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    rig_with_engine(config, features, store, bound, handoff_capacity)
+}
+
+/// [`rig_with`] with the feature engine supplied, so a test can register the
+/// standard suite for [`object`] the way the binary does.
+fn rig_with_engine(
+    config: CellConfig,
+    features: FeatureEngine,
+    store: Arc<dyn KeyValueStore>,
+    bound: usize,
+    handoff_capacity: usize,
+) -> Result<Rig> {
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
     // The one instrument the firing strategy trades and the touch below
@@ -2631,5 +2643,72 @@ fn a_turn_that_applied_tape_ships_a_market_state_pack_in_its_feature_digest() ->
         )],
         "the lineage names the tape this digest counted"
     );
+    Ok(())
+}
+
+/// R12-FABRIC-10102: `DecisionLoop::feature_digest` reached through a real
+/// turn with features registered. The outbox test hands the writer hand-built
+/// digests, and the turn test above runs an engine with nothing registered,
+/// so the digest's instruments were never shown to carry what the pass
+/// evaluated, nor to be written once per pass.
+///
+/// Mutation: make `feature_digest` skip the `by_subject` loop (empty
+/// instruments), or record the digest on every other turn; the first or the
+/// second assertion fails.
+#[test]
+fn a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them() -> Result<()> {
+    use qip_edge_node::standard_engine_and_catalogue;
+    use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
+    use std::collections::BTreeSet;
+    let (engine, _catalogue) = standard_engine_and_catalogue(&object(), DEFAULT_MAX_STALENESS)?;
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_journal_trimmed_on_ship()
+        .with_journal_wire();
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig_with_engine(
+        config,
+        engine,
+        Arc::clone(&store) as Arc<dyn KeyValueStore>,
+        1 << 16,
+        64,
+    )?;
+    let _watchdog = Watchdog::arm("digests for registered features reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 10;
+    let mut passes = 0;
+    let digests = loop {
+        if rig.decisions.turn(t(second))?.ran_pass {
+            passes += 1;
+        }
+        second += 1;
+        let found = writer::records(&rig.spool)?
+            .into_iter()
+            .filter(|r| r.event.topic == Topic::ReflexFeatureDigested)
+            .map(|r| writer::feature_digest(&r.event))
+            .collect::<Result<Vec<_>>>()?;
+        if passes >= 3 && found.len() >= passes {
+            break found;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: three passes ran and their digests reached the spool"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(digests.len(), passes, "one digest per pass that ran");
+    let numbers: BTreeSet<u64> = digests.iter().map(|d| d.pass).collect();
+    assert_eq!(numbers.len(), digests.len(), "no pass is digested twice");
+    for digest in &digests {
+        assert!(
+            digest
+                .instruments
+                .iter()
+                .any(|i| i.subject == object().to_string() && !i.features.is_empty()),
+            "pass {} digest names no evaluated feature for the registered instrument: {:?}",
+            digest.pass,
+            digest.instruments
+        );
+    }
     Ok(())
 }

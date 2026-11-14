@@ -431,6 +431,21 @@ fn a_logistics_plan_missing_any_of_the_seven_parts_is_refused() {
     assert!(bad.into_plan().is_err(), "a risk above one was clamped");
 }
 
+#[test]
+fn a_simulated_carrier_books_its_own_plan_and_refuses_another_carriers() {
+    let plan = draft().into_plan().expect("the full draft is a plan");
+    assert!(!plan.route.is_empty(), "the premise: the plan has legs");
+    let mut other = SimulatedCarrier::new("Hapag");
+    let e = other.book(&plan).expect_err("a plan for Maersk was booked");
+    assert!(e.message().contains("Maersk"), "{}", e.message());
+    assert_eq!(other.calls(), 0, "a refusal reached the carrier");
+    let mut own = SimulatedCarrier::new("Maersk");
+    let b = own.book(&plan).expect("the carrier named was refused");
+    assert_eq!((b.sequence, b.legs), (1, plan.route.len()));
+    assert_eq!(b.carrier, "Maersk");
+    assert_eq!(own.book(&plan).expect("second booking").sequence, 2);
+}
+
 // ---- Ledger (COMMERCE-017, -018)
 
 fn received(unit: &str, basis: Decimal) -> LedgerEvent {

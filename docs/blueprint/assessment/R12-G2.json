@@ -839,7 +839,11 @@
       "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::Market, written in AmbientJournal::record",
       "backend/crates/services/qip-expansion/src/meta.rs allocate_within (Decline::OverAgentBudget), MetaIntelligence::reputation / ReputationBook::standing().weight_bp()",
       "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_research_round_journals_the_agent_budgets_and_model_weights_it_allocated_on",
-      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing"
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing",
+      "a_compute_plan_refuses_a_missing_repeated_or_exceeded_agent_line",
+      "an_agent_with_no_stated_line_is_refused_and_a_listed_one_is_not",
+      "a_bid_weighted_above_its_models_ceiling_is_refused_not_clamped",
+      "a_zero_budget_line_grants_nothing_and_a_granted_qpu_plan_carries_its_line"
     ],
     "gap": "2026-10-25 (lane L2b; independent read-only skeptic REFUTED on bar parts 4 and 2): the requirement's test clause says a ComputePlan bounds per-agent budgets and model weights — ComputePlanFields (qip-contracts control.rs:259-273) carries one budget for the whole QPU plan and no per-agent or per-model field, the per-agent bound is a separate map handed to allocate_within, and nothing anywhere bounds a model weight (the journaled weight_bp is read, never capped; the tree has no ModelWeight type); and agent_budgets is empty by default with QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS set in no committed environment, so the per-agent bound sits behind an env var every environment leaves unset. Met: the refusal of an agent past its stated budget, the ComputePlan on QPU grants, and since 2026-10-25 the journaled MarketRecord (budgets, grants with their weight, declines, spend). Closing it: a ComputePlan that carries the per-agent budget lines and a model-weight ceiling the allocator enforces, a default budget set in the shipped configuration (fail closed), and a model-weight refusal test. Also noted: a grant whose question has no cell is left off the record (research.rs run_market `if let Some((key, _)) = cells.get(..)`), caught only by the units-sum assertion. 2026-11-12 (fw-g-01): the two remaining bounds are figures nobody gave: a default per-agent research budget for the shipped configuration and a model-weight ceiling for the allocator; both stay with the owner (decision 28), and the ComputePlan fields and the refusal test can be built only once those figures exist.",
     "implemented": true,
@@ -852,7 +856,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L18: the allocator's agent bound landed with a mutated test (deleting the agent-budget check grants the agent five units and the second bid); a negative agent budget is refused. The research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site and its configuration landed, mutation-verified; PARTIAL on the deployment value and the event-log record. 2026-10-25 lane L2b (wave580): market record journaled. Mutation fired: deleting the AmbientRecord::Market append in AmbientJournal::record -> \"left: 0 right: 1\" on the record count; restored byte for byte (cmp), research_market 9 passed, ambient_journal 10 passed (its record-count assertion moved 4 -> 5 for the market record, named in its message). Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held the default-path call of run_market, the Decimal/BTreeMap replayability of the record and the refusal test; noted the weight assertion would pass on the uninformed default of 5000 bp. Its doc-placement finding was fixed (the new structs had displaced ResearchRound's doc comment)."
+    "notes": "2026-10-18 lane L18: the allocator's agent bound landed with a mutated test (deleting the agent-budget check grants the agent five units and the second bid); a negative agent budget is refused. The research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site and its configuration landed, mutation-verified; PARTIAL on the deployment value and the event-log record. 2026-10-25 lane L2b (wave580): market record journaled. Mutation fired: deleting the AmbientRecord::Market append in AmbientJournal::record -> \"left: 0 right: 1\" on the record count; restored byte for byte (cmp), research_market 9 passed, ambient_journal 10 passed (its record-count assertion moved 4 -> 5 for the market record, named in its message). Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records; held the default-path call of run_market, the Decimal/BTreeMap replayability of the record and the refusal test; noted the weight assertion would pass on the uninformed default of 5000 bp. Its doc-placement finding was fixed (the new structs had displaced ResearchRound's doc comment). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-WORLD-9035",
@@ -1541,7 +1545,9 @@
     "evidence": [
       "infrastructure/terraform/modules/trust-zones/main.tf:141-160",
       "backend/crates/tests/qip-acceptance/tests/egress.rs",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:370"
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:370",
+      "the_crawler_zone_leaves_from_an_address_and_gateway_no_other_zone_shares_and_only_it_holds_information_source",
+      "two_egress_zones_leave_from_two_addresses_and_two_gateways (tftest run)"
     ],
     "gap": "Owner decision O17 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split scouts and engineering into their own projects before the second region (ADR 0113 §4, ADR 0118). Enables: Project-level isolation for scouts and engineering. Costs: More projects, budgets and IAM; ADR 0118 bootstrap re-run.",
     "implemented": true,
@@ -1554,7 +1560,7 @@
     "verification": "cargo test -p qip-acceptance --test egress --test security_controls",
     "work_item": "",
     "size": "M",
-    "notes": "ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required. Lane N1-KERNEL-ACCEPT 2026-10-24: re-read, still owner decision O17 (design-decisions-2026-10-18.json); classed DESIGN_OPEN, no agent writes the ADR and no code changed. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0113 §4 stands: the scouts' own project comes with the second region, not before, and node pools stay refused under ADR 0114 D4. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The scout zone gets its own VPC network with no peering or route to any other network, and its own project waits for the second region.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required. Lane N1-KERNEL-ACCEPT 2026-10-24: re-read, still owner decision O17 (design-decisions-2026-10-18.json); classed DESIGN_OPEN, no agent writes the ADR and no code changed. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): ADR 0113 §4 stands: the scouts' own project comes with the second region, not before, and node pools stay refused under ADR 0114 D4. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The scout zone gets its own VPC network with no peering or route to any other network, and its own project waits for the second region.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-SEC-9065",
@@ -1647,9 +1653,15 @@
       ".github/workflows/deploy.yml:130",
       "scripts/agent-guard.test.mjs: 'an agent identity may not start a deploying workflow and a person may'",
       "scripts/agent-guard.test.mjs: 'a sandbox workflow with a secret, a credential, a write or no time limit is refused'",
-      "scripts/agent-guard.test.mjs: 'the committed agent sandbox workflow passes the sandbox rule'"
+      "scripts/agent-guard.test.mjs: 'the committed agent sandbox workflow passes the sandbox rule'",
+      "backend/crates/tests/qip-acceptance/tests/agent_sandbox_credentials.rs: the_agent_sandbox_workflow_grants_contents_read_and_nothing_else",
+      "backend/crates/tests/qip-acceptance/tests/agent_sandbox_credentials.rs: the_agent_sandbox_workflow_names_no_secret_oidc_token_or_environment",
+      "backend/crates/tests/qip-acceptance/tests/agent_sandbox_credentials.rs: every_checkout_in_the_agent_sandbox_drops_the_repository_token",
+      "the_agent_sandbox_workflow_grants_contents_read_and_nothing_else",
+      "the_agent_sandbox_workflow_names_no_secret_oidc_token_or_environment",
+      "every_checkout_in_the_agent_sandbox_drops_the_repository_token"
     ],
-    "gap": "Owner decision O18 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Give agent sessions their own identity (a Workload Identity pool) and scoped per-run credentials. Enables: A principal that distinguishes an agent from a person; sandboxed credentials. Costs: New IAM pool and providers; issuing credentials to agents.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Rust-side second gate on the sandbox workflow now exists (no secrets, id-token, environment, extra permissions; checkouts drop the token). Still open: owner decision O18 (agent identity pool, per-run credentials) and the coder agent's own working session, which gets no sandboxed credential from this repo. Tests not mutation-verified or run.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1660,7 +1672,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based. ADR lane 2026-10-18: gap re-graded against decision O18; gap before it: The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued. Owner ruling 2026-10-31, second pass (WRITE_PATCH): O18 is decided once, under R12-SEC-10201's record: no agent identity pool and no per-run cloud credential. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-sec-9068-credential-workflows-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based. ADR lane 2026-10-18: gap re-graded against decision O18; gap before it: The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued. Owner ruling 2026-10-31, second pass (WRITE_PATCH): O18 is decided once, under R12-SEC-10201's record: no agent identity pool and no per-run cloud credential. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-sec-9068-credential-workflows-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-CICD-9069",
@@ -2536,7 +2548,9 @@
     "evidence": [
       "infrastructure/terraform/modules/registry/main.tf:22-33,154,206",
       ".github/workflows/deploy.yml:510-540",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1071 is_digest_pinned"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1071 is_digest_pinned",
+      "the_publish_check_tells_a_publish_from_prose_a_neighbour_and_nothing",
+      "every_registry_repository_has_a_workflow_that_publishes_to_it"
     ],
     "gap": "Nothing publishes to the rust_packages or deployment_bundles repositories (modules/registry/main.tf), but removing them is not this lane's to do: it deletes Artifact Registry resources on the next apply, needs the explicit approval naming the resource that the infrastructure rules require, and contradicts pipeline_waivers.rs, which asserts both repositories are declared. The choice is the owner's: publish to them (a deploy.yml step, a protected path) or remove them together with that waiver test.",
     "implemented": true,
@@ -2549,7 +2563,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": "Gap corrected 2026-10-18 after reading the module and the waiver suite; status unchanged. Proposed test for either branch: infrastructure.rs::every_registry_repository_has_a_workflow_that_publishes_to_it. Owner ruling 2026-10-31, second pass (WRITE_PATCH): Publish to the two repositories; do not remove them. Deleting them would be a destructive apply and would rewrite the waiver test, and the requirement names both. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-cicd-9107-publish-packages-and-bundles-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Gap corrected 2026-10-18 after reading the module and the waiver suite; status unchanged. Proposed test for either branch: infrastructure.rs::every_registry_repository_has_a_workflow_that_publishes_to_it. Owner ruling 2026-10-31, second pass (WRITE_PATCH): Publish to the two repositories; do not remove them. Deleting them would be a destructive apply and would rewrite the waiver test, and the requirement names both. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Protected patch docs/blueprint/lanes/l6-cicd-9107-publish-packages-and-bundles-protected.patch: the lane writes it (not present on 2026-10-31) and the orchestrator applies it as far as the session permission layer allows. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-CICD-9108",

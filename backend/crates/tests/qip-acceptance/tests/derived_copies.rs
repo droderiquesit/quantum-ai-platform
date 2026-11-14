@@ -350,3 +350,57 @@ fn no_production_source_outside_the_warehouse_module_and_its_one_insert_only_sin
          analytics and derived caches, never a decision"
     );
 }
+
+/// Whether a grouped import from `qip_mesh` brings in the `bigquery` module:
+/// `use qip_mesh::{bigquery::BigQueryWarehouse as W};` names neither
+/// `qip_mesh::bigquery` nor, after an alias, always the client type, so the
+/// name scans above pass it. The import statement is read up to its `;`, so a
+/// group spread over several lines is seen, and `bigquery` is matched as a
+/// whole identifier, not as a substring of a longer name.
+fn imports_the_warehouse_module_in_a_group(code: &str) -> bool {
+    code.match_indices("qip_mesh::{").any(|(at, _)| {
+        let statement = code[at..].split(';').next().unwrap_or("");
+        statement
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|word| word == "bigquery")
+    })
+}
+
+/// R12-LEDGER-8138, one remaining item: a grouped import. Without this
+/// detector a source could reach the warehouse client through
+/// `use qip_mesh::{bigquery::{self as bq}};` and pass the name scan.
+///
+/// Mutation: add `use qip_mesh::{bigquery::{self as bq}};` to any kernel
+/// source; this test fails naming that file.
+#[test]
+fn no_production_source_reaches_the_warehouse_client_through_a_grouped_import() {
+    assert!(imports_the_warehouse_module_in_a_group(
+        "use qip_mesh::{bigquery::{self as bq}};"
+    ));
+    assert!(imports_the_warehouse_module_in_a_group(
+        "use qip_mesh::{\n    config::MeshConfig,\n    bigquery::LoadState,\n};"
+    ));
+    assert!(!imports_the_warehouse_module_in_a_group(
+        "use qip_mesh::{config::MeshConfig, bigquery_like::X};"
+    ));
+    assert!(!imports_the_warehouse_module_in_a_group(
+        "use qip_mesh::{config::MeshConfig};\nuse other::bigquery;"
+    ));
+
+    let sources = production_sources();
+    assert!(
+        sources.len() > 100,
+        "premise: the walk reads the workspace's production sources, found {}",
+        sources.len()
+    );
+    let offenders: Vec<&String> = sources
+        .iter()
+        .filter(|(_, code)| imports_the_warehouse_module_in_a_group(code))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "production sources import the warehouse module through a group: {offenders:?}; a \
+         warehouse is a derived copy and no decision may read from it"
+    );
+}

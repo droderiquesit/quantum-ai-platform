@@ -219,3 +219,21 @@ variable "platform_apis" {
     "cloudasset.googleapis.com",
   ]
 }
+
+variable "allowed_resource_locations" {
+  description = <<-EOT
+    Organization Policy `gcp.resourceLocations` allowed values on the folder:
+    United States and European Union only (owner decision 36, provisional).
+    `in:us-locations` is what admits the multi-region US archive bucket;
+    `in:eu-locations` keeps the European regions. Not empty: an empty list
+    would refuse every new resource at apply, and a list without the US group
+    would refuse the archive bucket.
+  EOT
+  type        = list(string)
+  default     = ["in:us-locations", "in:eu-locations"]
+
+  validation {
+    condition     = length(var.allowed_resource_locations) > 0 && alltrue([for v in var.allowed_resource_locations : can(regex("^in:[a-z0-9-]+-locations$", v))])
+    error_message = "Name at least one value group in the form `in:us-locations`; a bare region or an empty list is refused."
+  }
+}

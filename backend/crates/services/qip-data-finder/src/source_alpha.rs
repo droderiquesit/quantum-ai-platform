@@ -14,8 +14,9 @@
 //! composition root feeds this yet: the outcome series must come from the
 //! LEARN stage's attribution, and that join is not built.
 
-use qip_core::Timestamp;
+use crate::quality::SourceCost;
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -208,4 +209,94 @@ impl SourceAlphaHistory {
     pub fn history(&self, source: &str) -> impl Iterator<Item = &SourceAlpha> {
         self.by_source.get(source).into_iter().flatten()
     }
+}
+
+/// What one unit of information coefficient is worth per month, in the
+/// source's currency (owner decision 36, 2026-11-14, provisional).
+///
+/// Zero, the most restrictive value: no ADR states a price, and a positive one
+/// would be an invented number that moves source selection. At zero every
+/// [`net_score`] is zero, so no source is promoted on a priced gain; the owner
+/// may replace the figure, and callers pass the price in rather than reading
+/// this constant inside the arithmetic.
+pub const PRICE_OF_INFORMATION_PER_IC: Decimal = Decimal::ZERO;
+
+/// What a source costs and how late it arrives, read from its manifest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEconomics {
+    monthly_cost: Decimal,
+    publication_delay_ms: u64,
+    horizon_ms: u64,
+}
+
+impl SourceEconomics {
+    /// `requests_per_month` is the volume the cost is priced at, by
+    /// [`SourceCost::monthly_cost_at`]. `horizon_ms` is the interval the
+    /// signal is meant to anticipate; a delay is judged against it, so a
+    /// source late by a fraction of the horizon loses that fraction and one
+    /// late by many horizons loses nearly all. A zero horizon is refused: a
+    /// discount over no interval is a division by nothing, not a free pass.
+    pub fn new(
+        cost: &SourceCost,
+        requests_per_month: u64,
+        publication_delay_ms: u64,
+        horizon_ms: u64,
+    ) -> Result<Self> {
+        if horizon_ms == 0 {
+            return Err(Error::invalid(
+                "a delay discount needs the horizon the signal anticipates; zero is not one",
+            ));
+        }
+        Ok(Self {
+            monthly_cost: cost.monthly_cost_at(requests_per_month)?,
+            publication_delay_ms,
+            horizon_ms,
+        })
+    }
+
+    pub fn monthly_cost(&self) -> Decimal {
+        self.monthly_cost
+    }
+
+    /// `horizon / (horizon + delay)`, in `(0, 1]`; 1 for a source with no delay.
+    fn delay_discount(&self) -> Result<Decimal> {
+        // Statistics cross to money here, once: a ratio of two integers.
+        let horizon = self.horizon_ms as f64;
+        let ratio = horizon / (horizon + self.publication_delay_ms as f64);
+        Decimal::from_f64(ratio)
+            .ok_or_else(|| Error::numeric("the delay discount is not a finite number"))
+    }
+}
+
+/// A source's gross value net of its delay and its cost, floored at zero.
+///
+/// Gross is the new information the source carried that then anticipated the
+/// outcome, `incremental_gain * max(realised_contribution, 0)`, priced at
+/// `price_per_ic`. That is discounted by the delay and the monthly cost is
+/// subtracted. A duplicate (gain near zero) scores near zero, a late source
+/// loses value in proportion to its delay and a costly one by its cost. The
+/// floor is deliberate: a source is never scored below nothing, so a negative
+/// figure cannot be read as a reason to short it. Refuses a negative price.
+pub fn net_score(
+    alpha: &SourceAlpha,
+    economics: &SourceEconomics,
+    price_per_ic: Decimal,
+) -> Result<Decimal> {
+    if price_per_ic.is_negative() {
+        return Err(Error::invalid(
+            "a negative price of information would reward a source for being useless",
+        ));
+    }
+    let gross = alpha.incremental_gain * alpha.realised_contribution.max(0.0);
+    let gross = Decimal::from_f64(gross)
+        .ok_or_else(|| Error::numeric("the gross score is not a finite number"))?;
+    let overflow = || Error::numeric("net score overflowed");
+    let priced = gross.checked_mul(price_per_ic).ok_or_else(overflow)?;
+    let discounted = priced
+        .checked_mul(economics.delay_discount()?)
+        .ok_or_else(overflow)?;
+    let net = discounted
+        .checked_sub(economics.monthly_cost)
+        .ok_or_else(overflow)?;
+    Ok(net.max(Decimal::ZERO))
 }

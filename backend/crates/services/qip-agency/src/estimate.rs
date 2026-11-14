@@ -573,6 +573,64 @@ pub fn backdoor_adjusted(
     })
 }
 
+/// R12-MODEL-4013: [`backdoor_adjusted`] per segment, so the effect is
+/// reported per entity group, audience, market or horizon rather than as the
+/// one pooled figure that hides a segment where the action does harm.
+///
+/// `segments` maps a segment name to the row indices of the units in it. The
+/// identification check does not depend on the rows, so a design that leaves
+/// a back-door path open abstains for every segment at once, with the reason
+/// and no number. An empty segment, or an index beyond the observed units, is
+/// refused rather than dropped: a segment silently shrunk reports an effect
+/// over units nobody named.
+#[allow(clippy::too_many_arguments)] // the design, the columns and the segmentation are separate facts
+pub fn backdoor_adjusted_by_segment(
+    model: &StructuralModel,
+    treatment_variable: &str,
+    outcome_variable: &str,
+    covariates: &BTreeMap<String, Vec<f64>>,
+    treatment: &[f64],
+    outcome: &[f64],
+    prior_sd: f64,
+    segments: &BTreeMap<String, Vec<usize>>,
+) -> Result<BTreeMap<String, Estimate>, Error> {
+    if segments.is_empty() {
+        return Err(Error::invalid(
+            "an effect is estimated per segment over one segment or more",
+        ));
+    }
+    let n = outcome.len();
+    if treatment.len() != n || covariates.values().any(|column| column.len() != n) {
+        return Err(Error::invalid(
+            "treatment and every covariate column must be observed on the same units as the outcome",
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for (name, rows) in segments {
+        if rows.is_empty() || rows.iter().any(|&i| i >= n) {
+            return Err(Error::invalid(format!(
+                "segment `{name}` is empty or names a unit that was not observed"
+            )));
+        }
+        let pick = |column: &[f64]| rows.iter().map(|&i| column[i]).collect::<Vec<f64>>();
+        let sub: BTreeMap<String, Vec<f64>> = covariates
+            .iter()
+            .map(|(k, column)| (k.clone(), pick(column)))
+            .collect();
+        let estimate = backdoor_adjusted(
+            model,
+            treatment_variable,
+            outcome_variable,
+            &sub,
+            &pick(treatment),
+            &pick(outcome),
+            prior_sd,
+        )?;
+        out.insert(name.clone(), estimate);
+    }
+    Ok(out)
+}
+
 /// A Bayesian linear causal model, `y = a + tau d + beta x + noise`, with an
 /// independent `Normal(0, prior_sd^2)` prior on `tau` and on every `beta`
 /// and a flat prior on the intercept. The effect is the posterior mean of

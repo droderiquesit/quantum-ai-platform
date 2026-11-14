@@ -2058,6 +2058,31 @@ impl DistilledModelContract {
         }
         Ok(())
     }
+
+    /// Refuse a model whose stated memory or latency exceeds the ceilings
+    /// the receiving runtime can honour.
+    ///
+    /// Prevents a model sized for the training stack being admitted by a
+    /// bounded lane that would then overrun its memory or its time slice:
+    /// `validate` only proves the bounds are self-consistent, not that
+    /// they fit the runtime. Ceilings are the caller's, never defaulted
+    /// here, and an excess is refused rather than clamped.
+    pub fn validate_within(&self, max_memory_bytes: u64, max_latency_micros: u64) -> Result<()> {
+        self.validate()?;
+        if self.memory_bytes > max_memory_bytes {
+            return Err(Error::denied(format!(
+                "distilled model `{}` needs {} bytes; the runtime ceiling is {max_memory_bytes}",
+                self.name, self.memory_bytes
+            )));
+        }
+        if self.latency_micros > max_latency_micros {
+            return Err(Error::denied(format!(
+                "distilled model `{}` needs {} microseconds; the runtime ceiling is {max_latency_micros}",
+                self.name, self.latency_micros
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

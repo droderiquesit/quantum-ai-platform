@@ -140,11 +140,13 @@ pub mod clock_precision;
 pub mod conformal;
 pub mod dataset;
 pub mod distill;
+pub mod ensemble;
 pub mod estimators;
 pub mod job;
 pub mod labels;
 pub mod local;
 pub mod microstructure;
+pub mod representation;
 pub mod serve;
 pub mod store;
 pub mod vertex;
@@ -153,6 +155,7 @@ pub use cadence::{AuthorisedUpdate, TrainingCadence, UpdatePayload, UpdateScope}
 pub use conformal::ConformalInterval;
 pub use dataset::TrainingDataset;
 pub use distill::{Distillation, FidelityPolicy, FidelityReport, StudentForm, distil};
+pub use ensemble::Ensemble;
 pub use job::{
     Capacity, DEFAULT_QUEUE, JobPriority, JobScheduling, JobState, LocalTrainingProvider,
     QueueQuotas, TrainingArtifact, TrainingJob, TrainingProvider, TrainingSpec, run_to_completion,

@@ -281,6 +281,27 @@ resource "google_storage_bucket" "artifacts" {
   encryption {
     default_kms_key_name = google_kms_crypto_key.archive[0].id
   }
+
+  # Retention is set, not absent (R12-DATA-7013). Unlocked on purpose: it
+  # stops an operator deleting a fresh artifact by hand, and an owner can
+  # still lengthen or lift it; a locked policy cannot be undone.
+  retention_policy {
+    retention_period = 30 * 24 * 60 * 60
+    is_locked        = false
+  }
+
+  # Colder with age and never deleted: a model card names an artifact and a
+  # version, so a Delete rule here would turn a card into a record of
+  # something that no longer exists.
+  lifecycle_rule {
+    condition {
+      age = 90
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "NEARLINE"
+    }
+  }
 }
 
 # The regional segment store: sealed tick and internal replay segments and

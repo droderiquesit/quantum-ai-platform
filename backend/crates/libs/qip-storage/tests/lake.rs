@@ -340,3 +340,33 @@ fn a_crash_while_writing_raw_bytes_is_repaired_by_the_retry_not_sealed_without_t
     assert_eq!(store.inner.get(&retried.key)?, Some(b"lines".to_vec()));
     Ok(())
 }
+
+#[test]
+fn the_lake_reads_back_the_raw_bytes_it_sealed_and_refuses_a_missing_or_altered_slot() -> Result<()>
+{
+    let store = MemoryBlobStore::new();
+    let lake = Lake::new(&store);
+    let raw = b"8=FIX.4.4|35=W|".to_vec();
+    let kept = lake.write_segment(
+        &part("MSFT", ent("raw-ok", true))?,
+        "seg-raw",
+        b"canonical".to_vec(),
+        Some(raw.clone()),
+    )?;
+    assert!(kept.raw_key.is_some(), "premise: raw was retained");
+    assert_eq!(lake.read_raw(&kept)?, raw);
+
+    let denied = lake.write_segment(
+        &part("AAPL", ent("no-raw", false))?,
+        "seg-none",
+        b"canonical".to_vec(),
+        Some(raw.clone()),
+    )?;
+    assert!(denied.raw_key.is_none(), "premise: no raw slot written");
+    assert!(lake.read_raw(&denied).is_err());
+
+    let mut altered = kept.clone();
+    altered.raw_sha256 = Some(sha256_hex(b"something else"));
+    assert!(lake.read_raw(&altered).is_err());
+    Ok(())
+}

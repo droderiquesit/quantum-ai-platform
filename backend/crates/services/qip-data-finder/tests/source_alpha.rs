@@ -6,11 +6,13 @@
 
 mod common;
 
-use qip_core::Timestamp;
 use qip_core::error::Result;
+use qip_core::{Currency, Decimal, Timestamp};
+use qip_data_finder::quality::SourceCost;
 use qip_data_finder::source_alpha::{
-    HISTORY_BOUND, SourceAlphaHistory, incremental_information_gain,
-    incremental_information_gain_over, realised_contribution,
+    HISTORY_BOUND, PRICE_OF_INFORMATION_PER_IC, SourceAlpha, SourceAlphaHistory, SourceEconomics,
+    incremental_information_gain, incremental_information_gain_over, net_score,
+    realised_contribution,
 };
 
 /// A deterministic pseudo-random series in `[-1, 1)`, so the replay is the
@@ -213,5 +215,99 @@ fn a_leading_source_outscores_a_lagging_one_on_timeliness() -> Result<()> {
         lagging < beta,
         "a measured lag did not lower the lagging source's timeliness"
     );
+    Ok(())
+}
+
+fn alpha(gain: f64, contribution: f64) -> SourceAlpha {
+    SourceAlpha {
+        at: Timestamp::from_secs(1),
+        incremental_gain: gain,
+        realised_contribution: contribution,
+    }
+}
+
+fn economics(monthly_fee: i64, delay_ms: u64) -> Result<SourceEconomics> {
+    let cost = SourceCost::new(
+        Decimal::from_int(monthly_fee),
+        Decimal::ZERO,
+        0,
+        Currency::USD,
+    )?;
+    SourceEconomics::new(&cost, 0, delay_ms, 1_000)
+}
+
+/// R12-DATA-6006, owner decision 36: with the provisional price of zero no
+/// source earns a net score, however informative, so none is promoted on a
+/// priced gain. Mutation: replace the constant with `Decimal::ONE` and the
+/// assertion on the constant fails.
+#[test]
+fn at_the_provisional_price_of_zero_no_source_earns_a_net_score() -> Result<()> {
+    assert!(PRICE_OF_INFORMATION_PER_IC.is_zero());
+    let perfect = alpha(1.0, 1.0);
+    assert_eq!(
+        net_score(&perfect, &economics(0, 0)?, PRICE_OF_INFORMATION_PER_IC)?,
+        Decimal::ZERO
+    );
+    Ok(())
+}
+
+/// Mutation: drop the `incremental_gain *` factor in `net_score` and the
+/// duplicate scores as much as the informative source.
+#[test]
+fn a_duplicate_source_scores_near_zero_net_and_an_informative_one_scores_positive() -> Result<()> {
+    let price = Decimal::from_int(100);
+    let free = economics(0, 0)?;
+    let informative = net_score(&alpha(0.9, 0.8), &free, price)?;
+    assert!(
+        informative > Decimal::from_int(60),
+        "premise: {informative:?}"
+    );
+    let duplicate = net_score(&alpha(0.0, 0.8), &free, price)?;
+    assert!(duplicate < Decimal::from_int(1), "{duplicate:?}");
+    Ok(())
+}
+
+/// Mutation: skip the `delay_discount` multiplication and the late source
+/// scores the same as the prompt one.
+#[test]
+fn a_late_source_scores_less_than_the_same_source_on_time() -> Result<()> {
+    let price = Decimal::from_int(100);
+    let signal = alpha(0.9, 0.8);
+    let on_time = net_score(&signal, &economics(0, 0)?, price)?;
+    let late = net_score(&signal, &economics(0, 1_000)?, price)?;
+    let very_late = net_score(&signal, &economics(0, 99_000)?, price)?;
+    assert!(on_time.is_positive(), "premise: {on_time:?}");
+    // A delay equal to the horizon halves the value.
+    let half = on_time
+        .checked_div(Decimal::from_int(2))
+        .unwrap_or_default();
+    assert!(
+        (late.checked_sub(half).unwrap_or_default()).abs()
+            < Decimal::from_scaled(1, 3).unwrap_or_default()
+    );
+    assert!(very_late < late, "{very_late:?} {late:?}");
+    Ok(())
+}
+
+/// Mutation: skip the `checked_sub(monthly_cost)` and the costly source
+/// scores the same as the free one.
+#[test]
+fn a_costly_source_scores_less_than_a_free_one_and_never_below_zero() -> Result<()> {
+    let price = Decimal::from_int(100);
+    let signal = alpha(0.9, 0.8);
+    let free = net_score(&signal, &economics(0, 0)?, price)?;
+    let costly = net_score(&signal, &economics(30, 0)?, price)?;
+    assert!(free.is_positive(), "premise: {free:?}");
+    assert!(costly < free, "{costly:?} {free:?}");
+    let ruinous = net_score(&signal, &economics(1_000_000, 0)?, price)?;
+    assert_eq!(ruinous, Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
+fn a_negative_price_and_a_zero_horizon_are_refused() -> Result<()> {
+    assert!(net_score(&alpha(0.5, 0.5), &economics(0, 0)?, Decimal::NEG_ONE).is_err());
+    let cost = SourceCost::free(Currency::USD);
+    assert!(SourceEconomics::new(&cost, 0, 0, 0).is_err());
     Ok(())
 }

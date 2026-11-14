@@ -488,3 +488,81 @@ fn a_broken_cycle_is_unwound_and_hedged_end_to_end() -> Result<()> {
     );
     Ok(())
 }
+
+/// ADR 0209 closes the finding the first test records: the failed pass's
+/// report is kept by the cell, so the orders sent before the refusal ride the
+/// delta and the centre settles the leftover leg instead of finding its fill
+/// unsent. Without this the centre would keep disagreeing with a cell that
+/// had told it everything.
+///
+/// Mutation: drop the `failed_report` store in `Cell::work`'s error arm and
+/// the premise that a report is waiting fails; ship the delta from a default
+/// report and the unsent-fill assertion fails.
+#[test]
+fn the_failed_passs_kept_report_lets_the_centre_settle_the_leftover_leg() -> Result<()> {
+    let mut cell = cell()?;
+    let mut gateway = BreakingGateway {
+        refuse_attempt: 2,
+        fills_through: 1,
+        ..BreakingGateway::default()
+    };
+    assert!(
+        cell.work(t(10), &mut gateway).is_err(),
+        "premise: the refused second leg did not fail the pass"
+    );
+    assert!(
+        cell.confirm_execution_reports(&mut gateway, t(11))
+            .is_empty(),
+        "premise: nothing was left to confirm after the break"
+    );
+    let confirmed = cell.fills().to_vec();
+    assert_eq!(confirmed.len(), 1, "{confirmed:?}");
+    let leg = gateway.placed[0].clone();
+
+    let failed = cell
+        .take_failed_report()
+        .ok_or_else(|| Error::not_found("the failed pass's report was not kept"))?;
+    assert!(
+        failed.orders.iter().any(|order| order.order_id == leg.0),
+        "the sent leg is not on the kept report: {:?}",
+        failed.orders
+    );
+    let report = WorkReport {
+        fills: confirmed,
+        ..failed
+    };
+    let delta = cell.state_delta(&report, t(11));
+    assert!(
+        delta.orders.iter().any(|order| order.order_id == leg.0),
+        "the delta does not carry the sent leg: {:?}",
+        delta.orders
+    );
+    let decoded = qip_mesh::delta::decode_cell_delta(&delta.to_frame()?)?;
+
+    let mut platform = platform()?;
+    let cell_report = CellReport::new(decoded.standing.cell.clone(), decoded.standing.at)
+        .with_region(decoded.standing.region.clone())
+        .with_orders(decoded.interval.orders.clone())
+        .with_fills(decoded.interval.fills.clone())
+        .with_advisory_positions(
+            decoded.standing.positions.clone(),
+            decoded.standing.positions_as_of,
+        );
+    let ingestion = platform.ingest_cell_report(cell_report, t(12))?;
+    assert!(
+        !ingestion
+            .settlement
+            .breaks
+            .iter()
+            .any(|found| found.origin == BreakOrigin::UnsentFill),
+        "the fill was still found unsent: {:?}",
+        ingestion.settlement.breaks
+    );
+    assert_eq!(ingestion.settlement.fills_settled, 1);
+    assert!(
+        ingestion.advisory_disagreements.is_empty(),
+        "the settled book still disagrees with the cell: {:?}",
+        ingestion.advisory_disagreements
+    );
+    Ok(())
+}

@@ -1171,3 +1171,30 @@ fn a_decomposition_that_does_not_add_up_is_refused() -> Result<()> {
     assert!(error.message().contains("nearly adds up"), "{error}");
     Ok(())
 }
+
+#[test]
+fn a_decision_view_cannot_read_a_same_day_bar_before_its_close() -> Result<()> {
+    // The requirement's named unit proof. A daily bar stamped with day 3's
+    // open closes at day 4; a view taken at noon on day 3 that returned it
+    // would be a full session of look-ahead, which is what keying bars on
+    // open time instead of close time produces.
+    let subject = object("obj-alpha");
+    let mut market = market_of(rising(&subject))?;
+
+    // Premise: bar 3 (open 106, close 107) exists, and is readable once its
+    // session has ended, so the intraday refusal below is not an empty market.
+    let after_close = market.view_at(day(4))?;
+    assert_eq!(
+        after_close.last_close(&subject),
+        Some(Decimal::from_int(107))
+    );
+
+    let intraday = market.view_at(day(3).saturating_add(Duration::from_hours(12)))?;
+    assert_eq!(
+        intraday.last_close(&subject),
+        Some(Decimal::from_int(105)),
+        "a bar whose session had not ended was visible intraday"
+    );
+    assert_eq!(intraday.as_of(), day(3));
+    Ok(())
+}

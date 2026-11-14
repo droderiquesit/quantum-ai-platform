@@ -101,6 +101,10 @@ locals {
     # A new project gets no `default` VPC with its permissive firewall rules;
     # the platform root builds its own network (modules/network).
     "compute.skipDefaultNetworkCreation" = "no default VPC appears in a new project"
+    # Every VM is a Shielded VM (R12-GOV-10004). The platform root sets the same
+    # on its project, where a project owner can delete it; set here, no
+    # project-level actor can remove it.
+    "compute.requireShieldedVm" = "no VM can be created from an image or shape that cannot be shielded"
   } : {}
 }
 
@@ -129,6 +133,26 @@ resource "google_org_policy_policy" "vm_external_ip" {
   spec {
     rules {
       deny_all = "TRUE"
+    }
+  }
+}
+
+# Resource locations (R12-GOV-10004, owner decision 36). A resource created
+# outside the allowed groups is refused at creation, so data cannot land in a
+# jurisdiction nobody reviewed. The default is the most restrictive set that
+# still admits the multi-region US archive bucket; the platform's single
+# regions all sit inside one of the two groups.
+resource "google_org_policy_policy" "resource_locations" {
+  count = local.policies_applied ? 1 : 0
+
+  name   = "folders/${local.folder_id}/policies/gcp.resourceLocations"
+  parent = "folders/${local.folder_id}"
+
+  spec {
+    rules {
+      values {
+        allowed_values = var.allowed_resource_locations
+      }
     }
   }
 }

@@ -740,9 +740,7 @@ pub fn run_with(
         // between cycles for the same reason the archive writes there: a
         // round's backtests are work the cycle's budget never promised.
         if let Some(engine) = evolution.as_deref_mut() {
-            if let Some(desk) = loops.tick.as_deref() {
-                engine.set_priors(desk.posteriors().clone());
-            }
+            hand_posteriors(engine, loops.tick.as_deref());
             // Held rounds first, on the cycle they were due, so each runs
             // exactly as it would have.
             for work in &drained {
@@ -1141,6 +1139,19 @@ pub fn flush(
     })
 }
 
+/// Hand the tick desk's last fused posteriors to the engine before its turn
+/// (R12-TICK-2085). Pulled out of the run loop so a test can prove the
+/// hand-off: with it deleted the engine searched at the neutral size on every
+/// round and nothing failed. A desk absent leaves the engine's priors alone.
+fn hand_posteriors(
+    engine: &mut crate::evolution::EvolutionEngine,
+    desk: Option<&crate::tick_desk::TickDesk>,
+) {
+    if let Some(desk) = desk {
+        engine.set_priors(desk.posteriors().clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1150,6 +1161,46 @@ mod tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
     use qip_storage::MemoryKeyValueStore;
+
+    /// R12-TICK-2085: the run loop's hand-off replaces the engine's priors
+    /// with the desk's posteriors, and leaves them alone when there is no
+    /// desk. Mutation: delete the `set_priors` call in `hand_posteriors` and
+    /// the stale prior survives the first hand-off.
+    #[test]
+    fn the_tick_desks_posteriors_replace_the_engines_priors_at_the_hand_off() {
+        let mut engine = crate::evolution::EvolutionEngine::new(
+            crate::evolution::EvolutionConfig::default(),
+            Box::new(qip_market_ingestion::synthetic::SyntheticEnvironment::demo(
+                start(),
+                qip_market_ingestion::synthetic::EnvironmentConfig::default(),
+            )),
+            7,
+            Universe::new(),
+        )
+        .expect("the engine assembles");
+        let desk = crate::tick_desk::TickDesk::new(
+            crate::tick_desk::TickDeskConfig::off(),
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+        );
+        assert!(
+            desk.posteriors().is_empty(),
+            "the premise: a fresh desk believes nothing"
+        );
+
+        engine.set_priors(std::collections::BTreeMap::from([(
+            "STALE".to_string(),
+            1.0,
+        )]));
+        hand_posteriors(&mut engine, None);
+        assert_eq!(engine.priors().len(), 1, "no desk leaves the priors alone");
+
+        hand_posteriors(&mut engine, Some(&desk));
+        assert!(
+            engine.priors().is_empty(),
+            "the desk's posteriors replaced the stale prior"
+        );
+    }
 
     fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)

@@ -1423,7 +1423,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:769 cycle_whitelist",
       "backend/crates/edge/qip-edge/src/reservation.rs:121"
     ],
-    "gap": "Central template discovery feeding cycle_whitelist; inventory prepositioning.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Owner ruling is ADR_THEN_IMPLEMENT: ADR must be claimed first (docs/adr is protected). Inventory prepositioning and capital grants for named regions are still unbuilt and span qip-contracts, kernel plane and edge. Whitelist derivation exists (cycle_whitelist_for); no change made.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1434,7 +1434,7 @@
     "verification": "kernel test producing a whitelist from discovery",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The centre discovers templates only inside what the operator signed. Slot 8 carries the operator's conversions narrowed to the cycles the centre finds over them, so stopping discovery empties it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered."
+    "notes": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The centre discovers templates only inside what the operator signed. Slot 8 carries the operator's conversions narrowed to the cycles the centre finds over them, so stopping discovery empties it. Handed to lane L5b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: Discovery proposes and the operator permits: a cycle outside the whitelist is reported and never sent, the centre's whitelist is the operator's markets narrowed to the cycles it discovers, and an inventory target may only be lowered. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-MESH-5060",
@@ -1721,9 +1721,11 @@
     "current": "RestOrderEntryAdapter declares no native extension (VenueAdapter::native_extensions default, empty) and submit_native refuses an instruction it did not declare before any request is built, never downgrading it to a plain order; the clause each adapter exposes its native extension holds with a truthfully empty declaration, pinned by a test. No DEX adapter exists to extend (ADR 0155 section 20).",
     "evidence": [
       "backend/crates/services/qip-brokers/tests/rest.rs::a_generic_rest_adapter_declares_no_native_extension_and_refuses_one_rather_than_sending_it_plain",
-      "backend/crates/services/qip-brokers/src/adapter.rs::VenueAdapter::submit_native"
+      "backend/crates/services/qip-brokers/src/adapter.rs::VenueAdapter::submit_native",
+      "backend/crates/services/qip-brokers/tests/exchange.rs::a_venues_native_post_only_order_reaches_it_through_a_declared_extension_and_keeps_its_native_meaning",
+      "backend/crates/services/qip-brokers/tests/exchange.rs::a_post_only_instruction_on_an_order_with_no_price_is_refused_rather_than_sent_as_a_market_order"
     ],
-    "gap": "2026-10-24: requirement is adapters exposing a common contract while retaining venue-native features; the named test proves only that the generic REST adapter declares none and refuses one, submit_native is called by no production code, and the single declared extension (SimulatedExchange post_only) is not covered by the named test",
+    "gap": "2026-11-14 (independent read-only reader, no test run): The native path is not reached in production. Grep for submit_native and native_extensions outside tests finds only the trait (adapter.rs:495, 530) and the SimulatedExchange impl (exchange.rs:1293, 1305), with no composition-root or cycle caller. The only declared extension is SimulatedExchange post_only. RestOrderEntryAdapter declares none, and no DEX adapter exists. Tests exercise the seam directly, not through the cycle. The 2026-10-24 register gap (no production caller) is still open. The test coverage claim holds for post_only, but that does not close the production-reach clause.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1734,7 +1736,7 @@
     "verification": "cargo test -p qip-brokers --test rest",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: declaring post_only on RestOrderEntryAdapter and routing submit_native_order to submit_order failed the empty-declaration premise assertion. AUDIT-2 2026-10-24: regraded, requirement is adapters exposing a common contract while retaining venue-native features; the named test proves only that the generic REST adapter declares none and refuses one, submit_native is called by no production code, and the single declared extension (SimulatedExchange post_only) is not covered by the named test"
+    "notes": "2026-10-24 ADR 0155 lane. Mutation fired: declaring post_only on RestOrderEntryAdapter and routing submit_native_order to submit_order failed the empty-declaration premise assertion. AUDIT-2 2026-10-24: regraded, requirement is adapters exposing a common contract while retaining venue-native features; the named test proves only that the generic REST adapter declares none and refuses one, submit_native is called by no production code, and the single declared extension (SimulatedExchange post_only) is not covered by the named test 2026-11-14: an independent reader tried to refute that this row is fully met and could not be satisfied (CODE). submit_native has no production caller (only trait and SimulatedExchange impl). The only extension is simulated post_only, so the contract is tested but not reached by any composition root or the cycle. Row stays PARTIAL."
   },
   {
     "id": "R12-EXEC-5072",
@@ -2133,9 +2135,12 @@
       "backend/crates/services/qip-prediction/tests/access.rs:106",
       "backend/crates/services/qip-prediction/tests/access.rs:121",
       "backend/crates/services/qip-prediction/tests/access.rs:141",
-      "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit"
+      "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit",
+      "backend/crates/services/qip-prediction/tests/access.rs::an_event_market_cannot_be_created_at_a_wagering_venue_though_its_jurisdiction_permits",
+      "backend/crates/services/qip-prediction/src/access.rs::AccessBook::admit_event_creation",
+      "an_event_market_cannot_be_created_at_a_wagering_venue_though_its_jurisdiction_permits"
     ],
-    "gap": "2026-10-24: The wagering/event path separation and the age and jurisdiction controls are real and mutation-checked but run only under a breadth plan no committed environment supplies. Closing: a committed environment sets QIP_DEEPBRAIN_BREADTH_PLAN with an event-market section, or the row is narrowed to the library. 2026-10-24 (AUDIT-5 verification): the guard is not on the only order path: the breadth plan's market_factory section creates event-contract markets and seeds resting order ladders (FactoryStage::install -> OrderManager::admit_ladder / MarketFactory::seed) and checks only admit_creation's jurisdiction, never policy.kind or entity eligibility. A factory venue recorded as Wagering gets event orders resting at it. The path is also behind QIP_DEEPBRAIN_BREADTH_PLAN, set by no committed environment. Closes when the seeding path calls the same admit as the order seams, with a test of the crossing.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Factory seeding path now refuses event markets at a non-Event venue (admit_event_creation, called in breadth.rs). Still open: no entity age/eligibility check on seeded ladders (factory has no entity); QIP_DEEPBRAIN_BREADTH_PLAN still set by no committed environment; no kernel-level test of the factory crossing; mutation not run (cannot compile).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2146,7 +2151,7 @@
     "verification": "cargo test -p qip-prediction --test access",
     "work_item": "",
     "size": "S",
-    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the wagering/event separation and age and jurisdiction controls run only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL"
+    "notes": "Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit). AUDIT-4: 2026-10-24 regraded, the wagering/event separation and age and jurisdiction controls run only under a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets.; AUDIT-5 proposed promoting this row; the mutation reproduced, but an independent skeptic refuted the promotion on the grounds now in `gap` (lanes/audit-5-verification-2026-10-24.md), so it stays PARTIAL 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-EVENT-5089",

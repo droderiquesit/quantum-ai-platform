@@ -270,6 +270,29 @@ pub struct ComputePlanFields {
     /// What checks a result before it is used (a feasibility checker, the
     /// objective re-evaluated classically).
     pub verifier: String,
+    /// The per-agent lines the plan was issued under (R12-AMBIENT-9034). At
+    /// least one: a plan that names no agent bounds none, and an agent
+    /// absent from the allocator's lines holds the restrictive default of
+    /// zero units and a zero basis-point weight ceiling.
+    pub agent_lines: Vec<AgentLine>,
+}
+
+/// One agent's stated line in a [`ComputePlan`]: the compute units it may be
+/// charged and the most model influence, in basis points, its record may
+/// carry. The failure it prevents: a plan whose single budget bounds the
+/// whole round while one well-reputed agent takes all of it, with no figure
+/// anywhere an auditor could read the agent's own bound from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentLine {
+    /// The agent's reputation cell, written `domain/horizon/regime`.
+    pub agent: String,
+    /// Compute units across every resource, baseline included. Zero grants
+    /// the agent nothing.
+    pub budget: Decimal,
+    /// The most reputation weight, in basis points, the agent's bids may be
+    /// priced on. Zero admits no bid.
+    pub weight_ceiling_bp: u32,
 }
 
 /// The §24.9 hybrid compute plan. Built only through [`Validated::new`].
@@ -295,6 +318,27 @@ impl Contract for ComputePlanFields {
         named(c, "task", &self.task)?;
         named(c, "verifier", &self.verifier)?;
         positive(c, "budget", self.budget)?;
+        listed(c, "agent_lines", &self.agent_lines)?;
+        let mut agents = BTreeSet::new();
+        let mut line_total = Decimal::ZERO;
+        for line in &self.agent_lines {
+            named(c, "agent_lines.agent", &line.agent)?;
+            if !agents.insert(line.agent.as_str()) {
+                return refuse(c, format!("states agent `{}` twice", line.agent));
+            }
+            non_negative(c, "agent_lines.budget", line.budget)?;
+            basis_points(c, "agent_lines.weight_ceiling_bp", line.weight_ceiling_bp)?;
+            line_total = line_total.checked_add(line.budget).ok_or_else(|| {
+                qip_core::error::Error::numeric("a plan's agent budgets overflowed")
+            })?;
+        }
+        if self.budget > line_total {
+            return refuse(
+                c,
+                "spends more than its agent lines allow; a plan is bounded by what its agents were given, \
+                 so raise a line or shrink the plan",
+            );
+        }
         listed(c, "candidates", &self.candidates)?;
         let mut ids = BTreeSet::new();
         for k in &self.candidates {

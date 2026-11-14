@@ -288,6 +288,33 @@ impl<'a> Lake<'a> {
         Ok(canonical)
     }
 
+    /// The raw venue bytes `record` names, checked against the SHA-256 kept
+    /// when they were captured.
+    ///
+    /// Without a reader the raw slot was written and never read back by the
+    /// lake itself, so "re-materialise byte-for-byte" rested on tests reading
+    /// object keys directly. A record with no raw key is refused by name: the
+    /// entitlement did not permit retention, and an empty answer would read as
+    /// a captured session that held no bytes.
+    pub fn read_raw(&self, record: &SegmentRecord) -> Result<Vec<u8>> {
+        let key = record.raw_key.as_deref().ok_or_else(|| {
+            Error::denied(format!(
+                "segment {} holds no raw bytes; its entitlement did not permit raw retention, so read its canonical bytes instead",
+                record.key
+            ))
+        })?;
+        let raw = self
+            .store
+            .get(key)?
+            .ok_or_else(|| Error::not_found(format!("raw slot {key} is missing")))?;
+        match record.raw_sha256.as_deref() {
+            Some(expected) if sha256_hex(&raw) == expected => Ok(raw),
+            _ => Err(Error::invalid(format!(
+                "raw slot {key} fails its checksum; it is not the capture that was sealed"
+            ))),
+        }
+    }
+
     /// Seal one segment. A second write to the same segment id is refused.
     pub fn write_segment(
         &self,

@@ -401,8 +401,46 @@ run "a_zone_egressing_from_this_region_is_given_a_nat" {
   }
 
   assert {
-    condition     = google_compute_router_nat.egress[0].nat_ip_allocate_option == "MANUAL_ONLY" && length(google_compute_address.nat) == 1
+    condition     = google_compute_router_nat.egress["ingestion-discovery"].nat_ip_allocate_option == "MANUAL_ONLY" && length(google_compute_address.nat) == 1
     error_message = "the zone NAT draws ephemeral addresses; a counterparty cannot allow-list an outbound address that Google may replace"
+  }
+}
+
+run "two_egress_zones_leave_from_two_addresses_and_two_gateways" {
+  command = plan
+
+  variables {
+    region = "us-east4"
+    zones = {
+      "ingestion-discovery" = { region = "us-east4", subnet_cidr = "10.90.2.0/24" }
+      "optimisation"        = { region = "us-east4", subnet_cidr = "10.90.9.0/24" }
+    }
+    external_egress = {
+      "reference-data-feed" = {
+        zone    = "ingestion-discovery"
+        cidr    = "203.0.113.0/24"
+        port    = 443
+        purpose = "information-source"
+        note    = "a crawler destination"
+      }
+      "quantum-runtime" = {
+        zone    = "optimisation"
+        cidr    = "198.51.100.0/24"
+        port    = 443
+        purpose = "ibm-quantum"
+        note    = "a second zone on the same network, to prove the two zones do not share an outbound address"
+      }
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_router_nat.egress) == 2 && length(google_compute_address.nat) == 2
+    error_message = "two zones declared egress and did not each get a gateway and a reserved address; a shared pair makes crawler and quantum traffic one outbound identity"
+  }
+
+  assert {
+    condition     = contains(keys(google_compute_address.nat), "ingestion-discovery") && contains(keys(google_compute_address.nat), "optimisation")
+    error_message = "the egress addresses are not keyed by the zone that owns them"
   }
 }
 
@@ -450,7 +488,7 @@ run "a_zone_egressing_from_another_region_is_refused" {
     }
   }
 
-  expect_failures = [google_compute_router_nat.egress[0]]
+  expect_failures = [google_compute_router_nat.egress["ingestion-discovery"]]
 }
 
 # --- the identities placed in a zone ----------------------------------------

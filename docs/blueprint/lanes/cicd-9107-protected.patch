@@ -1,0 +1,84 @@
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -1501,6 +1501,80 @@
+             echo "nothing and says so (ADR 0036)."
+           } >> "$GITHUB_STEP_SUMMARY"
+ 
++      # Publish what this commit built to the two repositories that exist for
++      # it (R12 CICD-9107, owner decision 36 of 2026-11-14).
++      #
++      # `modules/registry` declares `qip-rust-<env>` and `qip-deployments-<env>`
++      # with a writer grant for this job's account, and until this step nothing
++      # wrote to either: two repositories claimed to hold the source a build is
++      # reproduced from and the bundle a deployment is reproduced from, and
++      # both were empty. Publishing is the non-destructive branch; removing
++      # them is a destructive apply and was ruled out.
++      #
++      # By digest: the bundle names every image as `registry/binary@sha256:…`,
++      # read back from the registry rather than from the build, and each file
++      # is hashed before upload and the hash written to the summary, so what
++      # was published is attributable to bytes and not to a tag. Both files
++      # are deterministic for a commit (sorted lines, no timestamp, `gzip -n`),
++      # which is what makes the skip below sound: the version is the commit,
++      # an existing version is this commit's earlier publish, and a re-run or
++      # a rollback dispatch must not fail on a repository that refuses to
++      # replace a version.
++      - name: publish the source and the deployment bundle for this commit
++        env:
++          GCP_PROJECT: ${{ steps.identity.outputs.project }}
++          GCP_REGION: ${{ steps.identity.outputs.region }}
++          BUILD_REGISTRY: ${{ steps.identity.outputs.registry }}
++          PAIRS: ${{ steps.catalogue.outputs.pairs }}
++        run: |
++          set -euo pipefail
++          out="$(mktemp -d)"
++          bundle="${out}/deployment-bundle.txt"
++          source_archive="${out}/qip-backend-source.tar.gz"
++          {
++            echo "environment ${TARGET_ENVIRONMENT}"
++            echo "commit ${DEPLOY_SHA}"
++          } > "$bundle"
++          for pair in $(printf '%s\n' $PAIRS | LC_ALL=C sort); do
++            name="${pair%%=*}"
++            binary="${pair#*=}"
++            digest=$(gcloud artifacts docker images describe \
++              "${BUILD_REGISTRY}/${binary}:${DEPLOY_SHA}" \
++              --format='value(image_summary.digest)')
++            case "$digest" in
++              sha256:[0-9a-f]*) ;;
++              *)
++                echo "no digest for ${binary}:${DEPLOY_SHA} ('${digest}'); a bundle is not written from a tag." >&2
++                exit 1
++                ;;
++            esac
++            echo "${name} ${BUILD_REGISTRY}/${binary}@${digest}" >> "$bundle"
++          done
++          git archive --format=tar "$DEPLOY_SHA" backend | gzip -n > "$source_archive"
++
++          publish() {
++            repository="$1"; package="$2"; file="$3"
++            hash="$(sha256sum "$file" | cut -d' ' -f1)"
++            if gcloud artifacts versions describe "$DEPLOY_SHA" \
++                 --package="$package" --repository="$repository" \
++                 --location="$GCP_REGION" --project="$GCP_PROJECT" >/dev/null 2>&1; then
++              echo "${repository}/${package} already holds ${DEPLOY_SHA}; not republished."
++            else
++              gcloud artifacts generic upload \
++                --project="$GCP_PROJECT" --location="$GCP_REGION" \
++                --repository="$repository" --package="$package" \
++                --version="$DEPLOY_SHA" --source="$file"
++            fi
++            echo "| ${repository} | ${package} | ${DEPLOY_SHA} | \`sha256:${hash}\` |" >> "$GITHUB_STEP_SUMMARY"
++          }
++          {
++            echo
++            echo "| repository | package | version | file digest |"
++            echo "|---|---|---|---|"
++          } >> "$GITHUB_STEP_SUMMARY"
++          publish "qip-rust-${TARGET_ENVIRONMENT}" qip-backend-source "$source_archive"
++          publish "qip-deployments-${TARGET_ENVIRONMENT}" deployment-bundle "$bundle"
++
+       # The execution nodes: a rolling replacement under the group's own
+       # policy, for every group the environment has. None today — every
+       # environment's `execution_nodes` is empty — and the step says so

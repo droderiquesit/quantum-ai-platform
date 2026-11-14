@@ -159,9 +159,12 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/policy.rs:1392-1402 DistilledModelContract",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack",
-      "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs"
+      "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs",
+      "backend/crates/libs/qip-contracts/src/policy.rs DistilledModelContract::validate_within",
+      "backend/crates/libs/qip-contracts/tests/contracts.rs a_distilled_model_over_the_runtime_memory_or_latency_ceiling_is_refused",
+      "a_distilled_model_over_the_runtime_memory_or_latency_ceiling_is_refused"
     ],
-    "gap": "No export pipeline from a training run to a packaged artifact consumed by a deployed runtime. 2026-11-14 (wave580 t5-04, not built this batch): the in-tree pieces are a training run's distillate packed by qip_training::serve::pack_distilled, the kernel's release-pack gate (ADR 0480, qip-kernel/tests/microstructure_release.rs) and the cell compiler's worst-case-cost refusal (qip-acceptance/tests/model_reflex_evaluation.rs::a_model_whose_worst_case_cost_exceeds_the_reflex_budget_is_refused_at_compile). What remains in code: a distilled model's DistilledModelContract (memory_bytes, latency_micros) does not travel with the inline DistilledModel to the cell, so the reflex lane refuses on cost and never on memory or latency; and no composition root runs training-to-pack. What remains outside code: no runtime is deployed to consume a pack.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): DistilledModelContract::validate_within(max_memory, max_latency) now refuses out-of-bound memory/latency, but no cell/reflex lane calls it yet and the contract does not travel with the inline DistilledModel. No composition root runs training-to-pack. No runtime deployed to consume a pack.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -172,7 +175,7 @@
     "verification": "cargo test -p qip-acceptance --test model_reflex_evaluation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-LEDGER-7009",
@@ -273,9 +276,12 @@
       "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl:220 the_simulation_bucket_bounds_outputs_and_keeps_campaigns_and_manifests",
       "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:283 the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores",
       "infrastructure/terraform/modules/ai/main.tf:52 training bucket",
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs"
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs",
+      "infrastructure/terraform/modules/data/main.tf google_storage_bucket.artifacts retention_policy",
+      "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl the_model_artifact_bucket_holds_a_retention_and_never_deletes",
+      "the_model_artifact_bucket_holds_a_retention_and_never_deletes"
     ],
-    "gap": "enable_cloud_storage is false in every committed environment (owner switch), so no committed plan renders the bucket; the model-artifact bucket still carries no retention policy; and no deployed process writes a simulation output, campaign dataset or manifest to GCS (the integration half of the verification).",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): enable_cloud_storage is false in every committed environment (owner switch), so no committed plan renders the buckets. No deployed process writes a simulation output, campaign dataset or manifest to GCS (integration half). Retention period 30 days and NEARLINE at 90 days are owner-tunable choices.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -286,7 +292,7 @@
     "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 (lane L13): simulation bucket added and BUCKET_CLASSES states its class. Mutations, each restored byte-for-byte: outputs/ kept 900 days failed 'Simulation outputs must be deleted at 90 days'; the campaigns/ rule turned to Delete failed 'No lifecycle rule may delete a campaign dataset'; manifests/ renamed failed the acceptance test 'names no lifecycle class for manifests/'. The acceptance test's training branch was conditional on a bucket that lives in modules/ai, so before this it asserted nothing about modules/data. Owner ruling 2026-10-31, second pass (IMPLEMENT): The model-artifact bucket gets its retention now, in code. It gets an unlocked hold and colder storage with age, and no rule that deletes an artifact or a version a model card still names. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "2026-10-18 (lane L13): simulation bucket added and BUCKET_CLASSES states its class. Mutations, each restored byte-for-byte: outputs/ kept 900 days failed 'Simulation outputs must be deleted at 90 days'; the campaigns/ rule turned to Delete failed 'No lifecycle rule may delete a campaign dataset'; manifests/ renamed failed the acceptance test 'names no lifecycle class for manifests/'. The acceptance test's training branch was conditional on a bucket that lives in modules/ai, so before this it asserted nothing about modules/data. Owner ruling 2026-10-31, second pass (IMPLEMENT): The model-artifact bucket gets its retention now, in code. It gets an unlocked hold and colder storage with age, and no rule that deletes an artifact or a version a model card still names. Handed to lane L3 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-SEC-7014",
@@ -871,9 +877,13 @@
       "backend/crates/services/qip-streaming/src/event_fabric/mirror.rs::plan_copy",
       "backend/crates/services/qip-streaming/tests/event_fabric_mirror.rs::a_row_that_does_not_chain_to_the_last_copy_refuses_the_whole_plan",
       "backend/crates/services/qip-streaming/tests/event_fabric_mirror.rs::a_missing_source_offset_is_a_gap_and_the_rows_around_it_are_still_copied",
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:451"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:451",
+      "backend/crates/services/qip-streaming/tests/event_fabric_mirror.rs::a_checkpoint_at_offset_zero_naming_a_last_batch_is_refused",
+      "backend/crates/services/qip-streaming/tests/event_fabric_mirror.rs::an_empty_fetch_leaves_the_checkpoint_unchanged",
+      "a_checkpoint_at_offset_zero_naming_a_last_batch_is_refused",
+      "an_empty_fetch_leaves_the_checkpoint_unchanged"
     ],
-    "gap": "Remaining slices of ADR 0119 (the register said ADR 0120, which is the WebAuthn record): (1) the StreamPolicy Mirroring::Async arm, admitted only when a mirror exists to honour it; (2) the mirror role in qip-fabricd: mTLS client to the source fabric, producer into the region-qualified target stream that nothing else may write, and the Gap record journaled in the target; (3) the durable checkpoint in the target region's regional Spanner instance; (4) qip_fabric_mirror_lag_records and _seconds and the typed stale state a consumer reads past the stream's bound (R12-OBS-9148, R12-RES-7114); (5) replay from the source archive when the source no longer retains the records; (6) the two-fabricd local test and game day that kills the link. Deployment waits on a second execution region and a record superseding ADR 0035's 'one'. Corrected 2026-10-24.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Slices 2-6 of ADR 0119 remain: StreamPolicy Mirroring::Async arm; mirror role in qip-fabricd (mTLS, producer into region-qualified stream, Gap journal); durable Spanner checkpoint; lag metrics and stale state; archive replay; two-fabricd local test and game day. Deployment waits on a second region.",
     "implemented": false,
     "tested": true,
     "integrated": false,
@@ -884,7 +894,7 @@
     "verification": "cargo test -p qip-streaming --test event_fabric_mirror",
     "work_item": "",
     "size": "XL",
-    "notes": "Slice 1 only; the row stays PARTIAL. The core is deliberately free of sockets and clocks (ADR 0119 'Dependency direction'). Mutations that fired: dropping the duplicate branch, the committed-bound refusal, the gap push, the chain check, row.verify() and the ascending-order refusal each fail their test; a dot admitted in the region label fails the target-stream test. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0119 section 3 already decided this. The mirror is built and game-dayed now, on two fabricd processes on one host. Handed to lane L1b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Slice 1 only; the row stays PARTIAL. The core is deliberately free of sockets and clocks (ADR 0119 'Dependency direction'). Mutations that fired: dropping the duplicate branch, the committed-bound refusal, the gap push, the chain check, row.verify() and the ascending-order refusal each fail their test; a dot admitted in the region label fails the target-stream test. Owner ruling 2026-10-31, second pass (IMPLEMENT): ADR 0119 section 3 already decided this. The mirror is built and game-dayed now, on two fabricd processes on one host. Handed to lane L1b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-FABRIC-7039",
@@ -1314,7 +1324,7 @@
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:316-332 StreamPolicy::new refuses replication_factor != 1 (C2) and mirroring != None (C8)"
     ],
-    "gap": "Already decided by ADR 0119: Cross-region mirroring is decided: an in-tree asynchronous fabric-mirror consumer (ADR 0119, accepted 2026-10-11); the rows' 'C8 refuses mirroring' text is stale and what is left is the build and a second region to deploy into.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Asynchronous fabric-mirror consumer (ADR 0119) not built; StreamPolicy still refuses mirroring (C8). Needs the consumer, policy change, a non-blocking-produce test with link cut, and a second region to deploy into.",
     "implemented": false,
     "tested": true,
     "integrated": false,
@@ -1327,7 +1337,7 @@
     "verification": "mirror game day",
     "work_item": "",
     "size": "L",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision E01; gap before it: Mirror not built."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision E01; gap before it: Mirror not built. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-FABRIC-7058",
@@ -1454,9 +1464,11 @@
       "backend/crates/services/qip-reasoning-engine/src/engine.rs::ReasoningEngine::belief_clock",
       "backend/crates/runtime/qip-kernel/src/platform.rs reasoning.belief_clock().last_updated()",
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::forming_a_hypothesis_moves_the_belief_states_last_update_and_nothing_else_does",
-      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode"
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs::a_belief_state_with_an_empty_proposition_evidence_or_causal_path_is_refused",
+      "a_belief_state_with_an_empty_proposition_evidence_or_causal_path_is_refused"
     ],
-    "gap": "2026-10-24: the contract is constructed in production only by the mesh policy dispatch, which is off in every committed deployment (QIP_MESH_CELLS unset, no execution node), so no BeliefState gates what ships to a cell; and the named section27_partial_contracts test does not fail when the causal_path refusal is removed",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Test now fails if the causal_path (or proposition/evidence_set) refusal in BeliefState::validate is removed. Still open: BeliefState is constructed in production only by mesh policy dispatch, off in every committed deployment (QIP_MESH_CELLS unset, no execution node), so it gates nothing shipped to a cell.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1467,7 +1479,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoning forming_a_hypothesis_moves; cargo test -p qip-contracts --test section27_partial_contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Rename landed in 4c1fe46a (ADR 0149 d19); regraded 2026-10-24 lane T6-MODEL-AGENTS after re-running the test. Mutation re-fired: last_updated() returning Some(1ms) before any hypothesis formed failed the test at reasoning.rs:1551 (left Some(1970-01-01T00:00:00.001Z), right None); restored byte for byte, passes. AUDIT-2 2026-10-24: regraded, the contract is constructed in production only by the mesh policy dispatch, which is off in every committed deployment (QIP_MESH_CELLS unset, no execution node), so no BeliefState gates what ships to a cell; and the named section27_partial_contracts test does not fail when the causal_path refusal is removed"
+    "notes": "Rename landed in 4c1fe46a (ADR 0149 d19); regraded 2026-10-24 lane T6-MODEL-AGENTS after re-running the test. Mutation re-fired: last_updated() returning Some(1ms) before any hypothesis formed failed the test at reasoning.rs:1551 (left Some(1970-01-01T00:00:00.001Z), right None); restored byte for byte, passes. AUDIT-2 2026-10-24: regraded, the contract is constructed in production only by the mesh policy dispatch, which is off in every committed deployment (QIP_MESH_CELLS unset, no execution node), so no BeliefState gates what ships to a cell; and the named section27_partial_contracts test does not fail when the causal_path refusal is removed 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-CONTRACT-7064",
@@ -2757,7 +2769,9 @@
       "backend/crates/apps/qip-deepbrain/src/operations.rs:289 observe feeds five SignalClass values",
       "backend/crates/apps/qip-deepbrain/src/main.rs:646 Operations::new; :663 passed to run loop",
       "backend/crates/libs/qip-observability/tests/aiops.rs:20 five_signal_classes_about_one_instrument_are_reachable_from_its_single_node",
-      "backend/crates/apps/qip-deepbrain/tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity"
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity",
+      "the_deployment_entity_key_carries_service_region_and_cell_and_a_blank_value_is_refused",
+      "an_operations_loop_given_a_deployment_key_attaches_its_signals_to_that_key"
     ],
     "gap": "2026-10-31 owner ruling, second pass (STAY_PARTIAL_DEPLOY): missing: deployment evidence the owner's dispatch produces. ADR 0156 §5.6 stands. The platform graph is joined by shared keys where signals are ingested. No process pushes its graph to another or scrapes a peer across the unjoined networks. Ingestion needs a billed, attested collector that is unpriced and not bought before dev runs, so the row stays PARTIAL. The move of the deployment key from a literal to service, region and cell values, which §5.6 already decides, may be built now. Closes on: A lane may now replace the literal at operations.rs:739 with service, region and cell values from the deep brain's configuration, refusing a blank one. Test: the_deployment_entity_key_carries_service_region_and_cell_and_a_blank_value_is_refused. Mutation: restore the literal. The row closes only after R12-OBS-10089's collector is funded and ingestion is shown. Then join each binary's signals on those keys at ingestion, and show all five classes from more than one binary on shared keys. Earlier: The platform graph over other binaries, edge nodes and infrastructure is joined where signals are ingested, by shared entity keys, which needs proven ingestion first: a collector (vendored, attested, with an egress listener) is a billed deployment and nothing has been shown to ingest. The deployment entity key moves from a literal to service, region and cell values when the join is built. A graph assembled before ingestion is shown would chart a platform nothing has proved is being observed. (Restated 2026-10-19.)",
     "implemented": true,
@@ -2770,7 +2784,7 @@
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production feed, but scope is one process. Lane L03, 2026-10-18: the closure's 'production test asserts only Infrastructure' is stale. Operations::signal records every class on the deployment key plus the model or venue key, and tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity asserts all five classes on the one deployment node. What remains is the gap as stated: one process's graph, not the platform's. Lane W8-156, 2026-10-19 (ADR 0156) §5.6. Decision and register restatement only; no code changed. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): ADR 0156 §5.6 stands. The platform graph is joined by shared keys where signals are ingested. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production feed, but scope is one process. Lane L03, 2026-10-18: the closure's 'production test asserts only Infrastructure' is stale. Operations::signal records every class on the deployment key plus the model or venue key, and tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity asserts all five classes on the one deployment node. What remains is the gap as stated: one process's graph, not the platform's. Lane W8-156, 2026-10-19 (ADR 0156) §5.6. Decision and register restatement only; no code changed. Owner ruling 2026-10-31, second pass (STAY_PARTIAL_DEPLOY): ADR 0156 §5.6 stands. The platform graph is joined by shared keys where signals are ingested. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-CICD-7116",
@@ -3031,9 +3045,11 @@
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
       "backend/crates/libs/qip-observability/src/slo.rs::blueprint_slos",
       "backend/crates/runtime/qip-kernel/src/platform.rs::ingest_cell_report",
-      "backend/crates/libs/qip-observability/src/critical_paths.rs::critical_path_slos"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs::critical_path_slos",
+      "backend/crates/tests/qip-acceptance/tests/slo.rs::the_reconciliation_objective_is_declared_once_with_a_daily_window_and_a_zero_tolerance_target",
+      "the_reconciliation_objective_is_declared_once_with_a_daily_window_and_a_zero_tolerance_target"
     ],
-    "gap": "Evaluation reached only via qip-api mesh, which runs only when QIP_MESH_CELLS is set; no committed deployment sets it. The critical-path reconciliation objective can never be measured.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Declaration, target and window are now pinned by test. Still open: the critical_paths \"reconciliation\" objective is SourceRule::NotCountable and always unmeasured, and evaluation through qip-api mesh runs only when QIP_MESH_CELLS is set, which no committed deployment sets. Both need a design change or deployment.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -3044,7 +3060,7 @@
     "verification": "slo test",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-OBS-7128",
@@ -3287,9 +3303,12 @@
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move",
       "backend/crates/apps/qip-edge-node/src/replay.rs:1-3 (module doc only)",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_recorded_node_session_replayed_reproduces_every_journal_entry_fill_and_flag",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_replay_missing_one_recorded_control_frame_names_the_pass_and_position_rather_than_reproducing",
+      "backend/crates/apps/qip-edge-node/tests/replay.rs::a_recorded_journal_that_disagrees_with_its_own_inputs_is_caught_at_the_first_differing_entry"
     ],
-    "gap": "Implement the node replay (re-drive run_pass from recorded PassInputs and control frames over ManualClock, see R12-TICK-10184), then give main.rs an entry point that runs it; a deployed node.",
+    "gap": "2026-11-14 (independent read-only reader, no test run): Code leg is closed: replay.rs is now 1230 lines (replay() at :682), and main.rs:183 dispatches Some(\"replay\") to replay_command. Still open: the row's gap names \"a deployed node\". The statement is a Phase 1 exit (kind process, \"one reflex cell ... paper trading\"). Nothing is deployed: execution_nodes = {} in test, stage and prod, and dev has execution_nodes_enabled = false. The register row still says deployable=false, e2e=false, and its replay description is stale. I did not run the tests, so I cannot confirm they pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3300,7 +3319,7 @@
     "verification": "cargo test -p qip-edge-node",
     "work_item": "",
     "size": "M",
-    "notes": "Corrected 2026-10-18 by lane L09: the gap said replay had no binary caller, which understated it; there is no replay implementation to call. The triage closure (a QIP_REPLAY_TAPE entry in main.rs driving replay.rs) presupposed one. nothing deployed: execution_nodes = {} in every environment."
+    "notes": "Corrected 2026-10-18 by lane L09: the gap said replay had no binary caller, which understated it; there is no replay implementation to call. The triage closure (a QIP_REPLAY_TAPE entry in main.rs driving replay.rs) presupposed one. nothing deployed: execution_nodes = {} in every environment. 2026-11-14: an independent reader tried to refute that this row is fully met and could not be satisfied (DEPLOYMENT). Replay code and tests now exist (replay.rs 1230 lines, main.rs:183 dispatch). The register row's \"a deployed node\" gap is still open, since execution_nodes = {} in test, stage and prod, and dev has execution_nodes_enabled = false."
   },
   {
     "id": "R12-TICK-7138",
@@ -3439,9 +3458,11 @@
       "docs/adr/0209-a-pass-that-fails-or-halts-after-sending-still-ships-the-orders-it-sent-marked-once.md",
       "backend/crates/edge/qip-edge/src/cell.rs::Cell::work, Cell::work_into, Cell::take_failed_report",
       "backend/crates/apps/qip-edge-node/src/scheduler.rs (DecisionLoop::turn pass arms)",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_pass_that_breaks_after_sending_a_leg_keeps_its_report_marked_and_hands_it_over_once"
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::a_pass_that_breaks_after_sending_a_leg_keeps_its_report_marked_and_hands_it_over_once",
+      "backend/crates/tests/qip-acceptance/tests/cycle_unwind_hedge.rs::the_failed_passs_kept_report_lets_the_centre_settle_the_leftover_leg",
+      "the_failed_passs_kept_report_lets_the_centre_settle_the_leftover_leg"
     ],
-    "gap": "2026-11-07 (lane L5-EDGE): the cell keeps and marks a failed pass's report and the scheduler ships it once. Still open: (1) no test holds the scheduler's ship-once and clear; the closure's decision_loop test needs a node pass that fails after sending, which the rig's single-venue strategy cannot produce. (2) qip-acceptance cycle_unwind_hedge.rs does not yet assert the leftover leg settles at the centre, is charged by Platform::charge_cell_fills and is planned against by the Hedge Brain. (3) Decision 19: edge pass-time rows stay PARTIAL until a deployed node runs passes. The LegGroup import the closure called unused is referenced by two doc links in cell.rs and was left.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Still open: (1) no test holds qip-edge-node scheduler's ship-once and clear of the failed report (needs a node pass that fails after sending). (2) the new test does not assert Platform::charge_cell_fills aggregation or that the Hedge Brain plans against the leftover leg. (3) Decision 19: edge pass-time rows stay PARTIAL until a deployed node runs passes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3452,7 +3473,7 @@
     "verification": "cargo test -p qip-kernel --lib hedge::; cargo test -p qip-kernel --test catalogue_hedge_candidates --test hedge --test asset_classes; cargo test -p qip-kernel --lib central::plane::tests::a_cells_stated_book; cargo test -p qip-mesh --lib delta::tests; cargo test -p qip-acceptance --test cycle_unwind_hedge",
     "work_item": "",
     "size": "XL",
-    "notes": " Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap. The positions-on-the-wire gap is named so the next slice starts there. Lane L5b 2026-10-31, slice 2 (ADR 0208): cycle_unwind_hedge passes. Mutations, each restored byte for byte: Cell::state_delta shipping no positions (split_once filtered to None) fails a_broken_cycle_is_unwound_and_hedged_end_to_end at the delta assertion `delta.positions.len() == 1` (cell.rs restored, sha256 7add12ca402beffe); advisory_disagreements_of reading the stated side twice fails it at 'the centre did not learn the leg the cell holds' and fails the plane unit test; the backwards-sequence check dropped fails the plane unit test. Kept PARTIAL: no hedge is asserted end to end because the failed pass's orders never reach the centre, and no node is deployed. 2026-11-07 lane L5-EDGE (taken over from L5b; wave1101 queue, ADR_THEN_CODE, file unverified): scheduler.rs re-read; `Err(_) => {}` and the halt reset were as described. ADR 0209's body was written under L5b's claim. The marking moved into the cell, which knows the pass number and can journal the fail-closed refusal. A failed pass with nothing kept now resets the scheduler's report to the default, where it used to re-offer the previous pass's report. Mutations, each restored byte-for-byte (cmp): drop the failed_report store; leave the mark unset. Each fails the new test."
+    "notes": "Lane L5b 2026-10-31: hedge-map slice landed. Mutation: `plan` admitting every resolved candidate whatever its class fails a_hedge_is_drawn_only_from_a_class_the_hedge_map_names at 'a bond was planned as the hedge of an equity book' (restored byte for byte, sha256 bdf5b7ca8475de33). Kept PARTIAL; remaining slices in the gap. The positions-on-the-wire gap is named so the next slice starts there. Lane L5b 2026-10-31, slice 2 (ADR 0208): cycle_unwind_hedge passes. Mutations, each restored byte for byte: Cell::state_delta shipping no positions (split_once filtered to None) fails a_broken_cycle_is_unwound_and_hedged_end_to_end at the delta assertion `delta.positions.len() == 1` (cell.rs restored, sha256 7add12ca402beffe); advisory_disagreements_of reading the stated side twice fails it at 'the centre did not learn the leg the cell holds' and fails the plane unit test; the backwards-sequence check dropped fails the plane unit test. Kept PARTIAL: no hedge is asserted end to end because the failed pass's orders never reach the centre, and no node is deployed. 2026-11-07 lane L5-EDGE (taken over from L5b; wave1101 queue, ADR_THEN_CODE, file unverified): scheduler.rs re-read; `Err(_) => {}` and the halt reset were as described. ADR 0209's body was written under L5b's claim. The marking moved into the cell, which knows the pass number and can journal the fail-closed refusal. A failed pass with nothing kept now resets the scheduler's report to the default, where it used to re-offer the previous pass's report. Mutations, each restored byte-for-byte (cmp): drop the failed_report store; leave the mark unset. Each fails the new test. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-QUANT-7144",
@@ -3482,9 +3503,12 @@
     "evidence": [
       "backend/crates/services/qip-prediction",
       "backend/crates/tests/qip-acceptance/tests/market_creation.rs",
-      "backend/crates/libs/qip-financial/src/commerce.rs"
+      "backend/crates/libs/qip-financial/src/commerce.rs",
+      "backend/crates/libs/qip-financial/src/commerce.rs: CarrierPort, SimulatedCarrier",
+      "backend/crates/libs/qip-financial/tests/commerce.rs: a_simulated_carrier_books_its_own_plan_and_refuses_another_carriers",
+      "a_simulated_carrier_books_its_own_plan_and_refuses_another_carriers"
     ],
-    "gap": "2026-10-24 (re-read against the tree): Event markets (qip-prediction plus kernel event_markets.rs), market creation (market_factory_stage.rs, qip-acceptance tests/market_creation.rs) and paper physical commerce (qip-financial commerce.rs, kernel commerce_research.rs) exist and are tested; no logistics adapter exists - qip-financial commerce.rs LogisticsPlan is a planner with no carrier port and no simulated or real carrier adapter anywhere in backend/crates. A simulated carrier adapter is plain code; any real carrier is BLOCKED by ADR 0021/0099; the commerce plane is itself behind QIP_DEEPBRAIN_BREADTH_PLAN, unset in every committed env.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Carrier port and simulated carrier now exist and are tested in qip-financial. Still missing: no production caller wires SimulatedCarrier into CommercePlane or kernel; commerce plane stays behind QIP_DEEPBRAIN_BREADTH_PLAN, unset in every committed env; any real carrier is BLOCKED by ADR 0021/0099.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3495,7 +3519,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "XL",
-    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'regulated wagering isolation not assessed' is stale: qip-prediction src/access.rs isolates VenueKind::Wagering, tested by qip-prediction tests/access.rs and qip-kernel tests/breadth.rs."
+    "notes": "2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: 'regulated wagering isolation not assessed' is stale: qip-prediction src/access.rs isolates VenueKind::Wagering, tested by qip-prediction tests/access.rs and qip-kernel tests/breadth.rs. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-AMBIENT-7146",
@@ -4670,9 +4694,11 @@
       "backend/crates/runtime/qip-kernel/src/central/foundry.rs:70",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs::a_subject_the_population_missed_spawns_a_temporary_specialist_that_competes_until_it_expires",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS"
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::a_temporary_specialist_a_full_tournament_refuses_is_dropped_and_the_refusal_is_recorded",
+      "a_temporary_specialist_a_full_tournament_refuses_is_dropped_and_the_refusal_is_recorded"
     ],
-    "gap": "2026-10-31 (lane L2-INTEL): temporary specialists now spawn on the default cycle. TournamentStage::learn proposes a WorldModelSpawner branch when the aggregate's residual on a resolved question exceeds SPAWN_RESIDUAL (0.6), and admits a Laplace-smoothed outcome-frequency model on that subject as ForecasterKind::Temporary for 14 days (TournamentReview.spawned records the branch). REASON and LEARN reach the stage from run_cycle in qip-fastbrain and qip-deepbrain. The in-lane skeptic REFUTED it on bar part 4: production spawns at most one temporary per subject the platform asks questions on, so the population is the detector, the analysts and one entrant per subject, and 'thousands' rests on MAX_FORECASTERS and a library test, not on anything a composition root does. Also open: no test drives a Platform cycle through to a spawn, and the refused-admission arm (a full tournament drops the temporary rather than holding it live) is untested. A scored temporary can contribute to a verifier-society refutation (subtract-only, ADR 0125 decision 2).",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Refused-admission arm now tested. Still open: no test drives a full Platform cycle through to a spawn, and 'thousands' still rests on MAX_FORECASTERS and a library test, since production spawns at most one temporary per subject. Needs a new acceptance suite and a per-entity forecaster seam.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4683,7 +4709,7 @@
     "verification": "new acceptance suite",
     "work_item": "",
     "size": "XL",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; same missing forecaster-per-entity as R12-MODEL-3089. Left PARTIAL with the corrected gap."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; same missing forecaster-per-entity as R12-MODEL-3089. Left PARTIAL with the corrected gap. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-TICK-7199",
@@ -4958,7 +4984,7 @@
       "backend/crates/tests/qip-acceptance/tests/cell_refusal_learning.rs",
       "docs/adr/0448-a-cell-refusal-of-a-fully-reasoned-intent-carries-the-leg-it-proposed-so-learn-prices-cell-vetoes.md"
     ],
-    "gap": "2026-11-12 (lane t50-11): still not priced \u2014 cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
+    "gap": "2026-11-12 (lane t50-11): still not priced — cell refusals that carry no leg: routing gates before a venue or price is known (signal_expiry, route_for's gates, signal_kind), zero-size refusals, deployment, region_reservation (refused inside hold_region_capital), and refusals of a net order after netting in place_net (feasibility, conduct, quote budget, broker backpressure); arbitrage_cycle_broken ships no report (R12-MESH-7143). Nothing is deployed, so the cell-to-LEARN path is proven in test only (qip-acceptance cell_refusal_learning).",
     "implemented": true,
     "tested": true,
     "integrated": true,

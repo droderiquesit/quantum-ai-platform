@@ -76,7 +76,8 @@
       "infrastructure/terraform/main.tf google_org_policy_policy disable_service_account_key_creation, disable_service_account_key_upload, deny_vm_external_ip, require_shielded_vm",
       "infrastructure/foundation/main.tf:107 google_org_policy_policy.boolean (folder scope), :126 vm_external_ip",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs organization_policy_disables_service_account_key_creation",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs organization_policy_refuses_external_vm_addresses_and_unshielded_machines"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs organization_policy_refuses_external_vm_addresses_and_unshielded_machines",
+      "the_folder_holds_shielded_vms_and_the_us_and_eu_resource_locations"
     ],
     "gap": "gcp.resourceLocations is declared at neither scope: it needs an allowed-locations value nobody has decided (the archive bucket is multi-region US while var.region is a single region, so no value derives from existing variables). compute.requireShieldedVm exists only at project scope, where a project owner can remove it; the folder copy is the owner's foundation root. Patch for the location variable is in notes.",
     "implemented": true,
@@ -89,7 +90,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure organization_policy",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18: two constraints added at project scope, test mutation-verified (deleting deny_vm_external_ip and flipping deny_all to FALSE each failed the test). Kept PARTIAL for gcp.resourceLocations. Proposed patch, protected path infrastructure/terraform/variables.tf: variable \"allowed_resource_locations\" { type = list(string); default = []; description = \"Organization Policy gcp.resourceLocations allowed values, e.g. [\\\"in:us-locations\\\"]; empty declares no policy, because a wrong list refuses every new resource at apply.\" } and in main.tf a google_org_policy_policy \"resource_locations\" with count = var.project_key_policies_enabled && length(var.allowed_resource_locations) > 0 ? 1 : 0, spec { rules { values { allowed_values = var.allowed_resource_locations } } }; tfvars value per environment is the owner's to choose. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Resources are created only in the United States and the European Union, enforced at the folder with gcp.resourceLocations and compute.requireShieldedVm; per the skeptic the ADR names the three committed 'global' resources, the same change moves the workloads log bucket into the set, 'global' is admitted only for config-only resources, and a test refuses any data-bearing resource in 'global'. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Resources are created only in the United States and the European Union: the platform folder enforces gcp.resourceLocations and compute.requireShieldedVm, and each environment's project narrows to the locations its own tfvars name.. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "2026-10-18: two constraints added at project scope, test mutation-verified (deleting deny_vm_external_ip and flipping deny_all to FALSE each failed the test). Kept PARTIAL for gcp.resourceLocations. Proposed patch, protected path infrastructure/terraform/variables.tf: variable \"allowed_resource_locations\" { type = list(string); default = []; description = \"Organization Policy gcp.resourceLocations allowed values, e.g. [\\\"in:us-locations\\\"]; empty declares no policy, because a wrong list refuses every new resource at apply.\" } and in main.tf a google_org_policy_policy \"resource_locations\" with count = var.project_key_policies_enabled && length(var.allowed_resource_locations) > 0 ? 1 : 0, spec { rules { values { allowed_values = var.allowed_resource_locations } } }; tfvars value per environment is the owner's to choose. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): Resources are created only in the United States and the European Union, enforced at the folder with gcp.resourceLocations and compute.requireShieldedVm; per the skeptic the ADR names the three committed 'global' resources, the same change moves the workloads log bucket into the set, 'global' is admitted only for config-only resources, and a test refuses any data-bearing resource in 'global'. The skeptic overturned part of the decider's ruling within the class; the skeptic's text governs. Handed to lane L6 (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: Resources are created only in the United States and the European Union: the platform folder enforces gcp.resourceLocations and compute.requireShieldedVm, and each environment's project narrows to the locations its own tfvars name.. Where the skeptic corrected the substance, the ADR follows the skeptic, not the title's wording. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-GOV-10005",
@@ -1125,9 +1126,13 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2354 no_workload_runs_as_the_projects_default_compute_identity",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_service_account_terraform_creates_runs_something_or_signs_something",
       "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names",
-      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names (ten files since 2026-10-24)"
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names (ten files since 2026-10-24)",
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::the_ci_identity_holds_only_its_own_roles_and_the_infra_identity_only_its_own",
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::an_admin_role_bound_to_the_ci_account_is_found_by_the_per_account_scan",
+      "the_ci_identity_holds_only_its_own_roles_and_the_infra_identity_only_its_own",
+      "an_admin_role_bound_to_the_ci_account_is_found_by_the_per_account_scan"
     ],
-    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Split the cicd ceiling now so CI and infra are each bounded on their own; that is a tightening a lane can land today. 'Only the grants it uses' is a measurement, and it waits on IAM Recommender findings from a deployed project, committed per account. Closes on: Key the cicd allow list per google_service_account (ci, infra) in workload_identity.rs, with a mutation per account. After a deploy, commit IAM Recommender findings per account and remove any unused role. Earlier: 2026-10-24 (lane L6): allow lists now also pin the CI and infra deploy identities (modules/cicd/main.tf), the build pool, the image bake, the GitOps control plane, the artefact signers including the model-pack publisher (artefact-signing.tf) and the research fleet worker (infrastructure/fleet/main.tf); the console and landing run as Cloud Run workloads and were already under the cloudrun module's list. Still open: (1) a list is a per-file ceiling, so where one file declares two accounts (cicd: CI and infra) the test bounds their union, not each; (2) nothing measures that each held role is used (a pinned list is a ceiling, not a use measurement), so 'only the grants it uses' is unproven: that needs IAM Recommender or audit-log evidence from a deployed project; (3) the infra identity's list is admin-wide by design, since it applies the whole root.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Per-account ceilings for CI and infra now pinned. Still open: 'only the grants it uses' is unmeasured; needs IAM Recommender or audit-log findings from a deployed project, committed per account, and unused roles removed. The infra list stays admin-wide by design.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1138,7 +1143,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity",
     "work_item": "",
     "size": "S",
-    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file. 2026-10-24 lane L6: six allow lists added. Mutation: a roles/iam.serviceAccountKeyAdmin binding appended to modules/cicd/main.tf failed every_workload_identity_holds_only_the_roles_its_allow_list_names naming the file and role; restored by cp and cmp, 'test result: ok. 4 passed'. Stays PARTIAL. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Split the cicd ceiling now so CI and infra are each bounded on their own; that is a tightening a lane can land today."
+    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file. 2026-10-24 lane L6: six allow lists added. Mutation: a roles/iam.serviceAccountKeyAdmin binding appended to modules/cicd/main.tf failed every_workload_identity_holds_only_the_roles_its_allow_list_names naming the file and role; restored by cp and cmp, 'test result: ok. 4 passed'. Stays PARTIAL. Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Split the cicd ceiling now so CI and infra are each bounded on their own; that is a tightening a lane can land today. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-SEC-10051",
@@ -1369,9 +1374,11 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_deployable_binary_in_the_workspace_has_a_workload",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held",
       "infrastructure/terraform/catalogue.tf state_owner/scaling/degraded_mode on api, fastbrain, deepbrain",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode",
+      "infrastructure/terraform/catalogue.tf connections on api, fastbrain, deepbrain",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs SERVICE_CONTRACT_FIELDS (4 fields) via every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode and a_blanked_contract_field_is_found_by_the_scan"
     ],
-    "gap": "The check needs each service contract to declare its connections. The enforced contract fields are state owner, scaling and degraded mode; the catalogue has no upstream or downstream field and no test requires one.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Cloud Run catalogue entries (api, fastbrain, deepbrain) now carry a required connections field, refused when blank by the existing contract scan. Not covered: the portal, OpenObserve, VMs and managed stores sit outside the catalogue and carry no such field.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1382,19 +1389,20 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure -- state_owner pinned_to_one blanked_contract; cd infrastructure/terraform && terraform init -backend=false && terraform validate",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18: the three fields are written on every Cloud Run catalogue entry, a second test refuses prose that contradicts max_instances (capped at one yet described as horizontal, or the reverse), and a third runs the scan on mutated copies. `terraform validate` on the root: `Success! The configuration is valid.` Mutation, restored: fastbrain's degraded_mode blanked failed the first test naming the workload. OpenObserve is instantiated outside the catalogue and is not covered. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
+    "notes": "2026-10-18: the three fields are written on every Cloud Run catalogue entry, a second test refuses prose that contradicts max_instances (capped at one yet described as horizontal, or the reverse), and a third runs the scan on mutated copies. `terraform validate` on the root: `Success! The configuration is valid.` Mutation, restored: fastbrain's degraded_mode blanked failed the first test naming the workload. OpenObserve is instantiated outside the catalogue and is not covered. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-FABRIC-10062",
-    "status": "MISSING",
-    "current": "No mirroring exists in qip-fabricd; the acceptance tests named fabric_011/fabric_021 assert fixtures.",
+    "status": "PARTIAL",
+    "current": "qip-fabricd/src/mirror.rs holds `Mirror` (`Mirror::new`, `Mirror::pass`) and `Broker` implements `MirrorSource` and `MirrorTarget`; tests/mirror.rs proves a cut link never blocks source acknowledgements and that a mirror naming an undeclared region or stream is refused at construction. No composition root constructs a `Mirror`.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_metadata_and_contracts.rs:249 fabric_021 (fixture-only)",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs:82 fabric_011"
+      "backend/crates/apps/qip-fabricd/tests/mirror.rs::while_the_link_is_cut_the_source_keeps_acknowledging_and_both_mirror_lag_series_grow",
+      "backend/crates/apps/qip-fabricd/tests/mirror.rs::a_mirror_naming_a_region_or_stream_outside_its_configuration_is_refused_at_construction",
+      "backend/crates/apps/qip-fabricd/src/mirror.rs Mirror::new, Mirror::pass"
     ],
-    "gap": "Mirror implementation.",
-    "implemented": false,
-    "tested": false,
+    "gap": "2026-11-14 (independent read-only reader, no test run): Mirror library and test exist, but nothing in the tree constructs `Mirror`. qip-fabricd main.rs and the other apps never call `Mirror::new` or `Mirror::pass`; only tests/mirror.rs does. There is no cross-region transport and no deployment. The register row still says MISSING with every flag false, so its \"Mirror implementation\" gap is only partly closed. The per-topic claim \"only declared topics mirror\" is covered only by the construction-refusal test.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1405,7 +1413,7 @@
     "verification": "qip-fabricd mirror test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-11-14: an independent reader tried to refute that this row is fully met and could not be satisfied (CODE). mirror.rs and two passing-claimed tests exist, but no composition root builds or runs `Mirror`, and no cross-region link or deployment exists. The requirement is an invariant over running Fabric, so it is not met by library code alone. The register row (MISSING) is stale, but the row is still not fully met."
   },
   {
     "id": "R12-AGENCY-10063",
@@ -2054,9 +2062,11 @@
       "backend/crates/services/qip-world-model/src/lattice.rs::route",
       "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastTask, ForecastSolver, ForecastTrigger",
       "backend/crates/libs/qip-contracts/tests/forecast_task.rs::a_task_over_no_time_or_about_nothing_is_refused_and_each_solver_gets_its_own (mutants: span check, blank-subject check, solver out of the id; all killed)",
-      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::tasks_for, LatticeReview.tasks, a_surprise_fans_one_forecast_task_per_central_horizon_to_every_member_kind (mutants: a solver kind dropped, every task state-vector, an unpromoted subject fanned out, every slot due; all killed. Lane guard removed: survived, held by routing)"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::tasks_for, LatticeReview.tasks, a_surprise_fans_one_forecast_task_per_central_horizon_to_every_member_kind (mutants: a solver kind dropped, every task state-vector, an unpromoted subject fanned out, every slot due; all killed. Lane guard removed: survived, held by routing)",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::the_forecast_tasks_on_a_journaled_review_survive_a_round_trip",
+      "the_forecast_tasks_on_a_journaled_review_survive_a_round_trip"
     ],
-    "gap": "Skeptic 2026-10-31 PARTIAL: the tasks are a journaled record, not a dispatch: no agent, world model or simulator consumes them, and no Fabric task topic exists, so \"via Fabric task contracts\" is unmet. The microsecond horizon is never routed from the centre (the issue loop's central-lane guard and a population with no central microsecond model); ADR 0008 places that horizon in the cell but does not decline routing it, so the \"microsecond-to-year\" clause stays unmet under bar part 4. No test round-trips a journaled review to show the tasks survive. Mutation note: removing the lane guard survives, because routing refuses the microsecond horizon too.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Tasks are still a journaled record, not a dispatch: no agent, world model or simulator consumes them and no Fabric task topic exists, so \"via Fabric task contracts\" is unmet. The microsecond horizon is still never routed from the centre (ADR 0008 puts it in the cell). Lane-guard mutant still survives.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2069,7 +2079,7 @@
     "verification": "cargo test -p qip-kernel --lib lattice_stage; cargo test -p qip-contracts --test forecast_task",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4-quant: built (4c3f2536), then corrected on the skeptic's findings (5a63750b): the first version fanned out unpromoted subjects as state-vector tasks and re-journaled the same up-to-512 tasks every cycle. Skeptic verdict PARTIAL."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 L4-quant: built (4c3f2536), then corrected on the skeptic's findings (5a63750b): the first version fanned out unpromoted subjects as state-vector tasks and re-journaled the same up-to-512 tasks every cycle. Skeptic verdict PARTIAL. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-MODEL-10092",
@@ -2345,9 +2355,11 @@
       "backend/crates/libs/qip-events/schemas.lock.json and consumers.lock.json rows for reflex.feature_digested",
       "infrastructure/event-fabric/streams.local.json and streams.managed.json: reflex-journal.local admits reflex.feature_digested",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them",
+      "a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them"
     ],
-    "gap": "Skeptic REFUTED 2026-10-31: (1) the P2 stream still carries one `reflex.market_event_applied` record per applied tape event (writer.rs `SpoolWriter::pass`, the replay input ADR 0100 §8 records), so ADR 0132 decision 4's 'does not produce one record per tick' does not hold on the default path while the requirement's own text ('tick ... appended to Fabric P1/P2') is met by those records; the owner decides which governs, and until then the digest is an addition beside the per-event records, not a replacement; (2) `Scheduler::feature_digest` and `WorkReport::features` are reached by no test — the outbox test hands the writer hand-built digests — so bar part 1 holds for the writer only; (3) `ticks` is the feed's message count (status messages included) while the hash covers the applied events, and the time range is of the applied events, not of every tick a windowed value rests on. Closes with a node-level turn test with registered features and a non-empty tape asserting one digest per pass, and the owner's reading of decision 4.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Owner has not ruled whether ADR 0132 decision 4 or the per-event reflex.market_event_applied records govern the tick requirement. The digest ticks count includes status messages while the hash and time range cover applied events only. The new test is not mutation-verified, and the patch is uncompiled.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2360,7 +2372,7 @@
     "verification": "cargo +1.94.1 test -p qip-edge-node --test event_fabric_outbox && cargo +1.94.1 test -p qip-acceptance --test event_fabric_schema_lock --test event_fabric_catalogue",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-17; ADR lane 2026-10-18 against D08; lane T1-EDGE 2026-10-24 kept PARTIAL. 2026-10-31 lane L1b-fabric: the digest landed as a seventh reflex binding. Mutation: `SpoolWriter::pass` never pushing the digest record — `a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped` fails with `left: []` against the two digests; restored by copy, `cmp` clean. Independent skeptic: REFUTED (gap); the time range was changed from first/last to min/max and the record's doc narrowed to what this pass applied in answer to its findings. Limit stated: the digest carries the feature vector as evaluated, which is bounded by registered features; a cell with no registered features writes a digest with no instruments, which is a true statement about that pass."
+    "notes": "Re-graded 2026-10-17; ADR lane 2026-10-18 against D08; lane T1-EDGE 2026-10-24 kept PARTIAL. 2026-10-31 lane L1b-fabric: the digest landed as a seventh reflex binding. Mutation: `SpoolWriter::pass` never pushing the digest record — `a_pass_ships_one_bounded_feature_digest_and_ticks_are_counted_not_shipped` fails with `left: []` against the two digests; restored by copy, `cmp` clean. Independent skeptic: REFUTED (gap); the time range was changed from first/last to min/max and the record's doc narrowed to what this pass applied in answer to its findings. Limit stated: the digest carries the feature vector as evaluated, which is bounded by registered features; a cell with no registered features writes a digest with no instruments, which is a true statement about that pass. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-TICK-10103",
@@ -2926,9 +2938,13 @@
     "status": "MISSING",
     "current": "No alert policy on Fabric health; fabricd not deployed; replay from archive untested at platform level.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs archive_lag gauge"
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs archive_lag gauge",
+      "infrastructure/terraform/modules/observability/main.tf google_monitoring_alert_policy.fabric_serving",
+      "infrastructure/terraform/modules/observability/tests/budget.tftest.hcl the_fabric_policy_is_gated_and_watches_serving_and_archive_lag",
+      "run the_fabric_policy_is_gated_and_watches_serving_and_archive_lag",
+      "run the_fabric_policy_is_absent_until_metrics_exist"
     ],
-    "gap": "2026-10-31 owner ruling (STAY_PARTIAL_DEPLOY), missing: deployment evidence. Build the fabric alert now, gated on workload_metrics_exist like the other eleven policies. It costs nothing until metrics exist. The row stays open until a deployed fabricd is lost on purpose, the alert fires and the archive replay restores it, and no broker is deployed before it has a baked image. Closes on: A lane can land now: google_monitoring_alert_policy.fabric_serving on qip_event_fabric_serving (absent or zero) and on a rising archive_lag_segments, gated on workload_metrics_exist, with a tftest. That moves the row from MISSING to PARTIAL. It closes only on a broker-loss game-day record against a deployed fabricd showing the alert and the replay. Earlier: Alert + restore runbook automation.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Policy exists, gated on workload_metrics_exist (false everywhere), but nothing is shown to scrape fabricd and fabricd is not deployed. Still needed: a broker-loss game-day record against a deployed fabricd showing the alert fire and the spool/GCS archive replay restore continuity. SERIES_THAT_MUST_PAGE in manifest_wiring.rs not extended.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2942,7 +2958,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "L",
-    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Build the fabric alert now, gated on workload_metrics_exist like the other eleven policies."
+    "notes": "Owner ruling 2026-10-31 (STAY_PARTIAL_DEPLOY): Build the fabric alert now, gated on workload_metrics_exist like the other eleven policies. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-RES-10126",
@@ -3809,9 +3825,10 @@
     "current": "Node binary with local risk and simulated venue, replay; Fabric journal unwired; not deployed.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs",
-      "backend/crates/apps/qip-edge-node/src/replay.rs"
+      "backend/crates/apps/qip-edge-node/src/replay.rs",
+      "backend/crates/apps/qip-edge-node/tests/fabric_wiring.rs::a_node_given_a_fabric_endpoint_ships_its_journal_to_p2_and_its_chain_to_p1"
     ],
-    "gap": "Fabric journal wiring; deployed node.",
+    "gap": "2026-11-14 (independent read-only reader, no test run): Phase 3 exit test is a process milestone (\"meeting its exit test before later phases depend on it\") and the blueprint's deliverable list includes a running reflex cell with paper trading. No node is deployed (execution_nodes = {} in test/stage/prod; dev has execution_nodes_enabled = false), so the cell has never run in an environment and the exit test cannot be shown passing by code alone. The journal-wiring gap in the register is stale: main.rs imports and uses event_fabric drain, relay, writer and mirror, and fabric_wiring.rs exists. The deployment gap remains open.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3825,7 +3842,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-11-14: an independent reader tried to refute that this row is fully met and could not be satisfied (DEPLOYMENT). Journal wiring is present (main.rs uses event_fabric drain/relay/writer/mirror; fabric_wiring test exists), but the phase exit test needs a deployed node and execution_nodes is empty or disabled in every environment, so it is NOT_MET (DEPLOYMENT)."
   },
   {
     "id": "R12-LEDGER-10163",
@@ -4106,7 +4123,7 @@
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs",
       "backend/crates/services/qip-capital"
     ],
-    "gap": "Capital society missing; no phase exit test.",
+    "gap": "2026-11-14 (independent read-only reader, no test run): Statement requires phase 15 to meet its exit test; check requires the exit test to pass. docs/architecture/phase-register.json phase 15 (row R12-CAPITAL-10174) has state \"not_entered\" and \"exit_tests\": []. No exit test is named or exists. The owner has not defined exit criteria. The register's \"Capital society missing\" gap is stale: society.rs exists and plane.rs holds society and coordinator fields. The exit test and phase state are still open.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4119,7 +4136,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-11-14: an independent reader tried to refute that this row is fully met and could not be satisfied (OWNER). Deliverables exist in qip-capital and plane.rs, but phase 15 is not_entered in phase-register.json with empty exit_tests. The exit test is undefined and owner-dependent, so the requirement is not met."
   },
   {
     "id": "R12-AMBIENT-10175",
@@ -4132,9 +4149,12 @@
       "backend/crates/apps/qip-deepbrain/tests/research.rs::a_raised_gap_signal_carries_the_urgency_of_its_deadline_not_zero (another lane's test of the same emit fix, carried in from origin/ccr-116bbb27-osu8n8 at merge)",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
       "backend/crates/tests/qip-acceptance/tests/phase_16_exit.rs::a_gap_carrying_economic_value_launches_an_information_request_on_the_product_rank (2026-11-13: a sweep over a platform that paper-filled 150 AAA, fills ~200 bp off the twin, launches an information request at or above MIN_VIABLE_BP; mutation: cheapest_viable returns None -> 'a priced gap launched no information request')",
-      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_woken_specialist_is_queued_at_the_urgency_its_surprise_stated_not_the_floor (2026-11-13: ResearchLoop::admit reads AmbientSignal::urgency_bp as a floor under the deadline-derived urgency; mutation: drop .max(stated_urgency) -> 'adversarial queued at urgency 0.5, not the 1 its surprise stated')"
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_woken_specialist_is_queued_at_the_urgency_its_surprise_stated_not_the_floor (2026-11-13: ResearchLoop::admit reads AmbientSignal::urgency_bp as a floor under the deadline-derived urgency; mutation: drop .max(stated_urgency) -> 'adversarial queued at urgency 0.5, not the 1 its surprise stated')",
+      "backend/crates/apps/qip-deepbrain/src/research.rs run_market uses economic_scale_bp",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::an_economic_value_past_the_scale_saturates_and_a_negative_one_is_refused",
+      "an_economic_value_past_the_scale_saturates_and_a_negative_one_is_refused"
     ],
-    "gap": "2026-11-13 (lane t50-37): value-of-information sensing now has its exit test (a priced residual gap launches an information request through sweep_over on the product rank), and AmbientSignal::urgency_bp now has a production reader (ResearchLoop::admit takes the signal's stated urgency as a floor under the deadline-derived figure, so a NOW surprise's severity-urgency reaches the desk queue). Remaining: recursive specialist creation is still a proposal, not a creation — an accepted specialist proposal yields an InstantiateSpecialist plan step (qip-expansion plan.rs) with no executor, the deep brain's roster is a reviewed static manifest (apps/qip-deepbrain/src/roster.rs manifests::roster), and no cycle fixture reaches calibration >= MIN_EVALUATED, so the exit suite has no test that puts a specialist on the roster. A gap the sweep raises from its own residual still states urgency at the floor at emission (whole window ahead), which is correct rather than a constant in disguise now that the field is read. Found, not fixed: run_market reads a priced gap's expected_economic_value through basis_points(v/100), so a gap worth more than 100 units is declined as invalid_value (seen in the new exit test's round: declined {invalid_value: 1}, units_granted 0) while admit saturates the same figure with economic_scale_bp; the most valuable gaps get no compute grant. Earlier: 2026-10-31 (lane L2b; independent read-only skeptic REFUTED on bar parts 1 and 4): the exit suite phase_16_exit.rs covers the compute market (units_granted > 0) and the compiler (held unsigned) and says itself that specialist proposal and value-of-information launch are not driven there, so two of the four deliverables have no exit test; urgency_bp(now, now + ttl, ttl) at emission always returns URGENCY_FLOOR_BP (a constant in disguise; nothing in production reads AmbientSignal::urgency_bp, and attention_value is severity x economic value), while the real deadline-based urgency is computed at desk admission (research.rs admit) and the exit suite does not prove it; and a specialist proposal produces only an Observation whose plan step is InstantiateSpecialist (qip-expansion plan.rs), gated on calibration >= MIN_EVALUATED, which no cycle fixture reaches, so recursive specialist creation is a proposal, not a creation. Closing it: an exit test per deliverable (a value-of-information launch on the product rank from a sweep; a specialist proposal that instantiates a specialist on the roster), and the signal's urgency computed from the deadline the launch is ranked against rather than restated at emission.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Recursive specialist creation remains a proposal: an accepted proposal yields an InstantiateSpecialist plan step with no executor, the roster is a static reviewed manifest, and no cycle fixture reaches calibration >= MIN_EVALUATED, so no exit test puts a specialist on the roster. The run_market invalid_value fix lacks a sweep-level test showing a gap worth over 100 units gets a compute grant.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4148,7 +4168,7 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test phase_16_exit && cargo +1.94.1 test -p qip-deepbrain --lib a_signal_raised_detection_carries_the_urgency_of_its_deadline_not_zero",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L2b (wave580): the row said no phase exit test existed; phase_16_exit.rs does, now cited. The one literal left — urgency_bp: 0 on a signal-raised Detection — is replaced by the deadline-derived figure. Mutation fired: restoring `urgency_bp: 0` in ResearchLoop::emit -> \"left: 0 right: 5000\"; restored byte for byte (cmp), test ok. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records. The emission change and its test are kept (the literal zero is gone and the mutation fired), but they move no production behaviour; the row's claim is withdrawn to what the exit suite proves.  Merge 2026-10-31 with origin/ccr-116bbb27-osu8n8: upstream had the same urgency fix in emit with its own crate-level test and an older gap text (phase_16_exit drives neither a specialist proposal nor an information request, info_launched zero); this lane's refuted gap kept, upstream evidence appended. 2026-11-13 lane t50-37: two slices landed (VoI exit test; urgency reader), each mutation-verified and restored byte for byte (cmp). Grade stays PARTIAL on specialist instantiation."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-31 lane L2b (wave580): the row said no phase exit test existed; phase_16_exit.rs does, now cited. The one literal left — urgency_bp: 0 on a signal-raised Detection — is replaced by the deadline-derived figure. Mutation fired: restoring `urgency_bp: 0` in ResearchLoop::emit -> \"left: 0 right: 5000\"; restored byte for byte (cmp), test ok. Skeptic (code-reviewer, read-only, default REFUTED): REFUTED as the gap records. The emission change and its test are kept (the literal zero is gone and the mutation fired), but they move no production behaviour; the row's claim is withdrawn to what the exit suite proves.  Merge 2026-10-31 with origin/ccr-116bbb27-osu8n8: upstream had the same urgency fix in emit with its own crate-level test and an older gap text (phase_16_exit drives neither a specialist proposal nor an information request, info_launched zero); this lane's refuted gap kept, upstream evidence appended. 2026-11-13 lane t50-37: two slices landed (VoI exit test; urgency reader), each mutation-verified and restored byte for byte (cmp). Grade stays PARTIAL on specialist instantiation. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-ARCH-10176",
@@ -4182,9 +4202,10 @@
       "backend/crates/tests/qip-acceptance/tests/event_fabric_architecture.rs::no_crate_outside_the_libraries_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route",
       "backend/crates/tests/qip-acceptance/src/lib.rs::production_text (code_braces) and its four unit tests",
       "backend/crates/libs/qip-events/src/event_fabric/catalogue.rs (the spine frames beside the streams, R12-FABRIC-10077)",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs (the ledger consumer, no longer a placeholder)"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs (the ledger consumer, no longer a placeholder)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_architecture.rs::no_crate_outside_the_libraries_sends_across_a_process_except_through_the_spine_the_fabric_producer_the_peer_link_or_a_named_synchronous_route (RAW_SEND_TOKENS adds UnixDatagram, UnixListener)"
     ],
-    "gap": "Skeptic HOLDS for PARTIAL 2026-10-31, gap narrowed. Still open: a token scan cannot see an aliased or grouped import (`use std::net::TcpStream as X`, `use tokio::{net}`), a spawned process (`std::process::Command`; qip-edge-node's placement.rs already spawns `taskset`), `UnixDatagram` or `qip_transport::RemoteSubscriber`; `HttpClient` is admitted wholesale without checking the route a request names; type-name tokens are allow-listed by file, not by site. qip-streaming's `MeshTransport` is a dormant fourth path ADR 0128 does not name: no app reaches its registry today, and an app that asked the registry for a transport by a configured name would publish over the raw mesh without naming either type — whether it is deleted or amended into the ADR is the ADR owner's decision. Decision 4 says `qip_events` fabric producer where the seam symbol scanned is `qip_transport::event_fabric`. Bar part 4 as 10077's: the spine is admitted only by ADR 0128's naming. Closes with the owner's reading of decision 2, a decision on `MeshTransport`, and either a route check on `HttpClient` or a statement that the HTTP client is admitted as a seam by design.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Scan now also refuses UnixDatagram and UnixListener (no current users). Still open: aliased/grouped imports, std::process::Command spawns (qip-edge-node placement.rs spawns taskset), qip_transport::RemoteSubscriber, HttpClient route check or by-design statement, type-name tokens allow-listed by file, dormant MeshTransport decision (ADR owner), owner reading of decision 2.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4199,7 +4220,7 @@
     "verification": "cargo +1.94.1 test -p qip-acceptance --lib --test event_fabric_architecture",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04. 2026-10-25 lane L1b-fabric: the scan landed. Limits stated: a token scan over `src/` with `#[cfg(test)]` stripped sees names, not behaviour; `ToSocketAddrs` is deliberately not a refused token because qip-cli resolves `--peer` with it and resolution is not a send; the HTTP client is admitted as a seam and the scan does not check which route a request names. Bar part 4 caveat as 10077's. Mutation fired 2026-10-25 and restored (cp+cmp): `let _ = std::net::TcpStream::connect(\"127.0.0.1:1\");` as the first line of qip-api main — the scan names `apps/qip-api/src/main.rs` and `TcpStream::connect`. Earlier run found the scan blind to its own allow-list (the walked path carries an `apps/` prefix); fixed before the mutation. Independent skeptic: REFUTED (gap). The scan stays as the first guard; its holes are named in the gap rather than papered. 2026-10-31 lane L1b-fabric: scan widened to apps/services/runtime/edge, tokens connect_timeout, tokio::net, MeshTransport added, site counts on socket tokens; production_text over-strip fixed (raw strings, char literals, comment lines). Mutations fired and restored byte-for-byte (cp+cmp): raw connect in qip-kernel platform.rs (named); `MeshTransport` named after the test module of qip-api main.rs (named — this mutation survived before the stripper fix and was the proof of the over-strip); peer-link entry dropped (offenders assertion names wire.rs); SCANNED_GROUPS back to apps only (premise names spine.rs); second connect beside ledgerd's self-poke (site count); stripper: naive brace count, state reset per line, raw-string arm deleted, comment skip dropped (each unit test fails). Independent skeptic: HOLDS for PARTIAL with the gap above."
+    "notes": "ADR lane 2026-10-18: gap re-graded against decision D04. 2026-10-25 lane L1b-fabric: the scan landed. Limits stated: a token scan over `src/` with `#[cfg(test)]` stripped sees names, not behaviour; `ToSocketAddrs` is deliberately not a refused token because qip-cli resolves `--peer` with it and resolution is not a send; the HTTP client is admitted as a seam and the scan does not check which route a request names. Bar part 4 caveat as 10077's. Mutation fired 2026-10-25 and restored (cp+cmp): `let _ = std::net::TcpStream::connect(\"127.0.0.1:1\");` as the first line of qip-api main — the scan names `apps/qip-api/src/main.rs` and `TcpStream::connect`. Earlier run found the scan blind to its own allow-list (the walked path carries an `apps/` prefix); fixed before the mutation. Independent skeptic: REFUTED (gap). The scan stays as the first guard; its holes are named in the gap rather than papered. 2026-10-31 lane L1b-fabric: scan widened to apps/services/runtime/edge, tokens connect_timeout, tokio::net, MeshTransport added, site counts on socket tokens; production_text over-strip fixed (raw strings, char literals, comment lines). Mutations fired and restored byte-for-byte (cp+cmp): raw connect in qip-kernel platform.rs (named); `MeshTransport` named after the test module of qip-api main.rs (named — this mutation survived before the stripper fix and was the proof of the over-strip); peer-link entry dropped (offenders assertion names wire.rs); SCANNED_GROUPS back to apps only (premise names spine.rs); second connect beside ledgerd's self-poke (site count); stripper: naive brace count, state reset per line, raw-string arm deleted, comment skip dropped (each unit test fails). Independent skeptic: HOLDS for PARTIAL with the gap above. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-FABRIC-10178",
@@ -4263,9 +4284,11 @@
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::apply_operation",
       "backend/crates/apps/qip-ledgerd/tests/operations_on_the_stream.rs",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::the_desks_treasury_funding_reaches_the_ledger_once_across_restarts",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts",
+      "backend/crates/apps/qip-ledgerd/tests/operations_on_the_stream.rs::for_any_redelivery_order_and_restart_the_operation_balances_equal_one_delivery_of_each_id",
+      "for_any_redelivery_order_and_restart_the_operation_balances_equal_one_delivery_of_each_id"
     ],
-    "gap": "Non-fill financial outcomes other than treasury funding and capital-grant funding and recall cannot reach the ledger: custody, collateral, margin, transfer, tax-lot, tax-charge, commitment, mandate-subscription and inventory LedgerOperations have a topic and a consumer but no production producer, because no production path observes those facts (no custodian, margin or collateral seam exists; the commerce inventory ledger runs only under an uncommitted breadth plan). Producer-side crash schedules are fixed scenarios, not a property. Not deployed (no broker, no desk token): tracked under deployable.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Custody, collateral, margin, transfer, tax-lot, tax-charge, commitment, mandate-subscription and inventory operations still have no production producer. Producer-side crash schedules are still fixed scenarios. Operation redelivery is now a property at the store (reopen mid-stream, no WAL cut). Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4279,7 +4302,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "L",
-    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'Every financial outcome ... eventually committed' is unmet for the desk path: that leg runs only in tests, so 'eventually' is not demonstrated for it. Shipper added 2026-10-17 (84e4e33d, 54b9a01a); independent grader (wrote none of the code, ran nothing) held PARTIAL. The earlier 'no non-test caller' / 'shipper does not exist' text is false for acknowledge_desk_outcomes. 2026-10-17: queuing 300+ records found the shipper wedged for ever (a 256-record batch exceeded the broker's per-second byte quota); batches are now capped at 131,072 payload bytes. Live gap heal added 2026-10-17 (DeskLedgerFeed::fill_gap via Platform::heal_desk_gap). 2026-10-17: qip-api and the deep brain ship on their own chains; property test over desk records added (mutation: store treating a re-sent last position as new parks a clean chain). Status left for an independent grader. Independent grade 2026-10-17 (read-only, after 0aae3a36): PARTIAL on 'every financial outcome' only; idempotency clause met; deployment not an acceptance condition of this row. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL. The 'no fabric topic / Decoded::Other / no non-test caller' text predated 27aa66df and is removed; two operation kinds now reach the ledger from production and the gap names the kinds that still have no observer. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; a third operation kind reaches the ledger from production and the gap's list is unchanged."
+    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'Every financial outcome ... eventually committed' is unmet for the desk path: that leg runs only in tests, so 'eventually' is not demonstrated for it. Shipper added 2026-10-17 (84e4e33d, 54b9a01a); independent grader (wrote none of the code, ran nothing) held PARTIAL. The earlier 'no non-test caller' / 'shipper does not exist' text is false for acknowledge_desk_outcomes. 2026-10-17: queuing 300+ records found the shipper wedged for ever (a 256-record batch exceeded the broker's per-second byte quota); batches are now capped at 131,072 payload bytes. Live gap heal added 2026-10-17 (DeskLedgerFeed::fill_gap via Platform::heal_desk_gap). 2026-10-17: qip-api and the deep brain ship on their own chains; property test over desk records added (mutation: store treating a re-sent last position as new parks a clean chain). Status left for an independent grader. Independent grade 2026-10-17 (read-only, after 0aae3a36): PARTIAL on 'every financial outcome' only; idempotency clause met; deployment not an acceptance condition of this row. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL. The 'no fabric topic / Decoded::Other / no non-test caller' text predated 27aa66df and is removed; two operation kinds now reach the ledger from production and the gap names the kinds that still have no observer. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; a third operation kind reaches the ledger from production and the gap's list is unchanged. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-MODEL-10180",

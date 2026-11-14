@@ -71,3 +71,26 @@ run "enabled_watches_the_recorded_series" {
     error_message = "the calibration policy must page on a Brier score worse than a coin flip for an hour"
   }
 }
+
+run "the_fabric_policy_is_gated_and_watches_serving_and_archive_lag" {
+  command = plan
+  variables {
+    workload_metrics_exist = true
+  }
+  assert {
+    condition     = google_monitoring_alert_policy.fabric_serving[0].conditions[0].condition_prometheus_query_language[0].query == "absent(qip_event_fabric_serving) or min_over_time(qip_event_fabric_serving[5m]) < 1"
+    error_message = "the fabric policy must fire on a broker that is not serving or has vanished"
+  }
+  assert {
+    condition     = length(regexall("deriv\\(qip_event_fabric_archive_lag_segments", google_monitoring_alert_policy.fabric_serving[0].conditions[1].condition_prometheus_query_language[0].query)) == 1
+    error_message = "the fabric policy must fire on a rising archive lag"
+  }
+}
+
+run "the_fabric_policy_is_absent_until_metrics_exist" {
+  command = plan
+  assert {
+    condition     = length(google_monitoring_alert_policy.fabric_serving) == 0
+    error_message = "the fabric policy names descriptors nothing has ingested and must not exist until workload_metrics_exist is true"
+  }
+}

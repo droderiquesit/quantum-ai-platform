@@ -15,9 +15,9 @@ mod common;
 use common::{each_refused, refuses_missing_unknown_and_foreign_version, round_trips};
 use qip_contracts::capital::{CapitalGrant, CapitalGrantFields, CollateralClass, GrantMode};
 use qip_contracts::control::{
-    ComputeBackend, ComputeCandidate, ComputePlan, ComputePlanFields, Exposure, HedgeInstrument,
-    HedgeLiquidity, HedgePlan, HedgePlanFields, HedgeRollback, HedgeSide, InformationRequest,
-    InformationRequestFields, ModelVote, ModelVoteFields, ScorePoint,
+    AgentLine, ComputeBackend, ComputeCandidate, ComputePlan, ComputePlanFields, Exposure,
+    HedgeInstrument, HedgeLiquidity, HedgePlan, HedgePlanFields, HedgeRollback, HedgeSide,
+    InformationRequest, InformationRequestFields, ModelVote, ModelVoteFields, ScorePoint,
 };
 use qip_contracts::forecast::{
     Calibration, Forecast, ForecastFields, ForecastState, ForecastStateFields, OutcomeDistribution,
@@ -572,6 +572,11 @@ fn compute_plan() -> ComputePlanFields {
         ],
         budget: dec!("5"),
         verifier: s("objective-reevaluated-classically"),
+        agent_lines: vec![AgentLine {
+            agent: s("execution/research/all"),
+            budget: dec!("5"),
+            weight_ceiling_bp: 5_000,
+        }],
     }
 }
 
@@ -619,6 +624,43 @@ fn a_compute_plan_refuses_each_broken_invariant_including_a_missing_or_quantum_b
             (
                 "unaffordable baseline",
                 Box::new(|f| f.candidates[0].estimated_cost = dec!("6")),
+            ),
+        ],
+    );
+}
+
+/// R12-AMBIENT-9034: a plan carries each agent's line and is bounded by
+/// them. Mutation: delete the `self.budget > line_total` refusal in
+/// `ComputePlanFields::check` and "plan over its lines" is admitted.
+#[test]
+fn a_compute_plan_refuses_a_missing_repeated_or_exceeded_agent_line() {
+    assert!(
+        ComputePlan::new(compute_plan()).is_ok(),
+        "premise: the fixture is valid"
+    );
+    each_refused(
+        &compute_plan(),
+        vec![
+            ("no agent line", Box::new(|f| f.agent_lines.clear())),
+            ("blank agent", Box::new(|f| f.agent_lines[0].agent = s(""))),
+            (
+                "agent twice",
+                Box::new(|f| {
+                    let line = f.agent_lines[0].clone();
+                    f.agent_lines.push(line);
+                }),
+            ),
+            (
+                "negative line budget",
+                Box::new(|f| f.agent_lines[0].budget = dec!("-1")),
+            ),
+            (
+                "ceiling above 10000 bp",
+                Box::new(|f| f.agent_lines[0].weight_ceiling_bp = 10_001),
+            ),
+            (
+                "plan over its lines",
+                Box::new(|f| f.agent_lines[0].budget = dec!("4.99")),
             ),
         ],
     );

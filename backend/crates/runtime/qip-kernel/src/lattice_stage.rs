@@ -1159,4 +1159,31 @@ mod tests {
             again.tasks.len()
         );
     }
+
+    /// The tasks are a journaled record, so they must survive the journal's
+    /// encoding: a reader replaying the log must see the same questions the
+    /// router asked, solver, trigger and due instant included. A task field
+    /// dropped from the serde shape would leave every in-memory test green
+    /// while the replayed record asked nothing.
+    ///
+    /// Mutation: add `#[serde(skip)]` to `LatticeReview::tasks`; the
+    /// round-trip then returns no tasks and this fails.
+    #[test]
+    fn the_forecast_tasks_on_a_journaled_review_survive_a_round_trip() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut stage = LatticeStage::new().expect("the stage builds");
+        let review = stage.run(
+            LatticeInputs {
+                cycle: 1,
+                targets: vec![forecastable_target("AAPL", now, None)],
+                surprised: BTreeSet::from(["AAPL".to_string()]),
+            },
+            now,
+        );
+        // Premise: the pass raised tasks, so an empty round trip is a loss.
+        assert!(!review.tasks.is_empty(), "the pass raised no tasks");
+        let text = serde_json::to_string(&review).expect("a review encodes");
+        let back: LatticeReview = serde_json::from_str(&text).expect("a review decodes");
+        assert_eq!(back.tasks, review.tasks);
+    }
 }

@@ -4002,3 +4002,72 @@ fn a_searched_plan_acts_only_with_a_causal_score_a_policy_gate_pass_and_a_simula
     );
     assert!(adapter.calls.is_empty());
 }
+
+/// ADR 0141's requirement: the more authority a level carries, the stronger
+/// its evidence and rollback. Read down the grantable rows, no requirement may
+/// ever fall, and every row above shadow must name its rollback and scope; a
+/// row edited to ask for less than the one beneath it would let a wider level
+/// be reached on weaker evidence than a narrower one, and nothing else reads
+/// `rollback` or `scope`.
+///
+/// Mutation: set `clean_days` of `BroadInternal` to 0, or `approvers` of
+/// `NarrowCompensable` to 1, or `rollback` of `NarrowReversible` to "none", and
+/// the matching assertion fires.
+#[test]
+fn a_wider_authority_level_never_asks_for_less_evidence_or_rollback_than_a_narrower_one() {
+    use qip_agency::autonomy::SCHEDULE;
+
+    let grantable = [
+        Authority::NarrowReversible,
+        Authority::NarrowCompensable,
+        Authority::BroadInternal,
+    ];
+    let rows: Vec<_> = grantable.iter().map(|l| l.requirement()).collect();
+    assert_eq!(rows.len(), 3, "premise: three grantable rows");
+    assert!(
+        SCHEDULE.len() > rows.len(),
+        "premise: the table has more rows"
+    );
+
+    for row in &rows {
+        assert!(
+            !row.rollback.trim().is_empty() && row.rollback != "none",
+            "{:?} names no rollback",
+            row.level
+        );
+        assert!(
+            !row.scope.trim().is_empty() && row.scope != "none",
+            "{:?} names no scope",
+            row.level
+        );
+        assert!(row.approvers >= 1, "{:?} needs an approver", row.level);
+    }
+    for pair in rows.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
+        assert!(
+            hi.approvers >= lo.approvers,
+            "{:?} approvers fell",
+            hi.level
+        );
+        assert!(
+            hi.clean_days >= lo.clean_days,
+            "{:?} clean days fell",
+            hi.level
+        );
+        assert!(
+            hi.compensation || !lo.compensation,
+            "{:?} dropped compensation",
+            hi.level
+        );
+        assert!(
+            hi.kill_path || !lo.kill_path,
+            "{:?} dropped the kill path",
+            hi.level
+        );
+        assert_eq!(hi.from, Some(lo.level), "{:?} skips a level", hi.level);
+    }
+    assert!(
+        rows[2].kill_path && !rows[0].kill_path,
+        "premise: strictness rises"
+    );
+}

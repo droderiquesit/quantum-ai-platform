@@ -345,9 +345,11 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/discovery_targets.rs targets_from_strategies, StrategyCoverage, TargetReason::StrategyGap",
       "backend/crates/runtime/qip-kernel/src/source_discovery.rs Platform::strategy_coverage, discovery_targets",
-      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs a_strategy_whose_instrument_no_source_covers_yields_a_target_naming_it"
+      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs a_strategy_whose_instrument_no_source_covers_yields_a_target_naming_it",
+      "backend/crates/runtime/qip-kernel/tests/source_discovery.rs a_registered_strategy_whose_instrument_no_source_covers_becomes_a_target_naming_it",
+      "a_registered_strategy_whose_instrument_no_source_covers_becomes_a_target_naming_it"
     ],
-    "gap": "Two limits. The kernel wiring (strategy_coverage reading the strategy factory candidates) has no kernel-level test that registers a candidate and reads the target back, so deleting that feed would not fail a test. And discovery runs only when QIP_DEEPBRAIN_DISCOVER_EVERY is above zero, which it is in no committed environment.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Discovery runs only when QIP_DEEPBRAIN_DISCOVER_EVERY is above zero, which it is in no committed environment; that is an environment setting. Test not yet mutation-verified (delete strategy_coverage feed, expect failure). The spike-versus-strategy-gap ordering at kernel level is also not tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -358,7 +360,7 @@
     "verification": "cargo test -p qip-data-finder --test discovery_targets; cargo test -p qip-kernel --test source_discovery",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 L22: input, ranking and finder-level test added; kept PARTIAL. Mutations that fired: treat every strategy instrument as uncovered; skip the strategy loop. The kernel feed was built and compiled but not mutation-tested; that is the first remaining gap, stated rather than claimed."
+    "notes": "2026-10-18 L22: input, ranking and finder-level test added; kept PARTIAL. Mutations that fired: treat every strategy instrument as uncovered; skip the strategy loop. The kernel feed was built and compiled but not mutation-tested; that is the first remaining gap, stated rather than claimed. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-DATA-2016",
@@ -488,7 +490,8 @@
     "current": "LifecycleStage::Sandbox and Promote exist as reasoning-trail labels; the sandbox_lifecycle tests only record and read back strings and would pass with no sandbox at all.",
     "evidence": [
       "backend/crates/services/qip-data-finder/tests/sandbox_lifecycle.rs:11-35 test records strings into Reasoning and asserts them back",
-      "backend/crates/services/qip-data-finder/src/decision.rs LifecycleStage enum"
+      "backend/crates/services/qip-data-finder/src/decision.rs LifecycleStage enum",
+      "a_fast_brain_step_whose_source_is_no_longer_admitted_puts_nothing_in_the_world_fabric"
     ],
     "gap": "2026-10-30: owner decision: a source the finder registers never gets an adapter (ADR 0157 §4, ADR 0180 decision 3), and the connectors that do feed the world model are hand-written licensed arms off in every committed tfvars, so there is no sandboxed output for a promotion gate to hold back; the requirement needs restating to the hand-written-connector model (or generated adapters admitted by ADR) before a gate would guard anything that runs.",
     "implemented": true,
@@ -503,7 +506,7 @@
     "verification": "a test that ingests from a sandboxed source and asserts the world model is unchanged",
     "work_item": "",
     "size": "M",
-    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: tests/sandbox_lifecycle.rs now drives the real DataFinder (a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded) and pins the absence of a Sandbox stage. 2026-10-30: lane L3-data read admit_world_records/absorb_evidence: records are tied to connector claim ids, never to finder registrations, so a kernel sandbox gate keyed on registered sources would match nothing. No code written; no skeptic round (nothing to grade)."
+    "notes": "The DATA-034 sandbox test is vacuous with respect to behaviour. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: tests/sandbox_lifecycle.rs now drives the real DataFinder (a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded) and pins the absence of a Sandbox stage. 2026-10-30: lane L3-data read admit_world_records/absorb_evidence: records are tied to connector claim ids, never to finder registrations, so a kernel sandbox gate keyed on registered sources would match nothing. No code written; no skeptic round (nothing to grade). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-DATA-2022",
@@ -729,7 +732,9 @@
       "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::the_world_record_seam_releases_only_what_the_fabric_stood_behind",
       "backend/crates/apps/qip-fastbrain/src/feed.rs FeedSource::poll (claim None for Synthetic, Replay, Tape, Live) and node.rs admit_world_records",
       "backend/crates/apps/qip-deepbrain/src/connectors.rs and backend/crates/apps/qip-api/src/routes.rs admit_world_records",
-      "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document"
+      "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
+      "an_arm_outside_the_market_data_bar_set_is_refused_an_unclaimed_record",
+      "the_synthetic_arm_is_a_market_data_bar_arm_and_polls_unclaimed"
     ],
     "gap": "2026-11-12 (lane fw-m-01), replacing the 2026-10-24 slice list, whose slices 1-3 have landed (claim ids returned with each connector record, the fabric's withheld set, and observe gated on it in all three roots through admit_world_records). Two clauses of the bar remain unmet. (a) 'every ingested world claim is wrapped; fails if a claim reaches the world model without one': admit_world_records passes a record with claim None straight to observe, and the fast brain's Live arm (RestMarketDataAdapter, a vendor's bars) produces only None, so a vendor's assertion about a price reaches the world model with no EvidenceRecord; synthetic, replay and tape records do the same. Closing needs a decision, recorded in an ADR, on what an unclaimed record is — either the Live arm mints evidence like the connector arm, or an ADR states that a venue/vendor market-data bar is an observation and not an extracted claim, and a test then refuses any arm outside that named set reaching observe with None. The second reading withdraws a clause by ADR, so under bar part 4 it would still need the owner. (b) A world-model fact carries no link to the evidence it rests on: EvidenceIntake::release drops the claim id, so a sensed record observed into the world model cannot be traced back to its EvidenceRecord from the world model alone (old slice 4). Neither was built in this lane: (a) is a product decision on market-data provenance and (b) changes observe's input type across the three roots.",
     "implemented": true,
@@ -744,7 +749,7 @@
     "verification": "cargo test -p qip-kernel --test evidence_intake (14 passed); cargo test -p qip-market-ingestion --test evidence_stage (10 passed); cargo test -p qip-fastbrain --test registrations (7 passed); cargo test -p qip-acceptance --test runtime_reachability (8 passed); cargo test -p qip-evidence --lib (24 passed); cargo test -p qip-world-model --test evidence_fabric (22 passed). Mutation-verified 2026-11-12, each restored byte-for-byte: admit_world_records' `Some(id) => intake.release(..)` arm replaced by `vec![record]` fails the_world_record_seam_releases_only_what_the_fabric_stood_behind; `if false &&` on each of new's source_identity, extraction_method and license refusals fails its own evidence::tests refusal test; dropping `!record.is_complete() ||` from EvidenceFabric::admit fails the new fabric test ('a edited claim with a blank source_identity was admitted') and nothing else in qip-evidence or qip-world-model, which is why the test was added; dropping the licence term from is_complete fails it too.",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change. 2026-11-12 lane fw-m-01: gap rewritten (slices 1-3 landed; the remaining clauses are the unclaimed record and the fact-to-evidence link); added the fabric-backstop test, since removing the is_complete refusal failed no test anywhere. Left PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap. 2026-10-24 (lane T8-RESIDUAL): re-read, no change. 2026-11-12 lane fw-m-01: gap rewritten (slices 1-3 landed; the remaining clauses are the unclaimed record and the fact-to-evidence link); added the fabric-backstop test, since removing the is_complete refusal failed no test anywhere. Left PARTIAL. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-EVID-2032",
@@ -1035,9 +1040,12 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs default_retention (simulated dataset raw: true, ADR 0181)",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::every_drained_lake_segment_carries_the_venues_published_bytes_line_for_line",
       "backend/crates/libs/qip-storage/tests/lake.rs::a_crash_while_writing_raw_bytes_is_repaired_by_the_retry_not_sealed_without_them",
-      "backend/crates/apps/qip-edge-node/tests/lake_retention.rs::a_raw_grant_for_a_feed_the_lake_cannot_re_encode_is_refused_by_name"
+      "backend/crates/apps/qip-edge-node/tests/lake_retention.rs::a_raw_grant_for_a_feed_the_lake_cannot_re_encode_is_refused_by_name",
+      "backend/crates/libs/qip-storage/src/lake.rs Lake::read_raw",
+      "backend/crates/libs/qip-storage/tests/lake.rs::the_lake_reads_back_the_raw_bytes_it_sealed_and_refuses_a_missing_or_altered_slot",
+      "the_lake_reads_back_the_raw_bytes_it_sealed_and_refuses_a_missing_or_altered_slot"
     ],
-    "gap": "2026-10-25 (after the skeptic's refutation, three of its five items addressed): a drain-driven decision_loop test now proves every segment LakeSink seals from the spool carries a raw slot whose lines are, one for one, the bytes published for its canonical ticks; Lake::write_segment writes the raw slot first and write-once, so a crash between the two can no longer leave a sealed segment without its raw bytes; and parse_retention refuses at start a raw grant for any dataset the lake cannot re-encode. Remaining: (1) durability - the edge binary's default store is memory, execution_nodes_enabled and enable_cloud_storage are false in every environment, and infrastructure/terraform/modules/data/main.tf deletes lake/class=market/ objects (raw slots included) at 90 days; meeting 'remains available for exact replay and retraining' needs a durable store on a committed deployment and either a .raw exemption from that delete rule or an owner decision on the retention bound - both cost storage and are the owner's; (2) no qip_storage reader returns raw slots (tests read raw keys directly) and the pinned manifest carries no raw hash.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Remaining: durability. The edge default store is memory, enable_cloud_storage and execution_nodes_enabled are false everywhere, and modules/data/main.tf deletes lake/class=market/ objects, raw slots included, at 90 days. A durable store plus a .raw exemption or an owner retention decision are owner and deployment costs. The pinned manifest still carries no raw hash.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1050,7 +1058,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: The evidence 'grep with_tick_lake|TickLakeWriter::new ... none' is stale: qip-deepbrain main.rs and evolution.rs call with_tick_lake, only when QIP_DEEPBRAIN_TICK_LAKE_RETENTION is set, which no committed deployment sets; the edge LakeSink writes no raw bytes and no raw hash. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0181 decisions 1-2: the simulated depth dataset permits raw retention; raw frames travel the spool and LakeSink seals them in the segment's raw slot off the decision path. Code left: the frame record, the raw slot, default_retention raw:true for the simulated dataset, and a byte-for-byte re-materialisation test. Status unchanged. 2026-10-25 lane L3-DATA (wave580): raw retention landed (7450feb8). Mutation fired: dropping even-sequenced native lines in LakeSink - 'pass 2: the lake's raw bytes are not the frame the venue published'. Independent skeptic (security-engineer) verdict REFUTED; reasons in gap. Kept PARTIAL. 2026-10-25 later: mutations fired - LakeSink never filling raw_by_partition ('sealed without the venue's bytes'); seal-before-raw order restored in write_segment (crash test fails); non-simulated raw refusal removed (refusal test fails). An existing lake_retention assertion that accepted a raw grant for lse-level2 was changed to grant raw to the simulated dataset and canonical to lse-level2: stricter, not weaker - the sink could never honour that raw grant. Kept PARTIAL for durability, an owner cost."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-24 lane L3-DATA: gap rewritten from a read-only re-read of the tree against the requirement text; status unchanged. Correction to current/evidence: The evidence 'grep with_tick_lake|TickLakeWriter::new ... none' is stale: qip-deepbrain main.rs and evolution.rs call with_tick_lake, only when QIP_DEEPBRAIN_TICK_LAKE_RETENTION is set, which no committed deployment sets; the edge LakeSink writes no raw bytes and no raw hash. 2026-10-25 lane L3-DATA (wave580), decided under the owner's 2026-10-24 delegation (docs/blueprint/owner-decisions-2026-10-24.md): ADR 0181 decisions 1-2: the simulated depth dataset permits raw retention; raw frames travel the spool and LakeSink seals them in the segment's raw slot off the decision path. Code left: the frame record, the raw slot, default_retention raw:true for the simulated dataset, and a byte-for-byte re-materialisation test. Status unchanged. 2026-10-25 lane L3-DATA (wave580): raw retention landed (7450feb8). Mutation fired: dropping even-sequenced native lines in LakeSink - 'pass 2: the lake's raw bytes are not the frame the venue published'. Independent skeptic (security-engineer) verdict REFUTED; reasons in gap. Kept PARTIAL. 2026-10-25 later: mutations fired - LakeSink never filling raw_by_partition ('sealed without the venue's bytes'); seal-before-raw order restored in write_segment (crash test fails); non-simulated raw refusal removed (refusal test fails). An existing lake_retention assertion that accepted a raw grant for lse-level2 was changed to grant raw to the simulated dataset and canonical to lse-level2: stricter, not weaker - the sink could never honour that raw grant. Kept PARTIAL for durability, an owner cost. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-TICK-2043",
@@ -1811,9 +1819,11 @@
       "backend/crates/services/qip-twin/tests/twin.rs:221 planning_an_alternative_against_a_later_market_is_refused_and_names_the_leak",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::maybe_round_with_orders",
       "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_tick_round_replays_the_platforms_own_orders_and_records_fill_versus_assumption_rows",
-      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::the_run_loop_hands_the_platforms_own_orders_to_the_tick_desk"
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::the_run_loop_hands_the_platforms_own_orders_to_the_tick_desk",
+      "backend/crates/services/qip-twin/tests/twin.rs::a_decision_view_cannot_read_a_same_day_bar_before_its_close",
+      "a_decision_view_cannot_read_a_same_day_bar_before_its_close"
     ],
-    "gap": "2026-10-25 (wave580 lane L3b): the node.rs handoff is now pinned - the run-loop test submits an order through Platform::submit_order and asserts every round's order_rows + unreplayable_orders covers it (mutation: node.rs handing Vec::new() fails it with [(0, 0), (0, 0)]). Remaining: (1) the desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset in every committed environment; the deep brain's own lake namespace holds no market segments by default, so a default-on desk would replay nothing - R12-TICK-2066's 2026-10-25 decision keeps the guard); (2) the requirement's named unit proof - a decision view cannot read a bar before its close time, failing if a same-day bar is visible intraday - is evidenced by qip-twin asof::view_at and twin.rs planning_an_alternative_against_a_later_market_is_refused_and_names_the_leak but was not re-run and mutation-verified by this lane.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Named unit proof now a direct test, not yet run or mutation-verified (mutation: key bars on open_time in PointInTimeView::bars). Remaining: tick desk off by default (QIP_DEEPBRAIN_TICK_EVERY unset; no market segments in lake), and no tick-level history replay.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1826,7 +1836,7 @@
     "verification": "cargo test -p qip-deepbrain --test tick_desk a_tick_round_replays_the_platforms_own_orders",
     "work_item": "",
     "size": "M",
-    "notes": "Checked 2026-10-18 against tick_desk.rs maybe_round/round. 2026-10-24 lane L3-DATA (wave580): order handoff landed. Mutation fired: maybe_round_with_orders passing Vec::new() again - 'the replay did not take the platform's own orders: []'. qip-execution-engine moved from qip-deepbrain dev-dependencies to dependencies (the execution engine's allowed-dependents list already names qip-deepbrain). Not promoted; no skeptic run because the row is not claimed COMPLETE. 2026-10-25 lane L3b (wave580): run-loop handoff pin added; mutation fired (node.rs passing an empty order list: 'the run loop handed the desk none of the platform's 1 order(s): [(0, 0), (0, 0)]'), restored by cp + cmp. cargo test -p qip-deepbrain --no-fail-fast: 15 binaries, 331 passed, 0 failed. Not promoted: the desk default stands under the 2066 decision."
+    "notes": "Checked 2026-10-18 against tick_desk.rs maybe_round/round. 2026-10-24 lane L3-DATA (wave580): order handoff landed. Mutation fired: maybe_round_with_orders passing Vec::new() again - 'the replay did not take the platform's own orders: []'. qip-execution-engine moved from qip-deepbrain dev-dependencies to dependencies (the execution engine's allowed-dependents list already names qip-deepbrain). Not promoted; no skeptic run because the row is not claimed COMPLETE. 2026-10-25 lane L3b (wave580): run-loop handoff pin added; mutation fired (node.rs passing an empty order list: 'the run loop handed the desk none of the platform's 1 order(s): [(0, 0), (0, 0)]'), restored by cp + cmp. cargo test -p qip-deepbrain --no-fail-fast: 15 binaries, 331 passed, 0 failed. Not promoted: the desk default stands under the 2066 decision. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-TICK-2074",
@@ -2007,9 +2017,12 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/fusion.rs::MeasuredReaction",
       "backend/crates/runtime/qip-kernel/tests/fusion.rs::each_market_input_the_trace_records_appears_in_the_measured_reaction",
-      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs TracePoint depth imbalance"
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs TracePoint depth imbalance",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::the_desk_fills_depth_and_imbalance_from_the_replayed_book_into_the_fused_reaction",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickRound::reactions",
+      "the_desk_fills_depth_and_imbalance_from_the_replayed_book_into_the_fused_reaction"
     ],
-    "gap": "Fusion now carries liquidity, flow, regime (realised volatility), dislocation and feasibility, but only behind the tick desk, which is off unless QIP_DEEPBRAIN_TICK_EVERY is set and no committed deployment sets it; the desk's fill of depth and imbalance from the replayed book has no test of its own (the round keeps counts, not the fused reactions). The regime is a realised-volatility reading, not a classified regime label, and flow is book imbalance, not signed trade flow.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Desk fill of depth and imbalance is now tested on TickRound.reactions. Still open: the desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set and no committed deployment sets it. Regime is realised volatility, not a classified label. Flow is book imbalance, not signed trade flow.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2020,7 +2033,7 @@
     "verification": "cargo test -p qip-kernel --test fusion",
     "work_item": "",
     "size": "XL",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: five inputs fused; mutations (depth ratio against itself, dislocation needing three venues, feasibility compared with zero) each failed the new test. Kept PARTIAL: desk off by default and its fill untested."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: five inputs fused; mutations (depth ratio against itself, dislocation needing three venues, feasibility compared with zero) each failed the new test. Kept PARTIAL: desk off by default and its fill untested. 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-TICK-2082",
@@ -2098,9 +2111,12 @@
       "backend/crates/apps/qip-deepbrain/src/evolution.rs set_priors and its use in maybe_turn",
       "backend/crates/apps/qip-deepbrain/src/node.rs the set_priors hand-off",
       "backend/crates/runtime/qip-kernel/tests/foundry.rs a_fused_posterior_changes_how_many_candidates_a_round_proposes_and_so_which_are_registered",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_fused_posterior_handed_to_the_engine_sizes_the_round_it_runs"
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_fused_posterior_handed_to_the_engine_sizes_the_round_it_runs",
+      "backend/crates/apps/qip-deepbrain/src/node.rs hand_posteriors, the_tick_desks_posteriors_replace_the_engines_priors_at_the_hand_off",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs EvolutionEngine::priors",
+      "the_tick_desks_posteriors_replace_the_engines_priors_at_the_hand_off"
     ],
-    "gap": "The tick desk is still off by default (QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it), so no deployed binary produces a posterior and every deployed round searches at the neutral size. The node.rs hand-off (TickDesk::posteriors -> set_priors) has no test of its own: deleting it fails nothing. Fusion posteriors are keyed by the watch graph's instrument names, which match the evolution subject only where the graph names instruments as the exchange does. No Asset, Capital or Risk brain type exists to read it.",
+    "gap": "2026-11-14 (after the drafted change landed; what its author said remains): Tick desk still off by default (QIP_DEEPBRAIN_TICK_EVERY unset, no deployment sets it), so deployed rounds search at the neutral size. The hand-off test uses an empty desk (non-empty posteriors need a full round), so it proves replacement, not a specific value. Posteriors keyed by watch-graph names may not match subjects. No separate Asset, Capital or Risk brain type exists; owner ruling says an ADR must settle that.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2113,7 +2129,7 @@
     "verification": "cargo test -p qip-kernel --test foundry && cargo test -p qip-deepbrain --lib evolution::tests::a_fused",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutations fired: search_with_prior ignoring its prior fails the kernel test (the moving and quiet subjects propose the same ten); the engine passing the neutral prior fails the deepbrain test on the high-prior comparison. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The Asset, Capital and Risk brains are not new components. The Asset brain is the foundry's per-subject search, and a posterior may change only how many candidates a round proposes, each one charged to the trial ledger. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The fused posterior's Asset and Risk consumers are the foundry's per-subject search and REASON's narrowing seam, and Capital and the specialist brains do not read it while nothing new is sized.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14)."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutations fired: search_with_prior ignoring its prior fails the kernel test (the moving and quiet subjects propose the same ten); the engine passing the neutral prior fails the deepbrain test on the high-prior comparison. Owner ruling 2026-10-31, second pass (ADR_THEN_IMPLEMENT): The Asset, Capital and Risk brains are not new components. The Asset brain is the foundry's per-subject search, and a posterior may change only how many candidates a round proposes, each one charged to the trial ledger. Handed to lane L3b (docs/blueprint/lanes/wave1031-handoff-2-2026-10-31.json); status stays PARTIAL until the lane closes it. ADR to claim first in docs/adr/README.md, title: The fused posterior's Asset and Risk consumers are the foundry's per-subject search and REASON's narrowing seam, and Capital and the specialist brains do not read it while nothing new is sized.. Verbatim ruling, closure and skeptic: docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (owner-decisions-2026-10-31.md decision 14). 2026-11-14: a change for this row was drafted without compiling and kept because a batched local build (clippy -D warnings, the crate tests) passed with it. Its new tests have NOT been mutation-verified, so they are evidence the code runs, not yet proof they can fail; status unchanged."
   },
   {
     "id": "R12-TICK-2086",
