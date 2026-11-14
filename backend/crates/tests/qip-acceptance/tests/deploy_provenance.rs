@@ -999,14 +999,19 @@ fn two_builds(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path:
     let second = scratch.join("second");
     portal_tree(&first, "first");
     portal_tree(&second, "second");
-    for secret in PER_BUILD_SECRETS {
+    for (index, secret) in PER_BUILD_SECRETS.iter().enumerate() {
         let relative = secret.trim_start_matches('/');
         let a = std::fs::read(first.join(relative)).unwrap_or_default();
         let b = std::fs::read(second.join(relative)).unwrap_or_default();
+        // The message names the entry by its position in PER_BUILD_SECRETS
+        // and prints nothing read from it. It used to interpolate the entry,
+        // and main's static analysis refused that as a secret written to a
+        // log (rust/cleartext-logging, severity 7.5); that one finding kept
+        // main's ci red, and infra.yml applies nothing on a red commit.
         assert!(
             !a.is_empty() && a != b,
-            "premise: the fixture's two builds must differ in {secret}, or the admitting case \
-             proves nothing about the exceptions"
+            "premise: the fixture's two builds must differ in entry {index} of \
+             PER_BUILD_SECRETS, or the admitting case proves nothing about the exceptions"
         );
     }
     (scratch, first, second)

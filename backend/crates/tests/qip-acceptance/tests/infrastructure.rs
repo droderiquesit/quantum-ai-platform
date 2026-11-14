@@ -15291,6 +15291,129 @@ fn every_asset_change_feed_publishes_to_the_change_topic() {
     );
 }
 
+/// The infra account's warehouse-and-feeds role holds exactly the permissions
+/// its resources are refused without, and what needs the role waits for it.
+///
+/// Not hypothetical. The first apply that used this role (infra run 127, dev,
+/// 2026-11-14) was refused three times: both asset feeds with "Request denied
+/// by Cloud IAM. Missing required IAM permission on requested scope", and the
+/// read that names BigQuery's encryption account with "User does not have
+/// bigquery.jobs.create permission". The role carried the feed and dataset
+/// verbs and none of the three a feed's creator and that read are asked for.
+///
+/// The set is pinned whole, so that a widening is a diff a reviewer reads
+/// here; and it is matched as delimited entries, because
+/// `contains("cloudasset.feeds.create")` says nothing about its neighbours.
+/// What this cannot prove is that the set is enough: only an apply does.
+///
+/// Mutations: delete `"bigquery.jobs.create",` from the role and this fails
+/// naming it; delete `module.cicd,` from the feed's `depends_on` and it fails
+/// on the feed's ordering.
+#[test]
+fn the_infra_account_holds_the_permissions_the_first_warehouse_and_feed_apply_was_refused_for() {
+    let cicd = read("infrastructure/terraform/modules/cicd/main.tf");
+    let at = cicd
+        .find("resource \"google_project_iam_custom_role\" \"infra_warehouse_and_feeds\"")
+        .expect("premise: modules/cicd declares the warehouse-and-feeds role");
+    let body = &cicd[at..];
+    let end = body.find("\n}\n").expect("the role block closes");
+    let mut held: Vec<&str> = body[..end]
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix('"'))
+        .filter_map(|line| line.strip_suffix("\","))
+        .collect();
+    held.sort_unstable();
+    assert!(
+        held.contains(&"bigquery.datasets.create") && held.contains(&"cloudasset.feeds.create"),
+        "premise: the role still carries the dataset and feed verbs it was written for, so \
+         the walk read its permission list and not something else: {held:?}"
+    );
+    for (permission, refused) in [
+        (
+            "bigquery.jobs.create",
+            "the read that names BigQuery's encryption account",
+        ),
+        (
+            "cloudasset.assets.exportResource",
+            "creating the RESOURCE feed",
+        ),
+        (
+            "cloudasset.assets.exportIamPolicy",
+            "creating the IAM_POLICY feed",
+        ),
+    ] {
+        assert!(
+            held.contains(&permission),
+            "the infra account's warehouse-and-feeds role no longer carries {permission}, so \
+             {refused} is refused as it was on the first apply"
+        );
+    }
+    assert_eq!(
+        held,
+        vec![
+            "bigquery.datasets.create",
+            "bigquery.datasets.delete",
+            "bigquery.datasets.get",
+            "bigquery.datasets.getIamPolicy",
+            "bigquery.datasets.setIamPolicy",
+            "bigquery.datasets.update",
+            "bigquery.jobs.create",
+            "cloudasset.assets.exportIamPolicy",
+            "cloudasset.assets.exportResource",
+            "cloudasset.feeds.create",
+            "cloudasset.feeds.delete",
+            "cloudasset.feeds.get",
+            "cloudasset.feeds.list",
+            "cloudasset.feeds.update",
+        ],
+        "the warehouse-and-feeds role changed; a permission added here is a grant to the \
+         account that applies every environment, so name the refusal that asked for it"
+    );
+
+    // The role is bound by the same root that uses it. The feed waits for
+    // modules/cicd, and modules/data's reads are deferred while the role is
+    // changing, through the output that stands for the binding.
+    let audit = read("infrastructure/terraform/audit-logs.tf");
+    let at = audit
+        .find("resource \"google_cloud_asset_project_feed\" \"changes\"")
+        .expect("premise: audit-logs.tf declares the asset change feed");
+    let feed = &audit[at..];
+    let feed = &feed[..feed.find("\n}\n").expect("the feed block closes")];
+    let waits_for: Vec<&str> = feed
+        .split("depends_on = [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .expect("premise: the feed declares what it waits for")
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    assert!(
+        waits_for.contains(&"module.cicd"),
+        "the asset change feed no longer waits for modules/cicd, so it can be created beside \
+         a change to the role that permits creating it: {waits_for:?}"
+    );
+    let root = read("infrastructure/terraform/main.tf");
+    let at = root
+        .find("module \"data\" {")
+        .expect("premise: the root instantiates modules/data");
+    let data = &root[at..];
+    let data = &data[..data.find("\n}\n").expect("the module block closes")];
+    assert!(
+        data.lines().any(|line| line.trim()
+            == "depends_on = [module.services, module.cicd.warehouse_and_feeds_grant]"),
+        "modules/data no longer waits for the infra account's warehouse grant, so its read \
+         of BigQuery's encryption account runs at plan while the role is still changing"
+    );
+    let outputs = read("infrastructure/terraform/modules/cicd/outputs.tf");
+    assert!(
+        outputs.contains("output \"warehouse_and_feeds_grant\" {")
+            && outputs.contains("google_project_iam_member.infra_warehouse_and_feeds.id"),
+        "modules/cicd no longer exports the binding the data module waits for"
+    );
+}
+
 /// ADR 0240: the catalogue hands the deep brain the research dataset's name,
 /// its staging bucket and its location by computing them the way
 /// `modules/data` does, because reading that module's outputs would be a

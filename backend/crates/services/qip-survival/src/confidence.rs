@@ -38,11 +38,33 @@
 //! `[0, 1]`, a dissenting share above one — because a malformed figure read
 //! as "fine" is the failure every limit in this workspace has been fixed for.
 
+use qip_contracts::regime::MarketRegime;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
-use qip_cost_router::context::MarketRegime;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// One instrument whose recent returns shifted past what the estimators' own
+/// error explains: the population stability index and the floor it is read
+/// against.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShiftReading {
+    pub object_id: String,
+    pub population_stability_index: f64,
+    pub floor: f64,
+}
+
+/// What the governor reads of one cycle's feature statistics, as data. The
+/// kernel's `FeatureStatisticsReview` builds it (`distribution_reading`); the
+/// governor never names the review, so this crate's closure stays free of the
+/// runtime (ADR 0464).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DistributionReading {
+    /// Shifted instruments, in identifier order.
+    pub shifted: Vec<ShiftReading>,
+    /// Instruments whose feed has stopped being a distribution.
+    pub quantised: Vec<String>,
+}
 
 /// How many per-thesis and per-instrument signals the governor holds.
 ///
@@ -110,7 +132,7 @@ pub enum Trigger {
     /// sizing. Only a component with a graded record has one.
     Reliability,
     /// The twin's replay of fills at the strategy's venue diverged from the
-    /// venue past `crate::replay_divergence`'s threshold, and no
+    /// venue past `qip-kernel`'s `replay_divergence` threshold, and no
     /// re-promotion has been recorded since (R12-RES-7104). Read only for a
     /// capital grant, on the strategy the grant is for.
     ReplayDivergence,
@@ -303,15 +325,11 @@ impl ConfidenceSignals {
 
     /// The latest feature statistics: each shifted instrument's index over its
     /// floor, and every quantised feed at infinity.
-    pub fn observe_distribution(
-        &mut self,
-        review: &crate::feature_statistics::FeatureStatisticsReview,
-    ) {
+    pub fn observe_distribution(&mut self, reading: &DistributionReading) {
         let mut ood = BTreeMap::new();
-        for shift in &review.shifted {
-            let drift = &shift.drift;
-            let score = if drift.floor > 0.0 {
-                drift.population_stability_index / drift.floor
+        for shift in &reading.shifted {
+            let score = if shift.floor > 0.0 {
+                shift.population_stability_index / shift.floor
             } else {
                 // A floor of zero means any index at all is beyond the
                 // estimators' error; `is_material` put it on the list.
@@ -319,7 +337,7 @@ impl ConfidenceSignals {
             };
             bounded_insert(&mut ood, shift.object_id.clone(), score);
         }
-        for object in &review.quantised {
+        for object in &reading.quantised {
             bounded_insert(&mut ood, object.clone(), f64::INFINITY);
         }
         self.ood = ood;
@@ -843,15 +861,10 @@ mod tests {
         assert_eq!(ood_multiplier(f64::INFINITY).unwrap(), OOD_FLOOR);
     }
 
-    fn quantised(object: &str) -> crate::feature_statistics::FeatureStatisticsReview {
-        crate::feature_statistics::FeatureStatisticsReview {
-            instruments: Vec::new(),
-            unmeasured: Vec::new(),
+    fn quantised(object: &str) -> DistributionReading {
+        DistributionReading {
             shifted: Vec::new(),
             quantised: vec![object.to_string()],
-            bytes: 0,
-            cycle: 1,
-            at: qip_core::Timestamp::from_secs(1_760_000_000),
         }
     }
 

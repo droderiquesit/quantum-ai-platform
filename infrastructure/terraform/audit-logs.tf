@@ -135,8 +135,13 @@ resource "google_cloud_asset_project_feed" "changes" {
     }
   }
 
+  # module.cicd holds the role that lets the applying account create a feed.
+  # Without the edge Terraform is free to create the feed beside a change to
+  # that role, and the feed is refused for a permission the same apply was
+  # about to grant (infra run 127).
   depends_on = [
     google_pubsub_topic_iam_member.asset_changes_publisher,
     module.services,
+    module.cicd,
   ]
 }

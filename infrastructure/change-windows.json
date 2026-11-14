@@ -21,6 +21,8 @@
     "google_sql_database_instance"
   ],
   "windows": [
-    { "days": ["Tue", "Wed", "Thu"], "from": "14:00", "to": "20:00" }
+    { "days": ["Tue", "Wed", "Thu"], "from": "14:00", "to": "20:00" },
+    { "days": ["Fri"], "from": "18:00", "to": "23:59" },
+    { "days": ["Sat"], "from": "00:00", "to": "03:00" }
   ]
 }

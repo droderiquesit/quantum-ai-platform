@@ -263,6 +263,7 @@ fn cycle_journal() -> CycleJournalEntry {
             topic: "market.bar".to_string(),
         }],
         sensed_unlisted: 1,
+        risk_discovery: None,
     }
 }
 
