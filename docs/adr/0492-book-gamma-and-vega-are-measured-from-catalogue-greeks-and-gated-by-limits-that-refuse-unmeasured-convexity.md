@@ -100,6 +100,22 @@ limit together, and proves both through the governed order path.
 - Each test was mutation-verified; the mutations are named in the doc
   comment of each test.
 
+## What it costs
+
+- **Every risk state carries a convexity entry per catalogue record.**
+  `Platform::risk_state_from` builds the map from the whole universe on each
+  call, because the order under check is not known when the state is built.
+  That is one `BTreeMap` of the catalogue's size per pre-trade check.
+- **A desk that installs either limit trades no option the catalogue cannot
+  price.** That is the intent, and it is a cost: a record arriving without
+  Greeks blocks new orders in that instrument until its source states them.
+- **The figure follows the notional convention.** Decision 2 couples the
+  divisor to how the desk books notional; a change to one is a change to
+  both, held only by the integration test.
+- **Two more arms on an exhaustive enum.** Every match over `LimitKind` —
+  the edge gate's `evaluable`, tolerance narrowing, the fixture table — had
+  to answer for them, and will for the next.
+
 ## What this leaves open
 
 R12-RISK-4095 stays **PARTIAL** (gap dated 2026-11-13):
