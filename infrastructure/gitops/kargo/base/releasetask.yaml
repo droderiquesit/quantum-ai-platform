@@ -1,0 +1,66 @@
+# The release-standing check (ADR 0504, R12-OBS-9156): before freight is
+# recorded as having passed `paper`, ask the platform whether the plane this
+# freight carries has spent its error budget, and refuse the promotion if it
+# has or if the answer cannot be read.
+#
+# Why this exists. §49.1's objectives were evaluated, and
+# `aiops::release_gate` refused a release per plane, and nothing that
+# promotes anything asked it. An SLO that does not gate a release is
+# decoration (R12-OBS-9156's own rationale).
+#
+# One plane per invocation, by construction. The task takes `plane` as a
+# variable and asks `GET /api/v1/release/<plane>` for that plane alone. A
+# spent budget on any other plane answers 200 here, because qip-api's route
+# reads only the asked plane's objectives -- the refusal is "that plane
+# only" because the question is. The Stage names which planes its freight
+# carries; see stages.yaml.
+#
+# Fail closed, three ways. A 409 (budget spent) fails. A 404 (a plane no
+# objective is declared on -- a typo in `plane`) fails, where
+# `release_gate` alone would have answered "proceed" for ever. Anything
+# else -- no address configured, a timeout, a 401, a 503 from a poisoned
+# platform -- fails too: the success expression is exactly `status == 200`,
+# and the failure expression is its negation, so no response leaves the
+# step undecided and retrying.
+#
+# What it cannot know. A 200 on a plane none of whose objectives this
+# process observed is a gate with nothing to act on, not a healthy plane.
+# The body says so in `observed_objectives`; this step does not refuse on
+# it, because the owner's ruling refuses a spent budget, and most §49.1
+# objectives have no figure yet (blueprint_objectives.rs says which, and
+# why). Refusing on "unobserved" would refuse every promotion for a reason
+# no change in this tree can clear.
+#
+# Unproven against a live Kargo: the control plane is suspended (ADR 0093),
+# `releaseStandingURL` is empty in every Stage until an environment serves
+# qip-api to the control plane, and the credential Secret named below does
+# not exist yet. Until both do, the first `fail` step refuses every
+# promotion out of `paper`; that is the ruling ("a standing that cannot be
+# read refuses"), not an accident. `qip-acceptance`'s `gitops` suite pins
+# the shape; the first promotion through `paper` is its test.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: verify-release-standing
+  namespace: qip
+spec:
+  vars:
+    - name: plane
+    - name: releaseStandingURL
+      value: ""
+  steps:
+    - uses: fail
+      if: ${{ vars.releaseStandingURL == "" || vars.plane == "" }}
+      config:
+        message: no qip-api address or no plane is configured for the release-standing check; a standing that cannot be read refuses the promotion (ADR 0504).
+    - uses: http
+      as: standing
+      config:
+        method: GET
+        url: ${{ vars.releaseStandingURL }}/api/v1/release/${{ vars.plane }}
+        headers:
+          - name: Authorization
+            value: Bearer ${{ secret('qip-release-standing').token }}
+        timeout: 10s
+        successExpression: response.status == 200
+        failureExpression: response.status != 200

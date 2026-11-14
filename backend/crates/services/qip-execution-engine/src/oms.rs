@@ -1057,9 +1057,9 @@ impl OrderManager {
                     }
                 }
                 // ADR 0285: a desk fill is the other side of a layering
-                // pattern on this instrument, at any venue. The desk has no
-                // replace path, so nothing here records a requote; a replace
-                // path added later must call `ConductWatch::requoted`.
+                // pattern on this instrument, at any venue. The requote it
+                // is read against is recorded by `Self::replace` (ADR 0526),
+                // not here: a submission is a placement, never a requote.
                 if !order.fills.is_empty() {
                     self.conduct.filled(&order.object_id, book_side, at);
                 }
@@ -1238,6 +1238,104 @@ impl OrderManager {
             self.orders.insert(id, order);
         }
         worked
+    }
+
+    /// Reprice a working limit order: the desk's requote (ADR 0526).
+    ///
+    /// A requote is the withdrawal of `order_id` and the submission of
+    /// `replacement` on the same side of the same instrument, and it is
+    /// recorded as both, so the conduct watch reads it the way the cell's
+    /// `Cell::record_replacement` makes it read one there:
+    ///
+    /// - the withdrawal is the desk's own choice, counted as unfilled when
+    ///   nothing of the order traded (R12-GOV-6126);
+    /// - an unfilled requote is also recorded on the layering arm,
+    ///   `ConductWatch::requoted`, as away from the touch only when it moved
+    ///   the limit further behind `touch` (ADR 0285 decision 5). Until this
+    ///   path existed the desk's half of that arm had nothing to read and
+    ///   could not fire;
+    /// - the replacement goes through [`Self::submit`] whole, so every gate a
+    ///   new order meets — the kill switch, autonomy, the conduct gate that
+    ///   now holds this requote, pre-trade risk — it meets.
+    ///
+    /// `touch` is the best price on the side the order rests at, as the
+    /// caller's book shows it: the best bid for a buy, the best ask for a
+    /// sale. `None` is a desk that cannot see the touch, and its requote is
+    /// not counted as away — the cell's rule for a cell holding no book
+    /// (ADR 0285 decision 4), because a requote nobody could judge is not
+    /// evidence of a pattern.
+    ///
+    /// Refused before anything is withdrawn when the pair is not a requote:
+    /// a different instrument or side is a new order, not a reprice, and a
+    /// non-limit order has no price to move. Once the original is withdrawn
+    /// a refused replacement leaves the desk with neither order resting,
+    /// which is the restrictive outcome and the one a gate refusing it chose.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace(
+        &mut self,
+        order_id: &OrderId,
+        replacement: Order,
+        touch: Option<Decimal>,
+        broker: &mut dyn Broker,
+        autonomy: &AutonomyController,
+        risk_state: &RiskState,
+        axes: BTreeMap<String, String>,
+        counterparty: Option<String>,
+        at: Timestamp,
+    ) -> Result<SubmissionResult> {
+        let Some(original) = self.orders.get(order_id.as_str()) else {
+            return Err(Error::not_found(format!(
+                "no order {} to requote; submit a new order instead",
+                order_id.as_str()
+            )));
+        };
+        if replacement.object_id != original.object_id || replacement.side != original.side {
+            return Err(Error::invalid(format!(
+                "order {} is a {} of {}; a replacement for another instrument or side is a new \
+                 order, not a requote — cancel and submit it",
+                order_id.as_str(),
+                original.side.as_str(),
+                original.object_id.as_str()
+            )));
+        }
+        let (OrderType::Limit { price: from }, OrderType::Limit { price: to }) =
+            (&original.order_type, &replacement.order_type)
+        else {
+            return Err(Error::invalid(format!(
+                "a requote moves a limit, and order {} or its replacement has none; cancel and \
+                 submit instead",
+                order_id.as_str()
+            )));
+        };
+        let (from, to) = (*from, *to);
+        let unfilled = original.filled_quantity().is_zero();
+        let (object_id, side) = (original.object_id.clone(), original.side);
+
+        self.withdraw(
+            order_id,
+            broker,
+            "requoted by the desk".to_string(),
+            at,
+            true,
+        )?;
+        if unfilled {
+            self.conduct.requoted(
+                &qip_contracts::venue::VenueId::new(broker.name()),
+                &object_id,
+                book_side_of(side),
+                requote_moved_away(side, from, to, touch),
+                at,
+            );
+        }
+        Ok(self.submit(
+            replacement,
+            broker,
+            autonomy,
+            risk_state,
+            axes,
+            counterparty,
+            at,
+        ))
     }
 
     /// Cancel a working order: the desk's own withdrawal, which the conduct
@@ -1581,4 +1679,17 @@ const fn book_side_of(side: Side) -> qip_contracts::message::BookSide {
         Side::Buy => qip_contracts::message::BookSide::Ask,
         Side::Sell => qip_contracts::message::BookSide::Bid,
     }
+}
+
+/// Whether a requote of a `side` order from `from` to `to` moved it further
+/// behind `touch`, the best price on the side it rests at (ADR 0285
+/// decision 4, the cell's rule in `Cell::requote_moved_away`). A buy rests
+/// on the bid: away is lower than before and below the best bid. A sale
+/// rests on the ask: away is higher than before and above the best ask. No
+/// touch is no judgement, and no judgement is not away.
+fn requote_moved_away(side: Side, from: Decimal, to: Decimal, touch: Option<Decimal>) -> bool {
+    touch.is_some_and(|touch| match side {
+        Side::Buy => to < from && to < touch,
+        Side::Sell => to > from && to > touch,
+    })
 }

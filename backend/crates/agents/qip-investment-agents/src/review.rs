@@ -69,11 +69,9 @@ impl Agent for AdversarialReviewer {
                 let Some(rate) = memory.hit_rate(&agent_id, brief.as_of) else {
                     continue;
                 };
-                let resolved = memory
-                    .episodes_as_of(&agent_id, brief.as_of)
-                    .iter()
-                    .filter(|e| e.outcome.is_some())
-                    .count();
+                // The same point-in-time set the rate was computed over: an
+                // outcome graded after the brief's instant is in neither.
+                let resolved = memory.resolved_as_of(&agent_id, brief.as_of).len();
                 // A poor rate over three episodes is noise; over ten it is a
                 // record. The threshold is on the count, not on a p-value,
                 // because the reviewer raises a question rather than a verdict.
