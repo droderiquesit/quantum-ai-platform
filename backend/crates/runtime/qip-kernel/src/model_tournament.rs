@@ -2961,7 +2961,11 @@ mod tests {
             .learn(&bars, None, 2, resolved_at)
             .expect("learns")
             .expect("a resolution is a record");
-        assert_eq!(review.spawned.len(), 1, "premise: the miss spawned {review:?}");
+        assert_eq!(
+            review.spawned.len(),
+            1,
+            "premise: the miss spawned {review:?}"
+        );
         let temporary = format!("{TEMPORARY_PREFIX}obj-AAA");
         assert!(
             stage.temporaries.contains_key("obj-AAA"),
@@ -2987,7 +2991,10 @@ mod tests {
                 break;
             }
         }
-        assert!(refused_at_capacity, "premise: the tournament reached its cap");
+        assert!(
+            refused_at_capacity,
+            "premise: the tournament reached its cap"
+        );
 
         let next = resolved_at.saturating_add(Duration::from_mins(1));
         observe_card_question(&mut stage, "hyp-3-obj-AAA", horizon, next);

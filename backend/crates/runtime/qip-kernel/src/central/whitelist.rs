@@ -947,11 +947,7 @@ mod tests {
 
     #[test]
     fn discovery_keeps_only_conversions_that_lie_on_a_cycle() {
-        let input = vec![
-            edge("USD", "AAA"),
-            edge("AAA", "USD"),
-            edge("AAA", "BBB"),
-        ];
+        let input = vec![edge("USD", "AAA"), edge("AAA", "USD"), edge("AAA", "BBB")];
         assert_eq!(input.len(), 3, "premise: three conversions offered");
         let kept = cyclic_conversions(input);
         let markets: Vec<&str> = kept.iter().map(|c| c.market.as_str()).collect();

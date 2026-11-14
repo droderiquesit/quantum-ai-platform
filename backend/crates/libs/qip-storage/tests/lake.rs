@@ -342,7 +342,8 @@ fn a_crash_while_writing_raw_bytes_is_repaired_by_the_retry_not_sealed_without_t
 }
 
 #[test]
-fn the_lake_reads_back_the_raw_bytes_it_sealed_and_refuses_a_missing_or_altered_slot() -> Result<()> {
+fn the_lake_reads_back_the_raw_bytes_it_sealed_and_refuses_a_missing_or_altered_slot() -> Result<()>
+{
     let store = MemoryBlobStore::new();
     let lake = Lake::new(&store);
     let raw = b"8=FIX.4.4|35=W|".to_vec();

@@ -2054,8 +2054,15 @@ fn every_received_unit_carries_its_sku_shipping_insurance_duty_and_tax_from_the_
             other => panic!("attribute {key} is not a value: {other:?}"),
         };
         assert!(!text("sku_identity").is_empty());
-        assert_eq!(text("insurance"), format!("insured for {coverage} at {premium}"));
-        assert!(text("shipping").ends_with(" via paper-carrier"), "{}", text("shipping"));
+        assert_eq!(
+            text("insurance"),
+            format!("insured for {coverage} at {premium}")
+        );
+        assert!(
+            text("shipping").ends_with(" via paper-carrier"),
+            "{}",
+            text("shipping")
+        );
         assert_eq!(text("customs_duties"), "duty rate 0.02");
         assert_eq!(text("tax"), "purchase tax 0.1");
     }

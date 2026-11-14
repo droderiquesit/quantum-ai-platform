@@ -1024,7 +1024,10 @@ fn a_source_alpha_desk_switched_off_journals_no_round_where_the_default_desk_jou
     let on_every = source_alpha_every(&|_| None).unwrap_or_else(|e| panic!("{e}"));
     let off_every =
         source_alpha_every(&|_| Some("0".to_string())).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(on_every, 1, "premise: the default cadence scores every cycle");
+    assert_eq!(
+        on_every, 1,
+        "premise: the default cadence scores every cycle"
+    );
     assert_eq!(off_every, 0, "premise: an explicit 0 disables scoring");
 
     let mut on = SourceAlphaDesk::new(on_every);
@@ -1037,7 +1040,9 @@ fn a_source_alpha_desk_switched_off_journals_no_round_where_the_default_desk_jou
         .maybe_score(1, start())
         .unwrap_or_else(|| panic!("premise: the default desk scores on this data"));
     assert_eq!(
-        journal_on.record_source_scores(1, &round_on, start()).unwrap(),
+        journal_on
+            .record_source_scores(1, &round_on, start())
+            .unwrap(),
         1,
         "the default desk journals one score"
     );

@@ -14550,16 +14550,17 @@ mod crossing_tests {
             cell.admit_replacement(&bid, &object(), &venue(), side, quantity, price, at(second))?;
             cell.record_replacement(&bid, &venue(), "r", quantity, price, at(second));
         }
-        let fifth = cell.admit_replacement(
-            &bid,
-            &object(),
-            &venue(),
-            side,
-            quantity,
-            Decimal::from_int(94),
-            at(24),
-        )
-        .map(|_| ());
+        let fifth = cell
+            .admit_replacement(
+                &bid,
+                &object(),
+                &venue(),
+                side,
+                quantity,
+                Decimal::from_int(94),
+                at(24),
+            )
+            .map(|_| ());
         Ok((cell, fifth))
     }
 

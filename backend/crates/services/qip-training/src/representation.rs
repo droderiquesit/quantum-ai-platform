@@ -58,7 +58,9 @@ impl MicroEmbedding {
                 ));
             }
             if example.features.iter().any(|f| !f.is_finite()) {
-                return Err(Error::invalid("a feature is not finite; refuse the example upstream"));
+                return Err(Error::invalid(
+                    "a feature is not finite; refuse the example upstream",
+                ));
             }
         }
         let n = examples.len() as f64;
@@ -129,7 +131,12 @@ impl MicroEmbedding {
             variance.push(dot(&v, &cv));
             components.push(v);
         }
-        Ok(Self { mean, scale, components, variance })
+        Ok(Self {
+            mean,
+            scale,
+            components,
+            variance,
+        })
     }
 
     /// Number of output dimensions.

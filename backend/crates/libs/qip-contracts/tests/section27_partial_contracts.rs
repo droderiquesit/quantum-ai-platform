@@ -299,15 +299,39 @@ fn a_belief_state_with_an_empty_proposition_evidence_or_causal_path_is_refused()
         uncertainty_type: UncertaintyType::Epistemic,
         expires_at: now + 3_600,
     };
-    assert!(intact.validate(now).is_ok(), "premise: the intact belief is admitted");
+    assert!(
+        intact.validate(now).is_ok(),
+        "premise: the intact belief is admitted"
+    );
     let cases: [(&str, BeliefState); 3] = [
-        ("proposition is empty", BeliefState { proposition: s(""), ..intact.clone() }),
-        ("evidence_set is empty", BeliefState { evidence_set: Vec::new(), ..intact.clone() }),
-        ("causal_path is empty", BeliefState { causal_path: Vec::new(), ..intact.clone() }),
+        (
+            "proposition is empty",
+            BeliefState {
+                proposition: s(""),
+                ..intact.clone()
+            },
+        ),
+        (
+            "evidence_set is empty",
+            BeliefState {
+                evidence_set: Vec::new(),
+                ..intact.clone()
+            },
+        ),
+        (
+            "causal_path is empty",
+            BeliefState {
+                causal_path: Vec::new(),
+                ..intact.clone()
+            },
+        ),
     ];
     for (reason, belief) in cases {
         let refusal = belief.validate(now).expect_err(reason);
-        assert!(refusal.to_string().contains(reason), "{reason}: got {refusal}");
+        assert!(
+            refusal.to_string().contains(reason),
+            "{reason}: got {refusal}"
+        );
     }
 }
 

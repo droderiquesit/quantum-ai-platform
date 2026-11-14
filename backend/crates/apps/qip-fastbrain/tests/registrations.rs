@@ -686,8 +686,9 @@ fn a_fast_brain_step_whose_source_is_no_longer_admitted_puts_nothing_in_the_worl
     // The same feed once the gate no longer grants, into a platform that has
     // never seen the source.
     let mut held_back = empty_platform()?;
-    let refusal = qip_fastbrain::node::step(&mut held_back, &mut feed, expiry, Duration::from_secs(5))
-        .expect_err("a step over a source the gate no longer admits went on observing");
+    let refusal =
+        qip_fastbrain::node::step(&mut held_back, &mut feed, expiry, Duration::from_secs(5))
+            .expect_err("a step over a source the gate no longer admits went on observing");
     assert!(
         refusal.message().contains("expired"),
         "the refusal does not say the licence expired: {}",

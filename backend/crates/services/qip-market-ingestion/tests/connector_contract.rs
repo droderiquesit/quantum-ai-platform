@@ -1072,9 +1072,10 @@ fn a_forged_station_position_against_a_held_weather_claim_is_flagged_as_a_geogra
         );
     }
     let mut genuine = records[0].clone();
-    genuine
-        .metadata
-        .insert(qip_evidence::evidence::META_SUBJECT.to_string(), "station".into());
+    genuine.metadata.insert(
+        qip_evidence::evidence::META_SUBJECT.to_string(),
+        "station".into(),
+    );
     assert_eq!(genuine.location.as_deref(), Some("geo:41.98,-87.9"));
     let mut forged = genuine.clone();
     forged.id = format!("{}-forged", genuine.id);

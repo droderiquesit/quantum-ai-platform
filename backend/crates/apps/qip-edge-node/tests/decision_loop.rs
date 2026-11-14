@@ -2666,7 +2666,13 @@ fn a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them
         .with_journal_trimmed_on_ship()
         .with_journal_wire();
     let store = Arc::new(MemoryKeyValueStore::new());
-    let mut rig = rig_with_engine(config, engine, Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let mut rig = rig_with_engine(
+        config,
+        engine,
+        Arc::clone(&store) as Arc<dyn KeyValueStore>,
+        1 << 16,
+        64,
+    )?;
     let _watchdog = Watchdog::arm("digests for registered features reaching the spool");
     let waited = std::time::Instant::now();
     let mut second = 10;
@@ -2695,7 +2701,10 @@ fn a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them
     assert_eq!(numbers.len(), digests.len(), "no pass is digested twice");
     for digest in &digests {
         assert!(
-            digest.instruments.iter().any(|i| i.subject == object().to_string() && !i.features.is_empty()),
+            digest
+                .instruments
+                .iter()
+                .any(|i| i.subject == object().to_string() && !i.features.is_empty()),
             "pass {} digest names no evaluated feature for the registered instrument: {:?}",
             digest.pass,
             digest.instruments

@@ -14547,12 +14547,8 @@ fn no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_bench
 /// (R12-ARCH-10061): who owns its state, how it scales, what it does
 /// degraded, and which peers it is connected to upstream and downstream. A service with none of these written down is one whose second
 /// instance, or whose loss, somebody discovers in production.
-const SERVICE_CONTRACT_FIELDS: [&str; 4] = [
-    "state_owner",
-    "scaling",
-    "degraded_mode",
-    "connections",
-];
+const SERVICE_CONTRACT_FIELDS: [&str; 4] =
+    ["state_owner", "scaling", "degraded_mode", "connections"];
 
 /// The contract fields an entry leaves absent or blank.
 fn blank_contract_fields(body: &str) -> Vec<&'static str> {
@@ -15675,9 +15671,16 @@ fn the_folder_holds_shielded_vms_and_the_us_and_eu_resource_locations() {
         .filter(|(name, _)| name == "boolean")
         .map(|(_, body)| body)
         .collect();
-    assert_eq!(boolean.len(), 1, "the foundation must declare one `boolean` policy set");
+    assert_eq!(
+        boolean.len(),
+        1,
+        "the foundation must declare one `boolean` policy set"
+    );
     assert!(
-        boolean[0].lines().map(str::trim).any(|l| l == "enforce = \"TRUE\""),
+        boolean[0]
+            .lines()
+            .map(str::trim)
+            .any(|l| l == "enforce = \"TRUE\""),
         "the folder boolean policies must enforce TRUE"
     );
     let keys = foundation
@@ -15705,8 +15708,9 @@ fn the_folder_holds_shielded_vms_and_the_us_and_eu_resource_locations() {
     );
     let lines: Vec<&str> = bodies[0].lines().map(str::trim).collect();
     assert!(
-        lines.iter().any(|l| l.starts_with("name")
-            && l.ends_with("/policies/gcp.resourceLocations\"")),
+        lines
+            .iter()
+            .any(|l| l.starts_with("name") && l.ends_with("/policies/gcp.resourceLocations\"")),
         "resource_locations must name gcp.resourceLocations as its policy"
     );
     assert!(

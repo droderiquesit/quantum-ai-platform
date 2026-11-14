@@ -1183,14 +1183,23 @@ mod tests {
             Arc::new(qip_storage::blob::MemoryBlobStore::new()),
             Arc::new(qip_storage::blob::MemoryBlobStore::new()),
         );
-        assert!(desk.posteriors().is_empty(), "the premise: a fresh desk believes nothing");
+        assert!(
+            desk.posteriors().is_empty(),
+            "the premise: a fresh desk believes nothing"
+        );
 
-        engine.set_priors(std::collections::BTreeMap::from([("STALE".to_string(), 1.0)]));
+        engine.set_priors(std::collections::BTreeMap::from([(
+            "STALE".to_string(),
+            1.0,
+        )]));
         hand_posteriors(&mut engine, None);
         assert_eq!(engine.priors().len(), 1, "no desk leaves the priors alone");
 
         hand_posteriors(&mut engine, Some(&desk));
-        assert!(engine.priors().is_empty(), "the desk's posteriors replaced the stale prior");
+        assert!(
+            engine.priors().is_empty(),
+            "the desk's posteriors replaced the stale prior"
+        );
     }
 
     fn start() -> Timestamp {

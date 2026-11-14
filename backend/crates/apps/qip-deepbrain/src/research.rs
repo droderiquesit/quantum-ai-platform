@@ -4356,7 +4356,8 @@ impl ResearchLoop {
             // Saturating like `emit` and `admit`: a gap worth more than the
             // 100-unit scale is the most valuable kind, and declining it as
             // invalid left it with no compute grant.
-            let economic_value_bp = economic_scale_bp(entry.item().expected_economic_value.to_f64());
+            let economic_value_bp =
+                economic_scale_bp(entry.item().expected_economic_value.to_f64());
             let (Ok(information_value_bp), Ok(economic_value_bp)) =
                 (information_value_bp, economic_value_bp)
             else {

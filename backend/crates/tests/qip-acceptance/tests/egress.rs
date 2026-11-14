@@ -2440,7 +2440,9 @@ fn the_crawler_zone_leaves_from_an_address_and_gateway_no_other_zone_shares_and_
     //     counterparty's allow-list for one is an allow-list for both;
     //   * a second zone is given the `information-source` purpose, so the
     //     crawler zone is no longer the only one that may visit sources.
-    let module = without_comments(&read("infrastructure/terraform/modules/trust-zones/main.tf"));
+    let module = without_comments(&read(
+        "infrastructure/terraform/modules/trust-zones/main.tf",
+    ));
     assert!(
         module.contains("resource \"google_compute_address\" \"nat\" {"),
         "premise: the zone module no longer reserves a NAT address, so this reads nothing"
@@ -2489,7 +2491,9 @@ fn the_crawler_zone_leaves_from_an_address_and_gateway_no_other_zone_shares_and_
         holders.len()
     );
     assert!(
-        holders[0].trim_start().starts_with("\"ingestion-discovery\""),
+        holders[0]
+            .trim_start()
+            .starts_with("\"ingestion-discovery\""),
         "information-source is held by a zone other than ingestion-discovery: {holders:?}"
     );
 

@@ -578,7 +578,10 @@ fn the_reconciliation_objective_is_declared_once_with_a_daily_window_and_a_zero_
          target nothing can miss, two means one of them is unreviewed"
     );
     let slo = matching[0];
-    assert!((slo.target - 1.0).abs() < 1e-12, "any break is severity one");
+    assert!(
+        (slo.target - 1.0).abs() < 1e-12,
+        "any break is severity one"
+    );
     assert_eq!(
         slo.window,
         SloWindow::Day,

@@ -349,7 +349,11 @@ fn the_ci_identity_holds_only_its_own_roles_and_the_infra_identity_only_its_own(
     // The two lists together are exactly the file's list, so the per-account
     // split cannot drift from the per-file ceiling above.
     let union: BTreeSet<String> = ci.union(&infra).cloned().collect();
-    assert_eq!(union, roles_in(&text), "a role in {CICD} belongs to neither account");
+    assert_eq!(
+        union,
+        roles_in(&text),
+        "a role in {CICD} belongs to neither account"
+    );
 }
 
 #[test]

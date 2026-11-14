@@ -1203,12 +1203,17 @@ fn the_desk_fills_depth_and_imbalance_from_the_replayed_book_into_the_fused_reac
     );
     let round = desk.round(&graph()?, at(400_000), Vec::new())?;
     assert_eq!(round.fused_events, 1, "premise: the strike was fused");
-    assert!(!round.reactions.is_empty(), "premise: a reaction was measured");
+    assert!(
+        !round.reactions.is_empty(),
+        "premise: a reaction was measured"
+    );
     let reaction = &round.reactions[0];
     assert_eq!(reaction.instrument, "obj-ACME");
     let depth = reaction.depth_ratio.expect("depth came from the book");
     assert!(depth.is_finite() && depth > 0.0, "depth ratio {depth}");
-    let flow = reaction.flow_imbalance.expect("imbalance came from the book");
+    let flow = reaction
+        .flow_imbalance
+        .expect("imbalance came from the book");
     assert!(
         flow.abs() > 0.0 && flow.abs() <= 1.0,
         "the quotes are lopsided, so imbalance is nonzero: {flow}"

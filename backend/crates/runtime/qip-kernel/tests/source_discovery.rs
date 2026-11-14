@@ -10,7 +10,10 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+use qip_contracts::feature::FeatureKey;
 use qip_contracts::governance::Usage;
+use qip_contracts::signal::{SignalKind, StrategyId};
+use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ObjectId, dec};
@@ -26,22 +29,19 @@ use qip_financial::asset_class::{AssetClass, InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
-use qip_contracts::feature::FeatureKey;
-use qip_contracts::signal::{SignalKind, StrategyId};
-use qip_contracts::venue::VenueId;
 use qip_kernel::central::StrategyCandidate;
 use qip_kernel::config::PlatformConfig;
-use qip_lifecycle::trials::StrategyFamily;
-use qip_strategy::catalogue::FeatureCatalogue;
-use qip_strategy::compile::StrategyCompiler;
-use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_kernel::platform::Platform;
 use qip_kernel::source_discovery::DISCOVERY_SPIKE_MULTIPLE;
 use qip_learning_engine::{Outcome, ThesisClaim};
+use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::compile::StrategyCompiler;
+use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -318,8 +318,8 @@ fn strategy_candidate(id: &str) -> Result<StrategyCandidate> {
 /// test green, because those hand the finder a `StrategyCoverage` themselves.
 /// This registers a real candidate in the factory and reads the target back.
 #[test]
-fn a_registered_strategy_whose_instrument_no_source_covers_becomes_a_target_naming_it()
--> Result<()> {
+fn a_registered_strategy_whose_instrument_no_source_covers_becomes_a_target_naming_it() -> Result<()>
+{
     let mut platform = platform(Universe::new())?;
     let now = start().saturating_add(Duration::from_secs(120));
     // Premise: empty universe and empty window, so nothing but the strategy

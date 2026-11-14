@@ -833,7 +833,8 @@ fn a_lake_line_whose_stamp_claims_an_unsupported_order_is_counted_unparsed() -> 
 /// Mutation: `decode_line` returns `clock: None` — the digest line for every
 /// tick reads `none` and the hand-worked comparison fails.
 #[test]
-fn the_digest_over_the_clock_the_lake_reader_returns_is_reproducible_and_hand_worked() -> Result<()> {
+fn the_digest_over_the_clock_the_lake_reader_returns_is_reproducible_and_hand_worked() -> Result<()>
+{
     use qip_storage::lake::Lake;
     use qip_storage::lake_history::HistoryQuery;
     use std::collections::BTreeSet;

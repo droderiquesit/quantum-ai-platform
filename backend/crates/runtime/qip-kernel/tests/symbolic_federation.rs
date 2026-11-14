@@ -2276,7 +2276,11 @@ fn a_non_empty_proof_trace_journaled_by_the_cycle_is_accepted_on_replay_and_refu
     platform.observe(bars("AAA", 120));
     platform.run_cycle(start());
     let derivations = symbolic_stage::replay(&platform)?;
-    assert_eq!(derivations.len(), 1, "premise: one hypothesis on the future");
+    assert_eq!(
+        derivations.len(),
+        1,
+        "premise: one hypothesis on the future"
+    );
     let derivation = &derivations[0];
     let verdict = derivation
         .rules

@@ -1894,13 +1894,21 @@ fn an_export_verifies_against_the_replayed_history_and_a_tampered_or_stale_one_i
     }
     let exported = store.export_state().expect("export state");
     assert!(!exported.balances.is_empty(), "premise: there are balances");
-    assert!(exported.chain_records_count > 0, "premise: there is a chain");
-    store.verify_export(&exported).expect("a faithful export verifies");
+    assert!(
+        exported.chain_records_count > 0,
+        "premise: there is a chain"
+    );
+    store
+        .verify_export(&exported)
+        .expect("a faithful export verifies");
 
     let mut edited = exported.clone();
     let key = edited.balances.keys().next().expect("a key").clone();
     edited.balances.insert(key, "123456789".to_string());
-    assert!(store.verify_export(&edited).is_err(), "edited balance refused");
+    assert!(
+        store.verify_export(&edited).is_err(),
+        "edited balance refused"
+    );
 
     let mut stale = exported.clone();
     stale.chain_records_count -= 1;

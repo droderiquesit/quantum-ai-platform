@@ -781,7 +781,13 @@ fn a_draft_is_measured_against_the_reading_it_was_written_on_not_the_follow_up_r
         ..Default::default()
     };
     let done = agency
-        .route(1, &first, None, Timestamp::from_secs(110), &telemetry.metrics)
+        .route(
+            1,
+            &first,
+            None,
+            Timestamp::from_secs(110),
+            &telemetry.metrics,
+        )
         .unwrap();
     assert_eq!(done.drafted, 1, "premise: a draft was written");
     assert_eq!(agency.awaiting(), 1, "premise: it awaits a follow-up");
@@ -797,7 +803,13 @@ fn a_draft_is_measured_against_the_reading_it_was_written_on_not_the_follow_up_r
         ..Default::default()
     };
     let done = agency
-        .route(2, &second, None, Timestamp::from_secs(170), &telemetry.metrics)
+        .route(
+            2,
+            &second,
+            None,
+            Timestamp::from_secs(170),
+            &telemetry.metrics,
+        )
         .unwrap();
     assert_eq!(done.learned, 1, "{:?}", done.learning_withheld);
 

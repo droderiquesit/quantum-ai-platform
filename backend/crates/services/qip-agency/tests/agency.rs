@@ -4024,7 +4024,10 @@ fn a_wider_authority_level_never_asks_for_less_evidence_or_rollback_than_a_narro
     ];
     let rows: Vec<_> = grantable.iter().map(|l| l.requirement()).collect();
     assert_eq!(rows.len(), 3, "premise: three grantable rows");
-    assert!(SCHEDULE.len() > rows.len(), "premise: the table has more rows");
+    assert!(
+        SCHEDULE.len() > rows.len(),
+        "premise: the table has more rows"
+    );
 
     for row in &rows {
         assert!(
@@ -4041,8 +4044,16 @@ fn a_wider_authority_level_never_asks_for_less_evidence_or_rollback_than_a_narro
     }
     for pair in rows.windows(2) {
         let (lo, hi) = (pair[0], pair[1]);
-        assert!(hi.approvers >= lo.approvers, "{:?} approvers fell", hi.level);
-        assert!(hi.clean_days >= lo.clean_days, "{:?} clean days fell", hi.level);
+        assert!(
+            hi.approvers >= lo.approvers,
+            "{:?} approvers fell",
+            hi.level
+        );
+        assert!(
+            hi.clean_days >= lo.clean_days,
+            "{:?} clean days fell",
+            hi.level
+        );
         assert!(
             hi.compensation || !lo.compensation,
             "{:?} dropped compensation",
@@ -4055,5 +4066,8 @@ fn a_wider_authority_level_never_asks_for_less_evidence_or_rollback_than_a_narro
         );
         assert_eq!(hi.from, Some(lo.level), "{:?} skips a level", hi.level);
     }
-    assert!(rows[2].kill_path && !rows[0].kill_path, "premise: strictness rises");
+    assert!(
+        rows[2].kill_path && !rows[0].kill_path,
+        "premise: strictness rises"
+    );
 }

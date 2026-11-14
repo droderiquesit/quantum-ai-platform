@@ -863,7 +863,10 @@ mod unclaimed_record_tests {
         let batch = feed
             .poll(Timestamp::from_secs(1_760_000_600), &mut |_| Ok(()))
             .expect("a bar arm polls");
-        assert!(!batch.accepted.is_empty(), "the synthetic arm produced nothing");
+        assert!(
+            !batch.accepted.is_empty(),
+            "the synthetic arm produced nothing"
+        );
         assert_eq!(batch.accepted.len(), batch.claims.len());
         assert!(batch.claims.iter().all(Option::is_none));
     }

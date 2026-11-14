@@ -10,8 +10,9 @@ use qip_core::error::Result;
 use qip_core::{Currency, Decimal, Timestamp};
 use qip_data_finder::quality::SourceCost;
 use qip_data_finder::source_alpha::{
-    HISTORY_BOUND, PRICE_OF_INFORMATION_PER_IC, SourceAlpha, SourceAlphaHistory, SourceEconomics, incremental_information_gain,
-    incremental_information_gain_over, net_score, realised_contribution,
+    HISTORY_BOUND, PRICE_OF_INFORMATION_PER_IC, SourceAlpha, SourceAlphaHistory, SourceEconomics,
+    incremental_information_gain, incremental_information_gain_over, net_score,
+    realised_contribution,
 };
 
 /// A deterministic pseudo-random series in `[-1, 1)`, so the replay is the
@@ -257,7 +258,10 @@ fn a_duplicate_source_scores_near_zero_net_and_an_informative_one_scores_positiv
     let price = Decimal::from_int(100);
     let free = economics(0, 0)?;
     let informative = net_score(&alpha(0.9, 0.8), &free, price)?;
-    assert!(informative > Decimal::from_int(60), "premise: {informative:?}");
+    assert!(
+        informative > Decimal::from_int(60),
+        "premise: {informative:?}"
+    );
     let duplicate = net_score(&alpha(0.0, 0.8), &free, price)?;
     assert!(duplicate < Decimal::from_int(1), "{duplicate:?}");
     Ok(())
@@ -274,8 +278,13 @@ fn a_late_source_scores_less_than_the_same_source_on_time() -> Result<()> {
     let very_late = net_score(&signal, &economics(0, 99_000)?, price)?;
     assert!(on_time.is_positive(), "premise: {on_time:?}");
     // A delay equal to the horizon halves the value.
-    let half = on_time.checked_div(Decimal::from_int(2)).unwrap_or_default();
-    assert!((late.checked_sub(half).unwrap_or_default()).abs() < Decimal::from_scaled(1, 3).unwrap_or_default());
+    let half = on_time
+        .checked_div(Decimal::from_int(2))
+        .unwrap_or_default();
+    assert!(
+        (late.checked_sub(half).unwrap_or_default()).abs()
+            < Decimal::from_scaled(1, 3).unwrap_or_default()
+    );
     assert!(very_late < late, "{very_late:?} {late:?}");
     Ok(())
 }

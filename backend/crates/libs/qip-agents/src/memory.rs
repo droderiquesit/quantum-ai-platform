@@ -404,7 +404,10 @@ impl ResearchMemory {
             return false;
         };
         if let Some(previous) = episode.outcome.replace(outcome) {
-            let kept = self.superseded.entry(run_id.as_str().to_string()).or_default();
+            let kept = self
+                .superseded
+                .entry(run_id.as_str().to_string())
+                .or_default();
             kept.push_back(previous);
             while kept.len() > MAX_SUPERSEDED_OUTCOMES {
                 kept.pop_front();

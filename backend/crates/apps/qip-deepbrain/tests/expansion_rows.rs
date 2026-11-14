@@ -1796,8 +1796,7 @@ fn an_anomalous_subject_the_causal_graph_explains_raises_no_causal_link_gap() {
 /// rather than an empty object shell. Mutation: restore the constant shell
 /// schema and the `derived_from` assertion fails.
 #[test]
-fn a_candidate_types_schema_names_the_subject_it_was_derived_from()
-{
+fn a_candidate_types_schema_names_the_subject_it_was_derived_from() {
     let platform = reference_surprised();
     let mut research = deployed(BTreeMap::new());
     let (licensed, eligible) = deployed_bounds();

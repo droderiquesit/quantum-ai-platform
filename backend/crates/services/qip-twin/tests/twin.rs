@@ -1184,7 +1184,10 @@ fn a_decision_view_cannot_read_a_same_day_bar_before_its_close() -> Result<()> {
     // Premise: bar 3 (open 106, close 107) exists, and is readable once its
     // session has ended, so the intraday refusal below is not an empty market.
     let after_close = market.view_at(day(4))?;
-    assert_eq!(after_close.last_close(&subject), Some(Decimal::from_int(107)));
+    assert_eq!(
+        after_close.last_close(&subject),
+        Some(Decimal::from_int(107))
+    );
 
     let intraday = market.view_at(day(3).saturating_add(Duration::from_hours(12)))?;
     assert_eq!(

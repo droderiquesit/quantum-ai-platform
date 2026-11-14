@@ -333,17 +333,26 @@ fn for_any_redelivery_order_and_restart_the_operation_balances_equal_one_deliver
                     let delivery = at(
                         next as u64,
                         &format!("h{next}"),
-                        funding(&format!("desk:treasury-funding:{id}"), Decimal::from(amount)),
+                        funding(
+                            &format!("desk:treasury-funding:{id}"),
+                            Decimal::from(amount),
+                        ),
                     );
-                    store.apply_operation(&delivery).map_err(|e| e.to_string())?;
+                    store
+                        .apply_operation(&delivery)
+                        .map_err(|e| e.to_string())?;
                     next += 1;
                 }
-                let booked = store.balance(&trading(), "USD").map_err(|e| e.to_string())?;
+                let booked = store
+                    .balance(&trading(), "USD")
+                    .map_err(|e| e.to_string())?;
                 let trial = store.trial_balance().map_err(|e| e.to_string())?;
                 drop(store);
                 let _ = std::fs::remove_dir_all(&dir);
                 if booked != Decimal::from(expected) {
-                    return Err(format!("booked {booked}, one delivery of each id is {expected}"));
+                    return Err(format!(
+                        "booked {booked}, one delivery of each id is {expected}"
+                    ));
                 }
                 if !trial.values().all(|total| total.is_zero()) {
                     return Err(format!("trial balance not zero: {trial:?}"));

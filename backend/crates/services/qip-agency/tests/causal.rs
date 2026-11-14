@@ -945,7 +945,11 @@ fn an_uplift_effect_is_estimated_per_segment_and_a_confounded_design_abstains_fo
     };
     let model = StructuralModel::new(StructuralModelDecl {
         name: "segmented".to_string(),
-        links: vec![link("u", "t", 1.0), link("u", "y", 3.0), link("t", "y", 2.0)],
+        links: vec![
+            link("u", "t", 1.0),
+            link("u", "y", 3.0),
+            link("t", "y", 2.0),
+        ],
         variables: Vec::new(),
         intercepts: BTreeMap::new(),
         noise_variance: BTreeMap::new(),

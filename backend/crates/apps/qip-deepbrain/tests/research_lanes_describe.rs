@@ -9,15 +9,28 @@ fn the_round_description_names_each_promoted_questions_lane() {
     let mut round = ResearchRound::default();
     round.lanes.insert(
         "q-inside".to_string(),
-        PromotionLane::Reflex { package_id: "pkg-inside".to_string() },
+        PromotionLane::Reflex {
+            package_id: "pkg-inside".to_string(),
+        },
     );
     round.lanes.insert(
         "q-past".to_string(),
-        PromotionLane::Research { refusal: "past-the-bounds".to_string() },
+        PromotionLane::Research {
+            refusal: "past-the-bounds".to_string(),
+        },
     );
     assert_eq!(round.lanes.len(), 2, "premise: two lanes recorded");
     let line = round.describe();
-    assert!(line.contains("promotion lanes {"), "lanes section missing: {line}");
-    assert!(line.contains(r#""q-inside": Reflex { package_id: "pkg-inside" }"#), "{line}");
-    assert!(line.contains(r#""q-past": Research { refusal: "past-the-bounds" }"#), "{line}");
+    assert!(
+        line.contains("promotion lanes {"),
+        "lanes section missing: {line}"
+    );
+    assert!(
+        line.contains(r#""q-inside": Reflex { package_id: "pkg-inside" }"#),
+        "{line}"
+    );
+    assert!(
+        line.contains(r#""q-past": Research { refusal: "past-the-bounds" }"#),
+        "{line}"
+    );
 }

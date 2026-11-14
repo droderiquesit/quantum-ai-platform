@@ -714,7 +714,8 @@ fn a_rejected_lesson_says_why() -> Result<()> {
 }
 
 #[test]
-fn each_position_attributes_exactly_to_its_own_books_pnl_and_the_sources_sum_to_the_total() -> Result<()> {
+fn each_position_attributes_exactly_to_its_own_books_pnl_and_the_sources_sum_to_the_total()
+-> Result<()> {
     // Reconciling only the book total lets two positions' errors cancel: one
     // overstated by X and another understated by X still close to zero
     // residual. Assert each position against its own independently computed

@@ -99,7 +99,10 @@ fn every_checkout_in_the_agent_sandbox_drops_the_repository_token() {
         .filter(|(_, (_, l))| l.starts_with("- uses: actions/checkout@"))
         .map(|(i, _)| i)
         .collect();
-    assert!(!checkouts.is_empty(), "premise: the sandbox checks code out");
+    assert!(
+        !checkouts.is_empty(),
+        "premise: the sandbox checks code out"
+    );
     for i in checkouts {
         let window = &lines[i + 1..(i + 6).min(lines.len())];
         let kept = window

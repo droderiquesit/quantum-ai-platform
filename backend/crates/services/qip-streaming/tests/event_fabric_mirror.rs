@@ -272,7 +272,13 @@ fn a_checkpoint_at_offset_zero_naming_a_last_batch_is_refused() {
 #[test]
 fn an_empty_fetch_leaves_the_checkpoint_unchanged() {
     let rows = chain(3);
-    let first = plan_copy(&source(), &MirrorCheckpoint::default(), 3, rows[..2].to_vec()).unwrap();
+    let first = plan_copy(
+        &source(),
+        &MirrorCheckpoint::default(),
+        3,
+        rows[..2].to_vec(),
+    )
+    .unwrap();
     assert_eq!(first.checkpoint.next_offset, 2, "premise: progress exists");
 
     let idle = plan_copy(&source(), &first.checkpoint, 3, Vec::new()).unwrap();

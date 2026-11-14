@@ -15,9 +15,9 @@ mod common;
 use common::{each_refused, refuses_missing_unknown_and_foreign_version, round_trips};
 use qip_contracts::capital::{CapitalGrant, CapitalGrantFields, CollateralClass, GrantMode};
 use qip_contracts::control::{
-    AgentLine, ComputeBackend, ComputeCandidate, ComputePlan, ComputePlanFields, Exposure, HedgeInstrument,
-    HedgeLiquidity, HedgePlan, HedgePlanFields, HedgeRollback, HedgeSide, InformationRequest,
-    InformationRequestFields, ModelVote, ModelVoteFields, ScorePoint,
+    AgentLine, ComputeBackend, ComputeCandidate, ComputePlan, ComputePlanFields, Exposure,
+    HedgeInstrument, HedgeLiquidity, HedgePlan, HedgePlanFields, HedgeRollback, HedgeSide,
+    InformationRequest, InformationRequestFields, ModelVote, ModelVoteFields, ScorePoint,
 };
 use qip_contracts::forecast::{
     Calibration, Forecast, ForecastFields, ForecastState, ForecastStateFields, OutcomeDistribution,
@@ -642,10 +642,7 @@ fn a_compute_plan_refuses_a_missing_repeated_or_exceeded_agent_line() {
         &compute_plan(),
         vec![
             ("no agent line", Box::new(|f| f.agent_lines.clear())),
-            (
-                "blank agent",
-                Box::new(|f| f.agent_lines[0].agent = s("")),
-            ),
+            ("blank agent", Box::new(|f| f.agent_lines[0].agent = s(""))),
             (
                 "agent twice",
                 Box::new(|f| {

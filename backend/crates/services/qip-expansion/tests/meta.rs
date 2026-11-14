@@ -14,8 +14,8 @@ use qip_contracts::ambient::{ComputeResourceType, ModelReputation};
 use qip_contracts::control::ComputeBackend;
 use qip_core::{Decimal, Timestamp};
 use qip_expansion::meta::{
-    AgentLimit, Decline, DomainResidual, MetaIntelligence, MetaPolicy, REALISATION_PRIOR_BP, ReputationBook,
-    ReputationKey, Standing, UNINFORMED_REPUTATION_BP, WorkBid, WorkKind,
+    AgentLimit, Decline, DomainResidual, MetaIntelligence, MetaPolicy, REALISATION_PRIOR_BP,
+    ReputationBook, ReputationKey, Standing, UNINFORMED_REPUTATION_BP, WorkBid, WorkKind,
 };
 use std::collections::BTreeMap;
 
