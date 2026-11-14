@@ -117,7 +117,14 @@ pub struct SyntheticCommerceFeed {
 
 /// The SKUs the synthetic feed reads: product, brand, model, variant, GTIN,
 /// reference price in whole units.
-const SYNTHETIC_SKUS: [(&str, &str, &str, &str, &str, i64); 3] = [
+///
+/// The last is the first again in another colour, under its own GTIN and at
+/// the same reference (R12-COMMERCE-5092). Until it was added no two
+/// listings the feed emitted shared a brand and model and differed in
+/// variant, so the resolver's rule that a variant is a different product
+/// never met a variant under any plan that reads this feed. It is last so
+/// the first batch's draws for the three before it are unchanged.
+const SYNTHETIC_SKUS: [(&str, &str, &str, &str, &str, i64); 4] = [
     (
         "sku-headphones",
         "acme",
@@ -128,6 +135,14 @@ const SYNTHETIC_SKUS: [(&str, &str, &str, &str, &str, i64); 3] = [
     ),
     ("sku-kettle", "brewco", "k2", "steel", "0000000000024", 60),
     ("sku-drill", "toolworks", "d9", "18v", "0000000000031", 150),
+    (
+        "sku-headphones-white",
+        "acme",
+        "h100",
+        "white",
+        "0000000000048",
+        120,
+    ),
 ];
 
 /// The venues it reads them at, one per channel.

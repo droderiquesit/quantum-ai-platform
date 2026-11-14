@@ -731,3 +731,219 @@ fn a_cycle_under_the_committed_dev_plan_journals_a_commerce_simulated_assessment
     );
     Ok(())
 }
+
+/// The committed plan's commerce section, loaded the way `main` loads it.
+fn committed_commerce_plan() -> Result<CommercePlan> {
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), committed_plan_path())]);
+    Ok(
+        qip_deepbrain::breadth::load(&|name| environment.get(name).cloned())?
+            .expect("the committed plan loads")
+            .commerce
+            .expect("the committed plan carries a commerce section"),
+    )
+}
+
+/// R12-COMMERCE-5090. Under the committed plan every received unit's
+/// marketplace fees, storage and returns are the plan's own terms, by value.
+/// These three of the twelve tracked attributes were covered only by the
+/// presence loop, which `UnitAttributes::new` already enforces, so writing
+/// any non-blank text for them passed every test.
+///
+/// Mutation: write `terms.fees.per_unit` in place of `terms.fees.ad_valorem`
+/// in `unit_attributes`, name the carrier in place of the warehouse under
+/// `storage`, or write `terms.returns.recovery_rate` in place of
+/// `terms.returns.rate`, and the matching assertion fails.
+#[test]
+fn every_unit_received_under_the_committed_plan_tracks_the_plans_marketplace_fee_storage_and_return_rate()
+-> Result<()> {
+    use qip_financial::commerce_resale::Attr;
+    let plan = committed_commerce_plan()?;
+    // Premise: the three terms are distinguishable from their neighbours, so
+    // a record that read the wrong field could not match by accident.
+    assert_eq!(plan.terms.fees.ad_valorem, dec!("0.05"));
+    assert_ne!(plan.terms.fees.ad_valorem, plan.terms.fees.per_unit);
+    assert_ne!(plan.logistics.warehouse, plan.logistics.carrier);
+    assert_ne!(plan.terms.returns.rate, plan.terms.returns.recovery_rate);
+
+    let platform = install_plan_file(&committed_plan_path(), 6)?;
+    let research = platform.commerce_research().expect("installed");
+    let units = research.ledger().units();
+    assert!(!units.is_empty(), "premise: no unit was received");
+    for unit in units.keys() {
+        let attributes = research
+            .attributes(unit)
+            .expect("a received unit has its record");
+        let text = |name: &str| match attributes.get(name) {
+            Some(Attr::Value(text)) => text.clone(),
+            other => panic!("{unit}: {name} is {other:?}, not a value"),
+        };
+        assert_eq!(
+            text("marketplace_fees"),
+            "0.05 ad valorem, 0 per unit",
+            "{unit}"
+        );
+        assert_eq!(
+            text("storage"),
+            "paper-warehouse at 0 per unit per day",
+            "{unit}"
+        );
+        assert_eq!(text("returns"), "return rate 0", "{unit}");
+    }
+    Ok(())
+}
+
+/// R12-COMMERCE-5092, the variant clause. The feed the committed plan names
+/// lists one headphone in two colours. Under the plan's own registries the
+/// resolver gives each colour one identity across the merchants that list
+/// it, and the two identities differ: a variant is a different product. The
+/// same listings with one colour's GTIN put on the other are refused whole,
+/// which is the resolver's variant refusal; that fault is injected here,
+/// because a feed that really carried it would queue nothing.
+///
+/// Mutation: drop the variant from `Resolver::key` and the two colours
+/// resolve to one identity, so the distinctness assertion fails.
+#[test]
+fn the_committed_dev_plan_keeps_a_variant_apart_from_the_product_it_varies_and_refuses_a_gtin_that_links_them()
+-> Result<()> {
+    use qip_financial::commerce::Resolver;
+    use qip_kernel::commerce_research::CommerceFeed;
+    let plan = committed_commerce_plan()?;
+    assert_eq!(plan.source, "synthetic", "premise: the committed source");
+    let resolver = Resolver::new(
+        plan.counterfeit_gtins.clone(),
+        plan.counterfeit_sellers.clone(),
+    );
+    let mut feed = SyntheticCommerceFeed::new(7, start());
+    let mut at = start();
+    let mut separated = 0_u32;
+    let mut refused = false;
+    for _ in 0..24 {
+        let batch = feed.poll(at)?;
+        at = at.saturating_add(Duration::from_hours(1));
+        let identities = resolver.resolve(&batch.listings)?;
+        // Genuine listings of the one brand and model, by variant.
+        let mut by_variant: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for listing in &batch.listings {
+            let identity = identities.get(&listing.id).expect("every listing resolves");
+            if identity.counterfeit_finding.is_none()
+                && listing.brand == "acme"
+                && listing.model == "h100"
+            {
+                by_variant
+                    .entry(listing.variant.clone())
+                    .or_default()
+                    .insert(identity.id.clone());
+            }
+        }
+        let (Some(black), Some(white)) = (by_variant.get("black"), by_variant.get("white")) else {
+            continue;
+        };
+        assert_eq!(
+            black,
+            &BTreeSet::from(["product:acme|h100|black".to_string()]),
+            "the black listings did not resolve to one identity"
+        );
+        assert_eq!(
+            white,
+            &BTreeSet::from(["product:acme|h100|white".to_string()]),
+            "the white listings did not resolve to one identity"
+        );
+        separated += 1;
+
+        if !refused {
+            let black_gtin = batch
+                .listings
+                .iter()
+                .find(|listing| listing.variant == "black")
+                .and_then(|listing| listing.gtin.clone())
+                .expect("the black listing carries a GTIN");
+            let mut linked = batch.listings.clone();
+            for listing in &mut linked {
+                if listing.variant == "white" {
+                    listing.gtin = Some(black_gtin.clone());
+                }
+            }
+            let error = resolver
+                .resolve(&linked)
+                .expect_err("a GTIN linking two variants resolved");
+            assert!(
+                error
+                    .message()
+                    .contains("acme|h100|black / acme|h100|white"),
+                "{}",
+                error.message()
+            );
+            refused = true;
+        }
+    }
+    assert!(
+        separated > 0,
+        "no batch listed both colours as genuine, so no variant was separated"
+    );
+    assert!(refused, "the variant refusal was never reached");
+    Ok(())
+}
+
+/// R12-COMMERCE-5097, the routing clause. Every unit listed under the
+/// committed plan is listed on the venue whose net proceeds, less the cost
+/// of carrying the unit until that venue sells it, are highest of the three
+/// the plane quotes, at that venue's own price. The figures are worked here
+/// from the plan's fee, capital cost and days on market and the unit's
+/// ledger cost basis, not read back from the router.
+///
+/// The repricing clause of the row is not proven here and cannot be under
+/// this plan: it sells a marketplace unit after `days_on_market` = 2 days,
+/// marks down after 3, and the synthetic reference price never moves.
+///
+/// Mutation: reverse the comparison in `route_resale` and every unit is
+/// listed on the direct buyer, so the venue assertion fails.
+#[test]
+fn every_unit_listed_under_the_committed_dev_plan_is_on_the_venue_with_the_highest_net_proceeds()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    let platform = install_plan_file(&committed_plan_path(), 6)?;
+    let research = platform.commerce_research().expect("installed");
+    let references: BTreeMap<String, Decimal> = discovered(&platform)?
+        .into_iter()
+        .flat_map(|run| run.candidates)
+        .map(|candidate| (candidate.product, candidate.reference_price))
+        .collect();
+    let listed: Vec<_> = simulated(&platform)?
+        .into_iter()
+        .flat_map(|run| run.listed)
+        .collect();
+    assert!(!listed.is_empty(), "premise: nothing was listed");
+    let fee = plan.terms.fees.ad_valorem;
+    assert!(
+        fee.is_positive() && plan.terms.fees.per_unit.is_zero(),
+        "premise: the committed plan charges an ad valorem fee and no fixed one"
+    );
+    for priced in &listed {
+        let record = research
+            .ledger()
+            .units()
+            .get(&priced.unit)
+            .expect("a listed unit is in the ledger");
+        let reference = *references
+            .get(&record.sku)
+            .expect("a listed unit's SKU was scouted");
+        let carry_per_day = record.cost_basis * plan.daily_capital_cost;
+        let days = |days: u32| Decimal::from(i64::from(days));
+        let auction_price = (reference * dec!("0.95")).round_dp(2);
+        let direct_price = (reference * dec!("0.85")).round_dp(2);
+        let marketplace = reference - reference * fee - carry_per_day * days(plan.days_on_market);
+        let auction = auction_price
+            - auction_price * fee
+            - carry_per_day * days((plan.days_on_market / 2).max(1));
+        let direct = direct_price - carry_per_day;
+        assert!(
+            marketplace > auction && marketplace > direct,
+            "premise: the marketplace nets most for {}: {marketplace} / {auction} / {direct}",
+            priced.unit
+        );
+        assert_ne!(auction, direct, "premise: the other two differ");
+        assert_eq!(priced.venue, "simulated-marketplace", "{}", priced.unit);
+        assert_eq!(priced.price, reference, "{}", priced.unit);
+    }
+    Ok(())
+}
