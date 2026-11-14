@@ -982,3 +982,146 @@ fn cross_venue_alignment_of_the_recorded_stamps_is_reproducible_and_its_digest_m
     assert_ne!(digest, alignment_digest(0)?);
     Ok(())
 }
+
+// --- world+market fusion over the recorded session (R12-TICK-1127) ----------
+
+use qip_kernel::fusion::{FusionConfig, MarketTrace, TracePoint, fuse};
+use qip_world_model::graph::{EntityKind, Fact, KnowledgeGraph, Node, NodeKind};
+use qip_world_model::relationship::{Relationship, RelationshipKind};
+
+fn fusion_config(reaction_threshold_bps: f64) -> FusionConfig {
+    FusionConfig {
+        max_hops: 2,
+        reaction_threshold_bps,
+        reaction_window: Duration::from_secs(60),
+        expect_reaction_above: 0.15,
+        weak_evidence_below: 0.4,
+        max_events: 16,
+    }
+}
+
+/// The mid the replayed book showed after each released event, as a trace.
+/// `scale` is 1.0 for the session as recorded; any other value rescales the
+/// points after the fourth, a move the fuser measures as a reaction (a uniform
+/// rescale would leave every relative move unchanged).
+fn recorded_trace(record: &ReplayRecord, scale: f64) -> Result<MarketTrace> {
+    let mut points = Vec::new();
+    for through in 1..=record.events.len() {
+        let mut state = fresh_book();
+        replay(&mut state, &record.events[..through])?;
+        let Some(mid) = state.mid() else { continue };
+        points.push(TracePoint {
+            at: record.events[through - 1].capture_time,
+            mid: if points.len() < 4 {
+                mid.to_f64()
+            } else {
+                mid.to_f64() * scale
+            },
+            spread_bps: 2.0,
+            depth: None,
+            imbalance: None,
+        });
+    }
+    Ok(MarketTrace {
+        instrument: "obj-aapl".into(),
+        venue: "XNAS".into(),
+        points,
+    })
+}
+
+/// A world event about the instrument, recorded inside the session.
+fn world_with_one_event() -> Result<KnowledgeGraph> {
+    let occurred = captured(1);
+    let recorded = captured(2);
+    let mut graph = KnowledgeGraph::new();
+    graph.add_node(
+        Node::event("evt-guidance", "evt-guidance", occurred, recorded)
+            .with_attribute("expected_direction", "up")
+            .with_attribute("evidence_quality", "0.9"),
+    )?;
+    graph.add_node(Node::entity(
+        "aapl",
+        EntityKind::Company,
+        "aapl",
+        session_midnight(),
+    ))?;
+    graph.add_node(
+        Node::new(
+            "inst-aapl",
+            NodeKind::FinancialObject,
+            "inst-aapl",
+            session_midnight(),
+        )
+        .with_attribute("object_id", "obj-aapl"),
+    )?;
+    graph.assert_fact(Fact::new(
+        Relationship::new(
+            "evt-guidance",
+            "aapl",
+            RelationshipKind::ConcernsEntity,
+            1.0,
+            "wire:1",
+        ),
+        occurred,
+        recorded,
+        0.9,
+    )?);
+    graph.assert_fact(Fact::new(
+        Relationship::new(
+            "aapl",
+            "inst-aapl",
+            RelationshipKind::Issues,
+            1.0,
+            "registry:1",
+        ),
+        session_midnight(),
+        session_midnight(),
+        1.0,
+    )?);
+    Ok(graph)
+}
+
+/// The session's fused digest: bytes to decoded events to replayed book to
+/// trace, fused with the world as of the end of the session.
+fn fused_digest(scale: f64, threshold_bps: f64) -> Result<(usize, String)> {
+    let record = replay_from_the_start(&recorded_session())?;
+    let trace = recorded_trace(&record, scale)?;
+    assert!(
+        trace.points.len() >= 8,
+        "premise: the session gave {} trace point(s)",
+        trace.points.len()
+    );
+    let fused = fuse(
+        &world_with_one_event()?,
+        &[trace],
+        captured(1_000),
+        &fusion_config(threshold_bps),
+    )?;
+    Ok((fused.events.len(), fused.digest))
+}
+
+/// Pins no literal digest: this draft could not be run, and an invented
+/// constant would fail on first contact. It proves what a pin would: the
+/// digest reproduces across two full runs from bytes, and moves when the
+/// market side or the fusion rule moves, so a stage that ignored either would
+/// leave it unchanged and fail the inequalities below.
+#[test]
+fn a_recorded_session_fused_with_the_world_reproduces_its_digest_and_a_changed_stage_moves_it()
+-> Result<()> {
+    let (count, digest) = fused_digest(1.0, 20.0)?;
+    assert_eq!(count, 1, "premise: the world event is knowable and fused");
+    assert!(!digest.is_empty(), "premise: a digest was computed");
+
+    let (_, again) = fused_digest(1.0, 20.0)?;
+    assert_eq!(digest, again, "the fused replay is not reproducible");
+
+    // The market side moved by 1000 bps, far past the reaction threshold.
+    let (_, shifted) = fused_digest(1.1, 20.0)?;
+    assert_ne!(digest, shifted, "the digest ignores the market traces");
+
+    // The fusion rule moved: the same session judged against a threshold no
+    // move can reach.
+    let (_, unreachable) = fused_digest(1.0, 1.0e9)?;
+    assert_ne!(digest, unreachable, "the digest ignores the fusion rule");
+    Ok(())
+}
