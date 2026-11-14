@@ -269,3 +269,102 @@ fn the_cloud_run_module_refuses_an_execution_plane_and_no_catalogue_workload_hos
         "a Cloud Run catalogue entry declares the execution plane"
     );
 }
+
+const CICD: &str = "infrastructure/terraform/modules/cicd/main.tf";
+
+/// The roles bound by the top-level resource blocks of `text` that name
+/// `google_service_account.<account>.` outside a comment, as a member or as
+/// the account a binding is granted on. A block ends at a `}` in column 0.
+///
+/// Failure prevented: the per-file ceiling bounds the union of the CI and
+/// infra identities, so a role meant for infra could be bound to the CI
+/// account and pass, handing the pipeline that only updates services an
+/// admin role.
+fn roles_held_by(text: &str, account: &str) -> BTreeSet<String> {
+    let needle = format!("google_service_account.{account}.");
+    let mut held = BTreeSet::new();
+    let mut block = String::new();
+    for line in text.lines() {
+        block.push_str(line);
+        block.push('\n');
+        if line == "}" {
+            let code: String = block
+                .lines()
+                .map(|l| l.split('#').next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if code.contains(&needle) {
+                held.extend(roles_in(&code));
+            }
+            block.clear();
+        }
+    }
+    held
+}
+
+fn ci_roles() -> BTreeSet<String> {
+    set(&[
+        "roles/iam.workloadIdentityUser",
+        "roles/logging.viewer",
+        "roles/run.developer",
+    ])
+}
+
+fn infra_roles() -> BTreeSet<String> {
+    set(&[
+        "roles/artifactregistry.admin",
+        "roles/binaryauthorization.attestorsAdmin",
+        "roles/binaryauthorization.policyAdmin",
+        "roles/cloudkms.admin",
+        "roles/cloudkms.publicKeyViewer",
+        "roles/compute.admin",
+        "roles/containeranalysis.admin",
+        "roles/dns.admin",
+        "roles/iam.roleAdmin",
+        "roles/iam.serviceAccountAdmin",
+        "roles/iam.serviceAccountUser",
+        "roles/iam.workloadIdentityPoolAdmin",
+        "roles/iam.workloadIdentityUser",
+        "roles/logging.admin",
+        "roles/logging.viewer",
+        "roles/monitoring.admin",
+        "roles/pubsub.admin",
+        "roles/resourcemanager.projectIamAdmin",
+        "roles/run.admin",
+        "roles/secretmanager.admin",
+    ])
+}
+
+#[test]
+fn the_ci_identity_holds_only_its_own_roles_and_the_infra_identity_only_its_own() {
+    let text = read(CICD);
+    let ci = roles_held_by(&text, "ci");
+    let infra = roles_held_by(&text, "infra");
+    assert!(
+        !ci.is_empty() && !infra.is_empty(),
+        "premise: both accounts bind roles in {CICD}"
+    );
+    assert_eq!(ci, ci_roles(), "the CI account's roles changed");
+    assert_eq!(infra, infra_roles(), "the infra account's roles changed");
+    // The two lists together are exactly the file's list, so the per-account
+    // split cannot drift from the per-file ceiling above.
+    let union: BTreeSet<String> = ci.union(&infra).cloned().collect();
+    assert_eq!(union, roles_in(&text), "a role in {CICD} belongs to neither account");
+}
+
+#[test]
+fn an_admin_role_bound_to_the_ci_account_is_found_by_the_per_account_scan() {
+    let mutated = format!(
+        "{}\nresource \"google_project_iam_member\" \"extra\" {{\n  role   = \"roles/run.admin\"\n  member = \"serviceAccount:${{google_service_account.ci.email}}\"\n}}\n",
+        read(CICD)
+    );
+    let ci = roles_held_by(&mutated, "ci");
+    assert!(
+        !ci.is_empty(),
+        "premise: the CI account still binds roles after the mutation"
+    );
+    assert!(
+        ci.contains("roles/run.admin") && ci != ci_roles(),
+        "the per-account scan missed an admin role on the CI account"
+    );
+}
