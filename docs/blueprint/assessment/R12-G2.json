@@ -2319,13 +2319,13 @@
   },
   {
     "id": "R12-CICD-9098",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "CI release build and the Dockerfile run cargo build --release --locked; cargo-audit/deny installs also --locked.",
     "evidence": [
       ".github/workflows/ci.yml:124",
       "infrastructure/docker/Dockerfile:68"
     ],
-    "gap": "None.",
+    "gap": "The check needs every cargo build to pass `--locked`. The release build and the Dockerfile do. The clippy, nextest, `cargo run` and two `cargo test` steps of `.github/workflows/ci.yml` compile without it, and no acceptance test asserts the flag on every step. Earlier gap text: None.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2336,7 +2336,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "S",
-    "notes": "No acceptance test asserts --locked; evidence is the workflow/Dockerfile itself."
+    "notes": "No acceptance test asserts --locked; evidence is the workflow/Dockerfile itself. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
   },
   {
     "id": "R12-CICD-9099",
@@ -2623,13 +2623,13 @@
   },
   {
     "id": "R12-CICD-9111",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The explicit decision exists: ADR 0114 has Config Connector reconcile the baseline on a controllers-only control plane. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names pins the admitted controller set and refuses Config Sync's kinds and API group under bootstrap/.",
     "evidence": [
       "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names"
     ],
-    "gap": "",
+    "gap": "The check needs a digest-promotion commit followed by an observed reconciliation. The tree holds ADR 0114 and a controller-set test; no promotion has been reconciled in any environment. Closes on deployment evidence.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2640,7 +2640,7 @@
     "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a RootSync document under bootstrap/config-connector/base failed the test."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a RootSync document under bootstrap/config-connector/base failed the test. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
   },
   {
     "id": "R12-CICD-9112",
@@ -3850,7 +3850,7 @@
   },
   {
     "id": "R12-OBS-9164",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Two objectives are declared in slo.rs (model-package-freshness: a promoted package at most a week old; research-queue-depth: at most 768 items) and bound in critical_paths.rs to counters of checks recorded where the age gauge (Operations::observe) and the queue-depth gauge (ResearchLoop::sweep_over) are written, so both read unmeasured until a round runs and measured after.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/slo.rs model_package_freshness, research_queue_depth",
@@ -3859,7 +3859,7 @@
       "backend/crates/apps/qip-deepbrain/src/research.rs RESEARCH_QUEUE_CHECKS",
       "backend/crates/apps/qip-deepbrain/tests/research.rs a_round_moves_the_model_freshness_and_research_queue_objectives_from_unmeasured_to_measured"
     ],
-    "gap": "",
+    "gap": "The requirement names five AI service-level objectives. Only model-package freshness and research-queue depth are declared and bound. Agent tool failure and the quantum/classical delta have no objective, and calibration has no critical-path recording.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3870,7 +3870,7 @@
     "verification": "cargo test -p qip-deepbrain --test research -- a_round_moves; cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "M",
-    "notes": "Mutation: pointing either counter site at the gauge name leaves its objective at zero observations and fails the test. Both objectives are evaluated by the deep brain's existing evaluate_where over its own registry; no alert policy is added, so nothing pages on them until workload_metrics_exist is flipped."
+    "notes": "Mutation: pointing either counter site at the gauge name leaves its objective at zero observations and fails the test. Both objectives are evaluated by the deep brain's existing evaluate_where over its own registry; no alert policy is added, so nothing pages on them until workload_metrics_exist is flipped. Regraded COMPLETE to PARTIAL on 2026-11-14 by the full-register audit (owner decision 37): two independent read-only readers found the part named in the gap unmet."
   },
   {
     "id": "R12-OBS-9165",

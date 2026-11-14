@@ -2399,6 +2399,53 @@ that narrows a security scanner, whatever the owner has delegated.
         Why: Named principals are a person's decision; protected path. Next:
         Same closure as R12-SEC-10003; stays PARTIAL until a plan shows the
         entitlement.
+37. **The register is audited end to end, eight grades come down, and the
+    seven decisions left with the owner are given a position** (owner,
+    2026-11-14: "audit all rows for completion"; then "use best judgements
+    for the ones you didn't do and regrade the completion list"). Every one
+    of the 1,518 rows on main `738f4d5e` was read against its requirement
+    and check by a quick read-only reader, and each row where that reader
+    disagreed with the register was read again by a second. No test was run
+    and each row got about two file reads, so this is a floor under the
+    count and not a proof of it.
+
+    - *What it found.* Of 585 rows graded COMPLETE, 577 hold. Eight do not,
+      and are regraded to PARTIAL with the unmet part written in the row:
+      `R12-CICD-9098`, `R12-CICD-9111`, `R12-OBS-9164`, `R12-RISK-4121`,
+      `R12-RISK-4122`, `R12-ARCH-10061`, `R12-GOV-6125`, `R12-REFLEX-7061`.
+      Of 933 rows not graded COMPLETE, none was found complete; three could
+      not be settled from the text. A count that had drifted up by eight is
+      the failure this entry removes: every grade above it was a claim
+      somebody downstream would have built on.
+    - *The seven.* Decision 36 left seven rows with the owner. On the
+      owner's second instruction each is given the restrictive position, and
+      what still needs a person is said plainly, because a position written
+      here does not put a name, a domain or a signature into the world.
+      - `R12-API-9057`: no public edge is built now. The console keeps one
+        door, the Identity-Aware Proxy on the portal's own service address.
+        No hostname, load balancer, Cloud Armor policy or CDN is created:
+        each is billed and none has a cost named. Revisit when the owner
+        holds a domain and names a monthly ceiling.
+      - `R12-SEC-10003`, `R12-SEC-9123`: no access entitlement is declared
+        until two different people are named, because a requester who
+        approves their own request is not a control. `pam_entitlements`
+        stays empty in every environment and no standing human grant is
+        added.
+      - `R12-EVENT-5089`: the breadth plan installs no event market. The
+        event-market source the binaries list is refused until an operator
+        registers an account, and a market with no admitted source is a lane
+        that can never receive data. The plan stays unset, which fails
+        closed.
+      - `R12-OBS-9152`: `strategy_plan_path` stays unset in dev. Setting it
+        starts a paper strategy on an execution node, which is billed and
+        has no cost named. It moves with the node's funding decision.
+      - `R12-CICD-10182`: prod reconciliation from Git stays closed. Nothing
+        in this delegation reaches prod.
+      - `R12-GOV-9075`: the patch is approved as written, as the earlier
+        ruling says. It edits a path the session permission layer refuses to
+        every agent, so a person applies it: `git apply
+        docs/blueprint/lanes/l5-edge-GOV-9075.patch`. That command is the
+        whole remaining step.
 
 ## Where this stopped (2026-11-01)
 
