@@ -144,8 +144,21 @@ impl Agent for WorldModelArbitrationAnalyst {
                 not_reproduced.join(", ")
             ));
         }
+        // A family no live member covers is the federation's coverage, read
+        // whole off the review: a fact about the world model, never an input
+        // this agent lacked. Filed as missing it read as a gap in the panel's
+        // evidence, and the verifier society's missing-variable critic then
+        // refuted every thesis on a platform without an on-chain or company
+        // member — which is every deployed platform today.
+        let mut caveats = vec![
+            "decides each proposition from the views the federation scored, under the \
+             federation's own rule; it re-scores no member"
+                .to_string(),
+            "an unscored member has no resolved forecast: unscored is not a Brier of zero"
+                .to_string(),
+        ];
         if !view.uncovered.is_empty() {
-            missing.push(format!(
+            caveats.push(format!(
                 "no live member covers {}",
                 view.uncovered.join(", ")
             ));
@@ -229,13 +242,14 @@ impl Agent for WorldModelArbitrationAnalyst {
                 "count",
                 SOURCE,
             ))
-            .caveats(vec![
-                "decides each proposition from the views the federation scored, under the \
-                 federation's own rule; it re-scores no member"
-                    .to_string(),
-                "an unscored member has no resolved forecast: unscored is not a Brier of zero"
-                    .to_string(),
-            ]);
+            .fact(computed(
+                ctx,
+                "families_uncovered",
+                view.uncovered.len() as f64,
+                "count",
+                SOURCE,
+            ))
+            .caveats(caveats);
         // A mean over no scored member would be a number nobody measured.
         if scored > 0 {
             builder = builder.fact(computed(

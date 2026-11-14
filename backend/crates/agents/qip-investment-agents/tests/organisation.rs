@@ -4685,3 +4685,59 @@ fn the_world_model_arbitration_brain_decides_from_the_preserved_views_and_names_
     );
     Ok(())
 }
+
+/// A family no live world-model member covers is reported as a fact and a
+/// caveat, never as a missing input: the specialist read the whole review,
+/// and the federation's coverage is what it found, not something it lacked.
+///
+/// The failure this guards happened (round 50, 2026-11-14): the uncovered
+/// families were filed in `missing_inputs`, the verifier society's
+/// missing-variable critic read them as evidence the explanation went ahead
+/// without, and every thesis on a platform with no on-chain or company
+/// member was refuted below the action bar.
+///
+/// Mutation: push the uncovered families onto `missing` — the finding turns
+/// `Partial` and `missing_inputs` is no longer empty.
+#[test]
+fn a_world_model_family_no_member_covers_is_a_fact_of_the_review_not_a_missing_input() -> Result<()>
+{
+    use qip_investment_agents::desk::ArbitrationView;
+    let desk = Arc::new(Desk::empty(now()).with_arbitration(ArbitrationView {
+        observed: true,
+        cycle: 9,
+        journal_base: 12,
+        arbitrations: federation_review_arbitrations(),
+        calibrations: BTreeMap::new(),
+        uncovered: vec![
+            "crypto/on-chain".to_string(),
+            "company/fundamental".to_string(),
+        ],
+    }));
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = arbitration_finding(&report);
+    assert_eq!(fact_value(finding, "families_uncovered"), Some(2.0));
+    assert!(
+        finding
+            .caveats
+            .iter()
+            .any(|c| c == "no live member covers crypto/on-chain, company/fundamental"),
+        "{:?}",
+        finding.caveats
+    );
+    assert_eq!(finding.status, FindingStatus::Complete, "{}", finding.claim);
+    assert!(
+        finding.missing_inputs.is_empty(),
+        "{:?}",
+        finding.missing_inputs
+    );
+    assert!(
+        !report
+            .missing_inputs
+            .iter()
+            .any(|m| m.starts_with(ids::WORLD_MODEL_ARBITRATION)),
+        "{:?}",
+        report.missing_inputs
+    );
+    Ok(())
+}
