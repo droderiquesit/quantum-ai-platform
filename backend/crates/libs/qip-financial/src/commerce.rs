@@ -641,6 +641,61 @@ impl LogisticsPlanDraft {
     }
 }
 
+/// A booking a carrier acknowledged for one complete plan.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CarrierBooking {
+    pub sequence: u32,
+    pub carrier: String,
+    pub legs: usize,
+}
+
+/// The seam through which a plan reaches a carrier. A [`LogisticsPlan`] is
+/// only a plan; without a port nothing could show a booking reaching, or
+/// being refused by, the party that would move the goods.
+pub trait CarrierPort {
+    /// Books the plan, refusing one addressed to a different carrier.
+    fn book(&mut self, plan: &LogisticsPlan) -> Result<CarrierBooking>;
+}
+
+/// The only carrier there is: it acknowledges a plan addressed to it and
+/// counts the calls, so a test can prove a refusal reached nobody. No real
+/// carrier is reachable from here (ADR 0021/0099).
+#[derive(Clone, Debug)]
+pub struct SimulatedCarrier {
+    name: String,
+    calls: u32,
+}
+
+impl SimulatedCarrier {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            calls: 0,
+        }
+    }
+
+    pub fn calls(&self) -> u32 {
+        self.calls
+    }
+}
+
+impl CarrierPort for SimulatedCarrier {
+    fn book(&mut self, plan: &LogisticsPlan) -> Result<CarrierBooking> {
+        if plan.carrier != self.name {
+            return Err(Error::invalid(format!(
+                "the plan names carrier {} but this port is {}; book it with the carrier it names",
+                plan.carrier, self.name
+            )));
+        }
+        self.calls += 1;
+        Ok(CarrierBooking {
+            sequence: self.calls,
+            carrier: self.name.clone(),
+            legs: plan.route.len(),
+        })
+    }
+}
+
 // --------------------------------------------------------------- Ledger
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
