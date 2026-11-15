@@ -42,11 +42,21 @@ cell that activated a pack kept a metric, not a record.
    that carries `provenance` is signed over it with no edit to
    `.github/workflows/model-pack-publish.yml`.
 
-## Consequences
+## What it costs
 
-- A pack without provenance still verifies and still releases (backward
+- A pack without provenance still verifies and releases (backward
   compatible), but no activation record can be made from it.
+- Every pack draft that wants an activation record must now carry a full
+  commit id and a manifest digest, which the training pipeline does not yet
+  supply.
 - Not decided here, and still open: the cell-side journal that writes an
   `ActivationRecord` where `qip-edge-node` admits a manifest (today
-  `PackageActivation` is a metric), and the training pipeline that supplies a
-  commit and manifest digest to the pack draft.
+  `PackageActivation` is a metric).
+
+## What would make this wrong
+
+- If a model can reach a cell by a path that never builds an
+  `ActivationRecord`, the five links are optional in practice. The journal
+  that makes the record mandatory at admission is the check to add.
+- If a commit id is ever abbreviated or case-folded upstream and re-expanded,
+  the signed link names a commit nobody built; validation refuses both.
