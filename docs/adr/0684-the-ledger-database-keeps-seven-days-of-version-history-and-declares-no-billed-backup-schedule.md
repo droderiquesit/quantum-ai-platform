@@ -26,13 +26,25 @@ folded `version_retention_period` into the single DDL statement that
 PITR becomes plannable. The requirement is not met until a schedule exists.
 Paper boundary untouched. Nothing here was planned or applied.
 
-## Cost, stated because the title could be read as saying there is none
+## What it costs
 
-Seven days of version history is not free. Spanner bills retained versions as
-storage, so this setting raises the storage bill of the ledger database from the
-day a database exists. No environment enables Spanner today (`enable_spanner` is
-false in all four), so nothing is billed by this record, and the figure is not
-priced here: it is named, with the rest of Spanner's cost, before any environment
-turns the database on. "No billed backup schedule" in the title means only that
-no backup schedule is declared. Added by the wave's orchestrator on 2026-11-15
-after an independent reader found the prose silent on this.
+Seven days of version history should not be read as free. That Spanner bills
+retained versions as storage is the vendor's pricing as this record understands
+it; nothing in this repository holds or checks it, and a person confirms it
+before relying on it. If it holds, this setting raises the storage bill of the
+ledger database from the day a database exists. No environment enables Spanner
+today (`enable_spanner` is false in all four `terraform.tfvars`), so nothing is
+billed by this record, and the figure is not priced here: it is named, with the
+rest of Spanner's cost, before any environment turns the database on. "No billed
+backup schedule" in the title means only that no backup schedule is declared.
+
+## What would make this wrong
+
+A person gives a retention figure shorter than seven days, or a storage bill for
+retained versions that the desk judges larger than the recovery window is worth;
+the 7d value should then be lowered. A schedule or retention and cost figure is
+approved, which makes the undeclared `google_spanner_backup_schedule` a gap to
+close rather than a deferral. An environment sets `enable_spanner` to true
+before the storage cost of the retained versions has been named, which the
+section above says comes first. Spanner changes its maximum retention, or its
+billing of retained versions turns out not to be what that section understands.

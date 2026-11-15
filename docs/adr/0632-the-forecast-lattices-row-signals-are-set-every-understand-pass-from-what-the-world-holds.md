@@ -43,6 +43,37 @@ generation (capital-cycle, policy, technology, geopolitical) for the
 quarters-years row, and any downstream gate on `PromotionTarget`. Rows stay
 PARTIAL for them.
 
+## What it costs
+
+- The lattice now depends on the federation step having run earlier in the
+  same UNDERSTAND pass: the flow map is taken inside `understand_federation`
+  and read by the lattice afterwards, so reordering those two steps would
+  silently hand the flow member the previous pass's map, or an empty one on
+  the first pass.
+- Every pass reads the world model's live causal claims into each target
+  subject and the macro surprises for the one pending catalyst, and sums the
+  cycle's flow per subject. This record holds no measurement of that work.
+- The flow member only ever sees the paper simulator's own prints, so every
+  flow signal is simulated. R12-WORLD-3085 and R12-WORLD-3088 both stay
+  PARTIAL for what "Not decided" lists.
+- `signals_read` adds a field to the journaled review, so every pass that
+  read any signal writes a slightly larger record; a pass that read none
+  writes nothing extra.
+
+## What would make this wrong
+
+- A lattice pass whose journaled `signals_read` is empty while the world
+  model held a live causal claim into one of the pass's target subjects or a
+  pending catalyst at that instant, which
+  would show the wiring has drifted from the world the pass claims to read.
+- A second source of signed aggressor flow, such as a real venue feed,
+  because decision 3 assumes the paper simulator is the only one.
+- A forecast row that needs a signal to narrow its interval, which decision 2
+  forbids, or evidence that widening on every claim leaves the intervals too
+  wide to score against the calibrator.
+- A composition root that does begin setting the signals itself, leaving two
+  writers of the same state.
+
 ## Evidence
 
 `qip-kernel/tests/lattice_signals_wired.rs`, each mutation-verified (see the

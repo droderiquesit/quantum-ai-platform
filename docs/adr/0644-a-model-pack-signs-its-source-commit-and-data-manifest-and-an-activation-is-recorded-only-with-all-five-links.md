@@ -42,11 +42,32 @@ cell that activated a pack kept a metric, not a record.
    that carries `provenance` is signed over it with no edit to
    `.github/workflows/model-pack-publish.yml`.
 
-## Consequences
+## What it costs
 
 - A pack without provenance still verifies and still releases (backward
-  compatible), but no activation record can be made from it.
+  compatible), but no activation record can be made from it. `admit` refuses
+  it, so a pack an operator wants traced must be re-drafted and re-signed with
+  a commit and manifest digest under the two-person release.
+- Whoever drafts a pack that is to be traced must supply a full commit id
+  and a manifest digest in the pack file. Not decided here, and still open:
+  the training pipeline that supplies them to the pack draft.
 - Not decided here, and still open: the cell-side journal that writes an
   `ActivationRecord` where `qip-edge-node` admits a manifest (today
-  `PackageActivation` is a metric), and the training pipeline that supplies a
-  commit and manifest digest to the pack draft.
+  `PackageActivation` is a metric). Until it lands, the record type exists
+  and an activation is still only counted, so the five-link trace is not yet
+  kept by any running cell.
+
+## What would make this wrong
+
+- A pack found executing in a cell with no `ActivationRecord` after the
+  cell-side journal exists, which would mean a model runs in Reflex that
+  cannot be traced, the thing R12-MODEL-10180 rules out.
+- Operators routinely signing packs with placeholder or copied commit and
+  manifest values to get past the refusal, so the links name nothing real.
+  `PackProvenance::validate` checks only the shape of the two values, so the
+  provenance field would then prove presence and not origin.
+- A change to `signing_payload` ordering or the `provenance/v1` tag that
+  alters the bytes of a pack signed before the field existed, which breaks
+  the backward-compatibility claim in Decision 1.
+- A need to record a centre-side promotion as an activation, which Decision 3
+  excludes because it has no epoch.

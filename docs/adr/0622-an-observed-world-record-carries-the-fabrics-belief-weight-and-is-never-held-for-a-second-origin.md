@@ -59,3 +59,11 @@ Nothing is built by this record. R12-EVID-2030 stays PARTIAL until the four
 seams and the test exist. Seams 2 and 3 cross `qip-opportunity-engine` and
 `qip-kernel` and are being edited by other lanes, so they should land as a
 sequence of small commits, not one.
+
+## What it costs
+
+A single-origin record keeps reaching the detectors, so one source's word can still raise an anomaly; the decision only caps how confident that anomaly may be. The cap is worth nothing until the four seams exist, and seams 2 and 3 cross `qip-opportunity-engine` and `qip-kernel`: the weight must travel beside each released record because `SensedRecord` carries no claim id and `Platform::admit_world_records` is generic over `T`, `CatalystLink` must carry the fabric weight, `Anomaly::confidence` must multiply by it, and the bare `f64` series behind `Platform::observation_history` needs a weight per point. Records with no claim are left as they are, and a record whose weight cannot be found is refused by name, so a lookup gap becomes a named refusal, not a default weight. If the weight is held in a kernel map keyed by record digest, that map is extra state bounded by `DEFAULT_EVIDENCE_CAPACITY`; its memory cost is unmeasured. The row R12-EVID-2030 stays PARTIAL, and a record a person might expect to be held for a second origin is not held.
+
+## What would make this wrong
+
+An uncorroborated record is found to have moved a decision, not just an anomaly's confidence, even though the bound held. A source type appears whose claims all carry high belief weight without independent origins, so the cap does not bind where it should. Corroboration becomes common enough across the connectors that arm (B) would no longer withhold every record on all three roots, and a gate that waits for two origins would cost little. The weight cannot be threaded to the detectors without a per-record map that exceeds its bound in practice, or the refusal for a missing weight fires often enough to starve the detectors.

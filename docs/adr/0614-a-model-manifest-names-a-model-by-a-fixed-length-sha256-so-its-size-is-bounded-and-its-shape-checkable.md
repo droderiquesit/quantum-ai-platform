@@ -32,12 +32,26 @@ size, not announcement size.
    commit. This is the step that touches what ADR 0149 decision 17 keeps
    byte-identical, so it is not taken without the ruling.
 
-## Consequences
+## What it costs
 
-The fabric then carries only fixed-length references. A model's weights
-cannot ride a payload by being folded into a digest string. The migration
-invalidates every signed payload that named the old form, so the release
-pack is re-signed through the two-person publish.
+The fabric then carries only fixed-length references, and a model's weights
+cannot ride a payload by being folded into a digest string. In exchange, the
+migration invalidates every signed payload that named the old long form, so
+the release pack must be re-signed through the two-person publish, and pinned
+digests that depend on the old encoding (ADR 0149 decision 17) change in one
+commit that waits on the owner's ruling. The centre, the cell and the release
+pack all take on one shared hashing function in `qip-contracts`. Hashing the
+canonical form is a step on top of producing it, wherever the digest is
+computed, and its cost is unmeasured. Until `MAX_MANIFEST_BYTES` is named and
+the migration lands, the size bound and the shape check stay unenforced.
+
+## What would make this wrong
+
+The decision should be revisited if the owner rules that pinned digests must
+stay byte-identical and no migration is allowed, since step 4 then cannot be
+taken. It should be reopened if the three computing sites cannot share one
+function in `qip-contracts` without a dependency inversion, or if a second
+manifest producer appears whose model has no canonical form to hash.
 
 ## Not decided here
 

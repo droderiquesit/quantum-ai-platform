@@ -50,3 +50,11 @@ change enabling the desk, are separate and the second is the owner's decision.
 No number is chosen here. The 100 ns and 200 ns uncertainties and the 250 ns
 shift in `tick_replay.rs` are test fixtures that make both `Unordered` and
 ordered answers occur, not statements about any venue's clock.
+
+## What it costs
+
+Two ticks whose recorded gap is no more than the sum of their recorded uncertainties are reported `Unordered`, so the aligner states fewer orders than a naive timestamp comparison would, and a consumer must handle that answer. Ticks from two different cells must not go through this type; the caller must route them to `CrossRegionAligner` with a stated bound. `VenueTick` names no cell, so nothing in the type stops a caller who forgets, and the error is then understated with no refusal. A lake line with no clock block is refused by the reader that builds `VenueTick` rather than aligned, so such history drops out of a cross-venue read. The aligner holds one latest tick per `(venue, instrument)` key, capped at `MAX_VENUE_PARTITIONS` (1,024), and evicts the earliest beyond that; each `relate` call scans every held key. The scan cost has not been measured. The conversion from `RecordedTick` stays in the caller, so `qip-sequencing` offers none and each consumer writes its own. No production composition root calls the aligner yet, and the row R12-TICK-1124 stays PARTIAL.
+
+## What would make this wrong
+
+A venue's clock error turns out to be larger than its recorded uncertainty even within one cell, for example a feed that stamps arrival rather than capture. Then the stated orders are too confident and a bound argument is needed here as well. A deployment captures several venues through different cells but feeds them to this type, which the type does not prevent. Consumers find `Unordered` so common that the output is unusable, which would show the recorded uncertainties are too wide to relate venues at all. The 1,024-key cap evicts a key a consumer still needs, which would show up as missing alignments for a quiet venue.
