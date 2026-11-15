@@ -93,8 +93,8 @@ use qip_edge_node::standby::{
     ROLE_VARIABLE, SimulatedSessions, StandbySettings,
 };
 use qip_edge_node::strategies::{
-    MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
-    parse_pricing,
+    FEATURE_PAIRS_VARIABLE, MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX,
+    StrategyInstaller, parse_feature_pairs, parse_pricing,
 };
 use qip_edge_node::telemetry::PeerSeries;
 use qip_edge_node::trust::{TRUST_BUNDLE_VARIABLE, choose_root};
@@ -272,6 +272,9 @@ struct NodeConfig {
     /// one of the two forms stops the process — see
     /// `qip_edge_node::strategies`.
     pricing: Option<PricingPolicy>,
+    /// The instrument pairs the lead/lag and cross-venue features are
+    /// registered for (R12-TICK-2063); empty registers none.
+    feature_pairs: Vec<qip_edge_node::strategies::FeaturePair>,
     /// Where the compiled plan the payload names by digest is read from.
     /// `None` deploys nothing and is named in the production requirements.
     plan_path: Option<PathBuf>,
@@ -455,6 +458,8 @@ impl NodeConfig {
         }
         let feed = FeedChoice::from_env()?;
         let pricing = parse_pricing(std::env::var(PRICING_VARIABLE).ok().as_deref())?;
+        let feature_pairs =
+            parse_feature_pairs(std::env::var(FEATURE_PAIRS_VARIABLE).ok().as_deref())?;
         let plan_path = match std::env::var(PLAN_VARIABLE) {
             Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
             _ => None,
@@ -541,6 +546,7 @@ impl NodeConfig {
             arbitrage_search,
             feed,
             pricing,
+            feature_pairs,
             plan_path,
             reprice,
             settlement,
@@ -792,7 +798,8 @@ fn replay_once(spool: Option<&str>) -> Result<qip_edge_node::replay::ReplayRepor
     gateway.install_settlement_terms(config.settlement.clone())?;
     let feed = SimulatedFeed::new(gateway_venue);
     feed.attach_settling(&mut cell, gateway.settlement_terms())?;
-    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
+    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing)
+        .with_feature_pairs(config.feature_pairs.clone());
     // The requoter as `run` builds it, over the assembly's registry: a replay
     // without one would re-drive a node that configured none, and diverge on
     // its first requote.
@@ -1176,7 +1183,8 @@ fn run() -> Result<()> {
     // a plan whose bytes are at the configured path. With no pricing or no
     // path it deploys nothing and says which on every tick, so a node
     // running no strategy is a node whose log says why.
-    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
+    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing)
+        .with_feature_pairs(config.feature_pairs.clone());
 
     for requirement in missing_production_requirements(
         config.mesh.is_some(),

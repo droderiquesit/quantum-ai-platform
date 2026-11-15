@@ -30,14 +30,16 @@ use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::SimulatedFeed;
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
-use qip_edge_node::strategies::{StrategyInstaller, StrategyPlan};
+use qip_edge_node::strategies::{
+    FeaturePair, StrategyInstaller, StrategyPlan, parse_feature_pairs,
+};
 use qip_edge_node::{NodeAssembly, assemble, standard_engine_and_catalogue};
 use qip_execution_engine::creation::{
     CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use qip_execution_engine::order::Side;
 use qip_feature_dag::definition::ValueKind;
-use qip_feature_dag::features::Microprice;
+use qip_feature_dag::features::{CrossVenueSpread, LeadLagCorrelation, Microprice};
 use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
 use qip_strategy::ir::Type;
 use std::collections::BTreeSet;
@@ -308,4 +310,113 @@ fn permitting_to_seed(
         }
     }
     gateway.with_listing_permissions(permissions, "paper")
+}
+
+/// Deploy the fixture plan with `pairs` configured and say which of the two
+/// pair features the cell's engine holds for `leader` against the plan's
+/// subject.
+fn pair_features_held(
+    pairs: Vec<FeaturePair>,
+    leader: &ObjectId,
+    probe: Option<&ObjectId>,
+) -> Result<(bool, bool)> {
+    let bytes = fs::read(fixture_path())
+        .unwrap_or_else(|error| panic!("the committed fixture plan is unreadable: {error}"));
+    let plan = StrategyPlan::from_bytes(&bytes)?;
+    let spec = plan.strategies[0].clone();
+    let (mut node, _gateway, _feed) = node_with_feed(&spec.subject)?;
+    let digest = StrategyPlan::digest_of(&bytes);
+    let mut installer =
+        StrategyInstaller::new(Some(fixture_path()), Some(PricingPolicy::Marketable))
+            .with_feature_pairs(pairs);
+    installer.offer(grant()?)?;
+    node.cell.apply_policy(
+        policy(1, t(10), &digest, plan.strategies.len() as u64)?,
+        t(10),
+    )?;
+    let outcome = installer.install(&mut node.cell, t(10));
+    assert_eq!(
+        outcome.deployed,
+        vec![STRATEGY.to_string()],
+        "premise: the strategy deployed: {}",
+        outcome.describe()
+    );
+    let graph = node.cell.features().graph();
+    let subject = probe.unwrap_or(&spec.subject);
+    Ok((
+        graph.is_defined(&LeadLagCorrelation::key(subject, leader, 30, 2)),
+        graph.is_defined(&CrossVenueSpread::key(subject, leader)),
+    ))
+}
+
+/// R12-TICK-2063: a configured pair reaches the engine. Before this nothing
+/// in the node registered either feature, so both families were library code.
+///
+/// Mutation: drop the `suite.push` of `CrossVenueSpread` (or of
+/// `LeadLagCorrelation`) in `StrategyInstaller::reconcile`: the matching
+/// assertion fails.
+#[test]
+fn a_configured_pair_registers_lead_lag_and_cross_venue_for_the_deployed_follower() -> Result<()> {
+    let bytes = fs::read(fixture_path())
+        .unwrap_or_else(|error| panic!("the committed fixture plan is unreadable: {error}"));
+    let follower = StrategyPlan::from_bytes(&bytes)?.strategies[0]
+        .subject
+        .clone();
+    let leader = ObjectId::from_string("obj-LEADER-2063");
+    let pair = FeaturePair {
+        leader: leader.clone(),
+        follower: follower.clone(),
+        window: 30,
+        lag: 2,
+    };
+    assert_eq!(
+        pair_features_held(Vec::new(), &leader, None)?,
+        (false, false),
+        "premise: with no pair configured neither feature is registered"
+    );
+    assert_eq!(
+        pair_features_held(vec![pair], &leader, None)?,
+        (true, true),
+        "a configured pair registers both features"
+    );
+    let undeployed = ObjectId::from_string("obj-NOT-DEPLOYED");
+    let elsewhere = FeaturePair {
+        leader: leader.clone(),
+        follower: undeployed.clone(),
+        window: 30,
+        lag: 2,
+    };
+    assert_eq!(
+        pair_features_held(vec![elsewhere], &leader, Some(&undeployed))?,
+        (false, false),
+        "a pair whose follower no strategy trades registers nothing"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_pair_variable_is_read_whole_or_refused() -> Result<()> {
+    assert!(parse_feature_pairs(None)?.is_empty());
+    assert!(parse_feature_pairs(Some("  "))?.is_empty());
+    let pairs = parse_feature_pairs(Some("obj-A>obj-B:30:2, obj-C>obj-B:10:1"))?;
+    assert_eq!(pairs.len(), 2, "premise: both entries parsed");
+    assert_eq!(pairs[0].leader, ObjectId::from_string("obj-A"));
+    assert_eq!(pairs[0].follower, ObjectId::from_string("obj-B"));
+    assert_eq!((pairs[0].window, pairs[0].lag), (30, 2));
+    for bad in [
+        "obj-A>obj-B",
+        "obj-A>obj-B:30",
+        "obj-A-obj-B:30:2",
+        "obj-A>obj-A:30:2",
+        "obj-A>obj-B:1:2",
+        "obj-A>obj-B:30:0",
+        "obj-A>obj-B:x:2",
+        "obj-A>obj-B:30:2,obj-A>obj-B:10:1",
+    ] {
+        assert!(
+            parse_feature_pairs(Some(bad)).is_err(),
+            "`{bad}` should be refused, not defaulted"
+        );
+    }
+    Ok(())
 }
