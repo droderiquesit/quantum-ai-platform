@@ -6773,6 +6773,7 @@ impl Platform {
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
         let fill_bias_installations_resumed = crate::fill_bias_installation::resume(&event_log)?;
+        let routing_reputation_resumed = crate::routing_score::resume_book(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -6898,7 +6899,7 @@ impl Platform {
             monitor_routing: None,
             reason_routing: None,
             routing_judgements: BTreeMap::new(),
-            routing_reputation: qip_cost_router::ReputationBook::new(),
+            routing_reputation: routing_reputation_resumed,
             universe_not_decision_grade: not_decision_grade,
             commitments,
             illiquid_marks,

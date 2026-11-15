@@ -42,3 +42,17 @@ decision is written here rather than under a third number.
    `a_closed_position_is_priced_as_the_unhedged_hold_and_a_climbing_tape_is_a_regret`.
    Owner decision 7 also holds that no composition root declares a hedge
    policy, so a hedge counterfactual would score nothing on a default path.
+
+## Further lane 40 decision: R12-MODEL-10123 (routing book across a restart)
+
+1. The routing reputation book is rebuilt at start-up from every
+   `RoutingScored` record in the log (`routing_score::resume_book`), through
+   the same `ReputationBook::observe` the cycle calls. The log, not memory, is
+   the book's source of truth.
+2. A judgement in flight between REASON and LEARN at a restart is dropped, not
+   re-held: it was never scored, and a judgement rebuilt later would carry the
+   wrong decision-time conditions. Unchanged from ADR 0391.
+3. Not built: hedges (owner decision 7), scoring the capital plans (ADR 0229,
+   0230) against realised outcomes, reading the book back (ADR 0391 decision
+   5), and tests for the inconclusive-verdict and closed-prediction branches of
+   `score_routings`.
