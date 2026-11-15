@@ -1,0 +1,11 @@
+{"lane": "38", "rows": [{
+  "id": "R12-RISK-5044",
+  "outcome": "SLICE",
+  "claims_requirement_met": false,
+  "what": "The existing net-edge gate is now armed at the decided 25 bp margin (qip_edge::cell::NET_EDGE_MARGIN_BP) in qip-edge-node's cell_configuration and the qip-cli demo cell, and a test drives a cell to the net_edge refusal at that margin (30 bp refused, 60 bp trades). No existing test or fixture was changed.",
+  "remains": "Slippage is not in the gate. Sweep-vs-touch slippage is always zero because the depth gate refuses any size above the touch; sweep-vs-mid is the half-spread, which refuses the existing 60 bp fixture (100 bp spread). Needs a person to say which reference price a rule's stated edge is against. Edgeless signals still pass (counted); no committed strategy declares an edge. The node arming is guarded by a source-text test, not a constructed NodeConfig. Not deployed.",
+  "tests": ["backend/crates/edge/qip-edge/tests/feasibility.rs::the_decided_margin_refuses_a_thirty_basis_point_edge_and_admits_sixty", "backend/crates/edge/qip-edge/tests/feasibility.rs::a_signal_whose_stated_edge_is_below_its_fixed_cost_plus_margin_is_refused_before_netting_while_a_signal_stating_none_and_an_unarmed_cell_pass", "backend/crates/apps/qip-edge-node/tests/net_edge_armed.rs::the_node_arms_the_net_edge_gate_at_the_decided_margin", "backend/crates/apps/qip-cli/src/demo/mod.rs::tests::the_demonstration_cell_is_armed_with_the_decided_net_edge_margin"],
+  "test_command": "cargo test -p qip-edge --test feasibility && cargo test -p qip-edge-node --test net_edge_armed && cargo test -p qip-cli --lib the_demonstration_cell",
+  "mutations": ["cell.rs, net_edge_refusal call filtered to never refuse: the_decided_margin_refuses_a_thirty_basis_point_edge_and_admits_sixty FAILED", "cell.rs, NET_EDGE_MARGIN_BP 25 to 5: assertion left == right failed at feasibility.rs:795, left Decimal(5)", "qip-edge-node main.rs, arming removed: 'cell_configuration no longer arms the net-edge gate'", "qip-cli demo/mod.rs, arming removed: left None, right Some(Decimal(25))"],
+  "commit": "fe65f21a"
+}]}
