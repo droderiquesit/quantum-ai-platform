@@ -399,9 +399,9 @@ fn tick_pass(
     let world = platform.world();
     // R12-TICK-10121: price the grown worlds against what the platform holds.
     match crate::tick_book::book_weights(&platform.positions_at_cost(), platform.equity()) {
-        Ok(weights) => desk.set_book(weights),
+        Ok(weights) => desk.set_portfolio_weights(weights),
         Err(error) => {
-            desk.set_book(std::collections::BTreeMap::new());
+            desk.set_portfolio_weights(std::collections::BTreeMap::new());
             outcome
                 .side_failures
                 .push(format!("tick desk book: {}", error.message()));
