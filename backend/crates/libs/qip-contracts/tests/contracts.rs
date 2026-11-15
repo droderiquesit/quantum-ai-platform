@@ -2879,6 +2879,7 @@ fn a_model_pack_with_all_required_fields_present_is_accepted() -> Result<()> {
             approver: "approver".to_string(),
             approved_at: Timestamp::from_secs(1_760_000_000),
         },
+        provenance: None,
         inline_model: None,
     };
     pack.validate()?;
@@ -2902,6 +2903,7 @@ fn a_model_pack_missing_any_required_field_is_refused() {
             approver: "approver".to_string(),
             approved_at: Timestamp::from_secs(1_760_000_000),
         },
+        provenance: None,
         inline_model: None,
     };
 
@@ -2954,6 +2956,7 @@ fn a_model_pack_with_out_of_range_calibration_is_refused() {
             approver: "approver".to_string(),
             approved_at: Timestamp::from_secs(1_760_000_000),
         },
+        provenance: None,
         inline_model: None,
     };
 
@@ -2997,6 +3000,7 @@ fn a_model_pack_serialises_and_deserialises_round_trip() -> Result<()> {
             approver: "approver".to_string(),
             approved_at: Timestamp::from_secs(1_760_000_000),
         },
+        provenance: None,
         inline_model: None,
     };
 

@@ -73,6 +73,7 @@ fn unsigned_pack(inline: Option<InlineModel>, approver: &str) -> ModelPack {
             approver: approver.to_string(),
             approved_at: t(0),
         },
+        provenance: None,
         inline_model: inline,
     }
 }
