@@ -43,6 +43,7 @@ pub mod bench;
 pub mod config;
 pub mod health;
 pub mod mirror;
+pub mod mirror_link;
 pub mod openobserve;
 pub mod quorum;
 pub mod spanner;
