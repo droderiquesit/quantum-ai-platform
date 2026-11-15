@@ -61,6 +61,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+/// What the last allocation granted (R12-CAPITAL-3020).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrantsRecord {
+    pub allocator_total: Decimal,
+    pub granted_total: Decimal,
+    pub by_cell: BTreeMap<String, Decimal>,
+}
+
 /// The key id every signature the central plane makes is recorded under.
 ///
 /// Carried into the envelope issuer, the approval chain and the artifact store
@@ -803,6 +811,9 @@ pub struct CentralPlane {
     /// acted on was chosen. Behind a mutex because `allocate` is a read of
     /// the plane: recording what it was told is not a change to its state.
     society: std::sync::Mutex<Vec<qip_capital::society::CapitalPlan>>,
+    /// The last allocation as the desk reads it (R12-CAPITAL-3020): the
+    /// allocator's total beside what was granted after narrowing.
+    last_grants: std::sync::Mutex<Option<GrantsRecord>>,
     /// The liquidity, collateral and funding claims on each cell's grant the
     /// coordinator settles beside the plan's allocation lines
     /// (R12-CAPITAL-9047, ADR 0230). Empty until a caller hands them over;
@@ -1065,6 +1076,7 @@ impl CentralPlane {
             allocator: CapitalAllocator::new(limits, config.drawdown.clone()),
             society_inputs: qip_capital::society::SocietyInputs::default(),
             society: std::sync::Mutex::new(Vec::new()),
+            last_grants: std::sync::Mutex::new(None),
             coordinator_claims: BTreeMap::new(),
             coordination: BTreeMap::new(),
             issuer: EnvelopeIssuer::new(signing_secret.to_vec(), CENTRAL_KEY_ID)?,
@@ -2007,6 +2019,17 @@ impl CentralPlane {
             self.society_inputs.forecast_spread,
         )?;
         *self.society.lock().unwrap_or_else(|e| e.into_inner()) = plans;
+        *self.last_grants.lock().unwrap_or_else(|e| e.into_inner()) = Some(GrantsRecord {
+            allocator_total: plan.allocated(),
+            granted_total: settled.allocated(),
+            by_cell: settled
+                .allocations
+                .iter()
+                .fold(BTreeMap::new(), |mut cells, line| {
+                    *cells.entry(line.cell.clone()).or_insert(Decimal::ZERO) += line.notional;
+                    cells
+                }),
+        });
         Ok(settled)
     }
 
@@ -2117,6 +2140,15 @@ impl CentralPlane {
                 )
             })
             .collect()
+    }
+
+    /// The last allocation's total, granted total and grant per cell, or
+    /// `None` before the first allocation has run.
+    pub fn last_grants(&self) -> Option<GrantsRecord> {
+        self.last_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Every agent's plan for the last allocation, in the order recorded.

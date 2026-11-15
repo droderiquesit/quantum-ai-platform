@@ -6482,6 +6482,7 @@ impl Platform {
                 ..RiskState::default()
             },
             limits: limits.clone(),
+            grants: None,
         });
         let mut desk = Desk::new(
             MarketView {
@@ -6513,6 +6514,7 @@ impl Platform {
                     ..RiskState::default()
                 },
                 limits: limits.clone(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -12434,7 +12436,16 @@ impl Platform {
     fn brief_the_desk_on_risk(&self) {
         let mut state = self.risk_state();
         let limits = self.monitor.limits().clone();
+        let grants =
+            self.central
+                .last_grants()
+                .map(|record| qip_investment_agents::GrantsReading {
+                    allocator_total: record.allocator_total,
+                    granted_total: record.granted_total,
+                    by_cell: record.by_cell,
+                });
         self.risk.update(|view| {
+            view.grants = grants;
             if state.survival_gross_ceiling.is_none() {
                 state.survival_gross_ceiling = view.state.survival_gross_ceiling;
             }

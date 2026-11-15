@@ -10528,3 +10528,43 @@ fn wider_forecast_disagreement_reduces_the_emitted_grant() -> Result<()> {
     );
     Ok(())
 }
+
+/// R12-CAPITAL-3020: the plane records what the last allocation granted beside
+/// the allocator's own total, so the desk can report what narrowing took off.
+///
+/// Mutation: record `plan.allocated()` for `granted_total` in
+/// `CentralPlane::allocate` and the narrowed total equals the allocator's.
+#[test]
+fn the_plane_records_the_grant_beside_the_allocators_total() -> Result<()> {
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    assert!(
+        plane.last_grants().is_none(),
+        "premise: nothing allocated yet"
+    );
+    plane.allocate(0.0, start())?;
+    let open = plane.last_grants().expect("an allocation ran");
+    assert_eq!(open.allocator_total, open.granted_total);
+    assert!(
+        open.granted_total.is_positive(),
+        "premise: a grant was made"
+    );
+
+    plane.set_forecast_spread(Some(qip_core::Decimal::from_raw(500_000_000)))?;
+    plane.allocate(0.0, start())?;
+    let narrowed = plane.last_grants().expect("an allocation ran");
+    assert_eq!(narrowed.allocator_total, open.allocator_total);
+    assert!(narrowed.granted_total < narrowed.allocator_total);
+    assert_eq!(
+        narrowed
+            .by_cell
+            .values()
+            .copied()
+            .sum::<qip_core::Decimal>(),
+        narrowed.granted_total,
+        "the per-cell grants do not sum to the granted total"
+    );
+    Ok(())
+}

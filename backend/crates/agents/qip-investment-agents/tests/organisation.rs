@@ -626,6 +626,7 @@ fn desk_with_purpose(
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -1137,6 +1138,7 @@ fn the_credit_analyst_refuses_to_assume_a_duration_it_does_not_have() -> Result<
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         ResearchMemory::new(),
@@ -1206,6 +1208,7 @@ fn the_alternative_data_analyst_will_not_use_an_unlicensed_dataset() -> Result<(
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         ResearchMemory::new(),
@@ -1301,6 +1304,7 @@ fn compliance_blocks_a_restricted_name_with_full_conviction() -> Result<()> {
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         compliance,
         ResearchMemory::new(),
@@ -1430,6 +1434,7 @@ fn the_construction_agent_respects_its_concentration_cap() -> Result<()> {
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         ResearchMemory::new(),
@@ -1571,6 +1576,7 @@ fn the_learning_agent_cannot_score_an_unresolved_episode() -> Result<()> {
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         memory,
@@ -1641,6 +1647,7 @@ fn the_learning_agent_reports_the_sample_size_behind_each_hit_rate() -> Result<(
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         memory,
@@ -1972,6 +1979,14 @@ fn two_briefs_identical_except_for_the_precedent_produce_identical_convictions_a
 
 /// A desk whose only interesting facility is the risk view.
 fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
+    desk_with_grants(state, limits, None)
+}
+
+fn desk_with_grants(
+    state: RiskState,
+    limits: LimitSet,
+    grants: Option<qip_investment_agents::GrantsReading>,
+) -> Arc<Desk> {
     Arc::new(Desk::new(
         MarketView {
             snapshot: MarketSnapshot::new(now()),
@@ -1989,7 +2004,11 @@ fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
             marks: BTreeMap::new(),
             purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
-        RiskView { state, limits },
+        RiskView {
+            state,
+            limits,
+            grants,
+        },
         ComplianceView::default(),
         ResearchMemory::new(),
         SearchIndex::new(),
@@ -3595,6 +3614,7 @@ fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> R
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -3679,6 +3699,7 @@ fn the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -3734,6 +3755,7 @@ fn adversary_desk(
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -4796,6 +4818,65 @@ fn a_world_model_family_no_member_covers_is_a_fact_of_the_review_not_a_missing_i
             .any(|m| m.starts_with(ids::WORLD_MODEL_ARBITRATION)),
         "{:?}",
         report.missing_inputs
+    );
+    Ok(())
+}
+
+/// R12-CAPITAL-3020: the risk control reports the grants the capital plane
+/// made, what the society took off the allocator's figure and how many cells
+/// hold a grant, each only once an allocation has run; removing the control
+/// leaves those facts unreported. A grant nobody made is not reported as zero.
+///
+/// Mutation: drop the `capital_narrowed_by_society` fact from
+/// `RiskControl::analyse` (or compute it as `granted - allocator_total`) and
+/// this test fails at that label.
+#[test]
+fn the_risk_control_reports_grants_and_placement_only_once_an_allocation_ran() -> Result<()> {
+    use qip_investment_agents::GrantsReading;
+    let state = RiskState {
+        equity: dec!("10000000"),
+        cash: dec!("4000000"),
+        ..RiskState::default()
+    };
+    let grants = GrantsReading {
+        allocator_total: dec!("900000"),
+        granted_total: dec!("600000"),
+        by_cell: BTreeMap::from([
+            ("cell-a".to_string(), dec!("600000")),
+            ("cell-b".to_string(), dec!("0")),
+        ]),
+    };
+    let desk = desk_with_grants(state.clone(), LimitSet::new("t"), Some(grants));
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::RISK)
+        .expect("premise: the standard organisation runs the risk control");
+    for (label, value) in [
+        ("capital_granted", 600_000.0),
+        ("capital_narrowed_by_society", 300_000.0),
+        ("capital_cells_funded", 1.0),
+    ] {
+        let got = fact_value(finding, label).expect(label);
+        assert!(
+            (got - value).abs() < 1e-6,
+            "{label} is {got}, expected {value}"
+        );
+    }
+
+    let before_any = desk_with_risk(state, LimitSet::new("t"));
+    let mut org = organisation(before_any)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::RISK)
+        .expect("premise: the risk control ran");
+    assert!(
+        fact_value(finding, "capital_granted").is_none(),
+        "a grant nobody made was reported"
     );
     Ok(())
 }

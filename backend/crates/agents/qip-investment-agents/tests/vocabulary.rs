@@ -168,6 +168,7 @@ fn desk(universe: Universe, world: WorldModel) -> Arc<Desk> {
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         ResearchMemory::new(),
