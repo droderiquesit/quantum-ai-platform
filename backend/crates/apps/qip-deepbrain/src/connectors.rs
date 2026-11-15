@@ -553,6 +553,31 @@ impl ConnectorArm {
         Ok(records)
     }
 
+    /// Poll once for the scout job (ADR 0144, R12-DATA-8112): the same
+    /// licence gate as [`Self::poll`], and the same transport, but no
+    /// platform — the scout holds none, and so can reference nothing on a
+    /// trading ledger. The fetch is handed over as a [`crate::scout::ScoutRecord`]
+    /// (its version-2 manifest beside what it decoded), or `None` when the
+    /// poll yielded no records. A refused gate is the poll's error.
+    pub fn scout_poll(&mut self, until: Timestamp) -> Result<Option<crate::scout::ScoutRecord>> {
+        self.admission
+            .check(until)
+            .and_then(|decision| AdmittedSource::from_decision(&decision, self.feed.manifest()))?;
+        let identified = self
+            .feed
+            .poll_referencing_identified(until, &mut |_| Ok(()))?;
+        // The evidence this poll checked is the trading plane's input and
+        // the scout has no fabric to put it in; it is discarded here rather
+        // than left to accumulate to the feed's bound.
+        drop(self.feed.drain_evidence());
+        let manifests = self.feed.drain_document_manifests();
+        let (Some(manifest), false) = (manifests.into_iter().last(), identified.is_empty()) else {
+            return Ok(None);
+        };
+        let records = identified.into_iter().map(|(record, _)| record).collect();
+        crate::scout::ScoutRecord::new(self.admitted.source_id(), manifest, records).map(Some)
+    }
+
     /// Ask the source again, through this arm's own transport, for up to
     /// `budget` of the extents the platform's ledger holds from it, and mark
     /// on the ledger every one the source no longer serves (R12-DATA-1037).

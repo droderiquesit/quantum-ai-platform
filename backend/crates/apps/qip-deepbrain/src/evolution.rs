@@ -4355,6 +4355,36 @@ mod tests {
         Ok(())
     }
 
+    /// R12-DATA-8112: a scout execution polls an arm with no platform, writes
+    /// the fetch as an immutable record, and the deep brain's reader returns
+    /// exactly it; a second execution serving the same fetch writes nothing
+    /// new. Mutation: make `scout_poll` return `Ok(None)` — nothing is
+    /// written and the first assertion fails.
+    #[test]
+    fn a_scout_execution_writes_one_immutable_record_and_the_reader_returns_it() -> Result<()> {
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        use qip_storage::{BlobStore, MemoryBlobStore};
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+        let mut arms = vec![scripted_coinbase_arm(now, vec![ok(), ok(), ok()])?];
+        let store = MemoryBlobStore::new();
+        let first = crate::scout::run_once(&mut arms, &store, now);
+        assert_eq!(first.written.len(), 1, "{first:?}");
+        assert!(first.failed.is_empty(), "{first:?}");
+        let source = first.written[0].clone();
+        let read = crate::scout::read_scout_records(&store, &source)?;
+        assert_eq!(read.valid.len(), 1, "{read:?}");
+        assert!(read.rejected.is_empty());
+        assert!(!read.valid[0].records().is_empty());
+        // The same fetch served again is a duplicate the connector's own dedup
+        // window drops, so the second execution has nothing to write and the
+        // bucket still holds exactly the first record.
+        let second = crate::scout::run_once(&mut arms, &store, now);
+        assert_eq!(second.empty, vec![source.clone()], "{second:?}");
+        assert_eq!(store.list(&format!("{source}/"))?.len(), 1);
+        Ok(())
+    }
+
     /// R12-DATA-1037, through the engine `main.rs` builds and the cadence
     /// the node loop drives: an extent the platform referenced is asked for
     /// again through the connector's own transport and the manifest's
