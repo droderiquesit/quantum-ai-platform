@@ -262,6 +262,35 @@ impl Fabric {
 
     /// [`Self::start_with`], with further configuration variables on top.
     fn start_configured(label: &str, catalogue: &str, extra: &[(&str, &str)]) -> Result<Self> {
+        Self::start_configured_on(label, catalogue, extra, false)
+    }
+
+    /// A broker whose archive is the Cloud Storage bucket `endpoint` serves,
+    /// selected through configuration and opened by `start` as `main` opens
+    /// it, not handed a store through the test seam.
+    fn start_on_bucket(label: &str, endpoint: &str, token_file: &str) -> Result<Self> {
+        Self::start_configured_on(
+            label,
+            &catalogue_json(&base_grants(), "leader_only"),
+            &[
+                (qip_fabricd::config::ARCHIVE_BUCKET, "qip-landing-test"),
+                (qip_fabricd::config::ARCHIVE_PREFIX, "fabricd-0"),
+                (qip_storage::gcp::ENDPOINT_VARIABLE, endpoint),
+                (qip_storage::gcp::TOKEN_FILE_VARIABLE, token_file),
+            ],
+            true,
+        )
+    }
+
+    /// [`Self::start_configured`]. With `bucket` set the directory archive is
+    /// left out of the configuration and no store is passed through the
+    /// seam, so the broker archives to whatever the configuration names.
+    fn start_configured_on(
+        label: &str,
+        catalogue: &str,
+        extra: &[(&str, &str)],
+        bucket: bool,
+    ) -> Result<Self> {
         let unique = DIRECTORIES.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "qip-fabricd-{label}-{}-{unique}",
@@ -281,7 +310,7 @@ impl Fabric {
             .collect::<String>();
         std::fs::write(root.join("identities"), identities).unwrap();
 
-        let variables: BTreeMap<String, String> = [
+        let mut variables: BTreeMap<String, String> = [
             (qip_fabricd::config::DATA_DIR, root.join("data")),
             (qip_fabricd::config::CATALOGUE, root.join("streams.json")),
             (
@@ -315,10 +344,13 @@ impl Fabric {
                 .map(|(name, value)| (name.to_string(), value.to_string())),
         )
         .collect();
+        if bucket {
+            variables.remove(qip_fabricd::config::ARCHIVE_DIR);
+        }
         let archive = Arc::new(GatedStore::new());
+        let seam: Option<Arc<dyn BlobStore>> = if bucket { None } else { Some(archive.clone()) };
         let started = Config::parse(&variables).and_then(|config| {
-            let running =
-                start_with_archive(&config, Arc::new(SystemClock), Some(archive.clone()))?;
+            let running = start_with_archive(&config, Arc::new(SystemClock), seam)?;
             Ok((config, running))
         });
         let (config, running) = match started {
@@ -2448,4 +2480,401 @@ fn a_broker_started_on_an_empty_disk_serves_the_archived_offsets_and_continues_a
         40,
         "the next record continues after the rebuilt offsets rather than reusing them"
     );
+}
+
+// --- R12-DATA-10079: the bucket path, end to end ------------------------------------
+
+/// A stateful stand-in for the Cloud Storage JSON API on a loopback port.
+///
+/// It keeps what is uploaded, answers the object, listing and delete calls
+/// `CloudStorageBlobStore` makes, refuses a second creation of one name the
+/// way `ifGenerationMatch=0` does, and can be held so that every request
+/// waits. Nothing is mocked at the type level: the bytes the broker's
+/// archiver sends are the bytes stored here.
+mod fake_bucket {
+    use std::collections::BTreeMap;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// The longest a held request waits before it is answered 503, so a test
+    /// that panics while the bucket is held cannot hang its own teardown.
+    const HOLD_LIMIT: Duration = Duration::from_secs(10);
+
+    #[derive(Default)]
+    struct State {
+        objects: Mutex<BTreeMap<String, Vec<u8>>>,
+        requests: Mutex<Vec<(String, String, bool)>>,
+        held: AtomicBool,
+        arrived: AtomicUsize,
+    }
+
+    pub(super) struct FakeBucket {
+        address: String,
+        stop: Arc<AtomicBool>,
+        state: Arc<State>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeBucket {
+        pub(super) fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+            let address = listener
+                .local_addr()
+                .expect("the listener has an address")
+                .to_string();
+            listener
+                .set_nonblocking(true)
+                .expect("the listener can poll");
+            let stop = Arc::new(AtomicBool::new(false));
+            let state = Arc::new(State::default());
+            let thread_stop = stop.clone();
+            let thread_state = state.clone();
+            let handle = std::thread::spawn(move || {
+                while !thread_stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let state = thread_state.clone();
+                            std::thread::spawn(move || serve(stream, &state));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                address,
+                stop,
+                state,
+                handle: Some(handle),
+            }
+        }
+
+        pub(super) fn url(&self) -> String {
+            format!("http://{}", self.address)
+        }
+
+        /// Make every request wait (`true`) or answer at once (`false`).
+        pub(super) fn hold(&self, held: bool) {
+            self.state.held.store(held, Ordering::SeqCst);
+        }
+
+        /// Requests that have reached the bucket, held or not.
+        pub(super) fn arrived(&self) -> usize {
+            self.state.arrived.load(Ordering::SeqCst)
+        }
+
+        /// Every stored object name containing `fragment`, in order.
+        pub(super) fn keys_containing(&self, fragment: &str) -> Vec<String> {
+            self.state
+                .objects
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|key| key.contains(fragment))
+                .cloned()
+                .collect()
+        }
+
+        pub(super) fn object(&self, key: &str) -> Option<Vec<u8>> {
+            self.state.objects.lock().unwrap().get(key).cloned()
+        }
+
+        /// Whether every request carried an `authorization` header.
+        pub(super) fn every_request_was_authorised(&self) -> bool {
+            let requests = self.state.requests.lock().unwrap();
+            !requests.is_empty() && requests.iter().all(|(_, _, authorised)| *authorised)
+        }
+
+        /// Upload requests seen, as `(method, target)`.
+        pub(super) fn uploads(&self) -> Vec<(String, String)> {
+            self.state
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, target, _)| target.starts_with("/upload/"))
+                .map(|(method, target, _)| (method.clone(), target.clone()))
+                .collect()
+        }
+    }
+
+    impl Drop for FakeBucket {
+        fn drop(&mut self) {
+            self.state.held.store(false, Ordering::SeqCst);
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn percent_decode(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            let hex = bytes
+                .get(index + 1..index + 3)
+                .and_then(|pair| std::str::from_utf8(pair).ok())
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+            match (bytes[index], hex) {
+                (b'%', Some(value)) => {
+                    out.push(value);
+                    index += 3;
+                }
+                (other, _) => {
+                    out.push(other);
+                    index += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn query_value(query: &str, name: &str) -> Option<String> {
+        query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| percent_decode(value))
+    }
+
+    fn respond(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) {
+        let mut out = format!(
+            "HTTP/1.1 {status} Status\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        let _ = stream.write_all(&out);
+        let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+
+    fn serve(mut stream: TcpStream, state: &State) {
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let Some((method, target, authorised, body)) = read_request(&stream) else {
+            return;
+        };
+        state.arrived.fetch_add(1, Ordering::SeqCst);
+        state
+            .requests
+            .lock()
+            .unwrap()
+            .push((method.clone(), target.clone(), authorised));
+        let started = Instant::now();
+        while state.held.load(Ordering::SeqCst) {
+            if started.elapsed() > HOLD_LIMIT {
+                respond(&mut stream, 503, "application/json", b"{}");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+        let mut objects = state.objects.lock().unwrap();
+        if method == "POST" && path.starts_with("/upload/storage/v1/b/") {
+            let Some(name) = query_value(query, "name") else {
+                respond(&mut stream, 400, "application/json", b"{}");
+                return;
+            };
+            let conditional = query_value(query, "ifGenerationMatch").as_deref() == Some("0");
+            if conditional && objects.contains_key(&name) {
+                respond(&mut stream, 412, "application/json", b"{}");
+                return;
+            }
+            objects.insert(name, body);
+            respond(&mut stream, 200, "application/json", b"{}");
+            return;
+        }
+        let object_name = path.split_once("/o/").map(|(_, name)| percent_decode(name));
+        match (method.as_str(), object_name) {
+            ("GET", Some(name)) => match objects.get(&name) {
+                Some(bytes) => respond(&mut stream, 200, "application/octet-stream", bytes),
+                None => respond(&mut stream, 404, "application/json", b"{}"),
+            },
+            ("DELETE", Some(name)) => {
+                let status = if objects.remove(&name).is_some() {
+                    204
+                } else {
+                    404
+                };
+                respond(&mut stream, status, "application/json", b"");
+            }
+            ("GET", None) if path.ends_with("/o") => {
+                let prefix = query_value(query, "prefix").unwrap_or_default();
+                let items: Vec<String> = objects
+                    .keys()
+                    .filter(|key| key.starts_with(&prefix))
+                    .map(|key| format!("{{\"name\":\"{key}\"}}"))
+                    .collect();
+                let listing = format!("{{\"items\":[{}]}}", items.join(","));
+                respond(&mut stream, 200, "application/json", listing.as_bytes());
+            }
+            _ => respond(&mut stream, 400, "application/json", b"{}"),
+        }
+    }
+
+    fn read_request(stream: &TcpStream) -> Option<(String, String, bool, Vec<u8>)> {
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let mut parts = line.split_whitespace();
+        let method = parts.next()?.to_string();
+        let target = parts.next()?.to_string();
+        let mut declared = 0usize;
+        let mut authorised = false;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).ok()? == 0 {
+                break;
+            }
+            let header = header.trim_end().to_ascii_lowercase();
+            if header.is_empty() {
+                break;
+            }
+            if let Some(value) = header.strip_prefix("content-length:") {
+                declared = value.trim().parse().unwrap_or(0);
+            }
+            if let Some(value) = header.strip_prefix("authorization:") {
+                authorised = !value.trim().is_empty();
+            }
+        }
+        let mut body = vec![0u8; declared];
+        if declared > 0 {
+            reader.read_exact(&mut body).ok()?;
+        }
+        Some((method, target, authorised, body))
+    }
+}
+
+/// Sealed segments are archived to a Cloud Storage bucket the broker was
+/// *configured* with, each exactly once and named by its content, and a
+/// bucket that stops answering delays no append.
+///
+/// The directory-archive tests above never reach `CloudStorageBlobStore`,
+/// and `config.rs` only parses a bucket target: before this, the bucket path
+/// (`open_archive`'s start-up probe, the HTTP client, the archiver's uploads)
+/// was code nobody had run. The fake bucket here is a loopback server holding
+/// real state, so what the archiver sent is what is asserted on.
+///
+/// Mutation (not run: nothing in this change was compiled): in
+/// `Broker::archive_sealed`, hold the partition's produce lock across the
+/// upload — the forty appends below would then wait on the held bucket and
+/// the first `unwrap_or_else` would panic with "append {index} waited on the
+/// held bucket".
+#[test]
+fn sealed_segments_reach_a_configured_bucket_once_each_and_a_held_bucket_never_delays_an_append() {
+    let bucket = fake_bucket::FakeBucket::start();
+    let token =
+        std::env::temp_dir().join(format!("qip-fabricd-bucket-token-{}", std::process::id()));
+    std::fs::write(&token, "bucket-test-token").unwrap();
+    let fabric = Fabric::start_on_bucket("bucket", &bucket.url(), &token.display().to_string())
+        .expect("a broker starts on a bucket archive whose probe object round-trips");
+    assert!(
+        bucket.arrived() >= 3,
+        "premise: start-up put, read back and deleted the probe object ({} request(s))",
+        bucket.arrived()
+    );
+    assert!(
+        bucket.keys_containing("startup-probe").is_empty(),
+        "the probe object was left in the bucket"
+    );
+
+    // Hold the bucket, then append: nothing may wait on it.
+    bucket.hold(true);
+    let arrived_when_held = bucket.arrived();
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    let mut sent = Vec::new();
+    for index in 0..40u8 {
+        let records = vec![vec![index; 1500]];
+        producer
+            .send(batch_of(
+                QosClass::P2MarketJournal,
+                &format!("j{index}"),
+                &records,
+            ))
+            .unwrap_or_else(|error| panic!("append {index} waited on the held bucket: {error}"));
+        sent.push(records);
+    }
+    wait_until("the archiver has reached the held bucket", || {
+        bucket.arrived() > arrived_when_held
+    });
+    assert!(
+        bucket.keys_containing("segments/").is_empty(),
+        "premise: the bucket really is held, so nothing has been stored"
+    );
+    let (_, high_watermark, archived_through) = metadata(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        (high_watermark, archived_through),
+        (40, 0),
+        "forty appends were acknowledged with nothing archived"
+    );
+
+    bucket.hold(false);
+    let broker = fabric.running().service().broker();
+    wait_until("every sealed journal segment is in the bucket", || {
+        let sealed = broker.sealed_segment_starts(JOURNAL, partition).unwrap();
+        let (_, high_watermark, archived_through) = metadata(&fabric, AUDITOR, JOURNAL, partition);
+        archived_through == high_watermark && !sealed.is_empty()
+    });
+
+    let sealed = broker.sealed_segment_starts(JOURNAL, partition).unwrap();
+    assert!(
+        sealed.len() >= 5,
+        "premise: several segments sealed ({})",
+        sealed.len()
+    );
+    let objects = bucket.keys_containing("segments/");
+    assert_eq!(
+        objects.len(),
+        sealed.len(),
+        "one bucket object per sealed segment: {objects:?}"
+    );
+    for key in &objects {
+        assert!(
+            key.starts_with("fabricd-0"),
+            "{key} is outside the configured prefix"
+        );
+        let bytes = bucket.object(key).expect("a listed object is stored");
+        assert!(
+            key.ends_with(&qip_core::hash::sha256_hex(&bytes)),
+            "{key} is named by its content"
+        );
+    }
+    assert!(
+        bucket
+            .uploads()
+            .iter()
+            .all(|(method, target)| method == "POST" && target.contains("uploadType=media")),
+        "every upload was a single media POST"
+    );
+    assert!(
+        bucket.every_request_was_authorised(),
+        "a request reached the bucket with no credential"
+    );
+    std::thread::sleep(StdDuration::from_millis(100));
+    assert_eq!(
+        bucket.keys_containing("segments/").len(),
+        objects.len(),
+        "a later pass archives nothing a second time"
+    );
+    assert_eq!(
+        fetch_all(&fabric, AUDITOR, JOURNAL, partition)
+            .iter()
+            .map(payloads_of)
+            .collect::<Vec<_>>(),
+        sent,
+        "archiving to the bucket changed nothing a consumer reads"
+    );
+    let _ = std::fs::remove_file(&token);
 }
