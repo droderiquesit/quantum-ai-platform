@@ -239,6 +239,44 @@ pub struct ChainView {
     pub pools: Vec<PoolReading>,
 }
 
+/// One unfunded private commitment as the kernel last read it
+/// (R12-ASSET-3018): what is still owed on it and the drawdown notices
+/// standing against it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrivateCommitmentReading {
+    pub subject: String,
+    /// Committed and not yet called. Money; the brain crosses to a statistic
+    /// once, where it states the total.
+    pub unfunded: qip_core::Decimal,
+    /// Notices issued and not yet settled.
+    pub calls_open: usize,
+    /// Of those, the notices past their due date at the reading instant.
+    pub calls_overdue: usize,
+}
+
+/// One dated illiquid mark as the kernel holds it (R12-ASSET-3018).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrivateMarkReading {
+    pub asset: String,
+    /// Past its own review date at the reading instant: an uncertain mark
+    /// is not a confident one.
+    pub stale: bool,
+    /// The mark's confidence at the reading instant, in `[0, 1]`.
+    pub confidence: f64,
+}
+
+/// The private-markets book as the kernel last read it (R12-ASSET-3018):
+/// the unfunded commitments with their capital calls, and the dated marks on
+/// illiquid assets. `observed` is false until the kernel has written the
+/// slot, and a desk that holds no commitment and no illiquid mark is
+/// reported as holding none, which is a finding and not a silence.
+#[derive(Debug, Default)]
+pub struct PrivateMarketsView {
+    pub observed: bool,
+    pub commitments: Vec<PrivateCommitmentReading>,
+    pub marks: Vec<PrivateMarkReading>,
+}
+
 /// The company records the Company/Fundamental Brain reads beside the
 /// world model's reported fundamentals (R12-REASON-3013, ADR 0458): the
 /// corporate actions the kernel holds awaiting their ex-date, and management
@@ -340,6 +378,10 @@ pub struct Desk {
     /// UNDERSTAND stage writes, and a test hands one in through
     /// [`Desk::with_arbitration`].
     pub arbitration: Gated<ArbitrationView>,
+    /// The private-markets book (R12-ASSET-3018). Empty from [`Desk::new`];
+    /// the kernel re-points this gate at the slot it feeds every REASON, and
+    /// a test hands one in through [`Desk::with_private_markets`].
+    pub private_markets: Gated<PrivateMarketsView>,
 }
 
 impl Desk {
@@ -399,7 +441,25 @@ impl Desk {
                 Capability::ReadWorldModel,
                 "world-model-federation",
             ),
+            // Commitments and illiquid marks are the book's own: a
+            // portfolio read.
+            private_markets: Gated::new(
+                PrivateMarketsView::default(),
+                Capability::ReadPortfolio,
+                "private-markets",
+            ),
         }
+    }
+
+    /// The desk with `private_markets` behind the private-markets gate,
+    /// under the capability and label [`Desk::new`] chose for it.
+    pub fn with_private_markets(mut self, private_markets: PrivateMarketsView) -> Self {
+        self.private_markets = Gated::new(
+            private_markets,
+            self.private_markets.required(),
+            self.private_markets.label(),
+        );
+        self
     }
 
     /// The desk with `company` behind the company-reference gate, under the

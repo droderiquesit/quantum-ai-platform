@@ -733,6 +733,10 @@ pub fn standard_agents(
             manifests::crypto_onchain_brain(reviewed_at),
             desk.clone(),
         )),
+        Arc::new(crate::private_markets_brain::PrivateMarketsAnalyst::new(
+            manifests::private_markets_brain(reviewed_at),
+            desk.clone(),
+        )),
         Arc::new(crate::fundamental_brain::CompanyFundamentalAnalyst::new(
             manifests::company_fundamental_brain(reviewed_at),
             desk.clone(),

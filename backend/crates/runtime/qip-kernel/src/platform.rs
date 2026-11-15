@@ -154,7 +154,7 @@ use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
     ArbitrationView, BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk,
     ExecutionRecord, ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView,
-    ModelsView, PoolReading, RiskView, TradeSide,
+    ModelsView, PoolReading, PrivateMarketsView, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -1237,6 +1237,10 @@ pub struct Platform {
     /// (R12-ASSET-3017), rebuilt before every REASON by
     /// `brief_the_desk_on_chain`.
     chain_view: Upstream<ChainView>,
+    /// The private-markets book as the desk's Private Markets Brain reads it
+    /// (R12-ASSET-3018), rebuilt before every REASON by
+    /// `brief_the_desk_on_private_markets`.
+    private_markets_view: Upstream<PrivateMarketsView>,
     /// The company records the desk's Company/Fundamental Brain reads
     /// (R12-REASON-3013, ADR 0458), rebuilt before every REASON by
     /// `brief_the_desk_on_company`.
@@ -6572,6 +6576,11 @@ impl Platform {
         desk.models = models.gate(desk.models.required(), desk.models.label());
         let chain_view = Upstream::new(ChainView::default());
         desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
+        let private_markets_view = Upstream::new(PrivateMarketsView::default());
+        desk.private_markets = private_markets_view.gate(
+            desk.private_markets.required(),
+            desk.private_markets.label(),
+        );
         let company_view = Upstream::new(CompanyView::default());
         desk.company = company_view.gate(desk.company.required(), desk.company.label());
         let arbitration_view = Upstream::new(ArbitrationView::default());
@@ -7075,6 +7084,7 @@ impl Platform {
             executions,
             models,
             chain_view,
+            private_markets_view,
             company_view,
             arbitration_view,
             research_memory,
@@ -12663,6 +12673,21 @@ impl Platform {
         });
     }
 
+    /// Write the commitment book and the dated illiquid marks into the slot
+    /// the desk's Private Markets Brain reads, before the panel is convened
+    /// (R12-ASSET-3018).
+    fn brief_the_desk_on_private_markets(&self, now: Timestamp) {
+        let view =
+            crate::private_markets_feed::reading(&self.commitments, &self.illiquid_marks, now);
+        self.private_markets_view.update(|slot| *slot = view);
+    }
+
+    /// The private-markets slot the desk's Private Markets Brain reads, as
+    /// REASON last wrote it.
+    pub fn desk_private_markets_view(&self) -> Reading<'_, PrivateMarketsView> {
+        self.private_markets_view.read()
+    }
+
     /// The chain the desk's Crypto/On-chain Brain reads, as REASON last wrote
     /// it.
     pub fn desk_chain_view(&self) -> Reading<'_, ChainView> {
@@ -17956,6 +17981,7 @@ impl Platform {
         self.brief_the_desk_on_executions();
         self.brief_the_desk_on_models();
         self.brief_the_desk_on_chain();
+        self.brief_the_desk_on_private_markets(now);
         self.brief_the_desk_on_company();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
