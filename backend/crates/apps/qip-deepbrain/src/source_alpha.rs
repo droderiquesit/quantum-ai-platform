@@ -35,12 +35,16 @@ use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::source_alpha::{MIN_OBSERVATIONS, SourceAlpha, SourceAlphaHistory};
 use qip_kernel::source_alpha_record::{ScoredSource, SourceAlphaScored};
+use qip_kernel::source_decision_attribution::DecisionContribution;
 use qip_market_ingestion::adapter::SensedRecord;
 use std::collections::{BTreeMap, VecDeque};
 
 /// The variable naming how often, in research cycles, sources are scored.
 /// `0` disables the desk; unset is [`DEFAULT_SOURCE_ALPHA_EVERY`].
 pub const SOURCE_ALPHA_EVERY_VARIABLE: &str = "QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY";
+
+/// Sources whose decision-attributed figures are kept.
+pub const MAX_ATTRIBUTED_SOURCES: usize = 512;
 
 /// Aligned samples kept per source and subject.
 pub const WINDOW: usize = 128;
@@ -126,6 +130,10 @@ pub struct SourceAlphaRound {
     /// because a score computed and not recorded is a figure nobody can
     /// check against its inputs.
     pub records_refused: Vec<String>,
+    /// What each source earned in the decisions that consumed it, as the
+    /// latest LEARN pass attributed it (R12-DATA-2025). Empty until a pass
+    /// has attributed a fill whose evidence named a source.
+    pub attributed: BTreeMap<String, DecisionContribution>,
 }
 
 impl SourceAlphaRound {
@@ -173,6 +181,10 @@ pub struct SourceAlphaDesk {
     samples: BTreeMap<(String, String), VecDeque<Sample>>,
     senses: u64,
     history: SourceAlphaHistory,
+    /// The latest LEARN pass's per-source figures. Replaced, not added:
+    /// each pass attributes every fill so far, so summing passes would count
+    /// a fill once per cycle.
+    attributed: BTreeMap<String, DecisionContribution>,
 }
 
 impl SourceAlphaDesk {
@@ -185,6 +197,19 @@ impl SourceAlphaDesk {
 
     pub const fn every_cycles(&self) -> u64 {
         self.every_cycles
+    }
+
+    /// Take the latest LEARN pass's per-source decision figures
+    /// ([`qip_kernel::source_decision_attribution::decision_contributions`]).
+    /// Bounded by [`MAX_ATTRIBUTED_SOURCES`]: evidence origins are text from
+    /// outside, and a map keyed by them must not grow without limit.
+    pub fn observe_decisions(&mut self, figures: BTreeMap<String, DecisionContribution>) {
+        self.attributed = figures.into_iter().take(MAX_ATTRIBUTED_SOURCES).collect();
+    }
+
+    /// What `source` earned in the decisions that consumed it, if any did.
+    pub fn attributed(&self, source: &str) -> Option<&DecisionContribution> {
+        self.attributed.get(source)
     }
 
     /// The own stream's records this sense.
@@ -230,7 +255,10 @@ impl SourceAlphaDesk {
     }
 
     fn score(&mut self, now: Timestamp) -> SourceAlphaRound {
-        let mut round = SourceAlphaRound::default();
+        let mut round = SourceAlphaRound {
+            attributed: self.attributed.clone(),
+            ..SourceAlphaRound::default()
+        };
         for ((source, subject), window) in &self.samples {
             let samples = window.len();
             let outcome = if samples < MIN_SAMPLES {
@@ -546,5 +574,33 @@ mod tests {
             Ok(4)
         ));
         assert!(source_alpha_every(&|_| Some("often".to_string())).is_err());
+    }
+
+    /// R12-DATA-2025: the round carries what LEARN attributed to each source's
+    /// decisions, and a later pass replaces the earlier one rather than adding
+    /// to it (each pass covers every fill, so adding counts a fill per cycle).
+    /// Mutation: make `observe_decisions` extend instead of replace — the
+    /// second assertion reads 2 positions for `a`; delete the
+    /// `attributed: self.attributed.clone()` in `score` — the first fails.
+    #[test]
+    fn a_round_carries_the_latest_decision_attribution_and_a_later_pass_replaces_it() -> Result<()>
+    {
+        let figure = |pnl: i64, positions: usize| DecisionContribution {
+            pnl: qip_core::Decimal::from_int(pnl),
+            positions,
+        };
+        let mut desk = SourceAlphaDesk::new(1);
+        desk.observe_decisions(BTreeMap::from([("a".to_string(), figure(5, 1))]));
+        let first = desk
+            .maybe_score(1, Timestamp::from_secs(1))
+            .ok_or_else(|| qip_core::error::Error::not_found("no round"))?;
+        assert_eq!(first.attributed.get("a"), Some(&figure(5, 1)));
+        desk.observe_decisions(BTreeMap::from([("a".to_string(), figure(-3, 1))]));
+        let second = desk
+            .maybe_score(2, Timestamp::from_secs(2))
+            .ok_or_else(|| qip_core::error::Error::not_found("no round"))?;
+        assert_eq!(second.attributed.get("a"), Some(&figure(-3, 1)));
+        assert_eq!(second.attributed.len(), 1);
+        Ok(())
     }
 }

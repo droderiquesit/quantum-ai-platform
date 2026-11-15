@@ -100,6 +100,7 @@ pub mod session_replay;
 pub mod shared_cause;
 pub mod sizing_review;
 pub mod source_alpha_record;
+pub mod source_decision_attribution;
 pub mod source_discovery;
 pub mod source_lifecycle;
 /// The survival kernel, moved to `qip-survival` (ADR 0464) and re-exported so
