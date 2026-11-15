@@ -72,7 +72,6 @@ pub mod quoting;
 /// limit can fire (CAPITAL-026). Private: `Cell` is its only caller.
 mod realised_loss;
 pub mod reflex_forecast;
-pub mod reflex_rules;
 /// Which other regions have gone dark, and what a cell does about it (§36.3).
 pub mod region;
 pub mod replay;

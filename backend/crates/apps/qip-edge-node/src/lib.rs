@@ -52,7 +52,6 @@ pub mod pass;
 pub mod quote_limits;
 /// The node's one reader of the peer link's rebalancing tasks.
 pub mod rebalance_kept;
-pub mod reflex;
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.

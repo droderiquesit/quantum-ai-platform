@@ -938,34 +938,9 @@ fn run() -> Result<()> {
     // long as calling it was optional.
     let NodeAssembly {
         telemetry,
-        cell,
+        mut cell,
         mesh_series,
     } = assembled(&config, cell_config, Arc::clone(&clock))?;
-    // R12-REASON-3063: published reflex packages, verified against the same
-    // trust root as every other artefact, evaluated on each pass. Read here
-    // because a composition root is the only place the environment is read.
-    let mut cell = match std::env::var(qip_edge_node::reflex::REFLEX_PACKAGES_VARIABLE)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-    {
-        Some(dir) => {
-            let book =
-                qip_edge_node::reflex::load_dir(std::path::Path::new(&dir), &trust, started)?;
-            println!(
-                "qip-edge-node: {} reflex package(s) admitted from {dir}",
-                book.len()
-            );
-            cell.with_reflex_rules(book)
-        }
-        None => {
-            println!(
-                "qip-edge-node: {} unset; no reflex package is evaluated",
-                qip_edge_node::reflex::REFLEX_PACKAGES_VARIABLE
-            );
-            cell
-        }
-    };
     // Said at start, because which limits the reflex path refuses on is the
     // first thing an operator reading a refusal under `risk_gate` needs.
     println!("qip-edge-node: {}", config.risk_limits.describe());

@@ -1215,11 +1215,6 @@ pub struct WorkReport {
     /// against (ADR 0132 decision 4): carried out so the node can digest it
     /// per pass without a second evaluation that could disagree.
     pub features: FeatureVector,
-    /// What the installed reflex packages said about each configured venue
-    /// this pass (R12-REASON-3063). Evaluated deterministically from the
-    /// signed rules and carried out for the centre; nothing in the cell's own
-    /// sizing reads it (ADR 0195 decision 1), so it cannot move an order.
-    pub reflex_adjustments: Vec<crate::reflex_rules::ReflexAdjustment>,
     /// Directional signals this pass that stated no edge and so were not
     /// judged by the net-edge gate (ADR 0155 §9). Counted only on a cell that
     /// built the gate, so the desk can see how much trading it does not judge.
@@ -1865,8 +1860,6 @@ pub struct Cell {
     /// registry nobody reads, which is what every test in the tree does. See
     /// [`crate::telemetry`] for why nothing here can block or fail the pass.
     metrics: CellMetrics,
-    /// Compiled reflex packages this cell admitted (R12-REASON-3063).
-    reflex_rules: Option<crate::reflex_rules::ReflexRuleBook>,
     /// Per-venue execution-mode enablement (EXEC-020). `None` is a cell built
     /// without one, which behaves as it always did; once installed, every
     /// order must be admitted in its mode before a sequence number is spent.
@@ -2124,7 +2117,6 @@ impl Cell {
             pass: 0,
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
-            reflex_rules: None,
             mode_gate: None,
             risk_gate: None,
             fence: None,
@@ -2207,16 +2199,6 @@ impl Cell {
         // cell with neither.
         self.record_dark_regions();
         self.record_awaiting_reconciliation();
-        self
-    }
-
-    /// Install the reflex packages the cell evaluates on every pass
-    /// (R12-REASON-3063). The book is built by the composition root through
-    /// [`crate::reflex_rules::ReflexRuleBook::install`], which verifies each
-    /// package against this cell's own trust root.
-    #[must_use]
-    pub fn with_reflex_rules(mut self, book: crate::reflex_rules::ReflexRuleBook) -> Self {
-        self.reflex_rules = Some(book);
         self
     }
 
@@ -6012,10 +5994,6 @@ impl Cell {
 
         let vector = self.features.evaluate(now)?;
         report.features = vector.clone();
-        if let Some(book) = self.reflex_rules.as_ref() {
-            let venues: Vec<&str> = self.config.venues.iter().map(VenueId::as_str).collect();
-            report.reflex_adjustments = book.evaluate(&venues, now);
-        }
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
         self.signal_sequences.clear();
 
