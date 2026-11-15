@@ -1,25 +1,92 @@
-{"lane": "02", "rows": [
-{"id": "R12-TICK-2052", "outcome": "SLICE", "claims_requirement_met": false,
- "what": "LakeSink::with_metrics publishes the clock discipline's per-tick uncertainty as qip_edge_clock_uncertainty{cell,region,venue,feed} in seconds, wired to the scraped registry in qip-edge-node main. A refused tick leaves the last value rather than writing zero.",
- "remains": "PTP/GPS time source and the game-day measurement of offset against a reference need a deployed node; no alert policy names the series (none should until something scrapes).",
- "tests": ["backend/crates/apps/qip-edge-node/tests/lake_clock.rs::the_clock_uncertainty_gauge_equals_the_latest_lake_lines_bound"],
- "test_command": "cargo test -p qip-edge-node --test lake_clock",
- "mutations": ["drain.rs LakeSink::deliver: published 0.0 instead of done.uncertainty.as_secs_f64(); failed with \"gauge 0 s must equal the latest line's 2000000 ns\"; restored, cmp identical, green"],
- "commit": "5a086844"},
-{"id": "R12-TICK-2053", "outcome": "NOT_BUILT", "claims_requirement_met": false,
- "what": "Not attempted beyond reading. The remaining step stamps a SourceManifest-carried Admission at every SensedRecord producer and moves market.* topic payloads to Admitted<SensedRecord>.",
- "remains": "Whole remaining step: touches every producer and needs a topic version move under ADR 0429, which a lane cannot do safely alongside 37 others without an ADR first; no honest smaller slice found.",
- "tests": [], "test_command": "", "mutations": [], "commit": ""},
-{"id": "R12-TICK-2062", "outcome": "NOT_BUILT", "claims_requirement_met": false,
- "what": "Not attempted beyond reading. Needs cross-instrument features registered on a shipped path, discipline half-width fed via Placed::from_disciplined, aligned RollingCorrelation and CrossVenueSpread, reset/rebuild bounds and a cell wiring test.",
- "remains": "All of it. Whether an unordered pair should make CrossVenueSpread Undefined is a semantic decision for an ADR, not a lane's guess.",
- "tests": [], "test_command": "", "mutations": [], "commit": ""},
-{"id": "R12-TICK-2063", "outcome": "NOT_BUILT", "claims_requirement_met": false,
- "what": "Not attempted. Needs a venue-pair configuration seam in the qip-edge-node composition root plus a committed deployment running a strategy-installing node.",
- "remains": "Venue-pair configuration (no pairs given, so a lane would invent them) and a deployment; alternatively narrow the row to the feature library, which is the register's call.",
- "tests": [], "test_command": "", "mutations": [], "commit": ""},
-{"id": "R12-TICK-2064", "outcome": "NOT_BUILT", "claims_requirement_met": false,
- "what": "Not attempted. Needs a new market-state embedding trainer, ModelRegistry/ModelCard versioning, a StateKind::Embedding producer and baseline evaluation, per ADR 0182 d2.",
- "remains": "All of it; too large to land honestly in the remaining session.",
- "tests": [], "test_command": "", "mutations": [], "commit": ""}
-]}
+{
+ "lane": "02",
+ "rows": [
+  {
+   "id": "R12-TICK-2052",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "LakeSink::with_metrics publishes the clock discipline's per-tick uncertainty as qip_edge_clock_uncertainty{cell,region,venue,feed} in seconds, wired to the scraped registry in qip-edge-node main. A refused tick leaves the last value rather than writing zero.",
+   "remains": "PTP/GPS time source and the game-day measurement of offset against a reference need a deployed node; no alert policy names the series (none should until something scrapes).",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/tests/lake_clock.rs::the_clock_uncertainty_gauge_equals_the_latest_lake_lines_bound"
+   ],
+   "test_command": "cargo test -p qip-edge-node --test lake_clock",
+   "mutations": [
+    "drain.rs LakeSink::deliver: published 0.0 instead of done.uncertainty.as_secs_f64(); failed with \"gauge 0 s must equal the latest line's 2000000 ns\"; restored, cmp identical, green"
+   ],
+   "commit": "5a086844"
+  },
+  {
+   "id": "R12-TICK-2053",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "qip_market_ingestion::admit builds Admitted<SensedRecord> through Admission::new (source hash, entitlement, clock doubt); Platform::observe_admitted takes only those and refuses and reports a record whose entitlement lapsed before absorption.",
+   "remains": "No adapter or fastbrain feed calls admit/observe_admitted yet; market.* topic payloads still carry no header (topic version move needs an ADR); full qip-kernel suite not run (disk).",
+   "tests": [
+    "backend/crates/services/qip-market-ingestion/tests/admit.rs::an_admitted_tick_carries_its_own_instants_its_source_and_its_licence",
+    "backend/crates/services/qip-market-ingestion/tests/admit.rs::a_record_with_no_source_no_licence_or_an_impossible_clock_is_not_built",
+    "backend/crates/runtime/qip-kernel/tests/learning.rs::an_admitted_record_whose_entitlement_lapsed_before_absorption_is_refused_and_reported"
+   ],
+   "test_command": "cargo test -p qip-market-ingestion --test admit; cargo test -p qip-kernel --test learning",
+   "mutations": [
+    "platform.rs observe_admitted: disabled is_granted(now) refusal; failed \"a record whose licence had lapsed was absorbed\"; restored, cmp identical",
+    "admit.rs: receive_time = event; both admit tests failed; restored",
+    "admit.rs: hard-coded source hash; both admit tests failed; restored"
+   ],
+   "commit": "69306fbc"
+  },
+  {
+   "id": "R12-TICK-2062",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "cell_alignment drives Cell::on_bytes with stamps 0 ms and 60 ms ahead of receipt over the lead/lag tape: zero doubt computes correlation 1, 60 ms leaves it Undefined. Closes the \"no cell wiring test\" clause.",
+   "remains": "Cross-instrument features still unregistered by default (see TICK-2063 for the pair seam), discipline half-width not fed (Placed::from_disciplined uncalled), RollingCorrelation and CrossVenueSpread unaligned, arrival unread, reset/rebuild ingest at zero doubt.",
+   "tests": [
+    "backend/crates/edge/qip-edge/tests/cell_alignment.rs::a_venue_whose_stamps_run_ahead_of_receipt_leaves_the_pair_unordered_at_the_cell"
+   ],
+   "test_command": "cargo test -p qip-edge --test cell_alignment",
+   "mutations": [
+    "cell.rs apply_batch: Duration::ZERO instead of uncertainty; failed \"the cell asserted an order the clocks cannot support: Some(Statistic(1.0))\"; restored, cmp identical"
+   ],
+   "commit": "952ce9a6"
+  },
+  {
+   "id": "R12-TICK-2063",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "QIP_FEATURE_PAIRS (LEADER>FOLLOWER:window:lag) is parsed at the qip-edge-node composition root; StrategyInstaller::with_feature_pairs registers LeadLagCorrelation and CrossVenueSpread beside each deployed strategy whose subject is a pair follower. No pair, window or lag is defaulted.",
+   "remains": "No committed deployment sets the variable or runs a node that installs a strategy; no pair was given to choose.",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/tests/features.rs::a_configured_pair_registers_lead_lag_and_cross_venue_for_the_deployed_follower",
+    "backend/crates/apps/qip-edge-node/tests/features.rs::the_pair_variable_is_read_whole_or_refused"
+   ],
+   "test_command": "cargo test -p qip-edge-node --test features",
+   "mutations": [
+    "strategies.rs: dropped CrossVenueSpread push; failed \"left: (true, false)\"; restored",
+    "strategies.rs: removed follower filter; failed \"left: (true, true)\"; restored",
+    "strategies.rs: window floor lowered; failed \"`obj-A>obj-B:1:2` should be refused\"; restored"
+   ],
+   "commit": "048ab368"
+  },
+  {
+   "id": "R12-TICK-2064",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "qip_ai::state_embedding fits a deterministic in-tree PCA embedding, binds it to a digest, evaluates it on held-out nearest-neighbour retrieval against raw-first-k features, and issues a ModelCard only if it strictly beats the baseline.",
+   "remains": "No StateKind::Embedding producer on the cycle and no deployment enabling tick_desk; no ModelFormat variant for the wire (ADR 0182 d2 widens that closed list).",
+   "tests": [
+    "backend/crates/libs/qip-ai/tests/state_embedding.rs::a_fitted_embedding_beats_the_raw_feature_baseline_and_is_versioned_by_a_card",
+    "backend/crates/libs/qip-ai/tests/state_embedding.rs::an_embedding_that_does_not_beat_its_baseline_is_issued_no_card",
+    "backend/crates/libs/qip-ai/tests/state_embedding.rs::the_fitted_directions_are_unit_length_and_orthogonal"
+   ],
+   "test_command": "cargo test -p qip-ai --test state_embedding",
+   "mutations": [
+    "beats_baseline < to <=; tie test failed; restored",
+    "baseline retrieval over embedding; beats-baseline test failed; restored",
+    "constant-column check weakened; refusal test failed; restored",
+    "deflation removed; orthogonality test failed \"directions overlap: dot 1.0000000000000002\"; restored"
+   ],
+   "commit": "6452fd48"
+  }
+ ]
+}
