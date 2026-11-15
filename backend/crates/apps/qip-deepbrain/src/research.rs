@@ -814,6 +814,7 @@ const fn disposition_str(disposition: Disposition) -> &'static str {
         Disposition::Shed => "shed",
         Disposition::Expired => "expired",
         Disposition::Clustered => "clustered",
+        Disposition::Quarantined => "quarantined",
     }
 }
 
@@ -3087,7 +3088,10 @@ impl ResearchLoop {
                 );
                 match event.disposition {
                     Disposition::Deferred => {}
-                    Disposition::Shed | Disposition::Expired | Disposition::Clustered => {
+                    Disposition::Shed
+                    | Disposition::Expired
+                    | Disposition::Clustered
+                    | Disposition::Quarantined => {
                         self.pending.remove(&event.signal_id);
                         self.pending_wakes.remove(&event.signal_id);
                         self.pending_capital.remove(&event.signal_id);
