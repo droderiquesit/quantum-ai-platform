@@ -49,6 +49,7 @@ pub mod compute_routing;
 /// Moved to `qip-survival` (ADR 0464); re-exported so `qip_kernel::confidence`
 /// paths keep compiling.
 pub use qip_survival::confidence;
+pub mod challenge_desk;
 pub mod config;
 pub mod cost_anomaly_tasks;
 pub mod counterfactual_alternatives;
