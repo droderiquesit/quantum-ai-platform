@@ -64,6 +64,7 @@ pub mod executable_scope;
 pub mod exploration;
 pub mod fabric_declaration;
 pub mod digest;
+pub mod venue_outage;
 pub mod falsification;
 pub mod family_review;
 pub mod feature_statistics;
