@@ -40,6 +40,7 @@ pub mod expansion;
 pub mod feasibility;
 pub mod feature;
 pub mod federation;
+pub mod fused_digest;
 pub mod gate;
 pub mod governance;
 pub mod intent;

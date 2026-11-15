@@ -882,3 +882,41 @@ fn each_world_market_mismatch_reaches_its_one_paper_only_consumer() -> Result<()
     assert_eq!(book.proposed()[0].status, HypothesisStatus::Proposed);
     Ok(())
 }
+
+/// R12-TICK-2086: the per-cell digest is built only for a region the card's
+/// entitlements permit, is bounded, and a stale or other-region digest is not
+/// read by the reader. Mutation: not run (nothing was compiled).
+#[test]
+fn a_cells_fused_digest_is_built_only_where_the_licence_permits_and_is_not_read_stale() -> Result<()> {
+    use qip_kernel::digest::build_for_cell;
+    let (graph, traces) = episode()?;
+    let state = fuse(&graph, &traces, at(600), &config())?;
+    let map = state.opportunity_map(8, Duration::from_mins(5))?;
+    assert!(map.entries.len() >= 2, "premise: the map has entries");
+    let card = ModelCard::new(ModelId::from_string("m"), "tick-fill", "1", "desk", at(600))
+        .with_data_entitlements(
+            BTreeSet::from(["lse-level2".to_string()]),
+            BTreeSet::from(["europe-west2".to_string()]),
+        )?;
+    let digest = build_for_cell(
+        &map,
+        &card,
+        "london-1",
+        "europe-west2",
+        Duration::from_mins(2),
+        1,
+    )?;
+    assert_eq!(digest.entries.len(), 1, "bounded to max_entries");
+    assert_eq!(digest.entries[0].instrument, map.entries[0].instrument);
+    assert!(
+        build_for_cell(&map, &card, "newyork-1", "us-east4", Duration::from_mins(2), 1).is_err(),
+        "a digest was built for a region the licence does not permit"
+    );
+    assert_eq!(digest.read(at(610), "europe-west2")?.len(), 1);
+    assert!(digest.read(at(610), "us-east4").is_err());
+    assert!(
+        digest.read(at(600 + 121), "europe-west2").is_err(),
+        "a stale digest was read"
+    );
+    Ok(())
+}
