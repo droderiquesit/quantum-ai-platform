@@ -584,6 +584,7 @@ fn a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_le
     };
     let Recorded::CustodyStatement {
         holdings,
+        cash: stated_cash,
         simulated,
         ..
     } = &outcome.entry.decision
@@ -593,6 +594,11 @@ fn a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_le
     assert!(
         *simulated,
         "a cell's custody statement is paper by construction"
+    );
+    assert!(
+        stated_cash.iter().any(|(_, change)| change != "0"),
+        "premise: the venue states a non-zero cash change, so the comparison below covers cash: \
+         {stated_cash:?}"
     );
     assert!(
         holdings
@@ -620,6 +626,15 @@ fn a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_le
             compared.push(breaks);
         }
     }
+    eprintln!(
+        "DBG {:?}",
+        store
+            .journal()?
+            .iter()
+            .filter(|n| n.event == "custody_break")
+            .map(|n| n.detail.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(compared, vec![0], "one statement, compared once, agreeing");
     assert_eq!(custody_breaks(&metrics, "ledger_over_venue"), 0);
     assert_eq!(custody_breaks(&metrics, "venue_over_ledger"), 0);
@@ -628,11 +643,39 @@ fn a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_le
     // Nothing moved at the venue since the pass: the same statement is not
     // journaled again. A statement that differs is, at the next sequence.
     let (holdings, cash) = gateway.custody_holdings();
+    let venue_cash = gateway.custody_cash()?;
+    assert!(
+        venue_cash.values().any(|change| !change.is_zero()),
+        "premise: the pass moved the venue's cash: {venue_cash:?}"
+    );
     assert_eq!(
-        node.cell
-            .record_custody_statement(&venue(), holdings.clone(), cash.clone(), t(11))?,
+        node.cell.record_custody_statement_with_cash(
+            &venue(),
+            holdings.clone(),
+            cash.clone(),
+            venue_cash.clone(),
+            t(11)
+        )?,
         None,
         "an unchanged statement was journaled again"
+    );
+    // R12-LEDGER-10185 (ADR 0652): the cash alone moving is a statement
+    // that moved, or a venue could drift in cash for ever unjournaled.
+    let drifted: BTreeMap<String, Decimal> = venue_cash
+        .iter()
+        .map(|(unit, change)| (unit.clone(), *change + Decimal::ONE))
+        .collect();
+    assert!(
+        node.cell
+            .record_custody_statement_with_cash(
+                &venue(),
+                holdings.clone(),
+                cash.clone(),
+                drifted,
+                t(11)
+            )?
+            .is_some(),
+        "a cash-only change was not journaled"
     );
     let mut moved = holdings;
     moved.insert(object().as_str().to_string(), Decimal::ZERO);

@@ -821,6 +821,36 @@ impl SimulatedGateway {
         (holdings, cash)
     }
 
+    /// The venue's cash as a custody statement (R12-LEDGER-10185, ADR 0652):
+    /// the change in the clearing account's cash since it opened, before
+    /// the venue's costs, in its currency, from the venue's own ledger. The change and not the balance,
+    /// because the opening cash is the venue's endowment and no fill the
+    /// ledger booked; every fill and fee since is.
+    ///
+    /// Refuses a change that overflows rather than stating a guess.
+    pub fn custody_cash(&self) -> Result<BTreeMap<String, Decimal>> {
+        let cash = self.exchange.ledger().cash();
+        // Before the venue's own costs. The cell journals a fill with no fee
+        // (ExecutionReport carries none), so the ledger books the trade's
+        // cash and nothing for what the venue charged on it; a statement net
+        // of costs would read every charged fill as a break. The costs are
+        // the open part of R12-LEDGER-10185, named in ADR 0652.
+        let change = cash
+            .settled
+            .checked_sub(cash.opening)
+            .and_then(|net| net.checked_add(cash.costs))
+            .ok_or_else(|| {
+                Error::numeric(
+                    "the venue's cash change since it opened overflows; no cash is stated rather \
+                 than a wrapped figure",
+                )
+            })?;
+        Ok(BTreeMap::from([(
+            cash.currency.as_str().to_string(),
+            change,
+        )]))
+    }
+
     /// Everything the venue has booked to the clearing account since the
     /// last drain, as the independent channel reports it.
     ///
