@@ -605,6 +605,15 @@ impl EvolutionEngine {
         cycle: u64,
         now: Timestamp,
     ) -> (Option<crate::source_alpha::SourceAlphaRound>, Result<()>) {
+        // What LEARN last attributed to each source's decisions goes to the
+        // desk before it scores, so the round carries it (R12-DATA-2025).
+        // A grouping that cannot be built leaves the previous figures.
+        if let (Some(desk), Some(pass)) = (self.source_alpha.as_mut(), platform.last_attribution())
+            && let Ok(figures) =
+                qip_kernel::source_decision_attribution::decision_contributions(pass)
+        {
+            desk.observe_decisions(figures);
+        }
         let round = self
             .source_alpha
             .as_mut()
