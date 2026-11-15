@@ -1,0 +1,78 @@
+{
+ "lane": "42",
+ "note": "NOTHING WAS COMPILED. Per the owner instruction of 2026-11-15, no cargo build, test or clippy, no terraform, and no check-secrets was run in this lane; every row is built_unverified. Every new test is mutation: not run. The pipeline after merge is the first compile.",
+ "rows": [
+  {
+   "id": "R12-LEDGER-8140",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Added version_retention_period (7d, provisional) as its own DDL statement on the positions database, plus a tftest run asserting it and that the DDL is two separate statements. No backup schedule is declared, as instructed.",
+   "remains": "Scheduled backups need an approved retention and cost figure (NEEDS_FIGURE); the 7d value needs confirmation; terraform fmt/validate/plan not run.",
+   "tests": [
+    "infrastructure/terraform/modules/data/tests/spanner_placement.tftest.hcl::the_ledger_database_plans_a_version_retention_period_as_its_own_statement"
+   ],
+   "test_command": "cd infrastructure/terraform/modules/data && terraform test -filter=tests/spanner_placement.tftest.hcl",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "3c02f888",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-RISK-4116",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Added Platform::authorise_joint_tail_reserve, a typed operator intent that refuses a stale credential, journals who authorised, then applies the joint world from the next SIMULATE; it only tightens and the default stays advisory. Added replay_joint_tail_reserve_authorised and one stress test.",
+   "remains": "The HTTP route that raises the intent needs a row in api_boundary.rs (protected guard suite): NEEDS_PERSON. Owner confirmation that raising the reserve is accepted is still outstanding. Credential age is provisional (reuses the 15-minute eligibility age). No composition-root call was added.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/stress.rs::only_a_fresh_operator_intent_applies_the_joint_tail_reserve"
+   ],
+   "test_command": "cargo test -p qip-kernel --test stress --no-fail-fast; cargo test -p qip-acceptance --test compliance_proof --test security --test paper_boundary --test api_boundary",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "1db0e8f6",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-GOV-6127",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "what": "Nothing built. reprice.rs::replace and its gate were deliberately left untouched; the decision is recorded in the ADR 0685 addendum.",
+   "remains": "Needs an owner decision on whether a mandated arbitrage is outside what the requirement forbids, or a per-cycle non-profit ground that does not exist in the tree. The structural token for the requote path is not built.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": "1ea5cfd6 (addendum only)",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-ASSET-4070",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The post-solve group check in construct_grouped now sums absolute weights, closing gap 4 (net vs gross under a shorting mandate); it can only refuse more. Added a property test.",
+   "remains": "Gaps 1-3 open: kernel passes no group (wiring withdrawn in f1ff11cf over solver feasibility on the fast-brain tape, not re-run), strategy/region/horizon are not keys on ApprovedThesis, and no kernel or acceptance test exercises grouping. The new test only fails if the solver returns a breaching shorting result.",
+   "tests": [
+    "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs::a_group_cap_bounds_gross_weight_when_the_mandate_may_short"
+   ],
+   "test_command": "cargo test -p qip-portfolio-engine --no-fail-fast; cargo test -p qip-acceptance --test compliance_proof --test security --test paper_boundary",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "1ea5cfd6",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-CAPITAL-1161",
+   "outcome": "NEEDS_FIGURE",
+   "claims_requirement_met": false,
+   "what": "Nothing built. Arming idle-cash routing is a yield-shelf declaration read by qip-fastbrain (qip_kernel::yield_shelf) carrying RoutingTerms max_share and horizons.",
+   "remains": "max_share and the horizon set are figures nobody gave; moving idle cash onto a shelf is not a restrictive change, so a lane may not choose them. The ladder outflow feed (4079) also needs an operator declaration.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": "",
+   "built_unverified": true
+  }
+ ]
+}
