@@ -98,6 +98,7 @@ pub const BATCH_MAX_BODY: usize = 2 * MAX_BATCH_LEN + BATCH_JSON_OVERHEAD;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Route {
     Metadata,
+    ClusterMap,
     ProducerInit,
     Produce,
     Fetch,
@@ -112,8 +113,9 @@ impl Route {
     /// Every route, in the module documentation's own order. Used so a test
     /// (or a future router) can walk the whole surface rather than a list
     /// that has to be kept in step with the enum by hand.
-    pub const ALL: [Route; 9] = [
+    pub const ALL: [Route; 10] = [
         Route::Metadata,
+        Route::ClusterMap,
         Route::ProducerInit,
         Route::Produce,
         Route::Fetch,
@@ -133,6 +135,7 @@ impl Route {
     pub const fn path(&self) -> &'static str {
         match self {
             Route::Metadata => "/v1/event-fabric/metadata",
+            Route::ClusterMap => "/v1/event-fabric/cluster-map",
             Route::ProducerInit => "/v1/event-fabric/producers/init",
             Route::Produce => "/v1/event-fabric/produce",
             Route::Fetch => "/v1/event-fabric/fetch",
@@ -191,6 +194,98 @@ fn require_archive_within_watermark(archived_through: u64, high_watermark: u64) 
         )));
     }
     Ok(())
+}
+
+// --- cluster map --------------------------------------------------------
+
+/// The most partitions one cluster-map answer may carry. The answer travels
+/// under [`CONTROL_MAX_BODY`], and a decoder that accepted an unbounded list
+/// would let a hostile or broken broker make a client allocate for it; 256
+/// entries of three short strings and two integers sit well inside the
+/// 64 KiB route limit, and a catalogue past it is a reason to page the
+/// request, not to widen this.
+pub const MAX_CLUSTER_MAP_PARTITIONS: usize = 256;
+
+/// `cluster-map` request: the live partition-to-leader map for every
+/// partition the caller's grants let it reach (ADR 0135 decision 5, R12-FABRIC-8098).
+///
+/// Carries nothing, deliberately. Which streams a caller may see is the
+/// broker's grants' decision, not the caller's claim, so there is no stream
+/// list to forge and nothing to widen.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterMapRequest {}
+
+/// One partition's current leader as the answering broker believes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartitionLeader {
+    pub stream: String,
+    pub partition: u32,
+    /// The `host:port` the leader serves the protocol on, or `None` when the
+    /// answering broker is the leader (a single, unmanaged broker) or knows
+    /// no address for the instance it believes leads. `None` never means
+    /// "no leader"; a caller that gets it uses the broker it asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader: Option<String>,
+    /// The epoch the leadership was observed at: the lease epoch for a
+    /// managed partition, this broker's leader epoch otherwise. A client
+    /// compares it with the epoch a refusal names to decide whether its map
+    /// is stale.
+    pub leader_epoch: u64,
+}
+
+/// `cluster-map` response.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ClusterMapWire")]
+pub struct ClusterMap {
+    partitions: Vec<PartitionLeader>,
+}
+
+#[derive(Deserialize)]
+struct ClusterMapWire {
+    partitions: Vec<PartitionLeader>,
+}
+
+impl TryFrom<ClusterMapWire> for ClusterMap {
+    type Error = Error;
+    fn try_from(wire: ClusterMapWire) -> Result<Self> {
+        ClusterMap::new(wire.partitions)
+    }
+}
+
+impl ClusterMap {
+    /// Refuses more than [`MAX_CLUSTER_MAP_PARTITIONS`] entries and a
+    /// partition listed twice: two answers for one partition leave a client
+    /// choosing between leaders by position in a list.
+    pub fn new(partitions: Vec<PartitionLeader>) -> Result<Self> {
+        if partitions.len() > MAX_CLUSTER_MAP_PARTITIONS {
+            return Err(Error::invalid(format!(
+                "a cluster map of {} partitions exceeds the {MAX_CLUSTER_MAP_PARTITIONS} a \
+                 response may carry",
+                partitions.len()
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in &partitions {
+            if !seen.insert((entry.stream.as_str(), entry.partition)) {
+                return Err(Error::invalid(format!(
+                    "the cluster map names {}:{} twice; a partition has one leader",
+                    entry.stream, entry.partition
+                )));
+            }
+        }
+        Ok(Self { partitions })
+    }
+
+    pub fn partitions(&self) -> &[PartitionLeader] {
+        &self.partitions
+    }
+
+    /// The entry for `(stream, partition)`, if the map holds one.
+    pub fn leader_of(&self, stream: &str, partition: u32) -> Option<&PartitionLeader> {
+        self.partitions
+            .iter()
+            .find(|e| e.stream == stream && e.partition == partition)
+    }
 }
 
 // --- metadata -----------------------------------------------------------
@@ -907,6 +1002,7 @@ pub enum Refusal {
 #[serde(tag = "route", content = "payload", rename_all = "snake_case")]
 pub enum Request {
     Metadata(MetadataRequest),
+    ClusterMap(ClusterMapRequest),
     ProducerInit(ProducerInitRequest),
     Produce(ProduceRequest),
     Fetch(FetchRequest),
@@ -923,6 +1019,7 @@ impl Request {
     pub const fn route(&self) -> Route {
         match self {
             Request::Metadata(_) => Route::Metadata,
+            Request::ClusterMap(_) => Route::ClusterMap,
             Request::ProducerInit(_) => Route::ProducerInit,
             Request::Produce(_) => Route::Produce,
             Request::Fetch(_) => Route::Fetch,
@@ -941,6 +1038,7 @@ impl Request {
 #[serde(tag = "route", content = "payload", rename_all = "snake_case")]
 pub enum Response {
     Metadata(Metadata),
+    ClusterMap(ClusterMap),
     ProducerInit(ProducerInitResponse),
     Produce(ProduceAck),
     Fetch(FetchResponse),
@@ -959,6 +1057,7 @@ impl Response {
     pub const fn route(&self) -> Option<Route> {
         match self {
             Response::Metadata(_) => Some(Route::Metadata),
+            Response::ClusterMap(_) => Some(Route::ClusterMap),
             Response::ProducerInit(_) => Some(Route::ProducerInit),
             Response::Produce(_) => Some(Route::Produce),
             Response::Fetch(_) => Some(Route::Fetch),

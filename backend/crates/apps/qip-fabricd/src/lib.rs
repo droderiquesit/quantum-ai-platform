@@ -692,6 +692,13 @@ fn start_composed(
         }
         _ => broker,
     };
+    // Where each instance serves, for the cluster map (R12-FABRIC-8098).
+    let broker = match &config.managed {
+        Some(settings) if !settings.advertised.is_empty() => {
+            broker.with_advertised_addresses(settings.advertised.clone())?
+        }
+        _ => broker,
+    };
     let broker = Arc::new(broker);
     prove_archive_writable(archive_store.as_ref(), broker.leader_epoch())?;
     let service = Arc::new(Service::new(

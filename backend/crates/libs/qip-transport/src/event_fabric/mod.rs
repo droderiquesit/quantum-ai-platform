@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod batcher;
 pub mod batching_producer;
+pub mod cluster;
 pub mod consumer;
 pub mod producer;
 pub mod protocol;

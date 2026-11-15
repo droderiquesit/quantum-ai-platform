@@ -87,6 +87,13 @@ pub const INSTANCES: &str = "QIP_EVENT_FABRIC_INSTANCES";
 /// non-preferred instance waits before taking it. Defaults to a third of the
 /// lease TTL, one renewal period of the preferred instance.
 pub const PLACEMENT_GRACE_MS: &str = "QIP_EVENT_FABRIC_PLACEMENT_GRACE_MS";
+/// Optional, with [`INSTANCES`]: where each instance serves the protocol, as
+/// comma-separated `name=host:port` pairs including this instance. The
+/// cluster map (R12-FABRIC-8098) names a partition's leader by this address,
+/// so a client that asked a follower is sent to the leader without a
+/// redeploy of its configuration. Unset leaves leaders unnamed and clients on
+/// the broker they asked.
+pub const ADVERTISE: &str = "QIP_EVENT_FABRIC_ADVERTISE";
 /// Optional: how many batches of each partition stay on this broker's disk
 /// once their segments are archived and indexed; older history is read back
 /// from the archive (FABRIC-8079). Unset keeps everything on disk.
@@ -127,6 +134,8 @@ pub struct ManagedConfig {
     pub instances: Vec<String>,
     /// How long a non-preferred instance waits after a lease expires.
     pub placement_grace_ms: u64,
+    /// Instance name to the `host:port` it serves on; empty names none.
+    pub advertised: BTreeMap<String, String>,
 }
 
 /// The most partitions a stream may be declared with. Every partition is a
@@ -290,6 +299,7 @@ fn managed_config(variables: &BTreeMap<String, String>) -> Result<Option<Managed
                 LEASE_TTL_MS,
                 INSTANCES,
                 PLACEMENT_GRACE_MS,
+                ADVERTISE,
             ] {
                 if present(variables, stray).is_some() {
                     return Err(Error::invalid(format!(
@@ -376,6 +386,46 @@ fn managed_config(variables: &BTreeMap<String, String>) -> Result<Option<Managed
             "{PLACEMENT_GRACE_MS} must be at most {MAXIMUM_LEASE_TTL_MS}, not {placement_grace_ms}"
         )));
     }
+    let mut advertised: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(list) = present(variables, ADVERTISE) {
+        for pair in list.split(',').map(str::trim) {
+            let Some((name, address)) = pair.split_once('=') else {
+                return Err(Error::invalid(format!(
+                    "{ADVERTISE} holds '{pair}'; each entry is name=host:port"
+                )));
+            };
+            let (name, address) = (name.trim(), address.trim());
+            let dialable = address
+                .rsplit_once(':')
+                .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
+            if name.is_empty() || !dialable {
+                return Err(Error::invalid(format!(
+                    "{ADVERTISE} entry '{pair}' is not name=host:port with a numeric port"
+                )));
+            }
+            if advertised
+                .insert(name.to_string(), address.to_string())
+                .is_some()
+            {
+                return Err(Error::invalid(format!(
+                    "{ADVERTISE} names '{name}' twice; a client would be sent to whichever \
+                     address was read last"
+                )));
+            }
+        }
+        if !advertised.contains_key(&instance) {
+            return Err(Error::invalid(format!(
+                "{ADVERTISE} does not name this instance '{instance}'; a broker that cannot \
+                 say where it is would send clients that ask it elsewhere"
+            )));
+        }
+        if let Some(stranger) = advertised.keys().find(|name| !instances.contains(name)) {
+            return Err(Error::invalid(format!(
+                "{ADVERTISE} names '{stranger}', which is not in {INSTANCES}; set the instance \
+                 set it belongs to, or drop the entry"
+            )));
+        }
+    }
     Ok(Some(ManagedConfig {
         backend,
         region,
@@ -383,6 +433,7 @@ fn managed_config(variables: &BTreeMap<String, String>) -> Result<Option<Managed
         lease_ttl_ms,
         instances,
         placement_grace_ms,
+        advertised,
     }))
 }
 
@@ -1080,6 +1131,7 @@ mod tests {
                 lease_ttl_ms: DEFAULT_LEASE_TTL_MS,
                 instances: Vec::new(),
                 placement_grace_ms: DEFAULT_LEASE_TTL_MS / 3,
+                advertised: BTreeMap::new(),
             })
         );
 
@@ -1128,5 +1180,42 @@ mod tests {
             Config::parse(&hot).expect("a hot window").hot_batches,
             Some(64)
         );
+    }
+
+    /// R12-FABRIC-8098. An advertised address must be `name=host:port`, must
+    /// name this instance, and may name only instances of the set: an entry
+    /// the cluster map would send clients to must be one this broker can
+    /// vouch for.
+    ///
+    /// Mutation: delete the `contains_key(&instance)` check in
+    /// `managed_config` — the "does not name this instance" case is accepted
+    /// and its `is_err` assertion fires.
+    #[test]
+    fn advertised_addresses_must_name_this_instance_and_only_its_set() {
+        let mut ok = spanner();
+        ok.insert(
+            INSTANCES.to_string(),
+            "fabricd-ew2-a,fabricd-ew2-b".to_string(),
+        );
+        ok.insert(
+            ADVERTISE.to_string(),
+            "fabricd-ew2-a=10.0.0.1:7100,fabricd-ew2-b=10.0.0.2:7100".to_string(),
+        );
+        let parsed = Config::parse(&ok).expect("a coherent advertisement");
+        let advertised = parsed.managed.expect("managed").advertised;
+        assert_eq!(advertised.len(), 2);
+        assert_eq!(advertised["fabricd-ew2-b"], "10.0.0.2:7100");
+
+        for (what, value) in [
+            ("not this instance", "fabricd-ew2-b=10.0.0.2:7100"),
+            ("no port", "fabricd-ew2-a=10.0.0.1"),
+            ("no equals", "fabricd-ew2-a"),
+            ("twice", "fabricd-ew2-a=10.0.0.1:1,fabricd-ew2-a=10.0.0.1:2"),
+            ("a stranger", "fabricd-ew2-a=10.0.0.1:1,other=10.0.0.9:1"),
+        ] {
+            let mut bad = ok.clone();
+            bad.insert(ADVERTISE.to_string(), value.to_string());
+            assert!(Config::parse(&bad).is_err(), "{what}: {value}");
+        }
     }
 }

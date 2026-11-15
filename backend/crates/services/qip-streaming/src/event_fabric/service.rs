@@ -65,9 +65,9 @@ use qip_events::registry::{SchemaDescriptor, SchemaRegistry};
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::{
-    AdminIsolateResponse, AdminReleaseResponse, GroupCommitResponse, GroupJoinResponse,
-    GroupLagResponse, IsolationStatus, ProducerInitResponse, Refusal, Request, Response, Route,
-    decode_request, encode_response,
+    AdminIsolateResponse, AdminReleaseResponse, ClusterMap, GroupCommitResponse, GroupJoinResponse,
+    GroupLagResponse, IsolationStatus, PartitionLeader, ProducerInitResponse, Refusal, Request,
+    Response, Route, decode_request, encode_response,
 };
 use qip_transport::server::AdmissionClass;
 
@@ -564,6 +564,30 @@ impl Service {
                     None => IsolationStatus::clear(),
                 };
                 Ok(Response::Metadata(metadata.with_isolation(isolation)))
+            }
+            Request::ClusterMap(_) => {
+                // Only partitions the caller's grants reach, from the same
+                // scope every other route applies: a map that listed a
+                // stream the caller holds no grant on would tell it which
+                // streams exist, and `refuse_unless_granted` answers an
+                // undeclared stream and an ungranted one alike for that
+                // reason.
+                let mut partitions = Vec::new();
+                for (stream, count) in self.broker.declared_streams() {
+                    let scope = self.scope(identity, &stream, &ANY_GRANT, seen)?;
+                    for partition in scope.partitions(count) {
+                        let (leader, leader_epoch) =
+                            self.broker.partition_leader(&stream, partition)?;
+                        partitions.push(PartitionLeader {
+                            stream: stream.clone(),
+                            partition,
+                            leader,
+                            leader_epoch,
+                        });
+                    }
+                }
+                seen.stream = None;
+                Ok(Response::ClusterMap(ClusterMap::new(partitions)?))
             }
             Request::ProducerInit(r) => {
                 if let Some(refusal) = self.refuse_unless_granted(
