@@ -132,6 +132,7 @@ fn a_re_fetch_reports_unchanged_and_revised_extents_with_both_hashes() -> Result
         [&reference],
         &mut Scripted(vec![ReFetchOutcome::Fetched {
             content_hash: qip_core::sha256_hex(TABLE.as_bytes()),
+            bytes: TABLE.len() as u64,
             etag: None,
         }]),
         10,
@@ -144,6 +145,7 @@ fn a_re_fetch_reports_unchanged_and_revised_extents_with_both_hashes() -> Result
         [&reference],
         &mut Scripted(vec![ReFetchOutcome::Fetched {
             content_hash: qip_core::sha256_hex(REVISED.as_bytes()),
+            bytes: REVISED.len() as u64,
             etag: None,
         }]),
         10,
@@ -193,6 +195,7 @@ fn a_withdrawn_extent_is_unretrievable_at_once_and_an_unanswered_one_only_after_
         [&reference],
         &mut Scripted(vec![ReFetchOutcome::Fetched {
             content_hash: qip_core::sha256_hex(TABLE.as_bytes()),
+            bytes: TABLE.len() as u64,
             etag: None,
         }]),
         10,
