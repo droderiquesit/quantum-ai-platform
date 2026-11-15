@@ -1,0 +1,67 @@
+{
+ "lane": "10",
+ "rows": [
+  {
+   "id": "R12-CONTRACT-7069",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "what": "Not built. Refusing a decision-less fill at ledgerd needs the kernel desk to journal its own decision entry and state its sequence, and an owner ruling on LedgerOperation owners and operation-shaped attribution.",
+   "remains": "Owner ruling (ADR_THEN_IMPLEMENT, 2026-10-31) on operation owner/attribution; desk decision entry in desk_ledger.rs; ledgerd refusal at posting seam.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-7070",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not built. Producer needs an ADR for the Simulated<Decimal> to Counterfactual.estimated_outcome crossing and a defined world_state_digest stamped at decision time; both are design decisions across several crates.",
+   "remains": "ADR 0602/0603 not written; digest definition; kernel join from decisions to evaluate_alternatives scores by order id; Episode producer.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-7072",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Added qip_kernel::tape_attestation (flagged venue or unattested tape removes traces, never adds) and TickDesk::note_feature_digest filtering traces before fuse. Mutation-verified.",
+   "remains": "Route reflex.feature_digested from the fabric to the tick desk (nothing in deepbrain consumes it); a test of the TickDesk hook itself (untested, no mutation); per-instrument rather than per-venue granularity; pass 1 ships no pack.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/tape_attestation.rs::a_venue_with_a_sequence_gap_loses_its_traces_and_only_its_own",
+    "backend/crates/runtime/qip-kernel/tests/tape_attestation.rs::applied_events_with_no_pack_are_unattested_and_admit_nothing",
+    "backend/crates/runtime/qip-kernel/tests/tape_attestation.rs::a_clean_pack_and_a_pass_with_no_tape_remove_nothing_and_add_nothing"
+   ],
+   "test_command": "cargo test -p qip-kernel --test tape_attestation",
+   "mutations": [
+    "tape_attestation.rs, Unattested => true, failed applied_events_with_no_pack_are_unattested_and_admit_nothing at tests/tape_attestation.rs:102",
+    "tape_attestation.rs, venue starts_with match, failed a_venue_with_a_sequence_gap_loses_its_traces_and_only_its_own: left [\"XLON\"], right [\"XNYSX\", \"XLON\"]"
+   ],
+   "commit": "a92030f8"
+  },
+  {
+   "id": "R12-CONTRACT-7073",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not built. Adding universe and time window changes the StatedManifest wire form every reader decodes; carrying a manifest between brains needs a new topic past the schema lock and a consumer that does not exist.",
+   "remains": "Wire change with ADR 0429 clauses; refuse ReplayManifest::new without assumptions; new topic and consumer.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-7092",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not built. Needs the ADR 0119 fabric-mirror consumer constructing and decoding MirrorCheckpoint in production, which is a multi-crate seam, plus a second region to deploy into.",
+   "remains": "Mirror consumer; second region deployment.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  }
+ ]
+}
