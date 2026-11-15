@@ -3895,3 +3895,66 @@ fn a_venue_halt_reaches_the_centre_typed_and_the_next_book_is_read_under_it() ->
     );
     Ok(())
 }
+
+/// R12-MODEL-6002 (ADR 0683): the declined path and the fill a cycle priced
+/// are both in the one training export, read back from the event log, each
+/// under its own kind and naming its own order. The export is what a replay
+/// of the journal produces, so a record that is in the log and not in the
+/// export, or the reverse, fails here.
+///
+/// Mutation: not run (nothing was compiled). Dropping the `declined_outcomes`
+/// arm of `TrainingExport::from_counterfactuals` fails the Declined count;
+/// dropping the `fill_outcomes` arm fails the fill count.
+#[test]
+fn the_training_export_holds_the_declined_path_and_the_fill_one_cycle_priced() -> Result<()> {
+    use qip_kernel::training_export::PathKind;
+
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 90));
+    let declined = refuse_one(&mut platform, "prop-refused", start())?;
+    let filled = fill_one(&mut platform, "prop-filled", start())?;
+    assert_eq!(platform.declined_awaiting_score(), 1, "premise: one refusal");
+    assert_eq!(platform.filled_awaiting_score(), 1, "premise: one fill");
+    assert!(
+        platform.training_export()?.records.is_empty(),
+        "premise: nothing is priced, so nothing is exported"
+    );
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let journaled = platform.journal_entries()?[0]
+        .counterfactuals
+        .clone()
+        .expect("the cycle journaled what it priced");
+    assert_eq!(
+        (journaled.scored, journaled.fills_scored),
+        (1, 1),
+        "premise: both paths were priced in the one cycle"
+    );
+
+    let export = platform.training_export()?;
+    assert_eq!(export.count(PathKind::Declined), 1);
+    assert_eq!(
+        export.count(PathKind::Filled) + export.count(PathKind::PartiallyFilled),
+        1
+    );
+    let declined_record = export
+        .records
+        .iter()
+        .find(|record| record.path == PathKind::Declined)
+        .expect("the declined path is exported");
+    assert_eq!(declined_record.order_id, declined.as_str());
+    assert!(declined_record.would_have_earned.is_some());
+    let fill_record = export
+        .records
+        .iter()
+        .find(|record| record.path != PathKind::Declined)
+        .expect("the fill is exported");
+    assert_eq!(fill_record.order_id, filled.as_str());
+    assert_eq!(
+        export.to_json_lines()?.len(),
+        export.records.len(),
+        "one line per record"
+    );
+    Ok(())
+}

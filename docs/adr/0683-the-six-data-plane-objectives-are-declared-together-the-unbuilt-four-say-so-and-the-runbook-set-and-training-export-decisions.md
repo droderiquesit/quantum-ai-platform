@@ -93,3 +93,32 @@ because nothing was compiled. If the pin test fails on first run, the
 constant is wrong and the correct value is in its failure message; no deployed
 process is affected, since the pipeline runs the test before an image is
 built.
+
+## R12-MODEL-6002: one training export of every priced path
+
+### Context
+
+Declined orders, the legs of cells' refused cycles and fills priced for the
+sizes not taken were each journaled, in separate lists inside
+`CounterfactualJournal`. No single export existed, so a trainer needed to know
+four shapes. An earlier draft (`training_export.rs`) conflicted with
+neighbouring work and was never re-applied.
+
+### Decision
+
+9. `qip_kernel::training_export::TrainingExport` is the one shape: a
+   `TrainingRecord` per priced path, kind `Declined`, `CellDeclined`,
+   `Filled` or `PartiallyFilled` (a fill with an unfilled remainder is the
+   path not taken on an order that went). `Platform::training_export` reads it
+   from the replayed journal and from nothing in memory.
+10. Figures about worlds that did not happen stay `Simulated`. Facts a path
+    does not have are `None`, never zero.
+11. Held out, by name, not omitted silently: the hedge-not-taken path (owner
+    decision 7: no hedge policy is declared, so nothing is proposed to
+    record), the agency proposals (the ambient door's), and the individual
+    figures of `evaluate_alternatives`' different-hedge and different-venue
+    arms (counted on a `DeclinedScore`, not journaled one by one). The export
+    cannot include what was never recorded; recording them is a separate
+    change to the journal's shape.
+12. An export is read by training and by nothing that sizes or loosens a
+    limit (blueprint 12.4). It is not an order path.
