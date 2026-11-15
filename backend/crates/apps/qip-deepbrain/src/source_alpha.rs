@@ -299,6 +299,34 @@ impl SourceAlphaDesk {
         round
     }
 
+    /// Rebuild the score history from the rounds the log holds, in log order
+    /// (R12-EVID-8108). A restarted node began with no scores, so a source
+    /// promoted or retired on its score had nothing behind it. Only scores
+    /// that were computed come back; a round's refusals say a pair lacked
+    /// samples and carry no score. The aligned-sample windows are not
+    /// restored: they are what the next senses refill, and a window
+    /// stitched from before the gap would align samples that never met.
+    /// Refused when the desk already holds a score, since replaying onto one
+    /// would count each twice. Returns the scores restored.
+    pub fn restore(&mut self, rounds: &[SourceAlphaScored]) -> Result<usize> {
+        if self.history != SourceAlphaHistory::default() {
+            return Err(qip_core::error::Error::invalid(
+                "the source-alpha history is restored once, before the first round; this desk \
+                 already holds scores",
+            ));
+        }
+        let mut restored = 0;
+        for round in rounds {
+            for scored in &round.scores {
+                if let Ok(alpha) = &scored.outcome {
+                    self.history.restore(&scored.source, *alpha)?;
+                    restored += 1;
+                }
+            }
+        }
+        Ok(restored)
+    }
+
     /// Every score kept for `source`, oldest first.
     pub fn history(&self, source: &str) -> impl Iterator<Item = &SourceAlpha> {
         self.history.history(source)

@@ -720,6 +720,12 @@ fn run() -> Result<()> {
         qip_deepbrain::source_alpha::source_alpha_every(&|name| std::env::var(name).ok())
             .map_err(configuration)?;
     evolution = evolution.with_source_alpha(source_alpha_every);
+    // Read the scores back off the log, so a restart does not forget what a
+    // source was scored (R12-EVID-8108).
+    let restored_scores = evolution
+        .restore_source_alpha(&platform)
+        .map_err(|error| Error::invalid(format!("source alpha: {}", error.message())))?;
+    println!("  source alpha:     restored {restored_scores} score(s) from the log");
     println!(
         "  source alpha:     {}",
         if source_alpha_every == 0 {
