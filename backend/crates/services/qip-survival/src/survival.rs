@@ -392,6 +392,15 @@ pub struct TailResponse {
     /// would have to stand behind beyond what it accepted, withheld as the
     /// stressed-liquidity reserve. Zero when the book survives.
     pub reserve: Decimal,
+    /// Every world the book fails at the tolerance, the worst included,
+    /// worst first and ties by name. Empty when the book survives.
+    ///
+    /// Recorded for the record only: `reserve` is the worst world's excess and
+    /// nothing here is added to it, because the worlds are alternatives, not
+    /// concurrent losses, and a reserve summed across them would withhold
+    /// capital twice for the same equity. Without this list a failed world
+    /// that another one outranked left no trace on the cycle's record.
+    pub failed: Vec<WorldLoss>,
 }
 
 impl TailResponse {
@@ -409,7 +418,7 @@ impl TailResponse {
 /// named the report would have an alpha crate in its closure. A record of two
 /// fields has no behaviour for a caller to substitute, which a trait object
 /// handed in by the kernel would (ADR 0127, "What would make this wrong").
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorldLoss {
     pub scenario: String,
     pub loss_fraction: f64,
@@ -470,11 +479,35 @@ pub fn tail_response(
                 ))
             })?
     };
+    let mut failed: Vec<WorldLoss> = stress
+        .map(|stress| {
+            stress
+                .worlds
+                .iter()
+                .map(|world| WorldLoss {
+                    scenario: world.scenario.clone(),
+                    // As in `worst_world`: a loss that is not a number fails.
+                    loss_fraction: if world.loss_fraction.is_nan() {
+                        f64::INFINITY
+                    } else {
+                        world.loss_fraction
+                    },
+                })
+                .filter(|world| world.loss_fraction > tolerance)
+                .collect()
+        })
+        .unwrap_or_default();
+    failed.sort_by(|a, b| {
+        b.loss_fraction
+            .total_cmp(&a.loss_fraction)
+            .then_with(|| a.scenario.cmp(&b.scenario))
+    });
     Ok(Some(TailResponse {
         scenario,
         loss_fraction,
         tolerance,
         reserve,
+        failed,
     }))
 }
 
@@ -598,6 +631,20 @@ impl SizingBudget {
                 tail.tolerance * 100.0,
                 tail.reserve
             ));
+            for world in tail
+                .failed
+                .iter()
+                .filter(|world| world.scenario != tail.scenario)
+            {
+                lines.push(format!(
+                    "the book also fails {}, losing {:.1}% of equity against the {:.0}% \
+                     tolerance; the reserve withheld for {} already covers it",
+                    world.scenario,
+                    world.loss_fraction * 100.0,
+                    tail.tolerance * 100.0,
+                    tail.scenario
+                ));
+            }
         }
         lines.extend(
             self.confidence
@@ -911,6 +958,58 @@ mod tests {
         // can be held, plus the 750,000 released.
         assert_eq!(hedged.gross_ceiling, dec!("1350000"));
         assert!(hedged.released < open.released);
+    }
+
+    /// R12-RISK-4122 / 4121: every world the book fails is recorded, the
+    /// reserve stays the worst world's alone, and a world inside tolerance is
+    /// not listed. Before this a failed world another one outranked left no
+    /// trace, so the DECIDE record could never name it.
+    ///
+    /// Mutations: make `failed` hold only the worst world (the second
+    /// assertion fails); add every failed world's excess to `reserve` (the
+    /// reserve assertion fails); drop the `> tolerance` filter (the survived
+    /// world is listed).
+    #[test]
+    fn every_failed_world_is_recorded_and_the_reserve_is_the_worst_ones_alone() {
+        let stress = StressedWorlds {
+            worlds: vec![
+                WorldLoss {
+                    scenario: "model-failure".to_string(),
+                    loss_fraction: 0.30,
+                },
+                WorldLoss {
+                    scenario: "synthetic-1".to_string(),
+                    loss_fraction: 0.50,
+                },
+                WorldLoss {
+                    scenario: "counterparty-failure".to_string(),
+                    loss_fraction: 0.10,
+                },
+            ],
+        };
+        let response = tail_response(Some(&stress), dec!("1000000"), 0.20)
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.scenario, "synthetic-1");
+        let names: Vec<&str> = response
+            .failed
+            .iter()
+            .map(|w| w.scenario.as_str())
+            .collect();
+        assert_eq!(names, ["synthetic-1", "model-failure"]);
+        assert_eq!(
+            response.reserve,
+            dec!("300000"),
+            "no reserve is added twice"
+        );
+
+        let mut governor = SurvivalGovernor::default();
+        let budget = governor
+            .size(figures(dec!("850000")), Some(&stress), 0.20, &views(), at())
+            .unwrap();
+        let lines = budget.narrowing().join("; ");
+        assert!(lines.contains("model-failure"), "{lines}");
+        assert!(!lines.contains("counterparty-failure"), "{lines}");
     }
 
     /// The reservation accounting `MaxSurvivalGross` needed before it could
