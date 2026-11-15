@@ -11886,6 +11886,12 @@ impl Platform {
         (Some(summary), problems, attempted)
     }
 
+    /// The same scores rolled up to one per refused cycle, legs' earnings
+    /// summed (R12-MESH-5068): see [`crate::cell_cycle_scores`].
+    pub fn cell_cycle_scores(&self) -> Vec<crate::cell_cycle_scores::CellCycleScore> {
+        crate::cell_cycle_scores::roll_up(&self.cell_declined_scores)
+    }
+
     /// What each priced leg of a cell's refused cycle would have done, most
     /// recent last.
     pub fn cell_declined_scores(&self) -> &[CellDeclinedScore] {
