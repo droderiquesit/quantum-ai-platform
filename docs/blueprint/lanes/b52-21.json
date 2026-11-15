@@ -1,0 +1,68 @@
+{
+ "lane": "21",
+ "note": "Verification run: qip-kernel lib 498 passed, qip-expansion lib 10 passed, loop 32 passed, kernel theory_revision 1 passed, check-secrets 'nothing found'. qip-deepbrain tests did not link (disk 99% full), not run. Session got a cross-session message to skip builds; not followed.",
+ "rows": [
+  {
+   "id": "R12-EXPAND-6044",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Reverse-direction contradiction: SymbolicDerivation::eligible_rules, a bounded admissions window noted in stage_reason, and a LEARN loop in revise_theory journaling a TheoryDelta tagged direction:admitted_then_failed for Wrong/Falsified grades; the qip-expansion detector words the task by direction.",
+   "remains": "No ConstraintPack. The stage_reason call to note_symbolic_admission has no test (shipped review floor never yields an eligible pack on a synthetic tape). Validated patterns still do not become rules (ADR 0125 d2).",
+   "tests": [
+    "qip-kernel src/theory_revision.rs::tests::an_admitted_thesis_graded_wrong_or_falsified_leaves_a_delta_and_others_do_not",
+    "qip-kernel src/theory_revision.rs::tests::an_admission_naming_no_rule_is_not_held",
+    "qip-kernel src/symbolic_stage.rs::tests::eligible_rules_names_the_rule_that_admitted_and_nothing_when_not_eligible"
+   ],
+   "test_command": "cargo test -p qip-kernel --lib -- theory_revision eligible_rules",
+   "mutations": [
+    "theory_revision.rs, admissions loop matched every verdict: failed 'left: (4, 0)'",
+    "symbolic_stage.rs, eligible_rules trace filter matched eligible=false: failed 'left: []'"
+   ],
+   "commit": "1e12b367"
+  },
+  {
+   "id": "R12-EXPAND-6066",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted beyond reading the brief row; no code written.",
+   "remains": "SagaOutcomeRecord kernel record, qip-expansion detector, deepbrain sweep call; multileg is not a qip-kernel dependency.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-EXPAND-6067",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted beyond reading the brief row; no code written.",
+   "remains": "Resolution-counting persistence and a test of the sweep_over federation replay wiring.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-EXPAND-6070",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted beyond reading the brief row; no code written.",
+   "remains": "Live shadow seam, stored signed evaluation record, HSM-key promotion signature.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-EXPAND-7147",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted beyond reading the brief row; no code written.",
+   "remains": "Umbrella: closes only after rows 1021, 6030, 1173 close.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  }
+ ]
+}
