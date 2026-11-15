@@ -942,6 +942,59 @@ impl DataReference {
         self.expiry.map(|expiry| now > expiry)
     }
 
+    /// The reference a re-fetch that found this extent revised stands for:
+    /// the same extent, locator and licence, with the hash, length and etag
+    /// the source now serves, read at `at`.
+    ///
+    /// Built through the one validating constructor, so a revised reference
+    /// is held to every rule an original is. The expiry moves with the
+    /// retrieval, keeping the freshness span the admission granted; leaving
+    /// it would date an extent as stale before it was re-read. Refuses an
+    /// `at` earlier than the original retrieval, since a re-fetch cannot
+    /// precede the fetch it verifies.
+    pub fn revised_by_refetch(
+        &self,
+        content_hash: &str,
+        bytes: u64,
+        etag: Option<String>,
+        at: Timestamp,
+    ) -> Result<Self> {
+        if at < self.retrieved_at {
+            return Err(Error::invalid(format!(
+                "a re-fetch of `{}` at {at} precedes the retrieval at {} it claims to                  revise; the clock went backwards or the reference is not the one fetched",
+                self.locator, self.retrieved_at
+            )));
+        }
+        let span = at.since(self.retrieved_at);
+        Self::build_hashed(
+            &self.source_id,
+            self.origin,
+            self.category,
+            self.locator.clone(),
+            self.symbols.iter().cloned(),
+            self.range,
+            self.schema.clone(),
+            content_hash.to_string(),
+            bytes,
+            at,
+            self.cost_estimate,
+            self.availability,
+            self.entitlements.clone(),
+            Acquisition {
+                etag,
+                cursor: self.cursor.clone(),
+                entitlement: self.entitlement,
+                geography: self.geography,
+                expiry: self.expiry.map(|expiry| expiry.saturating_add(span)),
+                re_fetch_instructions: self
+                    .re_fetch_instructions
+                    .as_ref()
+                    .map(|text| text.replace(&self.content_hash, content_hash)),
+                parser: self.parser.clone(),
+            },
+        )
+    }
+
     /// Whether a re-fetch producing `bytes` still matches what this reference
     /// recorded.
     pub fn verify(&self, bytes: &[u8]) -> RevisionCheck {
