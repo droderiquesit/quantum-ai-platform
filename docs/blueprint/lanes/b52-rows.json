@@ -790,5 +790,169 @@
    "id": "R12-RISK-5044",
    "what_the_last_reader_said_is_missing": "An edge-after-cost gate on the cell. Decided 2026-11-14 (decision 38), provisional and restrictive: 25 basis points, refused when an order's expected edge after sweep cost and slippage is below it. An earlier draft armed it at every composition root and retuned fixtures; do it without weakening any existing test, with the limit able to fire (a test that drives a cell to the refusal), and the qip-cli demo cell armed too."
   }
+ ],
+ "39": [
+  {
+   "id": "R12-DATA-10079",
+   "what_the_last_reader_said_is_missing": "(1) A fabricd test that seals a segment and finds it in a Cloud Storage target served by a local fake bucket, so the bucket path is exercised end to end and not only parsed. (2) The landing bucket and lifecycle copy in Terraform (R12-FABRIC-8101) and an enviro NOTE: An earlier draft failed lint: an unreachable `pub` item and a collapsible `if` in qip-fabricd/tests/broker.rs."
+  },
+  {
+   "id": "R12-TICK-1121",
+   "what_the_last_reader_said_is_missing": "2026-10-24 (re-read against the tree): No replay digest covers the lake stage: RECORDED_DIGEST in qip-acceptance tick_replay.rs is computed in memory from decode to book and never passes through qip_storage::lake, so mutating Lake::write_segment or lake_histor NOTE: An earlier draft in qip-acceptance/tests/tick_replay.rs did not compile: E0505, `ticks` moved while borrowed."
+  },
+  {
+   "id": "R12-TICK-1124",
+   "what_the_last_reader_said_is_missing": "2026-10-24 (re-read against the tree): qip_sequencing::align (Placed, align, as_of) has no caller outside qip-sequencing beyond CaptureStream's within-stream arrival order on the edge drain; qip_feature_dag CrossVenueSpread compares fresh mids without clock un NOTE: An earlier draft in qip-acceptance/tests/tick_replay.rs did not compile: E0505, `ticks` moved while borrowed."
+  },
+  {
+   "id": "R12-TICK-1125",
+   "what_the_last_reader_said_is_missing": "2026-10-24 (re-read against the tree): RECORDED_DIGEST covers the replay stage only as qip_orderbook::replay plus sweep_cost simulated fills over in-memory events; no digest is pinned over the fabric's replay/simulation engine, qip_simulation_engine::tick_repl NOTE: An earlier draft in qip-acceptance/tests/tick_replay.rs did not compile: E0505, `ticks` moved while borrowed. A literal digest cannot be pinned without running; assert reproducibility and sensitivity instead."
+  },
+  {
+   "id": "R12-TICK-1127",
+   "what_the_last_reader_said_is_missing": "2026-10-24 (re-read against the tree): No recorded session is replayed through qip_kernel::fusion::fuse with a digest a fusion mutation changes: qip-acceptance tests/fusion.rs only checks two fuse calls on hand-built traces agree, with no pinned digest and no  NOTE: An earlier draft in qip-acceptance/tests/tick_replay.rs did not compile: E0505, `ticks` moved while borrowed."
+  }
+ ],
+ "40": [
+  {
+   "id": "R12-WORLD-7023",
+   "what_the_last_reader_said_is_missing": "Decided by ADR 0191. Decision 3 is partly in code (8e6aeb06, 0dde23aa): every central brain's run_cycle journals a versioned knowledge-graph and causal-graph snapshot on world_model.snapshot when the domain's digest changes, with versions resumed from the log. NOTE: An earlier draft did not compile: qip-kernel/src/world_snapshot.rs expected i64, found u64."
+  },
+  {
+   "id": "R12-MESH-5055",
+   "what_the_last_reader_said_is_missing": "The borrow rate is stated, not measured: the centre holds no funding state, qip-edge's funding.rs is not fed into EdgeCosts at the desk refresh, and the path-wide 5% carry is still a constant assumption. No committed deployment states a borrow rate. NOTE: An earlier draft shared a file with one that did not compile and was reverted with it."
+  },
+  {
+   "id": "R12-WORLD-3086",
+   "what_the_last_reader_said_is_missing": "signals_from_world is not yet called from platform.rs::understand_now (one call before self.lattice.run; patch in the L14 lane report for L01), so the deployed hours-days row still sees no catalyst. ReactionEpisode history has no production holder, so the expe NOTE: An earlier draft was reverted when qip-kernel tests failed (a_closed_position_is_priced_as_the_unhedged_hold...)."
+  },
+  {
+   "id": "R12-MODEL-6004",
+   "what_the_last_reader_said_is_missing": "No counterfactual for hedged or unwound positions: Platform has no queue of hedge proposals or unwinds to price, and evaluate_alternatives prices a placed order's size arms, not a hedge or an unwind leg. Needs a design decision on what an unwound or hedged pat NOTE: An earlier draft (unwind queue, twin hold arm) broke qip-kernel tests a_closed_position_is_priced_as_the_unhedged_hold_and_a_climbing_tape_is_a_regret."
+  },
+  {
+   "id": "R12-MODEL-10123",
+   "what_the_last_reader_said_is_missing": "2026-11-11 (batch l2-d1-01): item (3) of the earlier gap is closed. ADR 0391 decides the contract change and it is built: a compute-routing choice is scored on the default path, from a judgement minted at the routing decision and resolved in LEARN. Five of the NOTE: An earlier draft was reverted with a neighbour when qip-kernel tests failed."
+  }
+ ],
+ "41": [
+  {
+   "id": "R12-EXPAND-6033",
+   "what_the_last_reader_said_is_missing": "Refuted by the in-lane skeptic 2026-10-25 on bar part 4: the requirement names digital twins, agent simulations and counterfactual worlds beside scenario generation, and three generated things leave no SyntheticEpisode: the capacity probe's seeded MarketSimula NOTE: An earlier draft was reverted with a neighbour when qip-kernel tests failed."
+  },
+  {
+   "id": "R12-OBS-9140",
+   "what_the_last_reader_said_is_missing": "qip-ledgerd builds no telemetry surface at all, and qip-edge-node has metrics but no tracer and is the reflex closure (a drain in its closure puts a thread that performs network I/O beside the decision loop, and would move the drain into Lane 0 in the lane reg NOTE: An earlier draft failed qip-ledgerd test a_ledger_with_a_collector_url_builds_a_drain_configuration."
+  },
+  {
+   "id": "R12-OBS-9163",
+   "what_the_last_reader_said_is_missing": "(1) data-archive-delay has no seam to record at: nothing in the tree ingests a GCS archive and learns how long ago it was written (qip-fabricd writes the archive and records EVENT_FABRIC_ARCHIVE_LAG, a different fact). (2) No data-plane objective is evaluated: NOTE: An earlier draft failed qip-observability test the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_unmeasured."
+  },
+  {
+   "id": "R12-OBS-9074",
+   "what_the_last_reader_said_is_missing": "2026-10-31 (lane L6): not decided. Runbooks are compiled into the deep brain's binary, so a verifier inside Operations::build checking them against a digest the same build embeds proves nothing a tampered build could not also fake; a real check needs a signer  NOTE: An earlier draft failed the same qip-observability catalogue test."
+  },
+  {
+   "id": "R12-MODEL-6002",
+   "what_the_last_reader_said_is_missing": "No unified training-data export of all paths; hedges/unwinds/agency proposals not captured. 2026-10-30 (lane L2-INTEL), one sentence: the hedge half is held by owner decision 7 (no declared hedge policy, so run_hedge_brain proposes nothing to record), and the  NOTE: An earlier draft (training_export.rs) conflicted and was never re-applied."
+  }
+ ],
+ "42": [
+  {
+   "id": "R12-LEDGER-8140",
+   "what_the_last_reader_said_is_missing": "Backup schedule + PITR. NOTE: An earlier draft folded version_retention_period into the one DDL statement three Terraform tests pin (tests/spanner_placement.tftest.hcl). Add it as its own DDL statement; do not declare a billed backup schedule."
+  },
+  {
+   "id": "R12-RISK-4116",
+   "what_the_last_reader_said_is_missing": "2026-10-30 (lane L1-MONEY, 89af653c, 8a6f1903): every cycle's SIMULATE now appends a generated joint world: regime-flip volatility times a seeded amplification, with every pair correlated against the book at a drawn magnitude in [0.75, 1]. It reaches the stres NOTE: An earlier draft called Platform::set_joint_tail_reserve_applied from qip-api main, which api_boundary forbids. The API raises an intent; it never mutates the platform."
+  },
+  {
+   "id": "R12-GOV-6127",
+   "what_the_last_reader_said_is_missing": "2026-10-25 (lane L5-EDGE; second independent skeptic REFUTED on bar part 4): an arbitrage cycle leg rests on expected profit under the desk's standing signed mandate (grant:{signature}), which is the same for every cycle and is profit relabelled under the requ NOTE: An earlier draft reshaped the requote seam so order_route_risk_gate could not find qip-edge-node/src/reprice.rs::replace. Keep that function and its gate where the walk finds them."
+  },
+  {
+   "id": "R12-ASSET-4070",
+   "what_the_last_reader_said_is_missing": "2026-10-24 (re-read against the tree): qip-portfolio-engine construction.rs Mandate has only target_gross, position_cap, long_only, maximum_holdings, minimum_position, turnover cost and risk aversion - no per-strategy, per-asset-class, per-region or per-horizo NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining items wire groupe"
+  },
+  {
+   "id": "R12-CAPITAL-1161",
+   "what_the_last_reader_said_is_missing": "2026-10-19: rides R12-CAPITAL-4075, 4078 and 4079 (ADR 0159 B, C): the floor is the survival waterfall's (4075, COMPLETE); idle-cash routing (4078) and the dated ladder's outflow feed (4079) are built and called from DECIDE but unarmed and without a declaratio NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Rider row. Remaining work is arming capita"
+  }
+ ],
+ "43": [
+  {
+   "id": "R12-CAPITAL-4079",
+   "what_the_last_reader_said_is_missing": "2026-10-19: no composition-root path calls Platform::declare_redemption_notice. There is no qip-api route for it, and a route would be authorised in shape and refused in fact: ADR 0065's presence gate refuses every standing credential in this build until a per NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining work is an API ro"
+  },
+  {
+   "id": "R12-CAPITAL-4085",
+   "what_the_last_reader_said_is_missing": "Everything. 2026-10-31 (lane L1-MONEY, 24bdaa19, ADR 0229): ten named agents each submit a plan per allocation, recorded on the central plane before the plan acted on is settled to the per-line minimum (tighten-only). Independent skeptic REFUTED promotion. Rem NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built, nothing compiled. All three"
+  },
+  {
+   "id": "R12-CAPITAL-4090",
+   "what_the_last_reader_said_is_missing": "Optimiser. NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Printed id was R12-R12-CAPITAL-4090 (double prefix); real file is build/R12-CAPITAL-4090.md. Optimiser proposing placements lands in qip-capital: capital allocation. Nothing written, nothing built."
+  },
+  {
+   "id": "R12-CAPITAL-9047",
+   "what_the_last_reader_said_is_missing": "Coordinator over the four proposal kinds; durable ledger. 2026-10-31 (lane L1-MONEY, 4f58eb01 + b0464e44, ADR 0230): qip_capital::coordinator::settle settles liquidity, collateral, funding and allocation claims against one grant in waterfall order and cuts fro NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining work wires capita"
+  },
+  {
+   "id": "R12-EXEC-5080",
+   "what_the_last_reader_said_is_missing": "Inventory management after seeding is absent. Three slices, none built: (1) MarketFactory::settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder; (2) SimulatedBroker::fill_price consuming resting depth instead of only sweeping the lis NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Every GAP slice changes qip"
+  }
+ ],
+ "44": [
+  {
+   "id": "R12-GOV-6118",
+   "what_the_last_reader_said_is_missing": "Two of ADR 0155 section 23 three call sites are not wired (2026-10-24): the plane is unarmed on every binary (see R12-GOV-6116: the seed is not published to any deployment and the image build context excludes data/), and qip-edge-node assemble does not yet cal NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining work is a complia"
+  },
+  {
+   "id": "R12-GOV-6126",
+   "what_the_last_reader_said_is_missing": "2026-10-25 (lane L5-EDGE; independent skeptic REFUTED): (1) no production caller of OrderManager::cancel exists, so on a shipped binary's default path the desk watch sees placements only and cannot fire; (2) closed 2026-10-31: a requote is now counted (Cell::r NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining gaps need new pre"
+  },
+  {
+   "id": "R12-MESH-5062",
+   "what_the_last_reader_said_is_missing": "2026-10-24: peer mesh is default-off (spawned only when LISTEN/PEERS variables are set; no committed deployment sets them and no node is deployed); reservation against RegionTable capital not wired. Cited qip-mesh peer.rs path no longer exists; the protocol is NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining work is wiring re"
+  },
+  {
+   "id": "R12-REASON-3054",
+   "what_the_last_reader_said_is_missing": "2026-11-12 (lane fw-j-01): the knowledge graph is journaled and replay-checked in every cycle but is advisory: no rule, veto or sizing input reads KnowledgeDerivation::outlived_by_claim or any other entailment yet, so the ontology informs the record and not th NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Only gap left is making ent"
+  },
+  {
+   "id": "R12-REFLEX-7061",
+   "what_the_last_reader_said_is_missing": "Past a payload's `valid_for` the cell narrows sizing to its floor and does not refuse. Refusal happens at envelope expiry and on a policy rollback only; the check asks for refusal past `valid_for`. NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Refusing past valid_for alters a pre-trade refusal gate in the cell and conflicts with the"
+  }
+ ],
+ "45": [
+  {
+   "id": "R12-RES-7104",
+   "what_the_last_reader_said_is_missing": "2026-10-24 (lane L6): two steps remain. (1) Platform::issue_capital is not reached on a shipped binary's default path past Principal::presence, so the narrowed grant is proven in the kernel test, not in a running binary (AUDIT-5 part 2). (2) closed 2026-10-25: NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. The remaining gap is wiring"
+  },
+  {
+   "id": "R12-RISK-3022",
+   "what_the_last_reader_said_is_missing": "2026-11-13 (orchestrator, round 48): the architecture guard only_the_cost_router_mints_a_deterministic_gate that lane t50-02 wrote, held since round 42 because it edits the protected guard suite architecture.rs, was applied unchanged on the owner's instruction NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining work alters pre-t"
+  },
+  {
+   "id": "R12-RISK-4095",
+   "what_the_last_reader_said_is_missing": "2026-11-13: basis and gap have neither a book measurement nor a recorded finding. basis_volatility is a per-hedge-candidate input (qip-risk/src/hedge_search.rs) and Universe::basis prices one future against its underlying; a book basis needs hedge pairs carrie NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Remaining work adds new ris"
+  },
+  {
+   "id": "R12-RISK-4096",
+   "what_the_last_reader_said_is_missing": "Corrected 2026-10-24 (lane L1-MONEY): the earlier text said no borrow datum exists anywhere; that was stale. A borrow limit exists and fires on the default order path: submit_order refuses every short not covered by a fresh reading, and nothing defaults to bor NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Needs a new pre-trade refusal in submit_or"
+  },
+  {
+   "id": "R12-RISK-9049",
+   "what_the_last_reader_said_is_missing": "2026-10-24 (lane L1-MONEY): the unit check's unwind half is built and proven — a plan is evaluated across every forecast world and each leg now includes its unwind plan. What remains is ADR 0134's other half and the requirement's 'using the hybrid solver route NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Not built. Routing hedge selection through"
+  }
+ ],
+ "46": [
+  {
+   "id": "R12-WORLD-10187",
+   "what_the_last_reader_said_is_missing": "2026-10-30 (L4, commit 244f0bcd, skeptic REFUTED). Closed: an ApprovedThesis is sized only on a validated qip_contracts Forecast (return_forecast), refused on decode without one, for another instrument, past its expiry or without a median; the kernel builds it NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing written. Remaining items alter cap"
+  },
+  {
+   "id": "R12-WORLD-9023",
+   "what_the_last_reader_said_is_missing": "Skeptic 2026-10-31 PARTIAL: no committed strategy states a model as its expected edge and no node arms the net-edge gate (CellConfig::net_edge_margin_bp defaults to None), so bar part 2 fails. The forecast the test drives reads one book-pressure level over a s NOTE: A risk-domain change (the draft pass would not write it). The brief's risk-domain section applies in full: restrictive only, any new limit able to fire, the three paper layers untouched and named in the commit. Nothing built. Arming the net-edge gate is"
+  }
  ]
 }

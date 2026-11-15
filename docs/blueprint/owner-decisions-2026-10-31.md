@@ -2494,6 +2494,36 @@ that narrows a security scanner, whatever the owner has delegated.
     not grade. A row is COMPLETE only after the pipeline passes with its
     change and two independent readers fail to refute it.
 
+39. **Billing is paused, the deployment stops, and the lanes write without
+    building (2026-11-15).** The owner, at about 01:27Z: "I have pause billing
+    complete all the rest of code you need to iterate through no testing or
+    building complete all development all together."
+
+    *Deployment.* Nothing is dispatched from here on: no plan, no apply, no
+    image build, until the owner says billing is back. Decision 38's two
+    switches for dev (the artefact-signing keys and the CA pool, organisation
+    "Algorik" as the owner gave it) are on main in dev's tfvars and applied
+    nowhere; they create nothing until somebody applies them. The network
+    steps a node needs were never reached. An attempt to add a one-off Sunday
+    change window was refused by the session's permission layer as
+    undermining oversight, and it was not worked around: that file is the
+    owner's to edit.
+
+    *Development.* Every b52 lane was told to write the code for every one of
+    its rows without running a local build, test or lint, to make a missing
+    design decision in an ADR under its own numbers, and to choose a missing
+    figure provisionally in the restrictive direction. Lanes 39 onward take
+    the rows the first 38 did not hold: the risk-domain rows the draft pass
+    would not write, and the drafts the batched build or the pipeline
+    reverted, each with the reason it was reverted.
+
+    What this does not change. Code written this way is unbuilt, and it is
+    called that in each lane's report. The pipeline builds and tests it when
+    it is merged, and what fails is fixed or reverted; no test is weakened to
+    pass it. A row is COMPLETE only after the pipeline has passed with its
+    change and two independent readers have failed to refute it. No lane may
+    write a live-order path, edit a protected path, or add a dependency.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly

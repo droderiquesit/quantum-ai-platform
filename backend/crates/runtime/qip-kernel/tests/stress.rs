@@ -1526,7 +1526,10 @@ fn a_cycle_sizing_beside_a_book_whose_worst_world_is_counterparty_failure_record
 /// reserve withheld by the cycle that covers what that world alone demands,
 /// and DECIDE's detail line records it.
 ///
-/// The line cannot name model-failure and this test does not pretend it does.
+/// The reserve line is named for the worst world, not for model-failure.
+/// Since the governor began recording every world a book fails, a second
+/// line names model-failure as covered by that reserve, and this test
+/// asserts both.
 /// The governor withholds for the worst world, and `synthetic-1` charges each
 /// position the same worst excursion amplified by at least 1.25, so it
 /// outranks model-failure for every book with a measured excursion (asserted
@@ -1567,7 +1570,7 @@ fn a_cycle_sizing_beside_a_book_that_fails_the_model_failure_world_withholds_a_r
     );
     assert!(
         loss_in(qip_kernel::tail::SYNTHETIC_WORLDS[0]) > loss,
-        "premise: a generated world outranks {name}, so DECIDE cannot name it"
+        "premise: a generated world outranks {name}, so the reserve is named for that world"
     );
 
     let budget = platform
