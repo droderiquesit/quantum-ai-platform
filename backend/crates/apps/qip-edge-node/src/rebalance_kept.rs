@@ -36,7 +36,7 @@ impl RebalanceKept {
     /// Take the tasks one status read delivered, oldest first. When the keeper
     /// is full the oldest kept task is released and counted: the newest drift
     /// is the one still true.
-    pub fn absorb(&mut self, tasks: Vec<RebalanceTask>) {
+    pub fn keep(&mut self, tasks: Vec<RebalanceTask>) {
         for task in tasks {
             self.absorbed = self.absorbed.saturating_add(1);
             if self.kept.len() == KEPT_TASKS {
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn a_task_is_kept_until_taken_and_taken_once() {
         let mut kept = RebalanceKept::new();
-        kept.absorb(vec![task("a", 1), task("b", 1)]);
+        kept.keep(vec![task("a", 1), task("b", 1)]);
         assert_eq!(kept.pending(), 2);
         let taken = kept.take();
         assert_eq!(
@@ -104,7 +104,7 @@ mod tests {
     fn the_keeper_is_bounded_and_counts_what_it_releases() {
         let mut kept = RebalanceKept::new();
         let over = (KEPT_TASKS as u64) + 3;
-        kept.absorb((0..over).map(|n| task("a", n)).collect());
+        kept.keep((0..over).map(|n| task("a", n)).collect());
         assert_eq!(kept.pending(), KEPT_TASKS);
         assert_eq!(kept.released_unread(), 3);
         let taken = kept.take();

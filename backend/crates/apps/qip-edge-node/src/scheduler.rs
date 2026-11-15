@@ -663,7 +663,7 @@ impl DecisionLoop {
         if let Some(port) = &self.peers {
             let mut status = port.status();
             self.rebalance_kept
-                .absorb(std::mem::take(&mut status.rebalance_new));
+                .keep(std::mem::take(&mut status.rebalance_new));
             if let Some(series) = &self.peer_series {
                 series.observe(&status);
             }
