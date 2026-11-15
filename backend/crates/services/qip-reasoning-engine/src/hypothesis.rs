@@ -285,6 +285,17 @@ impl fmt::Display for UncertaintyType {
     }
 }
 
+/// What withdrawing an origin's evidence did to a hypothesis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginRevision {
+    /// The hypothesis cited nothing from the origin.
+    Unaffected,
+    /// `removed` items came out and the confidence was recomputed.
+    Withdrawn { removed: usize },
+    /// Nothing supporting was left, so the hypothesis was rejected.
+    Invalidated,
+}
+
 /// An investment hypothesis.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Hypothesis {
@@ -502,6 +513,79 @@ impl Hypothesis {
         self.belief = update(self.prior, &strengths(&self.evidence, &self.origin_factors));
         let chain = self.chain.confidence().max(MINIMUM_CHAIN_WEIGHT);
         self.confidence = attenuate(self.prior, self.belief.posterior, chain);
+    }
+
+    /// Withdraw every item a quarantined origin supplied and recompute
+    /// (R12-RES-7097): a poisoned source's evidence is not merely discounted,
+    /// it is taken out of the belief, and `validate` then holds because the
+    /// confidence is recomputed from what remains.
+    ///
+    /// A thesis left with no supporting evidence cannot be held — `validate`
+    /// refuses one — so it is rejected rather than left standing on nothing,
+    /// and its evidence is kept so the record shows what it stood on. An
+    /// approved thesis left with only quantum-exploration support is
+    /// rejected for the same reason `validate` gives. Contrary evidence from
+    /// the origin is withdrawn too: a poisoned dissent is no more reliable
+    /// than a poisoned claim.
+    pub fn withdraw_origin(&mut self, origin: &str) -> Result<OriginRevision> {
+        if !self.evidence.iter().any(|e| e.origin == origin) {
+            return Ok(OriginRevision::Unaffected);
+        }
+        let remaining: Vec<crate::evidence::Evidence> = self
+            .evidence
+            .iter()
+            .filter(|e| e.origin != origin)
+            .cloned()
+            .collect();
+        let removed = self.evidence.iter().count() - remaining.len();
+        let has_support = remaining.iter().any(|e| e.stance == Stance::Supports);
+        if !has_support {
+            self.demote();
+            return Ok(OriginRevision::Invalidated);
+        }
+        let before = self.clone();
+        self.evidence = crate::evidence::EvidenceSet::from_items(remaining);
+        self.origin_factors.remove(origin);
+        self.revise();
+        if self.status == HypothesisStatus::Approved
+            && !self
+                .evidence
+                .with_stance(Stance::Supports)
+                .iter()
+                .any(|e| e.kind != crate::evidence::EvidenceKind::QuantumExploration)
+        {
+            self.demote();
+        }
+        if let Err(error) = self.validate() {
+            *self = before;
+            return Err(error);
+        }
+        Ok(OriginRevision::Withdrawn { removed })
+    }
+
+    /// Hold an origin's supporting weight at `factor` of itself because the
+    /// source is stale, not poisoned (R12-RES-7097), and recompute. The
+    /// stricter of the factor already recorded and this one stands, so a
+    /// second stale report cannot raise what the self-model lowered. Refuses a
+    /// factor outside `(0, 1]`, for the reason [`validate_factors`] gives.
+    /// Returns whether the origin is in the evidence at all.
+    pub fn downweight_origin(&mut self, origin: &str, factor: f64) -> Result<bool> {
+        let mut single = BTreeMap::new();
+        single.insert(origin.to_string(), factor);
+        validate_factors(&single)?;
+        if !self.evidence.iter().any(|e| e.origin == origin) {
+            return Ok(false);
+        }
+        let before = self.clone();
+        let held = self.origin_factors.get(origin).copied().unwrap_or(1.0);
+        self.origin_factors
+            .insert(origin.to_string(), held.min(factor));
+        self.revise();
+        if let Err(error) = self.validate() {
+            *self = before;
+            return Err(error);
+        }
+        Ok(true)
     }
 
     /// Add evidence and recompute. The only way confidence changes.
