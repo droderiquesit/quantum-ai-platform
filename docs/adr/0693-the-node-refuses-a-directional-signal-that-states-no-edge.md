@@ -1,4 +1,4 @@
-# ADR 0613: The node refuses a directional signal that states no edge
+# ADR 0693: The node refuses a directional signal that states no edge
 
 - **Status**: Accepted, 2026-11-15, by lane 46 of wave b52 under the wave's
   delegation. Restrictive only.

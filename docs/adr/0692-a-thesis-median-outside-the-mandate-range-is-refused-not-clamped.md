@@ -1,4 +1,4 @@
-# ADR 0612: A thesis median outside the mandate range is refused, not clamped
+# ADR 0692: A thesis median outside the mandate range is refused, not clamped
 
 - **Status**: Accepted, 2026-11-15, by lane 46 of wave b52 under the wave's
   delegation. Restrictive only: it removes an admission path and adds none.

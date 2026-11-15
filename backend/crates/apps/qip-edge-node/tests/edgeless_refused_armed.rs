@@ -1,4 +1,4 @@
-//! R12-WORLD-9023 (ADR 0613): the node refuses a directional signal that
+//! R12-WORLD-9023 (ADR 0693): the node refuses a directional signal that
 //! states no edge. Without this the net-edge gate is armed but judges only
 //! the signals that volunteer an edge, and every committed strategy declares
 //! none, so the gate would fire on nothing. Reads the source the way

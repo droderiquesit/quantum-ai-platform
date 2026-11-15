@@ -631,7 +631,7 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
         // and this margin before an order exists. Armed here because an
         // unarmed gate is one nobody runs.
         .with_net_edge_margin_bp(qip_edge::cell::NET_EDGE_MARGIN_BP)?
-        // ADR 0613: a directional signal that states no edge is refused, so
+        // ADR 0693: a directional signal that states no edge is refused, so
         // the gate above judges every entry rather than waving through the
         // ones nobody priced. Restrictive; no committed strategy declares an
         // edge yet, so until one does this node enters nothing.

@@ -1,5 +1,5 @@
 //! The median return a thesis is sized on, refused rather than clamped
-//! (R12-WORLD-10187, ADR 0612).
+//! (R12-WORLD-10187, ADR 0692).
 //!
 //! `Platform::thesis_from` used to take `(expected - observed).clamp(-0.5, 0.5)`.
 //! An extreme print then became a *finite, plausible* median: a displacement
