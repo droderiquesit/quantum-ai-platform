@@ -20787,6 +20787,24 @@ impl Platform {
         )
     }
 
+    /// Every held position's record, or the reason it cannot be stated
+    /// (R12-ASSET-4067), in object order. A position whose record refuses
+    /// stays in the list with its refusal: a holding nobody can state a
+    /// horizon or mark for is the finding, and dropping it would read as a
+    /// book with nothing wrong. Read-only, and the one enumeration the
+    /// API's holdings route serves; `position_holding` remains the one place
+    /// each record is built.
+    pub fn position_holdings(
+        &self,
+        now: Timestamp,
+    ) -> Vec<(String, Result<crate::position_register::PositionHolding>)> {
+        self.capital
+            .positions
+            .keys()
+            .map(|object| (object.clone(), self.position_holding(object, now)))
+            .collect()
+    }
+
     /// The mandate and target weight `object_id` was last sized under, or
     /// `None` where no construction this process ran has sized it
     /// (R12-ASSET-4066).
