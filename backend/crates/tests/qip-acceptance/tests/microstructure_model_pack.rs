@@ -199,6 +199,7 @@ fn release(keys: &Keys, artifact: &str, student: &DistilledModel) -> Result<Mode
             approver: "approver@example.com".to_string(),
             approved_at: start(),
         },
+        provenance: None,
         inline_model: Some(InlineModel {
             name: student.name().to_string(),
             digest: student.digest(),
