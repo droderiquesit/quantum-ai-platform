@@ -44,6 +44,7 @@ pub mod causal_review;
 pub mod central;
 pub mod chain_settlement;
 pub mod class_exposure;
+pub mod commerce_ledger_journal;
 pub mod commerce_research;
 pub mod compute_routing;
 /// Moved to `qip-survival` (ADR 0464); re-exported so `qip_kernel::confidence`
