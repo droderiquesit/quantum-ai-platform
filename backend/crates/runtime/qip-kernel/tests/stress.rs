@@ -1510,6 +1510,14 @@ fn a_cycle_sizing_beside_a_book_whose_worst_world_is_counterparty_failure_record
         !detail.contains("stressed-liquidity reserve"),
         "DECIDE recorded a reserve for a world the book survives: {detail}"
     );
+    // Nothing failed, so the cycle's record lists no failed world and the
+    // counterparty-failure world is absent from it: this is the surviving
+    // branch, the only one a long paper book can reach (see above).
+    assert!(
+        tail.failed.is_empty() && !detail.contains("the book also fails"),
+        "a surviving book recorded failed worlds: {:?} / {detail}",
+        tail.failed
+    );
     Ok(())
 }
 
@@ -1591,6 +1599,25 @@ fn a_cycle_sizing_beside_a_book_that_fails_the_model_failure_world_withholds_a_r
             tail.reserve
         )),
         "DECIDE's detail records the reserve: {detail}"
+    );
+    // The governor records every world the book fails, so the line names
+    // model-failure although a generated world outranks it, and the reserve
+    // is still the worst world's alone.
+    assert!(
+        tail.failed.iter().any(|failed| failed.scenario == name),
+        "the governor did not record {name} as failed: {:?}",
+        tail.failed
+    );
+    assert!(
+        detail.contains(&format!("the book also fails {name}")),
+        "DECIDE's detail never names {name}: {detail}"
+    );
+    let reserve_for_worst = (tail.loss_fraction - tail.tolerance)
+        * platform.equity().to_string().parse::<f64>().unwrap();
+    assert!(
+        (tail.reserve.to_string().parse::<f64>().unwrap() - reserve_for_worst).abs() < 1.0,
+        "the reserve is the worst world's excess alone: {} vs {reserve_for_worst}",
+        tail.reserve
     );
     Ok(())
 }
