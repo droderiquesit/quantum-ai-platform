@@ -698,7 +698,7 @@ pub fn reflex_objectives() -> Vec<CriticalPath> {
 /// The service name `slo::default_slos` declares the reflex objectives under.
 pub const REFLEX_SERVICE: &str = "reflex";
 
-/// Every critical path, then every service and reflex objective, evaluated against one
+/// Every critical path, then every service, reflex and data-plane objective, evaluated against one
 /// snapshot, in catalogue order.
 pub fn evaluate(snapshot: &Snapshot) -> Vec<SloStatus> {
     evaluate_where(snapshot, |_| true)
@@ -712,6 +712,7 @@ pub fn evaluate_where(snapshot: &Snapshot, keep: impl Fn(&CriticalPath) -> bool)
         .iter()
         .chain(service_objectives().iter())
         .chain(reflex_objectives().iter())
+        .chain(crate::data_plane::data_plane_objectives().iter())
         .filter(|path| keep(path))
         .map(|path| {
             let (good, total) = path.counts(snapshot);

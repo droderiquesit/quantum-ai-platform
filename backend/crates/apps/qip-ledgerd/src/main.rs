@@ -32,6 +32,31 @@ fn main() {
     };
     match start(&config) {
         Ok(running) => {
+            // The OpenObserve drain (ADR 0028, ADR 0156 5.5, ADR 0682): unset
+            // means the ledger's metrics stay on its scrape endpoint, as they
+            // always have. Set means a thread exports them on an interval;
+            // the handle must outlive `wait()` below, because dropping it
+            // stops the thread. A configuration that does not parse stops the
+            // process rather than draining nowhere. The ledger records
+            // metrics only, so the tracer and logger are fresh ones and
+            // export no span or log it never produced.
+            let _drain = match qip_ledgerd::openobserve::from_env() {
+                Ok(Some(drain)) => {
+                    eprintln!("qip-ledgerd: telemetry draining to {}", drain.describe());
+                    let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);
+                    let base = qip_observability::Telemetry::foreground("qip-ledgerd", clock.clone());
+                    let telemetry = qip_observability::Telemetry {
+                        metrics: running.metrics().clone(),
+                        ..base
+                    };
+                    match qip_ledgerd::openobserve::spawn(telemetry, drain, clock) {
+                        Ok(handle) => Some(handle),
+                        Err(error) => refuse(&error),
+                    }
+                }
+                Ok(None) => None,
+                Err(error) => refuse(&error),
+            };
             // Printed from the configuration, never from `running`: the
             // ledger holds the workload certificate's key and the access
             // token, and no value read out of either reaches a log line.
