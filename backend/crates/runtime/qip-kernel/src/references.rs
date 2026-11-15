@@ -664,6 +664,23 @@ impl Platform {
             qip_observability::metrics::labels([("source", source_id)]),
             served,
         );
+        // The same pass as good and total counts, because the gauge above
+        // cannot feed an objective (R12-OBS-9163, ADR 0683). A zero count is
+        // not written: it would create a series for an outcome that never
+        // happened.
+        let metrics = &self.telemetry().metrics;
+        for (outcome, count) in [
+            ("served", checked - unretrievable),
+            ("withdrawn", unretrievable),
+        ] {
+            if count > 0 {
+                metrics.increment(
+                    qip_observability::metrics::names::DATA_REFETCH_CHECKS,
+                    qip_observability::metrics::labels([("outcome", outcome)]),
+                    count as u64,
+                );
+            }
+        }
         Ok(())
     }
 

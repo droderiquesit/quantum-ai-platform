@@ -695,14 +695,26 @@ pub mod names {
     /// evaluated on. Recorded in `Platform::count_lineage`.
     pub const DATA_LINEAGE_RECORDS: &str = "qip_data_lineage_records_total";
     /// Delay in minutes between when an archive was written to GCS and when
-    /// the platform became aware of it. A histogram recording the observed lag
-    /// for each archive. Recorded when archive ingestion completes.
+    /// the platform became aware of it. A histogram of the observed lag for
+    /// each archive. **Nothing in the tree records it**: no process ingests a
+    /// GCS archive, so `data_plane::ARCHIVE_DELAY_OBJECTIVE` is bound to no
+    /// series and reads unmeasured (ADR 0683). This said "Recorded when
+    /// archive ingestion completes" until 2026-11-15, and no such ingestion
+    /// exists.
     pub const DATA_ARCHIVE_DELAY_MINUTES: &str = "qip_data_archive_delay_minutes";
     /// Source re-fetch health, per source on each re-fetch pass that asked for
     /// anything: the share of the extents re-requested that the source still
     /// served, from 1 (all served) to 0 (none). Recorded by
     /// `Platform::record_refetch_health`.
     pub const DATA_REFETCH_HEALTH: &str = "qip_data_refetch_health";
+    /// Extents a re-fetch pass asked a source for, by `outcome`: `served`
+    /// when the source still held it, `withdrawn` when it did not. The
+    /// counter the `data-refetch-health` objective is evaluated on, because
+    /// [`DATA_REFETCH_HEALTH`] is a gauge and carries no good/total split.
+    /// Unlabelled by source on purpose: an objective is one figure for the
+    /// plane, and the per-source reading stays on the gauge. Recorded beside
+    /// it in `Platform::record_refetch_health`.
+    pub const DATA_REFETCH_CHECKS: &str = "qip_data_refetch_checks_total";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
     // hypothesis the platform will act on", recorded where each fact becomes

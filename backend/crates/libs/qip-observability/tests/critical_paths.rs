@@ -65,10 +65,13 @@ fn recording_writes_observations_for_every_objective_and_a_budget_only_for_a_mea
     source.count(names::QUANTUM_JOBS, labels([("outcome", "failed")]));
     let statuses = evaluate(&source.snapshot());
     // The eight critical paths, the service objectives and the reflex
-    // objectives beside them.
+    // objectives beside them, and the six data-plane objectives (ADR 0683).
     assert_eq!(
         statuses.len(),
-        critical_path_slos().len() + service_objectives().len() + reflex_objectives().len()
+        critical_path_slos().len()
+            + service_objectives().len()
+            + reflex_objectives().len()
+            + qip_observability::data_plane::data_plane_objectives().len()
     );
 
     let sink = Metrics::new("sink");
@@ -78,6 +81,7 @@ fn recording_writes_observations_for_every_objective_and_a_budget_only_for_a_mea
         .into_iter()
         .chain(service_objectives())
         .chain(reflex_objectives())
+        .chain(qip_observability::data_plane::data_plane_objectives())
     {
         assert!(
             snapshot
