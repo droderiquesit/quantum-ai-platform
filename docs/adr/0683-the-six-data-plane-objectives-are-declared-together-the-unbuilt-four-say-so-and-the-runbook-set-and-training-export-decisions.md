@@ -54,4 +54,42 @@ Archive delay needs a process that ingests a GCS archive and learns when it
 was written; the other three need their stores. Until then the row cannot be
 COMPLETE.
 
-## Row R12-OBS-9074 and R12-MODEL-6002: see the sections below.
+
+## R12-OBS-9074: the runbook set is signed by the image it is compiled into
+
+### Context
+
+The deep brain's runbooks are committed code. The 2026-10-31 reader found no
+check could be written inside the build that a tampered build could not also
+fake, and that a real signer outside the build (ADR 0110's KMS artefact
+signing) is null everywhere, billed, and deferred. The owner ruled on
+2026-10-31 (ADR_THEN_IMPLEMENT): the set is signed by the image attestation it
+is compiled into; the deep brain runs only under the deny-by-default Binary
+Authorization policy whose attestor key CI alone holds; no runbook is read at
+run time.
+
+### Decision
+
+6. The signature is the image's Binary Authorization attestation. This ADR
+   adds no signer, no KMS grant and no Terraform.
+7. `operations::runbook_set_digest` is the SHA-256 of the set's canonical text
+   (name order, length-prefixed fields, target order), and
+   `REVIEWED_RUNBOOK_SET_DIGEST` is the digest of the set a person reviewed.
+   `Operations::build` runs `runbooks()` through `verified_runbooks`, which
+   refuses (`Error::denied`, naming both digests and the remedy) a set that
+   digests otherwise, so the process stops rather than hold an unreviewed
+   remediation set.
+8. `the_shipped_runbook_set_is_the_reviewed_one` pins the constant to the
+   shipped set, so a commit that changes one without the other fails in the
+   pipeline, before an image exists to attest. The check inside the process is
+   defence against a *mismatch of reviewed and shipped*, not against a
+   tampered build; the attestation is the answer to that, and this ADR says
+   so rather than letting the digest read as a signature.
+
+### Residual risk
+
+The constant was computed by an independent script, not by running the Rust,
+because nothing was compiled. If the pin test fails on first run, the
+constant is wrong and the correct value is in its failure message; no deployed
+process is affected, since the pipeline runs the test before an image is
+built.
