@@ -356,12 +356,24 @@ fn the_deep_brains_main_assembles_its_platform_through_node_assembly_and_one_dem
     for seam in [
         "let(platform_universe,mutsynthetic_arm)=qip_deepbrain::reference::node_assembly(\
          catalogue.universe,tape_feed.is_some(),replay_path.is_some(),",
-        "Platform::with_model_provider(platform_config,context,telemetry,platform_universe,",
+        // The platform is built inside `assembly::assemble` (R12-GCP-8106);
+        // main must hand it the universe node_assembly returned.
+        "qip_deepbrain::assembly::assemble(qip_deepbrain::assembly::Inputs{config:platform_config,context,telemetry,universe:platform_universe,",
         "letenvironment=synthetic_arm.take()",
         "EvolutionEngine::over_synthetic(evolution_config,environment,",
     ] {
         assert!(main.contains(seam), "main.rs no longer carries `{seam}`");
     }
+    let assembly = squeeze(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/assembly.rs"),
+        )
+        .expect("assembly.rs"),
+    );
+    assert!(
+        assembly.contains("Platform::with_model_provider(inputs.config,inputs.context,inputs.telemetry,inputs.universe,"),
+        "assembly.rs no longer builds the platform over the universe it was handed"
+    );
     assert_eq!(
         main.matches("SyntheticEnvironment::demo(").count(),
         0,
