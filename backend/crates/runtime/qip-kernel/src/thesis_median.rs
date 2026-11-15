@@ -58,9 +58,15 @@ mod tests {
         // Premise: the old clamp would have returned a value here.
         assert!((3.0_f64 - 0.0).clamp(-0.5, 0.5).abs() > 0.0);
         let high = reversion_median(3.0, 0.0);
-        assert!(high.is_err(), "an extreme positive print was admitted: {high:?}");
+        assert!(
+            high.is_err(),
+            "an extreme positive print was admitted: {high:?}"
+        );
         let low = reversion_median(0.0, 3.0);
-        assert!(low.is_err(), "an extreme negative print was admitted: {low:?}");
+        assert!(
+            low.is_err(),
+            "an extreme negative print was admitted: {low:?}"
+        );
         assert!(reversion_median(0.51, 0.0).is_err());
     }
 

@@ -57,8 +57,8 @@ pub use clock::{
 pub use failover::{FailoverEvent, FailoverOutcome, FailoverReconciler, FailoverStats};
 pub use identity::{reset_message, synthetic_id};
 pub use regions::{CrossRegionAligner, MAX_REGION_PARTITIONS, RegionAlignment};
-pub use venues::{CrossVenueAligner, MAX_VENUE_PARTITIONS, VenueAlignment, VenueTick};
 pub use tracker::{
     GapReason, ReorderPolicy, SequenceEvent, SequenceTracker, SequencedBatch, Sequencer,
     StreamStats, delivery_units,
 };
+pub use venues::{CrossVenueAligner, MAX_VENUE_PARTITIONS, VenueAlignment, VenueTick};

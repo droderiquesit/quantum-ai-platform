@@ -1687,6 +1687,9 @@ fn only_a_fresh_operator_intent_applies_the_joint_tail_reserve() -> Result<()> {
         advisory > held,
         "premise: the joint world would raise this book's reserve ({advisory} against {held})"
     );
-    assert_eq!(raised, advisory, "the authorised reserve is the reported one");
+    assert_eq!(
+        raised, advisory,
+        "the authorised reserve is the reported one"
+    );
     Ok(())
 }

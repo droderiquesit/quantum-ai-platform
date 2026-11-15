@@ -118,9 +118,9 @@ pub mod symbolic_stage;
 pub mod tactical_lane;
 pub mod tail;
 pub mod theory_revision;
-mod thesis_median;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
+mod thesis_median;
 pub mod treasury;
 pub mod valuation;
 pub mod venue_admission;
