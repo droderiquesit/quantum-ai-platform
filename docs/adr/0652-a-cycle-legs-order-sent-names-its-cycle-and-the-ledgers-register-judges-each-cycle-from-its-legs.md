@@ -33,7 +33,7 @@ known to be one cycle.
    filled; else `Partial` if any quantity filled; else `Failed`.
    `LedgerStore::cycles()` is the read. A verdict is a report, never a posting.
 
-## Consequences and what stays open
+## What it costs
 
 - A cycle whose other legs were never sent shows only the sent legs, so a lone
   filled leg reads `Complete`. Judging against the intended leg count needs
@@ -44,3 +44,23 @@ known to be one cycle.
   centre's halt signer.
 - No node, broker, ledgerd test of a two-region cycle with a hedge exists; the
   acceptance test reaches the store directly, as `cycle_ledger.rs` always has.
+
+The record carries one more optional field on every cycle-leg `OrderSent`,
+and `evaluate` walks every register row on each `LedgerStore::cycles()` read;
+that scan is unmeasured and grows with the register. The verdict is a report
+that nothing yet acts on, so the work of noticing a `Partial` cycle still falls
+to whoever reads it.
+
+## What would make this wrong
+
+- A `Partial` or `Complete` verdict that disagrees with the cycle's real
+  outcome in practice, for instance because a lone sent leg reads `Complete`,
+  would show the sent-legs-only judgement is too weak and the intended legs
+  must reach the ledger.
+- A cycle whose legs are split across cells or carry differing `cycle_id`
+  values would show `(cell, cycle_id)` is the wrong grouping key.
+- A register large enough that the full scan in `cycles()` is slow would show
+  that judging every cycle from every row on each read is the wrong read.
+- A reader needing the verdict to halt or be counted, rather than only
+  reported, would show that leaving the verdicts unraised was the wrong place
+  to stop.

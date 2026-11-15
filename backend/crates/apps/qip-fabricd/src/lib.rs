@@ -43,7 +43,6 @@ pub mod bench;
 pub mod config;
 pub mod health;
 pub mod mirror;
-pub mod mirror_link;
 pub mod openobserve;
 pub mod quorum;
 pub mod spanner;
@@ -690,13 +689,6 @@ fn start_composed(
     let broker = match &config.managed {
         Some(settings) if !settings.instances.is_empty() => {
             broker.with_placement(settings.instances.clone(), settings.placement_grace_ms)?
-        }
-        _ => broker,
-    };
-    // Where each instance serves, for the cluster map (R12-FABRIC-8098).
-    let broker = match &config.managed {
-        Some(settings) if !settings.advertised.is_empty() => {
-            broker.with_advertised_addresses(settings.advertised.clone())?
         }
         _ => broker,
     };

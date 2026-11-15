@@ -18,11 +18,11 @@ use std::sync::Arc;
 use qip_events::event_fabric::policy::QosClass;
 use qip_transport::event_fabric::protocol::{
     AdminIsolateRequest, AdminIsolateResponse, AdminReleaseRequest, AdminReleaseResponse,
-    ClusterMap, ClusterMapRequest, Direction, FetchRequest, FetchResponse, GroupCommitRequest,
-    GroupCommitResponse, GroupJoinRequest, GroupJoinResponse, GroupLagRequest, GroupLagResponse,
-    Metadata, MetadataRequest, PartitionLeader, ProduceAck, ProduceRequest, ProducerInitRequest,
-    ProducerInitResponse, Refusal, Request, Response, Route, decode_request, decode_response,
-    encode_request, encode_response,
+    Direction, FetchRequest, FetchResponse, GroupCommitRequest, GroupCommitResponse,
+    GroupJoinRequest, GroupJoinResponse, GroupLagRequest, GroupLagResponse, Metadata,
+    MetadataRequest, ProduceAck, ProduceRequest, ProducerInitRequest, ProducerInitResponse,
+    Refusal, Request, Response, Route, decode_request, decode_response, encode_request,
+    encode_response,
 };
 use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport, Timeouts};
 use qip_transport::server::{
@@ -39,7 +39,6 @@ fn sample_request(route: Route) -> Request {
             stream: "orders".to_string(),
             partition: 3,
         }),
-        Route::ClusterMap => Request::ClusterMap(ClusterMapRequest {}),
         Route::ProducerInit => Request::ProducerInit(ProducerInitRequest {
             stream: "orders".to_string(),
             partition: 3,
@@ -93,15 +92,6 @@ fn sample_success_response(route: Route) -> Response {
     match route {
         Route::Metadata => Response::Metadata(
             Metadata::new("orders", 3, 7, 120, 80).expect("a coherent metadata answer"),
-        ),
-        Route::ClusterMap => Response::ClusterMap(
-            ClusterMap::new(vec![PartitionLeader {
-                stream: "orders".to_string(),
-                partition: 3,
-                leader: Some("broker-b.internal:7100".to_string()),
-                leader_epoch: 7,
-            }])
-            .expect("a coherent cluster map"),
         ),
         Route::ProducerInit => Response::ProducerInit(ProducerInitResponse {
             producer_epoch: 4,
@@ -164,7 +154,7 @@ fn every_refusal() -> Vec<Refusal> {
     ]
 }
 
-/// Asserts its own premise first (ten routes, twelve refusals — the counts
+/// Asserts its own premise first (nine routes, twelve refusals — the counts
 /// this test's name promises to exercise), then that every route's request
 /// and response, and every refusal code, survive `encode` and `decode`
 /// unchanged.
@@ -173,7 +163,7 @@ fn every_refusal() -> Vec<Refusal> {
 /// because [`every_refusal`] can no longer construct that variant.
 #[test]
 fn every_request_and_response_round_trips_and_every_refusal_names_what_to_do_instead() {
-    assert_eq!(Route::ALL.len(), 10, "premise: ten routes to cover");
+    assert_eq!(Route::ALL.len(), 9, "premise: nine routes to cover");
 
     for route in Route::ALL {
         let request = sample_request(route);
@@ -401,42 +391,4 @@ fn the_http_transport_and_an_in_memory_transport_answer_one_request_with_identic
         "the http transport and the in-memory transport must answer one request with \
          identical typed responses from the same scripted handler"
     );
-}
-
-fn leader(stream: &str, partition: u32) -> PartitionLeader {
-    PartitionLeader {
-        stream: stream.to_string(),
-        partition,
-        leader: None,
-        leader_epoch: 1,
-    }
-}
-
-/// R12-FABRIC-8098. A cluster map names each partition once and is bounded,
-/// on the constructor and on the wire: a decoder that took a hostile
-/// broker's 100,000 entries, or two leaders for one partition, would leave a
-/// client choosing by list position.
-///
-/// Mutation: delete the duplicate check in `ClusterMap::new` — the
-/// `names ... twice` assertion fires. Mutation: change `>` to `>=` in the
-/// length check — the exactly-at-the-limit assertion fires.
-#[test]
-fn a_cluster_map_refuses_a_partition_named_twice_and_a_list_past_its_bound() {
-    assert!(ClusterMap::new(vec![leader("a", 0), leader("a", 1)]).is_ok());
-    let twice = ClusterMap::new(vec![leader("a", 0), leader("a", 0)]).unwrap_err();
-    assert!(twice.to_string().contains("twice"), "{twice}");
-
-    let at_limit: Vec<_> = (0..256).map(|p| leader("a", p)).collect();
-    assert!(
-        ClusterMap::new(at_limit).is_ok(),
-        "the bound itself is allowed"
-    );
-    let over: Vec<_> = (0..257).map(|p| leader("a", p)).collect();
-    assert!(ClusterMap::new(over).is_err());
-
-    // The same refusal on the wire, where a broker's answer is untrusted.
-    let body = br#"{"route":"cluster_map","payload":{"partitions":[
-        {"stream":"a","partition":0,"leader_epoch":1},
-        {"stream":"a","partition":0,"leader_epoch":2}]}}"#;
-    assert!(decode_response(Route::ClusterMap, body).is_err());
 }

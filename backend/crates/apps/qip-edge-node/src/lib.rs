@@ -39,7 +39,6 @@ pub mod gateway;
 pub mod halt;
 /// The health and scrape surface, on a thread of its own.
 pub mod health;
-pub mod lake_replay;
 pub mod market_state;
 /// A measured borrow rate laid over the stated one (ADR 0681).
 pub mod measured_borrow;

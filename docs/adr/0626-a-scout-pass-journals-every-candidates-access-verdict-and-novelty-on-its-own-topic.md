@@ -42,7 +42,27 @@ scout egress is unbuilt and billed. This record makes a pass that does run
 leave its findings on the log; it does not make one run by default, so the
 rows' default-path half remains an owner decision.
 
-## Consequences
+## What it costs
 
-`Topic::ALL` grows by one. Retention tests list the new topic. No dependency,
-no live-order path, no change to the paper-trading layers.
+`Topic::ALL` grows by one, so every exhaustive match over topics and the
+retention tests must list `SourceScouted`. Each scout pass that runs adds one
+`Episodic` frame carrying a verdict per candidate, so the frame grows with the
+candidate count and its storage and replay cost are unmeasured. A journal
+refusal of the scout frame raises out of `assess_sources`, as a refusal of the
+lifecycle record already does, so there is a second write on which a pass can
+fail after the finder has already decided. The committed
+environments still run no discovery cadence, so the record is empty there until
+an owner turns one on. No dependency, no live-order path, no change to the
+paper-trading layers.
+
+## What would make this wrong
+
+A reader needs the verdict per candidate rather than per pass, for instance a
+query by single source id that must decode and scan whole-pass frames, and that
+scan proves too slow or too large. A pass grows to a candidate count at which
+its single frame, and the idempotency key that joins every candidate id, is
+larger than the journal or its readers can carry; no bound on either is set
+here. A consumer treats a recorded `permitted` as current when it only states
+the verdict at that pass, and acts on a stale one. Or the lifecycle and scout
+topics disagree about one source and an operator cannot say which is
+authoritative.

@@ -8,7 +8,6 @@ pub mod broker;
 pub mod group;
 pub mod managed;
 pub mod mirror;
-pub mod mirror_lag;
 pub mod partition;
 pub mod peer_accounts;
 pub mod producer;

@@ -33,6 +33,14 @@
    cell to the wire thread that ADR 0116 forbids the decision loop from waiting
    on. Needs a design by a person; not built.
 
+## What it costs
+
+Nothing is built, so four requirements stay open and the cost is the exposure they leave. A cell whose centre has stopped keeps placing new orders past `valid_for`, narrowed to the floor but not refused, until a person settles the contradiction with ADR 0008. The edge node cannot call `admit_enablement`, so the enablement check is not enforced there until the `qip-compliance` split is done. The three manipulation patterns the third row names (marking the close, momentum ignition, quote stuffing) get no detector, and `OrderManager::cancel` still has no production caller. The region share does not bound a saga grant. None of these has a measured size; the cost is unmeasured. Each also leaves a person with a decision, a library split or a design to deliver.
+
+## What would make this wrong
+
+A person taking the first decision and finding the existing narrowing already satisfies the requirement would show the row was not a gap. Someone supplying the missing windows and thresholds, or a port design that ADR 0116 admits, would remove the reason for withholding those rows, so waiting is wrong from then on. An orphaned cell found to have placed exposure after `valid_for` in a deployment would show that deferring the restrictive choice left real exposure open. A `qip-compliance` split that keeps `qip-ai` out of every edge crate would unblock the second row.
+
 ## Paper boundary
 
 No edit touched any of the three layers.

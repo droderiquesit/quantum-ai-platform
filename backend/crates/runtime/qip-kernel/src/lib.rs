@@ -130,7 +130,6 @@ pub mod tape_attestation;
 pub mod theory_revision;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
-mod thesis_median;
 pub mod training_export;
 pub mod treasury;
 pub mod valuation;

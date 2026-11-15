@@ -668,7 +668,7 @@ impl TickDesk {
 
     /// Offer the platform's book (see [`crate::tick_book::book_weights`]) for
     /// the next round's portfolio outcome distribution.
-    pub fn set_book(&mut self, weights: BTreeMap<String, f64>) {
+    pub fn set_portfolio_weights(&mut self, weights: BTreeMap<String, f64>) {
         self.book = weights;
     }
 

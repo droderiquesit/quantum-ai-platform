@@ -88,16 +88,6 @@ struct ManagedSeat {
     instance: String,
     placement: Option<Placement>,
     leases: Mutex<BTreeMap<(String, u32), Lease>>,
-    /// The leader each partition this instance does not lead was last seen
-    /// under, as `(holder, lease epoch)` from the lease row's own answer. It
-    /// is what lets a follower say who leads without asking the database a
-    /// second time, and it is replaced or cleared by every
-    /// [`Broker::tend_leases`] pass.
-    observed: Mutex<BTreeMap<(String, u32), (String, u64)>>,
-    /// Instance name to the `host:port` it serves the protocol on, for the
-    /// cluster map ([`Broker::partition_leader`]). Empty until
-    /// [`Broker::with_advertised_addresses`].
-    addresses: BTreeMap<String, String>,
 }
 
 /// ADR 0111 Amendment 1 §2: the instances of the region and how long a
@@ -138,19 +128,6 @@ impl ManagedSeat {
             .unwrap_or_else(|e| e.into_inner())
             .get(&(stream.to_string(), partition))
             .cloned()
-    }
-
-    fn observe(&self, stream: &str, partition: u32, leader: Option<(String, u64)>) {
-        let mut observed = self.observed.lock().unwrap_or_else(|e| e.into_inner());
-        let key = (stream.to_string(), partition);
-        match leader {
-            Some(leader) => {
-                observed.insert(key, leader);
-            }
-            None => {
-                observed.remove(&key);
-            }
-        }
     }
 
     fn set_lease(&self, stream: &str, partition: u32, lease: Option<Lease>) {
@@ -659,8 +636,6 @@ impl Broker {
             instance: instance.to_string(),
             placement: None,
             leases: Mutex::new(BTreeMap::new()),
-            observed: Mutex::new(BTreeMap::new()),
-            addresses: BTreeMap::new(),
         });
         Ok(self)
     }
@@ -703,67 +678,6 @@ impl Broker {
             settled_at_ns,
         });
         Ok(self)
-    }
-
-    /// Name the `host:port` each instance serves the protocol on, so the
-    /// cluster map can tell a client where a partition's leader is
-    /// (R12-FABRIC-8098). Refuses a broker not seated at a managed log, a
-    /// map that does not name this instance, and a blank name or address: an
-    /// address a client could not dial is worse than none, which a client
-    /// reads as "the broker I asked".
-    pub fn with_advertised_addresses(
-        mut self,
-        addresses: BTreeMap<String, String>,
-    ) -> Result<Self> {
-        let seat = self.managed.as_mut().ok_or_else(|| {
-            Error::invalid("advertised addresses were given to a broker with no managed log")
-        })?;
-        if !addresses.contains_key(&seat.instance) {
-            return Err(Error::invalid(format!(
-                "the advertised addresses name {:?} and not this instance '{}'; a broker that \
-                 cannot say where it is would send every client that asked it elsewhere",
-                addresses.keys().collect::<Vec<_>>(),
-                seat.instance
-            )));
-        }
-        if let Some((name, _)) = addresses
-            .iter()
-            .find(|(name, address)| name.trim().is_empty() || address.trim().is_empty())
-        {
-            return Err(Error::invalid(format!(
-                "the advertised address for instance '{name}' is blank, or the instance name is"
-            )));
-        }
-        seat.addresses = addresses;
-        Ok(self)
-    }
-
-    /// Who leads `(stream, partition)` as this broker knows it, for the
-    /// cluster map: the address, and the epoch it was observed at.
-    ///
-    /// An unmanaged broker leads everything it declares, at its own leader
-    /// epoch, with no address (the caller reached it). A managed one leads
-    /// what it holds a lease for, at the lease epoch and its own address,
-    /// and otherwise reports the holder [`Self::tend_leases`] last saw, with
-    /// that instance's address if one was advertised. A partition with no
-    /// lease held and none observed yet is reported at epoch 0 with no
-    /// address rather than guessed: the client keeps the broker it asked.
-    pub fn partition_leader(&self, stream: &str, partition: u32) -> Result<(Option<String>, u64)> {
-        self.partition_state(stream, partition)?;
-        let Some(seat) = self.managed.as_ref() else {
-            return Ok((None, self.leader_epoch));
-        };
-        if let Some(lease) = seat.lease(stream, partition) {
-            return Ok((seat.addresses.get(&seat.instance).cloned(), lease.epoch));
-        }
-        let observed = seat.observed.lock().unwrap_or_else(|e| e.into_inner());
-        match observed.get(&(stream.to_string(), partition)) {
-            Some((holder, epoch)) => {
-                let instance = holder.split('#').next().unwrap_or(holder);
-                Ok((seat.addresses.get(instance).cloned(), *epoch))
-            }
-            None => Ok((None, 0)),
-        }
     }
 
     /// Read archived segments back from `store` when their local copy is
@@ -1579,15 +1493,13 @@ impl Broker {
                     let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
                     match &outcome {
                         LeaseOutcome::Held(lease) => {
-                            seat.observe(&stream, partition, None);
                             seat.set_lease(&stream, partition, Some(lease.clone()));
                             if cursor.caught_up_epoch != Some(lease.epoch) {
                                 self.catch_up(seat, &stream, partition, &state, &mut cursor)?;
                                 cursor.caught_up_epoch = Some(lease.epoch);
                             }
                         }
-                        LeaseOutcome::HeldByOther { holder, epoch } => {
-                            seat.observe(&stream, partition, Some((holder.clone(), *epoch)));
+                        LeaseOutcome::HeldByOther { .. } => {
                             seat.set_lease(&stream, partition, None);
                             cursor.caught_up_epoch = None;
                             self.catch_up(seat, &stream, partition, &state, &mut cursor)?;

@@ -33,14 +33,31 @@ vary those dimensions.
    refused, because `FutureTree::grow` skips it silently and a declared kind
    that grew nothing reads as explored.
 
-## Consequences
+## What it costs
 
-`WorldDriver` and its construction sites are unchanged; the kind lives in a
-wrapper. Nothing yet calls `SyntheticWorlds` from the tick desk or the CLI, so
-no deployed process grows a typed tree. The kind is held beside the tree, not
-in the `Branch` record, so a serialised branch does not carry it.
+A caller that declares drivers now owes each one a kind and a unique id without
+`:`, and a driver naming no instrument the twin was fitted on is refused rather
+than grown empty, so a set of drivers that `FutureTree::grow` accepts with
+some silently inert is refused whole by `SyntheticWorlds::grow`. Policy,
+weather, default and supply branches are hypotheses that decision 3 keeps out
+of `SyntheticWorlds::feed_backed`, so those four kinds do not inform a
+market-facing reader through that accessor for as long as `has_feed_producer`
+is false for them. `WorldDriver` and its
+construction sites are unchanged; the kind lives in a wrapper. Nothing yet
+calls `SyntheticWorlds` from the tick desk or the CLI, so no deployed process
+grows a typed tree and the decision is unexercised outside tests. The kind is
+held beside the tree, not in the `Branch` record, so a serialised branch does
+not carry it. The map from driver id to kind and the per-branch lookups add
+compute and memory that this record does not measure.
 
 ## What would make this wrong
 
-A consumer that reads `FutureTree::branches` directly bypasses decision 3.
-That is a review rule today, not a type.
+A consumer that reads `FutureTree::branches` directly bypasses decision 3;
+`SyntheticWorlds::tree` hands out the tree. That is a review rule today, not a
+type.
+It would also be wrong if a policy, weather, default or supply branch is
+found in an input to UNDERSTAND or REASON, or if one of those kinds gains a
+real feed producer while `has_feed_producer` still returns false for it, which
+would hide a measured signal. Revisit it if the wrapper is bypassed in
+practice; holding the kind in the `Branch` record is the alternative this
+record did not take.

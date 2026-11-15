@@ -29,15 +29,19 @@ declare an edge. Exits and hedges are never judged by this gate.
 This is the restrictive choice: it can only refuse. No figure is invented; the
 25 bp margin stays the one person-set value.
 
-## Consequences
+## What it costs
 
-- Nothing was compiled or run (owner instruction of 2026-11-15).
 - Until a strategy declares an edge (`Rule::with_expected_edge`, for example
   over a promoted model per ADR 0195), a node entering the market enters
-  nothing. That is honest: the cell does not trade what it cannot judge.
+  nothing. No committed strategy states an edge today, so every
+  risk-increasing directional signal from a node is refused under
+  `GATE_NET_EDGE`. The cell does not trade what it cannot judge, and an
+  operator or strategy author must declare an edge on a rule before that
+  rule's entries pass this gate. Exits and hedges are not judged by it.
 - Existing node tests that drive entries through `cell_configuration` would
   now see refusals. The one known pass test builds its own configuration; the
-  pipeline is the first to run the rest.
+  rest are unchecked, because this change was written without a build. How
+  many break is unmeasured.
 - Not addressed and still open on the row: no committed strategy declares a
   model edge; the forecast horizon is seconds-scale, not microsecond-to-minute;
   continuation past the capital envelope's expiry; ADR 0195 decision 5 still
@@ -45,5 +49,9 @@ This is the restrictive choice: it can only refuse. No figure is invented; the
 
 ## What would make this wrong
 
-If a deployment needs entries before any strategy declares an edge, reverse
-this with an ADR naming the risk accepted, not by dropping the call.
+If a deployment needs entries before any strategy declares an edge, the
+refusal is blocking work it should allow. Reverse it then with an ADR naming
+the risk accepted, not by dropping the call. It is also wrong if an entry
+signal whose rule declares an edge is refused under `GATE_NET_EDGE` as stating
+none, or if an exit or a hedge is ever refused under `GATE_NET_EDGE`. Either
+observation means the gate refuses what this record says it does not.

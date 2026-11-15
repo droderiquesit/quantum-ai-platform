@@ -26,11 +26,38 @@ changes from a general delegation). An earlier draft called
    `api_boundary.rs`'s reviewed-route table, a protected guard suite. That is
    NEEDS_PERSON; no route is added.
 
-## Consequences
+## What it costs
 
-Remaining: the API route, and the owner's confirmation that raising the reserve
-is accepted. Paper boundary untouched (Terraform refusal, `AutonomyLevel::deployable`,
-`Cell` constructor unchanged). Nothing compiled or tested.
+Until the API route exists and the owner confirms, the reserve stays advisory,
+so the generated joint tail world protects nothing: an operator can reach the
+intent only through code that holds a `Platform`, and no HTTP row for it is
+added. Once an operator does act, the intent only tightens and has no
+counterpart, so each later SIMULATE on that `Platform` that generates a joint
+world applies it to the survival reserve, and the intent offers no way to stop
+that; the capital that reserve withholds is unmeasured. The switch is a field
+that starts off in a newly built `Platform`, and
+`replay_joint_tail_reserve_authorised` only reports whether the log holds an
+authorisation; nothing sets the switch from it. The old `Platform::set_joint_tail_reserve_applied`
+setter is left in place, so a caller holding a `Platform` can still flip the
+switch without a credential or a journal record; closing that is not done here.
+The 15-minute credential age is provisional and unmeasured against how long an
+operator takes to decide. Remaining: the API route, and the owner's
+confirmation that raising the reserve is accepted. Paper boundary untouched
+(Terraform refusal, `AutonomyLevel::deployable`, `Cell` constructor unchanged).
+Nothing compiled or tested.
+
+## What would make this wrong
+
+If the owner decides the reserve should be reversible, the one-way switch is
+wrong and needs a journalled counterpart. If a composition root ever calls the
+unauthenticated setter (none does; a test in `qip-kernel/tests/stress.rs`
+does), the guarantee that only a fresh journalled intent applies the reserve
+does not hold and the setter must be removed or restricted. If the applied reserve withholds enough capital that the
+desk cannot trade, or operators routinely cannot authorise inside the
+credential age, applying the world or the age should be revisited. If
+`replay_joint_tail_reserve_authorised` disagrees with the running switch, the
+switch and the log have parted and the log alone no longer says what is
+applied; the setter already allows that.
 
 ## Addendum: lane 42's other rows (this lane owns only two ADR numbers)
 

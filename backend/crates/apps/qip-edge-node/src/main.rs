@@ -60,7 +60,6 @@ use qip_edge_node::arbitrage::{
 use qip_edge_node::control::{Handoff as ControlHandoff, PlanCompiler, Poller};
 use qip_edge_node::cross_region::{CrossRegionMirror, MIRROR_VARIABLE, no_declaration_line};
 use qip_edge_node::dark::DarkRegionWire;
-use qip_edge_node::event_fabric::control::ControlWiring;
 use qip_edge_node::event_fabric::drain::{Drain, DrainConfig, LakeSink, Sink};
 use qip_edge_node::event_fabric::inputs::RecordedInputs;
 use qip_edge_node::event_fabric::mirror::FabricMirror;
@@ -79,8 +78,8 @@ use qip_edge_node::mesh::MeshWorker;
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::outbox::{
-    FABRIC_CONTROL_TOKEN_VARIABLE, FABRIC_URL_VARIABLE, FabricSettings, PASS_INTERVAL,
-    SPOOL_BUDGET_BYTES, journal_bound, read_fabric, spool_dir, spool_survives_the_machine,
+    FABRIC_URL_VARIABLE, FabricSettings, PASS_INTERVAL, SPOOL_BUDGET_BYTES, journal_bound,
+    read_fabric, spool_dir, spool_survives_the_machine,
 };
 use qip_edge_node::pass::PassMeter;
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
@@ -95,8 +94,8 @@ use qip_edge_node::standby::{
     StandbySettings,
 };
 use qip_edge_node::strategies::{
-    FEATURE_PAIRS_VARIABLE, MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX,
-    StrategyInstaller, parse_feature_pairs, parse_pricing,
+    MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
+    parse_pricing,
 };
 use qip_edge_node::telemetry::PeerSeries;
 use qip_edge_node::trust::{TRUST_BUNDLE_VARIABLE, choose_root};
@@ -183,11 +182,6 @@ fn main() {
     let arguments: Vec<String> = std::env::args().collect();
     let outcome = match arguments.get(1).map(String::as_str) {
         Some("replay") => replay_command(&arguments[2..]),
-        // `qip-edge-node replay-lake <lake-dir> <dataset>[,<dataset>...]`
-        // (R12-TICK-9006): replays the retained tick history of a durable
-        // lake through a fresh cell. A subcommand for the reason `replay` is
-        // one, and refused on a lake that retains nothing.
-        Some("replay-lake") => replay_lake_command(&arguments[2..]),
         // `qip-edge-node replay-manifests --spool <dir> --cell-digest <hex>`,
         // read before any configuration: it reads a spool and serves nothing,
         // so it must not need the variables a node does.
@@ -279,9 +273,6 @@ struct NodeConfig {
     /// one of the two forms stops the process — see
     /// `qip_edge_node::strategies`.
     pricing: Option<PricingPolicy>,
-    /// The instrument pairs the lead/lag and cross-venue features are
-    /// registered for (R12-TICK-2063); empty registers none.
-    feature_pairs: Vec<qip_edge_node::strategies::FeaturePair>,
     /// Where the compiled plan the payload names by digest is read from.
     /// `None` deploys nothing and is named in the production requirements.
     plan_path: Option<PathBuf>,
@@ -465,8 +456,6 @@ impl NodeConfig {
         }
         let feed = FeedChoice::from_env()?;
         let pricing = parse_pricing(std::env::var(PRICING_VARIABLE).ok().as_deref())?;
-        let feature_pairs =
-            parse_feature_pairs(std::env::var(FEATURE_PAIRS_VARIABLE).ok().as_deref())?;
         let plan_path = match std::env::var(PLAN_VARIABLE) {
             Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
             _ => None,
@@ -553,7 +542,6 @@ impl NodeConfig {
             arbitrage_search,
             feed,
             pricing,
-            feature_pairs,
             plan_path,
             reprice,
             settlement,
@@ -717,71 +705,6 @@ fn replay_command(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `qip-edge-node replay-lake <lake-dir> <dataset>[,<dataset>...]`
-/// (R12-TICK-9006): read the retained history in the file-backed lake at
-/// `<lake-dir>` and drive it through a fresh cell with the node's own
-/// configuration and a seeded simulated venue, printing the decision digest.
-///
-/// Two runs over the same lake print the same digest; that comparison is the
-/// reproduction check. Refused for a lake that retains no tick, which is
-/// what a memory-backed node leaves behind (ADR 0003: the venue is the
-/// simulator, never a live one).
-fn replay_lake_command(arguments: &[String]) -> Result<()> {
-    let (Some(dir), Some(datasets)) = (arguments.first(), arguments.get(1)) else {
-        return Err(Error::invalid(
-            "configuration: `replay-lake` takes the lake directory and a comma-separated list of \
-             datasets as its two arguments",
-        ));
-    };
-    let datasets: std::collections::BTreeSet<String> = datasets
-        .split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .collect();
-    let store = qip_storage::blob::FileBlobStore::open(dir).map_err(|error| {
-        Error::invalid(format!(
-            "configuration: {dir} cannot be opened as a lake: {}",
-            error.message()
-        ))
-    })?;
-    let history = qip_edge_node::lake_replay::RetainedHistory::read(&store, &datasets)?;
-    let config = NodeConfig::from_env()?;
-    let (cell_config, _digest) = cell_configuration(&config)?;
-    let venue = config.venues.first().cloned().ok_or_else(|| {
-        Error::invalid("configuration: QIP_VENUES names no venue to rebuild a gateway for")
-    })?;
-    let first = history.instants().next().ok_or_else(|| {
-        Error::invalid("the retained history spans no pass; there is nothing to replay")
-    })?;
-    let clock = Arc::new(qip_core::ManualClock::new(first));
-    let NodeAssembly { mut cell, .. } =
-        assembled(&config, cell_config, Arc::clone(&clock) as Arc<dyn Clock>)?;
-    let ceiling = cell.autonomy().ceiling();
-    let choice = VenueChoice::from_env(&venue, ceiling.is_live())?;
-    let VenueChoice::Simulated { seed } = &choice else {
-        return Err(Error::denied(
-            "replay-lake sends to the seeded simulated venue only (ADR 0003)",
-        ));
-    };
-    let mut gateway = qip_edge_node::gateway::SimulatedGateway::new(venue.clone(), *seed, first)?;
-    gateway.install_settlement_terms(config.settlement.clone())?;
-    let mut feed = qip_edge_node::feed::ReplayFeed::new(venue);
-    feed.attach(&mut cell)?;
-    let report = qip_edge_node::lake_replay::replay_lake(
-        &mut cell,
-        &mut gateway,
-        &mut feed,
-        &history,
-        |_, now| {
-            clock.set(now);
-            Ok(())
-        },
-    )?;
-    println!("qip-edge-node: {}", report.describe());
-    Ok(())
-}
-
 /// How many times `replay --timing` replays the spool: a whole number from
 /// one to [`MAX_TIMING_RUNS`], refused rather than clamped otherwise.
 fn parse_timing_runs(value: Option<&str>) -> Result<u32> {
@@ -882,8 +805,7 @@ fn replay_once(spool: Option<&str>) -> Result<qip_edge_node::replay::ReplayRepor
     gateway.install_settlement_terms(config.settlement.clone())?;
     let feed = SimulatedFeed::new(gateway_venue);
     feed.attach_settling(&mut cell, gateway.settlement_terms())?;
-    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing)
-        .with_feature_pairs(config.feature_pairs.clone());
+    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
     // The requoter as `run` builds it, over the assembly's registry: a replay
     // without one would re-drive a node that configured none, and diverge on
     // its first requote.
@@ -1324,8 +1246,7 @@ fn run() -> Result<()> {
     // a plan whose bytes are at the configured path. With no pricing or no
     // path it deploys nothing and says which on every tick, so a node
     // running no strategy is a node whose log says why.
-    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing)
-        .with_feature_pairs(config.feature_pairs.clone());
+    let strategies = StrategyInstaller::new(config.plan_path.clone(), config.pricing);
 
     for requirement in missing_production_requirements(
         config.mesh.is_some(),
@@ -1535,11 +1456,6 @@ fn run() -> Result<()> {
     // of `run` — which never returns while the node runs — because dropping
     // it stops its renewal loop.
     let mut issued: Option<qip_transport::cas::CasIdentity> = None;
-    // ADR 0100 §8 / R12-FABRIC-10077: control read from the fabric's P0
-    // `control.local`, when the node holds a consume token. Declared here so
-    // the thread outlives the arm below — dropping its handle stops it — and
-    // the handoff reaches the decision loop where the plan handoff is built.
-    let mut control: Option<ControlWiring> = None;
     match config.fabric.take() {
         Some(mut fabric) => {
             // R12-FABRIC-10016: the broker's address from its SRV record when a
@@ -1603,28 +1519,6 @@ fn run() -> Result<()> {
                 fabric.url,
                 link.describe()
             );
-            match fabric.control_consumer(&config.cell_id, Arc::clone(&clock), &link)? {
-                Some(consumer) => {
-                    let wiring = ControlWiring::spawn(
-                        &config.cell_id,
-                        trust.clone(),
-                        Arc::clone(&clock),
-                        consumer,
-                        Arc::clone(&outbox_telemetry),
-                        PLAN_HANDOFF_CAPACITY,
-                    )?;
-                    println!(
-                        "qip-edge-node: reading control.local from the fabric under the node's \
-                         trust root; every grant, policy and halt is verified as on the mesh"
-                    );
-                    control = Some(wiring);
-                }
-                None => println!(
-                    "qip-edge-node: awaiting {FABRIC_CONTROL_TOKEN_VARIABLE}: this cell reads no \
-                     control from the fabric, and capital, policy and halts reach it over the \
-                     mesh and the polled flag only"
-                ),
-            }
             sinks.push(Box::new(fabric.sink(
                 &config.cell_id,
                 &config.region,
@@ -1750,27 +1644,12 @@ fn run() -> Result<()> {
              only through the centre"
         ),
     }
-    // One handoff, however many producers: the fabric consumer and the plan
-    // compiler each hold a sender, and the decision thread drains one
-    // boundary. The wiring is held for the life of `run` — its thread stops
-    // when it drops.
-    let (_control_live, control_handoff) = match control {
-        Some(wiring) => {
-            let (thread, handoff) = wiring.into_parts();
-            (Some(thread), Some(handoff))
-        }
-        None => (None, None),
-    };
-    let plans = match (config.plan_path.clone(), control_handoff) {
-        (Some(path), Some((sender, handoff))) => {
-            Some((Some(PlanCompiler::spawn(path, sender)?), handoff))
-        }
-        (Some(path), None) => {
+    let plans = match config.plan_path.clone() {
+        Some(path) => {
             let (sender, handoff) = ControlHandoff::bounded(PLAN_HANDOFF_CAPACITY)?;
             Some((Some(PlanCompiler::spawn(path, sender)?), handoff))
         }
-        (None, Some((_, handoff))) => Some((None, handoff)),
-        (None, None) => None,
+        None => None,
     };
     decisions = decisions.with_strategies(strategies, plans);
     if let Some(flag) = config.halt_flag.clone() {

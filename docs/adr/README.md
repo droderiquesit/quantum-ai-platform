@@ -337,5 +337,4 @@ both did it.
 | [0685](0685-the-joint-tail-reserve-is-applied-only-by-a-fresh-journalled-operator-intent-never-by-configuration.md) | *Proposed* — The joint tail reserve is applied only by a fresh, journalled operator intent, never by configuration |
 | [0688](0688-the-symbolic-veto-reads-the-knowledge-graphs-contract-expiry-entailment-as-a-hard-stop.md) | *Proposed 2026-11-15, lane 44 of wave b52* — The symbolic veto reads the knowledge graph's contract-expiry entailment as a hard stop |
 | [0689](0689-four-risk-rows-of-lane-44-are-not-built-and-why.md) | *Proposed 2026-11-15, lane 44 of wave b52* — Four risk rows of lane 44 are not built, and the decision each needs |
-| [0692](0692-a-thesis-median-outside-the-mandate-range-is-refused-not-clamped.md) | *Accepted, 2026-11-15, by lane 46 of wave b52 under the wave's delegation* — A thesis median outside the mandate range is refused, not clamped |
 | [0693](0693-the-node-refuses-a-directional-signal-that-states-no-edge.md) | *Accepted, 2026-11-15, by lane 46 of wave b52 under the wave's delegation* — The node refuses a directional signal that states no edge |

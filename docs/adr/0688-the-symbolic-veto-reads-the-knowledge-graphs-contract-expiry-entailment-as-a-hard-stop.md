@@ -33,6 +33,22 @@ An approved hypothesis on an expiring contract is vetoed with the entailment
 named. The paper boundary is untouched: Terraform refusal, `AutonomyLevel::deployable`
 and the `Cell` constructor are not edited.
 
+## What it costs
+
+A refusal now blocks something it did not before: an approved hypothesis on a
+dated contract that the graph holds as expiring before the claim can resolve is
+vetoed, where before its derivation was ineligible and its veto was `None`. The
+stop is only as good as the graph's typing: a subject with no recorded expiry
+margin is not typed `dated_contract` and is not stopped here. The graph is
+closed from the same expiry margin rule r70 reads, so a wrong margin misleads
+both and this stop is no second opinion on it. The decision adds one more name
+to `veto_rules` that an operator reading a refusal must learn, and a person
+must decide any existing test that expected no veto on such a contract. Each
+evaluation of the stop reads the recorded closure up to three times through
+`holds`, and `veto_rules` evaluates it again after `veto`; the cost of that is
+unmeasured. Physical delivery state and a governed ontology store are left
+unbuilt, so the row stays PARTIAL.
+
 ## What would make this wrong
 
 If the pipeline shows an existing test that expects `veto()` to be `None` for an

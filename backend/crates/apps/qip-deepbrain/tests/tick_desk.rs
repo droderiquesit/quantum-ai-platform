@@ -1255,7 +1255,7 @@ fn a_book_offered_to_the_desk_is_priced_against_every_live_branch_and_journaled(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         Arc::clone(&outputs) as Arc<dyn BlobStore>,
     );
-    desk.set_book(BTreeMap::from([("obj-ACME".to_string(), 0.5)]));
+    desk.set_portfolio_weights(BTreeMap::from([("obj-ACME".to_string(), 0.5)]));
     let round = desk.round(&graph()?, at(400_000), Vec::new())?;
     assert!(
         round.branches_live > 1,
@@ -1291,7 +1291,7 @@ fn a_book_offered_to_the_desk_is_priced_against_every_live_branch_and_journaled(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         Arc::clone(&outputs) as Arc<dyn BlobStore>,
     );
-    desk.set_book(BTreeMap::from([("obj-ELSEWHERE".to_string(), 0.5)]));
+    desk.set_portfolio_weights(BTreeMap::from([("obj-ELSEWHERE".to_string(), 0.5)]));
     let round = desk.round(&graph()?, at(400_000), Vec::new())?;
     assert!(round.portfolio_outcomes.is_empty());
     assert!(round.portfolio_outcomes_refused.is_some());

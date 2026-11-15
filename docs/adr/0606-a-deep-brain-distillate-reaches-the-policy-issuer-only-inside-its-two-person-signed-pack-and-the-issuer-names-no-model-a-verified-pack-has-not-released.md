@@ -42,15 +42,39 @@ release pack; the pack is the existing control.
    plan baked into the node image (R12-MODEL-1083); activation stays the pack's
    (R12-MODEL-10180).
 
-## Consequences
+## What it costs
 
-- A distillate's stated worst-case cost and fidelity travel inside signed
-  bytes, so a cell cannot load one whose bound was not reviewed.
-- The row stays PARTIAL until a deployed cell installs one; no node is deployed.
-- Mutations the implementation must show firing: admit a promotion without a
-  verified pack; drop the permitted locations from the signed payload.
+- A distillate the deep brain promotes waits for two people to sign a release
+  pack before any cell can see it. There is no faster path by design, so the
+  delay between promotion and use is whatever the two-person release takes, and
+  it is unmeasured.
+- Every promotion a cell is meant to run needs a `qip-cli model-pack` run
+  against its artifact digest. The command refuses a promotion with no
+  permitted locations, and a `ModelPromotion` reads its locations off the
+  registry card and never from the caller, so such a promotion stays
+  unreleased until its card names them.
+- The pack's signed contract grows (`ModelPack::signing_payload`). A pack
+  signed before this change carries no distilled entry, so releasing a
+  distillate takes a new pack. Whether an earlier pack keeps its bytes is the
+  implementation's to hold: the payload's two existing optional tails are
+  appended only when present for that reason.
+- The distilled entry (`DistilledManifestEntry`, a name and a digest) and the
+  permitted locations travel inside signed bytes, so `qip-api` names no
+  distillate to a cell that the two signers did not release.
+- The row stays PARTIAL until a deployed cell installs one; no node is
+  deployed. `qip-cli model-pack` does not yet take a promotion and `ModelPack`
+  holds no distilled entry, so the mutations the implementation must show
+  firing are still owed: admit a promotion without a verified pack; drop the
+  permitted locations from the signed payload.
 
 ## What would make this wrong
 
-If a second consumer needs promotions before a release (a research cell), a
-read-only channel would be a new decision, never a widening of this one.
+- A second consumer, such as a research cell, needs promotions before a
+  release. A read-only channel would then be a new decision, never a widening
+  of this one.
+- The two signers sign packs without reading the distillate, which would make
+  the two-person control nominal.
+- The wait between promotion and a signed pack proves long enough that
+  promotions go stale before a cell can use them.
+- The payload change cannot be made so that packs signed before it keep their
+  bytes, and every earlier pack has to be signed again.
