@@ -86,6 +86,7 @@ pub mod position_life;
 pub mod position_register;
 pub mod pre_positioning;
 pub mod precedent_declines;
+pub mod private_markets_feed;
 pub mod quantum_routing;
 pub mod quote_loop;
 pub mod reconciliation_breaks;

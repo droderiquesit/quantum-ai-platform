@@ -31,6 +31,7 @@ pub mod manifests;
 pub mod meta_brain;
 pub mod poisoning;
 pub mod portfolio_brain;
+pub mod private_markets_brain;
 pub mod reasoning;
 pub mod review;
 pub mod simulation;
