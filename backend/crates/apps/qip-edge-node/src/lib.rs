@@ -22,6 +22,8 @@
 pub mod allocation;
 /// The arbitrage desk, built from the payload's whitelist once capital arrives.
 pub mod arbitrage;
+/// A measured borrow rate laid over the stated one (ADR 0681).
+pub mod measured_borrow;
 pub mod control;
 /// The §31.1 mirror: which venues are abroad, and this region's discipline.
 pub mod cross_region;
