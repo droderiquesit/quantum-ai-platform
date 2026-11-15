@@ -716,3 +716,814 @@ fn a_mutated_distillation_stage_changes_the_digest_of_the_replay_it_learned_from
     );
     Ok(())
 }
+
+// --- the stages RECORDED_DIGEST did not reach ---------------------------------
+//
+// R12-TICK-1121 (the lake), 1124 (cross-venue alignment), 1125 (the fabric's
+// replay engine) and 1127 (world and market fusion). `RECORDED_DIGEST` is
+// computed in memory from decode to book, so a mutation of any of these stages
+// moved no digest the suite held. Each test below sends the recorded session
+// through the stage it names and asserts a digest a mutation of that stage
+// would move.
+//
+// **None of these tests was compiled or run when it was written** (owner
+// instruction of 2026-11-15; ADR 0679), so none pins a literal digest it has
+// not seen: it asserts reproducibility, equality with the independent path,
+// and sensitivity, and the lake test asserts the existing `RECORDED_DIGEST`.
+// Mutation: not run, for each.
+
+use qip_contracts::captured_event::{CapturedMarketEvent, ClockCorrectionLineage};
+use qip_core::error::Error;
+use qip_kernel::fusion::{FusionConfig, MarketTrace, TracePoint, fuse};
+use qip_sequencing::{CrossVenueAligner, Order, VenueAlignment, VenueTick};
+use qip_simulation_engine::tick_replay::{
+    ExecutionModel, OrderSide, ReplayOrder, ReplayRun, ReplaySession, ReplayTick,
+};
+use qip_storage::MemoryBlobStore;
+use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
+use qip_storage::lake_history::{HistoryQuery, RecordedHistory, RecordedTick};
+use qip_world_model::graph::{EntityKind, Fact, KnowledgeGraph, Node, NodeKind};
+use qip_world_model::relationship::{Relationship, RelationshipKind};
+use std::collections::BTreeSet;
+
+/// The entitlement the session's lake partitions are written under.
+const ENTITLEMENT: &str = "itch-research-test";
+
+/// Decode the session's packets and stop there: the decoder's messages in
+/// packet order, and the decoder's own diagnostics.
+fn decode_only(session: &[Packet]) -> Result<(Vec<MarketMessage>, Diagnostics)> {
+    let mut decoder = ItchDecoder::new(
+        VenueId::new("XNAS"),
+        "itch-a",
+        InstrumentPartitions::new().with("AAPL", 3),
+        session_midnight(),
+    );
+    let mut decoded = Vec::new();
+    for packet in session {
+        decoder.set_sequence(packet.sequence);
+        decoded.extend(decoder.decode(&packet.bytes, captured(packet.captured_micros))?);
+    }
+    Ok((decoded, decoder.diagnostics().clone()))
+}
+
+/// One decoded message as the capture path stores it.
+///
+/// The canonical record carries both instants as exact integer nanoseconds:
+/// `Timestamp`'s own serialised form is RFC 3339 and truncates to the
+/// millisecond, which is the limit `resumed_from_a_checkpoint` documents, and
+/// a session stamped in microseconds would come back sharing instants.
+///
+/// `sequence` is the message's position in decode order, not the feed's
+/// number. The lake orders a segment by receive time, then this field, then
+/// canonical text, and one wire packet can decode into two messages (an
+/// execution is a trade and a reduction) that share the first two keys; text
+/// order would then decide which a replay applies first. The feed's own
+/// sequence is in the canonical record, where the sequencer reads it.
+fn captured_event(
+    venue: &str,
+    position: u64,
+    message: &MarketMessage,
+    shift_nanos: i64,
+    uncertainty_nanos: i64,
+) -> CapturedMarketEvent {
+    let mut canonical = serde_json::to_value(message).expect("a message serialises");
+    canonical["venue_time"] = serde_json::json!(message.venue_time.as_nanos());
+    canonical["capture_time"] = serde_json::json!(message.capture_time.as_nanos());
+    let corrections = if shift_nanos == 0 {
+        Vec::new()
+    } else {
+        vec![ClockCorrectionLineage {
+            kind: "offset_estimate".to_string(),
+            delta_nanos: shift_nanos,
+            applied_at: message.capture_time,
+            samples: 8,
+            uncertainty_nanos: uncertainty_nanos as f64,
+        }]
+    };
+    CapturedMarketEvent {
+        venue: venue.to_string(),
+        feed: "itch-a".to_string(),
+        instrument: "AAPL".to_string(),
+        sequence: Some(position),
+        event_time: message.venue_time,
+        receive_time: message.capture_time,
+        normalized_time: Timestamp::from_nanos(message.venue_time.as_nanos() + shift_nanos),
+        uncertainty: Duration::from_nanos(uncertainty_nanos),
+        corrections,
+        arrival_order: None,
+        entitlement: ENTITLEMENT.to_string(),
+        canonical,
+        raw_sha256: None,
+        raw: None,
+    }
+}
+
+/// Seal `decoded` as one market segment of `venue` on 2024-01-02.
+fn into_the_lake(
+    store: &MemoryBlobStore,
+    venue: &str,
+    decoded: &[MarketMessage],
+    shift_nanos: i64,
+    uncertainty_nanos: i64,
+) -> Result<()> {
+    let partition = Partition::new(
+        RecordClass::Market,
+        venue,
+        "2024-01-02",
+        "AAPL",
+        Entitlement {
+            id: ENTITLEMENT.to_string(),
+            raw_retention_permitted: false,
+        },
+    )?;
+    let events: Vec<CapturedMarketEvent> = decoded
+        .iter()
+        .enumerate()
+        .map(|(position, message)| {
+            captured_event(
+                venue,
+                position as u64,
+                message,
+                shift_nanos,
+                uncertainty_nanos,
+            )
+        })
+        .collect();
+    Lake::new(store).write_market_segment(&partition, &events)?;
+    Ok(())
+}
+
+/// Pin the day's market history as `manifest` and read it back through the
+/// manifest, as a replay job does.
+fn out_of_the_lake(store: &MemoryBlobStore, manifest: &str) -> Result<RecordedHistory> {
+    let granted: BTreeSet<String> = BTreeSet::from([ENTITLEMENT.to_string()]);
+    let query = HistoryQuery {
+        from_date: "2024-01-02".to_string(),
+        to_date: "2024-01-02".to_string(),
+        venues: BTreeSet::new(),
+        instruments: BTreeSet::new(),
+        granted: granted.clone(),
+        max_segments: 16,
+        max_ticks: 10_000,
+    };
+    let lake = Lake::new(store);
+    let listing = lake.pin_market_history(manifest, &query)?;
+    assert!(
+        !listing.segments.is_empty(),
+        "premise: the pin found the sealed segment"
+    );
+    assert!(listing.withheld.is_empty(), "premise: nothing was withheld");
+    lake.read_market_history(manifest, &granted, query.max_ticks)
+}
+
+/// Sequence what the lake returned, as the live path sequences what the
+/// decoder returned: in capture order, the deadline advanced on the next
+/// tick's capture instant, and messages of one wire packet offered together.
+/// `decoder` is the decode stage's own diagnostics, which the lake does not
+/// hold. The book half of the record is left empty.
+fn sequence_the_lake(history: &RecordedHistory, decoder: Diagnostics) -> ReplayRecord {
+    let mut sequencer = Sequencer::new(ReorderPolicy::new(
+        64,
+        Duration::from_micros(GAP_TIMEOUT_MICROS),
+    ));
+    let mut ticks: Vec<&RecordedTick> = history.ticks.iter().collect();
+    // Stable, so ticks sharing an instant keep the lake's line order.
+    ticks.sort_by_key(|tick| tick.knowable_at);
+    let packet_of = |tick: &RecordedTick| {
+        (
+            tick.knowable_at,
+            tick.message.origin.stream_key().to_string(),
+            tick.message.origin.sequence,
+        )
+    };
+    let mut events = Vec::new();
+    let mut sequence_events = Vec::new();
+    let mut index = 0;
+    while index < ticks.len() {
+        let packet = packet_of(ticks[index]);
+        let at = packet.0;
+        let mut unit = Vec::new();
+        while index < ticks.len() && packet_of(ticks[index]) == packet {
+            unit.push(ticks[index].message.clone());
+            index += 1;
+        }
+        let expired = sequencer.poll(at);
+        events.extend(expired.released);
+        sequence_events.extend(expired.events);
+        let batch = sequencer.accept(unit, at);
+        events.extend(batch.released);
+        sequence_events.extend(batch.events);
+    }
+    let stream = sequencer
+        .streams()
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                sequencer.tracker(name).expect("a listed stream").stats(),
+            )
+        })
+        .collect();
+    let stamped_nanos = events
+        .iter()
+        .map(|event: &MarketMessage| (event.venue_time.as_nanos(), event.capture_time.as_nanos()))
+        .collect();
+    ReplayRecord {
+        events,
+        stamped_nanos,
+        sequence_events,
+        book_states: Vec::new(),
+        fills: Vec::new(),
+        integrity: ReplayOutput::default(),
+        stream,
+        decoder,
+    }
+}
+
+/// Fill in the book half of a record from its events, as
+/// `replay_from_the_start` does.
+fn with_the_book_half(mut record: ReplayRecord) -> Result<ReplayRecord> {
+    for through in 1..=record.events.len() {
+        let mut state = fresh_book();
+        replay(&mut state, &record.events[..through])?;
+        let (book, fill) = observe(&state);
+        record.book_states.push(book);
+        record.fills.push(fill);
+    }
+    let mut state = fresh_book();
+    record.integrity = replay(&mut state, &record.events)?;
+    Ok(record)
+}
+
+/// R12-TICK-1121. The session is written through `Lake::write_market_segment`,
+/// pinned, read back with `read_market_history`, sequenced and replayed, and
+/// the result is the digest the in-memory path was pinned to.
+///
+/// What each half catches. A `write_market_segment` or `decode_line` that
+/// loses, reorders or re-stamps a tick moves `events`, `stamped_nanos` or a
+/// book, and so the digest. The lossy session at the end shows the digest is
+/// a finding about the lake's contents and not a constant: the same chain
+/// with one message missing from the sealed segment does not reach it.
+///
+/// Mutation: not run. Intended: in `Lake::write_market_segment`, drop the
+/// last line of `canonical`, or in `lake_history::decode_line` replace
+/// `knowable_at: event.receive_time()` / `captured.receive_time` with the
+/// event time; the first assertion after the premises fires.
+#[test]
+fn the_recorded_session_sealed_in_the_tick_lake_and_read_back_replays_to_the_pinned_digest()
+-> Result<()> {
+    let session = recorded_session();
+    let direct = replay_from_the_start(&session)?;
+    let (decoded, diagnostics) = decode_only(&session)?;
+    let store = MemoryBlobStore::new();
+    into_the_lake(&store, "XNAS", &decoded, 0, 100)?;
+    let history = out_of_the_lake(&store, "recorded-session")?;
+
+    // --- premises ------------------------------------------------------------
+    assert!(
+        decoded.len() >= 15,
+        "premise: the session decoded to {} message(s)",
+        decoded.len()
+    );
+    assert_eq!(history.unparsed, 0, "premise: every lake line decoded");
+    assert_eq!(history.withheld, Vec::<String>::new());
+    assert!(
+        history.entitlements_read.contains(ENTITLEMENT),
+        "premise: the lineage names the entitlement read"
+    );
+    assert!(
+        history
+            .ticks
+            .iter()
+            .map(|tick| &tick.message)
+            .eq(decoded.iter()),
+        "the lake returned different messages, or the same in another order"
+    );
+    assert!(
+        history.ticks.iter().all(|tick| tick.clock.is_some()),
+        "a lake line lost its clock block"
+    );
+    assert!(
+        history.ticks.iter().all(|tick| {
+            tick.event_time == tick.message.venue_time
+                && tick.knowable_at == tick.message.capture_time
+        }),
+        "a tick's event or knowable instant differs from its message's"
+    );
+
+    // --- the replay, from the lake ---------------------------------------------
+    let from_lake = with_the_book_half(sequence_the_lake(&history, diagnostics.clone()))?;
+    assert_eq!(from_lake.events, direct.events, "event order differs");
+    assert_eq!(from_lake.stamped_nanos, direct.stamped_nanos);
+    assert_eq!(from_lake.book_states, direct.book_states);
+    assert_eq!(from_lake, direct);
+    assert_eq!(
+        from_lake.digest(),
+        RECORDED_DIGEST,
+        "the replay digest of the session read back from the lake moved"
+    );
+
+    // --- reproducible: a second lake, a second read -----------------------------
+    let again_store = MemoryBlobStore::new();
+    into_the_lake(&again_store, "XNAS", &decoded, 0, 100)?;
+    let again = out_of_the_lake(&again_store, "recorded-session")?;
+    assert_eq!(history.ticks, again.ticks);
+    assert_eq!(
+        with_the_book_half(sequence_the_lake(&again, diagnostics.clone()))?.digest(),
+        from_lake.digest()
+    );
+
+    // --- sensitive: one message missing from the sealed segment -----------------
+    let mut lossy = decoded.clone();
+    lossy.retain(|message| message.origin.sequence != 5);
+    assert!(
+        lossy.len() < decoded.len(),
+        "premise: sequence 5 was in the session"
+    );
+    let lossy_store = MemoryBlobStore::new();
+    into_the_lake(&lossy_store, "XNAS", &lossy, 0, 100)?;
+    let lossy_history = out_of_the_lake(&lossy_store, "recorded-session")?;
+    let lossy_record = with_the_book_half(sequence_the_lake(&lossy_history, diagnostics))?;
+    assert_ne!(
+        lossy_record.digest(),
+        RECORDED_DIGEST,
+        "a lake missing a printed message reached the same replay digest"
+    );
+    Ok(())
+}
+
+// --- cross-venue alignment (R12-TICK-1124) ----------------------------------------
+
+/// The venue a market segment key names.
+fn venue_of(segment: &str) -> String {
+    segment
+        .split('/')
+        .find_map(|part| part.strip_prefix("venue="))
+        .expect("a market segment key names its venue")
+        .to_string()
+}
+
+/// Place every tick of a history on the common timeline, in the order a
+/// reader wants "latest" to mean: capture instant, then venue, then feed
+/// sequence. A tick whose line carried no clock block is refused, not placed
+/// at its venue's own instant as if that clock were known.
+fn venue_ticks_of(history: &RecordedHistory) -> Result<Vec<VenueTick>> {
+    let mut ticks: Vec<&RecordedTick> = history.ticks.iter().collect();
+    ticks.sort_by(|a, b| {
+        a.knowable_at
+            .cmp(&b.knowable_at)
+            .then_with(|| venue_of(&a.segment).cmp(&venue_of(&b.segment)))
+            .then_with(|| a.message.origin.sequence.cmp(&b.message.origin.sequence))
+    });
+    ticks
+        .into_iter()
+        .map(|tick| {
+            let clock = tick.clock.ok_or_else(|| {
+                Error::invalid(format!(
+                    "a tick of {} carries no clock block; its clock is unknown and it cannot be aligned",
+                    tick.segment
+                ))
+            })?;
+            Ok(VenueTick {
+                venue: venue_of(&tick.segment),
+                instrument: "AAPL".to_string(),
+                sequence: tick.message.origin.sequence,
+                normalized_time: clock.normalized_time,
+                uncertainty: clock.uncertainty,
+                arrival: tick.knowable_at,
+            })
+        })
+        .collect()
+}
+
+/// The recorded session as two venues' history. XNAS is stamped exactly as
+/// decoded with a 100 ns clock; XBATS carries the same prints 250 ns later on
+/// a clock known to `b_uncertainty`. Sealed, pinned, read back, aligned.
+fn two_venue_alignments(b_uncertainty: i64) -> Result<Vec<VenueAlignment>> {
+    let (decoded, _) = decode_only(&recorded_session())?;
+    let store = MemoryBlobStore::new();
+    into_the_lake(&store, "XNAS", &decoded, 0, 100)?;
+    into_the_lake(&store, "XBATS", &decoded, 250, b_uncertainty)?;
+    let history = out_of_the_lake(&store, "two-venues")?;
+    assert_eq!(
+        history.ticks.len(),
+        2 * decoded.len(),
+        "premise: both venues' ticks came back from the lake"
+    );
+    let mut aligner = CrossVenueAligner::new();
+    let mut alignments = Vec::new();
+    for tick in venue_ticks_of(&history)? {
+        alignments.extend(aligner.relate(tick)?);
+    }
+    Ok(alignments)
+}
+
+fn alignment_digest(alignments: &[VenueAlignment]) -> String {
+    sha256_hex(&serde_json::to_vec(alignments).expect("alignments serialise"))
+}
+
+/// R12-TICK-1124. Two venues' recorded ticks come back from the lake with
+/// their clock blocks, are placed, and are related by `CrossVenueAligner`,
+/// which states an order only beyond both recorded uncertainties.
+///
+/// The session is built so both answers occur: a tick and the other venue's
+/// print of it are 250 ns apart, inside the 300 ns their uncertainties sum to
+/// (unordered), while a tick and the other venue's previous print are about a
+/// microsecond apart (ordered). Reading the same history with the second
+/// venue's clock known to 100 ns instead of 200 ns turns those unordered
+/// pairs into ordered ones, so the digest depends on the recorded
+/// uncertainty: an aligner that ignored it, or a reader that dropped the
+/// clock block, would not move it.
+///
+/// Mutation: not run. Intended: in `qip_sequencing::align::align`, replace
+/// `lag.abs() <= lag_uncertainty` with `lag.abs() < Duration::ZERO`; every
+/// pair is then ordered and the first `Unordered` assertion fires.
+#[test]
+fn two_venues_recorded_in_the_lake_are_aligned_by_their_clocks_and_a_mutated_stage_moves_the_digest()
+-> Result<()> {
+    let alignments = two_venue_alignments(200)?;
+    assert!(
+        alignments
+            .iter()
+            .any(|alignment| alignment.order_of_other == Order::Unordered),
+        "premise: some pair sits inside its combined uncertainty"
+    );
+    assert!(
+        alignments
+            .iter()
+            .any(|alignment| alignment.order_of_other != Order::Unordered),
+        "premise: some pair is far enough apart to order"
+    );
+    assert!(
+        alignments
+            .iter()
+            .all(|alignment| alignment.venue != alignment.other_venue),
+        "a tick was related to its own venue"
+    );
+
+    let again = two_venue_alignments(200)?;
+    assert_eq!(alignments, again, "the alignment is not reproducible");
+    assert_eq!(alignment_digest(&alignments), alignment_digest(&again));
+
+    let tighter = two_venue_alignments(100)?;
+    assert_ne!(
+        alignment_digest(&alignments),
+        alignment_digest(&tighter),
+        "narrowing a clock's recorded uncertainty did not change the alignment digest"
+    );
+    assert!(
+        tighter
+            .iter()
+            .filter(|alignment| alignment.order_of_other == Order::Unordered)
+            .count()
+            < alignments
+                .iter()
+                .filter(|alignment| alignment.order_of_other == Order::Unordered)
+                .count(),
+        "a tighter clock did not order any pair it could not before"
+    );
+    Ok(())
+}
+
+// --- the fabric's replay engine (R12-TICK-1125) ------------------------------------
+
+fn run_digest(run: &ReplayRun) -> String {
+    sha256_hex(&serde_json::to_vec(run).expect("a replay run serialises"))
+}
+
+fn replay_ticks_of(history: &RecordedHistory) -> Vec<ReplayTick> {
+    history
+        .ticks
+        .iter()
+        .map(|tick| ReplayTick {
+            message: tick.message.clone(),
+            knowable_at: tick.knowable_at,
+        })
+        .collect()
+}
+
+fn execution_model() -> ExecutionModel {
+    ExecutionModel {
+        latency: Duration::from_micros(1),
+        fee_bps: 1.0,
+        impact_bps_at_full_depth: 10.0,
+        limit_ttl: Duration::from_secs(60),
+        message_budget: None,
+    }
+}
+
+/// R12-TICK-1125. The lake's ticks, as `qip-deepbrain`'s tick desk hands
+/// them, run through `qip_simulation_engine::tick_replay::ReplaySession` with
+/// one market order, twice and with each input varied.
+///
+/// A literal digest cannot be pinned without running it, so this asserts what
+/// a mutation of the engine would break: the run is reproducible; the run
+/// carries the session's own faults (the hole is a `gap` span, the order
+/// really filled); two inputs one tick or one fee apart do not share a
+/// digest; and on the clean first five packets the engine's rebuilt book is
+/// the book `qip_orderbook::replay` builds from the same messages, an
+/// independent path, so an engine that applied a message differently
+/// diverges.
+///
+/// Mutation: not run. Intended: in `ReplaySession::step`, skip
+/// `state.apply(&tick.message)?` for `OrderReduced` messages; the book
+/// comparison below fires.
+#[test]
+fn the_fabric_replay_engine_run_over_the_recorded_session_is_reproducible_and_agrees_with_the_book_replay()
+-> Result<()> {
+    let session = recorded_session();
+    let (decoded, _) = decode_only(&session)?;
+    let store = MemoryBlobStore::new();
+    into_the_lake(&store, "XNAS", &decoded, 0, 100)?;
+    let history = out_of_the_lake(&store, "recorded-session")?;
+    let ticks = replay_ticks_of(&history);
+    let instrument = decoded[0].object_id.as_str().to_string();
+    let order = ReplayOrder {
+        id: "probe-buy".to_string(),
+        instrument: instrument.clone(),
+        side: OrderSide::Buy,
+        quantity: Decimal::from_int(50),
+        limit: None,
+        decided_at: captured(45),
+    };
+    let run = ReplaySession::new(
+        execution_model(),
+        ticks.clone(),
+        vec![order.clone()],
+        Vec::new(),
+    )?
+    .run_to_end()?;
+
+    // --- premises --------------------------------------------------------------
+    assert_eq!(run.steps, ticks.len() as u64, "premise: every tick stepped");
+    assert!(
+        run.spans.iter().any(|span| span.fault == "gap"),
+        "premise: the hole in the session was flagged: {:?}",
+        run.spans
+    );
+    assert!(
+        !run.unreliable_steps.is_empty(),
+        "premise: some step was replayed inside an unreliable span"
+    );
+    assert_eq!(run.executions.len(), 1, "premise: the probe order resolved");
+    assert!(
+        run.executions[0].filled.is_positive(),
+        "premise: the probe order filled against the replayed book: {:?}",
+        run.executions[0]
+    );
+
+    // --- reproducible -----------------------------------------------------------
+    let again = ReplaySession::new(
+        execution_model(),
+        ticks.clone(),
+        vec![order.clone()],
+        Vec::new(),
+    )?
+    .run_to_end()?;
+    assert_eq!(run, again, "the engine's run is not reproducible");
+    assert_eq!(run_digest(&run), run_digest(&again));
+
+    // --- sensitive to its inputs --------------------------------------------------
+    let mut shorter = ticks.clone();
+    let _ = shorter.pop();
+    let shorter_run =
+        ReplaySession::new(execution_model(), shorter, vec![order.clone()], Vec::new())?
+            .run_to_end()?;
+    assert_ne!(run_digest(&run), run_digest(&shorter_run));
+    let dearer = ExecutionModel {
+        fee_bps: 2.0,
+        ..execution_model()
+    };
+    let dearer_run =
+        ReplaySession::new(dearer, ticks.clone(), vec![order], Vec::new())?.run_to_end()?;
+    assert_ne!(run_digest(&run), run_digest(&dearer_run));
+    assert_ne!(
+        run.executions[0].fees, dearer_run.executions[0].fees,
+        "a dearer fee left the simulated fee unchanged"
+    );
+
+    // --- agrees with the independent book replay on the clean span ------------------
+    let clean: Vec<ReplayTick> = ticks
+        .iter()
+        .filter(|tick| tick.message.origin.sequence <= 5)
+        .cloned()
+        .collect();
+    assert!(clean.len() >= 5, "premise: the clean span has its messages");
+    let mut engine = ReplaySession::new(execution_model(), clean.clone(), Vec::new(), Vec::new())?;
+    while engine.step()? {}
+    let engine_book = engine
+        .book(&instrument)
+        .expect("the engine rebuilt the instrument's book")
+        .snapshot()
+        .book
+        .digest();
+    let messages: Vec<MarketMessage> = clean.iter().map(|tick| tick.message.clone()).collect();
+    let mut direct = fresh_book();
+    replay(&mut direct, &messages)?;
+    assert_eq!(
+        engine_book,
+        direct.snapshot().book.digest(),
+        "the fabric's replay engine rebuilt a different book from the same messages"
+    );
+    assert_ne!(
+        engine_book,
+        fresh_book().snapshot().book.digest(),
+        "premise: the clean span left a book to compare"
+    );
+    Ok(())
+}
+
+// --- world and market fusion (R12-TICK-1127) ------------------------------------------
+
+/// The instrument's replayed market: one point per released event at which
+/// both sides of the touch stood, stamped with the instant it became knowable.
+fn market_trace_of(events: &[MarketMessage]) -> Result<MarketTrace> {
+    let mut points = Vec::new();
+    for through in 1..=events.len() {
+        let mut state = fresh_book();
+        replay(&mut state, &events[..through])?;
+        let (Some(bid), Some(ask), Some(mid), Some(spread)) = (
+            state.best_bid(),
+            state.best_ask(),
+            state.mid(),
+            state.spread(),
+        ) else {
+            continue;
+        };
+        let (b, a) = (bid.size.to_f64(), ask.size.to_f64());
+        let mid = mid.to_f64();
+        points.push(TracePoint {
+            at: events[through - 1].capture_time,
+            mid,
+            spread_bps: spread.to_f64() / mid * 10_000.0,
+            depth: Some(b + a),
+            imbalance: Some((b - a) / (b + a)),
+        });
+    }
+    Ok(MarketTrace {
+        instrument: "AAPL".to_string(),
+        venue: "XNAS".to_string(),
+        points,
+    })
+}
+
+/// One world event, on the session's own clock, concerning the instrument's
+/// issuer: expected to move it up, on sound evidence.
+fn world_graph() -> Result<KnowledgeGraph> {
+    let occurred = captured(25);
+    let recorded = captured(45);
+    let mut graph = KnowledgeGraph::new();
+    graph.add_node(
+        Node::event("evt-guidance", "evt-guidance", occurred, recorded)
+            .with_attribute("expected_direction", "up")
+            .with_attribute("evidence_quality", "0.9"),
+    )?;
+    graph.add_node(Node::entity(
+        "aapl-co",
+        EntityKind::Company,
+        "aapl-co",
+        captured(0),
+    ))?;
+    graph.add_node(
+        Node::new(
+            "inst-aapl",
+            NodeKind::FinancialObject,
+            "inst-aapl",
+            captured(0),
+        )
+        .with_attribute("object_id", "AAPL"),
+    )?;
+    graph.assert_fact(Fact::new(
+        Relationship::new(
+            "evt-guidance",
+            "aapl-co",
+            RelationshipKind::ConcernsEntity,
+            1.0,
+            "wire:1",
+        ),
+        occurred,
+        recorded,
+        0.9,
+    )?);
+    graph.assert_fact(Fact::new(
+        Relationship::new(
+            "aapl-co",
+            "inst-aapl",
+            RelationshipKind::Issues,
+            1.0,
+            "registry:1",
+        ),
+        captured(0),
+        captured(0),
+        1.0,
+    )?);
+    Ok(graph)
+}
+
+fn fusion_config() -> FusionConfig {
+    FusionConfig {
+        max_hops: 2,
+        reaction_threshold_bps: 20.0,
+        reaction_window: Duration::from_micros(500),
+        expect_reaction_above: 0.15,
+        weak_evidence_below: 0.4,
+        max_events: 16,
+    }
+}
+
+/// R12-TICK-1127. The recorded session, sealed in the lake, read back and
+/// replayed, becomes the instrument's market trace and is fused with a world
+/// event through `qip_kernel::fusion::fuse`.
+///
+/// The fused digest covers the measured reaction, including the depth ratio
+/// and flow imbalance the replayed books gave, so a replay that rebuilt a
+/// different book, or a lake that lost a print, moves it: the second half
+/// removes the execution and the digest follows. Equal digests from the
+/// in-memory replay and the lake path show the two agree before the fusion.
+///
+/// Mutation: not run. Intended: in `fusion::fuse`, replace
+/// `depth_ratio: match (base.depth, latest.depth) { .. }` with `None`; the
+/// `depth_ratio` premise fires.
+#[test]
+fn the_recorded_session_replayed_through_world_and_market_fusion_reproduces_a_digest_the_replay_moves()
+-> Result<()> {
+    let session = recorded_session();
+    let direct = replay_from_the_start(&session)?;
+    let (decoded, diagnostics) = decode_only(&session)?;
+    let store = MemoryBlobStore::new();
+    into_the_lake(&store, "XNAS", &decoded, 0, 100)?;
+    let history = out_of_the_lake(&store, "recorded-session")?;
+    let from_lake = with_the_book_half(sequence_the_lake(&history, diagnostics.clone()))?;
+
+    let graph = world_graph()?;
+    let as_of = captured(2_100);
+    let trace = market_trace_of(&from_lake.events)?;
+    assert!(
+        trace.points.len() >= 5,
+        "premise: the replay gave the fusion {} point(s)",
+        trace.points.len()
+    );
+    let fused = fuse(
+        &graph,
+        std::slice::from_ref(&trace),
+        as_of,
+        &fusion_config(),
+    )?;
+
+    // --- premises: the fusion read the replayed market --------------------------------
+    assert_eq!(fused.events.len(), 1, "premise: the world event was fused");
+    let event = &fused.events[0];
+    assert_eq!(
+        event.reactions.len(),
+        1,
+        "premise: the instrument was watched and measured"
+    );
+    assert!(
+        event.reactions[0].depth_ratio.is_some(),
+        "premise: the replayed depth reached the measured reaction"
+    );
+    assert!(!fused.digest.is_empty(), "premise: a digest was computed");
+
+    // --- reproducible, and the lake path agrees with the in-memory one -------------------
+    let again = fuse(
+        &graph,
+        std::slice::from_ref(&trace),
+        as_of,
+        &fusion_config(),
+    )?;
+    assert_eq!(fused, again);
+    let direct_trace = market_trace_of(&direct.events)?;
+    let from_direct = fuse(
+        &graph,
+        std::slice::from_ref(&direct_trace),
+        as_of,
+        &fusion_config(),
+    )?;
+    assert_eq!(
+        fused.digest, from_direct.digest,
+        "the fusion of the lake's replay differs from the fusion of the in-memory replay"
+    );
+
+    // --- sensitive: the same session with its execution missing ---------------------------
+    let without: Vec<MarketMessage> = from_lake
+        .events
+        .iter()
+        .filter(|message| message.origin.sequence != 5)
+        .cloned()
+        .collect();
+    assert!(
+        without.len() < from_lake.events.len(),
+        "premise: sequence 5 was in the replay"
+    );
+    let lossy = fuse(
+        &graph,
+        &[market_trace_of(&without)?],
+        as_of,
+        &fusion_config(),
+    )?;
+    assert_ne!(
+        fused.digest, lossy.digest,
+        "a replay missing a printed execution fused to the same digest"
+    );
+    Ok(())
+}
