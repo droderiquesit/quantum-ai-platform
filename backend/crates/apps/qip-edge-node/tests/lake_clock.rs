@@ -895,3 +895,73 @@ fn the_digest_over_the_clock_the_lake_reader_returns_is_reproducible_and_hand_wo
     );
     Ok(())
 }
+
+/// R12-TICK-2052: the bound the discipline puts on a tick is a series an
+/// operator can chart, not only a field on a lake line. The gauge must equal
+/// the latest line's own `uncertainty_ns`, so a sink that published a
+/// constant, or the tick's stated half-width instead of the disciplined one,
+/// is caught. The premise is that the disciplined bound differs from the
+/// 0.5 ms the first tick states for itself; otherwise the comparison could
+/// pass on the wrong number.
+///
+/// Mutation: in `LakeSink::deliver` publish `0.0` instead of
+/// `done.uncertainty.as_secs_f64()`: the gauge assertion fails.
+#[test]
+fn the_clock_uncertainty_gauge_equals_the_latest_lake_lines_bound() -> Result<()> {
+    use qip_observability::metrics::{Labels, Metrics, names};
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let lake = Arc::new(MemoryBlobStore::new());
+    let mut sink = LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        "edge-1",
+        "europe-west2",
+        default_retention(),
+        SegmentCodec::Identity,
+    )?
+    .with_metrics(Arc::clone(&metrics));
+    let records = (0..TICKS).map(tick).collect::<Result<Vec<_>>>()?;
+    let batch = Batch::new(
+        MessageType::Data,
+        QosClass::P2MarketJournal.batch_schema_id(),
+        1,
+        PayloadCodec::CanonicalJson,
+        records,
+    )?;
+    sink.deliver(1, QosClass::P2MarketJournal, &batch)?;
+    let mut lines = Vec::new();
+    for key in lake.list("lake/class=market/")? {
+        let body = lake.get(&key)?.expect("a listed segment is readable");
+        for line in String::from_utf8(body).expect("canonical JSON").lines() {
+            lines.push(serde_json::from_str::<serde_json::Value>(line)?);
+        }
+    }
+    lines.sort_by_key(|line| line["sequence"].as_u64());
+    let first = lines.first().expect("premise: lines were written")["clock"]["uncertainty_ns"]
+        .as_i64()
+        .expect("uncertainty_ns is a number");
+    let last = lines.last().expect("premise: lines were written")["clock"]["uncertainty_ns"]
+        .as_i64()
+        .expect("uncertainty_ns is a number");
+    assert_eq!(
+        first, OWN_UNCERTAINTY_NS,
+        "premise: the first tick states its own bound"
+    );
+    assert_ne!(
+        last, first,
+        "premise: the warmed discipline's bound differs from the tick's own"
+    );
+    let mut labels = Labels::new();
+    labels.insert("cell".to_string(), "edge-1".to_string());
+    labels.insert("region".to_string(), "europe-west2".to_string());
+    labels.insert("venue".to_string(), "XLON".to_string());
+    labels.insert("feed".to_string(), "simulated-depth".to_string());
+    let gauge = metrics
+        .snapshot()
+        .gauge(names::EDGE_CLOCK_UNCERTAINTY, &labels)
+        .expect("the gauge is published once a tick is normalized");
+    assert!(
+        (gauge - last as f64 / 1e9).abs() < 1e-12,
+        "gauge {gauge} s must equal the latest line's {last} ns"
+    );
+    Ok(())
+}

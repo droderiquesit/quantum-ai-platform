@@ -49,11 +49,11 @@
 use qip_contracts::policy::PlanDigest;
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
-use qip_core::{Duration, Timestamp};
+use qip_core::{Duration, ObjectId, Timestamp};
 use qip_edge::cell::{Cell, PricingPolicy};
 use qip_edge::envelope::VerifiedEnvelope;
 use qip_edge::telemetry::PackageActivation;
-use qip_feature_dag::features::standard_suite;
+use qip_feature_dag::features::{CrossVenueSpread, LeadLagCorrelation, standard_suite};
 use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::StrategySpec;
@@ -65,6 +65,14 @@ use std::path::{Path, PathBuf};
 /// The environment variable naming how every deployed strategy's intents are
 /// priced, until the plan slot carries a policy of its own.
 pub const PRICING_VARIABLE: &str = "QIP_DEFAULT_PRICING";
+/// The environment variable naming the instrument pairs the two-subject
+/// features are computed over, as `LEADER>FOLLOWER:window:lag` entries
+/// separated by commas (R12-TICK-2063). Unset registers none.
+pub const FEATURE_PAIRS_VARIABLE: &str = "QIP_FEATURE_PAIRS";
+/// The most pairs one node accepts. Each pair is two features in an engine
+/// that evaluates a bounded number per pass; the cell refuses past that bound
+/// by name, and this stops an obviously runaway list at start.
+pub const MAX_FEATURE_PAIRS: usize = 32;
 /// The environment variable naming the file the compiled plan is read from.
 pub const PLAN_VARIABLE: &str = "QIP_STRATEGY_PLAN_PATH";
 
@@ -123,6 +131,91 @@ pub fn parse_pricing(value: Option<&str>) -> Result<Option<PricingPolicy>> {
          `{REST_AT_MID_PREFIX}<seconds>`, which rests at the mid and is withdrawn after that \
          many seconds. Unset deploys no strategy and says so"
     )))
+}
+
+/// One instrument pair the lead/lag and cross-venue features are computed
+/// over: how the `leader` moves bears on the `follower`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeaturePair {
+    pub leader: ObjectId,
+    pub follower: ObjectId,
+    /// Return samples the lagged correlation is taken over.
+    pub window: usize,
+    /// Samples the follower is read behind the leader.
+    pub lag: usize,
+}
+
+/// Read [`FEATURE_PAIRS_VARIABLE`]: `LEADER>FOLLOWER:window:lag`, comma
+/// separated. `None` is unset or blank.
+///
+/// Refuses rather than defaults. The window and the lag are the operator's
+/// statement about how fast one instrument leads another; a node that filled
+/// in a number would be computing a signal nobody asked for. Also refused: a
+/// pair naming one instrument twice, a window under 2 or a lag under 1 (the
+/// feature would otherwise silently raise them), a pair stated twice, and
+/// more than [`MAX_FEATURE_PAIRS`].
+pub fn parse_feature_pairs(value: Option<&str>) -> Result<Vec<FeaturePair>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let shape = || {
+        format!(
+            "configuration: {FEATURE_PAIRS_VARIABLE} entries are `LEADER>FOLLOWER:window:lag`,              for example `obj-A>obj-B:30:2`"
+        )
+    };
+    let mut pairs: Vec<FeaturePair> = Vec::new();
+    for entry in value.split(',').map(str::trim) {
+        let (names, figures) = entry
+            .split_once(':')
+            .ok_or_else(|| Error::invalid(format!("{} (got `{entry}`)", shape())))?;
+        let (leader, follower) = names
+            .split_once('>')
+            .ok_or_else(|| Error::invalid(format!("{} (got `{entry}`)", shape())))?;
+        let (window, lag) = figures
+            .split_once(':')
+            .ok_or_else(|| Error::invalid(format!("{} (got `{entry}`)", shape())))?;
+        let (leader, follower) = (leader.trim(), follower.trim());
+        if leader.is_empty() || follower.is_empty() || leader == follower {
+            return Err(Error::invalid(format!(
+                "configuration: {FEATURE_PAIRS_VARIABLE} entry `{entry}` must name two different                  instruments"
+            )));
+        }
+        let number = |text: &str, what: &str, least: usize| -> Result<usize> {
+            let parsed = text.trim().parse::<usize>().map_err(|_| {
+                Error::invalid(format!(
+                    "configuration: {FEATURE_PAIRS_VARIABLE} entry `{entry}` has a {what} that is                      not a whole number"
+                ))
+            })?;
+            if parsed < least {
+                return Err(Error::invalid(format!(
+                    "configuration: {FEATURE_PAIRS_VARIABLE} entry `{entry}` has {what} \
+                     {parsed}; the least is {least}"
+                )));
+            }
+            Ok(parsed)
+        };
+        let pair = FeaturePair {
+            leader: ObjectId::from_string(leader),
+            follower: ObjectId::from_string(follower),
+            window: number(window, "window", 2)?,
+            lag: number(lag, "lag", 1)?,
+        };
+        if pairs
+            .iter()
+            .any(|held| held.leader == pair.leader && held.follower == pair.follower)
+        {
+            return Err(Error::invalid(format!(
+                "configuration: {FEATURE_PAIRS_VARIABLE} states `{leader}>{follower}` twice"
+            )));
+        }
+        pairs.push(pair);
+        if pairs.len() > MAX_FEATURE_PAIRS {
+            return Err(Error::invalid(format!(
+                "configuration: {FEATURE_PAIRS_VARIABLE} names more than {MAX_FEATURE_PAIRS} pairs"
+            )));
+        }
+    }
+    Ok(pairs)
 }
 
 /// The compiled plan as the file carries it: the strategy specifications,
@@ -317,6 +410,9 @@ pub struct StrategyInstaller {
     /// The digest [`Self::install_compiled`] last deployed, so an activation
     /// is counted once per package and not once per pass (R12-OBS-9152).
     active: Option<String>,
+    /// The instrument pairs the two-subject features are registered for
+    /// (R12-TICK-2063).
+    feature_pairs: Vec<FeaturePair>,
 }
 
 impl StrategyInstaller {
@@ -334,7 +430,18 @@ impl StrategyInstaller {
             compiled: None,
             parent: None,
             active: None,
+            feature_pairs: Vec::new(),
         }
+    }
+
+    /// Register the lead/lag and cross-venue features for `pairs` beside
+    /// each deployed strategy whose subject is a pair's follower. Without
+    /// this no shipped path computed either family: `standard_suite` holds
+    /// only single-subject features.
+    #[must_use]
+    pub fn with_feature_pairs(mut self, pairs: Vec<FeaturePair>) -> Self {
+        self.feature_pairs = pairs;
+        self
     }
 
     pub fn plan_path(&self) -> Option<&Path> {
@@ -609,7 +716,24 @@ impl StrategyInstaller {
             // Before the deployment rather than after, so a strategy the
             // engine has no room for is refused by name instead of deployed
             // deaf.
-            if let Err(error) = cell.register_features(standard_suite(&spec.subject)) {
+            let mut suite = standard_suite(&spec.subject);
+            for pair in self
+                .feature_pairs
+                .iter()
+                .filter(|pair| pair.follower == spec.subject)
+            {
+                suite.push(Box::new(LeadLagCorrelation::new(
+                    pair.follower.clone(),
+                    pair.leader.clone(),
+                    pair.window,
+                    pair.lag,
+                )));
+                suite.push(Box::new(CrossVenueSpread::new(
+                    pair.follower.clone(),
+                    pair.leader.clone(),
+                )));
+            }
+            if let Err(error) = cell.register_features(suite) {
                 outcome
                     .refused
                     .push((strategy.clone(), error.message().to_string()));
