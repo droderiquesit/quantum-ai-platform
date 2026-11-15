@@ -248,6 +248,9 @@ struct SymbolicReading {
     veto: Option<String>,
     /// The rule and invariant ids whose firing made `veto`; empty without one.
     veto_rules: Vec<String>,
+    /// The rule ids that made the pack find the thesis eligible; empty
+    /// without eligibility (R12-EXPAND-6044).
+    eligible_rules: Vec<String>,
     /// The pack and version the derivation ran under.
     pack: (String, u32),
     infeasible: Option<String>,
@@ -608,6 +611,8 @@ pub struct Platform {
     /// thesis is graded, so a refusal the outcome contradicted leaves a
     /// theory delta rather than nothing (R12-EXPAND-6044).
     pub(crate) symbolic_vetoes: BTreeMap<String, crate::theory_revision::SymbolicVetoNote>,
+    /// Theses the pack found eligible, awaiting a grade (R12-EXPAND-6044).
+    pub(crate) symbolic_admissions: BTreeMap<String, crate::theory_revision::SymbolicAdmissionNote>,
     /// What each priced refusal would have earned, most recent last, bounded
     /// by [`DECLINED_HISTORY`].
     declined_scores: Vec<DeclinedScore>,
@@ -6835,6 +6840,7 @@ impl Platform {
             publication_delays: BTreeMap::new(),
             declined: Vec::new(),
             symbolic_vetoes: BTreeMap::new(),
+            symbolic_admissions: BTreeMap::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
             cell_fills_queued: CellFillsQueued::default(),
@@ -18171,6 +18177,7 @@ impl Platform {
                     problem: symbolic_problem,
                     veto: symbolic_veto,
                     veto_rules: symbolic_veto_rules,
+                    eligible_rules: symbolic_eligible_rules,
                     pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                 } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
@@ -18388,6 +18395,28 @@ impl Platform {
                                         report.runs.len(),
                                     );
                                     self.pending_theses.push(thesis);
+                                    // R12-EXPAND-6044: the pack's eligibility is
+                                    // held against the grade too, so a rule that
+                                    // admits a thesis the outcome then refutes
+                                    // leaves a delta beside the veto direction.
+                                    if claim_written
+                                        && let Some(problem) = self.note_symbolic_admission(
+                                            crate::theory_revision::SymbolicAdmissionNote {
+                                                hypothesis_id: reasoned
+                                                    .hypothesis
+                                                    .hypothesis_id
+                                                    .as_str()
+                                                    .to_string(),
+                                                cycle: self.cycle,
+                                                at: now,
+                                                pack: symbolic_pack.0.clone(),
+                                                version: symbolic_pack.1,
+                                                rules: symbolic_eligible_rules.clone(),
+                                            },
+                                        )
+                                    {
+                                        outcome = outcome.with_problem(problem);
+                                    }
                                     // Bounded like the proposal working set: an idea
                                     // nobody sized for this many cycles is stale, and
                                     // the event log keeps the record.
@@ -18773,6 +18802,7 @@ impl Platform {
         let detail = derivation.detail();
         let veto = derivation.veto();
         let veto_rules = derivation.veto_rules();
+        let eligible_rules = derivation.eligible_rules();
         let pack = (
             self.symbolic_rule_pack.name.clone(),
             self.symbolic_rule_pack.version,
@@ -18792,6 +18822,7 @@ impl Platform {
             problem,
             veto,
             veto_rules,
+            eligible_rules,
             pack,
             infeasible,
         }
