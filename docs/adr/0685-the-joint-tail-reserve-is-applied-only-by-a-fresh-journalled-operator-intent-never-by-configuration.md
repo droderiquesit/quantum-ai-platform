@@ -31,3 +31,20 @@ changes from a general delegation). An earlier draft called
 Remaining: the API route, and the owner's confirmation that raising the reserve
 is accepted. Paper boundary untouched (Terraform refusal, `AutonomyLevel::deployable`,
 `Cell` constructor unchanged). Nothing compiled or tested.
+
+## Addendum: lane 42's other rows (this lane owns only two ADR numbers)
+
+- **R12-GOV-6127.** Decision: nothing in the requote seam moves.
+  `qip-edge-node/src/reprice.rs::replace` and its gate stay where
+  `order_route_risk_gate` finds them. A per-cycle non-profit ground for an
+  arbitrage leg does not exist in the tree, and whether a mandated arbitrage is
+  outside what the requirement forbids is the owner's decision (ADR 0200, Known
+  limits 2). Until then the restrictive state holds: the standing grant anchors
+  a leg and the skeptic's bar 4 stays open. NEEDS_PERSON. Nothing built.
+- **R12-ASSET-4070.** Decision: only gap 4 (net versus gross) is built, because
+  it can only refuse more. Kernel wiring of group caps stays withdrawn (f1ff11cf:
+  a non-binding row changed the solver's feasibility report on the fast-brain
+  tape); it cannot be validated without running the tape, which this lane did
+  not do. Strategy, region and horizon keys on `ApprovedThesis` are not added.
+- **R12-CAPITAL-1161.** See the report; arming needs a declaration and figures
+  nobody gave.
