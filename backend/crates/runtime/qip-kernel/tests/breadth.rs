@@ -2068,3 +2068,101 @@ fn every_received_unit_carries_its_sku_shipping_insurance_duty_and_tax_from_the_
     }
     Ok(())
 }
+
+/// R12-COMMERCE-5096: the plane's own inventory ledger survives a restart.
+/// Before it was journalled the restarted plane opened a fresh ledger and
+/// issued `{product}-{purchase}-{index}` ids the first process had already
+/// received, so the same id named two units and the receipt was refused.
+///
+/// Mutation: drop the `resume_commerce_ledger` call in `install_breadth`
+/// (or the `journal_commerce_ledger` call in `breadth_simulate`) and the
+/// restarted ledger is empty or the ids collide, failing the assertions.
+#[test]
+fn a_restarted_commerce_plane_resumes_its_ledger_from_the_log_and_never_reissues_a_unit_id()
+-> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-commerce-ledger-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let make = || -> Result<Platform> {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        platform.install_breadth(
+            &BreadthPlan {
+                commerce: Some(commerce_plan()?),
+                ..BreadthPlan::default()
+            },
+            start(),
+        )?;
+        Ok(platform)
+    };
+
+    let (first_units, first_events) = {
+        let mut platform = make()?;
+        let mut at = start();
+        for _ in 0..6 {
+            platform.run_cycle(at);
+            at = at.saturating_add(Duration::from_hours(1));
+        }
+        let ledger = platform.commerce_research().expect("installed").ledger();
+        (
+            ledger.units().keys().cloned().collect::<Vec<_>>(),
+            ledger.events().to_vec(),
+        )
+    };
+    assert!(
+        !first_units.is_empty(),
+        "premise: the first process received units"
+    );
+
+    let mut restarted = make()?;
+    let resumed = restarted.commerce_research().expect("installed").ledger();
+    assert_eq!(
+        resumed.events(),
+        first_events.as_slice(),
+        "the restarted ledger is not the one the log holds"
+    );
+    assert_eq!(
+        qip_financial::commerce::Ledger::replay(resumed.events())?,
+        *resumed,
+        "premise: the resumed ledger replays to itself"
+    );
+    let mut at = start().saturating_add(Duration::from_hours(7));
+    let mut problems = Vec::new();
+    for _ in 0..6 {
+        let report = restarted.run_cycle(at);
+        for stage in &report.stages {
+            problems.extend(
+                stage
+                    .problems
+                    .iter()
+                    .filter(|p| p.contains("commerce"))
+                    .cloned(),
+            );
+        }
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    assert!(
+        !problems.iter().any(|p| p.contains("already in the ledger")),
+        "a unit id was reissued after the restart: {problems:?}"
+    );
+    let after = restarted.commerce_research().expect("installed").ledger();
+    for unit in &first_units {
+        assert!(after.units().contains_key(unit), "unit {unit} was lost");
+    }
+    assert!(
+        after.units().len() > first_units.len(),
+        "premise: the restarted plane received new units"
+    );
+    Ok(())
+}

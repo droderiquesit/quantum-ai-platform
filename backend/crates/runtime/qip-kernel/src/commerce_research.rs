@@ -457,6 +457,9 @@ pub struct CommerceResearch {
     /// Sales settled and buyer returns taken, for the plan's return rate.
     sales: i64,
     returns_taken: i64,
+    /// How many of the ledger's events have reached the log
+    /// (R12-COMMERCE-5096).
+    ledger_journalled: usize,
 }
 
 impl CommerceResearch {
@@ -569,7 +572,42 @@ impl CommerceResearch {
             cycles: Vec::new(),
             sales: 0,
             returns_taken: 0,
+            ledger_journalled: 0,
         })
+    }
+
+    /// The purchase counter unit ids embed.
+    pub const fn purchases(&self) -> u32 {
+        self.purchases
+    }
+
+    /// Ledger events applied and not yet journalled, oldest first.
+    pub fn unjournaled_ledger_events(&self) -> &[LedgerEvent] {
+        let events = self.plane.ledger().events();
+        &events[self.ledger_journalled.min(events.len())..]
+    }
+
+    /// Record that the first `count` unjournalled events reached the log.
+    pub fn mark_ledger_journalled(&mut self, count: usize) {
+        let total = self.plane.ledger().events().len();
+        self.ledger_journalled = self.ledger_journalled.saturating_add(count).min(total);
+    }
+
+    /// Rebuild the plane's ledger from journalled `events` and resume the
+    /// purchase counter, so a unit id issued before a restart is never issued
+    /// again. Refused on a plane that has already received anything: replaying
+    /// over live units would merge two histories.
+    pub fn resume_ledger(&mut self, events: Vec<LedgerEvent>, purchases: u32) -> Result<()> {
+        if self.purchases != 0 || !self.plane.ledger().events().is_empty() {
+            return Err(Error::invalid(
+                "the commerce ledger can be resumed only on a plane that has received nothing",
+            ));
+        }
+        let ledger = Ledger::replay(&events)?;
+        self.ledger_journalled = ledger.events().len();
+        self.plane = CommercePlane::new(ledger, self.plan.terms.fees.clone());
+        self.purchases = purchases;
+        Ok(())
     }
 
     pub fn source(&self) -> &CommerceSource {

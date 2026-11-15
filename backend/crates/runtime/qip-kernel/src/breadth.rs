@@ -187,7 +187,7 @@ impl BreadthPlan {
 pub struct BreadthPlane {
     factory: Option<FactoryStage>,
     events: Option<EventMarketPlane>,
-    commerce: Option<CommerceResearch>,
+    pub(crate) commerce: Option<CommerceResearch>,
 }
 
 impl BreadthPlane {
@@ -371,11 +371,14 @@ impl Platform {
                 if section.source != SYNTHETIC_SOURCE {
                     return Err(refuse_source("commerce", &section.source));
                 }
-                let research = CommerceResearch::open(
+                let mut research = CommerceResearch::open(
                     Box::new(SyntheticCommerceFeed::new(seed, now)),
                     None,
                     section.clone(),
                 )?;
+                // The ledger the previous process journalled, before this
+                // plane issues a unit id (R12-COMMERCE-5096).
+                self.resume_commerce_ledger(&mut research)?;
                 let line = format!(
                     "commerce research from {} ({}, research only): purchases through account {} \
                      under a ceiling of {}",
@@ -713,6 +716,9 @@ impl Platform {
                 .as_mut()
                 .map(crate::commerce_research::CommerceResearch::take_inventory_moves)
                 .unwrap_or_default();
+            // Journalled before the movements are queued, so the ledger a
+            // restart resumes is never behind the movements it re-queues.
+            outcome.problems.extend(self.journal_commerce_ledger(now));
             let problems = self.queue_inventory_moves(moves, now);
             outcome.problems.extend(problems);
         }
