@@ -47,6 +47,8 @@ pub mod outbox;
 pub mod pass;
 /// Each venue's own message limits, as the deployment states them.
 pub mod quote_limits;
+/// The node's one reader of the peer link's rebalancing tasks.
+pub mod rebalance_kept;
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
