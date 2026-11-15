@@ -260,6 +260,52 @@ pub struct ToolRegistry {
     /// (R12-EXPAND-6023, ADR 0486). Bounded without a cap of its own: a
     /// registered tool times the three permissions.
     evaluations: BTreeMap<(String, ToolPermission), ToolEvaluation>,
+    /// Where each adopted tool came from (R12-EXPAND-1021): the gap that
+    /// asked for it and the operator's record that this process runs it.
+    /// One per tool; a tool registered at start-up holds none.
+    adoptions: BTreeMap<String, ToolAdoption>,
+}
+
+/// The lineage of a tool admitted from a gap's proposal rather than listed at
+/// start-up (R12-EXPAND-1021).
+///
+/// The failure it prevents: a proposal is a record of what to build, and a
+/// tool registered on being asked for would let every gap that needs it be
+/// admitted unblocked while nothing in the process runs it. Adoption names
+/// the gap that asked and carries the evidence that the tool is built and
+/// mounted, so a registered tool with no such record is one the node listed
+/// itself and one with it is one a gap earned.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolAdoption {
+    gap: String,
+    mounted: String,
+}
+
+impl ToolAdoption {
+    /// `gap` is the question or signal the proposal answered; `mounted` is
+    /// the record that the process runs the tool. Both must say something.
+    pub fn new(gap: &str, mounted: &str) -> Result<Self> {
+        if gap.trim().is_empty() {
+            return Err(Error::invalid(
+                "an adopted tool names the gap that asked for it",
+            ));
+        }
+        if mounted.trim().is_empty() {
+            return Err(Error::invalid(
+                "an adopted tool carries the record that this process runs it",
+            ));
+        }
+        Ok(Self {
+            gap: gap.trim().to_string(),
+            mounted: mounted.trim().to_string(),
+        })
+    }
+    pub fn gap(&self) -> &str {
+        &self.gap
+    }
+    pub fn mounted(&self) -> &str {
+        &self.mounted
+    }
 }
 
 /// What an evaluation of a tool found.
@@ -375,6 +421,34 @@ impl ToolRegistry {
             .last()
             .map(ToolVersion::spec)
             .ok_or_else(|| Error::invalid("a registered tool holds its first version"))
+    }
+
+    /// Register the tool a gap's proposal described, citing the gap and the
+    /// record that the process runs it (R12-EXPAND-1021).
+    ///
+    /// `spec` must be a proposal this registry would still admit: a name it
+    /// already holds is refused by `propose`, and a spec wider than read-only
+    /// is refused here, because the proposal door never widens a scope.
+    /// Widening stays `promote`'s, on a held passing evaluation.
+    pub fn adopt(&mut self, spec: &ToolSpec, adoption: ToolAdoption) -> Result<&ToolSpec> {
+        if spec.scope != BTreeSet::from([ToolPermission::Read]) {
+            return Err(Error::denied(
+                "a proposed tool is adopted read-only; widen it through `promote`",
+            ));
+        }
+        let name = ToolName::parse(&spec.name)?;
+        self.register(name, spec.kind)?;
+        self.adoptions.insert(spec.name.clone(), adoption);
+        self.tools
+            .get(&spec.name)
+            .and_then(|versions| versions.last())
+            .map(ToolVersion::spec)
+            .ok_or_else(|| Error::invalid("an adopted tool holds its first version"))
+    }
+
+    /// The lineage `name` was adopted with, if it was adopted from a gap.
+    pub fn adoption(&self, name: &ToolName) -> Option<&ToolAdoption> {
+        self.adoptions.get(name.as_str())
     }
 
     /// The tool registered under `name`.
