@@ -359,6 +359,16 @@ pub struct ModelCard {
     /// chooses (R12-EXPAND-6070).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub self_fitted: bool,
+    /// Whether the card is a training-pipeline candidate that must complete
+    /// a simulation or paper trial before it reaches production, whichever
+    /// door asks (ADR 0436, R12-MODEL-4022). Set by the fit's registration
+    /// (`register_fit`). The kernel's `promote_model_from` already reads the
+    /// trial; this puts the same refusal in [`ModelRegistry::promote`] and
+    /// [`ModelRegistry::promote_artifact`], so a direct call cannot reach
+    /// decision eligibility with no trial. A self-fitted card is gated by
+    /// its shadow stage instead and is exempt here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trial_required: bool,
     /// The four promotion tests as they were last run on this card's
     /// artifact (ADR 0392, R12-MODEL-10202). Absent on a card nobody has
     /// tested, which [`ModelRegistry::promote_artifact`] refuses.
@@ -636,6 +646,7 @@ impl ModelCard {
             shadow: None,
             trial: None,
             self_fitted: false,
+            trial_required: false,
             promotion_tests: None,
         }
     }
@@ -1341,6 +1352,17 @@ impl ModelRegistry {
                  beautifully and cannot trade",
                 leaks.join("; ")
             )));
+        }
+        if card.trial_required && !card.self_fitted {
+            let rounds = card.trial.as_ref().map_or(0, |trial| trial.rounds);
+            if !card.trial.as_ref().is_some_and(TrialRecord::completed) {
+                return Err(Error::denied(format!(
+                    "{reference} cannot be promoted: a training-pipeline candidate completes its \
+                     simulation or paper trial first, and it has run {rounds} of the \
+                     {MIN_TRIAL_ROUNDS} trial round(s) required; record each round through \
+                     ModelRegistry::record_trial_round"
+                )));
+            }
         }
         if card.self_fitted {
             let completed = card.stage == ModelStage::Shadow
