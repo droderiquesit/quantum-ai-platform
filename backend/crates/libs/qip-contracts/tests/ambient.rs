@@ -4,14 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use qip_contracts::ambient::{
-    AcquisitionCriteria, AcquisitionStatus, ActivationReason, Advisory, AmbientSignal,
-    AttentionBudget, AttentionEvent, AttentionRouter, AuthorityBoundary, ComputeAllocation,
-    ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation, Pathway,
-    ProducerQuarantine, PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
     AcquisitionCriteria, AcquisitionKind, AcquisitionStatus, ActivationReason, Advisory,
     AmbientSignal, AttentionBudget, AttentionEvent, AttentionRouter, AuthorityBoundary,
     ComputeAllocation, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
-    Pathway, PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
+    Pathway, ProducerQuarantine, PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
 };
 use qip_core::{Duration, Timestamp, dec};
 use std::collections::BTreeSet;

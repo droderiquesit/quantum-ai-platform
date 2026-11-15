@@ -8,8 +8,8 @@
 //! status: idempotent, so a venue that repeats "down" every poll opens one
 //! outage and not one per poll.
 
-use qip_core::error::Result;
 use qip_core::Timestamp;
+use qip_core::error::Result;
 use qip_financial::history::UniverseHistory;
 
 /// What [`apply_venue_status`] changed.

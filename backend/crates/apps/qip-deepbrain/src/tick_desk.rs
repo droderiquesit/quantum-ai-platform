@@ -607,7 +607,11 @@ pub fn dispatch_mismatches(
     };
     // A figure outside [0, 1] is refused, not clamped: that request is
     // left out rather than ranked on a number the fusion should not have made.
-    let bp = |x: f64| (0.0..=1.0).contains(&x).then(|| (x * 10_000.0).round() as u32);
+    let bp = |x: f64| {
+        (0.0..=1.0)
+            .contains(&x)
+            .then(|| (x * 10_000.0).round() as u32)
+    };
     let mut requests = Vec::new();
     for q in routing.questions {
         if let Some(rank_bp) = bp(q.prior) {

@@ -8,8 +8,8 @@
 use crate::fusion::OpportunityMap;
 use qip_ai::registry::ModelCard;
 use qip_contracts::fused_digest::{FusedDigest, FusedDigestEntry};
-use qip_core::error::{Error, Result};
 use qip_core::Duration;
+use qip_core::error::{Error, Result};
 
 /// Distil `map` for `cell` in `region`: at most `max_entries` of the map's
 /// already-ranked entries, valid for `valid_for` after the map's instant.

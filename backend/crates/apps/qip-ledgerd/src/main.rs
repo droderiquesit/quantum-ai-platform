@@ -44,7 +44,8 @@ fn main() {
                 Ok(Some(drain)) => {
                     eprintln!("qip-ledgerd: telemetry draining to {}", drain.describe());
                     let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);
-                    let base = qip_observability::Telemetry::foreground("qip-ledgerd", clock.clone());
+                    let base =
+                        qip_observability::Telemetry::foreground("qip-ledgerd", clock.clone());
                     let telemetry = qip_observability::Telemetry {
                         metrics: running.metrics().clone(),
                         ..base

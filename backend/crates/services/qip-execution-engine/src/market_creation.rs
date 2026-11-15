@@ -272,7 +272,6 @@ impl MarketStage {
             Self::Listed => "listed",
             Self::Seeded => "seeded",
             Self::Withdrawn => "withdrawn",
-            Self::Filled => "filled",
         }
     }
 }
@@ -324,6 +323,7 @@ impl FactoryAction {
             Self::Seeded => "seeded",
             Self::Flagged => "flagged",
             Self::Withdrawn => "withdrawn",
+            Self::Filled => "filled",
         }
     }
 }
@@ -363,7 +363,10 @@ pub enum ValidityFailure {
     /// The ask side resting at the venue promises more than the market's
     /// inventory now holds: a fill consumed inventory (ADR 0687) and the book
     /// still quotes the depth it was seeded with.
-    InventoryUncovered { resting_ask: Decimal, inventory: Decimal },
+    InventoryUncovered {
+        resting_ask: Decimal,
+        inventory: Decimal,
+    },
 }
 
 impl ValidityFailure {
@@ -757,11 +760,13 @@ impl MarketFactory {
         // Inventory the ask side no longer has behind it (ADR 0687): a fill
         // debited it and the book was not trimmed, so the venue shows depth
         // nobody holds. Withdrawn like any other failed validity check.
-        let resting_ask = venue.listed_book(&market.product).map_or(Decimal::ZERO, |book| {
-            book.asks
-                .iter()
-                .fold(Decimal::ZERO, |sum, level| sum + level.size)
-        });
+        let resting_ask = venue
+            .listed_book(&market.product)
+            .map_or(Decimal::ZERO, |book| {
+                book.asks
+                    .iter()
+                    .fold(Decimal::ZERO, |sum, level| sum + level.size)
+            });
         if resting_ask > market.inventory {
             return Ok(Some(ValidityFailure::InventoryUncovered {
                 resting_ask,
@@ -1580,12 +1585,18 @@ mod tests {
     }
 
     /// A seeded factory and its venue, for the settlement tests below.
-    fn seeded_with(inventory: &str) -> Result<(MarketFactory, SimulatedBroker, CreationPermissions)> {
+    fn seeded_with(
+        inventory: &str,
+    ) -> Result<(MarketFactory, SimulatedBroker, CreationPermissions)> {
         let permissions = permitted()?;
         let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
         let mut factory = MarketFactory::for_venue(&broker)?;
         factory.create(&admit(&permissions, CreationAction::Create)?, rule()?, at())?;
-        factory.list(&admit(&permissions, CreationAction::List)?, &mut broker, at())?;
+        factory.list(
+            &admit(&permissions, CreationAction::List)?,
+            &mut broker,
+            at(),
+        )?;
         factory.seed(
             &admit(&permissions, CreationAction::Seed)?,
             &ladder()?,
@@ -1639,7 +1650,11 @@ mod tests {
         let (mut factory, mut broker, permissions) = seeded_with("40")?;
         let marks = BTreeMap::from([(PRODUCT.to_string(), d("100"))]);
         factory.settle_fill(PRODUCT, d("5"), at())?;
-        assert!(factory.review(&permissions, &marks, &mut broker, at())?.is_empty());
+        assert!(
+            factory
+                .review(&permissions, &marks, &mut broker, at())?
+                .is_empty()
+        );
         // A further fill leaves 25 behind a 30-deep ask side.
         factory.settle_fill(PRODUCT, d("10"), at())?;
         let findings = factory.review(&permissions, &marks, &mut broker, at())?;

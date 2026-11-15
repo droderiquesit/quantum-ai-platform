@@ -887,7 +887,8 @@ fn each_world_market_mismatch_reaches_its_one_paper_only_consumer() -> Result<()
 /// entitlements permit, is bounded, and a stale or other-region digest is not
 /// read by the reader. Mutation: not run (nothing was compiled).
 #[test]
-fn a_cells_fused_digest_is_built_only_where_the_licence_permits_and_is_not_read_stale() -> Result<()> {
+fn a_cells_fused_digest_is_built_only_where_the_licence_permits_and_is_not_read_stale() -> Result<()>
+{
     use qip_kernel::digest::build_for_cell;
     let (graph, traces) = episode()?;
     let state = fuse(&graph, &traces, at(600), &config())?;
@@ -909,7 +910,15 @@ fn a_cells_fused_digest_is_built_only_where_the_licence_permits_and_is_not_read_
     assert_eq!(digest.entries.len(), 1, "bounded to max_entries");
     assert_eq!(digest.entries[0].instrument, map.entries[0].instrument);
     assert!(
-        build_for_cell(&map, &card, "newyork-1", "us-east4", Duration::from_mins(2), 1).is_err(),
+        build_for_cell(
+            &map,
+            &card,
+            "newyork-1",
+            "us-east4",
+            Duration::from_mins(2),
+            1
+        )
+        .is_err(),
         "a digest was built for a region the licence does not permit"
     );
     assert_eq!(digest.read(at(610), "europe-west2")?.len(), 1);

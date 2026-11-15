@@ -228,9 +228,7 @@ mod tests {
             "a duplicate id was accepted"
         );
         let start = Timestamp::from_secs(1_760_000_000);
-        let early = queue
-            .settle(start, |_| Some(dec!("110")))
-            .expect("settles");
+        let early = queue.settle(start, |_| Some(dec!("110"))).expect("settles");
         assert!(early.is_empty(), "a path was priced before its horizon");
         let unmarked = queue
             .settle(start.saturating_add(Duration::from_days(2)), |_| None)
@@ -250,7 +248,9 @@ mod tests {
                 .expect("room");
         }
         assert!(
-            queue.push(path("over", PathKind::Hedged, dec!("-1"))).is_err(),
+            queue
+                .push(path("over", PathKind::Hedged, dec!("-1")))
+                .is_err(),
             "the queue grew past its bound"
         );
     }

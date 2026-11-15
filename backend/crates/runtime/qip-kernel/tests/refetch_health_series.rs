@@ -57,8 +57,16 @@ fn a_refetch_pass_moves_the_refetch_objective_and_an_unrun_pass_reads_unmeasured
     assert!(!after.is_met, "a quarter withdrawn cannot meet 99%");
 
     platform.record_refetch_health("alpha", 0, 0)?;
-    assert_eq!(objective(&platform)?.observations, 4, "an empty pass adds nothing");
+    assert_eq!(
+        objective(&platform)?.observations,
+        4,
+        "an empty pass adds nothing"
+    );
     assert!(platform.record_refetch_health("alpha", 1, 2).is_err());
-    assert_eq!(objective(&platform)?.observations, 4, "a refused pass adds nothing");
+    assert_eq!(
+        objective(&platform)?.observations,
+        4,
+        "a refused pass adds nothing"
+    );
     Ok(())
 }

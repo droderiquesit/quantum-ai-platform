@@ -215,12 +215,30 @@ mod tests {
         assert_eq!(episode.seed(), Some(0x5EED));
         let reference = probe_digest(&base);
         let variants = [
-            ProbeInputs { quantity: "11", ..base.clone() },
-            ProbeInputs { step_volatility: 0.02, ..base.clone() },
-            ProbeInputs { step_drift: 0.001, ..base.clone() },
-            ProbeInputs { feed_delay_nanos: 1, ..base.clone() },
-            ProbeInputs { latency_nanos: Some((1, 0)), ..base.clone() },
-            ProbeInputs { half_spread_bps: 1.5, ..base.clone() },
+            ProbeInputs {
+                quantity: "11",
+                ..base.clone()
+            },
+            ProbeInputs {
+                step_volatility: 0.02,
+                ..base.clone()
+            },
+            ProbeInputs {
+                step_drift: 0.001,
+                ..base.clone()
+            },
+            ProbeInputs {
+                feed_delay_nanos: 1,
+                ..base.clone()
+            },
+            ProbeInputs {
+                latency_nanos: Some((1, 0)),
+                ..base.clone()
+            },
+            ProbeInputs {
+                half_spread_bps: 1.5,
+                ..base.clone()
+            },
         ];
         for variant in &variants {
             assert_ne!(probe_digest(variant), reference, "{variant:?}");

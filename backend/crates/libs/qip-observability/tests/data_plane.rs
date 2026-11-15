@@ -81,10 +81,24 @@ fn lineage_and_refetch_objectives_read_unmeasured_until_their_series_move() {
     assert!(!status(&metrics, LINEAGE_COMPLETENESS_OBJECTIVE).is_observed());
     assert!(!status(&metrics, REFETCH_HEALTH_OBJECTIVE).is_observed());
 
-    metrics.increment(names::DATA_LINEAGE_RECORDS, labels([("outcome", "linked")]), 19);
-    metrics.count(names::DATA_LINEAGE_RECORDS, labels([("outcome", "unlinked")]));
-    metrics.increment(names::DATA_REFETCH_CHECKS, labels([("outcome", "served")]), 3);
-    metrics.count(names::DATA_REFETCH_CHECKS, labels([("outcome", "withdrawn")]));
+    metrics.increment(
+        names::DATA_LINEAGE_RECORDS,
+        labels([("outcome", "linked")]),
+        19,
+    );
+    metrics.count(
+        names::DATA_LINEAGE_RECORDS,
+        labels([("outcome", "unlinked")]),
+    );
+    metrics.increment(
+        names::DATA_REFETCH_CHECKS,
+        labels([("outcome", "served")]),
+        3,
+    );
+    metrics.count(
+        names::DATA_REFETCH_CHECKS,
+        labels([("outcome", "withdrawn")]),
+    );
 
     let lineage = status(&metrics, LINEAGE_COMPLETENESS_OBJECTIVE);
     assert_eq!(lineage.observations, 20);

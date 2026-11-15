@@ -12,8 +12,8 @@
 //! judgement. It is a score and nothing reads it back into a routing, a
 //! budget or a size; letting it narrow one is a later decision.
 
-use qip_core::time::Timestamp;
 use qip_core::error::Result;
+use qip_core::time::Timestamp;
 use qip_cost_router::{Judgement, ReputationBook};
 use qip_events::log::EventLog;
 use qip_events::{EventBody, Topic};
@@ -128,12 +128,11 @@ mod tests {
     /// Mutation: not run (nothing was compiled, owner instruction 2026-11-15).
     #[test]
     fn a_book_rebuilt_from_scored_routings_holds_each_rungs_record() {
-        assert!(book_from(&Vec::<RoutingScored>::new()).is_empty(), "premise: no records, no book");
-        let records = [
-            scored("h1", true),
-            scored("h2", true),
-            scored("h3", false),
-        ];
+        assert!(
+            book_from(&Vec::<RoutingScored>::new()).is_empty(),
+            "premise: no records, no book"
+        );
+        let records = [scored("h1", true), scored("h2", true), scored("h3", false)];
         let book = book_from(&records);
         let rung = records[0].judgement.model().to_string();
         let record = book

@@ -3985,7 +3985,11 @@ fn the_training_export_holds_the_declined_path_and_the_fill_one_cycle_priced() -
     platform.observe(quiet_bars("AAA", 90));
     let declined = refuse_one(&mut platform, "prop-refused", start())?;
     let filled = fill_one(&mut platform, "prop-filled", start())?;
-    assert_eq!(platform.declined_awaiting_score(), 1, "premise: one refusal");
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        1,
+        "premise: one refusal"
+    );
     assert_eq!(platform.filled_awaiting_score(), 1, "premise: one fill");
     assert!(
         platform.training_export()?.records.is_empty(),

@@ -40,7 +40,7 @@ impl ComparisonTotals {
     /// The counterfactual's edge over live; positive when it would have done
     /// better. `None` over no segments, because nothing was compared.
     pub fn edge_bps(&self) -> Option<f64> {
-        (self.segments > 0).then(|| self.counterfactual_bps - self.live_bps)
+        (self.segments > 0).then_some(self.counterfactual_bps - self.live_bps)
     }
 
     /// Merge two shards' totals.
@@ -93,10 +93,16 @@ mod tests {
         let n = 11;
         let all: Vec<usize> = (0..n).collect();
         let single = replay(&all);
-        assert_eq!(single.segments, 11, "premise: the single run saw every segment");
+        assert_eq!(
+            single.segments, 11,
+            "premise: the single run saw every segment"
+        );
         let a = shard_indices(n, 0, 2).unwrap();
         let b = shard_indices(n, 1, 2).unwrap();
-        assert!(a.iter().all(|i| !b.contains(i)), "a segment is in both shards");
+        assert!(
+            a.iter().all(|i| !b.contains(i)),
+            "a segment is in both shards"
+        );
         assert_eq!(a.len() + b.len(), n, "a segment is in no shard");
         let merged = replay(&a).merge(replay(&b));
         assert_eq!(merged, single);

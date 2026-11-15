@@ -21761,7 +21761,9 @@ impl Platform {
                         )
                         .is_err()
                     {
-                        detail.push_str("; the capacity probe's synthetic episode was refused by the log");
+                        detail.push_str(
+                            "; the capacity probe's synthetic episode was refused by the log",
+                        );
                     }
                 }
                 Err(error) => detail.push_str(&format!(
@@ -21989,6 +21991,10 @@ impl Platform {
         spec.step_volatility = volatility;
         spec.step_drift = drift;
         let quantity = spec.level_size;
+        // Read before `spec` moves into the market: the probe's episode
+        // digests what shaped the run (R12-EXPAND-6033).
+        let half_spread_bps = spec.half_spread_bps;
+        let level_spacing_bps = spec.level_spacing_bps;
         let market = SyntheticMarket::single(now, Duration::from_mins(1), 3, "XSIM", spec);
         // The probe runs behind the feed delay the real sources have shown,
         // because a capacity figure read off a feed assumed current is a
@@ -22043,19 +22049,18 @@ impl Platform {
         if conditioned {
             run = run.with_conditions(schedule).ok()?;
         }
-        let input_digest = crate::synthetic_worlds::probe_digest(
-            &crate::synthetic_worlds::ProbeInputs {
+        let input_digest =
+            crate::synthetic_worlds::probe_digest(&crate::synthetic_worlds::ProbeInputs {
                 subject: subject.as_str(),
                 initial_price: &Decimal::from_f64(initial)?.to_string(),
                 quantity: &quantity.to_string(),
-                half_spread_bps: spec.half_spread_bps,
-                level_spacing_bps: spec.level_spacing_bps,
-                step_volatility: spec.step_volatility,
-                step_drift: spec.step_drift,
+                half_spread_bps,
+                level_spacing_bps,
+                step_volatility: volatility,
+                step_drift: drift,
                 feed_delay_nanos: feed_delay.as_nanos(),
                 latency_nanos,
-            },
-        );
+            });
         let mut strategy = CapacityProbeStrategy {
             object_id: subject.clone(),
             venue: "XSIM".to_string(),
@@ -36436,7 +36441,9 @@ mod simulate_tests {
         claim(&platform, driver, "PRIV-NEW");
         let outcome = platform.stage_simulate(start());
         assert!(
-            outcome.detail.contains("causal: 1 of 1 driver(s) reach the book"),
+            outcome
+                .detail
+                .contains("causal: 1 of 1 driver(s) reach the book"),
             "premise: the driver was walked: {}",
             outcome.detail
         );

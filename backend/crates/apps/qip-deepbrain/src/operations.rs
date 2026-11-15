@@ -937,11 +937,9 @@ impl Operations {
             iterations: VecDeque::new(),
             timeline,
             remediator: match journal {
-                Some(sink) => Remediator::journalled(
-                    reviewed_runbooks()?,
-                    CapabilitySwitch::default(),
-                    sink,
-                )?,
+                Some(sink) => {
+                    Remediator::journalled(reviewed_runbooks()?, CapabilitySwitch::default(), sink)?
+                }
                 None => Remediator::new(reviewed_runbooks()?, CapabilitySwitch::default())?,
             },
             book,

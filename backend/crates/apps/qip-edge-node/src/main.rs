@@ -622,7 +622,6 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
         // ones nobody priced. Restrictive; no committed strategy declares an
         // edge yet, so until one does this node enters nothing.
         .with_edgeless_signals_refused();
-        .with_journal_wire();
     // ADR 0242, R12-RES-7099: the cell keeps the custody watch, fed by the
     // statement the simulated venue makes each pass.
     let cell_config = qip_edge_node::pass::arm_custody_watch(cell_config)?;
@@ -1542,7 +1541,6 @@ fn run() -> Result<()> {
     // the handoff reaches the decision loop where the plan handoff is built.
     let mut control: Option<ControlWiring> = None;
     match config.fabric.take() {
-        Some(mut fabric) => {
         Some(mut fabric) => {
             // R12-FABRIC-10016: the broker's address from its SRV record when a
             // resolver and zone are configured; the configured endpoint is the

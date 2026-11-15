@@ -31,9 +31,9 @@
 use crate::platform::{
     CellDeclinedScore, CounterfactualJournal, CycleJournalEntry, DeclinedScore, FillScore, Platform,
 };
+use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::time::Timestamp;
-use qip_core::Decimal;
 use qip_twin::counterfactual::EstimationMethod;
 use qip_twin::value::Simulated;
 use serde::{Deserialize, Serialize};
@@ -230,8 +230,8 @@ impl Platform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qip_core::ids::OrderId;
     use qip_core::ObjectId;
+    use qip_core::ids::OrderId;
 
     fn ts(secs: i64) -> Timestamp {
         Timestamp::from_secs(secs)
@@ -323,7 +323,10 @@ mod tests {
         assert_eq!(declined.order_id, "d-1");
         assert_eq!(declined.regret, Some(true));
         assert!(declined.would_have_earned.is_some());
-        assert_eq!(declined.smaller_favoured, None, "a refusal has no size finding");
+        assert_eq!(
+            declined.smaller_favoured, None,
+            "a refusal has no size finding"
+        );
         let partial = export
             .records
             .iter()
