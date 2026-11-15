@@ -49,6 +49,7 @@
 //! deterministic templates narrating — which is what every deployment does
 //! today.
 
+pub mod acquisition_dispatch;
 pub mod ambient_agency;
 pub mod ambient_journal;
 pub mod ambient_models;

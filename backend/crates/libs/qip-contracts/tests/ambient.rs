@@ -4,10 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use qip_contracts::ambient::{
-    AcquisitionCriteria, AcquisitionStatus, ActivationReason, Advisory, AmbientSignal,
-    AttentionBudget, AttentionEvent, AttentionRouter, AuthorityBoundary, ComputeAllocation,
-    ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation, Pathway,
-    PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
+    AcquisitionCriteria, AcquisitionKind, AcquisitionStatus, ActivationReason, Advisory,
+    AmbientSignal, AttentionBudget, AttentionEvent, AttentionRouter, AuthorityBoundary,
+    ComputeAllocation, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
+    Pathway, PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
 };
 use qip_core::{Duration, Timestamp, dec};
 use std::collections::BTreeSet;
@@ -1539,4 +1539,25 @@ fn the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is() 
         10_000,
         "premise: the grid's top is a nonzero rank, so the sweep is not of zeros"
     );
+}
+
+/// R12-DATA-3105: the kind survives a round trip for every one of the seven
+/// kinds, and a record written before the field existed decodes as a new
+/// source query. Mutation: `#[serde(skip)]` on `InfoRequest::kind` — the
+/// round-trip row for the first non-default kind fails.
+#[test]
+fn an_information_request_keeps_its_kind_and_an_old_record_reads_as_a_new_source_query() {
+    let base = InfoRequest::new("r", "d", criteria(5_000, 5_000, 5_000, 100), at(100), at(0))
+        .expect("valid request");
+    assert_eq!(AcquisitionKind::ALL.len(), 7);
+    for kind in AcquisitionKind::ALL {
+        let request = base.clone().with_kind(kind);
+        let json = serde_json::to_string(&request).expect("encodes");
+        let back: InfoRequest = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(back.kind(), kind, "{json}");
+    }
+    let old = serde_json::to_string(&base).expect("encodes");
+    assert!(!old.contains("kind"), "the default is not written: {old}");
+    let back: InfoRequest = serde_json::from_str(&old).expect("decodes");
+    assert_eq!(back.kind(), AcquisitionKind::NewSourceQuery);
 }
