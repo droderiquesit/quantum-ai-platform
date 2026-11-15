@@ -388,8 +388,24 @@ impl ConnectorArm {
     }
 
     /// Keep every knowledge pack this arm's polls produce on `store`.
+    ///
+    /// The store is wrapped in the pack class's write check (R12-DATA-1041),
+    /// so whatever the caller hands in, bytes that are not a compact pack in
+    /// the packs namespace are refused before they reach it.
     pub fn with_knowledge_packs(mut self, store: Arc<dyn BlobStore>) -> Self {
-        self.pack_store = Some(store);
+        let class = qip_storage::classes::blob_class(
+            qip_storage::classes::DECLARED,
+            KNOWLEDGE_PACK_NAMESPACE,
+        )
+        .copied();
+        self.pack_store = Some(match class {
+            Ok(class) => Arc::new(qip_storage::class_checked::ClassCheckedStore::new(
+                store, class,
+            )),
+            // An undeclared class is a build defect; keep the caller's store
+            // rather than none so the pack write is not silently dropped.
+            Err(_) => store,
+        });
         self
     }
 
