@@ -24349,6 +24349,19 @@ impl Platform {
         &self.falsification
     }
 
+    /// Admit the relative-value hypotheses a tick round's mismatches proposed
+    /// (R12-TICK-2084, ADR 0609). They enter the falsification book as
+    /// proposed and size nothing; returns how many were new.
+    pub fn admit_proposed_hypotheses(
+        &mut self,
+        proposals: Vec<crate::mismatch::ProposedHypothesis>,
+    ) -> usize {
+        proposals
+            .into_iter()
+            .filter(|p| self.falsification.propose(p.clone()))
+            .count()
+    }
+
     /// What the platform's own series say, for the metrics named.
     ///
     /// The metric is `observable:subject`, as [`Platform::record_prediction`]
