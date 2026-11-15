@@ -60,7 +60,6 @@ use qip_edge_node::arbitrage::{
 use qip_edge_node::control::{Handoff as ControlHandoff, PlanCompiler, Poller};
 use qip_edge_node::cross_region::{CrossRegionMirror, MIRROR_VARIABLE, no_declaration_line};
 use qip_edge_node::dark::DarkRegionWire;
-use qip_edge_node::event_fabric::control::ControlWiring;
 use qip_edge_node::event_fabric::drain::{Drain, DrainConfig, LakeSink, Sink};
 use qip_edge_node::event_fabric::inputs::RecordedInputs;
 use qip_edge_node::event_fabric::mirror::FabricMirror;
@@ -79,8 +78,8 @@ use qip_edge_node::mesh::MeshWorker;
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::outbox::{
-    FABRIC_CONTROL_TOKEN_VARIABLE, FABRIC_URL_VARIABLE, FabricSettings, PASS_INTERVAL,
-    SPOOL_BUDGET_BYTES, journal_bound, read_fabric, spool_dir, spool_survives_the_machine,
+    FABRIC_URL_VARIABLE, FabricSettings, PASS_INTERVAL, SPOOL_BUDGET_BYTES, journal_bound,
+    read_fabric, spool_dir, spool_survives_the_machine,
 };
 use qip_edge_node::pass::PassMeter;
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
@@ -1396,13 +1395,8 @@ fn run() -> Result<()> {
     // of `run` — which never returns while the node runs — because dropping
     // it stops its renewal loop.
     let mut issued: Option<qip_transport::cas::CasIdentity> = None;
-    // ADR 0100 §8 / R12-FABRIC-10077: control read from the fabric's P0
-    // `control.local`, when the node holds a consume token. Declared here so
-    // the thread outlives the arm below — dropping its handle stops it — and
-    // the handoff reaches the decision loop where the plan handoff is built.
-    let mut control: Option<ControlWiring> = None;
     match config.fabric.take() {
-        Some(mut fabric) => {
+        Some(fabric) => {
             // ADR 0112: the fabric is a link between Compute Engine
             // processes, so it is mutual TLS with this node's workload
             // certificate unless the deployment is `local` and said
@@ -1443,28 +1437,6 @@ fn run() -> Result<()> {
                 fabric.url,
                 link.describe()
             );
-            match fabric.control_consumer(&config.cell_id, Arc::clone(&clock), &link)? {
-                Some(consumer) => {
-                    let wiring = ControlWiring::spawn(
-                        &config.cell_id,
-                        trust.clone(),
-                        Arc::clone(&clock),
-                        consumer,
-                        Arc::clone(&outbox_telemetry),
-                        PLAN_HANDOFF_CAPACITY,
-                    )?;
-                    println!(
-                        "qip-edge-node: reading control.local from the fabric under the node's \
-                         trust root; every grant, policy and halt is verified as on the mesh"
-                    );
-                    control = Some(wiring);
-                }
-                None => println!(
-                    "qip-edge-node: awaiting {FABRIC_CONTROL_TOKEN_VARIABLE}: this cell reads no \
-                     control from the fabric, and capital, policy and halts reach it over the \
-                     mesh and the polled flag only"
-                ),
-            }
             sinks.push(Box::new(fabric.sink(
                 &config.cell_id,
                 &config.region,
@@ -1590,27 +1562,12 @@ fn run() -> Result<()> {
              only through the centre"
         ),
     }
-    // One handoff, however many producers: the fabric consumer and the plan
-    // compiler each hold a sender, and the decision thread drains one
-    // boundary. The wiring is held for the life of `run` — its thread stops
-    // when it drops.
-    let (_control_live, control_handoff) = match control {
-        Some(wiring) => {
-            let (thread, handoff) = wiring.into_parts();
-            (Some(thread), Some(handoff))
-        }
-        None => (None, None),
-    };
-    let plans = match (config.plan_path.clone(), control_handoff) {
-        (Some(path), Some((sender, handoff))) => {
-            Some((Some(PlanCompiler::spawn(path, sender)?), handoff))
-        }
-        (Some(path), None) => {
+    let plans = match config.plan_path.clone() {
+        Some(path) => {
             let (sender, handoff) = ControlHandoff::bounded(PLAN_HANDOFF_CAPACITY)?;
             Some((Some(PlanCompiler::spawn(path, sender)?), handoff))
         }
-        (None, Some((_, handoff))) => Some((None, handoff)),
-        (None, None) => None,
+        None => None,
     };
     decisions = decisions.with_strategies(strategies, plans);
     if let Some(flag) = config.halt_flag.clone() {

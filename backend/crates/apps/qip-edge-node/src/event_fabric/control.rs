@@ -78,12 +78,11 @@
 //!   re-read is re-verified at the present instant, so an expired grant is
 //!   refused rather than revived, and the grant memory absorbs the rest.
 
-use crate::control::{CaughtUp, CaughtUpSignal, Delivery, Handoff, HandoffSender};
+use crate::control::{CaughtUpSignal, Delivery, HandoffSender};
 use crate::event_fabric::telemetry::OutboxTelemetry;
 use qip_contracts::replay::ControlPosition;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, EventId, Timestamp};
-use qip_edge::TrustRoot;
 use qip_edge::mesh::{CapitalDownlink, HaltTopic, PolicyDownlink, ScriptedFrames};
 use qip_events::AnyEvent;
 use qip_transport::event_fabric::consumer::Consumer;
@@ -362,39 +361,6 @@ impl ControlConsumer {
     /// source — an empty key or a zero grant memory.
     pub fn new(
         config: ControlConfig,
-        consumer: Consumer,
-        handoff: HandoffSender,
-        refusals: RefusalSender,
-        signal: CaughtUpSignal,
-        telemetry: Arc<OutboxTelemetry>,
-    ) -> Result<Self> {
-        let trust = TrustRoot::shared_key(&config.key)?;
-        Self::new_trusted(
-            config.cell,
-            trust,
-            config.grant_memory,
-            config.clock,
-            consumer,
-            handoff,
-            refusals,
-            signal,
-            telemetry,
-        )
-    }
-
-    /// [`Self::new`] with the root the composition root chose (ADR 0110):
-    /// the trust bundle's public keys, or the shared key for its last
-    /// release. The node's mesh downlink is built from the same root, so a
-    /// control record on the fabric is held to exactly the signature a
-    /// frame on the mesh is — a consumer that took only a shared key would
-    /// be unable to start on a node whose mount no longer holds one, and a
-    /// node tempted to keep the key mounted for it would defeat ADR 0110.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_trusted(
-        cell: String,
-        trust: TrustRoot,
-        grant_memory: usize,
-        clock: Arc<dyn Clock>,
         mut consumer: Consumer,
         handoff: HandoffSender,
         refusals: RefusalSender,
@@ -412,14 +378,17 @@ impl ControlConsumer {
         // through `poll_from`, one at a time, so each value keeps its
         // position. An empty script is the honest placeholder for "no
         // source of its own".
-        let capital = CapitalDownlink::from_source_trusted(
-            cell.clone(),
-            trust.clone(),
-            grant_memory,
+        let capital = CapitalDownlink::from_source(
+            config.cell.clone(),
+            &config.key,
+            config.grant_memory,
             Box::new(ScriptedFrames::new(1)?),
         )?;
-        let policy =
-            PolicyDownlink::from_source_trusted(cell, trust, Box::new(ScriptedFrames::new(1)?));
+        let policy = PolicyDownlink::from_source(
+            config.cell,
+            &config.key,
+            Box::new(ScriptedFrames::new(1)?),
+        )?;
         consumer.seek(0);
         Ok(Self {
             consumer,
@@ -428,7 +397,7 @@ impl ControlConsumer {
             handoff,
             refusals,
             telemetry,
-            clock,
+            clock: config.clock,
             signal: Some(signal),
             held: VecDeque::new(),
             stats: ControlStats::default(),
@@ -723,85 +692,4 @@ impl Drop for ControlThread {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
     }
-}
-
-/// How often the node's control consumer asks again when a turn moved
-/// nothing. Small against the pass interval so a halt waits a fraction of a
-/// pass at most, large enough that a broker at its head is not polled hot.
-pub const CONTROL_IDLE: Duration = Duration::from_millis(200);
-
-/// The composition root's one call: a [`ControlConsumer`] built under the
-/// node's trust root, running on its own thread, with the handoff it feeds
-/// and the channels the decision thread reads it through. Exists so `main`
-/// holds a single value and a test can build exactly what `main` builds.
-#[derive(Debug)]
-pub struct ControlWiring {
-    thread: ControlThread,
-    sender: HandoffSender,
-    handoff: Handoff,
-    refusals: Refusals,
-    barrier: CaughtUp,
-}
-
-impl ControlWiring {
-    /// Build and start. `trust` is the node's root, the same value the mesh
-    /// downlink verifies under (ADR 0110).
-    pub fn spawn(
-        cell: &str,
-        trust: TrustRoot,
-        clock: Arc<dyn Clock>,
-        consumer: Consumer,
-        telemetry: Arc<OutboxTelemetry>,
-        handoff_capacity: usize,
-    ) -> Result<Self> {
-        let (sender, handoff) = Handoff::bounded(handoff_capacity)?;
-        let (refusal_sender, refusals) = Refusals::bounded(MAX_REFUSAL_CAPACITY)?;
-        let (signal, barrier) = CaughtUp::new();
-        let control = ControlConsumer::new_trusted(
-            cell.to_string(),
-            trust,
-            qip_edge::mesh::DEFAULT_GRANT_MEMORY,
-            clock,
-            consumer,
-            sender.clone(),
-            refusal_sender,
-            signal,
-            telemetry,
-        )?;
-        let thread = control.spawn(Arc::new(qip_transport::retry::ThreadSleeper), CONTROL_IDLE)?;
-        Ok(Self {
-            thread,
-            sender,
-            handoff,
-            refusals,
-            barrier,
-        })
-    }
-
-    /// The counters as of the consumer thread's last turn.
-    pub fn stats(&self) -> ControlStats {
-        self.thread.stats()
-    }
-
-    /// Split into what must stay alive and what the decision loop takes:
-    /// a sender (for a second producer, the plan compiler) and the handoff
-    /// it drains at each boundary.
-    pub fn into_parts(self) -> (ControlLive, (HandoffSender, Handoff)) {
-        (
-            ControlLive {
-                thread: self.thread,
-                refusals: self.refusals,
-                barrier: self.barrier,
-            },
-            (self.sender, self.handoff),
-        )
-    }
-}
-
-/// What keeps the consumer running: dropping the thread handle stops it.
-#[derive(Debug)]
-pub struct ControlLive {
-    pub thread: ControlThread,
-    pub refusals: Refusals,
-    pub barrier: CaughtUp,
 }
