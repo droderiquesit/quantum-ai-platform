@@ -370,6 +370,12 @@ pub struct TickRound {
     /// to `branches_live`, so a branch is never silently absent.
     pub world_branches: usize,
     pub world_branches_refused: usize,
+    /// Each live branch priced against the book the desk was offered
+    /// (R12-TICK-10121): the distribution a sizing decision reads. Empty when
+    /// no book was offered, or when it was refused, in which case
+    /// `portfolio_outcomes_refused` says why.
+    pub portfolio_outcomes: Vec<qip_twin::futures::PortfolioOutcome>,
+    pub portfolio_outcomes_refused: Option<String>,
     pub tree_log_score: Option<f64>,
     pub compression: Option<CompressionReport>,
     /// Present ticks whose lake line carried typed sync metadata and a
@@ -555,6 +561,9 @@ pub struct TickDesk {
     /// The same fused state as beliefs REASON may be narrowed by, never
     /// raised (ADR 0151 decision 3, R12-TICK-1002).
     outside_priors: Vec<qip_kernel::fusion::OutsidePrior>,
+    /// The platform's book as signed weights of equity, set by the caller
+    /// before a round (R12-TICK-10121). Empty means no book was offered.
+    book: BTreeMap<String, f64>,
 }
 
 impl TickDesk {
@@ -571,7 +580,14 @@ impl TickDesk {
             tree: None,
             posteriors: BTreeMap::new(),
             outside_priors: Vec::new(),
+            book: BTreeMap::new(),
         }
+    }
+
+    /// Offer the platform's book (see [`crate::tick_book::book_weights`]) for
+    /// the next round's portfolio outcome distribution.
+    pub fn set_book(&mut self, weights: BTreeMap<String, f64>) {
+        self.book = weights;
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
@@ -1100,6 +1116,29 @@ impl TickDesk {
                     &format!("{OUTPUT_NAMESPACE}/world-branches/{}.json", round.manifest),
                     serde_json::to_vec(&contracts)?,
                 )?;
+            }
+            if !self.book.is_empty() {
+                match tree.portfolio_outcomes(&self.book) {
+                    Ok(outcomes) => {
+                        let record = crate::tick_book::PortfolioOutcomeRecord::new(
+                            &round.manifest,
+                            now,
+                            &self.book,
+                            outcomes.clone(),
+                        );
+                        self.outputs.put(
+                            &format!(
+                                "{OUTPUT_NAMESPACE}/portfolio-outcomes/{}.json",
+                                round.manifest
+                            ),
+                            serde_json::to_vec(&record)?,
+                        )?;
+                        round.portfolio_outcomes = outcomes;
+                    }
+                    Err(error) => {
+                        round.portfolio_outcomes_refused = Some(error.message().to_string());
+                    }
+                }
             }
             self.tree = Some(tree);
         }

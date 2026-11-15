@@ -78,6 +78,7 @@ pub mod signal_mapper;
 pub mod source_alpha;
 pub mod status;
 pub mod succession;
+pub mod tick_book;
 pub mod tick_desk;
 pub mod trust;
 pub mod warehouse;

@@ -1220,3 +1220,85 @@ fn the_desk_fills_depth_and_imbalance_from_the_replayed_book_into_the_fused_reac
     );
     Ok(())
 }
+
+/// R12-TICK-10121. Mutation: in `TickDesk::round_with_fills`, skip the
+/// `portfolio_outcomes` call, or write the record under another prefix; or in
+/// `book_weights`, drop the sign (use `abs`) or the division by equity.
+#[test]
+fn a_book_offered_to_the_desk_is_priced_against_every_live_branch_and_journaled() -> Result<()> {
+    use qip_deepbrain::tick_book::{PortfolioOutcomeRecord, book_weights};
+    // The weight arithmetic first: a short is negative and the figure is a
+    // fraction of equity, so ten units at 100 against 5,000 is 0.2 either way.
+    let weights = book_weights(
+        &BTreeMap::from([
+            ("obj-ACME".to_string(), (d(10.0), d(100.0))),
+            ("obj-SHORT".to_string(), (d(-10.0), d(100.0))),
+        ]),
+        d(5_000.0),
+    )?;
+    assert!((weights["obj-ACME"] - 0.2).abs() < 1e-12);
+    assert!((weights["obj-SHORT"] + 0.2).abs() < 1e-12);
+    assert!(
+        book_weights(
+            &BTreeMap::from([("obj-ACME".to_string(), (d(1.0), d(1.0)))]),
+            d(0.0)
+        )
+        .is_err(),
+        "an exhausted book is refused, not floored"
+    );
+
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let outputs = Arc::new(MemoryBlobStore::new());
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::clone(&outputs) as Arc<dyn BlobStore>,
+    );
+    desk.set_book(BTreeMap::from([("obj-ACME".to_string(), 0.5)]));
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert!(
+        round.branches_live > 1,
+        "premise: a tree with live branches"
+    );
+    assert_eq!(round.portfolio_outcomes.len(), round.branches_live);
+    let mass: f64 = round.portfolio_outcomes.iter().map(|o| o.weight).sum();
+    assert!(
+        (mass - 1.0).abs() < 1e-9,
+        "a distribution sums to one: {mass}"
+    );
+    assert!(
+        round
+            .portfolio_outcomes
+            .iter()
+            .any(|o| o.portfolio_bps != 0.0),
+        "premise: some world moves the book"
+    );
+    let written = outputs.list(&format!("{OUTPUT_NAMESPACE}/portfolio-outcomes/"))?;
+    assert_eq!(written.len(), 1);
+    let record: PortfolioOutcomeRecord =
+        serde_json::from_slice(&outputs.get(&written[0])?.expect("listed"))?;
+    assert_eq!(record.outcomes, round.portfolio_outcomes);
+    assert!((record.positions["obj-ACME"] - 0.5).abs() < 1e-12);
+
+    // A book that names nothing the twin models is refused with a reason and
+    // writes nothing: zero everywhere would read as a hedged book.
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let outputs = Arc::new(MemoryBlobStore::new());
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::clone(&outputs) as Arc<dyn BlobStore>,
+    );
+    desk.set_book(BTreeMap::from([("obj-ELSEWHERE".to_string(), 0.5)]));
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert!(round.portfolio_outcomes.is_empty());
+    assert!(round.portfolio_outcomes_refused.is_some());
+    assert!(
+        outputs
+            .list(&format!("{OUTPUT_NAMESPACE}/portfolio-outcomes/"))?
+            .is_empty()
+    );
+    Ok(())
+}
