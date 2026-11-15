@@ -25,3 +25,20 @@ origin. Nothing was compiled when this was written (owner instruction of
 
 A reader can cite "causal graph at version N as of T". Wiring `cite` into a
 decision record is not done here.
+
+## Further lane 40 decision: R12-MODEL-6004 (hedged and unwound paths)
+
+This record is lane 40's only home for decisions besides ADR 0681, so the
+decision is written here rather than under a third number.
+
+1. The alternative to an **unwind** is holding the closed quantity to the
+   horizon; the alternative to a **hedge** is the unhedged hold. Both are
+   reported as `regret` = alternative minus chosen, positive meaning the
+   alternative was better.
+2. The queue is bounded at 256 pending paths (`path_counterfactual::MAX_PENDING`),
+   refused beyond that, never dropped. **Provisional**: no figure was given.
+3. Not decided and not built: wiring the queue into `Platform` and LEARN. An
+   earlier draft did that (unwind queue, twin hold arm) and broke
+   `a_closed_position_is_priced_as_the_unhedged_hold_and_a_climbing_tape_is_a_regret`.
+   Owner decision 7 also holds that no composition root declares a hedge
+   policy, so a hedge counterfactual would score nothing on a default path.

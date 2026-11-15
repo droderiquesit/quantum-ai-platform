@@ -81,6 +81,7 @@ pub mod model_serving;
 pub mod model_tournament;
 pub mod model_trust;
 pub mod now_stage;
+pub mod path_counterfactual;
 pub mod platform;
 pub mod position_life;
 pub mod position_register;
