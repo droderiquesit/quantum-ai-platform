@@ -311,8 +311,6 @@ pub enum FactoryAction {
     Seeded,
     Flagged,
     Withdrawn,
-    /// A fill debited the market's inventory (ADR 0687).
-    Filled,
 }
 
 impl FactoryAction {
@@ -323,7 +321,6 @@ impl FactoryAction {
             Self::Seeded => "seeded",
             Self::Flagged => "flagged",
             Self::Withdrawn => "withdrawn",
-            Self::Filled => "filled",
         }
     }
 }
@@ -360,13 +357,6 @@ pub enum ValidityFailure {
     MarkDeviated { mark: Decimal, reference: Decimal },
     /// The seeded book no longer rests at the venue.
     LiquidityGone,
-    /// The ask side resting at the venue promises more than the market's
-    /// inventory now holds: a fill consumed inventory (ADR 0687) and the book
-    /// still quotes the depth it was seeded with.
-    InventoryUncovered {
-        resting_ask: Decimal,
-        inventory: Decimal,
-    },
 }
 
 impl ValidityFailure {
@@ -383,12 +373,6 @@ impl ValidityFailure {
                 "the mark {mark} moved past the rule's tolerance from the reference {reference}"
             ),
             Self::LiquidityGone => "the seeded book no longer rests at the venue".to_string(),
-            Self::InventoryUncovered {
-                resting_ask,
-                inventory,
-            } => format!(
-                "the ask side rests {resting_ask} and the market holds {inventory} of inventory"
-            ),
         }
     }
 
@@ -598,66 +582,6 @@ impl MarketFactory {
         Ok(())
     }
 
-    /// Debit the inventory of a seeded market by `quantity` that a buyer
-    /// took from its ask side (R12-EXEC-5080, ADR 0687).
-    ///
-    /// Inventory used to be set once at seeding and never again, so a market
-    /// could sell the same units forever while the monitor believed it
-    /// covered its ladder. A fill larger than the inventory is refused
-    /// outright rather than cut to it: a venue that reports a fill the market
-    /// cannot back is a disagreement to surface, not a number to correct.
-    /// Nothing is rested here, so no admission is needed and nothing can
-    /// widen: the book is left alone and [`Self::review`] withdraws a market
-    /// whose resting ask now outruns its inventory. Re-listing a trimmed
-    /// ladder would rest orders and needs a fresh seed admission; that is not
-    /// built. Returns the inventory left.
-    pub fn settle_fill(
-        &mut self,
-        product: &str,
-        quantity: Decimal,
-        now: Timestamp,
-    ) -> Result<Decimal> {
-        if !quantity.is_positive() {
-            return Err(Error::invalid(format!(
-                "a fill of {quantity} in {product} settles nothing; a fill is more than zero"
-            )));
-        }
-        let market = self.markets.get(product).ok_or_else(|| {
-            Error::not_found(format!(
-                "no market in {product} exists at {}; a fill on a product this factory did not \
-                 create is not its to settle",
-                self.venue
-            ))
-        })?;
-        if market.stage != MarketStage::Seeded {
-            return Err(Error::invalid(format!(
-                "the market in {product} is {}, and only a seeded market has inventory to sell",
-                market.stage.as_str()
-            )));
-        }
-        if quantity > market.inventory {
-            return Err(Error::denied(format!(
-                "a fill of {quantity} in {product} exceeds the {} of inventory the market holds; \
-                 the market cannot have sold what it did not have",
-                market.inventory
-            )));
-        }
-        let rule = market.rule.clone();
-        let left = market.inventory - quantity;
-        if let Some(market) = self.markets.get_mut(product) {
-            market.inventory = left;
-        }
-        self.record(
-            product,
-            FactoryAction::Filled,
-            format!("{quantity} of inventory sold from the ask side; {left} left"),
-            Vec::new(),
-            rule,
-            now,
-        );
-        Ok(left)
-    }
-
     /// Re-check every live market and withdraw each that is no longer valid.
     ///
     /// `marks` is the latest independent mark per product. A seeded market
@@ -756,22 +680,6 @@ impl MarketFactory {
             .is_some_and(|book| book.total_depth().is_positive());
         if !rests {
             return Ok(Some(ValidityFailure::LiquidityGone));
-        }
-        // Inventory the ask side no longer has behind it (ADR 0687): a fill
-        // debited it and the book was not trimmed, so the venue shows depth
-        // nobody holds. Withdrawn like any other failed validity check.
-        let resting_ask = venue
-            .listed_book(&market.product)
-            .map_or(Decimal::ZERO, |book| {
-                book.asks
-                    .iter()
-                    .fold(Decimal::ZERO, |sum, level| sum + level.size)
-            });
-        if resting_ask > market.inventory {
-            return Ok(Some(ValidityFailure::InventoryUncovered {
-                resting_ask,
-                inventory: market.inventory,
-            }));
         }
         Ok(None)
     }
@@ -1581,89 +1489,6 @@ mod tests {
             factory.drain_journal().is_empty(),
             "the refusal was journaled as a creation"
         );
-        Ok(())
-    }
-
-    /// A seeded factory and its venue, for the settlement tests below.
-    fn seeded_with(
-        inventory: &str,
-    ) -> Result<(MarketFactory, SimulatedBroker, CreationPermissions)> {
-        let permissions = permitted()?;
-        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
-        let mut factory = MarketFactory::for_venue(&broker)?;
-        factory.create(&admit(&permissions, CreationAction::Create)?, rule()?, at())?;
-        factory.list(
-            &admit(&permissions, CreationAction::List)?,
-            &mut broker,
-            at(),
-        )?;
-        factory.seed(
-            &admit(&permissions, CreationAction::Seed)?,
-            &ladder()?,
-            d(inventory),
-            &mut broker,
-            at(),
-        )?;
-        Ok((factory, broker, permissions))
-    }
-
-    /// R12-EXEC-5080 (ADR 0687). Written without being compiled or run; no
-    /// mutation was run.
-    /// Mutation to run: make `settle_fill` skip the debit and the second
-    /// assertion fails.
-    #[test]
-    fn a_fill_debits_the_markets_inventory_and_journals_it() -> Result<()> {
-        let (mut factory, _broker, _permissions) = seeded_with("40")?;
-        assert_eq!(factory.market(PRODUCT).map(|m| m.inventory), Some(d("40")));
-        let left = factory.settle_fill(PRODUCT, d("12"), at())?;
-        assert_eq!(left, d("28"));
-        assert_eq!(factory.market(PRODUCT).map(|m| m.inventory), Some(d("28")));
-        let actions: Vec<FactoryAction> =
-            factory.drain_journal().iter().map(|r| r.action).collect();
-        assert_eq!(actions.last(), Some(&FactoryAction::Filled));
-        Ok(())
-    }
-
-    /// A fill past the inventory is refused, and inventory is unchanged.
-    /// Mutation to run: change `quantity > market.inventory` to `>=`... or
-    /// delete the check, and the `expect_err` fails.
-    #[test]
-    fn a_fill_larger_than_the_inventory_is_refused_not_cut_to_it() -> Result<()> {
-        let (mut factory, _broker, _permissions) = seeded_with("30")?;
-        let refusal = factory
-            .settle_fill(PRODUCT, d("31"), at())
-            .expect_err("a fill past inventory");
-        assert!(refusal.message().contains("did not have"), "{refusal:?}");
-        assert_eq!(factory.market(PRODUCT).map(|m| m.inventory), Some(d("30")));
-        assert!(factory.settle_fill(PRODUCT, d("0"), at()).is_err());
-        assert!(factory.settle_fill("OTHER/USD", d("1"), at()).is_err());
-        Ok(())
-    }
-
-    /// The monitor withdraws a market whose resting ask outruns the
-    /// inventory a fill left, and leaves a covered one alone.
-    /// Mutation to run: delete the `resting_ask > market.inventory` branch
-    /// in `assess` and the second review finds nothing.
-    #[test]
-    fn a_market_whose_ask_side_outruns_its_inventory_is_withdrawn_by_the_monitor() -> Result<()> {
-        // Inventory 40 against a 30-deep ask side: one fill of 5 still covers.
-        let (mut factory, mut broker, permissions) = seeded_with("40")?;
-        let marks = BTreeMap::from([(PRODUCT.to_string(), d("100"))]);
-        factory.settle_fill(PRODUCT, d("5"), at())?;
-        assert!(
-            factory
-                .review(&permissions, &marks, &mut broker, at())?
-                .is_empty()
-        );
-        // A further fill leaves 25 behind a 30-deep ask side.
-        factory.settle_fill(PRODUCT, d("10"), at())?;
-        let findings = factory.review(&permissions, &marks, &mut broker, at())?;
-        assert_eq!(findings.len(), 1);
-        assert!(matches!(
-            findings[0].failure,
-            ValidityFailure::InventoryUncovered { .. }
-        ));
-        assert!(broker.listed_book(PRODUCT).is_none());
         Ok(())
     }
 }
