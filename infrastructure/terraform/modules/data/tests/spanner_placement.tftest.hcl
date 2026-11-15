@@ -129,3 +129,23 @@ run "the_default_leader_us_east1_reaches_the_ddl" {
     error_message = "spanner_default_leader = us-east1 did not reach the DDL, so the variable is not what sets the leader."
   }
 }
+
+# R12-LEDGER-8140 (ADR 0684): point-in-time recovery is its own DDL statement,
+# and no billed backup schedule is declared. Built, not compiled or planned.
+run "the_ledger_database_plans_a_version_retention_period_as_its_own_statement" {
+  command = plan
+
+  variables {
+    enable_spanner = true
+  }
+
+  assert {
+    condition     = contains(google_spanner_database.positions[0].ddl, "ALTER DATABASE `positions` SET OPTIONS (version_retention_period = '7d')")
+    error_message = "the ledger database's plan sets no version_retention_period, so point-in-time recovery is left at Spanner's one-hour default."
+  }
+
+  assert {
+    condition     = length(google_spanner_database.positions[0].ddl) == 2
+    error_message = "the ledger DDL is not two separate statements (leader, retention); the retention was folded into the pinned leader statement or another was added."
+  }
+}
