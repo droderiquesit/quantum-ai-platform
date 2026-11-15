@@ -211,6 +211,14 @@ pub enum Topic {
     /// after the pass that stopped it, and the registry holds only the
     /// present.
     SourceLifecycleChanged,
+    /// What a scout pass found about each candidate it assessed: the
+    /// access-rights verdict (host, robots, licensing) and the novelty the
+    /// finder scored, first passes included (R12-DATA-1102, R12-DATA-1103,
+    /// ADR 0626). Its own topic because `SourceLifecycleChanged` is written
+    /// only when policy moves a registration that already stands, and
+    /// every consumer of that topic decodes every frame as a transition;
+    /// a refusal of a first-seen source moved nothing and left no record.
+    SourceScouted,
     /// The deep brain scored each connector it senses on incremental
     /// information gain and realised contribution (R12-EVID-8108). Filed
     /// beside the lifecycle change it informs and kept as long: a source
@@ -336,7 +344,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 93] = [
+    pub const ALL: [Self; 94] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -408,6 +416,7 @@ impl Topic {
         Self::WorldModelSnapshot,
         Self::SourceRevisionDetected,
         Self::SourceLifecycleChanged,
+        Self::SourceScouted,
         Self::SourceAlphaScored,
         Self::ResearchCampaignClosed,
         Self::ResearchCampaignFlagged,
@@ -507,6 +516,7 @@ impl Topic {
             Self::WorldModelSnapshot => "world_model.snapshot",
             Self::SourceRevisionDetected => "learning.source_revised",
             Self::SourceLifecycleChanged => "learning.source_lifecycle",
+            Self::SourceScouted => "learning.source_scouted",
             Self::SourceAlphaScored => "learning.source_alpha_scored",
             Self::ResearchCampaignClosed => "learning.campaign_closed",
             Self::ResearchCampaignFlagged => "learning.campaign_flagged",
@@ -617,6 +627,7 @@ impl Topic {
             | Self::WorldModelSnapshot
             | Self::SourceRevisionDetected
             | Self::SourceLifecycleChanged
+            | Self::SourceScouted
             | Self::SourceAlphaScored
             | Self::ResearchCampaignClosed
             | Self::ResearchCampaignFlagged
@@ -765,6 +776,7 @@ impl Topic {
             | Self::WorldModelSnapshot
             | Self::SourceRevisionDetected
             | Self::SourceLifecycleChanged
+            | Self::SourceScouted
             | Self::SourceAlphaScored
             | Self::ResearchCampaignClosed
             | Self::ResearchCampaignFlagged

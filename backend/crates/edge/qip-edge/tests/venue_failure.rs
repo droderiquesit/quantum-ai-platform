@@ -2044,3 +2044,51 @@ fn an_abandoned_sequence_gap_counts_the_messages_it_lost_as_dropped() -> Result<
     );
     Ok(())
 }
+
+/// R12-TICK-2044. Mutation: in `Cell::send`, drop the `Decision::OrderRejected`
+/// record (leave only `record_reject`) and the chain holds no entry for the
+/// order the venue refused.
+///
+/// The failure this prevents: a venue that rejected an order was visible only
+/// as a health counter and an error that left the pass, so the journal could
+/// not tell a venue that refused from one that said nothing, and the burned
+/// order id appeared nowhere.
+#[test]
+fn an_order_the_venue_rejects_is_journaled_as_a_typed_reject_naming_the_order_and_the_venue()
+-> Result<()> {
+    let mut cell = quarantining_cell(&[XLON, XPAR])?;
+    let mut gateway = Gateway {
+        down: vec![venue(XLON)],
+        ..Gateway::default()
+    };
+    assert!(
+        cell.work(t(10), &mut gateway).is_err(),
+        "premise: the venue is down and the pass fails"
+    );
+    let rejects = journaled(&cell, |decision, _| match decision {
+        Decision::OrderRejected {
+            order_id,
+            venue,
+            object,
+            reason,
+        } => Some((
+            order_id.clone(),
+            venue.clone(),
+            object.clone(),
+            reason.clone(),
+        )),
+        _ => None,
+    });
+    assert_eq!(rejects.len(), 1, "{rejects:?}");
+    assert!(rejects[0].0.ends_with("-1"), "{}", rejects[0].0);
+    assert_eq!(rejects[0].1, XLON);
+    assert_eq!(rejects[0].2, "obj-ACME");
+    assert!(!rejects[0].3.is_empty(), "the gateway's reason is kept");
+    // A reject is not a send: no OrderSent exists for the refused order.
+    let sent = journaled(&cell, |decision, _| match decision {
+        Decision::OrderSent { order_id, .. } => Some(order_id.clone()),
+        _ => None,
+    });
+    assert!(!sent.contains(&rejects[0].0));
+    Ok(())
+}

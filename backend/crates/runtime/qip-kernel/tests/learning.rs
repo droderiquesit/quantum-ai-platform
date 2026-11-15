@@ -3895,3 +3895,64 @@ fn a_venue_halt_reaches_the_centre_typed_and_the_next_book_is_read_under_it() ->
     );
     Ok(())
 }
+
+/// R12-TICK-2053: a record taken in under its admission header is refused
+/// when its entitlement has lapsed by the time the platform absorbs it. The
+/// header is checked once, when it is built; a licence keeps expiring.
+///
+/// Mutation: delete the `is_granted(now)` refusal in
+/// `Platform::observe_admitted`: the late batch is absorbed and the first
+/// assertion fails.
+#[test]
+fn an_admitted_record_whose_entitlement_lapsed_before_absorption_is_refused_and_reported()
+-> Result<()> {
+    use qip_contracts::admission::Admitted;
+    use qip_contracts::governance::{Entitlement, Usage};
+    use qip_market_ingestion::admit::{admit, record_digest};
+
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+    let admitted = |price: &str, until: Timestamp| -> Result<Admitted<SensedRecord>> {
+        let record = late_tick("AAA", at, Duration::from_secs(5), price);
+        let hash = record_digest(&record)?;
+        admit(
+            record,
+            hash,
+            Entitlement::Granted {
+                dataset: "xnys-ticks".to_string(),
+                usage: Usage::Derive,
+                expires_at: until,
+            },
+            Duration::ZERO,
+        )
+    };
+    let expiry = at.saturating_add(Duration::from_secs(3600));
+
+    // Premise: inside the licence the same path absorbs the record.
+    let inside = at.saturating_add(Duration::from_secs(600));
+    assert_eq!(
+        platform.observe_admitted(vec![admitted("123", expiry)?], inside),
+        1,
+        "premise: a licensed admitted record was refused"
+    );
+
+    let after = expiry.saturating_add(Duration::from_secs(1));
+    assert_eq!(
+        platform.observe_admitted(vec![admitted("124", expiry)?], after),
+        0,
+        "a record whose licence had lapsed was absorbed"
+    );
+    let report = platform.run_cycle(after);
+    let problems: Vec<&String> = report
+        .stages
+        .iter()
+        .flat_map(|stage| stage.problems.iter())
+        .collect();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("no longer granted")),
+        "the refusal was not reported as a capture problem: {problems:?}"
+    );
+    Ok(())
+}

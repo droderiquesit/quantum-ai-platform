@@ -545,10 +545,11 @@ impl ConnectorArm {
     ///
     /// The licence is asked first, as a poll asks it: a source this platform
     /// may no longer read is not contacted to verify what it once served, and
-    /// the refusal withdraws it and is returned. Revised and unchanged
-    /// extents are reported, not acted on — a revision found here is a
-    /// finding about history, and the next poll's reference is what records
-    /// it on the log.
+    /// the refusal withdraws it and is returned. An unchanged extent is
+    /// reported only. A revised one is recorded at once, through
+    /// `Platform::record_reference`'s revision branch, as a reference of its
+    /// own: left to the next poll, a revision sat unflagged on the ledger, the
+    /// log and the metric until that poll happened to cover the same extent.
     pub fn refetch(
         &mut self,
         platform: &mut Platform,
@@ -592,6 +593,15 @@ impl ConnectorArm {
                     ),
                     at,
                 )?;
+            }
+        }
+        for (finding, reference) in findings.iter().zip(&held) {
+            if let (Some(RevisionCheck::Revised { now, .. }), Some(served)) =
+                (&finding.check, &finding.served)
+            {
+                let revised =
+                    reference.revised_by_refetch(now, served.bytes, served.etag.clone(), at)?;
+                platform.record_reference(revised, at)?;
             }
         }
         let withdrawn = findings

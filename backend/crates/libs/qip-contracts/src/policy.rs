@@ -433,6 +433,55 @@ pub struct ModelPack {
     /// its strength ([`ModelManifest::check_releases`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_model: Option<InlineModel>,
+    /// Where the model came from: the source commit of the build that fitted
+    /// it and the digest of the data and evaluation manifest it was fitted and
+    /// judged on (R12-MODEL-10180), inside the signed bytes. `None` for a pack
+    /// signed before the field existed; such a pack still verifies, but no
+    /// [`crate::model_activation::ActivationRecord`] can be made from it, so a
+    /// model with no recorded origin is never recorded as activated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<PackProvenance>,
+}
+
+/// The two origin links a [`ModelPack`] signs: the source commit and the
+/// data/evaluation manifest (R12-MODEL-10180).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackProvenance {
+    /// Full commit id of the build that produced the model: 40 or 64
+    /// lower-case hex characters. An abbreviated id is refused, because a
+    /// short prefix names more than one commit once the history grows.
+    pub source_commit: String,
+    /// SHA-256, 64 lower-case hex characters, of the manifest naming the
+    /// training data and the evaluation the model was judged on.
+    pub data_manifest: String,
+}
+
+fn is_lower_hex(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+impl PackProvenance {
+    /// Refuse a commit that is not a full id and a manifest that is not a
+    /// SHA-256 digest. Nothing is trimmed or case-folded: a value silently
+    /// corrected is a link that no longer names what was signed.
+    pub fn validate(&self) -> Result<()> {
+        let commit_len = self.source_commit.len();
+        if !(commit_len == 40 || commit_len == 64) || !is_lower_hex(&self.source_commit) {
+            return Err(Error::invalid(
+                "model_pack: provenance.source_commit must be a full commit id, 40 or 64                  lower-case hex characters; an abbreviated id names more than one commit",
+            ));
+        }
+        if self.data_manifest.len() != 64 || !is_lower_hex(&self.data_manifest) {
+            return Err(Error::invalid(
+                "model_pack: provenance.data_manifest must be the SHA-256 of the data and                  evaluation manifest, 64 lower-case hex characters",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl ModelPack {
@@ -466,6 +515,14 @@ impl ModelPack {
             out.extend_from_slice(b"inline-model/v1");
             out.extend_from_slice(&length_prefixed_bytes(inline.name.as_bytes()));
             out.extend_from_slice(&length_prefixed_bytes(inline.digest.as_bytes()));
+        }
+        // Tagged and appended after the inline model for the same reason: a
+        // pack signed without provenance keeps its bytes, and a pack with it
+        // can never read as one without.
+        if let Some(provenance) = &self.provenance {
+            out.extend_from_slice(b"provenance/v1");
+            out.extend_from_slice(&length_prefixed_bytes(provenance.source_commit.as_bytes()));
+            out.extend_from_slice(&length_prefixed_bytes(provenance.data_manifest.as_bytes()));
         }
         out
     }
@@ -546,6 +603,9 @@ impl ModelPack {
         }
         if self.budget_microseconds == 0 {
             return Err(Error::invalid("model_pack: budget_microseconds is zero"));
+        }
+        if let Some(provenance) = &self.provenance {
+            provenance.validate()?;
         }
         if self.expires_at == 0 {
             return Err(Error::invalid("model_pack: expires_at is zero"));

@@ -1624,3 +1624,72 @@ fn a_cycle_sizing_beside_a_book_that_fails_the_model_failure_world_withholds_a_r
     );
     Ok(())
 }
+
+/// R12-RISK-4116 (ADR 0685). The joint tail reserve is applied only by an
+/// authenticated, fresh operator intent: a stale credential is refused and the
+/// reserve stays the advisory-only default; a fresh one applies exactly the
+/// reported would-be reserve and the log holds the authorisation. Built, not
+/// compiled. Mutation: not run (intended: drop the `is_fresh` check in
+/// `Platform::authorise_joint_tail_reserve` and the stale refusal fails).
+#[test]
+fn only_a_fresh_operator_intent_applies_the_joint_tail_reserve() -> Result<()> {
+    let tape = |platform: &mut Platform| -> Result<()> {
+        for (symbol, phase) in [("AAA", 0.0), ("BBB", 0.31)] {
+            platform.observe(
+                bars_with_noise(symbol, 120, phase, 0.10)
+                    .into_iter()
+                    .map(|bar| SensedRecord::Bar(Box::new(bar)))
+                    .collect(),
+            );
+        }
+        buy(platform, "AAA", dec!("40000"), start())?;
+        buy(platform, "BBB", dec!("40000"), start())?;
+        Ok(())
+    };
+    let now = start();
+    let cycle_at = now.saturating_add(Duration::from_days(1));
+
+    // Stale: refused, nothing applied, nothing journalled.
+    let mut refused = platform()?;
+    tape(&mut refused)?;
+    let stale = qip_risk_engine::autonomy::OperatorIdentity::verified(
+        "ops-carol",
+        "oidc",
+        now.saturating_sub(Duration::from_mins(60)),
+    );
+    assert!(
+        refused.authorise_joint_tail_reserve(&stale, now).is_err(),
+        "a stale credential authorised the joint tail reserve"
+    );
+    assert!(!refused.replay_joint_tail_reserve_authorised()?);
+    refused.run_cycle(cycle_at);
+
+    // Fresh: applied from the next cycle, and the log says who.
+    let mut armed = platform()?;
+    tape(&mut armed)?;
+    let fresh = qip_risk_engine::autonomy::OperatorIdentity::verified("ops-carol", "oidc", now);
+    armed.authorise_joint_tail_reserve(&fresh, now)?;
+    assert!(armed.replay_joint_tail_reserve_authorised()?);
+    armed.run_cycle(cycle_at);
+
+    let held = refused
+        .applied_stress_reserve()?
+        .expect("premise: a reserve is computed");
+    let raised = armed
+        .applied_stress_reserve()?
+        .expect("premise: a reserve is computed");
+    let advisory = refused
+        .stress_report()
+        .expect("premise: the book is stressed")
+        .advisory_reserve
+        .expect("the would-be reserve is computed");
+    assert!(
+        advisory > held,
+        "premise: the joint world would raise this book's reserve ({advisory} against {held})"
+    );
+    assert_eq!(
+        raised, advisory,
+        "the authorised reserve is the reported one"
+    );
+    Ok(())
+}

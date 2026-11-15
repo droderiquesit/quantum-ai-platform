@@ -248,6 +248,9 @@ struct SymbolicReading {
     veto: Option<String>,
     /// The rule and invariant ids whose firing made `veto`; empty without one.
     veto_rules: Vec<String>,
+    /// The rule ids that made the pack find the thesis eligible; empty
+    /// without eligibility (R12-EXPAND-6044).
+    eligible_rules: Vec<String>,
     /// The pack and version the derivation ran under.
     pack: (String, u32),
     infeasible: Option<String>,
@@ -608,6 +611,8 @@ pub struct Platform {
     /// thesis is graded, so a refusal the outcome contradicted leaves a
     /// theory delta rather than nothing (R12-EXPAND-6044).
     pub(crate) symbolic_vetoes: BTreeMap<String, crate::theory_revision::SymbolicVetoNote>,
+    /// Theses the pack found eligible, awaiting a grade (R12-EXPAND-6044).
+    pub(crate) symbolic_admissions: BTreeMap<String, crate::theory_revision::SymbolicAdmissionNote>,
     /// What each priced refusal would have earned, most recent last, bounded
     /// by [`DECLINED_HISTORY`].
     declined_scores: Vec<DeclinedScore>,
@@ -824,6 +829,11 @@ pub struct Platform {
     /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
     /// venues one cycle's trades name.
     cycle_order_flow: BTreeMap<(String, String), qip_world_model::order_flow::FlowObservation>,
+    /// The buy-positive imbalance per subject of the flow
+    /// `understand_federation` took this cycle, kept for the forecast
+    /// lattice that runs after it (R12-WORLD-3085, ADR 0632). Replaced, never
+    /// accumulated, on every UNDERSTAND pass.
+    lattice_flow_imbalance: BTreeMap<String, f64>,
     /// The active-sensing requests the latest federation pass issued, each
     /// with the disagreement spread behind it in basis points (ADR 0158
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
@@ -5098,6 +5108,33 @@ impl EventBody for RegistrationEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// An authenticated operator's authorisation to apply the generated joint
+/// tail world to the survival reserve (R12-RISK-4116, ADR 0685). Journalled
+/// before the switch moves, so [`Platform::replay_joint_tail_reserve_authorised`]
+/// rebuilds it from the log alone: applying the world raises the reserve, and a
+/// raised reserve with nobody's name on it is a control change nobody made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JointTailReserveAuthorisation {
+    /// The authenticated operator's subject, taken from the identity and never
+    /// from a request body.
+    pub operator: String,
+}
+
+impl EventBody for JointTailReserveAuthorisation {
+    /// A compliance decision, told apart from registrations and eligibility
+    /// records by producer ([`JOINT_TAIL_ORIGIN`]).
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer a joint-tail authorisation is journalled under.
+const JOINT_TAIL_ORIGIN: &str = "kernel/joint-tail-reserve";
+
+/// How recently an operator authenticated to authorise the joint tail reserve.
+/// PROVISIONAL (ADR 0685): no figure was given, so the shortest age the
+/// platform already uses for an operator act is reused rather than a new one.
+const JOINT_TAIL_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
 /// An operator's declaration that a claim is expected to fall due (ADR 0159
 /// decision 9). It records an expectation and moves nothing: the platform
 /// never processes a withdrawal (ADR 0021). Journalled before it is adopted,
@@ -6482,6 +6519,7 @@ impl Platform {
                 ..RiskState::default()
             },
             limits: limits.clone(),
+            grants: None,
         });
         let mut desk = Desk::new(
             MarketView {
@@ -6513,6 +6551,7 @@ impl Platform {
                     ..RiskState::default()
                 },
                 limits: limits.clone(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -6835,6 +6874,7 @@ impl Platform {
             publication_delays: BTreeMap::new(),
             declined: Vec::new(),
             symbolic_vetoes: BTreeMap::new(),
+            symbolic_admissions: BTreeMap::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
             cell_fills_queued: CellFillsQueued::default(),
@@ -6880,6 +6920,7 @@ impl Platform {
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
             cycle_order_flow: BTreeMap::new(),
+            lattice_flow_imbalance: BTreeMap::new(),
             federation_requests: Vec::new(),
             decision_uncertainties: Vec::new(),
             cycle_second_order: None,
@@ -7487,6 +7528,10 @@ impl Platform {
         metrics.describe(
             names::COUNTERFACTUALS_DEFERRED,
             "declined paths due for pricing and left for a later cycle by the per-cycle cap",
+        );
+        metrics.describe(
+            names::OPPORTUNITIES_UNPRICED,
+            "opportunities seen and never graded, by reason: expired unworked, no mechanism, or an undirected claim",
         );
         metrics.describe(
             names::COUNTERFACTUALS_UNSCORED,
@@ -12434,7 +12479,16 @@ impl Platform {
     fn brief_the_desk_on_risk(&self) {
         let mut state = self.risk_state();
         let limits = self.monitor.limits().clone();
+        let grants =
+            self.central
+                .last_grants()
+                .map(|record| qip_investment_agents::GrantsReading {
+                    allocator_total: record.allocator_total,
+                    granted_total: record.granted_total,
+                    by_cell: record.by_cell,
+                });
         self.risk.update(|view| {
+            view.grants = grants;
             if state.survival_gross_ceiling.is_none() {
                 state.survival_gross_ceiling = view.state.survival_gross_ceiling;
             }
@@ -13041,6 +13095,58 @@ impl Platform {
         self.apply_joint_tail_reserve = applied;
     }
 
+    /// The operator intent that applies the generated joint tail world to the
+    /// survival reserve and hedge selection (R12-RISK-4116, ADR 0685).
+    ///
+    /// This is what a composition root or the API's typed intent calls instead
+    /// of [`Self::set_joint_tail_reserve_applied`]: the API never mutates the
+    /// platform (`api_boundary`), and a configuration value must not raise a
+    /// reserve by itself. It only ever tightens: the reserve rises, never
+    /// falls, and there is no counterpart that switches it back off. A stale
+    /// credential is refused and changes nothing; an accepted authorisation is
+    /// journalled before the switch moves. Applying takes effect from the next
+    /// SIMULATE.
+    pub fn authorise_joint_tail_reserve(
+        &mut self,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<()> {
+        if !operator.is_fresh(now, JOINT_TAIL_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to authorise the \
+                 joint tail reserve",
+                operator.subject(),
+                JOINT_TAIL_CREDENTIAL_AGE
+            )));
+        }
+        self.journal_record(
+            JointTailReserveAuthorisation {
+                operator: operator.subject().to_string(),
+            },
+            JOINT_TAIL_ORIGIN,
+            now,
+        )?;
+        self.apply_joint_tail_reserve = true;
+        Ok(())
+    }
+
+    /// Whether the log holds an authorisation of the joint tail reserve: the
+    /// switch's state rebuilt from the log alone, for comparison with the
+    /// running platform.
+    pub fn replay_joint_tail_reserve_authorised(&self) -> Result<bool> {
+        for record in self.event_log.records() {
+            if record.event.topic != JointTailReserveAuthorisation::TOPIC
+                || record.event.lineage.producer != JOINT_TAIL_ORIGIN
+            {
+                continue;
+            }
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            envelope.decode::<JointTailReserveAuthorisation>()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// The stressed-liquidity reserve the current stress demands at the
     /// current equity: `survival::tail_response` over the applied worlds and
     /// the platform's own tolerance, the figure DECIDE's survival governor
@@ -13629,6 +13735,36 @@ impl Platform {
     pub fn observe(&mut self, records: Vec<SensedRecord>) -> usize {
         self.count_lineage(0, records.len() as u64);
         self.absorb_records(records)
+    }
+
+    /// [`Self::observe`] for records that arrive under their admission
+    /// header (R12-TICK-2053, ADR 0132): a source hash and an entitlement
+    /// travel with each record, and `now` is when the platform takes it in.
+    ///
+    /// An entitlement that has lapsed between the admission and `now` is
+    /// refused here and reported as a capture problem, because a header is
+    /// checked once, at the instant it was built, and a licence does not stop
+    /// expiring after that. The record reaches no series.
+    pub fn observe_admitted(
+        &mut self,
+        batch: Vec<qip_contracts::admission::Admitted<SensedRecord>>,
+        now: Timestamp,
+    ) -> usize {
+        let mut records = Vec::with_capacity(batch.len());
+        for admitted in batch {
+            let entitlement = admitted.admission().entitlement();
+            if !entitlement.is_granted(now) {
+                self.capture_problems.push(format!(
+                    "a {} record was refused at absorption: its entitlement to {} is no longer \
+                     granted",
+                    admitted.record().topic(),
+                    entitlement.dataset()
+                ));
+                continue;
+            }
+            records.push(admitted.into_record());
+        }
+        self.observe(records)
     }
 
     /// The body of [`Self::observe`], shared with the lineage path so a
@@ -15976,6 +16112,7 @@ impl Platform {
                 )
             })
             .collect();
+        let lattice_surprises = macro_surprises.clone();
         let inputs = NowInputs {
             cycle: self.cycle,
             home_region: HOME_REGION.to_string(),
@@ -16047,6 +16184,22 @@ impl Platform {
                 ));
             }
         }
+        // The row specialists' signals, read at this pass and consumed by it
+        // (ADR 0632): the live causal claims and the pending catalyst from
+        // the world model as known at `now`, and the flow `understand_federation`
+        // took. Set every pass, so a pass with none states none.
+        let subjects: Vec<String> = targets.iter().map(|t| t.subject.clone()).collect();
+        let mut signals = {
+            let world = self.world.read();
+            crate::lattice_stage::signals_from_world(
+                world.causal(),
+                &lattice_surprises,
+                &subjects,
+                now,
+            )
+        };
+        signals.flow_imbalance = std::mem::take(&mut self.lattice_flow_imbalance);
+        self.lattice.set_signals(signals);
         let lattice = self.lattice.run(
             LatticeInputs {
                 cycle: self.cycle,
@@ -16087,6 +16240,10 @@ impl Platform {
                 crate::lattice_stage::CALIBRATION_BRIER_BOUND,
                 crate::lattice_stage::CALIBRATION_MIN_RESOLVED,
             ) {
+                self.telemetry.metrics.count(
+                    names::CALIBRATION_CHECKS,
+                    labels([("outcome", if breached { "breached" } else { "within" })]),
+                );
                 self.telemetry.metrics.gauge(
                     crate::lattice_stage::LATTICE_CALIBRATION_SLO_BREACHED,
                     labels([("horizon", horizon.as_str())]),
@@ -16638,6 +16795,11 @@ impl Platform {
         let surprises = self.fundamental_surprises(now);
         // This cycle's flow, taken so the next cycle starts empty: the
         // member reads one cycle's prints, never an accumulating history.
+        self.lattice_flow_imbalance = crate::lattice_stage::flow_imbalance_by_subject(
+            self.cycle_order_flow
+                .iter()
+                .map(|((subject, _), flow)| (subject.as_str(), flow)),
+        );
         let mut flows: BTreeMap<String, Vec<qip_world_model::order_flow::FlowObservation>> =
             BTreeMap::new();
         for ((subject, _), flow) in std::mem::take(&mut self.cycle_order_flow) {
@@ -16712,12 +16874,40 @@ impl Platform {
             &review,
             inputs.instruments.iter().map(|view| view.subject.clone()),
         );
+        // The widest disagreement among the forecasting members narrows the
+        // capital society's grants (R12-CAPITAL-10122). A spread the arithmetic
+        // cannot carry is a problem on this pass, not a silent clamp.
+        let widest = review
+            .arbitrations
+            .iter()
+            .map(|a| a.disagreement.spread)
+            .fold(None, |widest: Option<f64>, spread| {
+                Some(widest.map_or(spread, |w| w.max(spread)))
+            });
+        let forecast_problem = match widest.map(qip_core::Decimal::from_f64) {
+            Some(None) => Some("forecast disagreement spread is not a finite figure".to_string()),
+            Some(Some(spread)) => self
+                .central
+                .set_forecast_spread(Some(spread))
+                .err()
+                .map(|error| error.message().to_string()),
+            None => self
+                .central
+                .set_forecast_spread(None)
+                .err()
+                .map(|e| e.message().to_string()),
+        };
         let detail = review.detail();
         let mut problems: Vec<String> = review
             .refused
             .iter()
             .map(|(model, why)| format!("world model federation refused `{model}`: {why}"))
             .collect();
+        if let Some(problem) = forecast_problem {
+            problems.push(format!(
+                "capital society kept its last forecast spread: {problem}"
+            ));
+        }
         // Charge each resolved forecast to the member that made it, so a
         // world model is scored in the self-model like every other component
         // once its outcome resolves (R12-MODEL-6016).
@@ -17816,6 +18006,10 @@ impl Platform {
                 continue;
             }
             unworked += 1;
+            self.telemetry.metrics.count(
+                names::OPPORTUNITIES_UNPRICED,
+                labels([("reason", "expired_unworked")]),
+            );
             let Some(subject) = opportunity.affected_objects.first().cloned().or_else(|| {
                 opportunity
                     .affected_entities
@@ -18171,6 +18365,7 @@ impl Platform {
                     problem: symbolic_problem,
                     veto: symbolic_veto,
                     veto_rules: symbolic_veto_rules,
+                    eligible_rules: symbolic_eligible_rules,
                     pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                 } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
@@ -18260,6 +18455,12 @@ impl Platform {
                         }
                     ),
                 );
+                if matches!(predicted, Ok(false)) {
+                    self.telemetry.metrics.count(
+                        names::OPPORTUNITIES_UNPRICED,
+                        labels([("reason", "undirected_claim")]),
+                    );
+                }
                 let claim_written = matches!(predicted, Ok(true));
                 if let Err(error) = predicted {
                     outcome = outcome.with_problem(format!(
@@ -18388,6 +18589,28 @@ impl Platform {
                                         report.runs.len(),
                                     );
                                     self.pending_theses.push(thesis);
+                                    // R12-EXPAND-6044: the pack's eligibility is
+                                    // held against the grade too, so a rule that
+                                    // admits a thesis the outcome then refutes
+                                    // leaves a delta beside the veto direction.
+                                    if claim_written
+                                        && let Some(problem) = self.note_symbolic_admission(
+                                            crate::theory_revision::SymbolicAdmissionNote {
+                                                hypothesis_id: reasoned
+                                                    .hypothesis
+                                                    .hypothesis_id
+                                                    .as_str()
+                                                    .to_string(),
+                                                cycle: self.cycle,
+                                                at: now,
+                                                pack: symbolic_pack.0.clone(),
+                                                version: symbolic_pack.1,
+                                                rules: symbolic_eligible_rules.clone(),
+                                            },
+                                        )
+                                    {
+                                        outcome = outcome.with_problem(problem);
+                                    }
                                     // Bounded like the proposal working set: an idea
                                     // nobody sized for this many cycles is stale, and
                                     // the event log keeps the record.
@@ -18452,14 +18675,20 @@ impl Platform {
                 }
                 outcome
             }
-            Ok(None) => StageOutcome::ran(
-                Stage::Reason,
-                report.findings.len(),
-                format!(
-                    "{} finding(s), but the anomaly implies no mechanism, so no hypothesis was formed",
-                    report.findings.len()
-                ),
-            ),
+            Ok(None) => {
+                self.telemetry.metrics.count(
+                    names::OPPORTUNITIES_UNPRICED,
+                    labels([("reason", "no_mechanism")]),
+                );
+                StageOutcome::ran(
+                    Stage::Reason,
+                    report.findings.len(),
+                    format!(
+                        "{} finding(s), but the anomaly implies no mechanism, so no hypothesis was formed",
+                        report.findings.len()
+                    ),
+                )
+            }
             Err(error) => StageOutcome::ran(
                 Stage::Reason,
                 report.findings.len(),
@@ -18773,6 +19002,7 @@ impl Platform {
         let detail = derivation.detail();
         let veto = derivation.veto();
         let veto_rules = derivation.veto_rules();
+        let eligible_rules = derivation.eligible_rules();
         let pack = (
             self.symbolic_rule_pack.name.clone(),
             self.symbolic_rule_pack.version,
@@ -18792,6 +19022,7 @@ impl Platform {
             problem,
             veto,
             veto_rules,
+            eligible_rules,
             pack,
             infeasible,
         }
@@ -26990,6 +27221,29 @@ impl Platform {
         probe: &mut dyn SourceProbe,
         now: Timestamp,
     ) -> Result<SourceAssessment> {
+        self.assess_sources_scouted(
+            candidates,
+            probe,
+            now,
+            crate::scout_record::ScoutChecks::ALL,
+        )
+    }
+
+    /// [`Self::assess_sources`] with the scout checks it records chosen by
+    /// the caller (R12-DATA-1102, R12-DATA-1103): every candidate's
+    /// access-rights verdict and novelty reach the log, first passes
+    /// included, and a disabled check is recorded as absent.
+    pub fn assess_sources_scouted(
+        &mut self,
+        candidates: Vec<SourceCandidate>,
+        probe: &mut dyn SourceProbe,
+        now: Timestamp,
+        checks: crate::scout_record::ScoutChecks,
+    ) -> Result<SourceAssessment> {
+        // Read before the finder registers anything: after the pass every
+        // accepted candidate is held, and "first pass" would read false.
+        let held_before: std::collections::BTreeSet<String> =
+            self.data_finder.registry().keys().cloned().collect();
         // Read before anything registers: a target is something no source
         // covered when the pass began, and a candidate this call registers
         // must not erase the reason it was assessed.
@@ -27003,6 +27257,7 @@ impl Platform {
         // `source_lifecycle` for why a move the log does not hold must not
         // be reported as a pass.
         self.journal_source_transitions(&decisions, now)?;
+        self.journal_scout_verdicts(&decisions, &held_before, checks, now)?;
         let mut claims_invalidated = Vec::new();
         let mut claims_downweighted = Vec::new();
         // A source policy stopped is a dataset the mesh must stop offering.

@@ -180,6 +180,15 @@ pub enum Decision {
         /// entries sealed before the field existed.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         grounds: Vec<String>,
+        /// The multi-region cycle this order is a leg of (R12-LEDGER-10114,
+        /// ADR 0652), as `CycleCommitted` names it. Without it the P1 stream
+        /// said which orders were sent and filled but not which of them were
+        /// one cycle, so a cycle that filled one leg and lost the other was
+        /// two unrelated orders to the ledger. Absent, and so not written,
+        /// for an order that is no cycle's leg and on entries sealed before
+        /// the field existed, so a sealed chain still verifies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cycle_id: Option<String>,
     },
     /// The venue reported part or all of an order traded, and the cell
     /// booked it.
@@ -285,6 +294,19 @@ pub enum Decision {
         order_id: String,
         venue: String,
         withdrawn: String,
+        reason: String,
+    },
+    /// The venue refused an order the cell sent (R12-TICK-2044), or its
+    /// gateway could not take it. Distinct from [`Self::Refused`], which is
+    /// the cell's own gate: this is a venue fact. Before this entry a reject
+    /// was counted on the venue's health and propagated as an error, and the
+    /// chain held no record that an order id had been burned and refused, so
+    /// a quiet venue and a rejecting one read the same from the journal.
+    /// `reason` is the gateway's own text.
+    OrderRejected {
+        order_id: String,
+        venue: String,
+        object: String,
         reason: String,
     },
     /// Something was refused, with the gate that refused it.
@@ -798,6 +820,7 @@ impl Decision {
             | Self::OrderExpired { order_id, .. }
             | Self::MassCancelled { order_id, .. }
             | Self::VenueWithdrawn { order_id, .. }
+            | Self::OrderRejected { order_id, .. }
             | Self::CycleRested { order_id, .. }
             | Self::RequoteWithdrawn { order_id, .. }
             | Self::OrderReplaced { order_id, .. }
@@ -827,6 +850,7 @@ impl Decision {
             Self::OrderExpired { .. } => "order_expired",
             Self::MassCancelled { .. } => "mass_cancelled",
             Self::VenueWithdrawn { .. } => "venue_withdrawn",
+            Self::OrderRejected { .. } => "order_rejected",
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",

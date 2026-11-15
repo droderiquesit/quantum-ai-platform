@@ -252,7 +252,11 @@ pub fn is_outcome(decision: &Decision) -> bool {
         // Shed with P2, a break between the venue and the ledger would go
         // unfound for as long as the stream was shedding.
         Decision::CustodyStatement { .. } => true,
-        Decision::Ingested { .. }
+        // A venue's reject is journaled on P2 with the cell's own refusals:
+        // it is a diagnostic about why nothing traded, not a position change
+        // the ledger reads (R12-TICK-2044).
+        Decision::OrderRejected { .. }
+        | Decision::Ingested { .. }
         | Decision::GapDetected { .. }
         | Decision::FeedSilent { .. }
         | Decision::FeedReconciled { .. }

@@ -53,64 +53,70 @@ fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let command = arguments.first().map(String::as_str).unwrap_or("help");
 
-    let result = match command {
-        "help" | "--help" | "-h" => {
-            print_help();
-            Ok(OK)
-        }
-        "status" => status().map(|()| OK),
-        "demo" => demo(&arguments[1..]).map(|()| OK),
-        "cycle" => cycle_count(arguments.get(1)).and_then(cycle).map(|()| OK),
-        "agents" => agents().map(|()| OK),
-        "governance" => governance().map(|()| OK),
-        "limits" => limits_command().map(|()| OK),
-        "storage" => storage_command().map(|()| OK),
-        "registrations" => registrations_command(&arguments[1..]),
-        "replay" => replay_command(&arguments[1..]),
-        "simulate" => simulate_command(&arguments[1..]).map(|()| OK),
-        "blueprint" => blueprint_command(&arguments[1..]),
-        // R12-GCP-9120: infra.yml runs this on the saved plan before `up`.
-        "change-window" => qip_cli::change_window::run(&arguments[1..], SystemClock.now()),
-        // The agency's policy and journal may come from the environment;
-        // read here, the composition root, and nowhere below it.
-        "agency" => qip_cli::agency::run(&arguments[1..], &|name| std::env::var(name).ok()),
-        // The whole family, once: a subcommand added to
-        // `qip_cli::event_fabric` is reachable without this file changing,
-        // and an unknown one is refused by the family naming its list.
-        "event-fabric" => qip_cli::event_fabric::run(&arguments[1..]),
-        // R12-CONTRACT-7064: the publish workflow's three steps from an
-        // unsigned draft to a release pack, and the check that decides
-        // whether one loads. The verdict is the exit code.
-        // R12-CONTRACT-7091: a signed pack's rollout record, and whether one
-        // stands for a node. The verdict is the exit code.
-        "control-pack" => {
-            qip_cli::control_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
-                for line in lines {
+    let result =
+        match command {
+            "help" | "--help" | "-h" => {
+                print_help();
+                Ok(OK)
+            }
+            "status" => status().map(|()| OK),
+            "demo" => demo(&arguments[1..]).map(|()| OK),
+            "cycle" => cycle_count(arguments.get(1)).and_then(cycle).map(|()| OK),
+            "agents" => agents().map(|()| OK),
+            "governance" => governance().map(|()| OK),
+            "limits" => limits_command().map(|()| OK),
+            "storage" => storage_command().map(|()| OK),
+            "registrations" => registrations_command(&arguments[1..]),
+            "replay" => replay_command(&arguments[1..]),
+            "simulate" => simulate_command(&arguments[1..]).map(|()| OK),
+            "blueprint" => blueprint_command(&arguments[1..]),
+            // R12-GCP-9120: infra.yml runs this on the saved plan before `up`.
+            // R12-FINOPS-10141: the billing export read that feeds the detector.
+            "cost-anomalies" => qip_cli::cost_anomalies::run(&arguments[1..], SystemClock.now())
+                .map(|line| {
                     println!("{line}");
-                }
-                code
-            })
-        }
-        "model-pack" => {
-            qip_cli::model_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
-                for line in lines {
-                    println!("{line}");
-                }
-                code
-            })
-        }
-        "reflex-package" => {
-            qip_cli::reflex_package::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
-                for line in lines {
-                    println!("{line}");
-                }
-                code
-            })
-        }
-        other => Err(Error::invalid(format!(
-            "unknown command: {other}. Run `qip help` for the list."
-        ))),
-    };
+                    OK
+                }),
+            "change-window" => qip_cli::change_window::run(&arguments[1..], SystemClock.now()),
+            // The agency's policy and journal may come from the environment;
+            // read here, the composition root, and nowhere below it.
+            "agency" => qip_cli::agency::run(&arguments[1..], &|name| std::env::var(name).ok()),
+            // The whole family, once: a subcommand added to
+            // `qip_cli::event_fabric` is reachable without this file changing,
+            // and an unknown one is refused by the family naming its list.
+            "event-fabric" => qip_cli::event_fabric::run(&arguments[1..]),
+            // R12-CONTRACT-7064: the publish workflow's three steps from an
+            // unsigned draft to a release pack, and the check that decides
+            // whether one loads. The verdict is the exit code.
+            // R12-CONTRACT-7091: a signed pack's rollout record, and whether one
+            // stands for a node. The verdict is the exit code.
+            "control-pack" => qip_cli::control_pack::run(&arguments[1..], SystemClock.now()).map(
+                |(lines, code)| {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    code
+                },
+            ),
+            "model-pack" => {
+                qip_cli::model_pack::run(&arguments[1..], SystemClock.now()).map(|(lines, code)| {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    code
+                })
+            }
+            "reflex-package" => qip_cli::reflex_package::run(&arguments[1..], SystemClock.now())
+                .map(|(lines, code)| {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    code
+                }),
+            other => Err(Error::invalid(format!(
+                "unknown command: {other}. Run `qip help` for the list."
+            ))),
+        };
 
     match result {
         Err(error) => {
@@ -156,6 +162,7 @@ fn print_help() {
     );
     println!("  reflex-package verify <published.json> --trust-bundle <path> [--now <rfc3339>]");
     println!("                    sign a draft release pack through KMS and check it loads");
+    println!("  cost-anomalies --export <rows.json> --thresholds <t.json> --log <log>");
     println!("  change-window --plan <plan.json> --policy <policy.json> [--now <rfc3339>]");
     println!("                    refuse a saved plan changing a core resource outside");
     println!("                    the committed change window (exit 3)");
@@ -164,7 +171,7 @@ fn print_help() {
     println!("                    eligibility, registration and fabric registries from");
     println!("                    it alone, against the platform this configuration");
     println!("                    assembles");
-    println!("  simulate --set <path> [--shard k/n]");
+    println!("  simulate --set <path> [--shard k/n] [--participants <path>]");
     println!("                    replay a recorded tick set with its orders and plans");
     println!("                    against rebuilt books (queue, latency, fees, impact);");
     println!("                    --shard replays only the instruments whose stable hash");
@@ -711,14 +718,17 @@ fn replay_command(arguments: &[String]) -> Result<u8> {
 fn simulate_command(arguments: &[String]) -> Result<()> {
     let mut set = None;
     let mut shard = None;
+    let mut participants = None;
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
         let slot = match argument.as_str() {
             "--set" => &mut set,
             "--shard" => &mut shard,
+            "--participants" => &mut participants,
             other => {
                 return Err(Error::invalid(format!(
-                    "unexpected argument {other}; usage: qip simulate --set <path> [--shard k/n]"
+                    "unexpected argument {other}; usage: qip simulate --set <path> [--shard k/n] \
+                     [--participants <path>]"
                 )));
             }
         };
@@ -743,7 +753,10 @@ fn simulate_command(arguments: &[String]) -> Result<()> {
         Some(text) => qip_cli::simulate::Shard::parse(&text)?,
     };
     let set = qip_cli::simulate::ReplaySet::read(&PathBuf::from(set))?;
-    let shard_run = qip_cli::simulate::run(&set, shard)?;
+    let spec = participants
+        .map(|path| qip_cli::simulate::read_participants(&PathBuf::from(path)))
+        .transpose()?;
+    let shard_run = qip_cli::simulate::run_with_participants(&set, shard, spec.as_ref())?;
     for line in qip_cli::simulate::lines(&shard_run) {
         println!("{line}");
     }

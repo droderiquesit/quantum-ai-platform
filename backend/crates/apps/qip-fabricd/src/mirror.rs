@@ -56,6 +56,7 @@ use std::sync::Arc;
 use qip_core::Clock;
 use qip_core::error::{Error, Result};
 use qip_events::event_fabric::codec::{Batch, ContentHash, DecodeOutcome, PrefixDecodeOutcome};
+use qip_events::event_fabric::policy::QosClass;
 use qip_observability::metrics::{Labels, labels};
 use qip_streaming::event_fabric::broker::Broker;
 use qip_streaming::event_fabric::managed::{CommittedBatch, PartitionRef};
@@ -193,6 +194,33 @@ impl MirrorConfig {
             }
         }
         Ok(Self { regions, streams })
+    }
+}
+
+impl MirrorConfig {
+    /// The mirror catalogue ADR 0119 §1 fixes: outcome and control streams
+    /// only (P0, P1). Latency-sensitive arbitrage state stays on the direct
+    /// mesh links (R12-FABRIC-7142) and a P2-P4 stream is not mirrored until
+    /// a consumer in another region needs one, so naming one here is refused
+    /// rather than filtered out — a silent drop would read as a stream that
+    /// is mirrored and is not.
+    pub fn outcome_and_control(
+        regions: impl IntoIterator<Item = String>,
+        streams: impl IntoIterator<Item = (String, QosClass)>,
+    ) -> Result<Self> {
+        let mut names = Vec::new();
+        for (name, class) in streams {
+            if !matches!(class, QosClass::P0Control | QosClass::P1Outcomes) {
+                return Err(Error::denied(format!(
+                    "stream `{name}` is {}; only P0 control and P1 outcome streams are in the \
+                     mirror catalogue (ADR 0119 §1), and arbitrage state stays on the mesh \
+                     links",
+                    class.as_str()
+                )));
+            }
+            names.push(name);
+        }
+        Self::new(regions, names)
     }
 }
 

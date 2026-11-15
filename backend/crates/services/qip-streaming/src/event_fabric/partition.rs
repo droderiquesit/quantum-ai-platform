@@ -255,6 +255,15 @@ impl PartitionLog {
         Ok(out)
     }
 
+    /// The instant the sealed segment starting at `start_offset` was sealed,
+    /// from its seal. Every record in it was appended at or before that
+    /// instant, so a segment sealed longer ago than a retention window is
+    /// wholly older than the window — the safe direction for deletion: a
+    /// segment is never judged older than it is.
+    pub fn sealed_at(&self, start_offset: u64) -> Result<Option<qip_core::Timestamp>> {
+        Ok(self.log.seal_of(start_offset)?.map(|seal| seal.sealed_at))
+    }
+
     /// Delete the local copy of every sealed segment ending at or before
     /// `boundary_offset` that the segment log's own rule allows (an
     /// archive-required stream only loses archived segments). See

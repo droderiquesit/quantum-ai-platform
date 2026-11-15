@@ -7024,6 +7024,7 @@ impl Cell {
             schedule.equalised(),
             grants,
             justification.rendered(),
+            None,
             now,
         );
         self.open_chain(&order_id, net_intent, now);
@@ -7193,6 +7194,24 @@ impl Cell {
             if placed.is_err() || matches!(placed, Ok(false)) {
                 health.record_reject(venue, now);
             }
+        }
+        // R12-TICK-2044: a venue's reject is a typed record, not only a
+        // health counter and an error that leaves the pass.
+        let rejection = match &placed {
+            Err(error) => Some(error.message().to_string()),
+            Ok(false) => Some("the gateway's queue was at capacity".to_string()),
+            Ok(true) => None,
+        };
+        if let Some(reason) = rejection {
+            self.journal.record(
+                Decision::OrderRejected {
+                    order_id: order_id.clone(),
+                    venue: venue.as_str().to_string(),
+                    object: object_id.to_string(),
+                    reason,
+                },
+                now,
+            );
         }
         if matches!(placed, Ok(true)) {
             self.conduct.placed(venue, object_id, side, now);
@@ -7459,6 +7478,7 @@ impl Cell {
         equalised: bool,
         grants: Vec<(String, String)>,
         grounds: Vec<String>,
+        cycle_id: Option<String>,
         now: Timestamp,
     ) {
         let order = &working.order;
@@ -7474,6 +7494,7 @@ impl Cell {
                     equalised,
                     grants,
                     grounds: grounds.clone(),
+                    cycle_id,
                 },
                 now,
             )
@@ -11072,6 +11093,7 @@ impl Cell {
             schedule.equalised(),
             grants,
             justification.rendered(),
+            Some(cycle.cycle_id.clone()),
             now,
         );
         if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {

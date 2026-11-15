@@ -61,6 +61,59 @@ impl RobotsFetch {
     }
 }
 
+/// What a catalogue keeps of a robots.txt answer: its size and hash, never
+/// the text (R12-SEC-9065, ADR 0158 decision 16).
+///
+/// [`RobotsFetch::Served`] carries the publisher's body so the policy can be
+/// parsed, but [`ProbeEvidence`] is serialised into every registered source,
+/// so holding the fetch there put the publisher's text in the catalogue. The
+/// parsed [`RobotsPolicy`] is kept beside this record; the text is not.
+/// Old snapshots that still carry a `body` field load with it dropped.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "robots", rename_all = "snake_case")]
+pub enum RobotsRecord {
+    Served {
+        bytes: usize,
+        content_hash: String,
+        latency: Duration,
+    },
+    Absent {
+        status: u16,
+        latency: Duration,
+    },
+    Unreachable {
+        reason: String,
+    },
+}
+
+impl RobotsRecord {
+    /// Narrow a fetch to what may be kept.
+    pub fn retain(fetch: &RobotsFetch) -> Self {
+        match fetch {
+            RobotsFetch::Served { body, latency } => Self::Served {
+                bytes: body.len(),
+                content_hash: qip_core::hash::sha256_hex(body.as_bytes()),
+                latency: *latency,
+            },
+            RobotsFetch::Absent { status, latency } => Self::Absent {
+                status: *status,
+                latency: *latency,
+            },
+            RobotsFetch::Unreachable { reason } => Self::Unreachable {
+                reason: reason.clone(),
+            },
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Served { bytes, .. } => format!("robots.txt served, {bytes} bytes"),
+            Self::Absent { status, .. } => format!("no robots.txt (HTTP {status})"),
+            Self::Unreachable { reason } => format!("robots.txt could not be fetched: {reason}"),
+        }
+    }
+}
+
 /// The answer to a HEAD of a candidate endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeadResponse {
@@ -194,7 +247,7 @@ pub trait SourceProbe: std::fmt::Debug {
 /// Everything one probing of a candidate produced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProbeEvidence {
-    robots: RobotsFetch,
+    robots: RobotsRecord,
     robots_policy: Option<RobotsPolicy>,
     head: HeadResponse,
     sample: SampleManifest,
@@ -222,6 +275,7 @@ impl ProbeEvidence {
             }
         };
         let robots_policy = robots.policy();
+        let robots = RobotsRecord::retain(&robots);
         let head = probe.head(endpoint, at)?;
         let sample = probe.sample(endpoint, at)?;
         // Measured and hashed before the body is consumed, without reading
@@ -255,7 +309,7 @@ impl ProbeEvidence {
         })
     }
 
-    pub fn robots(&self) -> &RobotsFetch {
+    pub fn robots(&self) -> &RobotsRecord {
         &self.robots
     }
 

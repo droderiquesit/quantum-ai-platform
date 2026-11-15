@@ -39,7 +39,7 @@
 use crate::category::{ApprovedCategories, CategoryApproval, SourceCategory};
 use crate::endpoint::AccessMechanism;
 use crate::legal::{LicensingPosture, RateLimit};
-use crate::probe::RobotsFetch;
+use crate::probe::RobotsRecord;
 use crate::source::{Source, SourceCandidate};
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
@@ -238,9 +238,9 @@ impl TierEvidence {
         let mut evidence = Self::from_candidate(source.candidate());
         if source.endpoint().mechanism().is_governed_by_robots() {
             evidence.robots = match source.evidence().robots() {
-                RobotsFetch::Served { .. } => RobotsPosture::Served,
-                RobotsFetch::Absent { .. } => RobotsPosture::Absent,
-                RobotsFetch::Unreachable { .. } => RobotsPosture::Unreachable,
+                RobotsRecord::Served { .. } => RobotsPosture::Served,
+                RobotsRecord::Absent { .. } => RobotsPosture::Absent,
+                RobotsRecord::Unreachable { .. } => RobotsPosture::Unreachable,
             };
         }
         // Only a probe made without a credential can say anything about

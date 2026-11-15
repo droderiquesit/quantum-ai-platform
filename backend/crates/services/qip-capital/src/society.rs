@@ -91,6 +91,10 @@ pub struct SocietyInputs {
     pub survival_budget: Option<Decimal>,
     /// The capital ceiling on record per cell.
     pub cell_ceilings: BTreeMap<String, Decimal>,
+    /// The widest disagreement among the forecasting members this cycle, as
+    /// a spread in `[0, 1]`: `None` is "no forecast on record" and narrows
+    /// nothing, the same abstention rule the agents follow.
+    pub forecast_spread: Option<Decimal>,
 }
 
 /// Every agent's plan for `plan`, in [`CapitalAgent::ALL`] order.
@@ -209,4 +213,56 @@ pub fn settle(plan: &AllocationPlan, plans: &[CapitalPlan]) -> AllocationPlan {
         }
     }
     settled
+}
+
+/// The binding constraint a line narrowed for forecast disagreement names.
+pub const FORECAST_DISAGREEMENT: &str = "capital-society:forecast-disagreement";
+
+/// Refuses a forecast spread outside `[0, 1]`; `None` is admitted.
+pub fn check_spread(spread: Option<Decimal>) -> Result<()> {
+    match spread {
+        Some(spread) if spread.is_negative() || spread > Decimal::ONE => {
+            Err(Error::invalid(format!(
+                "forecast disagreement spread is {spread}; it is a share in [0, 1], never outside it"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `plan` with every line scaled by `1 - spread`, where `spread` is the
+/// widest disagreement among the forecasting members (R12-CAPITAL-10122).
+///
+/// Sizing a grant as if the members agreed, when they do not, spends capital
+/// on a consensus nobody holds. The factor is the complement of the measured
+/// spread itself, so no tuned rate stands between the evidence and the grant:
+/// no disagreement leaves the line alone and a total contradiction leaves
+/// nothing to grant. It can lower a line and never raise one. A spread
+/// outside `[0, 1]` is refused, not clamped: a forecast that reports one is
+/// a caller bug, and a clamp would size on it silently.
+pub fn narrow_for_disagreement(
+    plan: &AllocationPlan,
+    spread: Option<Decimal>,
+) -> Result<AllocationPlan> {
+    let mut narrowed = plan.clone();
+    check_spread(spread)?;
+    let Some(spread) = spread else {
+        return Ok(narrowed);
+    };
+    if spread.is_zero() {
+        return Ok(narrowed);
+    }
+    let keep = Decimal::ONE - spread;
+    for line in &mut narrowed.allocations {
+        let lowered = line
+            .notional
+            .checked_mul(keep)
+            .ok_or_else(|| Error::numeric("narrowing a line for forecast disagreement"))?;
+        if lowered < line.notional {
+            line.notional = lowered.max(Decimal::ZERO);
+            line.binding_constraints
+                .push(FORECAST_DISAGREEMENT.to_string());
+        }
+    }
+    Ok(narrowed)
 }

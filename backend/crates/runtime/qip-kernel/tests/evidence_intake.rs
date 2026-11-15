@@ -1033,3 +1033,104 @@ fn a_contest_and_its_resolving_evidence_survive_a_restart_from_the_event_log() {
         understand.detail
     );
 }
+
+/// R12-EVID-2032: an evidence item carries links to what corroborates and
+/// contradicts it, on **both** sides of each link, and a restarted process
+/// holds the same links.
+///
+/// The failure this prevents: the restart test above compares contests, and
+/// the rebuild test compares verdicts, which name only the links the *later*
+/// claim found. The earlier claim's own `corroborates`/`contradicts` list is
+/// where a contradiction is traced from the claim that was already held, and
+/// nothing asserted it survived. A replay that rebuilt the later side only
+/// would leave the first claim looking uncontested.
+///
+/// Mutation: in `EvidenceFabric::admit`, delete the back-link loop that
+/// pushes onto `held.record.contradicts` (fabric.rs, the
+/// `held.record.contradicts.push(record.id.clone())` line) — the in-memory
+/// premise fails; and skip `rebuild_evidence` in `Platform::new` — the
+/// restarted comparison fails.
+#[test]
+fn links_are_recorded_on_both_claims_and_survive_a_restart_from_the_event_log() {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-evidence-links-{}-{}",
+        std::process::id(),
+        at(0).as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let assemble = |now: Timestamp| {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(now, config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )
+        .unwrap()
+    };
+    let links = |platform: &Platform| -> Vec<(String, Vec<String>, Vec<String>)> {
+        platform
+            .world()
+            .evidence()
+            .held()
+            .map(|h| {
+                (
+                    h.record.id.clone(),
+                    h.record.corroborates.clone(),
+                    h.record.contradicts.clone(),
+                )
+            })
+            .collect()
+    };
+
+    let before = {
+        let mut platform = assemble(at(0));
+        let intake = platform.absorb_evidence(
+            vec![
+                checked("a1", "https://a.example", "rate 1.10", "1.10", &hash('a')),
+                checked("b1", "https://b.example", "rate 1.20", "1.20", &hash('b')),
+                checked("c1", "https://c.example", "fix at 1.10", "1.10", &hash('c')),
+            ],
+            at(30),
+        );
+        assert_eq!(intake.claims_journaled, 3, "{intake:?}");
+        links(&platform)
+    };
+    let find = |id: &str, set: &[(String, Vec<String>, Vec<String>)]| {
+        set.iter().find(|(held, _, _)| held == id).cloned().unwrap()
+    };
+    // Premise: the relation exists, and is on both claims of each pair.
+    let (_, a_corroborated_by, a_contradicted_by) = find("a1", &before);
+    let (_, b_corroborated_by, b_contradicted_by) = find("b1", &before);
+    let (_, c_corroborated_by, c_contradicted_by) = find("c1", &before);
+    assert!(
+        b_contradicted_by.contains(&"a1".to_string())
+            && a_contradicted_by.contains(&"b1".to_string()),
+        "premise: a1 and b1 contradict, recorded on each: a={a_contradicted_by:?} b={b_contradicted_by:?}"
+    );
+    assert!(
+        c_corroborated_by.contains(&"a1".to_string())
+            && a_corroborated_by.contains(&"c1".to_string()),
+        "premise: a1 and c1 corroborate, recorded on each: a={a_corroborated_by:?} c={c_corroborated_by:?}"
+    );
+    assert!(
+        c_contradicted_by.contains(&"b1".to_string())
+            && b_contradicted_by.contains(&"c1".to_string()),
+        "premise: b1 and c1 contradict, recorded on each"
+    );
+    assert!(
+        b_corroborated_by.is_empty(),
+        "b1 corroborates nothing: {b_corroborated_by:?}"
+    );
+
+    let restarted = assemble(at(3_600));
+    let after = links(&restarted);
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(
+        after, before,
+        "the restarted fabric holds the same links on every claim"
+    );
+}

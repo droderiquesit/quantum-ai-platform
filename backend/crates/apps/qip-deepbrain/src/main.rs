@@ -282,41 +282,6 @@ fn run() -> Result<()> {
         config.cycle_interval,
         clock.now(),
     )?;
-    let mut platform = Platform::with_model_provider(
-        platform_config,
-        context,
-        telemetry,
-        platform_universe,
-        limits,
-        language_model.chain.clone(),
-        Box::new(qip_training::serve::InTreeProvider),
-    )?;
-
-    // The survival policy, before anything is served (R12-CAPITAL-4089): the
-    // hedge capacity and emergency reserve every construction withholds, and
-    // the survival ceiling the Risk Gate reads re-derived under them at once.
-    // The Brain Registry (R12-EXPAND-6058), over the organisation this
-    // platform just convened rather than a list kept here: an agent on the
-    // roster without a valid entry stops the process before anything runs.
-    let brains = qip_deepbrain::brains::standard(platform.organisation().roster())?;
-    println!(
-        "  brain registry:   {} brain(s), {} competency domain(s) on record",
-        brains.len(),
-        brains.scopes().len()
-    );
-    let survival_banner = apply_survival_policy(&mut platform)?;
-    println!("  survival:         {survival_banner}");
-    // Where a promoted model's artifact goes (ADR 0083 §5): the registry is
-    // a library and performs no I/O, `Platform::promote_model` hands back
-    // the digest-named bytes, and this root writes them under its own
-    // storage beside the event log that holds the promotion record. Opened
-    // before anything runs, so a store that cannot be opened stops the
-    // process rather than the first promotion.
-    //
-    // A blob store: `key_value` refuses the Cloud Storage target for this
-    // content (MODEL-052).
-    let model_artifacts = config.storage.blobs(MODEL_ARTIFACTS_NAMESPACE)?;
-
     // The trust root, before anything is served: install the operator's
     // envelope key when the deployment provides one, and refuse to run
     // live-capable on the seed-derived default. See `trust.rs` for why a
@@ -348,6 +313,45 @@ fn run() -> Result<()> {
         ),
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let qip_deepbrain::assembly::Assembled {
+        mut platform,
+        brains,
+        provenance,
+    } = qip_deepbrain::assembly::assemble(qip_deepbrain::assembly::Inputs {
+        config: platform_config,
+        context,
+        telemetry,
+        universe: platform_universe,
+        limits,
+        language_model: language_model.chain.clone(),
+        envelope_key,
+        deployment,
+    })?;
+
+    // The survival policy, before anything is served (R12-CAPITAL-4089): the
+    // hedge capacity and emergency reserve every construction withholds, and
+    // the survival ceiling the Risk Gate reads re-derived under them at once.
+    // The Brain Registry (R12-EXPAND-6058) is built inside `assemble`, over the
+    // organisation the platform just convened: an agent on the roster without a
+    // valid entry stops the process before anything runs.
+    println!(
+        "  brain registry:   {} brain(s), {} competency domain(s) on record",
+        brains.len(),
+        brains.scopes().len()
+    );
+    let survival_banner = apply_survival_policy(&mut platform)?;
+    println!("  survival:         {survival_banner}");
+    // Where a promoted model's artifact goes (ADR 0083 §5): the registry is
+    // a library and performs no I/O, `Platform::promote_model` hands back
+    // the digest-named bytes, and this root writes them under its own
+    // storage beside the event log that holds the promotion record. Opened
+    // before anything runs, so a store that cannot be opened stops the
+    // process rather than the first promotion.
+    //
+    // A blob store: `key_value` refuses the Cloud Storage target for this
+    // content (MODEL-052).
+    let model_artifacts = config.storage.blobs(MODEL_ARTIFACTS_NAMESPACE)?;
+
     // R12-GOV-6121: a deployed process states the commit it was built from,
     // or it does not start — every decision it journals would otherwise name
     // code nobody can check out (`qip_kernel::decision_record`).
@@ -363,10 +367,6 @@ fn run() -> Result<()> {
     println!("  {}", desk_shipper.banner());
     qip_kernel::decision_record::require_source_commit(deployment)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let provenance =
-        qip_deepbrain::trust::harden_central(&mut platform, envelope_key.as_deref(), deployment)
-            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-
     // The durable trial book, on the same storage the event log archives to.
     // The factory the plane was built with charges holdout evaluations to an
     // in-process book, so until this call every restart forgot every

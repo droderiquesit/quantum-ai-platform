@@ -55,6 +55,9 @@ pub enum ReFetchOutcome {
     Fetched {
         /// Lower-case hex SHA-256 of the bytes as served.
         content_hash: String,
+        /// Length of what was served, so a revised extent can be recorded as
+        /// a reference of its own without the bytes being kept.
+        bytes: u64,
         etag: Option<String>,
     },
     /// The source says the extent no longer exists.
@@ -114,6 +117,7 @@ impl Refetcher for TransportRefetcher<'_> {
         Ok(match response.status {
             200..=299 => ReFetchOutcome::Fetched {
                 content_hash: response.body.sha256_hex(),
+                bytes: response.body.len() as u64,
                 etag: response.etag,
             },
             404 | 410 => ReFetchOutcome::Withdrawn,
@@ -125,9 +129,22 @@ impl Refetcher for TransportRefetcher<'_> {
     }
 }
 
+/// What a re-fetch was served: enough to build the revised reference, never
+/// the bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ServedExtent {
+    pub content_hash: String,
+    pub bytes: u64,
+    pub etag: Option<String>,
+}
+
 /// One re-fetch's result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ReFetchFinding {
+    /// What the source served, when it served anything. A caller that acts on
+    /// a `Revised` check needs the new length and etag, and the check holds
+    /// only the two hashes.
+    pub served: Option<ServedExtent>,
     pub source_id: String,
     pub locator: String,
     /// `None` while an unanswered extent is still below the threshold.
@@ -180,10 +197,21 @@ impl ReFetchDriver {
                 reference.locator().to_string(),
             );
             let outcome = fetcher.refetch(reference, at)?;
+            let mut served = None;
             let (check, failures) = match outcome {
-                ReFetchOutcome::Fetched { content_hash, .. } => {
+                ReFetchOutcome::Fetched {
+                    content_hash,
+                    bytes,
+                    etag,
+                } => {
                     self.failures.remove(&key);
-                    (Some(reference.verify_hash(content_hash)), 0)
+                    let check = reference.verify_hash(content_hash.clone());
+                    served = Some(ServedExtent {
+                        content_hash,
+                        bytes,
+                        etag,
+                    });
+                    (Some(check), 0)
                 }
                 ReFetchOutcome::Withdrawn | ReFetchOutcome::Denied => {
                     self.failures.remove(&key);
@@ -223,6 +251,7 @@ impl ReFetchDriver {
                 None => {}
             }
             findings.push(ReFetchFinding {
+                served,
                 source_id: source,
                 locator,
                 check,

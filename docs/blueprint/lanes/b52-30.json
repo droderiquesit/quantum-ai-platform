@@ -1,0 +1,70 @@
+{
+ "lane": "30",
+ "rows": [
+  {
+   "id": "R12-COVERAGE-7181",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not started: needs a constraint-goal planning search, a trace on ReasoningOutcome and a refusal of trace-less conclusions.",
+   "remains": "Planning reasoner; ReasoningOutcome trace; refusal on a decision path (sizing reserved for an ADR by symbolic_stage header, which a lane may not edit); composite acceptance suite.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-COVERAGE-7186",
+   "outcome": "BUILT",
+   "claims_requirement_met": true,
+   "what": "New acceptance suite agency_composite.rs drives qip_cli::agency::shadow and reads the hash-chained journal: goal to levers, action and no-action plans, simulation over every declared model and scenario, authority withheld on model dissent, execution only through a registered unrevoked tool. The engine has no wired adapter (ADR 0114), so the suite proves the tool-gated attempt and that nothing is sent.",
+   "remains": "",
+   "tests": [
+    "backend/crates/tests/qip-acceptance/tests/agency_composite.rs::a_goal_is_mapped_to_the_controllable_levers_that_reach_its_target",
+    "backend/crates/tests/qip-acceptance/tests/agency_composite.rs::both_an_action_plan_and_the_no_action_baseline_can_be_chosen",
+    "backend/crates/tests/qip-acceptance/tests/agency_composite.rs::a_plan_is_simulated_against_every_declared_model_and_scenario",
+    "backend/crates/tests/qip-acceptance/tests/agency_composite.rs::authority_is_withheld_when_a_competing_model_says_the_plan_does_not_help",
+    "backend/crates/tests/qip-acceptance/tests/agency_composite.rs::execution_goes_only_through_a_registered_and_authorised_tool"
+   ],
+   "test_command": "cargo test -p qip-acceptance --test agency_composite --no-fail-fast",
+   "mutations": [
+    "qip-agency engine.rs counterfactually_supported: .iter().take(1) on results; authority_is_withheld_when_a_competing_model_says_the_plan_does_not_help FAILED",
+    "qip-cli agency.rs Session::open: &policy.revoked_tools replaced by &[]; execution_goes_only_through_a_registered_and_authorised_tool FAILED",
+    "qip-agency causal.rs:784: models.iter().take(1); a_plan_is_simulated_against_every_declared_model_and_scenario and the dissent test FAILED"
+   ],
+   "commit": "08abea06"
+  },
+  {
+   "id": "R12-RES-10127",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not started: needs a ledger-lag halt source in qip-edge, a node-side feed from ledgerd and transfer gating in risk/capital paths.",
+   "remains": "All of it; also deployability needs execution_nodes_enabled (protected tfvars).",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-RES-10153",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not started: needs a P2 shed seam through qip-streaming admission and qip-fabricd with a production caller of TelemetryRecorder::shed.",
+   "remains": "Shed seam, shared QoS queue, local P1 lag-limit refusal, updated frozen-sink scenario evidence.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-RES-10154",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "what": "Not started: the drill needs an edited scripts/game-day ledgerd-loss scenario and harness ordering field, and scripts/** is a protected path.",
+   "remains": "Node composition root seeding simulated venue from a committed tape; fixture publisher and grant; scenario update (protected, needs a person).",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  }
+ ]
+}

@@ -502,6 +502,44 @@ fn every_filled_leg_of_a_completed_cycle_posts_balanced_and_the_cycle_cash_nets_
     assert_eq!(posted, 2, "exactly the cycle's two legs posted");
     assert_eq!(store.fill_events()?.len(), 2);
 
+    // R12-LEDGER-10114 (ADR 0652): the legs are one cycle on P1 and in the
+    // ledger's register. The cycle id on each `OrderSent` is the one the chain
+    // committed, and the register's replay reads the cycle complete.
+    let committed = cell
+        .journal()
+        .entries()
+        .iter()
+        .find_map(|entry| match &entry.decision {
+            Decision::CycleCommitted {
+                cycle_id, orders, ..
+            } => Some((cycle_id.clone(), orders.clone())),
+            _ => None,
+        })
+        .expect("premise: the cycle was committed");
+    let sent_cycles: Vec<Option<String>> = deliveries
+        .iter()
+        .filter_map(|delivery| match &delivery.record {
+            P1Record::Outcome(o) => match &o.entry.decision {
+                Recorded::OrderSent { cycle_id, .. } => Some(cycle_id.clone()),
+                _ => None,
+            },
+            P1Record::Span(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        sent_cycles,
+        vec![Some(committed.0.clone()); 2],
+        "each leg's OrderSent on P1 names the cycle the chain committed"
+    );
+    let reports = store.cycles()?;
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].cycle_id, committed.0);
+    assert_eq!(reports[0].orders.len(), committed.1.len());
+    assert_eq!(
+        reports[0].verdict,
+        qip_ledgerd::cycles::CycleVerdict::Complete
+    );
+
     // Every leg is one balanced event: the store's trial balance is zero in
     // every unit, and each event's own postings sum to zero per unit.
     assert!(

@@ -172,6 +172,7 @@ fn pack_for(digest: &str, inline: Option<(&str, String)>) -> ModelPack {
             approver: "approver".to_string(),
             approved_at: start(),
         },
+        provenance: None,
         inline_model: inline.map(|(name, digest)| InlineModel {
             name: name.to_string(),
             digest,

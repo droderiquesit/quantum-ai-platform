@@ -1288,3 +1288,54 @@ fn grouped_caps_that_cannot_hold_together_refuse_the_proposal_rather_than_breach
     );
     Ok(())
 }
+
+/// R12-ASSET-4070, gap 4 (ADR 0685 addendum). Under a shorting mandate a group
+/// cap bounds gross exposure, not the net of a long and a short: whatever the
+/// solver returns, either the construction is refused or every leg in the group
+/// sums, in absolute weight, to at most the cap. Built, not compiled.
+/// Mutation: not run (intended: drop `.abs()` in the post-solve check).
+#[test]
+fn a_group_cap_bounds_gross_weight_when_the_mandate_may_short() -> Result<()> {
+    use qip_portfolio_engine::construction::GroupCaps;
+    let theses = [thesis("AAA", 0.9, 0.04), thesis("BBB", -0.9, -0.04)];
+    let mandate = Mandate {
+        position_cap: 0.25,
+        target_gross: 0.5,
+        long_only: false,
+        ..Mandate::default()
+    };
+    let cap = 0.3;
+    let groups = [GroupCaps {
+        dimension: "class".to_string(),
+        group_of: [("AAA", "eq"), ("BBB", "eq")]
+            .iter()
+            .map(|(asset, group)| (object(asset).as_str().to_string(), group.to_string()))
+            .collect(),
+        caps: [("eq".to_string(), cap)].into_iter().collect(),
+    }];
+    let outcome = constructor(mandate)?.construct_grouped(
+        &theses,
+        &covariance(theses.len()),
+        &BTreeMap::new(),
+        equity(),
+        equity(),
+        &BTreeMap::new(),
+        &groups,
+        now(),
+        now(),
+        ProposalId::from_string("prop-gross"),
+    );
+    if let Ok(outcome) = outcome {
+        let gross: f64 = outcome
+            .proposal
+            .legs
+            .iter()
+            .map(|leg| leg.target_weight.abs())
+            .sum();
+        assert!(
+            gross <= cap + 1e-9,
+            "the group carries {gross} in gross weight, above its cap of {cap}"
+        );
+    }
+    Ok(())
+}

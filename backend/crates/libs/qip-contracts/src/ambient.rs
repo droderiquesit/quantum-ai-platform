@@ -340,6 +340,13 @@ pub enum Disposition {
     /// *more* severe than the live one is not a duplicate; it is the
     /// deviation getting worse, and routes.
     Clustered,
+    /// The producer that raised the signal is quarantined (see
+    /// [`ProducerQuarantine`]): its record shows it spends attention on
+    /// signals that are repeats, shed or stale, or its model's reputation fell
+    /// below the floor. It woke nothing, charged no budget and took no hold
+    /// slot, and is dropped on the record so a quarantine is visible rather
+    /// than a silence (R12-RES-7107).
+    Quarantined,
 }
 
 /// Why an activation happened: the class of deviation and the trigger that
@@ -414,6 +421,7 @@ pub struct RoutingPolicy {
     window: Duration,
     defer_capacity: usize,
     cluster_duplicates: bool,
+    quarantine: Option<ProducerQuarantine>,
 }
 
 impl RoutingPolicy {
@@ -448,6 +456,7 @@ impl RoutingPolicy {
             window,
             defer_capacity,
             cluster_duplicates: false,
+            quarantine: None,
         })
     }
 
@@ -459,6 +468,14 @@ impl RoutingPolicy {
     /// same deviation every sweep turns it on.
     pub fn clustering_duplicates(mut self) -> Self {
         self.cluster_duplicates = true;
+        self
+    }
+
+    /// Quarantine producers whose record or model reputation falls below the
+    /// policy's floor. Off by default for the same reason clustering is: a
+    /// caller that has not decided a floor must not have one chosen for it.
+    pub fn quarantining_producers(mut self, quarantine: ProducerQuarantine) -> Self {
+        self.quarantine = Some(quarantine);
         self
     }
 
@@ -504,6 +521,7 @@ pub struct AttentionRouter {
     /// them the same deviation, with the expiry and severity to compare a
     /// repeat against. Bounded by [`MAX_CLUSTER_KEYS`].
     live: BTreeMap<ClusterKey, (Timestamp, u32)>,
+    producers: BTreeMap<String, ProducerRecord>,
 }
 
 /// How many distinct live deviations the router remembers for clustering. A
@@ -539,6 +557,7 @@ impl AttentionRouter {
             deferred: VecDeque::new(),
             issued: 0,
             live: BTreeMap::new(),
+            producers: BTreeMap::new(),
         }
     }
 
@@ -615,6 +634,12 @@ impl AttentionRouter {
             out.push(event);
             return Ok(out);
         }
+        let producer = producer_of(signal);
+        if self.is_quarantined(&producer) {
+            let event = self.event(signal, Disposition::Quarantined, now)?;
+            out.push(event);
+            return Ok(out);
+        }
         self.live.retain(|_, (expiry, _)| *expiry >= now);
         let key = cluster_key(signal);
         if self.policy.cluster_duplicates
@@ -623,6 +648,7 @@ impl AttentionRouter {
                 .get(&key)
                 .is_some_and(|(_, severity)| signal.severity_bp <= *severity)
         {
+            self.record_producer(&producer, true);
             let event = self.event(signal, Disposition::Clustered, now)?;
             out.push(event);
             return Ok(out);
@@ -636,6 +662,7 @@ impl AttentionRouter {
         } else {
             Disposition::Shed
         };
+        self.record_producer(&producer, disposition == Disposition::Shed);
         if self.policy.cluster_duplicates
             && disposition != Disposition::Shed
             && (self.live.contains_key(&key) || self.live.len() < MAX_CLUSTER_KEYS)
@@ -645,6 +672,90 @@ impl AttentionRouter {
         let event = self.event(signal, disposition, now)?;
         out.push(event);
         Ok(out)
+    }
+
+    /// Whether `producer` is quarantined. Always false when the policy has no
+    /// [`ProducerQuarantine`].
+    pub fn is_quarantined(&self, producer: &str) -> bool {
+        self.producers.get(producer).is_some_and(|r| r.quarantined)
+    }
+
+    /// The producer's reputation in basis points: the share of its signals
+    /// that were not wasted attention. `None` before it has raised one.
+    pub fn producer_reputation_bp(&self, producer: &str) -> Option<u32> {
+        self.producers
+            .get(producer)
+            .and_then(ProducerRecord::reputation_bp)
+    }
+
+    /// Feed a model's [`ModelReputation`] to the router: a producer whose
+    /// `overall_bp` is below the policy's floor is quarantined at once, however
+    /// few signals it has raised. This is how a drifting ambient model is
+    /// stopped by what it measured rather than by what it sent. Refused when
+    /// the policy has no quarantine, so a caller does not believe a drifting
+    /// model is contained when nothing reads the report.
+    pub fn report_model_reputation(
+        &mut self,
+        producer: &str,
+        reputation: &ModelReputation,
+    ) -> Result<bool> {
+        let Some(policy) = self.policy.quarantine else {
+            return Err(Error::invalid(
+                "routing policy has no producer quarantine; build it with RoutingPolicy::quarantining_producers",
+            ));
+        };
+        let below = reputation.overall_bp() < policy.floor_bp;
+        let Some(record) = self.producer_slot(producer) else {
+            return Err(Error::invalid(
+                "the producer table is full; release a quarantined producer before reporting a new one",
+            ));
+        };
+        if below {
+            record.quarantined = true;
+        }
+        Ok(below)
+    }
+
+    /// Lift a quarantine and clear the record that earned it, so the producer
+    /// starts from nothing. Only a caller can do this: a quarantine that
+    /// lapsed by itself would be a drifting model re-admitted by the clock.
+    pub fn release_producer(&mut self, producer: &str) -> bool {
+        self.producers
+            .remove(producer)
+            .is_some_and(|r| r.quarantined)
+    }
+
+    fn producer_slot(&mut self, producer: &str) -> Option<&mut ProducerRecord> {
+        if !self.producers.contains_key(producer) {
+            if self.producers.len() >= MAX_PRODUCERS {
+                return None;
+            }
+            self.producers
+                .insert(producer.to_string(), ProducerRecord::default());
+        }
+        self.producers.get_mut(producer)
+    }
+
+    /// Record one routed signal against its producer and quarantine it when
+    /// the record crosses the floor. A no-op without a policy quarantine.
+    fn record_producer(&mut self, producer: &str, wasted: bool) {
+        let Some(policy) = self.policy.quarantine else {
+            return;
+        };
+        let Some(record) = self.producer_slot(producer) else {
+            return;
+        };
+        record.seen += 1;
+        if wasted {
+            record.wasted += 1;
+        }
+        if record.seen >= policy.min_signals
+            && record
+                .reputation_bp()
+                .is_some_and(|bp| bp < policy.floor_bp)
+        {
+            record.quarantined = true;
+        }
     }
 
     fn event(
@@ -679,6 +790,71 @@ impl AttentionRouter {
             authority: AuthorityBoundary::AdvisoryOnly,
             feedback_link: s.id.clone(),
         })
+    }
+}
+
+/// How many producers the router keeps a record for. At the cap a new
+/// producer is not tracked (and so cannot be quarantined by its record) rather
+/// than the table growing with the storm; [`AttentionRouter::report_model_reputation`]
+/// refuses instead of pretending.
+pub const MAX_PRODUCERS: usize = 256;
+
+/// When a producer is quarantined. Both numbers are the operator's to state:
+/// there is no default, because a floor chosen by the code would be a
+/// threshold nobody reviewed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProducerQuarantine {
+    min_signals: u32,
+    floor_bp: u32,
+}
+
+impl ProducerQuarantine {
+    /// `min_signals` is how many signals a producer must have raised before
+    /// its record counts (one repeat must not quarantine a new detector).
+    /// `floor_bp` is the reputation below which it is quarantined. Refuses a
+    /// zero `min_signals`, and a floor of zero (nothing is below it) or above
+    /// [`MAX_SEVERITY_BP`].
+    pub fn new(min_signals: u32, floor_bp: u32) -> Result<Self> {
+        if min_signals == 0 {
+            return Err(Error::invalid(
+                "a producer quarantine needs a positive minimum signal count; zero would judge a producer on nothing",
+            ));
+        }
+        if floor_bp == 0 || floor_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(
+                "a quarantine floor must be 1..=10000 bp; zero could never fire and above 10000 quarantines everyone",
+            ));
+        }
+        Ok(Self {
+            min_signals,
+            floor_bp,
+        })
+    }
+}
+
+/// What the router has seen a producer spend attention on.
+#[derive(Clone, Debug, Default)]
+struct ProducerRecord {
+    seen: u32,
+    wasted: u32,
+    quarantined: bool,
+}
+
+impl ProducerRecord {
+    /// The share of signals that were not repeats or shed, in basis points.
+    fn reputation_bp(&self) -> Option<u32> {
+        if self.seen == 0 {
+            return None;
+        }
+        let kept = u64::from(self.seen - self.wasted);
+        Some((kept * u64::from(MAX_SEVERITY_BP) / u64::from(self.seen)) as u32)
+    }
+}
+
+/// The producer of a signal: the detector its trigger names.
+fn producer_of(signal: &AmbientSignal) -> String {
+    match &signal.trigger {
+        Trigger::Schedule(name) | Trigger::Event(name) => name.clone(),
     }
 }
 

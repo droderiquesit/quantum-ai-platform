@@ -802,11 +802,22 @@ pub fn theory_contradictions(deltas: &[TheoryDelta]) -> Vec<Observation> {
                 Origin::TheoryContradiction,
                 GapTrigger::Contradiction,
                 Wanting::Model,
-                format!(
-                    "`{rule}` of `{pack}` v{version} refused {} thesis(es) the grader then \
-                     credited; the rule's bound is in question and is not moved",
-                    deltas.len()
-                ),
+                {
+                    let admitted = deltas
+                        .iter()
+                        .filter(|d| {
+                            d.contradicting_evidence
+                                .iter()
+                                .any(|e| e == "direction:admitted_then_failed")
+                        })
+                        .count();
+                    let refused = deltas.len() - admitted;
+                    format!(
+                        "`{rule}` of `{pack}` v{version} refused {refused} thesis(es) the grader \
+                         then credited and admitted {admitted} the grader then marked wrong; \
+                         the rule's bound is in question and is not moved"
+                    )
+                },
                 "reasoning",
                 evidence,
                 (deltas.len() as f64 / THEORY_CONTRADICTIONS_FOR_FULL_SEVERITY as f64).min(1.0),

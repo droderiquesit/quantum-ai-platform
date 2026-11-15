@@ -44,12 +44,14 @@ pub mod causal_review;
 pub mod central;
 pub mod chain_settlement;
 pub mod class_exposure;
+pub mod commerce_ledger_journal;
 pub mod commerce_research;
 pub mod compute_routing;
 /// Moved to `qip-survival` (ADR 0464); re-exported so `qip_kernel::confidence`
 /// paths keep compiling.
 pub use qip_survival::confidence;
 pub mod config;
+pub mod cost_anomaly_job;
 pub mod cost_anomaly_tasks;
 pub mod counterfactual_alternatives;
 pub mod counterfactual_trial;
@@ -95,11 +97,13 @@ pub mod regime_transition;
 pub mod replay_divergence;
 pub mod routing_score;
 pub mod rule_review;
+pub mod scout_record;
 pub mod self_watch;
 pub mod session_replay;
 pub mod shared_cause;
 pub mod sizing_review;
 pub mod source_alpha_record;
+pub mod source_decision_attribution;
 pub mod source_discovery;
 pub mod source_lifecycle;
 /// The survival kernel, moved to `qip-survival` (ADR 0464) and re-exported so

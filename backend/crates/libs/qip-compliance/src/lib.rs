@@ -33,6 +33,7 @@
 
 pub mod approval;
 pub mod artifacts;
+pub mod attestation;
 pub mod eligibility;
 pub mod incident;
 pub mod licensing;

@@ -603,7 +603,12 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
         // R12-RISK-5044: a stated edge must clear fixed cost, sweep slippage
         // and this margin before an order exists. Armed here because an
         // unarmed gate is one nobody runs.
-        .with_net_edge_margin_bp(qip_edge::cell::NET_EDGE_MARGIN_BP)?;
+        .with_net_edge_margin_bp(qip_edge::cell::NET_EDGE_MARGIN_BP)?
+        // ADR 0693: a directional signal that states no edge is refused, so
+        // the gate above judges every entry rather than waving through the
+        // ones nobody priced. Restrictive; no committed strategy declares an
+        // edge yet, so until one does this node enters nothing.
+        .with_edgeless_signals_refused();
     // ADR 0155 section 14: the identity of this build, from a file the unit
     // that starts the process writes, never from the network, in line with
     // "secrets and facts reach the process as files". Unset leaves the
@@ -1376,13 +1381,16 @@ fn run() -> Result<()> {
             .join(", "),
         lake_codec
     );
-    let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
-        config.storage.blobs(LAKE_NAMESPACE)?,
-        &config.cell_id,
-        &config.region,
-        retention,
-        lake_codec,
-    )?)];
+    let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(
+        LakeSink::new(
+            config.storage.blobs(LAKE_NAMESPACE)?,
+            &config.cell_id,
+            &config.region,
+            retention,
+            lake_codec,
+        )?
+        .with_metrics(Arc::clone(metrics)),
+    )];
     // The fabric link's issued certificate under `cas`, held for the life
     // of `run` — which never returns while the node runs — because dropping
     // it stops its renewal loop.
