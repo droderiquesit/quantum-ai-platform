@@ -125,6 +125,49 @@ pub fn resume(log: &EventLog) -> Result<BTreeMap<String, (u64, String)>> {
     Ok(last)
 }
 
+/// The snapshot a reader may cite for one domain as of an instant: its
+/// version and digest, and the instant the snapshot was read at.
+///
+/// A decision made at `at` cannot cite a snapshot read after `at`; that
+/// would name content the decision could not have seen. So the citation is
+/// the highest version whose own `at` is not later than the instant asked
+/// about, and a domain with no snapshot yet has none to cite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldCitation {
+    pub domain: String,
+    pub version: u64,
+    pub digest: String,
+    pub at: Timestamp,
+}
+
+/// The citation for `domain` as of `at`, read from the log, or `None` when
+/// no snapshot of that domain had been journaled by then (ADR 0680).
+pub fn cite(log: &EventLog, domain: &str, at: Timestamp) -> Result<Option<WorldCitation>> {
+    let mut best: Option<WorldCitation> = None;
+    for event in log.events() {
+        if event.topic != WorldModelSnapshot::TOPIC
+            || event.lineage.producer != WORLD_SNAPSHOT_ORIGIN
+        {
+            continue;
+        }
+        let snapshot = StreamEnvelope::from_frame(event)
+            .and_then(|envelope| envelope.decode::<WorldModelSnapshot>())?
+            .body;
+        if snapshot.domain != domain || snapshot.at > at {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| snapshot.version > b.version) {
+            best = Some(WorldCitation {
+                domain: snapshot.domain,
+                version: snapshot.version,
+                digest: snapshot.digest,
+                at: snapshot.at,
+            });
+        }
+    }
+    Ok(best)
+}
+
 /// Record what journaling `version` of `domain` did. A snapshot that reached
 /// the log takes its digest as the domain's last. One that failed still
 /// takes its version, keeping the previous digest, because the record may

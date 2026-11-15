@@ -32209,6 +32209,52 @@ mod decide_tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// R12-WORLD-7023, ADR 0680: a reader cites the snapshot version a
+    /// decision could have seen, never a later one, and cites nothing for a
+    /// domain not yet snapshotted.
+    ///
+    /// Mutations: ignore the instant and cite the highest version; return
+    /// version 0 instead of `None` before the first snapshot.
+    /// Mutation: not run (nothing was compiled, owner instruction 2026-11-15).
+    #[test]
+    fn a_world_model_version_is_cited_as_of_the_decision_instant_and_never_later() {
+        use crate::world_snapshot::{KNOWLEDGE_GRAPH, cite};
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let mut platform = small_book_platform();
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let day = |n: i64| t0.saturating_add(Duration::from_days(n));
+        let relate = |platform: &Platform, to: &str, at: Timestamp| {
+            platform.world.update(|world| {
+                world
+                    .relate(
+                        Relationship::new("FOUNDRY", to, RelationshipKind::Supplies, 0.3, "filing"),
+                        at,
+                        at,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            });
+        };
+        assert!(
+            cite(platform.event_log(), KNOWLEDGE_GRAPH, day(5))
+                .expect("the log reads")
+                .is_none(),
+            "a domain with no snapshot had a citation"
+        );
+        relate(&platform, "CHIPS", t0);
+        platform.run_cycle(day(1));
+        relate(&platform, "DEVICES", day(2));
+        platform.run_cycle(day(3));
+        let version_at = |n: i64| {
+            cite(platform.event_log(), KNOWLEDGE_GRAPH, day(n))
+                .expect("the log reads")
+                .map(|c| c.version)
+        };
+        assert_eq!(version_at(0), None, "cited a snapshot before it was read");
+        assert_eq!(version_at(2), Some(1), "cited a later version");
+        assert_eq!(version_at(3), Some(2), "did not cite the current version");
+    }
+
     /// R12-WORLD-9037: the platform's company twin is built from the
     /// supply facts its world graph holds, so a shock to an upstream company
     /// reaches the companies it supplies, at each customer's share, and a
