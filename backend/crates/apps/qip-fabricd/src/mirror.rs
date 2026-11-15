@@ -107,42 +107,35 @@ impl MirrorSource for Broker {
         max_bytes: u32,
     ) -> Result<Vec<CommittedBatch>> {
         let response = self.fetch(stream, partition, from, max_bytes)?;
-        committed_rows(stream, partition, response.batches())
+        let buffer = qip_core::hash::from_hex(response.batches()).ok_or_else(|| {
+            Error::invalid(format!(
+                "{stream}:{partition}: the fetch answered batches that are not hex"
+            ))
+        })?;
+        let mut rows = Vec::new();
+        let mut rest: &[u8] = &buffer;
+        while !rest.is_empty() {
+            let (batch, consumed) = match Batch::decode_prefix(rest)? {
+                PrefixDecodeOutcome::Complete { batch, consumed } => (batch, consumed),
+                PrefixDecodeOutcome::Torn => {
+                    return Err(Error::io(format!(
+                        "{stream}:{partition}: the fetch from offset {from} ended inside a batch"
+                    )));
+                }
+            };
+            let (frame, tail) = rest.split_at(consumed);
+            rows.push(CommittedBatch {
+                partition: PartitionRef::new(stream, partition),
+                offset: batch.base_offset,
+                lease_epoch: batch.leader_epoch,
+                batch_hash: qip_core::hash::sha256_hex(frame),
+                previous_batch_hash: batch.previous_batch_hash.as_ref().and_then(hex_of),
+                bytes: frame.to_vec(),
+            });
+            rest = tail;
+        }
+        Ok(rows)
     }
-}
-
-/// Parse a fetch answer's hex `batches` into committed rows, one per whole
-/// batch. Shared by the in-process source and the networked one so the two
-/// cannot disagree about what a torn frame or non-hex body is: both refuse.
-pub fn committed_rows(stream: &str, partition: u32, hex: &str) -> Result<Vec<CommittedBatch>> {
-    let buffer = qip_core::hash::from_hex(hex).ok_or_else(|| {
-        Error::invalid(format!(
-            "{stream}:{partition}: the fetch answered batches that are not hex"
-        ))
-    })?;
-    let mut rows = Vec::new();
-    let mut rest: &[u8] = &buffer;
-    while !rest.is_empty() {
-        let (batch, consumed) = match Batch::decode_prefix(rest)? {
-            PrefixDecodeOutcome::Complete { batch, consumed } => (batch, consumed),
-            PrefixDecodeOutcome::Torn => {
-                return Err(Error::io(format!(
-                    "{stream}:{partition}: the fetch ended inside a batch"
-                )));
-            }
-        };
-        let (frame, tail) = rest.split_at(consumed);
-        rows.push(CommittedBatch {
-            partition: PartitionRef::new(stream, partition),
-            offset: batch.base_offset,
-            lease_epoch: batch.leader_epoch,
-            batch_hash: qip_core::hash::sha256_hex(frame),
-            previous_batch_hash: batch.previous_batch_hash.as_ref().and_then(hex_of),
-            bytes: frame.to_vec(),
-        });
-        rest = tail;
-    }
-    Ok(rows)
 }
 
 impl MirrorTarget for Broker {
@@ -361,45 +354,6 @@ impl Mirror {
             clock,
             fetch_bytes: DEFAULT_FETCH_BYTES,
         })
-    }
-
-    /// Every lane's checkpoint as `(stream, partition, checkpoint)`, in lane
-    /// order: what a durable store persists after a pass.
-    pub fn checkpoints(&self) -> Vec<(String, u32, MirrorCheckpoint)> {
-        self.lanes
-            .iter()
-            .map(|lane| {
-                (
-                    lane.source.stream.clone(),
-                    lane.source.partition,
-                    lane.checkpoint.clone(),
-                )
-            })
-            .collect()
-    }
-
-    /// Resume `stream`'s `partition` from a persisted checkpoint. Refuses a
-    /// lane this mirror does not copy: a stored position for a stream that is
-    /// no longer configured is a configuration drift to name, not a value to
-    /// drop.
-    pub fn restore(
-        &mut self,
-        stream: &str,
-        partition: u32,
-        checkpoint: MirrorCheckpoint,
-    ) -> Result<()> {
-        let lane = self
-            .lanes
-            .iter_mut()
-            .find(|lane| lane.source.stream == stream && lane.source.partition == partition)
-            .ok_or_else(|| {
-                Error::invalid(format!(
-                    "a checkpoint was stored for {stream}:{partition}, which this mirror does \
-                     not copy; remove it from the store or configure the lane"
-                ))
-            })?;
-        lane.checkpoint = checkpoint;
-        Ok(())
     }
 
     /// The checkpoint the target has acknowledged for `stream`'s
