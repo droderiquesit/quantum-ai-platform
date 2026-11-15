@@ -519,6 +519,15 @@ impl SymbolicDerivation {
         if verdict.facts.get("cash_short") == Some(&Value::Bool(true)) {
             stops.push("cash is short of one lot");
         }
+        // R12-REASON-3054: the knowledge graph's entailment is read here, not
+        // only journaled. The graph is closed from the same expiry margin the
+        // pack's r70 reads, so this can only restrict (it adds a stop to a
+        // hypothesis already ineligible) and it fires only where the closure
+        // holds the hypothesis concerns a dated contract that expires before
+        // the claim can resolve.
+        if self.outlived_by_knowledge() {
+            stops.push("the contract expires before the claim can resolve");
+        }
         (!stops.is_empty()).then(|| {
             format!(
                 "{RULE_PACK} v{RULE_PACK_VERSION} does not find it eligible ({})",
@@ -557,9 +566,22 @@ impl SymbolicDerivation {
         {
             rules.push("i10-no-eligibility-under-live-authority".to_string());
         }
+        if self.outlived_by_knowledge() {
+            rules.push(KNOWLEDGE_OUTLIVED_RULE.to_string());
+        }
         rules.sort();
         rules.dedup();
         rules
+    }
+
+    /// Whether this record's own knowledge graph entails that the claim
+    /// outlives the contract (R12-REASON-3054). `false` for a record written
+    /// before the graph existed: absence of the graph adds no stop, and the
+    /// pack's own rule still rules on the margin.
+    fn outlived_by_knowledge(&self) -> bool {
+        self.knowledge
+            .as_ref()
+            .is_some_and(|k| k.outlived_by_claim(&self.hypothesis_id, &self.subject))
     }
 
     /// ADR 0212: why no money may move on this conclusion, or `None` when
@@ -813,6 +835,10 @@ pub const KNOWLEDGE_GRAPH_VERSION: u32 = 1;
 /// deadline.
 pub const CONTRACT_LIVE_THROUGH_HORIZON: &str = "contract/live_through_horizon";
 pub const CONTRACT_EXPIRES_BEFORE_HORIZON: &str = "contract/expires_before_horizon";
+
+/// The id [`SymbolicDerivation::veto_rules`] names when the knowledge graph's
+/// entailment, rather than a pack rule, is what stopped a hypothesis.
+pub const KNOWLEDGE_OUTLIVED_RULE: &str = "knowledge/outlived-by-claim";
 
 /// The asset classes whose instruments are physical things, and so carry a
 /// delivery lifecycle as well as a financial one.
@@ -1634,6 +1660,52 @@ mod tests {
 
     fn at(secs: i64) -> Timestamp {
         Timestamp::from_secs(1_700_000_000 + secs)
+    }
+
+    /// R12-REASON-3054: an approved hypothesis whose subject the knowledge
+    /// graph entails is a contract expiring before the claim resolves is
+    /// vetoed, naming the entailment; one with margin to spare is not.
+    /// Mutation: not run (nothing was compiled; lane 44, 2026-11-15).
+    #[test]
+    fn an_approved_hypothesis_the_knowledge_graph_entails_is_outlived_by_its_contract_is_vetoed() {
+        let healthy = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(30),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        // Premise: the same hypothesis with margin is not vetoed, so the veto
+        // below is the expiry's doing and not a standing veto.
+        assert_eq!(healthy.veto(), None, "{:?}", healthy.rules.verdict);
+        let expiring = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(-1),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        assert!(
+            expiring
+                .knowledge
+                .as_ref()
+                .is_some_and(|k| k.outlived_by_claim("hyp-3-AAA", "AAA")),
+            "premise: the graph entails the claim outlives the contract"
+        );
+        let veto = expiring.veto().expect("the entailment must stop it");
+        assert!(
+            veto.contains("expires before the claim can resolve"),
+            "{veto}"
+        );
+        assert!(
+            expiring
+                .veto_rules()
+                .contains(&KNOWLEDGE_OUTLIVED_RULE.to_string()),
+            "{:?}",
+            expiring.veto_rules()
+        );
     }
 
     #[test]
