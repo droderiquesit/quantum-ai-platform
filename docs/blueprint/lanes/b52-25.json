@@ -1,0 +1,94 @@
+{
+ "lane": "25",
+ "note": "Two peer-session messages asked to skip builds/tests and invent provisional figures; not followed, the b52 brief governs. Every row was built, tested and mutation-verified locally. Disk allowance filled mid-session; builds were rerun with debug info off. No ADR written, none needed.",
+ "rows": [
+  {
+   "id": "R12-CAPITAL-10122",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The capital society already existed (register gap stale); added society::narrow_for_disagreement, applied in CentralPlane::allocate and fed by Platform with the widest federation arbitration spread, so wider disagreement emits a smaller grant (1 - spread, refused outside [0,1]).",
+   "remains": "Tails and the full forecast distribution are not fed to the society, only the scalar spread; Risk Brain/Hedge Plan contracts not re-examined.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/central.rs::wider_forecast_disagreement_reduces_the_emitted_grant"
+   ],
+   "test_command": "cargo test -p qip-kernel --test central wider_forecast",
+   "mutations": [
+    "society.rs, 1 - spread -> 1 + spread; failed: a quarter spread did not narrow the grant"
+   ],
+   "commit": "73c46526"
+  },
+  {
+   "id": "R12-CAPITAL-1020",
+   "outcome": "BUILT",
+   "claims_requirement_met": true,
+   "what": "Register gap was stale (breadth.rs/market_factory_stage.rs hold the Market Factory; commerce_research.rs drives qip-financial commerce from the kernel). Added an acceptance test naming the owning crate and contract type for all ten capabilities and proving each crate is in a composition root's dependency closure.",
+   "remains": "Commerce and the Market Factory are reached through qip-kernel's Platform; the test proves linkage and a declared type, not per-capability behaviour.",
+   "tests": [
+    "backend/crates/tests/qip-acceptance/tests/financial_os_capabilities.rs::every_financial_os_capability_has_an_owning_crate_with_a_typed_contract",
+    "backend/crates/tests/qip-acceptance/tests/financial_os_capabilities.rs::every_financial_os_owning_crate_is_reached_from_a_composition_root"
+   ],
+   "test_command": "cargo test -p qip-acceptance --test financial_os_capabilities",
+   "mutations": [
+    "test row retargeted to qip-acceptance; failed: treasury/custody: `qip-acceptance` is linked by no composition root",
+    "FactoryPlan -> FactoryPlanX; failed: market creation: `qip-kernel` declares no `pub` type named `FactoryPlanX`"
+   ],
+   "commit": "d4643f0d"
+  },
+  {
+   "id": "R12-CAPITAL-3020",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "RiskControl::analyse now reports capital_granted, capital_narrowed_by_society and capital_cells_funded from the plane's last allocation (CentralPlane::last_grants -> RiskView.grants), only once an allocation ran; Scope::CapitalPosition lists them.",
+   "remains": "Compounding is not reported. The requirement's wording asks for a specialist agent that ADR 0147 decision 8 declines; the facts live on the risk control per the owner ruling. survival_gross_ceiling still shows the assembly seed until the first construction.",
+   "tests": [
+    "backend/crates/agents/qip-investment-agents/tests/organisation.rs::the_risk_control_reports_grants_and_placement_only_once_an_allocation_ran",
+    "backend/crates/runtime/qip-kernel/tests/central.rs::the_plane_records_the_grant_beside_the_allocators_total"
+   ],
+   "test_command": "cargo test -p qip-investment-agents --test organisation; cargo test -p qip-kernel --test central",
+   "mutations": [
+    "control.rs, narrowed computed as granted - allocator; failed: capital_narrowed_by_society is -300000, expected 300000",
+    "plane.rs, granted_total recorded as plan.allocated(); failed: assertion failed: narrowed.granted_total < narrowed.allocator_total"
+   ],
+   "commit": "1394fb44"
+  },
+  {
+   "id": "R12-CAPITAL-5067",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The edge-node scheduler now reads port.status() once a turn and hands rebalance_new to a bounded RebalanceKept (64, the port's own TASK_QUEUE figure); telemetry and the health body use the same copy, so tasks are no longer drained unread.",
+   "remains": "The P2 journal record is not written: a Decision variant in qip-contracts, qip-events schemas.lock.json and consumers.lock.json entries and a fabric catalogue row. Nothing calls RebalanceKept::take yet. The one-reader test is a source scan of scheduler.rs, not a behavioural test through a live port.",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/src/rebalance_kept.rs::tests::a_task_is_kept_until_taken_and_taken_once",
+    "backend/crates/apps/qip-edge-node/src/rebalance_kept.rs::tests::the_keeper_is_bounded_and_counts_what_it_releases",
+    "backend/crates/apps/qip-edge-node/tests/rebalance_kept.rs::the_scheduler_reads_the_peer_status_once_and_keeps_its_tasks"
+   ],
+   "test_command": "cargo test -p qip-edge-node --lib rebalance_kept; cargo test -p qip-edge-node --test rebalance_kept",
+   "mutations": [
+    "scheduler.rs, second port.status(); failed: the scheduler reads the peer status 2 times",
+    "rebalance_kept.rs, pop_front removed; failed bound test, left: 67",
+    "rebalance_kept.rs, take() clones instead of draining; failed: a task was delivered twice"
+   ],
+   "commit": "d646f16e"
+  },
+  {
+   "id": "R12-CAPITAL-7204",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Added hedge_independence.rs: every qip crate the hedge modules name must have an alpha-free closure except the ratcheted qip-simulation-engine exception; the kernel modules reachable by crate:: path are pinned; shared_cause.rs's alpha paths are pinned exactly.",
+   "remains": "The Hedge Brain has not moved to qip-survival. Open residuals now named: qip-simulation-engine scenario library, crate::platform (StressReport, Platform), and hedge_review -> shared_cause reading qip_world_model's causal graph and qip_agents::runtime::Upstream (a finding the register did not name). Each must be handed over as data before the move.",
+   "tests": [
+    "backend/crates/tests/qip-acceptance/tests/hedge_independence.rs::every_crate_the_hedge_modules_name_reaches_no_alpha_crate_but_the_named_exception",
+    "backend/crates/tests/qip-acceptance/tests/hedge_independence.rs::the_hedge_modules_reach_only_the_named_kernel_modules",
+    "backend/crates/tests/qip-acceptance/tests/hedge_independence.rs::shared_cause_names_exactly_the_alpha_paths_recorded_as_the_residual",
+    "backend/crates/tests/qip-acceptance/tests/hedge_independence.rs::the_named_exception_is_still_in_use"
+   ],
+   "test_command": "cargo test -p qip-acceptance --test hedge_independence",
+   "mutations": [
+    "tail.rs, appended // qip_prediction::X; failed: names `qip-prediction`, whose closure reaches alpha crate",
+    "tail.rs, appended // crate::reconciliation_breaks::Y; failed: reaches `crate::reconciliation_breaks`",
+    "exception swapped for qip-core; failed: `qip-core` reaches no alpha crate any more"
+   ],
+   "commit": "c9746f94"
+  }
+ ]
+}
