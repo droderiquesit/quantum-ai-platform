@@ -180,3 +180,54 @@ fn resealing_identical_events_is_a_no_op_and_the_buffer_never_exceeds_its_bound(
     assert!(TickLakeWriter::new(Arc::new(MemoryBlobStore::new()), policy(), 4, 3).is_err());
     Ok(())
 }
+
+/// R12-DATA-1039, per-venue rights: a venue's own entry decides for its
+/// events, in both directions, and a venue with no entry falls back to its
+/// licensing class. Until this the right was read per class only, so two
+/// venues filed under one class had to be kept or refused together, whatever
+/// either one's terms said.
+///
+/// The premise events (a venue with no entry kept under its class) stop the
+/// refusal and the grant from passing on a writer that ignores the class.
+///
+/// Mutated by removing the `venue_policy` lookup in `capture`: the "XNAS
+/// refused although its class keeps it" assertion fails; restored.
+#[test]
+fn a_venues_own_right_overrides_its_licensing_class_in_both_directions() -> Result<()> {
+    let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
+    let mut writer =
+        TickLakeWriter::new(store, policy(), 1, 8)?.with_venue_rights(BTreeMap::from([
+            (
+                "XNAS".to_string(),
+                RetentionRight {
+                    canonical: false,
+                    raw: false,
+                },
+            ),
+            (
+                "XNYS".to_string(),
+                RetentionRight {
+                    canonical: true,
+                    raw: false,
+                },
+            ),
+        ]));
+    let mut other = event(1, "AAA", "derived");
+    other.venue = "XLON".into();
+    assert!(
+        !writer.capture(other)?.is_empty(),
+        "premise: a venue with no entry is kept under its class"
+    );
+    assert!(
+        writer.capture(event(2, "AAA", "derived")).is_err(),
+        "XNAS was kept although its own right keeps nothing"
+    );
+    assert_eq!(writer.refused(), 1);
+    let mut granted = event(3, "AAA", "no-such-class");
+    granted.venue = "XNYS".into();
+    assert!(
+        !writer.capture(granted)?.is_empty(),
+        "a venue's own grant was not honoured"
+    );
+    Ok(())
+}

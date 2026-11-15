@@ -100,6 +100,10 @@ const LICENSING_CLASSES: [&str; 5] = ["public", "internal", "licensed", "restric
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TickLakeSettings {
     pub retention: BTreeMap<String, RetentionRight>,
+    /// Rights read per venue, from `venue/<name>=canonical|none` entries
+    /// (R12-DATA-1039). A venue's own entry decides for its events; a venue
+    /// with none falls back to its licensing class.
+    pub venues: BTreeMap<String, RetentionRight>,
 }
 
 impl TickLakeSettings {
@@ -113,6 +117,7 @@ impl TickLakeSettings {
             return Ok(None);
         };
         let mut retention = BTreeMap::new();
+        let mut venues = BTreeMap::new();
         for entry in raw.split(',').map(str::trim) {
             let Some((class, right)) = entry.split_once('=') else {
                 return Err(Error::invalid(format!(
@@ -120,6 +125,32 @@ impl TickLakeSettings {
                      licensing class and `canonical`"
                 )));
             };
+            if let Some(venue) = class.trim().strip_prefix("venue/") {
+                let right = match right.trim() {
+                    "canonical" => RetentionRight {
+                        canonical: true,
+                        raw: false,
+                    },
+                    "none" => RetentionRight {
+                        canonical: false,
+                        raw: false,
+                    },
+                    other => {
+                        return Err(Error::invalid(format!(
+                            "{TICK_LAKE_RETENTION_VARIABLE} gives venue `{venue}` the right \
+                             `{other}`; a venue is `canonical` or `none` (a connector's raw \
+                             bytes are never kept, ADR 0416)"
+                        )));
+                    }
+                };
+                if venue.is_empty() || venues.insert(venue.to_string(), right).is_some() {
+                    return Err(Error::invalid(format!(
+                        "{TICK_LAKE_RETENTION_VARIABLE} names venue `{venue}` empty or twice; \
+                         one venue has one reading of its terms"
+                    )));
+                }
+                continue;
+            }
             let class = class.trim().to_ascii_lowercase();
             if !LICENSING_CLASSES.contains(&class.as_str()) {
                 return Err(Error::invalid(format!(
@@ -155,17 +186,18 @@ impl TickLakeSettings {
                 )));
             }
         }
-        Ok(Some(Self { retention }))
+        Ok(Some(Self { retention, venues }))
     }
 
     /// One writer over `store`, for one arm.
     pub fn writer(&self, store: Arc<dyn BlobStore>) -> Result<TickLakeWriter> {
-        TickLakeWriter::new(
+        Ok(TickLakeWriter::new(
             store,
             self.retention.clone(),
             TICK_LAKE_BATCH,
             TICK_LAKE_MAX_BUFFERED,
-        )
+        )?
+        .with_venue_rights(self.venues.clone()))
     }
 }
 
@@ -388,8 +420,24 @@ impl ConnectorArm {
     }
 
     /// Keep every knowledge pack this arm's polls produce on `store`.
+    ///
+    /// The store is wrapped in the pack class's write check (R12-DATA-1041),
+    /// so whatever the caller hands in, bytes that are not a compact pack in
+    /// the packs namespace are refused before they reach it.
     pub fn with_knowledge_packs(mut self, store: Arc<dyn BlobStore>) -> Self {
-        self.pack_store = Some(store);
+        let class = qip_storage::classes::blob_class(
+            qip_storage::classes::DECLARED,
+            KNOWLEDGE_PACK_NAMESPACE,
+        )
+        .copied();
+        self.pack_store = Some(match class {
+            Ok(class) => Arc::new(qip_storage::class_checked::ClassCheckedStore::new(
+                store, class,
+            )),
+            // An undeclared class is a build defect; keep the caller's store
+            // rather than none so the pack write is not silently dropped.
+            Err(_) => store,
+        });
         self
     }
 
@@ -810,6 +858,28 @@ mod tests {
         assert!(lake("vendorx=canonical").is_err());
         assert!(lake("public=canonical,public=canonical+raw").is_err());
         assert!(lake("public").is_err());
+        Ok(())
+    }
+
+    /// R12-DATA-1039: rights may be read per venue. A `venue/<name>` entry
+    /// is `canonical` or `none` and nothing else, and a venue named twice or
+    /// with a raw right is refused, as a class is. The class entry in the
+    /// same list keeps the parse from passing on a list that admits only
+    /// venues.
+    ///
+    /// Mutation: drop the `venues.insert` duplicate check — the twice-named
+    /// venue assertion fails.
+    #[test]
+    fn a_venue_right_is_canonical_or_none_and_names_a_venue_once() -> Result<()> {
+        let settings = lake("public=canonical, venue/coinbase=none, venue/kraken=canonical")?
+            .ok_or_else(|| qip_core::error::Error::not_found("settings"))?;
+        assert!(settings.retention.contains_key("public"));
+        assert_eq!(settings.venues.len(), 2);
+        assert!(!settings.venues["coinbase"].canonical);
+        assert!(settings.venues["kraken"].canonical);
+        assert!(lake("venue/coinbase=canonical,venue/coinbase=none").is_err());
+        assert!(lake("venue/coinbase=canonical+raw").is_err());
+        assert!(lake("venue/=canonical").is_err());
         Ok(())
     }
 
