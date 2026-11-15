@@ -93,6 +93,124 @@ impl LeaseRecord {
     }
 }
 
+/// Where the lease lives, chosen by the scheme of [`LEASE_VARIABLE`]
+/// (ADR 0137 decision 5): `gs://bucket/object` is the cross-zone store, a
+/// plain path is the one-host file store, and any other scheme stops the
+/// process rather than being read as a file name — `s3://x` as a relative
+/// path would make a standby fence on a local file its primary never sees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeaseLocation {
+    File(PathBuf),
+    Gcs { bucket: String, object: String },
+}
+
+impl LeaseLocation {
+    pub fn parse(value: &str) -> Result<Self> {
+        if let Some(rest) = value.strip_prefix("gs://") {
+            return match rest.split_once('/') {
+                Some((bucket, object)) if !bucket.is_empty() && !object.is_empty() => {
+                    Ok(Self::Gcs {
+                        bucket: bucket.to_string(),
+                        object: object.to_string(),
+                    })
+                }
+                _ => Err(Error::invalid(format!(
+                    "configuration: {LEASE_VARIABLE}={value} must be gs://<bucket>/<object>"
+                ))),
+            };
+        }
+        if value.contains("://") {
+            return Err(Error::invalid(format!(
+                "configuration: {LEASE_VARIABLE}={value} has a scheme this node does not know; \
+                 use gs://<bucket>/<object> for a pair across zones or a file path for one host"
+            )));
+        }
+        Ok(Self::File(PathBuf::from(value)))
+    }
+}
+
+impl std::fmt::Display for LeaseLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Gcs { bucket, object } => write!(f, "gs://{bucket}/{object}"),
+        }
+    }
+}
+
+/// The two operations [`GcsLeaseStore`] needs of a Cloud Storage object: a
+/// read that names the generation it read, and a write that lands only on a
+/// named generation (`0`: only if absent). The production implementation is
+/// `qip_storage::gcp::CloudStorageBlobStore`; tests share one in-process
+/// double between two keepers.
+pub trait GenerationObject: Send + Sync + std::fmt::Debug {
+    fn read(&self) -> Result<Option<(Vec<u8>, u64)>>;
+    /// `Ok(false)` is a lost race (HTTP 412); every other failure is an error.
+    fn write_if_generation(&self, bytes: Vec<u8>, generation: u64) -> Result<bool>;
+}
+
+/// The production [`GenerationObject`]: one key in a Cloud Storage bucket,
+/// reached through the in-tree adapter (ADR 0113 section 1).
+#[derive(Debug)]
+pub struct CloudObject {
+    store: qip_storage::gcp::CloudStorageBlobStore,
+    key: String,
+}
+
+impl CloudObject {
+    pub fn new(store: qip_storage::gcp::CloudStorageBlobStore, key: impl Into<String>) -> Self {
+        Self {
+            store,
+            key: key.into(),
+        }
+    }
+}
+
+impl GenerationObject for CloudObject {
+    fn read(&self) -> Result<Option<(Vec<u8>, u64)>> {
+        self.store.get_with_generation(&self.key)
+    }
+
+    fn write_if_generation(&self, bytes: Vec<u8>, generation: u64) -> Result<bool> {
+        self.store.put_if_generation(&self.key, bytes, generation)
+    }
+}
+
+/// The cross-zone lease: one object whose generation is the version
+/// (ADR 0137 decision 1, R12-REFLEX-8069).
+#[derive(Debug)]
+pub struct GcsLeaseStore {
+    object: Arc<dyn GenerationObject>,
+}
+
+impl GcsLeaseStore {
+    pub fn new(object: Arc<dyn GenerationObject>) -> Self {
+        Self { object }
+    }
+}
+
+impl LeaseStore for GcsLeaseStore {
+    fn load(&self) -> Result<Option<(LeaseRecord, u64)>> {
+        let Some((bytes, generation)) = self.object.read()? else {
+            return Ok(None);
+        };
+        let record = serde_json::from_slice(&bytes).map_err(|error| {
+            Error::invalid(format!(
+                "the lease object is not a lease record ({error}); it is left as it is, and no \
+                 process promotes over a record it cannot read"
+            ))
+        })?;
+        Ok(Some((record, generation)))
+    }
+
+    fn swap(&self, expected: Option<u64>, next: &LeaseRecord) -> Result<bool> {
+        let bytes = serde_json::to_vec(next)
+            .map_err(|error| Error::io(format!("the lease record cannot be encoded: {error}")))?;
+        self.object
+            .write_if_generation(bytes, expected.unwrap_or(0))
+    }
+}
+
 /// A store holding one [`LeaseRecord`] under a version.
 pub trait LeaseStore: Send + Sync + std::fmt::Debug {
     /// The record and its version, or `None` if no process has ever held.
@@ -657,7 +775,7 @@ impl Drop for LeaseThread {
 /// The node's lease configuration, read in `main.rs`.
 #[derive(Debug)]
 pub struct StandbySettings {
-    pub path: PathBuf,
+    pub location: LeaseLocation,
     pub role: Role,
     pub name: String,
 }
@@ -727,7 +845,7 @@ impl StandbySettings {
             ))
         })?;
         Ok(Some(Self {
-            path: PathBuf::from(path),
+            location: LeaseLocation::parse(path)?,
             role,
             name: name.to_string(),
         }))

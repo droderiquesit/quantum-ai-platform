@@ -310,8 +310,9 @@ impl CloudStorageBlobStore {
     /// See the type documentation: the set refused here is
     /// [`crate::FileBlobStore`]'s, plus what would break the request itself.
     /// One `uploadType=media` request; `Ok(false)` only for a conditional
-    /// upload Cloud Storage refused because the object already exists.
-    fn upload(&self, key: &str, bytes: Vec<u8>, if_absent: bool) -> Result<bool> {
+    /// upload Cloud Storage refused because the live generation is not the one
+    /// asked for (`Some(0)`: the object already exists).
+    fn upload(&self, key: &str, bytes: Vec<u8>, precondition: Option<u64>) -> Result<bool> {
         if !self.is_available() {
             return Err(self.unavailable());
         }
@@ -329,11 +330,9 @@ impl CloudStorageBlobStore {
             "/upload/storage/v1/b/{}/o?uploadType=media&name={}{}",
             percent_encode(&self.config.bucket),
             percent_encode(&self.scoped(key)),
-            if if_absent {
-                "&ifGenerationMatch=0"
-            } else {
-                ""
-            }
+            precondition.map_or_else(String::new, |generation| format!(
+                "&ifGenerationMatch={generation}"
+            ))
         );
         let request = self
             .config
@@ -342,7 +341,7 @@ impl CloudStorageBlobStore {
             .with_header("content-type", &self.config.content_type)
             .with_body(bytes);
         let response = self.client.send(&request).map_err(Error::from)?;
-        if if_absent && response.status == 412 {
+        if precondition.is_some() && response.status == 412 {
             return Ok(false);
         }
         if !response.is_success() {
@@ -431,13 +430,63 @@ impl CloudStorageBlobStore {
     }
 }
 
+impl CloudStorageBlobStore {
+    /// The object's bytes and its generation, or `None` if there is none.
+    ///
+    /// The generation comes from the `x-goog-generation` header of the same
+    /// response that carried the bytes, never from a second metadata read: two
+    /// requests could straddle a writer and pair one writer's bytes with the
+    /// next one's generation, and a compare-and-swap built on that pair would
+    /// accept a stale view (ADR 0137 decision 1, R12-REFLEX-8069). A response
+    /// without a parseable generation is an error, not generation zero, because
+    /// zero means "create" to [`Self::put_if_generation`].
+    pub fn get_with_generation(&self, key: &str) -> Result<Option<(Vec<u8>, u64)>> {
+        if !self.is_available() {
+            return Err(self.unavailable());
+        }
+        self.validate_key(key)?;
+        let path = format!("{}?alt=media", self.object_path(key));
+        let request = self.config.access.request(Method::Get, &path)?;
+        let response = self.client.send(&request).map_err(Error::from)?;
+        if response.status == 404 {
+            return Ok(None);
+        }
+        if !response.is_success() {
+            return Err(status_refusal(
+                &self.service(),
+                response.status,
+                &response.body_excerpt(),
+            ));
+        }
+        let generation = response
+            .header("x-goog-generation")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|generation| *generation > 0)
+            .ok_or_else(|| {
+                Error::schema(format!(
+                    "{} answered a read with no usable x-goog-generation header; a version \
+                     cannot be guessed",
+                    self.service()
+                ))
+            })?;
+        Ok(Some((response.body, generation)))
+    }
+
+    /// Write the object only if its live generation is `generation`
+    /// (`0`: only if none exists). `Ok(false)` is a 412, a lost race; any
+    /// other failure is an error (ADR 0137 decision 1).
+    pub fn put_if_generation(&self, key: &str, bytes: Vec<u8>, generation: u64) -> Result<bool> {
+        self.upload(key, bytes, Some(generation))
+    }
+}
+
 impl BlobStore for CloudStorageBlobStore {
     /// Upload the whole object in one request.
     ///
     /// `uploadType=media` rather than `multipart`: the port carries no metadata
     /// to send alongside the bytes, so the simpler form is the honest one.
     fn put(&self, key: &str, bytes: Vec<u8>) -> Result<()> {
-        self.upload(key, bytes, false).map(|_| ())
+        self.upload(key, bytes, None).map(|_| ())
     }
 
     /// `ifGenerationMatch=0`: Cloud Storage creates the object only if no
@@ -445,7 +494,7 @@ impl BlobStore for CloudStorageBlobStore {
     /// write are one request, so two writers racing on one name cannot both
     /// create it.
     fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
-        self.upload(key, bytes, true)
+        self.upload(key, bytes, Some(0))
     }
 
     /// Download the whole object, or report that there is none.
