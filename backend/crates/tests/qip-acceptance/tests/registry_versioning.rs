@@ -563,12 +563,30 @@ fn a_model_version_is_its_own_card_beside_its_predecessor_and_a_card_rebinding_a
 #[test]
 fn a_research_verdict_recorded_again_is_the_next_version_with_its_predecessor_readable_and_a_version_not_above_the_latest_is_refused()
  {
+    use qip_agents::research::{BenchmarkRef, campaign_id, experiment_ref};
     const HYPOTHESIS: &str = "credit leads equity";
     let null = Verdict::Null {
         evidence: "exp-1".to_string(),
     };
+    let id = campaign_id(HYPOTHESIS).unwrap();
+    let bench = BenchmarkRef::new(
+        "signal capability",
+        "the unconditioned baseline",
+        "IncrementalValue",
+    )
+    .unwrap();
     let mut registry = ResearchRegistry::new();
-    assert_eq!(registry.record(HYPOTHESIS, null.clone()).unwrap(), 1);
+    assert_eq!(
+        registry
+            .record_concluded(
+                HYPOTHESIS,
+                null.clone(),
+                &[experiment_ref(&id, "shadow")],
+                Some(&bench)
+            )
+            .unwrap(),
+        1
+    );
     // Premise: the hypothesis is held at version 1.
     assert_eq!(registry.latest_version(HYPOTHESIS), Some(1));
 
@@ -580,21 +598,8 @@ fn a_research_verdict_recorded_again_is_the_next_version_with_its_predecessor_re
         (1, &null),
         "version 1 is no longer readable once version 2 was recorded"
     );
-
-    for stale in [0, 1, 2] {
-        assert!(
-            registry
-                .record_version(
-                    HYPOTHESIS,
-                    stale,
-                    Verdict::Supported {
-                        evidence: "exp-2".to_string(),
-                    },
-                )
-                .is_err(),
-            "version {stale} was accepted over latest 2"
-        );
-    }
+    // A stale version cannot be named at all: `record_version` is
+    // crate-private and the public doors always take the next number.
     assert_eq!(registry.latest_version(HYPOTHESIS), Some(2));
     assert_eq!(registry.history(HYPOTHESIS).len(), 2);
 }

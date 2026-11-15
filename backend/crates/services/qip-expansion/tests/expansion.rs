@@ -3,7 +3,7 @@
 //! The expansion loop's curriculum, one test per register row it closes.
 //! Generated cases come from a fixed-seed generator, so a failure replays.
 
-use qip_agents::research::{ResearchRegistry, Verdict};
+use qip_agents::research::{BenchmarkRef, ResearchRegistry, Verdict, campaign_id, experiment_ref};
 use qip_agents::tools::{ToolKind, ToolName, ToolPermission, ToolRegistry};
 use qip_contracts::expansion::{CurriculumItem, GapClass};
 use qip_core::Decimal;
@@ -578,11 +578,23 @@ fn a_task_outside_licence_security_policy_or_jurisdiction_is_refused_before_anyt
     let mut world = World::new();
     world
         .research
-        .record(
+        .record_concluded(
             "does the moon lead rates",
             Verdict::Null {
                 evidence: "exp-7".to_string(),
             },
+            &[experiment_ref(
+                &campaign_id("does the moon lead rates").unwrap(),
+                "shadow",
+            )],
+            Some(
+                &BenchmarkRef::new(
+                    "signal capability",
+                    "the unconditioned baseline",
+                    "IncrementalValue",
+                )
+                .unwrap(),
+            ),
         )
         .unwrap();
     // The premise: the same bounds admit a task that stays inside them.
