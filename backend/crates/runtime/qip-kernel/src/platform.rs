@@ -16161,6 +16161,10 @@ impl Platform {
                 crate::lattice_stage::CALIBRATION_BRIER_BOUND,
                 crate::lattice_stage::CALIBRATION_MIN_RESOLVED,
             ) {
+                self.telemetry.metrics.count(
+                    names::CALIBRATION_CHECKS,
+                    labels([("outcome", if breached { "breached" } else { "within" })]),
+                );
                 self.telemetry.metrics.gauge(
                     crate::lattice_stage::LATTICE_CALIBRATION_SLO_BREACHED,
                     labels([("horizon", horizon.as_str())]),

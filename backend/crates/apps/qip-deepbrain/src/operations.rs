@@ -1101,6 +1101,7 @@ impl Operations {
             path.slo.service != critical_paths::EDGE_NODE_SERVICE
         });
         critical_paths::record(&metrics, &statuses);
+        critical_paths::record(&metrics, &critical_paths::evaluate_ai(&metrics.snapshot()));
         round.objectives_missed = statuses
             .iter()
             .filter(|s| s.is_observed() && !s.is_met)
@@ -1124,6 +1125,20 @@ impl Operations {
             && let Some(outcome) = quantum_outcome(&routing)
         {
             metrics.count(names::QUANTUM_JOBS, labels([("outcome", outcome)]));
+            // A quantum answer that ran, read against the classical
+            // baseline solved beside it (R12-OBS-9164). A negative
+            // improvement means the baseline was the better answer.
+            if outcome == "succeeded" {
+                let delta = if routing.improvement_over_classical < 0.0 {
+                    "worse"
+                } else {
+                    "not_worse"
+                };
+                metrics.count(
+                    names::QUANTUM_CLASSICAL_CHECKS,
+                    labels([("outcome", delta)]),
+                );
+            }
             round.quantum = Some(outcome);
         }
 

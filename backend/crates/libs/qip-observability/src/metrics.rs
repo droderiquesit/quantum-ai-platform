@@ -1589,4 +1589,13 @@ pub mod names {
     /// Each sweep's reading of the research queue's depth against the
     /// queue-depth objective's ceiling, by outcome (`within`, `over`).
     pub const RESEARCH_QUEUE_CHECKS: &str = "qip_research_queue_checks_total";
+    /// Each cycle's reading of a horizon's calibration against the
+    /// calibration objective's Brier bound, by outcome (`within`,
+    /// `breached`). Counted only once the horizon has enough resolutions to
+    /// be judged, so an unjudged horizon adds nothing (R12-OBS-9164).
+    pub const CALIBRATION_CHECKS: &str = "qip_calibration_checks_total";
+    /// Each quantum answer that was judged and ran, read against the
+    /// classical baseline the router always solves (ADR 0006), by outcome
+    /// (`not_worse`, `worse`) (R12-OBS-9164).
+    pub const QUANTUM_CLASSICAL_CHECKS: &str = "qip_quantum_classical_checks_total";
 }
