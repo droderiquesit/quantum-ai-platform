@@ -34,3 +34,11 @@ every exhaustive match in the platform must then move.
 Nothing outside the kernel reads `rejected_by_challenge`, and no deep-brain
 process submits a request: the fabric subscriber and reply path stay open, as
 does making REASON honour a late rejection.
+
+## What it costs
+
+Each submit, answer and rejection read rebuilds the challenge history by reading and decoding every record journaled under `Topic::HypothesisChallenged` in the event log, so the work grows with the challenge records on the log; this record holds no measurement of it. The tournament retains up to 256 dossiers in memory, and a challenge that arrives after its dossier was dropped is only refused, never answered. A request whose target is not a prediction is refused the same way. At most 16 requests are answered per cycle, so requests beyond that wait for a later cycle. Nothing outside the kernel reads a rejection yet, so a refuted prediction is not acted on differently until REASON honours late rejections, and no deep-brain process raises a request.
+
+## What would make this wrong
+
+A refusal rate for missing dossiers that is high in practice would show 256 retained dossiers is too few for the delay at which second brains challenge. A backlog of unanswered requests that does not drain would show the cap of 16 per cycle is too low for the rate at which requests arrive. LEARN-stage time that rises with the challenge records on the log would show that re-decoding the whole topic on every call is the wrong shape. A second brain that cannot reach `Platform::submit_challenge` in its own process would need the fabric subscriber and reply path this record leaves open.

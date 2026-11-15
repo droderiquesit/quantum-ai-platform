@@ -122,3 +122,42 @@ neighbouring work and was never re-applied.
     change to the journal's shape.
 12. An export is read by training and by nothing that sizes or loosens a
     limit (blueprint 12.4). It is not an order path.
+
+## What it costs
+
+- Four of the six data-plane objectives read unmeasured, so a breach of
+  archive delay, Bigtable p99, knowledge-delta freshness or BQ ingestion
+  freshness pages nobody; the row cannot be COMPLETE until the archive
+  ingester and the three stores exist. The provisional figures (10 ms, 300
+  seconds, 99%) were given by nobody, and their cost is unmeasured because
+  nothing evaluates them.
+- Re-fetch health gains a second recording of one fact beside the gauge, so
+  the counter and the gauge can disagree if a later edit updates only one.
+- A deep-brain process refuses to build its operations on a runbook set that
+  does not digest to `REVIEWED_RUNBOOK_SET_DIGEST`, so every edit to the set
+  is a two-part change: the set and the constant, in the same commit. The
+  constant was computed by an independent script, not by running the Rust; if
+  it is wrong, the pin test's failure message carries the correct value.
+- The digest is not a signature: a tampered build can change both set and
+  constant, and only the Binary Authorization attestation answers that.
+- The training export leaves out the hedge-not-taken path, agency proposals and
+  per-arm hedge and venue figures, so a trainer sees a partial set of priced
+  paths until the journal's shape changes. Each export reads the journal
+  entries back from the event log; that cost is unmeasured.
+
+## What would make this wrong
+
+- A data-plane owner supplies the Bigtable or freshness figures and they differ
+  from the provisional ones, or a store is switched on and its objective still
+  reads unmeasured because no `SourceRule` was bound to a recorded series.
+- The refetch counter and the gauge are observed to disagree in a scrape, or
+  an objective on the counter pages on a split nobody can reproduce from the
+  log.
+- A runbook is changed in a way review should have caught and the digest
+  pin passed it, or the pin blocks deploys often enough that it is bypassed by
+  copying the failure value without review. Either would show the digest is
+  not doing the work of review; the signer outside the build that this record
+  names, ADR 0110's KMS artefact signing, is deferred.
+- A training consumer needs the held-out paths (a hedge policy is declared, or
+  the ambient door's proposals become recordable), or an export is read by
+  anything that sizes or loosens a limit.

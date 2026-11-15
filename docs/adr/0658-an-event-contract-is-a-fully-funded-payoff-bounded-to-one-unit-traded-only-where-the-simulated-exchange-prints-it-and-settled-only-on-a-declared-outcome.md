@@ -36,6 +36,14 @@ Decisions 1 and 2 are built in this slice. Decisions 3 to 5 are not: the
 settlement path (operator-declared outcome, payoff booking) and the
 fully-funded sizing check remain, and the row stays PARTIAL until they land.
 
+## What it costs
+
+Until decisions 3 to 5 land, the platform can build an event contract, assemble it in the Prediction class and trade it on paper, but the settlement path and the fully-funded sizing check are not built, so the row stays PARTIAL. The price bound is a refusal: any event contract object built with a price above one is rejected at construction, and a caller that supplied one must correct it. Settlement adds an operator duty, because every contract needs an outcome declared with a date by an operator, and a contract whose outcome no operator declares does not settle. Refusing external prediction-market quotes means the simulated exchange's print is the only price source, so a contract it does not print has no price. The cost in storage, compute and operator effort is unmeasured.
+
+## What would make this wrong
+
+The decision should be revisited if the desk needs an event contract priced where the simulated exchange prints nothing, so that decision 3 leaves positions unpriceable in practice. It should also be revisited if operator-declared outcomes prove too slow or too error-prone, for example if contracts routinely sit unsettled past their dates or two declarations disagree. A payoff other than one unit, such as a scalar or multi-outcome contract, would break the one-unit bound of decisions 1 and 2. A change in the licensing posture toward a prediction-market venue would reopen decision 3.
+
 ## Evidence
 
 `qip-kernel/tests/asset_classes.rs::an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bounded_to_one_unit`.

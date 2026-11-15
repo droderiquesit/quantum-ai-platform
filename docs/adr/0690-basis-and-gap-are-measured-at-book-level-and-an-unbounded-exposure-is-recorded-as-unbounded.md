@@ -46,6 +46,30 @@ reaches a reader of the book.
   compiling session and an owner-stated bound (**provisional: none chosen**).
 * Theta, rho, vanna and vomma remain unaggregated.
 
+## What it costs
+
+The module measures and nothing reads it: with no production caller and no
+`LimitKind` arm, R12-RISK-4095 stays PARTIAL and a breach of basis or gap
+exposure cannot refuse an order. Summing pairs without netting overstates basis
+for a book whose pairs do offset, so any later bound must be set against the
+restrictive figure. The gap figure is only as wide as the worlds the caller
+names, and a world left out is a loss not measured. `Unbounded` is a verdict a
+reader must now act on, since nothing yet turns it into a stop. The module's
+compute cost is one pass over the pairs and one over the worlds; it is
+unmeasured, and the figures are `f64` statistics, not `Decimal` money.
+
+## What would make this wrong
+
+If the owner states a bound and a compiling session finds that the summed basis
+figure refuses a book the desk considers well hedged, the no-netting reading is
+too restrictive and a netted measure needs its own ADR. If the stress library
+prices a gap world that `GapWorld` cannot express, the worst-world figure is
+understating gap and the input shape must change. If a caller treats `Unbounded`
+as acceptable rather than as a finding, the decision has failed its purpose and
+the limit arms should be built instead of waiting. If a basis or gap loss occurs
+in a book whose recorded verdict was `Within`, the formula or the world list was
+wrong.
+
 ## Findings on two other rows of this lane
 
 * **R12-RES-7104**: the remaining step is that the capital-grant route is

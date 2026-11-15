@@ -54,7 +54,7 @@ to whoever reads it.
 ## What would make this wrong
 
 - A `Partial` or `Complete` verdict that disagrees with the cycle's real
-  outcome in practice, for instance because a lone sent leg reads `Complete`,
+  outcome in practice, for instance because a lone filled leg reads `Complete`,
   would show the sent-legs-only judgement is too weak and the intended legs
   must reach the ledger.
 - A cycle whose legs are split across cells or carry differing `cycle_id`

@@ -38,14 +38,26 @@ Two existing seams record, each once, each with no new threshold:
 - **Nothing decides from an episode.** The store is still read by nothing
   that decides.
 
-## Consequences
+## What it costs
 
 Two of the six kinds now have a recording site, so the centre can answer
 "which venue left rotation in this region" and "which book was corrupt".
-Delivery is still gated on `QIP_MESH_CELLS` and a deployed execution node.
+Drift and queue behaviour stay unrecorded, so the requirement's row stays open
+on them and a region cannot yet share those episodes. Each recorded episode
+takes one slot in the 128-slot retained ring (`MAX_RETAINED_EPISODES`), so a
+venue that enters quarantine or a run of crossed books can push older episodes
+out sooner; how often either fires in practice is unmeasured. The two
+recordings add code inside seams that already exist: `Cell::apply_batch`,
+reached from `Cell::on_bytes` and from the pass, and `Cell::review_venues`,
+called on the pass. Delivery is still gated on `QIP_MESH_CELLS` and a
+deployed execution node, and none is deployed.
 
 ## What would make this wrong
 
 An episode filed at a seam that fires every pass would flood the 128-slot
-ring and push out the four kinds the centre already relies on. Both seams
+ring and push out the four kinds ADR 0207 already carries. Both seams
 fire on a state entry, and the tests assert one episode, not one per pass.
+The record should also be revisited if the centre needs drift or queue
+episodes to act on, since this decision leaves those two kinds with no
+recording site, or if a region's quarantine entries or crossed-book discards
+turn out frequent enough to displace the older episodes from the ring.

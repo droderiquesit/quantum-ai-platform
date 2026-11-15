@@ -27,17 +27,25 @@ raised nothing.
 4. `mismatch::route` returns every mismatch somewhere: the routed total equals
    `FusedState::mismatches().len()`.
 
-## Consequences
+## What it costs
 
 The tick desk stays off by default (`QIP_DEEPBRAIN_TICK_EVERY` unset), so no
 deployed binary routes a mismatch until it is enabled and entitled. Proposed
 hypotheses are not yet evaluated by `Book::review`. Nothing applies
-`EvidenceChallenge::lowered` to a live evidence weight yet.
+`EvidenceChallenge::lowered` to a live evidence weight yet. Parts 2 and 3 leave
+rows unbuilt: no edge crate reads `FusedDigest`, the kernel's per-cell
+publication does not call `build_for_cell`, and the replay seam, the
+`qip-deepbrain` shard entry point and the Terraform are not written, so the
+replay job's monthly cost is the owner's figure and is unmeasured here.
 
 ## What would make this wrong
 
 A consumer that derives a size from `ProposedHypothesis`. The type has no field
 to size from; adding one needs this record revisited.
+It is also wrong if mismatches keep being routed but the scout queue or the
+book grows without bound, or if `FusedDigest` and the replay shards stay
+without a caller long enough that the owner's provisional bounds and cost
+figure are never replaced by chosen values.
 
 
 ---

@@ -26,6 +26,35 @@ origin. Nothing was compiled when this was written (owner instruction of
 A reader can cite "causal graph at version N as of T". Wiring `cite` into a
 decision record is not done here.
 
+## What it costs
+
+- `cite` scans every event in the log and decodes each world-model snapshot it
+  finds, so a citation is linear in the log's length. No latency is measured.
+  An index per domain is the remedy if it matters.
+- `resume_book` likewise reads every record at start-up to rebuild the routing
+  book, and decodes each `RoutingScored` record it finds, so that part of
+  start-up grows with the log's length. Unmeasured.
+- Because one origin stays, versions written by different brains are not told
+  apart; a citation names a version and digest but not which brain produced it.
+- Nothing calls `cite` from a decision record yet, so no decision cites a
+  version today. The path-counterfactual queue is not wired into `Platform`,
+  so that queue scores no unwind or hedge regret in a cycle. The 256-path
+  bound (`MAX_PENDING`) is provisional and has no measured basis.
+- Features, entities, contradictions and episodic memory remain
+  unsnapshotted, so a decision cannot cite them.
+
+## What would make this wrong
+
+- A decision record that must name which brain's world model it used cannot
+  be served by one shared origin; at that point the per-brain origin must be
+  built and `resume` taught to read it.
+- A log long enough that `cite` or `resume_book` is a visible share of a
+  cycle or of start-up time would need an index. Neither share is measured.
+- A real workload that offers more than 256 pending paths and meets the
+  refusal would show the bound is too small.
+- A composition root that declares a hedge policy would make the hedge
+  counterfactual worth wiring into LEARN.
+
 ## Further lane 40 decision: R12-MODEL-6004 (hedged and unwound paths)
 
 This record is lane 40's only home for decisions besides ADR 0681, so the

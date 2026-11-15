@@ -39,3 +39,18 @@ serves the same bytes had only the first-read copy of the derived records.
   tape may be dropped is the owner's.
 - A connector arm no environment configures, and the egress decision, still
   gate any live re-fetch.
+
+## What it costs
+
+- Every replay that calls this puts live requests to the provider through the manifest's locator, the licence gate and the egress route, one per matching extent up to each arm's budget. The cost in provider quota and latency is unmeasured, and no caller exists yet to measure it against.
+- `REFETCH_BUDGET`, the same constant the cadence pass uses, caps each arm's pass, so a replay that touches more of one source's extents than the budget is not fully verified. An extent past the budget produces no finding, so the findings do not name what was left unchecked.
+- A licence refusal on one arm withdraws that source on the platform and returns the error from `EvolutionEngine::refetch_for_replay`, so arms after it are not asked. A replay can therefore withdraw a source as a side effect.
+- A revised extent is recorded as a new reference through `record_reference`, so a replay can grow the ledger. An unretrievable extent is marked on the ledger, so a replay can change state and is not read-only.
+- A replay with no subject is refused instead of widened, so a caller that has no subject set to give cannot use this path at all.
+
+## What would make this wrong
+
+- The replay path gains its caller and the re-fetch is found too slow or too costly in provider quota to run on every replay. The trigger would then need a cadence or a cache, which ADR 0180 decision 4 may not permit.
+- Replays routinely touch more of one source's extents than `REFETCH_BUDGET`, so the budgeted pass leaves most of them unchecked. The budget or the subject selection would then need a decision of their own.
+- A provider answers a re-fetch differently for a replayed period than for the first read, such as through rate limits or terms that deny archival access, so findings report revised or unretrievable where nothing changed. Replays would then mark good extents as unretrievable on the ledger.
+- The owner decides that a recorded tape or file may be the replay's source of truth. The manifest-driven re-fetch would then add network cost without adding evidence.

@@ -34,7 +34,26 @@ believed it covered its ladder.
    fill on a created product back to `settle_fill`. Until both exist,
    `settle_fill` has no production caller and the row stays PARTIAL.
 
+## What it costs
+
+A market seeded with exactly the inventory its ask side rests is withdrawn at
+the first `review` after any fill is settled, because the book is not trimmed
+and nothing re-lists a smaller ladder; a market seeded with more is withdrawn
+once its fills take the inventory below the resting ask depth. Withdrawing
+instead of trimming is the restrictive choice and it removes liquidity a
+trimmed ladder would have kept. Re-listing is not built, and the factory has
+no path back from withdrawn: `seed` accepts only a listed market and `create`
+refuses a product that already exists. `review` now asks the venue for the
+listed book a second time per seeded market that reaches the inventory check;
+that cost is unmeasured. `settle_fill` has no production caller and `fill_price` does not
+consume resting depth, so the debit is exercised only by direct calls and the
+row stays PARTIAL.
+
 ## What would make this wrong
 
 A bid-side fill acquires inventory; this ADR does not model it, so a market
-that buys is not credited. Crediting needs a bound on inventory first.
+that buys is not credited. Crediting needs a bound on inventory first. The
+decision should also be revisited if markets are withdrawn after their first
+fill often enough that a trimmed re-listing is wanted, or if the simulated
+venue starts consuming resting depth on a fill, because the inventory check
+assumes the book is left alone after a fill.

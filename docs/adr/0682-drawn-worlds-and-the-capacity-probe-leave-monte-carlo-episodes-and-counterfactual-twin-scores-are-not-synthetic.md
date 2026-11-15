@@ -54,6 +54,14 @@ the Conditional arm having no test that fails when its push is deleted.
    that really do not call the drain. The row stays open while the list is
    non-empty.
 
+## What it costs
+
+A cycle's `scenario.evaluated` journal grows by one `MonteCarlo` episode for each drawn tail world SIMULATE produced and one for the capacity probe when it ran, and each adds a SHA-256; the added storage and compute are unmeasured. The two digests cover different things: a drawn world's digest is over its name, the seed, the loss in both forms and the unmeasured positions, so it records what the stage computed, while the probe's digest is over its inputs only and the seed is carried beside it, so a replay of the probe must regenerate the run and compare its result separately. A drawn world is seeded with the cycle number and the probe with `PlatformConfig::seed`, so a replay needs both. Counterfactual twin scores get no synthetic label, so a reader who wanted every counterfactual under one episode type will not find them there. Decision 5 leaves the reflex node with no OTLP export, and decision 6 keeps R12-OBS-9140 open while `EXPORTERLESS_BINARIES` is non-empty. Nothing in this ADR was compiled or run, so the cost of the tests is also unmeasured.
+
+## What would make this wrong
+
+A third drawn world is added in `tail.rs` without joining `SYNTHETIC_WORLDS` or `SYNTHETIC_JOINT`, so `is_drawn_world` skips it and its seed is never journaled. A replay of a cycle from its journaled seed regenerates a drawn world whose digest differs from the one recorded, or a probe run that differs under the same digest and seed, which would show that something outside the recorded seed and inputs shaped the run. A reviewer names something the counterfactual twin generates that is not in the recorded bars, which would make the twin scores synthetic after all. Journal growth from these episodes is measured and found to be a retention or latency problem. A second Lane 1 crate has to be hosted by the node, which under ADR 0116 reopens the sidecar and with it decision 5.
+
 ## Evidence
 
 Nothing in this ADR was compiled or run. The tests it relies on are named in

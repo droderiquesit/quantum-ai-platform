@@ -31,7 +31,26 @@ breaks on broker replacement; DNS loss must not stop trading.
 No deployment sets the four variables; `manifest_wiring` records why in its
 allowlist. The resolver is not read from `resolv.conf`.
 
+## What it costs
+
+An operator who wants discovery must now set four variables together and
+choose the timeout and attempt count themselves; naming a resolver without
+all four stops the process at start-up, and every figure is a decision the
+operator owns. The lookup runs on the start-up path, so a resolver that does
+not answer delays start by up to the timeout times the attempts, and that
+delay is unmeasured here. The configured
+`QIP_FABRIC_URL` must still be supplied, so discovery adds a second source
+of the address rather than removing the first. Only `qip-edge-node` is wired:
+ledgerd, api, fastbrain and deepbrain still take one literal address, and no
+deployment sets the four variables yet.
+
 ## What would make this wrong
 
-A resolver that answers slowly would delay start by timeout times attempts;
-the operator who sets those chose that cost.
+The decision should be revisited if operators routinely leave discovery
+unconfigured because choosing a timeout and attempt count is a burden, in
+which case a reviewed default would serve better than a required figure. It
+should also be revisited if `qip_fabric_address_source` shows regions sitting
+on the configured rung for long periods without anyone noticing, which would
+mean the gauge is not enough to expose stale discovery. A start-up delay from
+a slow resolver that exceeds what a region can tolerate would argue for
+resolving off the start-up path.

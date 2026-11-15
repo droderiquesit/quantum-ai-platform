@@ -74,6 +74,25 @@ and the survival agent has no input.
    0076). A route written now would be dead code with a passing test;
    the row is NEEDS_PERSON.
 
+## What it costs
+
+- The greedy order is a heuristic: two requirements competing for one cheap
+  source are served in the caller's order, and the result is not a global
+  optimum (decision 1). The gap is unmeasured.
+- A requirement with no same-currency, same-entity source is left unplaced
+  rather than converted, so cross-currency optimisation stays open until a
+  rate source exists (decision 3). Carry figures must be supplied by the
+  caller (decision 4).
+- Under decision 5 a released budget smaller than the allocator's lines
+  narrows every line pro rata, so the society may size smaller than before,
+  and existing `Platform` tests that assert unnarrowed allocator figures may
+  move.
+- Routing both `allocate` and the horizon arming through
+  `settle_through_society` runs all ten agents on every arming. Its compute
+  cost is unmeasured.
+- Two things stay unbuilt: a reader of the coordinator's settlement
+  (decision 7), and the declaration route for R12-CAPITAL-4079 (decision 8).
+
 ## What would make this wrong
 
 - A solver found worth its dependency would replace the greedy order.
