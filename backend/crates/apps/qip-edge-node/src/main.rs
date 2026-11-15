@@ -1372,13 +1372,16 @@ fn run() -> Result<()> {
             .join(", "),
         lake_codec
     );
-    let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
-        config.storage.blobs(LAKE_NAMESPACE)?,
-        &config.cell_id,
-        &config.region,
-        retention,
-        lake_codec,
-    )?)];
+    let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(
+        LakeSink::new(
+            config.storage.blobs(LAKE_NAMESPACE)?,
+            &config.cell_id,
+            &config.region,
+            retention,
+            lake_codec,
+        )?
+        .with_metrics(Arc::clone(metrics)),
+    )];
     // The fabric link's issued certificate under `cas`, held for the life
     // of `run` — which never returns while the node runs — because dropping
     // it stops its renewal loop.

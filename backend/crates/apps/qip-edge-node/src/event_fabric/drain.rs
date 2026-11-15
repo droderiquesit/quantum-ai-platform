@@ -771,6 +771,9 @@ pub struct LakeSink {
     /// events' own venue and capture instants in spool order: the decision
     /// thread gains nothing from it and would pay for it on every pass.
     capture: CaptureStream,
+    /// Where the clock bound is published as a gauge (R12-TICK-2052). `None`
+    /// on a sink nobody scrapes; the bound is on the lake line either way.
+    metrics: Option<Arc<qip_observability::metrics::Metrics>>,
 }
 
 impl LakeSink {
@@ -823,7 +826,23 @@ impl LakeSink {
             withheld: 0,
             raw_unverified: 0,
             capture: CaptureStream::new(DisciplineSettings::default())?,
+            metrics: None,
         })
+    }
+
+    /// Publish each normalized tick's clock uncertainty on `metrics` as
+    /// `qip_edge_clock_uncertainty{cell,region,venue,feed}`. Labels are the
+    /// cell's two identity values and the configured venue and feed: never an
+    /// instrument or partition, which are unbounded.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<qip_observability::metrics::Metrics>) -> Self {
+        metrics.describe(
+            qip_observability::metrics::names::EDGE_CLOCK_UNCERTAINTY,
+            "uncertainty in seconds the clock discipline put on the latest normalized tick, \
+             by venue and feed",
+        );
+        self.metrics = Some(metrics);
+        self
     }
 
     /// The discipline the sink holds for `stream` (`venue/feed/partition`),
@@ -969,6 +988,19 @@ impl Sink for LakeSink {
             // error would retry the batch forever, fill the spool and halt
             // the cell over a timestamp annotation.
             let captured = self.capture.capture(&tick, None);
+            if let (Ok(done), Some(metrics)) = (&captured, &self.metrics) {
+                let origin = tick.origin();
+                let mut labels = qip_observability::metrics::Labels::new();
+                labels.insert("cell".to_string(), self.cell.clone());
+                labels.insert("region".to_string(), self.region.clone());
+                labels.insert("venue".to_string(), origin.venue.as_str().to_string());
+                labels.insert("feed".to_string(), origin.feed.clone());
+                metrics.gauge(
+                    qip_observability::metrics::names::EDGE_CLOCK_UNCERTAINTY,
+                    labels,
+                    done.uncertainty.as_secs_f64(),
+                );
+            }
             let permitted = self
                 .retention
                 .get(tick.entitlement().dataset())

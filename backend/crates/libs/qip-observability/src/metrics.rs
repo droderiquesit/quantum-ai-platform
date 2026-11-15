@@ -997,6 +997,14 @@ pub mod names {
     /// The degradation table's sizing multiplier currently in force. A cell
     /// sizing at the 0.375 floor is an operator-visible fact.
     pub const EDGE_SIZING_MULTIPLIER: &str = "qip_edge_sizing_multiplier";
+    /// The uncertainty, in seconds, the clock discipline put on the most
+    /// recent tick it normalized, by `venue` and `feed` (R12-TICK-2052). An
+    /// offset nobody bounded is a fake lead/lag signal, so the bound is a
+    /// series an operator can chart and alert on rather than a field found
+    /// only by reading lake lines. Absent until a tick has been normalized,
+    /// and not updated by a tick the discipline refused: a stale bound is
+    /// shown as stale, never replaced by a zero that reads as perfect.
+    pub const EDGE_CLOCK_UNCERTAINTY: &str = "qip_edge_clock_uncertainty";
     /// The sequence of the policy payload this cell has applied, for
     /// correlation against what the central plane believes it published.
     pub const EDGE_POLICY_SEQUENCE: &str = "qip_edge_policy_sequence";
