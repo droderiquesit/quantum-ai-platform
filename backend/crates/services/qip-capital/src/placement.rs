@@ -169,7 +169,10 @@ pub fn optimise(
             .collect();
         eligible.sort_by(|a, b| (a.carry_bps, &a.id).cmp(&(b.carry_bps, &b.id)));
         let capacity = eligible.iter().fold(Decimal::ZERO, |sum, source| {
-            sum + remaining.get(source.id.as_str()).copied().unwrap_or(Decimal::ZERO)
+            sum + remaining
+                .get(source.id.as_str())
+                .copied()
+                .unwrap_or(Decimal::ZERO)
         });
         if capacity < requirement.amount {
             plan.unplaced.push(Unplaced {

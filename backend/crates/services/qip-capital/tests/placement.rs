@@ -5,7 +5,14 @@ use qip_capital::placement::{PlacementRequirement, PlacementSource, optimise, re
 use qip_core::{Decimal, dec};
 use std::collections::BTreeMap;
 
-fn source(id: &str, currency: &str, entity: &str, venue: Option<&str>, available: Decimal, carry: Decimal) -> PlacementSource {
+fn source(
+    id: &str,
+    currency: &str,
+    entity: &str,
+    venue: Option<&str>,
+    available: Decimal,
+    carry: Decimal,
+) -> PlacementSource {
     PlacementSource {
         id: id.to_string(),
         currency: currency.to_string(),
@@ -17,7 +24,13 @@ fn source(id: &str, currency: &str, entity: &str, venue: Option<&str>, available
     }
 }
 
-fn need(id: &str, currency: &str, entity: &str, venue: &str, amount: Decimal) -> PlacementRequirement {
+fn need(
+    id: &str,
+    currency: &str,
+    entity: &str,
+    venue: &str,
+    amount: Decimal,
+) -> PlacementRequirement {
     PlacementRequirement {
         id: id.to_string(),
         currency: currency.to_string(),
@@ -53,8 +66,12 @@ fn the_cheapest_eligible_source_is_drawn_first_and_the_totals_reconcile_to_the_l
 fn a_source_offered_above_the_ledger_is_refused_rather_than_cut_to_it() {
     let sources = vec![source("s", "USD", "ent-a", None, dec!("500"), dec!("10"))];
     let ledger = ledger(&[("s", dec!("499"))]);
-    let refusal = optimise(&[need("r", "USD", "ent-a", "XNYS", dec!("1"))], &sources, &ledger)
-        .expect_err("offer above ledger");
+    let refusal = optimise(
+        &[need("r", "USD", "ent-a", "XNYS", dec!("1"))],
+        &sources,
+        &ledger,
+    )
+    .expect_err("offer above ledger");
     assert!(refusal.message().contains("ledger is authoritative"));
 }
 
@@ -75,8 +92,12 @@ fn a_requirement_the_eligible_sources_cannot_meet_is_unplaced_whole_and_draws_no
         source("c", "EUR", "ent-a", None, dec!("5000"), dec!("1")),
     ];
     let ledger = ledger(&[("a", dec!("300")), ("b", dec!("5000")), ("c", dec!("5000"))]);
-    let plan = optimise(&[need("r", "USD", "ent-a", "XNYS", dec!("301"))], &sources, &ledger)
-        .expect("plan");
+    let plan = optimise(
+        &[need("r", "USD", "ent-a", "XNYS", dec!("301"))],
+        &sources,
+        &ledger,
+    )
+    .expect("plan");
     assert!(plan.draws.is_empty());
     assert_eq!(plan.unplaced.len(), 1);
     assert_eq!(plan.unplaced[0].requirement, "r");
@@ -84,7 +105,14 @@ fn a_requirement_the_eligible_sources_cannot_meet_is_unplaced_whole_and_draws_no
 
 #[test]
 fn a_source_bound_to_one_venue_funds_no_other_venue() {
-    let sources = vec![source("v", "USD", "ent-a", Some("XLON"), dec!("900"), dec!("5"))];
+    let sources = vec![source(
+        "v",
+        "USD",
+        "ent-a",
+        Some("XLON"),
+        dec!("900"),
+        dec!("5"),
+    )];
     let ledger = ledger(&[("v", dec!("900"))]);
     let plan = optimise(
         &[
@@ -144,5 +172,12 @@ fn a_duplicate_source_or_a_negative_requirement_is_refused() {
     let ledger = ledger(&[("s", dec!("1"))]);
     assert!(optimise(&[], &[one.clone(), one], &ledger).is_err());
     let sources = vec![source("s", "USD", "ent-a", None, dec!("1"), dec!("1"))];
-    assert!(optimise(&[need("r", "USD", "ent-a", "XNYS", dec!("-1"))], &sources, &ledger).is_err());
+    assert!(
+        optimise(
+            &[need("r", "USD", "ent-a", "XNYS", dec!("-1"))],
+            &sources,
+            &ledger
+        )
+        .is_err()
+    );
 }
