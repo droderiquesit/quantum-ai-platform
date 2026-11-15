@@ -1409,6 +1409,7 @@ fn a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass() 
         question: format!("question {id}"),
         rank_bp,
         entities: entities.iter().map(|e| (*e).to_string()).collect(),
+        kind: qip_contracts::ambient::AcquisitionKind::default(),
     };
     let jobs = vec![
         job("info-b", 6_000, &["venue:XSIM"]),

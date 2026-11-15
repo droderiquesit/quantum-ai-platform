@@ -133,6 +133,37 @@ pub struct ManifestV2 {
 }
 
 impl ManifestV2 {
+    /// The six fields for text this platform generated.
+    ///
+    /// Infallible for the reason [`SourceManifest::generated`] is: no argument
+    /// reaches a refusal. Each field is stated as what it truly is for
+    /// generated text and none is a stand-in: there is no vendor etag or feed
+    /// cursor, so both are `None`; the licence is this platform's own for
+    /// research use and does not lapse; the bytes are reproducible and so are
+    /// never stale (`Timestamp::MAX`); the parser is the generator named by
+    /// the caller; and the re-fetch instruction says plainly that nothing can
+    /// serve the original again, with the generator and seed as the way to
+    /// reproduce it.
+    fn generated(generator: &str) -> Self {
+        Self {
+            etag: None,
+            entitlement: Entitlement::Granted {
+                dataset: GENERATED_SOURCE.to_string(),
+                usage: qip_contracts::governance::Usage::Research,
+                expires_at: Timestamp::MAX,
+            },
+            cursor: None,
+            fresh_until: Timestamp::MAX,
+            parser_name: format!("{GENERATED_SOURCE}:{generator}"),
+            parser_version: env!("CARGO_PKG_VERSION").to_string(),
+            refetch: Refetch::NotRefetchable {
+                reason: "generated text: no vendor serves it again; the generator and its seed \
+                         reproduce it"
+                    .to_string(),
+            },
+        }
+    }
+
     /// Assemble the six fields, refusing each that would read as recorded and
     /// say nothing: a blank etag or cursor (absence is `None`), a parser with
     /// no name or version (lineage nobody can replay), a freshness bound that
@@ -269,6 +300,51 @@ impl SourceManifest {
         })
     }
 
+    /// Describe an extent whose hash was already taken where its bytes were
+    /// in hand, as a connector's fetch digest does. Refuses what [`Self::of`]
+    /// refuses, and a hash that is not 64 lowercase hex digits or a zero
+    /// length: the hash is taken on trust here, so the shape is the only
+    /// thing left to check, and a malformed one would let a later re-fetch
+    /// "match" nothing.
+    pub fn from_hash(
+        source: impl Into<String>,
+        locator: impl Into<String>,
+        retrieved_at: Timestamp,
+        bytes: u64,
+        sha256: impl Into<String>,
+    ) -> Result<Self> {
+        let (source, locator, sha256) = (source.into(), locator.into(), sha256.into());
+        if source.trim().is_empty() || locator.trim().is_empty() {
+            return Err(Error::invalid(
+                "a manifest from a digest needs the source and an addressable locator",
+            ));
+        }
+        if bytes == 0 {
+            return Err(Error::invalid(
+                "a manifest from a digest covers no bytes; the hash of nothing is the same for \
+                 every extent that never arrived",
+            ));
+        }
+        if sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error::invalid(
+                "the content hash is not 64 lowercase hex digits; a manifest must hold a SHA-256",
+            ));
+        }
+        Ok(Self {
+            source,
+            locator,
+            bytes,
+            sha256,
+            retrieved_at,
+            schema_version: 1,
+            v2: None,
+        })
+    }
+
     /// The manifest for text this platform generated rather than fetched.
     ///
     /// The synthetic streams exist to exercise the pipeline end to end, and a
@@ -295,9 +371,24 @@ impl SourceManifest {
             bytes: extent.len() as u64,
             sha256: qip_core::sha256_hex(extent.as_bytes()),
             retrieved_at: at,
-            schema_version: 1,
-            v2: None,
+            schema_version: 2,
+            v2: Some(ManifestV2::generated(generator)),
         }
+    }
+
+    /// Whether the record states every one of the nine fields of
+    /// R12-DATA-8013 (source, locator, retrieval time, version/etag, content
+    /// hash, entitlement, cursor, freshness, parser lineage and re-fetch
+    /// instructions, with the source and locator standing for the URI or
+    /// provider id). A version-1 record cannot: the six version-2 fields read
+    /// as not recorded. A version-2 record can say a field is absent only by
+    /// the typed `None` of the etag and cursor, which the source may genuinely
+    /// lack; everything else is mandatory in [`ManifestV2::new`].
+    pub fn records_the_full_descriptor(&self) -> bool {
+        self.v2.is_some()
+            && !self.source.trim().is_empty()
+            && !self.locator.trim().is_empty()
+            && self.sha256.len() == 64
     }
 
     /// Upgrade to version 2 by attaching the six fields ADR 0132 adds.
@@ -598,5 +689,42 @@ mod tests {
             .and_then(|m| m.with_v2(stale))
             .expect_err("bytes fresh only until the instant they were read are stale");
         assert_eq!(error.code(), "invalid", "got {error:?}");
+    }
+
+    /// R12-DATA-8013: generated text carries a version-2 manifest, so no
+    /// ingested-source path writes a bare version-1 record. Mutation: set
+    /// `v2: None` and `schema_version: 1` in `generated` — both assertions
+    /// fail.
+    #[test]
+    fn a_generated_manifest_is_version_two_and_records_the_full_descriptor() {
+        let manifest = SourceManifest::generated("synthetic-news", "routine-1", at(), "text");
+        assert_eq!(manifest.schema_version(), 2);
+        assert!(manifest.records_the_full_descriptor());
+        let v2 = manifest.v2().expect("version two");
+        assert!(matches!(v2.refetch(), Refetch::NotRefetchable { reason } if !reason.is_empty()));
+        assert_eq!(v2.parser().0, "generated:synthetic-news");
+        assert!(v2.fresh_until() > manifest.retrieved_at());
+    }
+
+    /// A sealed version-1 manifest does not record the full descriptor.
+    #[test]
+    fn a_version_one_manifest_does_not_record_the_full_descriptor() {
+        let manifest =
+            SourceManifest::of("wire", "http://vendor/doc/1", at(), b"abc").expect("well formed");
+        assert!(!manifest.records_the_full_descriptor());
+    }
+
+    /// A manifest from a connector's digest keeps the hash and refuses a
+    /// malformed one. Mutation: delete the 64-digit check in `from_hash` —
+    /// the second assertion fails.
+    #[test]
+    fn a_manifest_from_a_digest_keeps_the_hash_and_refuses_a_malformed_one() {
+        let hash = qip_core::sha256_hex(b"abc");
+        let manifest = SourceManifest::from_hash("wire", "/doc/1", at(), 3, hash.clone())
+            .expect("well formed");
+        assert_eq!(manifest.sha256(), hash);
+        assert_eq!(manifest.bytes(), 3);
+        assert!(SourceManifest::from_hash("wire", "/doc/1", at(), 3, "XYZ").is_err());
+        assert!(SourceManifest::from_hash("wire", "/doc/1", at(), 0, hash).is_err());
     }
 }
