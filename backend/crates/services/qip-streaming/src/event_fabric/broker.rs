@@ -544,6 +544,16 @@ pub fn hot_window(class: qip_events::RetentionClass, keep_batches: u64) -> u64 {
     }
 }
 
+/// The age past which a stream's class lets go of a sealed segment, for the
+/// two classes whose retention is a span: `Rolling` and `For`. `None` for a
+/// class bounded by count or by nothing, which is [`hot_window`]'s business.
+pub fn age_limit(class: qip_events::RetentionClass) -> Option<qip_core::Duration> {
+    match class.retention() {
+        qip_events::Retention::Rolling(span) | qip_events::Retention::For(span) => Some(span),
+        _ => None,
+    }
+}
+
 impl Broker {
     /// Open (or create) a broker rooted at `data_dir`, bumping and
     /// persisting its leader epoch before returning — see the module
@@ -2053,7 +2063,7 @@ impl Broker {
                  to; keep at least one",
             ));
         }
-        let declared: Vec<(String, u32, bool, u64)> = {
+        let declared: Vec<(String, u32, bool, u64, Option<qip_core::Duration>)> = {
             let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
             declared
                 .iter()
@@ -2063,15 +2073,36 @@ impl Broker {
                         d.partition_count,
                         d.policy.archive_required(),
                         hot_window(d.policy.retention(), keep_batches),
+                        age_limit(d.policy.retention()),
                     )
                 })
                 .collect()
         };
         let mut deleted = 0u64;
-        for (stream, partition_count, archive_required, keep) in declared {
+        let now = self.clock.now();
+        for (stream, partition_count, archive_required, keep, age) in declared {
             for partition in 0..partition_count {
                 let state = self.partition_state(&stream, partition)?;
                 let mut boundary = state.log.high_water().saturating_sub(keep);
+                // A time-bounded class (EventAnchored's rolling window,
+                // FallbackSeries' span) also lets go of every leading sealed
+                // segment older than its window, however few batches that
+                // is: batch count alone kept a quiet stream's 90-day-old
+                // segments for as long as the count allowed. The archive
+                // guard below still holds the boundary behind any segment
+                // not yet archived and indexed, so age removes a local copy
+                // only after archival.
+                if let Some(age) = age {
+                    for (start, end, _) in state.log.sealed_segments()? {
+                        let Some(sealed_at) = state.log.sealed_at(start)? else {
+                            break;
+                        };
+                        if now.since(sealed_at) < age {
+                            break;
+                        }
+                        boundary = boundary.max(end);
+                    }
+                }
                 if archive_required {
                     for (start, end, archived) in state.log.sealed_segments()? {
                         if end > boundary {

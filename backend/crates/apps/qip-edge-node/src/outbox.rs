@@ -10,6 +10,7 @@
 //! composition root hands in, so its refusals are testable without a process
 //! environment.
 
+use crate::event_fabric::control::CONTROL_STREAM;
 use crate::event_fabric::drain::{FabricSink, JOURNAL_STREAM, OUTCOMES_STREAM};
 use crate::scheduler::JournalBound;
 use qip_core::error::{Error, Result};
@@ -19,6 +20,7 @@ use qip_storage::provider::StorageTarget;
 use qip_storage::settings::StorageSettings;
 use qip_transport::breaker::BreakerPolicy;
 use qip_transport::event_fabric::auth::BearerToken;
+use qip_transport::event_fabric::consumer::{Consumer, ConsumerConfig};
 use qip_transport::event_fabric::producer::{Producer, ProducerConfig};
 use qip_transport::event_fabric::transport::{HttpTransport, Timeouts};
 use qip_transport::tls::LinkSecurity;
@@ -33,8 +35,20 @@ use std::time::Duration;
 pub const FABRIC_URL_VARIABLE: &str = "QIP_FABRIC_URL";
 /// The bearer token the fabric checks, directly or through `_FILE`.
 pub const FABRIC_TOKEN_VARIABLE: &str = "QIP_FABRIC_TOKEN";
+/// The bearer token this cell reads `control.local` under, directly or
+/// through `_FILE`. Its own variable, not `QIP_FABRIC_TOKEN`: the broker
+/// grants the produce identity and the consume identity separately
+/// (SLICE-53), and one token for both would make a cell that can ship its
+/// journal a cell that can read control, or the reverse. Unset: this cell
+/// reads no control from the fabric and announces that it does not.
+pub const FABRIC_CONTROL_TOKEN_VARIABLE: &str = "QIP_FABRIC_CONTROL_TOKEN";
 /// This cell's partition on the reflex streams.
 pub const FABRIC_PARTITION_VARIABLE: &str = "QIP_FABRIC_PARTITION";
+
+/// The credit window of the control consumer's fetches. Control is a few
+/// signed frames, not a data stream; the window is room for a backlog of
+/// grants and halts in one answer, not a throughput figure.
+pub const CONTROL_FETCH_CREDIT_BYTES: u32 = 256 * 1024;
 
 /// The spool's budget: one gibibyte, room for hours of a quiet cell's
 /// journal and minutes of a busy one's — the outage the producer-retained
@@ -101,6 +115,9 @@ pub struct FabricSettings {
     /// One token per producer: `BearerToken` is deliberately not `Clone`.
     outcomes_token: BearerToken,
     journal_token: BearerToken,
+    /// The consume identity for `control.local`, taken by
+    /// [`Self::control_consumer`].
+    control_token: Option<BearerToken>,
 }
 
 impl FabricSettings {
@@ -139,7 +156,79 @@ impl FabricSettings {
             partition,
             outcomes_token: token()?,
             journal_token: token()?,
+            control_token: {
+                let file = format!(
+                    "{FABRIC_CONTROL_TOKEN_VARIABLE}{}",
+                    qip_core::secret::FILE_SUFFIX
+                );
+                let (direct, path) = (
+                    lookup(FABRIC_CONTROL_TOKEN_VARIABLE).filter(|v| !v.trim().is_empty()),
+                    lookup(&file).filter(|v| !v.trim().is_empty()),
+                );
+                // Set means resolved and shaped, with no fallback: a control
+                // token that is present and malformed is a misconfigured
+                // cell, not an unconfigured one.
+                if direct.is_none() && path.is_none() {
+                    None
+                } else {
+                    Some(
+                        BearerToken::resolve(FABRIC_CONTROL_TOKEN_VARIABLE, direct, path).map_err(
+                            |error| Error::invalid(format!("configuration: {}", error.message())),
+                        )?,
+                    )
+                }
+            },
         })
+    }
+
+    /// The consumer of `control.local` on this cell's partition, when a
+    /// control token is configured; `None` when it is not. Call before
+    /// [`Self::sink`], which consumes the settings.
+    ///
+    /// Same scheme rule as the sink, for the same reason: an endpoint that
+    /// disagrees with the link is refused, never upgraded or downgraded.
+    pub fn control_consumer(
+        &mut self,
+        cell: &str,
+        clock: Arc<dyn Clock>,
+        link: &LinkSecurity,
+    ) -> Result<Option<Consumer>> {
+        let Some(token) = self.control_token.take() else {
+            return Ok(None);
+        };
+        let authority = self.authority(link)?;
+        let seed = u64::from_str_radix(sha256_hex(cell.as_bytes()).get(..16).unwrap_or("0"), 16)
+            .unwrap_or(0);
+        Consumer::new(ConsumerConfig {
+            transport: Box::new(HttpTransport::over(link, &authority, token)?),
+            stream: CONTROL_STREAM.to_string(),
+            partition: self.partition,
+            group_id: format!("control-{cell}"),
+            retry_policy: RetryPolicy::default(),
+            breaker_policy: BreakerPolicy::default(),
+            clock,
+            sleeper: Arc::new(ThreadSleeper),
+            retry_seed: seed.wrapping_add(4),
+            breaker_seed: seed.wrapping_add(5),
+            timeouts: Timeouts::default(),
+            fetch_credit_bytes: CONTROL_FETCH_CREDIT_BYTES,
+        })
+        .map(Some)
+    }
+
+    fn authority(&self, link: &LinkSecurity) -> Result<String> {
+        let scheme = format!("{}://", link.scheme());
+        self.url
+            .strip_prefix(&scheme)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "configuration: {FABRIC_URL_VARIABLE}={} and the fabric link is {}; the \
+                     endpoint's scheme must be `{scheme}` for this link",
+                    self.url,
+                    link.describe()
+                ))
+            })
     }
 
     /// The sink: a P1 producer at the quorum acknowledgement its class
@@ -159,16 +248,7 @@ impl FabricSettings {
         clock: Arc<dyn Clock>,
         link: &LinkSecurity,
     ) -> Result<FabricSink> {
-        let scheme = format!("{}://", link.scheme());
-        let Some(authority) = self.url.strip_prefix(&scheme) else {
-            return Err(Error::invalid(format!(
-                "configuration: {FABRIC_URL_VARIABLE}={} and the fabric link is {}; the \
-                 endpoint's scheme must be `{scheme}` for this link",
-                self.url,
-                link.describe()
-            )));
-        };
-        let authority = authority.to_string();
+        let authority = self.authority(link)?;
         let seed = u64::from_str_radix(sha256_hex(cell.as_bytes()).get(..16).unwrap_or("0"), 16)
             .unwrap_or(0);
         let producer = |stream: &str, class: QosClass, token: BearerToken, offset: u64| {
