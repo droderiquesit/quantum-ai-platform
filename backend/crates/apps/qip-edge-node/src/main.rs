@@ -599,7 +599,11 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
     // wire is armed here and nowhere a spool is not.
     let cell_config = cell_config
         .with_journal_trimmed_on_ship()
-        .with_journal_wire();
+        .with_journal_wire()
+        // R12-RISK-5044: a stated edge must clear fixed cost, sweep slippage
+        // and this margin before an order exists. Armed here because an
+        // unarmed gate is one nobody runs.
+        .with_net_edge_margin_bp(qip_edge::cell::NET_EDGE_MARGIN_BP)?;
     // ADR 0155 section 14: the identity of this build, from a file the unit
     // that starts the process writes, never from the network, in line with
     // "secrets and facts reach the process as files". Unset leaves the
