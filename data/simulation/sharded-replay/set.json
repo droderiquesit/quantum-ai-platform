@@ -1,0 +1,4060 @@
+{
+  "model": {
+    "latency": 10000000,
+    "fee_bps": 2.0,
+    "impact_bps_at_full_depth": 20.0,
+    "limit_ttl": 60000000000
+  },
+  "ticks": [
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 1,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 2,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 3,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 4,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 5,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 6,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 7,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 8,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 9,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 10,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 11,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 12,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 13,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 14,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 15,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 16,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 17,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 18,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 19,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 20,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 21,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 22,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 23,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 24,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 25,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 26,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 27,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 28,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 29,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 30,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 31,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 32,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 33,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 34,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 35,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 36,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 37,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 38,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 39,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 40,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 41,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 42,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 43,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 44,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 45,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-ACME",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-ACME",
+          "sequence": 46,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "113",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 1,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 2,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 3,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 4,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 5,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 6,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 7,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 8,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 9,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 10,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 11,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 12,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 13,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 14,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 15,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 16,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 17,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 18,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 19,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 20,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 21,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 22,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 23,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 24,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 25,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 26,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 27,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 28,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 29,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 30,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 31,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 32,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 33,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 34,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 35,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 36,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 37,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 38,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 39,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 40,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 41,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 42,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 43,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 44,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 45,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-BOLT",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-BOLT",
+          "sequence": 46,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "113",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 1,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 2,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 3,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 4,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 5,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 6,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 7,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 8,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 9,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 10,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 11,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 12,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 13,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 14,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 15,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 16,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 17,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 18,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 19,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 20,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 21,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 22,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 23,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 24,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 25,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 26,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 27,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 28,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 29,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 30,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 31,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 32,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 33,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 34,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 35,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 36,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 37,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 38,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 39,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 40,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 41,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 42,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 43,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 44,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 45,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-CRUX",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-CRUX",
+          "sequence": 46,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "113",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 1,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 2,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.000Z",
+        "capture_time": "2026-10-11T00:00:00.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 3,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "100",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 4,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 5,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 6,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.100Z",
+        "capture_time": "2026-10-11T00:00:00.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 7,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "101",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 8,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 9,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 10,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.200Z",
+        "capture_time": "2026-10-11T00:00:00.200Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.200Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 11,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "102",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 12,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 13,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 14,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.300Z",
+        "capture_time": "2026-10-11T00:00:00.300Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.300Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 15,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "103",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 16,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 17,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 18,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.400Z",
+        "capture_time": "2026-10-11T00:00:00.400Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.400Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 19,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "104",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 20,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 21,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 22,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.500Z",
+        "capture_time": "2026-10-11T00:00:00.500Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.500Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 23,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "105",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 24,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 25,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 26,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.600Z",
+        "capture_time": "2026-10-11T00:00:00.600Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.600Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 27,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "106",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 28,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 29,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 30,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.700Z",
+        "capture_time": "2026-10-11T00:00:00.700Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.700Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 31,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "107",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 32,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 33,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 34,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.800Z",
+        "capture_time": "2026-10-11T00:00:00.800Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.800Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 35,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "108",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 36,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 37,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 38,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:00.900Z",
+        "capture_time": "2026-10-11T00:00:00.900Z"
+      },
+      "knowable_at": "2026-10-11T00:00:00.900Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 39,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "109",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 40,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "111",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 41,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 42,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.000Z",
+        "capture_time": "2026-10-11T00:00:01.000Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.000Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 43,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "110",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 44,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "112",
+            "quantity": "0",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 45,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Bid",
+            "price": "111",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    },
+    {
+      "message": {
+        "object_id": "obj-DUNE",
+        "origin": {
+          "venue": "XLON",
+          "feed": "feed-obj-DUNE",
+          "sequence": 46,
+          "partition": 0
+        },
+        "body": {
+          "LevelSet": {
+            "side": "Ask",
+            "price": "113",
+            "quantity": "1000",
+            "order_count": null
+          }
+        },
+        "venue_time": "2026-10-11T00:00:01.100Z",
+        "capture_time": "2026-10-11T00:00:01.100Z"
+      },
+      "knowable_at": "2026-10-11T00:00:01.100Z"
+    }
+  ],
+  "orders": [],
+  "plans": []
+}

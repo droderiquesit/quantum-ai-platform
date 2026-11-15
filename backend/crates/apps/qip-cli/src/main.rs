@@ -164,7 +164,7 @@ fn print_help() {
     println!("                    eligibility, registration and fabric registries from");
     println!("                    it alone, against the platform this configuration");
     println!("                    assembles");
-    println!("  simulate --set <path> [--shard k/n]");
+    println!("  simulate --set <path> [--shard k/n] [--participants <path>]");
     println!("                    replay a recorded tick set with its orders and plans");
     println!("                    against rebuilt books (queue, latency, fees, impact);");
     println!("                    --shard replays only the instruments whose stable hash");
@@ -711,14 +711,17 @@ fn replay_command(arguments: &[String]) -> Result<u8> {
 fn simulate_command(arguments: &[String]) -> Result<()> {
     let mut set = None;
     let mut shard = None;
+    let mut participants = None;
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
         let slot = match argument.as_str() {
             "--set" => &mut set,
             "--shard" => &mut shard,
+            "--participants" => &mut participants,
             other => {
                 return Err(Error::invalid(format!(
-                    "unexpected argument {other}; usage: qip simulate --set <path> [--shard k/n]"
+                    "unexpected argument {other}; usage: qip simulate --set <path> [--shard k/n] \
+                     [--participants <path>]"
                 )));
             }
         };
@@ -743,7 +746,10 @@ fn simulate_command(arguments: &[String]) -> Result<()> {
         Some(text) => qip_cli::simulate::Shard::parse(&text)?,
     };
     let set = qip_cli::simulate::ReplaySet::read(&PathBuf::from(set))?;
-    let shard_run = qip_cli::simulate::run(&set, shard)?;
+    let spec = participants
+        .map(|path| qip_cli::simulate::read_participants(&PathBuf::from(path)))
+        .transpose()?;
+    let shard_run = qip_cli::simulate::run_with_participants(&set, shard, spec.as_ref())?;
     for line in qip_cli::simulate::lines(&shard_run) {
         println!("{line}");
     }

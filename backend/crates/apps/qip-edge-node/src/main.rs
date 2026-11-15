@@ -181,6 +181,11 @@ fn main() {
     let arguments: Vec<String> = std::env::args().collect();
     let outcome = match arguments.get(1).map(String::as_str) {
         Some("replay") => replay_command(&arguments[2..]),
+        // `qip-edge-node replay-lake <lake-dir> <dataset>[,<dataset>...]`
+        // (R12-TICK-9006): replays the retained tick history of a durable
+        // lake through a fresh cell. A subcommand for the reason `replay` is
+        // one, and refused on a lake that retains nothing.
+        Some("replay-lake") => replay_lake_command(&arguments[2..]),
         // `qip-edge-node replay-manifests --spool <dir> --cell-digest <hex>`,
         // read before any configuration: it reads a spool and serves nothing,
         // so it must not need the variables a node does.
@@ -699,6 +704,71 @@ fn replay_command(arguments: &[String]) -> Result<()> {
         ),
         None => println!("qip-edge-node: timing over {runs} replays ({tuning}): no pass timed"),
     }
+    Ok(())
+}
+
+/// `qip-edge-node replay-lake <lake-dir> <dataset>[,<dataset>...]`
+/// (R12-TICK-9006): read the retained history in the file-backed lake at
+/// `<lake-dir>` and drive it through a fresh cell with the node's own
+/// configuration and a seeded simulated venue, printing the decision digest.
+///
+/// Two runs over the same lake print the same digest; that comparison is the
+/// reproduction check. Refused for a lake that retains no tick, which is
+/// what a memory-backed node leaves behind (ADR 0003: the venue is the
+/// simulator, never a live one).
+fn replay_lake_command(arguments: &[String]) -> Result<()> {
+    let (Some(dir), Some(datasets)) = (arguments.first(), arguments.get(1)) else {
+        return Err(Error::invalid(
+            "configuration: `replay-lake` takes the lake directory and a comma-separated list of \
+             datasets as its two arguments",
+        ));
+    };
+    let datasets: std::collections::BTreeSet<String> = datasets
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
+    let store = qip_storage::blob::FileBlobStore::open(dir).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {dir} cannot be opened as a lake: {}",
+            error.message()
+        ))
+    })?;
+    let history = qip_edge_node::lake_replay::RetainedHistory::read(&store, &datasets)?;
+    let config = NodeConfig::from_env()?;
+    let (cell_config, _digest) = cell_configuration(&config)?;
+    let venue = config.venues.first().cloned().ok_or_else(|| {
+        Error::invalid("configuration: QIP_VENUES names no venue to rebuild a gateway for")
+    })?;
+    let first = history.instants().next().ok_or_else(|| {
+        Error::invalid("the retained history spans no pass; there is nothing to replay")
+    })?;
+    let clock = Arc::new(qip_core::ManualClock::new(first));
+    let NodeAssembly { mut cell, .. } =
+        assembled(&config, cell_config, Arc::clone(&clock) as Arc<dyn Clock>)?;
+    let ceiling = cell.autonomy().ceiling();
+    let choice = VenueChoice::from_env(&venue, ceiling.is_live())?;
+    let VenueChoice::Simulated { seed } = &choice else {
+        return Err(Error::denied(
+            "replay-lake sends to the seeded simulated venue only (ADR 0003)",
+        ));
+    };
+    let mut gateway = qip_edge_node::gateway::SimulatedGateway::new(venue.clone(), *seed, first)?;
+    gateway.install_settlement_terms(config.settlement.clone())?;
+    let mut feed = qip_edge_node::feed::ReplayFeed::new(venue);
+    feed.attach(&mut cell)?;
+    let report = qip_edge_node::lake_replay::replay_lake(
+        &mut cell,
+        &mut gateway,
+        &mut feed,
+        &history,
+        |_, now| {
+            clock.set(now);
+            Ok(())
+        },
+    )?;
+    println!("qip-edge-node: {}", report.describe());
     Ok(())
 }
 
