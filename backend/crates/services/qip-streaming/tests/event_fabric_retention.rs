@@ -72,7 +72,11 @@ fn declare(
     broker
         .register_schema(stream, 1, 1, Shape::of(&1u32).unwrap())
         .unwrap();
-    for sequence in 0..BATCHES {
+    produce(broker, stream, 0..BATCHES);
+}
+
+fn produce(broker: &Broker, stream: &str, sequences: std::ops::Range<u64>) {
+    for sequence in sequences {
         let mut batch = Batch::new(
             MessageType::Data,
             1,
@@ -158,6 +162,72 @@ fn a_stream_with_a_short_retention_class_is_trimmed_while_a_long_one_is_kept() {
     assert!(
         local(&broker, "ticks", newest),
         "the newest transient batch is kept"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// R12-FABRIC-7034: a stream whose class is a span (EventAnchored's rolling
+/// ninety days) lets go of sealed segments older than the span even when the
+/// operator's batch window would keep them, while a count-only class under
+/// the same window keeps them — and a segment inside the span stays.
+///
+/// Mutation: make `age_limit` return `None` for every class (or drop the
+/// age block in `retain_hot`) — the anchored stream keeps the old offsets and
+/// the first age assertion fails.
+#[test]
+fn a_time_bounded_stream_drops_sealed_segments_older_than_its_retention() {
+    let store = Arc::new(MemoryBlobStore::new());
+    let dir = temp_dir("age");
+    let manual = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 11)));
+    let clock: Arc<dyn Clock> = manual.clone();
+    let archiver =
+        qip_storage::segment::archive::Archiver::new(store.clone()).with_manifest_index();
+    let broker = Broker::open(&dir, clock.clone())
+        .unwrap()
+        .with_archive_reader(store);
+    for (stream, class) in [
+        ("anchored", qip_events::RetentionClass::EventAnchored),
+        ("features", qip_events::RetentionClass::DerivedState),
+    ] {
+        declare(&broker, clock.clone(), stream, class, stream == "anchored");
+    }
+    // Ninety-one days on: the first batches' segments are older than the
+    // rolling window. Newer batches seal later, inside it.
+    manual.advance(qip_core::Duration::from_days(91));
+    for stream in ["anchored", "features"] {
+        produce(&broker, stream, BATCHES..BATCHES + 8);
+    }
+    let window = 10_000; // far wider than the log: count alone trims nothing
+    assert!(
+        local(&broker, "features", 0),
+        "premise: the old offsets are served before retention"
+    );
+    // Not yet archived: the stream is archive-required, so age alone must
+    // not delete a segment nobody could hydrate back.
+    assert_eq!(
+        broker.retain_hot(window).unwrap(),
+        0,
+        "an unarchived segment was deleted for its age"
+    );
+    assert!(local(&broker, "anchored", 0), "premise: still served");
+    broker.archive_sealed(&archiver).unwrap();
+    // Six sealed segments of four batches were sealed 91 days ago and are
+    // archived; the segment sealed after the advance is inside the window.
+    // (A fetch cannot tell: it hydrates a deleted segment from the archive.)
+    assert_eq!(
+        broker.retain_hot(window).unwrap(),
+        6,
+        "the anchored stream's aged, archived segments were not all removed, or one inside the \
+         window was"
+    );
+
+    assert!(
+        local(&broker, "features", 0),
+        "a count-only class lost an offset inside its batch window"
+    );
+    assert!(
+        local(&broker, "anchored", BATCHES + 7),
+        "the newest anchored batch was lost"
     );
     let _ = std::fs::remove_dir_all(dir);
 }
