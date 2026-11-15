@@ -21066,6 +21066,109 @@ impl Platform {
         )
     }
 
+    /// Every held position's record, or the reason it cannot be stated
+    /// (R12-ASSET-4067), in object order. A position whose record refuses
+    /// stays in the list with its refusal: a holding nobody can state a
+    /// horizon or mark for is the finding, and dropping it would read as a
+    /// book with nothing wrong. Read-only, and the one enumeration the
+    /// API's holdings route serves; `position_holding` remains the one place
+    /// each record is built.
+    pub fn position_holdings(
+        &self,
+        now: Timestamp,
+    ) -> Vec<(String, Result<crate::position_register::PositionHolding>)> {
+        self.capital
+            .positions
+            .keys()
+            .map(|object| (object.clone(), self.position_holding(object, now)))
+            .collect()
+    }
+
+    /// A secondary-sale route for a held private position, priced off its
+    /// dated mark at a discount the caller evidences (R12-ASSET-4072).
+    ///
+    /// Every input is a record and a missing one refuses: the position must
+    /// be held and have a dated exit plan (its horizon end), carry a mark
+    /// that is not past its review date (a stale mark cannot price a sale),
+    /// and sit on the private-stages lifecycle. The lockup is the
+    /// catalogue's; a lockup that outlasts the horizon refuses, as
+    /// [`plan_secondary_exit`] does. `None` is the answer when the holding's
+    /// own forecast returns capital before the horizon, so no secondary
+    /// route is needed.
+    ///
+    /// The discount is a [`DiscountToMark`] the caller built with its
+    /// evidence. This method has no default for it and the platform holds no
+    /// source of secondary-market discounts: a plan is only as evidenced as
+    /// the figure handed in. Planning only; nothing is sold here.
+    ///
+    /// [`plan_secondary_exit`]: qip_financial::secondary_exit::plan_secondary_exit
+    /// [`DiscountToMark`]: qip_financial::secondary_exit::DiscountToMark
+    pub fn secondary_exit_plan(
+        &self,
+        object_id: &str,
+        discount: qip_financial::secondary_exit::DiscountToMark,
+        now: Timestamp,
+    ) -> Result<Option<qip_financial::secondary_exit::SecondarySale>> {
+        let held_plan = self.position_exit_plan(object_id).ok_or_else(|| {
+            Error::not_found(format!(
+                "{object_id} has no dated exit plan, so there is no horizon to plan a sale                  inside; it is not held, or no construction in this log sized it"
+            ))
+        })?;
+        let mark = self.illiquid_marks.get(object_id).ok_or_else(|| {
+            Error::not_found(format!(
+                "{object_id} carries no dated illiquid mark, so a secondary sale has nothing                  to be discounted from"
+            ))
+        })?;
+        if mark.is_stale(now) {
+            return Err(Error::invalid(format!(
+                "{object_id}'s mark is past its review date; re-mark it before pricing a sale                  off it"
+            )));
+        }
+        match self.private_stage(object_id) {
+            Some(qip_financial::private_stage::PrivateStage::Exited) | None => {
+                return Err(Error::invalid(format!(
+                    "{object_id} is not a private position still held on the private-stages                      lifecycle, so it has no secondary exit to plan"
+                )));
+            }
+            Some(_) => {}
+        }
+        let id = ObjectId::from_string(object_id);
+        let lockup = {
+            let market = self.market.read();
+            match market.universe.get(&id).map(|record| &record.extension) {
+                Some(qip_financial::extensions::Extension::PrivateAsset(details)) => {
+                    let origin = private_asset_origin(details)?;
+                    let term = details.lockup()?;
+                    Some(
+                        origin
+                            .as_nanos()
+                            .checked_add(term.as_nanos())
+                            .map(Timestamp::from_nanos)
+                            .ok_or_else(|| {
+                                Error::numeric(format!(
+                                    "{object_id}'s lockup ends at an instant no timestamp can \
+                                     represent; correct the reference record"
+                                ))
+                            })?,
+                    )
+                }
+                _ => None,
+            }
+        };
+        let primary: Vec<Timestamp> = match self.private_forecasts.get(object_id) {
+            Some(forecast) => forecast.first_return_at(now)?.into_iter().collect(),
+            None => Vec::new(),
+        };
+        qip_financial::secondary_exit::plan_secondary_exit(
+            mark.value(),
+            now,
+            held_plan.exit_at(),
+            &primary,
+            lockup,
+            discount,
+        )
+    }
+
     /// The mandate and target weight `object_id` was last sized under, or
     /// `None` where no construction this process ran has sized it
     /// (R12-ASSET-4066).
