@@ -1033,3 +1033,108 @@ fn a_contest_and_its_resolving_evidence_survive_a_restart_from_the_event_log() {
         understand.detail
     );
 }
+
+// ---- R12-EVID-2033: a belief walks to every source document hash ----
+
+fn now_delta(manifests: Vec<(&str, &str)>) -> qip_world_model::now::BeliefDelta {
+    use qip_world_model::now::{
+        BeliefDelta, BeliefDeltaFields, Domain, ManifestRef, NOW_SCHEMA_VERSION, PartitionKey,
+        Prior, Scope, ScopeKind, VariableKey,
+    };
+    BeliefDelta::new(BeliefDeltaFields {
+        schema_version: NOW_SCHEMA_VERSION,
+        key: VariableKey::new(
+            Scope::new(ScopeKind::Instrument, "EURUSD").unwrap(),
+            "return",
+        )
+        .unwrap(),
+        partition: PartitionKey::new(Domain::Markets, "global").unwrap(),
+        epoch: 1,
+        prior: Prior::Genesis,
+        posterior_mean: 0.01,
+        posterior_variance: 0.0001,
+        confidence_bp: 5_000,
+        at: at(40),
+        manifests: manifests
+            .into_iter()
+            .map(|(s, r)| ManifestRef::new(s, r).unwrap())
+            .collect(),
+    })
+    .unwrap()
+}
+
+/// A NOW belief citing two admitted claims walks to both documents' hashes
+/// and sources. Mutation: make `ProvenanceGraph::bind_belief` skip the
+/// `link` of the second claim — the traced set loses `hash('b')` and the
+/// second assertion fails.
+#[test]
+fn a_now_belief_walks_to_every_source_document_hash_it_rests_on() {
+    let mut platform = platform();
+    let a = checked("a1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let b = checked("b1", "https://b.example", "rate 1.10", "1.10", &hash('b'));
+    platform.absorb_evidence(vec![a, b], at(30));
+    assert_eq!(platform.evidence_held(), 2, "premise: both claims admitted");
+    let delta = now_delta(vec![
+        ("https://a.example", "a1"),
+        ("https://b.example", "b1"),
+        ("kernel/bar-history", "EURUSD@close"),
+    ]);
+
+    let binding = platform.bind_now_beliefs(std::slice::from_ref(&delta));
+
+    assert_eq!(binding.bound, 1, "{binding:?}");
+    assert_eq!(
+        binding.unresolved, 1,
+        "the in-process bar manifest names no admitted claim and is counted, not linked"
+    );
+    let f = delta.fields();
+    let id = qip_kernel::evidence_intake::now_belief_id(&f.key, &f.partition);
+    let walked = platform.trace_belief(&id).unwrap();
+    let hashes: std::collections::BTreeSet<_> =
+        walked.iter().map(|e| e.document_hash.clone()).collect();
+    assert_eq!(
+        hashes,
+        [hash('a'), hash('b')].into_iter().collect(),
+        "{walked:?}"
+    );
+    let sources: std::collections::BTreeSet<_> = walked.iter().map(|e| e.source.clone()).collect();
+    assert!(sources.contains("https://a.example") && sources.contains("https://b.example"));
+}
+
+/// A manifest whose reference is a claim id but whose source is another
+/// source's does not resolve, and a belief bound to nothing cannot be traced.
+/// Mutation: drop the `source_identity == manifest.source` guard in
+/// `bind_now_beliefs` — the belief binds and `trace_belief` succeeds.
+#[test]
+fn a_manifest_naming_a_claim_under_the_wrong_source_is_not_an_edge() {
+    let mut platform = platform();
+    platform.absorb_evidence(
+        vec![checked(
+            "a1",
+            "https://a.example",
+            "rate 1.10",
+            "1.10",
+            &hash('a'),
+        )],
+        at(30),
+    );
+    assert_eq!(platform.evidence_held(), 1, "premise: the claim is held");
+    let delta = now_delta(vec![("https://other.example", "a1")]);
+
+    let binding = platform.bind_now_beliefs(std::slice::from_ref(&delta));
+
+    assert_eq!((binding.bound, binding.unresolved), (0, 1));
+    let f = delta.fields();
+    let id = qip_kernel::evidence_intake::now_belief_id(&f.key, &f.partition);
+    assert!(platform.trace_belief(&id).is_err());
+}
+
+/// Binding a belief to a claim nobody admitted is refused: an edge to
+/// nothing is the invented edge the walk rules out.
+#[test]
+fn binding_a_belief_to_an_unadmitted_claim_is_refused() {
+    let mut platform = platform();
+    let claims: std::collections::BTreeSet<String> = ["ghost".to_string()].into();
+    assert!(platform.bind_belief("thesis-1", &claims).is_err());
+    assert!(platform.trace_belief("thesis-1").is_err());
+}

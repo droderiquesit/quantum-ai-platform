@@ -52,10 +52,12 @@ use qip_core::error::{Error, Result};
 use qip_events::{EventBody, Topic};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::metrics::labels;
+use qip_world_model::BeliefEvidence;
 use qip_world_model::TemporalConsistency;
 use qip_world_model::causal::CausalEdge;
 use qip_world_model::fabric::{ClaimKey, EvidenceVerdict, JournaledClaim, KeyOutcome};
 use qip_world_model::graph::Node;
+use qip_world_model::now::BeliefDelta;
 pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
 };
@@ -75,6 +77,31 @@ pub const EVIDENCE_POISONING_FINDINGS: &str = "qip_evidence_poisoning_findings_t
 /// Refusal reasons kept on one report. The counter carries the total; the
 /// first few reasons are what an operator reads on the cycle line.
 pub const REFUSALS_RETAINED: usize = 8;
+
+/// NOW beliefs bound to at least one admitted claim, per pass.
+pub const NOW_BELIEFS_BOUND: &str = "qip_now_beliefs_bound_total";
+
+/// What [`Platform::bind_now_beliefs`] did with one pass's deltas.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NowBinding {
+    /// Beliefs bound to at least one admitted claim.
+    pub bound: usize,
+    /// Manifest entries that named no admitted claim of that source.
+    pub unresolved: usize,
+}
+
+/// The id a NOW belief is bound under in the provenance graph.
+pub fn now_belief_id(
+    key: &qip_world_model::now::VariableKey,
+    partition: &qip_world_model::now::PartitionKey,
+) -> String {
+    format!(
+        "now:{}:{}/{}",
+        partition.domain.as_str(),
+        partition.region,
+        key
+    )
+}
 
 /// One relationship handed to [`Platform::absorb_knowledge`]: the typed edge,
 /// the instant it became true, and the confidence it is asserted with.
@@ -589,6 +616,53 @@ impl Platform {
     /// fabric was fed rather than read a clean scan of nothing.
     pub fn evidence_held(&self) -> usize {
         self.world.read().evidence().len()
+    }
+
+    /// Bind a belief to the admitted claims it rests on (R12-EVID-2033).
+    /// Refused for an empty set or a claim the world fabric does not hold.
+    pub fn bind_belief(&mut self, belief: &str, claims: &BTreeSet<String>) -> Result<()> {
+        self.world.update(|world| world.bind_belief(belief, claims))
+    }
+
+    /// Walk from a belief to every claim, document hash and source it rests
+    /// on. An error means a link is missing; it is never a shorter answer.
+    pub fn trace_belief(&self, belief: &str) -> Result<BTreeSet<BeliefEvidence>> {
+        self.world.read().evidence().graph().trace_belief(belief)
+    }
+
+    /// Bind each NOW belief delta to the admitted claims its manifest names
+    /// (R12-EVID-2033, R12-EVID-3081). A manifest entry resolves to a claim
+    /// only when its `reference` is the id of a claim the world fabric holds
+    /// **and** its `source` is that claim's source identity; an entry that
+    /// merely shares an id with a claim from another source is not one. The
+    /// production manifests name in-process sources (`kernel/bar-history`),
+    /// which resolve to nothing and are counted as `unresolved`, not given an
+    /// invented edge. The belief id is the delta's variable key and partition.
+    pub fn bind_now_beliefs(&mut self, deltas: &[BeliefDelta]) -> NowBinding {
+        let mut out = NowBinding::default();
+        for delta in deltas {
+            let fields = delta.fields();
+            let belief = now_belief_id(&fields.key, &fields.partition);
+            let mut claims = BTreeSet::new();
+            {
+                let world = self.world.read();
+                for manifest in &fields.manifests {
+                    match world.evidence().get(&manifest.reference) {
+                        Some(held) if held.record.source_identity == manifest.source => {
+                            claims.insert(manifest.reference.clone());
+                        }
+                        _ => out.unresolved += 1,
+                    }
+                }
+            }
+            if claims.is_empty() {
+                continue;
+            }
+            if self.bind_belief(&belief, &claims).is_ok() {
+                out.bound += 1;
+            }
+        }
+        out
     }
 
     /// Every knowledge delta the log retains under

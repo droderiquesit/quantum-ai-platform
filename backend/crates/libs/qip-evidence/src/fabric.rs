@@ -101,6 +101,9 @@ pub const MAX_CORROBORATING_ORIGINS: usize = 2;
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum ProvenanceNode {
     Claim(String),
+    /// A belief the platform holds (a NOW variable, a thesis, a world-model
+    /// fact), by the id its holder gives it (R12-EVID-2033).
+    Belief(String),
     /// A fetched document, by content hash.
     Document(String),
     Source(String),
@@ -118,12 +121,30 @@ pub enum ProvenanceEdge {
     Corroborates,
     /// Claim → the claim it disagrees with.
     Contradicts,
+    /// Belief → a claim the belief rests on.
+    RestsOn,
 }
 
 /// Claims linked to documents and sources and to each other (R12-EVID-2033).
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ProvenanceGraph {
     edges: BTreeSet<(ProvenanceNode, ProvenanceEdge, ProvenanceNode)>,
+    /// What each belief was bound to, kept apart from `edges` on purpose:
+    /// evicting a claim removes every edge touching it, so a belief whose
+    /// evidence aged out would otherwise shrink to the claims that remained
+    /// and still walk clean. Binding is the statement of what the belief
+    /// rests on; a walk must fail when any of it is gone.
+    beliefs: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// One source document a belief rests on, with the claim that carries it and
+/// the source that served it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct BeliefEvidence {
+    pub claim: String,
+    /// The fetched document's content hash.
+    pub document_hash: String,
+    pub source: String,
 }
 
 impl ProvenanceGraph {
@@ -161,6 +182,97 @@ impl ProvenanceGraph {
             .filter(|(from, kind, _)| from == node && *kind == edge)
             .map(|(_, _, to)| to)
             .collect()
+    }
+
+    /// Bind `belief` to the claims it rests on. Refuses an empty set and a
+    /// claim the graph does not hold: an edge to a claim nobody admitted is
+    /// the invented edge the walk exists to rule out. Binding again replaces
+    /// the earlier set, because a belief is restated, not accumulated.
+    pub fn bind_belief(&mut self, belief: &str, claims: &BTreeSet<String>) -> Result<()> {
+        if belief.trim().is_empty() {
+            return Err(Error::invalid("a belief is bound under a non-empty id"));
+        }
+        if claims.is_empty() {
+            return Err(Error::invalid(format!(
+                "belief `{belief}` rests on no claim; a belief with no evidence is not bound, \
+                 it is refused"
+            )));
+        }
+        for claim in claims {
+            let held = ProvenanceNode::Claim(claim.clone());
+            if self.targets(&held, ProvenanceEdge::DerivedFrom).is_empty() {
+                return Err(Error::invalid(format!(
+                    "belief `{belief}` names claim `{claim}`, which the fabric does not hold; \
+                     admit the evidence first"
+                )));
+            }
+        }
+        let from = ProvenanceNode::Belief(belief.to_string());
+        self.edges
+            .retain(|(f, e, _)| !(*f == from && *e == ProvenanceEdge::RestsOn));
+        for claim in claims {
+            self.link(
+                from.clone(),
+                ProvenanceEdge::RestsOn,
+                ProvenanceNode::Claim(claim.clone()),
+            );
+        }
+        self.beliefs.insert(belief.to_string(), claims.clone());
+        Ok(())
+    }
+
+    /// Walk from a belief to every document hash and source it rests on.
+    /// Fails when the belief was never bound, or when any claim it was bound
+    /// to has lost its claim, document or source edge (R12-EVID-2033): a
+    /// partial chain read as the whole one is an audit that passes on
+    /// missing evidence.
+    pub fn trace_belief(&self, belief: &str) -> Result<BTreeSet<BeliefEvidence>> {
+        let Some(claims) = self.beliefs.get(belief) else {
+            return Err(Error::invalid(format!(
+                "belief `{belief}` was never bound to evidence"
+            )));
+        };
+        let mut out = BTreeSet::new();
+        for claim in claims {
+            let node = ProvenanceNode::Claim(claim.clone());
+            if !self.edges.contains(&(
+                ProvenanceNode::Belief(belief.to_string()),
+                ProvenanceEdge::RestsOn,
+                node.clone(),
+            )) {
+                return Err(Error::invalid(format!(
+                    "belief `{belief}` rests on claim `{claim}`, which is no longer in the \
+                     graph; the chain is broken"
+                )));
+            }
+            let documents = self.targets(&node, ProvenanceEdge::DerivedFrom);
+            if documents.is_empty() {
+                return Err(Error::invalid(format!(
+                    "claim `{claim}` under belief `{belief}` has no source document"
+                )));
+            }
+            for document in documents {
+                let ProvenanceNode::Document(hash) = document else {
+                    continue;
+                };
+                let sources = self.targets(document, ProvenanceEdge::PublishedBy);
+                if sources.is_empty() {
+                    return Err(Error::invalid(format!(
+                        "document `{hash}` under belief `{belief}` names no source"
+                    )));
+                }
+                for source in sources {
+                    if let ProvenanceNode::Source(id) = source {
+                        out.insert(BeliefEvidence {
+                            claim: claim.clone(),
+                            document_hash: hash.clone(),
+                            source: id.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The sources a claim traces back to through its documents.
@@ -865,6 +977,12 @@ impl EvidenceFabric {
 
     pub fn get(&self, id: &str) -> Option<&HeldEvidence> {
         self.held.iter().find(|held| held.record.id == id)
+    }
+
+    /// Bind a belief to the claims it rests on; see
+    /// [`ProvenanceGraph::bind_belief`].
+    pub fn bind_belief(&mut self, belief: &str, claims: &BTreeSet<String>) -> Result<()> {
+        self.graph.bind_belief(belief, claims)
     }
 
     pub fn graph(&self) -> &ProvenanceGraph {
