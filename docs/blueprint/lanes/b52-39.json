@@ -1,0 +1,95 @@
+{
+ "lane": "39",
+ "compiled": false,
+ "note": "Nothing in this lane was compiled, built, tested or linted (owner instruction 2026-11-15). Only rustfmt --check ran, and passed on the touched files. Every row is built_unverified. ADRs 0678 and 0679 are provisional.",
+ "rows": [
+  {
+   "id": "R12-DATA-10079",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "A fabricd broker test now starts from configuration naming a bucket, prefix, endpoint and token file, against a stateful loopback fake of the Cloud Storage API, and asserts the probe round-trips, forty appends are acknowledged while the bucket is held, one content-named object per sealed segment lands once released, and consumers read the same records. Nothing was compiled or run.",
+   "remains": "Run the test; mutation-verify it. Terraform landing bucket and lifecycle copy (R12-FABRIC-8101), an environment enabling the broker module, and fabricd deployment are untouched.",
+   "tests": [
+    "backend/crates/apps/qip-fabricd/tests/broker.rs::sealed_segments_reach_a_configured_bucket_once_each_and_a_held_bucket_never_delays_an_append"
+   ],
+   "test_command": "cargo test -p qip-fabricd --test broker --no-fail-fast",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "00715fe1",
+   "built_unverified": true,
+   "new_tests_mutation": "mutation: not run"
+  },
+  {
+   "id": "R12-TICK-1121",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The recorded session is sealed through Lake::write_market_segment, pinned, read back with read_market_history, sequenced and replayed, and must equal the in-memory record and hash to RECORDED_DIGEST; a lake missing one print must not. Nothing was compiled or run.",
+   "remains": "Run it; the open ordering finding in ADR 0679 (lake line order for two messages of one packet) is unresolved; no composition root opens the lake on a default path.",
+   "tests": [
+    "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::the_recorded_session_sealed_in_the_tick_lake_and_read_back_replays_to_the_pinned_digest"
+   ],
+   "test_command": "cargo test -p qip-acceptance --test tick_replay",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "d0dc13ff",
+   "built_unverified": true,
+   "new_tests_mutation": "mutation: not run"
+  },
+  {
+   "id": "R12-TICK-1124",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Added qip_sequencing::CrossVenueAligner (pure, ADR 0678) with three unit tests, and an acceptance test that aligns two venues' ticks read back from the lake and requires the digest to move when a recorded uncertainty narrows. Nothing was compiled or run.",
+   "remains": "Run both; wire the aligner into qip-deepbrain's tick desk round (off in every committed deployment); a clock-less tick refusal is only in the test's reader.",
+   "tests": [
+    "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::two_venues_recorded_in_the_lake_are_aligned_by_their_clocks_and_a_mutated_stage_moves_the_digest",
+    "backend/crates/edge/qip-sequencing/tests/venues.rs::a_tick_is_ordered_against_another_venue_only_beyond_both_uncertainties",
+    "backend/crates/edge/qip-sequencing/tests/venues.rs::a_tick_is_not_related_to_its_own_venue_or_to_another_instrument",
+    "backend/crates/edge/qip-sequencing/tests/venues.rs::a_negative_uncertainty_or_a_blank_name_is_refused_rather_than_read_as_exact"
+   ],
+   "test_command": "cargo test -p qip-acceptance --test tick_replay && cargo test -p qip-sequencing --test venues --no-fail-fast",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "f81578a4 (module), d0dc13ff (test)",
+   "built_unverified": true,
+   "new_tests_mutation": "mutation: not run"
+  },
+  {
+   "id": "R12-TICK-1125",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The lake's ticks run through ReplaySession with a probe order; the test asserts reproducibility, sensitivity to one tick and one fee, and that the clean span's book equals qip_orderbook::replay's. No literal digest is pinned (ADR 0679). Nothing was compiled or run.",
+   "remains": "Run it and pin an observed digest; a committed deployment enabling the tick desk is the owner's decision.",
+   "tests": [
+    "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::the_fabric_replay_engine_run_over_the_recorded_session_is_reproducible_and_agrees_with_the_book_replay"
+   ],
+   "test_command": "cargo test -p qip-acceptance --test tick_replay",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "d0dc13ff",
+   "built_unverified": true,
+   "new_tests_mutation": "mutation: not run"
+  },
+  {
+   "id": "R12-TICK-1127",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The replayed session becomes the instrument's market trace and is fused with a world event through fuse(); the digest is equal across the lake and in-memory paths and moves when the printed execution is removed. No literal digest is pinned. Nothing was compiled or run.",
+   "remains": "Run it and pin an observed digest; the only production caller, the tick desk, is off by default.",
+   "tests": [
+    "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::the_recorded_session_replayed_through_world_and_market_fusion_reproduces_a_digest_the_replay_moves"
+   ],
+   "test_command": "cargo test -p qip-acceptance --test tick_replay",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "d0dc13ff",
+   "built_unverified": true,
+   "new_tests_mutation": "mutation: not run"
+  }
+ ]
+}
