@@ -1056,7 +1056,6 @@ dependencies = [
  "qip-events",
  "qip-financial",
  "qip-market",
- "qip-observability",
  "qip-sequencing",
  "qip-storage",
  "qip-transport",
