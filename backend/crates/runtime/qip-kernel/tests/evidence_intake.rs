@@ -1138,3 +1138,44 @@ fn binding_a_belief_to_an_unadmitted_claim_is_refused() {
     assert!(platform.bind_belief("thesis-1", &claims).is_err());
     assert!(platform.trace_belief("thesis-1").is_err());
 }
+
+// ---- R12-EVID-3081: a manifest entry resolves to a source reference ----
+
+/// A NOW delta citing connector evidence has every connector entry resolve to
+/// the claim's source and the hash of the document fetched; the bar entry
+/// resolves to nothing. Mutation: make `resolve_manifest` return
+/// `document_hash: None` — the hash assertion fails.
+#[test]
+fn a_now_manifest_entry_from_connector_data_resolves_to_its_source_and_document_hash() {
+    let mut platform = platform();
+    platform.absorb_evidence(
+        vec![checked(
+            "a1",
+            "https://a.example",
+            "rate 1.10",
+            "1.10",
+            &hash('a'),
+        )],
+        at(30),
+    );
+    assert_eq!(platform.evidence_held(), 1, "premise: the claim is held");
+    let delta = now_delta(vec![
+        ("https://a.example", "a1"),
+        ("kernel/bar-history", "EURUSD@close"),
+    ]);
+
+    let resolved: Vec<_> = delta
+        .fields()
+        .manifests
+        .iter()
+        .map(|m| platform.resolve_manifest(m))
+        .collect();
+
+    let first = resolved[0].as_ref().expect("connector entry resolves");
+    assert_eq!(first.source, "https://a.example");
+    assert_eq!(first.document_hash.as_deref(), Some(hash('a').as_str()));
+    assert!(
+        resolved[1].is_none(),
+        "an in-process name resolves to nothing"
+    );
+}

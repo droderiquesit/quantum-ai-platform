@@ -90,6 +90,34 @@ pub struct NowBinding {
     pub unresolved: usize,
 }
 
+/// What a NOW manifest entry points at once it is resolved against the
+/// world fabric: the admitted claim, the source that served it and the hash
+/// of the fetched document, which is what a re-fetch is checked against
+/// (R12-EVID-3081).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedManifest {
+    pub claim: String,
+    pub source: String,
+    pub document_hash: Option<String>,
+}
+
+/// Resolve one manifest entry to the claim and source reference it names, or
+/// `None`. An entry resolves only when its `reference` is the id of a claim
+/// the fabric holds **and** its `source` is that claim's source identity; an
+/// in-process name (`kernel/bar-history`) resolves to nothing, and is not
+/// given an edge it does not have.
+pub fn resolve_manifest(
+    fabric: &qip_world_model::EvidenceFabric,
+    manifest: &qip_world_model::now::ManifestRef,
+) -> Option<ResolvedManifest> {
+    let held = fabric.get(&manifest.reference)?;
+    (held.record.source_identity == manifest.source).then(|| ResolvedManifest {
+        claim: manifest.reference.clone(),
+        source: manifest.source.clone(),
+        document_hash: held.document_hash.clone(),
+    })
+}
+
 /// The id a NOW belief is bound under in the provenance graph.
 pub fn now_belief_id(
     key: &qip_world_model::now::VariableKey,
@@ -630,6 +658,15 @@ impl Platform {
         self.world.read().evidence().graph().trace_belief(belief)
     }
 
+    /// Resolve one manifest entry against the world fabric; see
+    /// [`resolve_manifest`].
+    pub fn resolve_manifest(
+        &self,
+        manifest: &qip_world_model::now::ManifestRef,
+    ) -> Option<ResolvedManifest> {
+        resolve_manifest(self.world.read().evidence(), manifest)
+    }
+
     /// Bind each NOW belief delta to the admitted claims its manifest names
     /// (R12-EVID-2033, R12-EVID-3081). A manifest entry resolves to a claim
     /// only when its `reference` is the id of a claim the world fabric holds
@@ -647,11 +684,11 @@ impl Platform {
             {
                 let world = self.world.read();
                 for manifest in &fields.manifests {
-                    match world.evidence().get(&manifest.reference) {
-                        Some(held) if held.record.source_identity == manifest.source => {
-                            claims.insert(manifest.reference.clone());
+                    match resolve_manifest(world.evidence(), manifest) {
+                        Some(resolved) => {
+                            claims.insert(resolved.claim);
                         }
-                        _ => out.unresolved += 1,
+                        None => out.unresolved += 1,
                     }
                 }
             }
