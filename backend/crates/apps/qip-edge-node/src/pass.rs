@@ -537,8 +537,7 @@ fn decide_act_reconcile(
     // with the fills it booked when it applies the entry.
     let venue = VenueId::new(gateway.simulated().venue());
     let (holdings, cash_units) = gateway.simulated().custody_holdings();
-    let cash = gateway.simulated().custody_cash()?;
-    cell.record_custody_statement_with_cash(&venue, holdings, cash_units, cash, now)?;
+    cell.record_custody_statement(&venue, holdings, cash_units, now)?;
 
     Ok(PassOutcome::Ran {
         feed: tick,

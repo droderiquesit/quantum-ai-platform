@@ -158,7 +158,6 @@ pub mod placement;
 pub mod recall;
 pub mod reservation;
 pub mod shadow;
-pub mod shadow_farm;
 pub mod society;
 pub mod survival;
 

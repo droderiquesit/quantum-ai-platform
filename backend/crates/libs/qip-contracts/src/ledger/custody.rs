@@ -62,11 +62,6 @@ pub struct CustodyStatement {
     /// Units this statement does not state custody of — the venue's cash
     /// currencies. Left out on both sides of the comparison.
     pub cash_units: BTreeSet<String>,
-    /// Signed change in the venue's cash per cash unit since it opened
-    /// (ADR 0652). A unit here is compared, against the ledger's trading
-    /// plus in-settlement cash for the cell; a cash unit absent here is left
-    /// out as before.
-    pub cash: BTreeMap<String, Decimal>,
 }
 
 impl CustodyStatement {
@@ -97,7 +92,6 @@ impl CustodyStatement {
             simulated,
             holdings: BTreeMap::new(),
             cash_units: BTreeSet::new(),
-            cash: BTreeMap::new(),
         })
     }
 
@@ -128,20 +122,6 @@ impl CustodyStatement {
         Ok(self)
     }
 
-    /// State the venue's cash change in one cash unit, so it is compared.
-    /// Refuses a unit that was not named as cash first.
-    pub fn cash_balance(mut self, unit: impl Into<String>, change: Decimal) -> Result<Self> {
-        let unit = unit.into();
-        if !self.cash_units.contains(&unit) {
-            return Err(Error::invalid(format!(
-                "{unit} is stated as a cash balance but is not a cash unit of this statement; \
-                 name it as cash first"
-            )));
-        }
-        self.cash.insert(unit, change);
-        Ok(self)
-    }
-
     /// The statement a journaled [`Decision::CustodyStatement`] carries, at
     /// the entry's own chain position (ADR 0494). `None` for any other
     /// decision.
@@ -159,7 +139,6 @@ impl CustodyStatement {
             venue,
             holdings,
             cash_units,
-            cash,
             simulated,
         } = &entry.decision
         else {
@@ -192,22 +171,6 @@ impl CustodyStatement {
                 ))
             })?;
             statement = statement.holding(unit.as_str(), quantity)?;
-        }
-        for (unit, change) in cash {
-            if statement.cash.contains_key(unit) {
-                return Err(Error::invalid(format!(
-                    "custody statement at sequence {} states the cash of {unit} twice",
-                    entry.sequence
-                )));
-            }
-            let change = Decimal::parse(change).ok_or_else(|| {
-                Error::invalid(format!(
-                    "custody statement at sequence {} states the cash of {unit} as {change:?}, \
-                     which is not an exact decimal; nothing is compared against a guess",
-                    entry.sequence
-                ))
-            })?;
-            statement = statement.cash_balance(unit.as_str(), change)?;
         }
         Ok(Some(statement))
     }
@@ -260,8 +223,7 @@ pub fn compare(
     let units: BTreeSet<&String> = ledger
         .keys()
         .chain(statement.holdings.keys())
-        .chain(statement.cash.keys())
-        .filter(|unit| !statement.cash_units.contains(*unit) || statement.cash.contains_key(*unit))
+        .filter(|unit| !statement.cash_units.contains(*unit))
         .collect();
     units
         .into_iter()
@@ -270,7 +232,6 @@ pub fn compare(
             let held = statement
                 .holdings
                 .get(unit)
-                .or_else(|| statement.cash.get(unit))
                 .copied()
                 .unwrap_or(Decimal::ZERO);
             let direction = if booked > held {
