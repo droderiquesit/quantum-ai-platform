@@ -2005,7 +2005,7 @@ fn the_register_groups_a_cycles_legs_and_judges_each_cycle_by_what_filled() {
     assert_eq!(c2.orders, vec!["c2-a".to_string(), "c2-b".to_string()]);
 }
 
-// --- venue cash as a custody statement (ADR 0653) ---------------------------
+// --- venue cash as a custody statement (ADR 0652) ---------------------------
 
 fn custody_with_cash(holdings: &[(&str, &str)], cash: &str) -> Decision {
     match custody(holdings, true) {

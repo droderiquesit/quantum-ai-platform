@@ -659,7 +659,7 @@ fn a_node_pass_that_fills_journals_the_venues_custody_statement_on_p1_and_the_le
         None,
         "an unchanged statement was journaled again"
     );
-    // R12-LEDGER-10185 (ADR 0653): the cash alone moving is a statement
+    // R12-LEDGER-10185 (ADR 0652): the cash alone moving is a statement
     // that moved, or a venue could drift in cash for ever unjournaled.
     let drifted: BTreeMap<String, Decimal> = venue_cash
         .iter()

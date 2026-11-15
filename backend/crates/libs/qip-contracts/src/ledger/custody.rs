@@ -63,7 +63,7 @@ pub struct CustodyStatement {
     /// currencies. Left out on both sides of the comparison.
     pub cash_units: BTreeSet<String>,
     /// Signed change in the venue's cash per cash unit since it opened
-    /// (ADR 0653). A unit here is compared, against the ledger's trading
+    /// (ADR 0652). A unit here is compared, against the ledger's trading
     /// plus in-settlement cash for the cell; a cash unit absent here is left
     /// out as before.
     pub cash: BTreeMap<String, Decimal>,

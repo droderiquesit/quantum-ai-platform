@@ -1,5 +1,5 @@
 //! The shadow-portfolio farm: a plan's counterfactuals, scored exactly into a
-//! compact outcome pack (R12-CAPITAL-9051, ADR 0654).
+//! compact outcome pack (R12-CAPITAL-9051, ADR 0653).
 //!
 //! [`crate::shadow`] defines what a shadow is. This module is the batch that
 //! uses it: build the universe a plan implies, score every shadow once the
@@ -82,7 +82,7 @@ pub fn universe_from_plan(
 ///
 /// **Provisional model:** linear in size, so it carries no market impact. A
 /// larger size would in fact have moved the price against itself, so this
-/// flatters bigger shadows; ADR 0654 records that and the pack says which
+/// flatters bigger shadows; ADR 0653 records that and the pack says which
 /// model scored it. Refused when the actual notional is not positive.
 pub fn linear_pnl(
     actual_pnl: Decimal,

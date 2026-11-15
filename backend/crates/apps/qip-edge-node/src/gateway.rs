@@ -821,7 +821,7 @@ impl SimulatedGateway {
         (holdings, cash)
     }
 
-    /// The venue's cash as a custody statement (R12-LEDGER-10185, ADR 0653):
+    /// The venue's cash as a custody statement (R12-LEDGER-10185, ADR 0652):
     /// the change in the clearing account's cash since it opened, before
     /// the venue's costs, in its currency, from the venue's own ledger. The change and not the balance,
     /// because the opening cash is the venue's endowment and no fill the
@@ -834,7 +834,7 @@ impl SimulatedGateway {
         // (ExecutionReport carries none), so the ledger books the trade's
         // cash and nothing for what the venue charged on it; a statement net
         // of costs would read every charged fill as a break. The costs are
-        // the open part of R12-LEDGER-10185, named in ADR 0653.
+        // the open part of R12-LEDGER-10185, named in ADR 0652.
         let change = cash
             .settled
             .checked_sub(cash.opening)

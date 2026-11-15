@@ -772,7 +772,7 @@ pub enum Decision {
         cash_units: Vec<String>,
         /// `(unit, signed change in the venue's cash since it opened)`, the
         /// venue's cash balance as a custody statement (R12-LEDGER-10185,
-        /// ADR 0653). Each unit is one of `cash_units` and is compared with
+        /// ADR 0652). Each unit is one of `cash_units` and is compared with
         /// the cell's trading plus in-settlement cash instead of being left
         /// out; a cash unit not listed here stays left out. Absent, and so
         /// not written, on statements sealed before the field existed.

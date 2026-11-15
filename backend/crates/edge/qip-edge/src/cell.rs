@@ -2600,7 +2600,7 @@ impl Cell {
     }
 
     /// [`Self::record_custody_statement`] that also states the venue's cash
-    /// change per cash unit (R12-LEDGER-10185, ADR 0653). A cash balance for a
+    /// change per cash unit (R12-LEDGER-10185, ADR 0652). A cash balance for a
     /// unit not named in `cash_units` is refused: it would be compared and
     /// excluded at once. A cash change that moved is a statement that moved,
     /// so a cash-only change is journaled too.
