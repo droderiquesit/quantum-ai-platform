@@ -26,6 +26,9 @@ qip-sequencing.workspace = true
 qip-transport.workspace = true
 # Durable envelope storage: message log and journal backing (ADR 0100).
 qip-storage.workspace = true
+# The mirror's lag series (ADR 0119 §2): written into a registry the caller
+# hands in, never one this crate reached for.
+qip-observability.workspace = true
 
 [lints]
 workspace = true
