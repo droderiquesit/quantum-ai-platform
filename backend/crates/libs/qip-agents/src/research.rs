@@ -158,7 +158,20 @@ impl ResearchRegistry {
 
     /// Record `verdict` as the next version of `hypothesis`, returning the
     /// version it was recorded as.
+    ///
+    /// Only `Open` is accepted here (R12-EXPAND-6023). A `Null` or
+    /// `Supported` verdict stops a later repeat of the question, so it may
+    /// enter only through [`Self::record_concluded`], which demands the
+    /// experiments and the benchmark it rests on. This door once took a
+    /// concluded verdict on free-text evidence alone, which is exactly the
+    /// uncited widening ADR 0198 closes for every other registry.
     pub fn record(&mut self, hypothesis: &str, verdict: Verdict) -> Result<u32> {
+        if !matches!(verdict, Verdict::Open) {
+            return Err(Error::invalid(
+                "a concluded verdict is recorded with `record_concluded`, citing its \
+                 experiments and benchmark; `record` takes only an Open question",
+            ));
+        }
         let next = self
             .latest_version(hypothesis)
             .map_or(1, |latest| latest.saturating_add(1));
@@ -304,7 +317,7 @@ impl ResearchRegistry {
     /// zero and a version not above the latest held for the hypothesis: a
     /// late-arriving older verdict would otherwise replace the current one,
     /// the failure the ontology registry's same rule names.
-    pub fn record_version(
+    pub(crate) fn record_version(
         &mut self,
         hypothesis: &str,
         version: u32,
@@ -381,5 +394,32 @@ impl ResearchRegistry {
                 hypothesis: h.clone(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `record_version` is crate-private since R12-EXPAND-6023, so the
+    /// stale-version refusal is held here: a late older verdict must not
+    /// replace the current one.
+    #[test]
+    fn a_version_not_above_the_latest_is_refused() {
+        let mut registry = ResearchRegistry::new();
+        assert_eq!(registry.record("credit leads equity", Verdict::Open), Ok(1));
+        for stale in [0, 1] {
+            assert!(
+                registry
+                    .record_version("credit leads equity", stale, Verdict::Open)
+                    .is_err(),
+                "version {stale} was accepted over latest 1"
+            );
+        }
+        assert!(
+            registry
+                .record_version("credit leads equity", 2, Verdict::Open)
+                .is_ok()
+        );
     }
 }
