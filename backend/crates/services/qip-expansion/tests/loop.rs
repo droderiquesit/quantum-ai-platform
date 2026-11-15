@@ -1521,3 +1521,23 @@ fn a_campaign_produces_a_validated_experiment_pack_with_its_backtest_result() {
         pack.findings
     );
 }
+
+/// R12-EXPAND-6066: failed sagas at one venue are one execution gap naming
+/// the venue and every record, and a venue with none raises nothing.
+/// Mutation: group by record instead of venue; the `len() == 2` assertion
+/// fails.
+#[test]
+fn failed_sagas_at_one_venue_are_one_execution_gap_citing_every_record() {
+    use qip_expansion::detectors::failed_sagas;
+    let sagas: Vec<(String, String)> = [
+        ("XNYS", "XNYS:g1"),
+        ("XNYS", "XNYS:g2"),
+        ("XLON", "XLON:g3"),
+    ]
+    .iter()
+    .map(|(v, r)| (v.to_string(), r.to_string()))
+    .collect();
+    let observations = failed_sagas(&sagas);
+    assert_eq!(observations.len(), 2, "{observations:#?}");
+    assert!(failed_sagas(&[]).is_empty());
+}

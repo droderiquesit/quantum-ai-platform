@@ -75,9 +75,9 @@ use qip_expansion::desk::{
 use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
     causal_driver_universe, contested_evidence, contradictions, coverage, cross_domain_links,
-    incompetent_specialists, low_confidence, missing_causal_links, model_drift, model_error_rate,
-    reconciliation_breaks, refusal_clusters, repeated_vetoes_priced, split_by_wanting,
-    theory_contradictions, unexplained_anomalies, unexplained_residuals_priced,
+    failed_sagas, incompetent_specialists, low_confidence, missing_causal_links, model_drift,
+    model_error_rate, reconciliation_breaks, refusal_clusters, repeated_vetoes_priced,
+    split_by_wanting, theory_contradictions, unexplained_anomalies, unexplained_residuals_priced,
     world_state_expired,
 };
 use qip_expansion::executor::{
@@ -989,6 +989,8 @@ pub struct ResearchRound {
     /// why the log could not be read, where it could not.
     pub reconciliation_breaks: usize,
     pub reconciliation_breaks_refused: Option<String>,
+    pub failed_sagas: usize,
+    pub failed_sagas_refused: Option<String>,
     /// Claim keys the world fabric held an unresolved contest on when the
     /// sweep read it (R12-EXPAND-6011), and of their subjects, how many the
     /// causal graph holds no live claim into.
@@ -1768,6 +1770,7 @@ pub struct ResearchLoop {
     /// Reconciliation-break records already read off the log, in log order
     /// (R12-EXPAND-6066), so each halt is raised once.
     breaks_seen: usize,
+    sagas_seen: usize,
     issued: u64,
     fills_read: usize,
     slippage_read: usize,
@@ -2029,6 +2032,7 @@ impl ResearchLoop {
             surprises_seen: 0,
             misses_seen: 0,
             breaks_seen: 0,
+            sagas_seen: 0,
             issued: 0,
             fills_read: 0,
             slippage_read: 0,
@@ -2415,6 +2419,29 @@ impl ResearchLoop {
         )
     }
 
+    /// The sweep's belief-discrepancy step (ADR 0346), taking what the
+    /// replay returned so the wiring is testable without a journal. A refused
+    /// read is reported on the round and the watch is not fed, so a refusal
+    /// does not reset a run in progress.
+    fn read_beliefs(
+        &mut self,
+        replayed: Result<Vec<Vec<Resolution>>>,
+        round: &mut ResearchRound,
+    ) -> Vec<Observation> {
+        match replayed {
+            Ok(reviews) => {
+                let read: Vec<&[Resolution]> = reviews.iter().map(Vec::as_slice).collect();
+                let raised = self.beliefs.feed(&read);
+                round.belief_discrepancies = raised.len();
+                raised
+            }
+            Err(error) => {
+                round.belief_reviews_refused = Some(error.message().to_string());
+                Vec::new()
+            }
+        }
+    }
+
     /// The sweep, over fills and slippage the caller read. `sweep` reads them
     /// from the platform; a test hands a campaign the fills a paper venue
     /// would have produced without running a book to produce them, through
@@ -2519,18 +2546,15 @@ impl ResearchLoop {
         // The price/belief discrepancy (ADR 0346): the federation's
         // resolutions, off the log. A review the replay refuses is reported
         // and the watch is not fed, so a refused read does not reset a run.
-        match federation_stage::replay(platform) {
-            Ok(reviews) => {
-                let read: Vec<&[Resolution]> = reviews
-                    .iter()
-                    .map(|review| review.resolved.as_slice())
-                    .collect();
-                let raised = self.beliefs.feed(&read);
-                round.belief_discrepancies = raised.len();
-                observations.extend(raised);
-            }
-            Err(error) => round.belief_reviews_refused = Some(error.message().to_string()),
-        }
+        observations.extend(self.read_beliefs(
+            federation_stage::replay(platform).map(|reviews| {
+                reviews
+                    .into_iter()
+                    .map(|review| review.resolved)
+                    .collect::<Vec<_>>()
+            }),
+            &mut round,
+        ));
 
         // --- calibration, declines, refusals, fills, coverage -------------
         if let Some(calibration) = platform.calibration() {
@@ -2728,6 +2752,21 @@ impl ResearchLoop {
                 observations.extend(reconciliation_breaks(&fresh));
             }
             Err(error) => round.reconciliation_breaks_refused = Some(error.message().to_string()),
+        }
+        // R12-EXPAND-6066: sagas that ended without completing, read the same
+        // way; one execution gap per venue.
+        match platform.saga_outcome_records() {
+            Ok(records) => {
+                let fresh: Vec<(String, String)> = records
+                    .iter()
+                    .skip(self.sagas_seen)
+                    .map(|r| (r.venue.clone(), r.record_id.clone()))
+                    .collect();
+                self.sagas_seen = records.len();
+                round.failed_sagas = fresh.len();
+                observations.extend(failed_sagas(&fresh));
+            }
+            Err(error) => round.failed_sagas_refused = Some(error.message().to_string()),
         }
         let deltas = match platform.knowledge_deltas() {
             Ok(deltas) => deltas,
@@ -5274,6 +5313,58 @@ const fn class_str(class: qip_contracts::expansion::GapClass) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn against(subject: &str, cycle: u64) -> Resolution {
+        Resolution {
+            proposition: format!("{subject}@{cycle}"),
+            outcome: false,
+            closed: Vec::new(),
+            forecasts: Default::default(),
+            ensemble: Some(0.8),
+        }
+    }
+
+    /// R12-EXPAND-6067, the wiring ADR 0346's closure left untested: the
+    /// sweep's belief step feeds the watch from the replayed reviews,
+    /// reports a refused read on the round without feeding it, and a refusal
+    /// does not reset a run in progress. Mutations: feed nothing in
+    /// `read_beliefs` (nothing is ever raised); feed on the `Err` arm too
+    /// (the refusal sweep resets the run and the final raise never comes).
+    #[test]
+    fn the_sweeps_belief_step_raises_on_replayed_reviews_and_a_refusal_neither_raises_nor_resets() {
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let mut log: Vec<Vec<Resolution>> = Vec::new();
+        let mut raised = 0;
+        for n in 1..=u64::from(PERSIST_SWEEPS) {
+            log.push(vec![against("macro:rates:move-persists", n)]);
+            let mut round = ResearchRound::default();
+            if n == 2 {
+                // A refused replay between two flagged sweeps.
+                let out = research.read_beliefs(
+                    Err(qip_core::error::Error::invalid("a review is not trusted")),
+                    &mut round,
+                );
+                assert!(out.is_empty());
+                assert!(
+                    round
+                        .belief_reviews_refused
+                        .as_deref()
+                        .is_some_and(|m| m.contains("not trusted")),
+                    "{round:?}"
+                );
+                round = ResearchRound::default();
+            }
+            let out = research.read_beliefs(Ok(log.clone()), &mut round);
+            assert_eq!(round.belief_discrepancies, out.len());
+            assert!(round.belief_reviews_refused.is_none());
+            raised += out.len();
+        }
+        assert_eq!(
+            raised, 1,
+            "one item after {PERSIST_SWEEPS} flagged sweeps, a refusal between them notwithstanding"
+        );
+    }
 
     /// A priced gap worth more than the scale's 100 units saturates at the
     /// scale's end; `run_market` once declined such a gap as invalid.
