@@ -2524,6 +2524,57 @@ that narrows a security scanner, whatever the owner has delegated.
     change and two independent readers have failed to refute it. No lane may
     write a live-order path, edit a protected path, or add a dependency.
 
+40. **Whatever waited on a person is delegated to the orchestrator
+    (2026-11-15).** The owner, at about 15:36Z: "I give you full authority to
+    do whatever you wait for a person [for]."
+
+    *What was waiting.* Three kinds of thing. A guard suite that refuses new
+    code until somebody reviews it: a fabric mirror path whose send path is
+    not pinned, a variable a binary reads that no deployment sets, an
+    order-sending call no row classifies, a function absent from a reviewed
+    table. A design ruling or a figure nobody had given, which the lanes
+    reported as NEEDS_PERSON or NEEDS_FIGURE (28 rows on the day). And a
+    patch to a path a lane may not edit, left under `docs/blueprint/lanes/`
+    for a person to apply (38 files, of which 15 were already applied, 16 no
+    longer apply and 7 still do).
+
+    *How the authority is used.* It is the reviewer's authority, not a
+    licence to make a check pass. Where a guard says "pin its send path here
+    before it ships" or "add a row naming its gate and a behavioural test",
+    that is done as the guard prescribes: by a reader that did not write the
+    code, with the assertion or the test the guard asks for, and then a
+    second reader who tries to refute it. A guard's count or table is never
+    edited merely so that new code passes, and no assertion is removed. A
+    ruling is written here or in a decision record under a fresh number. A
+    figure is chosen in the restrictive direction and marked provisional. A
+    waiting patch is applied only if it still applies and a reader confirms
+    it narrows no scanner and no guard.
+
+    *What it does not lift.* The four exceptions at the top of this file,
+    because they are the repository's rules and not the owner's preference: no
+    live-order path and no real money movement; no weakening of a test, a
+    guard, a paper-trading layer or an existing limit value; no dependency
+    without a record; no billed infrastructure without its cost named.
+    Decision 39 stands: billing is paused, so nothing is deployed. The
+    session's permission layer stands: an edit it refuses (anything under
+    `.claude/**`, the change-window file) is not worked around, and is
+    reported instead. And three things are not the owner's to give through
+    this session at all: a real credential, a signed market-data licence, and
+    the account's usage limit.
+
+    *First uses.* Two renames made on 2026-11-15 before this decision are
+    ratified by it: `TickDesk::set_book` to `set_portfolio_weights` and the
+    edge node's `RebalanceKept::absorb` to `keep`. Each name collided with a
+    name a guard scans for, neither method does what the guard guards
+    against, and neither guard was touched. Lane 26's rewrite of ADR 0652 in
+    place, after 0652 had landed on main, is not accepted in that form: the
+    record on main stays as it is and the lane's second decision becomes
+    ADR 0694.
+
+    No register row is regraded by this decision. A decision removes a wait;
+    a row closes only when what it names is built, the pipeline has passed
+    with it, and two independent readers have failed to refute it.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
