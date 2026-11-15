@@ -12,6 +12,7 @@
 
 use crate::arbitrage::{ArbitrageDesk, EdgeRefresh};
 use crate::conduct::{ConductPolicy, ConductWatch};
+use crate::custody::{CustodyStatement, CustodyWatch};
 use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
 use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, ReleaseSchedule};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
@@ -687,6 +688,11 @@ pub struct CellConfig {
     /// by [`Self::with_custody_statements`]; a cell without it records no
     /// custody row and sizes on none, as before.
     pub custody_statements: bool,
+    /// How often the venue states custody, when the cell holds the watch
+    /// itself (ADR 0242, R12-RES-7099). Armed only by
+    /// [`Self::with_custody_watch`], which also arms
+    /// [`Self::custody_statements`].
+    pub custody_statement_period: Option<Duration>,
     /// This build's own identity (ADR 0155 section 14), or `None` on a cell
     /// built without the wire. Armed only by [`Self::with_build_identity`];
     /// a cell with no identity has no deployment halt to report.
@@ -805,6 +811,7 @@ impl CellConfig {
             feed_loss_playbook: FeedLossPlaybook::Hedge,
             journal_wire: false,
             custody_statements: false,
+            custody_statement_period: None,
             build_identity: None,
             product_classes: BTreeMap::new(),
             authority_bounds_required: false,
@@ -941,6 +948,21 @@ impl CellConfig {
     pub fn with_custody_statements(mut self) -> Self {
         self.custody_statements = true;
         self
+    }
+
+    /// Arm the custody reading and let the cell keep the watch (ADR 0242):
+    /// the venue's statements are handed to [`Cell::observe_custody_statement`]
+    /// and custody's freshness is read from the newest one at every pass
+    /// instant, so a venue that stops stating ages into stale and then
+    /// unavailable with nobody having to hand the cell a reading.
+    ///
+    /// Refused unless `period` is positive, for the reason
+    /// [`CustodyWatch::new`] gives.
+    pub fn with_custody_watch(mut self, period: Duration) -> Result<Self> {
+        CustodyWatch::new(period)?;
+        self.custody_statements = true;
+        self.custody_statement_period = Some(period);
+        Ok(self)
     }
 
     /// Measure the crossing cap over `interval` rather than per net.
@@ -1726,6 +1748,10 @@ pub struct Cell {
     /// The custody reading the node last handed in (ADR 0242), or `None`
     /// before one arrives or on a cell built without custody statements.
     custody: Option<Freshness>,
+    /// The newest custody statement the venue sent, when the cell keeps the
+    /// watch itself ([`CellConfig::with_custody_watch`]). Its reading is
+    /// taken at the pass instant, so it supersedes `custody`.
+    custody_watch: Option<CustodyWatch>,
     dropcopy: DropCopyReconciler,
     /// The arbitrage desk, if the composition root installed one. `None` is
     /// a cell that runs strategy programs and scans no graph, which is every
@@ -2063,6 +2089,9 @@ impl Cell {
             polled_halt: None,
             journal_pressure,
             custody: None,
+            custody_watch: config
+                .custody_statement_period
+                .and_then(|period| CustodyWatch::new(period).ok()),
             dropcopy: DropCopyReconciler::new(),
             desk: None,
             journal: if config.journal_trimmed_on_ship {
@@ -3377,7 +3406,11 @@ impl Cell {
         let mut state = self.narrowing_without_custody(now);
         // ADR 0242: the custody reading the node handed in, recorded only
         // once one was; a cell nobody hands a reading records no row.
-        if let Some(custody) = self.custody {
+        // A watch the cell keeps is read at `now`, so a venue that went
+        // quiet narrows the pass with no one handing in a reading.
+        if let Some(watch) = &self.custody_watch {
+            state.observe(Capability::Custody, watch.freshness(now));
+        } else if let Some(custody) = self.custody {
             state.observe(Capability::Custody, custody);
         }
         state
@@ -3400,7 +3433,38 @@ impl Cell {
                  readings",
             ));
         }
+        if self.custody_watch.is_some() {
+            return Err(Error::invalid(
+                "this cell keeps its own custody watch and reads custody from the statements                  handed to observe_custody_statement; a second, handed-in reading would be one                  the cell ignores",
+            ));
+        }
         self.custody = Some(reading);
+        Ok(())
+    }
+
+    /// Whether this cell keeps its own custody watch, so a node knows whether
+    /// to hand it the venue's statements.
+    pub fn keeps_custody_watch(&self) -> bool {
+        self.custody_watch.is_some()
+    }
+
+    /// Record a custody statement the venue sent (ADR 0242). Only a newer
+    /// statement moves the reading. Refused on a cell that does not keep the
+    /// watch, and for a venue the cell does not trade at: a statement from
+    /// elsewhere says nothing about the custody this cell sizes against.
+    pub fn observe_custody_statement(&mut self, statement: &CustodyStatement) -> Result<()> {
+        if !self.config.venues.contains(&statement.venue) {
+            return Err(Error::invalid(format!(
+                "{} is not a venue this cell trades at, so its custody statement says nothing                  about this cell's custody",
+                statement.venue.as_str()
+            )));
+        }
+        let Some(watch) = self.custody_watch.as_mut() else {
+            return Err(Error::invalid(
+                "this cell was built without a custody watch; build it from                  CellConfig::with_custody_watch, or stop handing it statements",
+            ));
+        };
+        watch.record(statement);
         Ok(())
     }
 

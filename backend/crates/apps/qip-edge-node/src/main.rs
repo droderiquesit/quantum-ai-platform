@@ -622,6 +622,10 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
         // ones nobody priced. Restrictive; no committed strategy declares an
         // edge yet, so until one does this node enters nothing.
         .with_edgeless_signals_refused();
+        .with_journal_wire();
+    // ADR 0242, R12-RES-7099: the cell keeps the custody watch, fed by the
+    // statement the simulated venue makes each pass.
+    let cell_config = qip_edge_node::pass::arm_custody_watch(cell_config)?;
     // ADR 0155 section 14: the identity of this build, from a file the unit
     // that starts the process writes, never from the network, in line with
     // "secrets and facts reach the process as files". Unset leaves the
