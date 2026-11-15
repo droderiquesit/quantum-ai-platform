@@ -43,6 +43,9 @@
 
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256;
+use qip_simulation_engine::participants::{
+    PARTICIPANT_PREFIX, ParticipantSpec, participant_orders,
+};
 use qip_simulation_engine::tick_replay::{
     ExecutionModel, MultiLegPlan, ReplayOrder, ReplayRun, ReplaySession, ReplayTick,
 };
@@ -212,9 +215,44 @@ pub struct ShardRun {
     pub run: ReplayRun,
 }
 
+/// Read a participant spec from a JSON file, refusing a missing or
+/// malformed one by name rather than replaying without participants and
+/// saying they were simulated.
+pub fn read_participants(path: &Path) -> Result<ParticipantSpec> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        Error::invalid(format!(
+            "the participant spec at {} could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    serde_json::from_str(&text).map_err(|error| {
+        Error::schema(format!(
+            "the participant spec at {} is not one (seed, calm_half_spread_bps, agents): {error}",
+            path.display()
+        ))
+    })
+}
+
 /// Replay `shard` of `set` through a [`ReplaySession`] to the end.
 pub fn run(set: &ReplaySet, shard: Shard) -> Result<ShardRun> {
-    let part = split(set, shard)?;
+    run_with_participants(set, shard, None)
+}
+
+/// [`run`] with simulated participants (R12-TICK-9036): `spec`'s agents act
+/// on the shard's own tape and their orders are executed on the rebuilt
+/// books under queue position, latency and fees. Generated after the split,
+/// from the shard's ticks alone: an agent reads only its own instrument, so
+/// the union of shards carries every instrument's participants once.
+pub fn run_with_participants(
+    set: &ReplaySet,
+    shard: Shard,
+    spec: Option<&ParticipantSpec>,
+) -> Result<ShardRun> {
+    let mut part = split(set, shard)?;
+    if let Some(spec) = spec {
+        let added = participant_orders(spec, part.model, &part.ticks)?;
+        part.orders.extend(added);
+    }
     let mut instruments: BTreeSet<String> = part
         .ticks
         .iter()
@@ -278,6 +316,15 @@ pub fn lines(shard_run: &ShardRun) -> Vec<String> {
             plan.plan_id, plan.completed, plan.failed_leg, plan.unwind_pnl
         ));
     }
+    let simulated = run
+        .executions
+        .iter()
+        .filter(|execution| execution.order_id.starts_with(PARTICIPANT_PREFIX))
+        .count();
+    out.push(format!(
+        "participants: {simulated} simulated participant execution(s) of {}",
+        run.executions.len()
+    ));
     out.push("simulated over recorded history; paper only, nothing was sent".to_string());
     out
 }

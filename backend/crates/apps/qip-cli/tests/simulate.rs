@@ -309,3 +309,92 @@ fn a_shard_that_names_no_part_of_the_set_is_refused_rather_than_read_as_all_of_i
     }
     assert_eq!(seen.len(), 7);
 }
+
+/// The committed sharded job: `data/simulation/sharded-replay`.
+fn job(file: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../data/simulation/sharded-replay")
+        .join(file)
+}
+
+/// R12-TICK-9036: participants are simulated on the sharded replay path.
+/// Over the committed job, the participants' executions across n shards are
+/// the unsharded run's, none lost or doubled, and they exist at all.
+///
+/// The failure it prevents: `qip simulate` listed participant behaviour in
+/// its output without simulating it, so a sharded job's fills reflected the
+/// recorded tape only.
+///
+/// Mutation: in `run_with_participants` (src/simulate.rs) skip the
+/// `part.orders.extend(added)`: the premise assertion that participants
+/// executed fails.
+#[test]
+fn the_committed_sharded_job_simulates_participants_and_its_shards_union_to_the_whole() -> Result<()>
+{
+    let set = ReplaySet::read(&job("set.json"))?;
+    let spec = qip_cli::simulate::read_participants(&job("participants.json"))?;
+    let whole = qip_cli::simulate::run_with_participants(&set, Shard::WHOLE, Some(&spec))?;
+    let participant = |e: &ReplayExecution| e.order_id.starts_with("participant:");
+    assert!(
+        whole.run.executions.iter().any(participant),
+        "premise: the participants executed on the replayed books"
+    );
+    assert!(
+        set.orders.is_empty(),
+        "premise: the job holds no platform order, so every execution is a participant's"
+    );
+    for count in [2u32, 3] {
+        let mut union = Vec::new();
+        for index in 1..=count {
+            let part = qip_cli::simulate::run_with_participants(
+                &set,
+                Shard::new(index, count)?,
+                Some(&spec),
+            )?;
+            union.extend(part.run.executions);
+        }
+        assert_eq!(
+            by_order(union),
+            by_order(whole.run.executions.clone()),
+            "{count} shards did not reproduce the unsharded participants"
+        );
+    }
+    Ok(())
+}
+
+/// R12-TICK-9036: the shipped binary takes `--participants` and prints the
+/// simulated count; a spec that cannot be read is refused.
+#[test]
+fn the_qip_binary_simulates_the_committed_job_and_refuses_a_missing_spec() {
+    let qip = env!("CARGO_BIN_EXE_qip");
+    let out = std::process::Command::new(qip)
+        .arg("simulate")
+        .arg("--set")
+        .arg(job("set.json"))
+        .arg("--shard")
+        .arg("1/2")
+        .arg("--participants")
+        .arg(job("participants.json"))
+        .output()
+        .expect("qip runs");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("participants:"))
+        .expect("the run reports its participants");
+    assert!(!line.contains("participants: 0 "), "{line}");
+    let missing = std::process::Command::new(qip)
+        .arg("simulate")
+        .arg("--set")
+        .arg(job("set.json"))
+        .arg("--participants")
+        .arg(job("absent.json"))
+        .output()
+        .expect("qip runs");
+    assert!(!missing.status.success(), "a missing spec was ignored");
+}
