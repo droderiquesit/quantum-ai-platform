@@ -7489,6 +7489,10 @@ impl Platform {
             "declined paths due for pricing and left for a later cycle by the per-cycle cap",
         );
         metrics.describe(
+            names::OPPORTUNITIES_UNPRICED,
+            "opportunities seen and never graded, by reason: expired unworked, no mechanism, or an undirected claim",
+        );
+        metrics.describe(
             names::COUNTERFACTUALS_UNSCORED,
             "declined and filled paths that will never be priced, by reason",
         );
@@ -17816,6 +17820,10 @@ impl Platform {
                 continue;
             }
             unworked += 1;
+            self.telemetry.metrics.count(
+                names::OPPORTUNITIES_UNPRICED,
+                labels([("reason", "expired_unworked")]),
+            );
             let Some(subject) = opportunity.affected_objects.first().cloned().or_else(|| {
                 opportunity
                     .affected_entities
@@ -18260,6 +18268,12 @@ impl Platform {
                         }
                     ),
                 );
+                if matches!(predicted, Ok(false)) {
+                    self.telemetry.metrics.count(
+                        names::OPPORTUNITIES_UNPRICED,
+                        labels([("reason", "undirected_claim")]),
+                    );
+                }
                 let claim_written = matches!(predicted, Ok(true));
                 if let Err(error) = predicted {
                     outcome = outcome.with_problem(format!(
@@ -18452,14 +18466,20 @@ impl Platform {
                 }
                 outcome
             }
-            Ok(None) => StageOutcome::ran(
-                Stage::Reason,
-                report.findings.len(),
-                format!(
-                    "{} finding(s), but the anomaly implies no mechanism, so no hypothesis was formed",
-                    report.findings.len()
-                ),
-            ),
+            Ok(None) => {
+                self.telemetry.metrics.count(
+                    names::OPPORTUNITIES_UNPRICED,
+                    labels([("reason", "no_mechanism")]),
+                );
+                StageOutcome::ran(
+                    Stage::Reason,
+                    report.findings.len(),
+                    format!(
+                        "{} finding(s), but the anomaly implies no mechanism, so no hypothesis was formed",
+                        report.findings.len()
+                    ),
+                )
+            }
             Err(error) => StageOutcome::ran(
                 Stage::Reason,
                 report.findings.len(),
