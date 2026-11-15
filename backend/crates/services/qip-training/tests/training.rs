@@ -2308,3 +2308,55 @@ fn a_regime_switch_changes_the_ensemble_a_reading_comes_from_and_an_unregistered
     assert!(RegimeEnsembles::new(0).is_err());
     Ok(())
 }
+
+/// R12-MODEL-4021. A model the trainer really fitted that hangs on one split
+/// inside its data is refused by the perturbation suite, and a really fitted
+/// smooth model is admitted. The unit test in `adversarial.rs` attacks a
+/// hand-written closure; this one attacks what `LocalTrainer` produces, so a
+/// fitted stump whose threshold sits mid-data cannot pass because the
+/// closure was easier than the product.
+///
+/// Mutation: drop the single-feature check in `PerturbationReport::refusal`
+/// — the stump is admitted and the first assertion fails.
+#[test]
+fn a_really_fitted_one_split_model_is_refused_by_the_perturbation_suite_and_a_smooth_one_is_not()
+-> Result<()> {
+    use qip_training::adversarial::{PerturbationPolicy, attack};
+    let step = dataset_of(
+        "step",
+        400,
+        2,
+        601,
+        |row, _| {
+            if row[0] > 0.0 { 1.0 } else { 0.0 }
+        },
+    )?;
+    let stump = member(
+        "one-split",
+        ModelFamily::BoostedStumps {
+            rounds: 1,
+            learning_rate: 1.0,
+            min_samples_leaf: 12,
+            candidate_splits: 16,
+        },
+        &step,
+    )?;
+    let policy = PerturbationPolicy::default();
+    let report = attack(|r| stump.predict(r), step.rows(), &policy)?;
+    assert!(
+        report.fragile_by_feature[0] > 0,
+        "premise: the fitted split sits inside the data: {report:?}"
+    );
+    assert!(
+        report
+            .refusal(&policy)
+            .is_some_and(|why| why.contains("feature 0 alone")),
+        "{report:?}"
+    );
+
+    let smooth_data = linear_dataset("smooth", 400, 0.0, &[1.0, 0.5], 0.05, 602)?;
+    let smooth = member("smooth", ModelFamily::Linear { ridge: 0.0 }, &smooth_data)?;
+    let ok = attack(|r| smooth.predict(r), smooth_data.rows(), &policy)?;
+    assert!(ok.refusal(&policy).is_none(), "{ok:?}");
+    Ok(())
+}
