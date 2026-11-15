@@ -54,6 +54,11 @@ pub const RETIREMENT_CONSECUTIVE_FAILURES: usize = 3;
 /// A link, as re-estimation keys it: cause, effect and the mechanism claimed
 /// between them.
 ///
+/// The most evidence ids [`CausalGraph::weaken_on_contradiction`] leaves on one
+/// edge (R12-WORLD-6015). Provisional: a bound on retention, not a limit that
+/// trades or sizes anything.
+pub const MAX_EDGE_EVIDENCE: usize = 64;
+
 /// The mechanism is part of the key because evidence about a cost pass-through
 /// is not evidence about a sentiment spillover, even between the same pair.
 /// Ordered, and carried in a [`BTreeMap`], because a re-estimation report
@@ -1588,6 +1593,11 @@ impl CausalGraph {
         let before = edge.confidence;
         edge.confidence = before * factor;
         edge.evidence.push(evidence_id);
+        // Bounded: an edge contradicted once per event for as long as the
+        // platform runs would otherwise carry its whole history. The oldest
+        // citations go first; the confidence they lowered stays lowered.
+        let excess = edge.evidence.len().saturating_sub(MAX_EDGE_EVIDENCE);
+        edge.evidence.drain(..excess);
         Ok((before, edge.confidence))
     }
 
