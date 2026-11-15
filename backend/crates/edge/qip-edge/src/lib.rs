@@ -34,6 +34,7 @@
 //!   `tests/unevaluated.rs`.
 
 pub mod arbitrage;
+pub mod band;
 pub mod cell;
 /// The cell's own order conduct: a place-and-cancel pattern refused before
 /// the next order of its shape exists. The watch lives in
