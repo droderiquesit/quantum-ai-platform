@@ -1114,6 +1114,11 @@ pub mod names {
     /// Declined paths that were due for pricing and left for a later cycle because
     /// the per-cycle cap was reached. Counted rather than silently truncated.
     pub const COUNTERFACTUALS_DEFERRED: &str = "qip_counterfactuals_deferred_total";
+    /// Opportunities the platform saw and could not grade, by `reason`
+    /// (ADR 0148 decision 2): `expired_unworked`, `no_mechanism`,
+    /// `undirected_claim`. Counted, never zeroed: a figure nobody computed
+    /// would read as a miss that cost nothing. The label set is closed.
+    pub const OPPORTUNITIES_UNPRICED: &str = "qip_opportunities_unpriced_total";
     /// Declined paths that will never be priced, by `reason` — the working set was
     /// full, or the twin refused the evaluation. Since the LEARN stage also
     /// prices the orders a venue *filled*, `reason="fill_capacity"` counts a
