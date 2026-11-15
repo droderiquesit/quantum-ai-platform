@@ -74,6 +74,7 @@ use qip_transport::server::AdmissionClass;
 use super::acl::{self, Scope};
 use super::broker::Broker;
 use super::group::{DEFAULT_SESSION_TIMEOUT_NS, GroupCoordinator};
+use super::peer_accounts::PeerAccounts;
 use std::sync::Mutex;
 
 /// What the handler did with one request, for whoever records metrics.
@@ -198,6 +199,8 @@ pub struct Service {
     /// broker starts every group empty, and its bumped leader epoch makes
     /// every generation the previous incarnation handed out stale.
     groups: Mutex<GroupCoordinator>,
+    /// When set, certificate SANs replace bearer tokens on every route.
+    peer_accounts: Option<PeerAccounts>,
 }
 
 /// How a stream's partitions open their segment logs, given the stream's
@@ -249,12 +252,21 @@ impl Service {
             segments,
             schema_registry: RwLock::new(SchemaRegistry::new()),
             topicless,
+            peer_accounts: None,
         };
         // The lock embedded in qip-events: the broker admits against the lock
         // its image was built with and reads no file (ADR 0156 §1.2).
         let descriptors = qip_events::registry::locked_descriptors()?;
         service.apply_catalogue(catalogue, &descriptors)?;
         Ok(service)
+    }
+
+    /// Authorise by certificate SAN on every route; the bearer token is then
+    /// never consulted (R12-SEC-8100). For a composition root, before serving.
+    #[must_use]
+    pub fn with_peer_accounts(mut self, accounts: PeerAccounts) -> Self {
+        self.peer_accounts = Some(accounts);
+        self
     }
 
     /// Replace the consumer-group lease length. Resets every membership, so
@@ -395,19 +407,36 @@ impl Service {
         };
         seen.route = Some(route);
         let admin = matches!(route, Route::AdminIsolate | Route::AdminRelease);
-        let identity = match peer_identity.filter(|name| admin && !name.trim().is_empty()) {
-            Some(name) => name.to_string(),
-            None => match auth::verify(&self.identities, authorization) {
-                Ok(identity) => identity.as_str().to_string(),
+        let identity = if let Some(accounts) = &self.peer_accounts {
+            // Certificate authorisation replaces the token on every route:
+            // an absent or unmapped peer is refused, never sent to the
+            // bearer path (R12-SEC-8100).
+            match accounts.resolve(peer_identity) {
+                Ok(account) => account.identity.clone(),
                 Err(error) => {
                     seen.outcome = "unauthenticated";
                     return Handled {
-                        status: 401,
+                        status: 403,
                         body: error_body(&error),
                         observation: seen,
                     };
                 }
-            },
+            }
+        } else {
+            match peer_identity.filter(|name| admin && !name.trim().is_empty()) {
+                Some(name) => name.to_string(),
+                None => match auth::verify(&self.identities, authorization) {
+                    Ok(identity) => identity.as_str().to_string(),
+                    Err(error) => {
+                        seen.outcome = "unauthenticated";
+                        return Handled {
+                            status: 401,
+                            body: error_body(&error),
+                            observation: seen,
+                        };
+                    }
+                },
+            }
         };
         let answered = decode_request(route, body)
             .and_then(|request| self.answer(&identity, request, &mut seen))
@@ -466,6 +495,12 @@ impl Service {
         authorization: Option<&str>,
         peer_identity: Option<&str>,
     ) -> AdmissionClass {
+        if let Some(accounts) = &self.peer_accounts {
+            return match accounts.resolve(peer_identity) {
+                Ok(account) => self.class_of(&account.identity),
+                Err(_) => AdmissionClass::Bulk,
+            };
+        }
         let identity = match auth::verify(&self.identities, authorization) {
             Ok(identity) => identity.as_str().to_string(),
             Err(_) => match peer_identity.filter(|name| !name.trim().is_empty()) {
@@ -473,6 +508,11 @@ impl Service {
                 None => return AdmissionClass::Bulk,
             },
         };
+        self.class_of(&identity)
+    }
+
+    /// The class an identity's grants earn it.
+    fn class_of(&self, identity: &str) -> AdmissionClass {
         let grants = self
             .grants
             .read()

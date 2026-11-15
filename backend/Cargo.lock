@@ -340,6 +340,7 @@ dependencies = [
  "qip-ai",
  "qip-contracts",
  "qip-core",
+ "qip-tls",
  "serde",
  "serde_json",
 ]
