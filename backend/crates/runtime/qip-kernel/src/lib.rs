@@ -50,6 +50,7 @@ pub mod compute_routing;
 /// paths keep compiling.
 pub use qip_survival::confidence;
 pub mod config;
+pub mod cost_anomaly_job;
 pub mod cost_anomaly_tasks;
 pub mod counterfactual_alternatives;
 pub mod counterfactual_trial;
