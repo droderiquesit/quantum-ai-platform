@@ -837,6 +837,11 @@ impl EvolutionEngine {
             &window.bars,
             now,
         )?);
+        // The microstructure models the cells' folded residuals support,
+        // registered before the journal below so a restart rebuilds them
+        // (R12-MODEL-7022). Registers only; a refusal is a declined entry,
+        // never a stopped round.
+        self.learning.train_microstructure_models(platform, now)?;
         // Every card the round registered, evaluated, drifted, promoted or
         // rolled back, on the log, so a restart rebuilds it (R12-MODEL-9003).
         platform.journal_model_registry(self.learning.registry(), now)?;

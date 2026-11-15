@@ -1408,6 +1408,25 @@ impl LearningDesk {
         &self.registry
     }
 
+    /// Train and register the microstructure models the cells' folded
+    /// residuals on `platform`'s log support (R12-MODEL-7022), into this
+    /// desk's registry so the round's journal carries them. Registers only:
+    /// promotion needs a recorded trial and then a verified release pack
+    /// (ADR 0480).
+    pub fn train_microstructure_models(
+        &mut self,
+        platform: &Platform,
+        now: Timestamp,
+    ) -> Result<qip_kernel::microstructure_training::MicrostructureTrainingPass> {
+        qip_kernel::microstructure_training::train_and_register_all(
+            platform.event_log(),
+            &mut self.registry,
+            &self.policy,
+            "qip-deepbrain/microstructure-trainer",
+            now,
+        )
+    }
+
     /// The registry, mutably, for the governed acts this module does not
     /// perform itself -- promotion above all. Kept separate from `registry`
     /// so that "this desk fitted a model" and "somebody staged it for
