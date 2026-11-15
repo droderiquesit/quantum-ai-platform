@@ -106,6 +106,7 @@ pub fn capital_subject(strategy: &StrategyId, cell: &str) -> String {
         requested_by: String::new(),
         exposure: None,
         drawdown: None,
+        authority: None,
     }
     .subject()
 }
@@ -807,6 +808,11 @@ pub struct CentralPlane {
     /// (R12-CAPITAL-4085, ADR 0229). Empty until a caller hands one over, and
     /// an agent whose figure is absent abstains.
     society_inputs: qip_capital::society::SocietyInputs,
+    /// The authority block every grant this plane issues states
+    /// (R12-GOV-6120, ADR 0155 section 6, step one: the issuer states it
+    /// before any cell is armed to require it). `None` until configured, so
+    /// an unconfigured plane signs what it always signed.
+    authority: Option<qip_contracts::capital::AuthorityBounds>,
     /// Every agent's plan for the last allocation, recorded before the plan
     /// acted on was chosen. Behind a mutex because `allocate` is a read of
     /// the plane: recording what it was told is not a change to its state.
@@ -1075,6 +1081,7 @@ impl CentralPlane {
                 .with_promotion_eligibility(config.promotion_eligibility.clone()),
             allocator: CapitalAllocator::new(limits, config.drawdown.clone()),
             society_inputs: qip_capital::society::SocietyInputs::default(),
+            authority: None,
             society: std::sync::Mutex::new(Vec::new()),
             last_grants: std::sync::Mutex::new(None),
             coordinator_claims: BTreeMap::new(),
@@ -2033,6 +2040,17 @@ impl CentralPlane {
         Ok(settled)
     }
 
+    /// State `authority` on every grant issued from now on. Its leverage must
+    /// equal the exposure terms' leverage; a difference is refused when a
+    /// grant is signed, not here, because the figure it is measured against
+    /// is the issuer's.
+    pub fn set_authority_bounds(
+        &mut self,
+        authority: Option<qip_contracts::capital::AuthorityBounds>,
+    ) {
+        self.authority = authority;
+    }
+
     /// The figures on record the capital society reads from the next
     /// allocation on. Only narrows: see [`qip_capital::society::settle`].
     pub fn set_society_inputs(&mut self, inputs: qip_capital::society::SocietyInputs) {
@@ -2574,6 +2592,9 @@ impl CentralPlane {
                     allocation.notional
                 ))
             })?;
+        if let Some(authority) = &self.authority {
+            terms = terms.with_authority(authority.clone());
+        }
         let envelope = self.issuer.issue(&terms, approval, now)?;
         // Verified immediately rather than trusted: the issuer is the boundary
         // that decides whether a cell may commit capital, and a grant that does
@@ -2594,6 +2615,7 @@ impl CentralPlane {
             // payload comparison below covers them (R12-CAPITAL-4088).
             exposure: envelope.exposure().cloned(),
             drawdown: envelope.drawdown().cloned(),
+            authority: envelope.bounds().cloned(),
         };
         let approved =
             self.compliance

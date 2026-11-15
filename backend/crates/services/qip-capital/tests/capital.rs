@@ -436,6 +436,7 @@ fn terms(gross: Decimal, validity: Duration) -> EnvelopeTerms {
         validity,
         exposure: qip_capital::ExposureTerms::default(),
         drawdown_of_loss: qip_capital::envelope::DEFAULT_DRAWDOWN_OF_LOSS,
+        authority: None,
     }
 }
 
@@ -1942,5 +1943,56 @@ fn a_capital_agent_plan_above_the_allocators_line_is_clipped_to_it() -> Result<(
         "an agent widened a line"
     );
     assert_eq!(settled.allocated(), plan.allocated());
+    Ok(())
+}
+
+/// R12-GOV-6120: terms that state an authority block sign an envelope that
+/// carries it, and the signature covers it — a block stripped after signing
+/// is a different payload and must not verify.
+#[test]
+fn terms_stating_an_authority_block_sign_an_envelope_carrying_it() -> Result<()> {
+    use qip_contracts::capital::AuthorityBounds;
+    let issuer = issuer()?;
+    let bounds = AuthorityBounds::new(
+        qip_capital::ExposureTerms::default().max_leverage,
+        vec!["equity".to_string()],
+        vec!["agency".to_string()],
+    )?;
+    let approval = approval(start())?;
+    let plain = issuer.issue(
+        &terms(dec!("10000"), Duration::from_hours(1)),
+        &approval,
+        start(),
+    )?;
+    assert!(plain.bounds().is_none(), "premise: no block unless stated");
+    let stated = issuer.issue(
+        &terms(dec!("10000"), Duration::from_hours(1)).with_authority(bounds.clone()),
+        &approval,
+        start(),
+    )?;
+    assert_eq!(stated.bounds(), Some(&bounds));
+    issuer.verify(&stated, start())?;
+    assert_ne!(stated.signing_payload(), plain.signing_payload());
+    Ok(())
+}
+
+#[test]
+fn terms_stating_a_leverage_that_contradicts_the_exposure_terms_are_refused() -> Result<()> {
+    use qip_contracts::capital::AuthorityBounds;
+    let issuer = issuer()?;
+    let leverage = qip_capital::ExposureTerms::default().max_leverage + dec!("1");
+    let bounds = AuthorityBounds::new(leverage, vec!["equity".to_string()], vec![])?;
+    let approval = approval(start())?;
+    let refusal = issuer
+        .issue(
+            &terms(dec!("10000"), Duration::from_hours(1)).with_authority(bounds),
+            &approval,
+            start(),
+        )
+        .unwrap_err();
+    assert!(
+        refusal.to_string().contains("one leverage measure"),
+        "{refusal}"
+    );
     Ok(())
 }
