@@ -7,7 +7,7 @@ the dev tfvars, both protected. **Not validated, not planned, not applied.**
 
 ```hcl
 variable "enable_replay_pool" {
-  description = "Create the replay shard Cloud Run Job (R12-TICK-8110, ADR 0611). Off by default; provisional cost about 105 USD a month, the owner's figure."
+  description = "Create the replay shard Cloud Run Job (R12-TICK-8110, ADR 0609 part 3). Off by default; provisional cost about 105 USD a month, the owner's figure."
   type        = bool
   default     = false
 }

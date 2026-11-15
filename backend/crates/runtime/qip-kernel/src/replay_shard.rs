@@ -1,5 +1,5 @@
 //! Disjoint replay shards and the merge of their live-versus-counterfactual
-//! totals (R12-TICK-8110; ADR 0611).
+//! totals (R12-TICK-8110; ADR 0609 part 3).
 //!
 //! A replay over archived segments is a fold: each segment yields the
 //! comparison of what the live path did against what a counterfactual would
@@ -12,7 +12,7 @@
 //!
 //! It does not read the archive and it does not score: which crate reads
 //! `qip-storage`'s `ArchiveReader` into the kernel's `score_declined` and
-//! `score_filled` inputs is decided in ADR 0611, and that seam is not built.
+//! `score_filled` inputs is decided in ADR 0609 part 3, and that seam is not built.
 
 use qip_core::error::{Error, Result};
 
