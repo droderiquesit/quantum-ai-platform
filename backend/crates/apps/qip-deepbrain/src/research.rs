@@ -75,9 +75,9 @@ use qip_expansion::desk::{
 use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
     causal_driver_universe, contested_evidence, contradictions, coverage, cross_domain_links,
-    incompetent_specialists, low_confidence, missing_causal_links, model_drift, model_error_rate,
-    reconciliation_breaks, refusal_clusters, repeated_vetoes_priced, split_by_wanting,
-    theory_contradictions, unexplained_anomalies, unexplained_residuals_priced,
+    failed_sagas, incompetent_specialists, low_confidence, missing_causal_links, model_drift,
+    model_error_rate, reconciliation_breaks, refusal_clusters, repeated_vetoes_priced,
+    split_by_wanting, theory_contradictions, unexplained_anomalies, unexplained_residuals_priced,
     world_state_expired,
 };
 use qip_expansion::executor::{
@@ -988,6 +988,8 @@ pub struct ResearchRound {
     /// why the log could not be read, where it could not.
     pub reconciliation_breaks: usize,
     pub reconciliation_breaks_refused: Option<String>,
+    pub failed_sagas: usize,
+    pub failed_sagas_refused: Option<String>,
     /// Claim keys the world fabric held an unresolved contest on when the
     /// sweep read it (R12-EXPAND-6011), and of their subjects, how many the
     /// causal graph holds no live claim into.
@@ -1760,6 +1762,7 @@ pub struct ResearchLoop {
     /// Reconciliation-break records already read off the log, in log order
     /// (R12-EXPAND-6066), so each halt is raised once.
     breaks_seen: usize,
+    sagas_seen: usize,
     issued: u64,
     fills_read: usize,
     slippage_read: usize,
@@ -2021,6 +2024,7 @@ impl ResearchLoop {
             surprises_seen: 0,
             misses_seen: 0,
             breaks_seen: 0,
+            sagas_seen: 0,
             issued: 0,
             fills_read: 0,
             slippage_read: 0,
@@ -2720,6 +2724,21 @@ impl ResearchLoop {
                 observations.extend(reconciliation_breaks(&fresh));
             }
             Err(error) => round.reconciliation_breaks_refused = Some(error.message().to_string()),
+        }
+        // R12-EXPAND-6066: sagas that ended without completing, read the same
+        // way; one execution gap per venue.
+        match platform.saga_outcome_records() {
+            Ok(records) => {
+                let fresh: Vec<(String, String)> = records
+                    .iter()
+                    .skip(self.sagas_seen)
+                    .map(|r| (r.venue.clone(), r.record_id.clone()))
+                    .collect();
+                self.sagas_seen = records.len();
+                round.failed_sagas = fresh.len();
+                observations.extend(failed_sagas(&fresh));
+            }
+            Err(error) => round.failed_sagas_refused = Some(error.message().to_string()),
         }
         let deltas = match platform.knowledge_deltas() {
             Ok(deltas) => deltas,
