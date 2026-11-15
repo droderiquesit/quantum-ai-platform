@@ -1,0 +1,16 @@
+{"lane":"37","rows":[
+{"id":"R12-RISK-4122","outcome":"BUILT","claims_requirement_met":true,
+ "what":"The survival governor now records every world the book fails at the tolerance (TailResponse.failed), keeping the reserve as the worst world's alone. The cycle's DECIDE detail names model-failure, asserted in a cycle test.",
+ "remains":"",
+ "tests":["backend/crates/runtime/qip-kernel/tests/stress.rs::a_cycle_sizing_beside_a_book_that_fails_the_model_failure_world_withholds_a_reserve_covering_it","backend/crates/services/qip-survival/src/survival.rs::tests::every_failed_world_is_recorded_and_the_reserve_is_the_worst_ones_alone"],
+ "test_command":"cargo test -p qip-survival; cargo test -p qip-kernel --test stress",
+ "mutations":["survival.rs, failed filtered to worst world only: left [\"synthetic-1\"] right [\"synthetic-1\", \"model-failure\"]; stress.rs:1606 panicked","survival.rs, narrowing loop disabled: stress.rs:1611 \"DECIDE's detail never names model-failure\""],
+ "commit":"9b489b78"},
+{"id":"R12-RISK-4121","outcome":"SLICE","claims_requirement_met":false,
+ "what":"The surviving branch is proved on the cycle record: counterparty-failure is the worst world, the book survives it, and failed is empty with no reserve or 'also fails' line. The failing branch is unreachable by a long paper book because the risk gate refuses gross above equity.",
+ "remains":"The failing branch is not shown through DECIDE; it needs an owner reading of the check ('equity above the survival floor OR a recorded response') or a book that honestly reaches gross above equity.",
+ "tests":["backend/crates/runtime/qip-kernel/tests/stress.rs::a_cycle_sizing_beside_a_book_whose_worst_world_is_counterparty_failure_records_that_world_as_survived"],
+ "test_command":"cargo test -p qip-kernel --test stress",
+ "mutations":["Not mutation-verified for the new failed.is_empty() assertion; the shared governor mutations above guard the failed list."],
+ "commit":"9b489b78"}
+]}
