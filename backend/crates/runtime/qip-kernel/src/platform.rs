@@ -824,6 +824,11 @@ pub struct Platform {
     /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
     /// venues one cycle's trades name.
     cycle_order_flow: BTreeMap<(String, String), qip_world_model::order_flow::FlowObservation>,
+    /// The buy-positive imbalance per subject of the flow
+    /// `understand_federation` took this cycle, kept for the forecast
+    /// lattice that runs after it (R12-WORLD-3085, ADR 0632). Replaced, never
+    /// accumulated, on every UNDERSTAND pass.
+    lattice_flow_imbalance: BTreeMap<String, f64>,
     /// The active-sensing requests the latest federation pass issued, each
     /// with the disagreement spread behind it in basis points (ADR 0158
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
@@ -6880,6 +6885,7 @@ impl Platform {
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
             cycle_order_flow: BTreeMap::new(),
+            lattice_flow_imbalance: BTreeMap::new(),
             federation_requests: Vec::new(),
             decision_uncertainties: Vec::new(),
             cycle_second_order: None,
@@ -16010,6 +16016,7 @@ impl Platform {
                 )
             })
             .collect();
+        let lattice_surprises = macro_surprises.clone();
         let inputs = NowInputs {
             cycle: self.cycle,
             home_region: HOME_REGION.to_string(),
@@ -16081,6 +16088,22 @@ impl Platform {
                 ));
             }
         }
+        // The row specialists' signals, read at this pass and consumed by it
+        // (ADR 0632): the live causal claims and the pending catalyst from
+        // the world model as known at `now`, and the flow `understand_federation`
+        // took. Set every pass, so a pass with none states none.
+        let subjects: Vec<String> = targets.iter().map(|t| t.subject.clone()).collect();
+        let mut signals = {
+            let world = self.world.read();
+            crate::lattice_stage::signals_from_world(
+                world.causal(),
+                &lattice_surprises,
+                &subjects,
+                now,
+            )
+        };
+        signals.flow_imbalance = std::mem::take(&mut self.lattice_flow_imbalance);
+        self.lattice.set_signals(signals);
         let lattice = self.lattice.run(
             LatticeInputs {
                 cycle: self.cycle,
@@ -16672,6 +16695,11 @@ impl Platform {
         let surprises = self.fundamental_surprises(now);
         // This cycle's flow, taken so the next cycle starts empty: the
         // member reads one cycle's prints, never an accumulating history.
+        self.lattice_flow_imbalance = crate::lattice_stage::flow_imbalance_by_subject(
+            self.cycle_order_flow
+                .iter()
+                .map(|((subject, _), flow)| (subject.as_str(), flow)),
+        );
         let mut flows: BTreeMap<String, Vec<qip_world_model::order_flow::FlowObservation>> =
             BTreeMap::new();
         for ((subject, _), flow) in std::mem::take(&mut self.cycle_order_flow) {
