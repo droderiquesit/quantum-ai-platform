@@ -1060,3 +1060,78 @@ fn government_and_corporate_debt_and_credit_trade_on_paper_and_each_debt_class_i
     }
     Ok(())
 }
+
+/// R12-COVERAGE-5104, ADR 0658: an event contract is a payoff bounded to one
+/// unit. One assembles in the Prediction class and trades on paper; a price
+/// above one is refused at the object, not clamped; and withdrawing the
+/// Prediction record refuses the instrument at assembly.
+///
+/// Mutation: drop the `EventContract` arm's price bound in
+/// `FinancialObject::validate`, or map `EventContract` to another class in
+/// `InstrumentType::asset_class`, and this fails.
+#[test]
+fn an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bounded_to_one_unit()
+-> Result<()> {
+    let event = |id: &str, price| -> Result<FinancialObject> {
+        FinancialObject::builder(
+            ObjectId::from_string(id),
+            id,
+            InstrumentType::EventContract,
+            liquidity(),
+        )
+        .venue("XNYS")
+        .sector(Sector::InformationTechnology)
+        .price(price)
+        .provenance(Provenance::synthetic("asset-class-test", start()))
+        .build(start())
+    };
+
+    let refused = event("obj-EVT-HIGH", dec!("1.5"));
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.message().contains("one-unit payoff bound")),
+        "a price above the one-unit payoff was not refused: {refused:?}"
+    );
+
+    let contract = event("obj-EVT", dec!("0.4"))?;
+    assert_eq!(contract.asset_class, AssetClass::Prediction);
+    let mut platform = assemble(universe_of(vec![
+        object("obj-AAA", InstrumentType::CommonStock, None)?,
+        contract.clone(),
+    ])?)?;
+    assert!(
+        platform
+            .asset_class_registry()
+            .is_registered(AssetClass::Prediction)
+    );
+    let order = platform.order_for(
+        ObjectId::from_string("obj-EVT"),
+        qip_execution_engine::order::Side::Buy,
+        dec!("10"),
+        dec!("0.4"),
+        "prop-event",
+        vec!["hyp-event".to_string()],
+        start(),
+    )?;
+    platform.submit_order(order, start())?;
+    let fills = platform.orders().fills();
+    assert!(
+        !fills.is_empty(),
+        "the event contract did not fill on paper"
+    );
+    assert!(fills.iter().all(|fill| fill.simulated));
+
+    // Withdraw the class: assembly refuses the instrument naming it.
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let withdrawn = qip_kernel::asset_class_registry::AssetClassRegistry::shipped()?
+        .without(AssetClass::Prediction)?;
+    assert!(!withdrawn.is_registered(AssetClass::Prediction));
+    assert!(
+        withdrawn.admit(&contract).is_err(),
+        "an event contract was admitted with the Prediction record withdrawn"
+    );
+    drop(context);
+    Ok(())
+}
