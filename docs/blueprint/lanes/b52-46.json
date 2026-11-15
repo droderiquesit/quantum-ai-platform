@@ -1,0 +1,41 @@
+{
+ "lane": "46",
+ "nothing_compiled": true,
+ "note": "Nothing was compiled, built, tested or linted (owner instruction 2026-11-15). Every row is built_unverified; the pipeline is the first to build it.",
+ "rows": [
+  {
+   "id": "R12-WORLD-10187",
+   "outcome": "SLICE",
+   "built_unverified": true,
+   "claims_requirement_met": false,
+   "what": "The thesis median clamp to [-0.5,0.5] is replaced by thesis_median::reversion_median, which refuses non-finite or out-of-range values so no thesis is sized. ADR 0612 records the decision and the bound as provisional.",
+   "remains": "Unit risk: Anomaly observed/expected can be price levels, so refusal may stop theses for those detectors; a person decides whether the median becomes a relative return. DemandForecast still not a Forecast; one expired thesis still refuses the batch; epistemic variance still variance/n.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/thesis_median.rs::tests::a_reversion_inside_the_bound_is_passed_through_unchanged",
+    "...::a_reversion_beyond_the_bound_is_refused_in_both_directions_not_clamped",
+    "...::a_non_finite_measurement_is_refused"
+   ],
+   "test_command": "cargo test -p qip-kernel thesis_median (not run)",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "b697884a"
+  },
+  {
+   "id": "R12-WORLD-9023",
+   "outcome": "SLICE",
+   "built_unverified": true,
+   "claims_requirement_met": false,
+   "what": "qip-edge-node cell_configuration now calls with_edgeless_signals_refused beside the already-armed 25 bp net-edge margin, so an unpriced entry is refused. ADR 0613 records it; a source-reading test guards the call.",
+   "remains": "No committed strategy declares a model edge; forecast horizon is seconds-scale; continuation past the capital envelope expiry unproven; warm-backup clause declined by ADR 0195. Until a strategy declares an edge the node enters nothing; other node tests may see refusals.",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/tests/edgeless_refused_armed.rs::the_node_refuses_a_directional_signal_that_states_no_edge"
+   ],
+   "test_command": "cargo test -p qip-edge-node --test edgeless_refused_armed (not run)",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "c64d0fbf"
+  }
+ ]
+}
