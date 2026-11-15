@@ -125,6 +125,12 @@ pub struct CapitalRequest {
     /// (ADR 0126), carried into the approved envelope for the same reason
     /// as `exposure`: the issuing plane compares the two payloads.
     pub drawdown: Option<qip_contracts::DrawdownBounds>,
+    /// The product classes, regulated functions and leverage the grant is
+    /// asked under (R12-GOV-6120, ADR 0155 section 5), carried into the
+    /// approved envelope so the issuing plane's payload comparison covers
+    /// the authority claim too: an approval for a bounded grant cannot be
+    /// read as one for the same money in any class.
+    pub authority: Option<qip_contracts::capital::AuthorityBounds>,
 }
 
 impl CapitalRequest {
@@ -446,6 +452,10 @@ impl ApprovalChain {
         let envelope = match &request.drawdown {
             None => envelope,
             Some(drawdown) => envelope.with_drawdown(drawdown.clone())?,
+        };
+        let envelope = match &request.authority {
+            None => envelope,
+            Some(authority) => envelope.bound(authority.clone())?,
         };
         Ok(envelope.signed(signature))
     }

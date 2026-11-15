@@ -41,6 +41,7 @@ fn request(gross: Decimal) -> CapitalRequest {
         requested_by: "r.mensah".to_string(),
         exposure: None,
         drawdown: None,
+        authority: None,
     }
 }
 

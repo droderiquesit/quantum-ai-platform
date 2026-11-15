@@ -1576,6 +1576,7 @@ fn approved_grant_outside_the_plane(
         requested_by: "research.desk".to_string(),
         exposure: envelope.exposure().cloned(),
         drawdown: envelope.drawdown().cloned(),
+        authority: envelope.bounds().cloned(),
     };
     let mut chain = ApprovalChain::new(Decimal::ZERO, key.clone())?;
     let approved = chain.grant(&request, &approval, &credentials(now)?, now)?;
@@ -6951,6 +6952,7 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
         requested_by: grant.requested_by.clone(),
         exposure: envelope.exposure().cloned(),
         drawdown: envelope.drawdown().cloned(),
+        authority: envelope.bounds().cloned(),
     };
     assert_eq!(grant.subject, request.subject());
     assert_eq!(
@@ -10469,5 +10471,44 @@ fn the_microstructure_model_is_rebuilt_from_the_log_on_a_restart() -> Result<()>
         "a re-sent delta was folded again"
     );
     let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+/// R12-GOV-6120, ADR 0155 section 6 step one: a plane configured with an
+/// authority block states it on the envelope it signs, and the approval
+/// chain's own record carries the same block — the payload comparison inside
+/// `issue_narrowed` passed, so the claim is covered by both signatures. An
+/// unconfigured plane states none, so nothing arms by accident.
+#[test]
+fn a_plane_configured_with_an_authority_block_states_it_on_the_grant_it_issues() -> Result<()> {
+    use qip_contracts::capital::AuthorityBounds;
+    let id = strategy();
+
+    let mut plain = plane()?;
+    register(&mut plain, &id, CELL)?;
+    walk_to(&mut plain, &id, GateStage::Pilot)?;
+    let unstated = issue(&mut plain, &id, CELL, start())?;
+    assert!(
+        unstated.envelope().bounds().is_none(),
+        "premise: an unconfigured plane states no block"
+    );
+
+    let mut stating = plane()?;
+    let leverage = unstated
+        .envelope()
+        .exposure()
+        .map(|e| e.max_leverage)
+        .ok_or_else(|| qip_core::Error::not_found("the exposure bounds"))?;
+    let bounds = AuthorityBounds::new(
+        leverage,
+        vec!["equity".to_string()],
+        vec!["agency".to_string()],
+    )?;
+    stating.set_authority_bounds(Some(bounds.clone()));
+    register(&mut stating, &id, CELL)?;
+    walk_to(&mut stating, &id, GateStage::Pilot)?;
+    let stated = issue(&mut stating, &id, CELL, start())?;
+    assert_eq!(stated.envelope().bounds(), Some(&bounds));
+    assert_eq!(stated.approved().envelope().bounds(), Some(&bounds));
     Ok(())
 }
