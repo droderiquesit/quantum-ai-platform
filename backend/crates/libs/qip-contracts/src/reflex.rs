@@ -180,6 +180,15 @@ pub enum Decision {
         /// entries sealed before the field existed.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         grounds: Vec<String>,
+        /// The multi-region cycle this order is a leg of (R12-LEDGER-10114,
+        /// ADR 0652), as `CycleCommitted` names it. Without it the P1 stream
+        /// said which orders were sent and filled but not which of them were
+        /// one cycle, so a cycle that filled one leg and lost the other was
+        /// two unrelated orders to the ledger. Absent, and so not written,
+        /// for an order that is no cycle's leg and on entries sealed before
+        /// the field existed, so a sealed chain still verifies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cycle_id: Option<String>,
     },
     /// The venue reported part or all of an order traded, and the cell
     /// booked it.
