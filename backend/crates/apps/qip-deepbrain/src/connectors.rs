@@ -51,7 +51,7 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_data_finder::admission::{AdmittedSource, CatalogueEntry, StandingAdmission};
-use qip_data_finder::reference::{DataReference, RevisionCheck, SourceOrigin};
+use qip_data_finder::reference::{DataPeriod, DataReference, RevisionCheck, SourceOrigin};
 use qip_data_finder::refetch::{ReFetchDriver, ReFetchFinding, TransportRefetcher};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
@@ -64,7 +64,7 @@ use qip_market_ingestion::connector::transport::SourceTransport;
 use qip_market_ingestion::connector_feed::ConnectorFeed;
 use qip_storage::BlobStore;
 use qip_storage::tick_capture::{RetentionRight, TickLakeWriter};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The variable naming what the tick lake may keep per licensing class, as
@@ -569,6 +569,48 @@ impl ConnectorArm {
         budget: usize,
         at: Timestamp,
     ) -> Result<Vec<ReFetchFinding>> {
+        self.refetch_matching(platform, budget, at, |_| true)
+    }
+
+    /// Ask the source again for the extents a replay of a past document
+    /// touches (R12-DATA-8018): the references from this source whose period
+    /// overlaps `period` and which name at least one of `subjects`. The
+    /// served bytes are hashed and compared with the reference's hash, never
+    /// stored, so a replay reads the world as the provider serves it now and
+    /// says whether that differs from what was first read, instead of
+    /// reading a copy. Not on a cadence: the replay is the trigger.
+    ///
+    /// An empty `subjects` set is refused: a replay that names nothing would
+    /// re-fetch everything the source ever served, which is a corpus pull.
+    pub fn refetch_for_replay(
+        &mut self,
+        platform: &mut Platform,
+        subjects: &BTreeSet<String>,
+        period: DataPeriod,
+        at: Timestamp,
+    ) -> Result<Vec<ReFetchFinding>> {
+        if subjects.is_empty() {
+            return Err(Error::invalid(
+                "a replay re-fetch names the subjects it touches; an empty set would re-fetch \
+                 every extent the source ever served, which copies a corpus by another route",
+            ));
+        }
+        self.refetch_matching(platform, REFETCH_BUDGET, at, |reference| {
+            reference.range().overlaps(&period)
+                && reference
+                    .symbols()
+                    .iter()
+                    .any(|symbol| subjects.contains(symbol))
+        })
+    }
+
+    fn refetch_matching(
+        &mut self,
+        platform: &mut Platform,
+        budget: usize,
+        at: Timestamp,
+        wanted: impl Fn(&DataReference) -> bool,
+    ) -> Result<Vec<ReFetchFinding>> {
         if let Err(refusal) = self
             .admission
             .check(at)
@@ -586,6 +628,7 @@ impl ConnectorArm {
                         reference.origin(),
                         SourceOrigin::Discovered | SourceOrigin::CatalogueAdmitted
                     )
+                    && wanted(reference)
             })
             .cloned()
             .collect();

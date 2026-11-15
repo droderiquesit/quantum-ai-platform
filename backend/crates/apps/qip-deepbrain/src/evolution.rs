@@ -590,6 +590,25 @@ impl EvolutionEngine {
         Ok(Some(findings))
     }
 
+    /// A replay of a past document asks every arm's source for the extents it
+    /// touches again and compares their hash with the one first read
+    /// (R12-DATA-8018). Not on the cadence of [`Self::maybe_refetch`]: the
+    /// replay is the trigger, so a replay never reads a stored copy of what a
+    /// provider can serve again. A licence refusal stops the pass.
+    pub fn refetch_for_replay(
+        &mut self,
+        platform: &mut Platform,
+        subjects: &std::collections::BTreeSet<String>,
+        period: qip_data_finder::reference::DataPeriod,
+        now: Timestamp,
+    ) -> Result<Vec<qip_data_finder::refetch::ReFetchFinding>> {
+        let mut findings = Vec::new();
+        for arm in &mut self.connectors {
+            findings.extend(arm.refetch_for_replay(platform, subjects, period, now)?);
+        }
+        Ok(findings)
+    }
+
     /// Score every connector arm against the own stream every `every`
     /// cycles; zero attaches nothing, so nothing is observed either.
     pub fn with_source_alpha(mut self, every: u64) -> Self {
@@ -4266,6 +4285,74 @@ mod tests {
             r#"{{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"{}"}}"#,
             at.to_rfc3339()
         )
+    }
+
+    /// R12-DATA-8018: a replay of a past document is what triggers the
+    /// re-fetch, not the cadence (`with_refetch` is never set here). The
+    /// source is asked again for the extent the replay touches and the hash
+    /// is compared with the one first read; a replay naming a subject no
+    /// reference covers, or a period none overlaps, re-fetches nothing; and
+    /// an empty subject set is refused. Mutation: drop the
+    /// `symbols().iter().any(..)` clause in `refetch_for_replay` — the
+    /// non-matching-subject assertion fails.
+    #[test]
+    fn a_replay_of_a_past_document_refetches_it_by_its_manifest_and_compares_the_hash() -> Result<()>
+    {
+        use qip_data_finder::reference::RevisionCheck;
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+        let mut platform = platform()?;
+        let mut engine =
+            engine(0).with_connector(scripted_coinbase_arm(now, vec![ok(), ok(), ok()])?);
+        engine.sense(&mut platform, now)?;
+        let reference = platform
+            .reference_ledger()
+            .references()
+            .next()
+            .cloned()
+            .ok_or_else(|| Error::not_found("premise: the poll was referenced"))?;
+        let subjects: std::collections::BTreeSet<String> = reference.symbols().clone();
+        let period = reference.range();
+
+        let other: std::collections::BTreeSet<String> =
+            std::iter::once("not-a-subject".to_string()).collect();
+        assert!(
+            engine
+                .refetch_for_replay(&mut platform, &other, period, now)?
+                .is_empty(),
+            "a replay touching another subject re-fetches nothing"
+        );
+        assert!(
+            engine
+                .refetch_for_replay(
+                    &mut platform,
+                    &std::collections::BTreeSet::new(),
+                    period,
+                    now
+                )
+                .is_err(),
+            "an empty subject set is refused"
+        );
+        let findings = engine.refetch_for_replay(&mut platform, &subjects, period, now)?;
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, Some(RevisionCheck::Unchanged));
+
+        // The provider has revised the document since: the same replay now
+        // reads a different hash, and says so.
+        let later = now.saturating_add(Duration::from_mins(5));
+        let mut platform = self::platform()?;
+        let mut engine = engine_with_every(0).with_connector(scripted_coinbase_arm(
+            now,
+            vec![ok(), ok(), RecordedAnswer::json(200, ticker_body(later))],
+        )?);
+        engine.sense(&mut platform, now)?;
+        let findings = engine.refetch_for_replay(&mut platform, &subjects, period, now)?;
+        assert!(
+            matches!(findings[0].check, Some(RevisionCheck::Revised { .. })),
+            "{findings:?}"
+        );
+        Ok(())
     }
 
     /// R12-DATA-1037, through the engine `main.rs` builds and the cadence
