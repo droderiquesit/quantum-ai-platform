@@ -277,7 +277,10 @@ impl ConnectorArm {
         let class = qip_market_ingestion::connector_feed::shipped_class(source_id)?;
         let (admission, decision) =
             StandingAdmission::open(registrations.clone(), source_id, class, at)?;
-        let mut feed = ConnectorFeed::open(source_id, base_url, seed, at)?;
+        // Every fetch this arm's platform accepts leaves a version-2 manifest
+        // (R12-DATA-8013), collected by `drain_document_manifests`.
+        let mut feed = ConnectorFeed::open(source_id, base_url, seed, at)?
+            .with_document_manifests(source_id, qip_contracts::governance::Usage::Research);
         // `feed.manifest()` is borrowed by `from_decision`'s error path too,
         // so the failure is matched rather than `?`-propagated: a refusal
         // here leaves the socket `ConnectorFeed::open` already holds with no
@@ -357,7 +360,12 @@ impl ConnectorArm {
             manifest.licensing,
             at,
         )?;
-        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, seed, at)?;
+        let manifest_source_id = manifest.source_id.clone();
+        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, seed, at)?
+            .with_document_manifests(
+                manifest_source_id,
+                qip_contracts::governance::Usage::Research,
+            );
         // Released on the way out, same as `Self::open` above: a refusal
         // here has no other path back to this stack frame, and unlike
         // `Self::open` the transport this constructor is handed is the one
@@ -456,6 +464,12 @@ impl ConnectorArm {
 
     pub fn source_id(&self) -> &str {
         self.admitted.source_id()
+    }
+
+    /// The version-2 manifests of the fetches the platform accepted since the
+    /// last call (R12-DATA-8013).
+    pub fn drain_document_manifests(&mut self) -> Vec<qip_financial::manifest::SourceManifest> {
+        self.feed.drain_document_manifests()
     }
 
     pub fn admitted(&self) -> &AdmittedSource {

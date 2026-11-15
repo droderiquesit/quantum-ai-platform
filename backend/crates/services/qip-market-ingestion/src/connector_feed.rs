@@ -201,7 +201,19 @@ pub struct ConnectorFeed {
     /// each beside its `(pack bytes, body bytes)` footprint, oldest first,
     /// bounded at [`PENDING_PACK_CAPACITY`] (R12-DATA-1041).
     pending_packs: VecDeque<PendingPack>,
+    /// What this feed's fetches are entitled to, when the root states it
+    /// (R12-DATA-8013). `None` produces no manifest: a manifest with a guessed
+    /// licence would record a right nobody granted.
+    manifest_terms: Option<(String, qip_contracts::governance::Usage)>,
+    /// Version-2 manifests of accepted fetches nobody has collected, oldest
+    /// first, bounded at [`PENDING_MANIFEST_CAPACITY`].
+    pending_manifests: VecDeque<qip_financial::manifest::SourceManifest>,
+    /// Manifests that could not be formed, with the last reason.
+    manifest_failures: u64,
 }
+
+/// Document manifests held for collection.
+pub const PENDING_MANIFEST_CAPACITY: usize = 1_024;
 
 /// A knowledge pack a released poll produced, with the encoded size of the
 /// pack and of the body it was derived from, where the pack encoded.
@@ -336,7 +348,36 @@ impl ConnectorFeed {
             tick_lake_failures: 0,
             tick_lake_last_failure: None,
             pending_packs: VecDeque::new(),
+            manifest_terms: None,
+            pending_manifests: VecDeque::new(),
+            manifest_failures: 0,
         })
+    }
+
+    /// Record a version-2 manifest for every fetch the platform accepts
+    /// (R12-DATA-8013), granting `usage` on `dataset`. The freshness bound is
+    /// the source's own `freshness_sla_ms` past the retrieval instant, and the
+    /// grant lapses with it: no registration states an expiry and one is not
+    /// invented, so the entitlement is no longer than the bytes are fresh.
+    #[must_use]
+    pub fn with_document_manifests(
+        mut self,
+        dataset: impl Into<String>,
+        usage: qip_contracts::governance::Usage,
+    ) -> Self {
+        self.manifest_terms = Some((dataset.into(), usage));
+        self
+    }
+
+    /// Take the manifests of the fetches accepted since the last call, oldest
+    /// first, for the composition root to seal.
+    pub fn drain_document_manifests(&mut self) -> Vec<qip_financial::manifest::SourceManifest> {
+        self.pending_manifests.drain(..).collect()
+    }
+
+    /// Manifests that could not be formed.
+    pub const fn manifest_failures(&self) -> u64 {
+        self.manifest_failures
     }
 
     /// The manifest this feed was opened from — the declared category, the
@@ -515,6 +556,28 @@ impl ConnectorFeed {
             if let Err(refusal) = reference(&digest) {
                 self.runtime.unwind(before);
                 return Err(refusal);
+            }
+            if let Some((dataset, usage)) = self.manifest_terms.clone() {
+                let fresh_until =
+                    digest
+                        .retrieved_at()
+                        .saturating_add(qip_core::Duration::from_millis(
+                            self.runtime.manifest().freshness_sla_ms,
+                        ));
+                let entitlement = qip_contracts::governance::Entitlement::Granted {
+                    dataset,
+                    usage,
+                    expires_at: fresh_until,
+                };
+                match digest.source_manifest(entitlement, fresh_until) {
+                    Ok(manifest) => {
+                        if self.pending_manifests.len() == PENDING_MANIFEST_CAPACITY {
+                            self.pending_manifests.pop_front();
+                        }
+                        self.pending_manifests.push_back(manifest);
+                    }
+                    Err(_) => self.manifest_failures += 1,
+                }
             }
         }
         // The poll and the position it produced are written before the
@@ -1061,6 +1124,49 @@ mod tests {
         feed.journal_to(store)
             .expect("a journal opens on an empty store");
         feed
+    }
+
+    /// R12-DATA-8013: a feed told its entitlement records a version-2
+    /// manifest for each accepted fetch — the hash of the served bytes, the
+    /// parser lineage, a re-fetch instruction and a freshness bound after the
+    /// retrieval — and a feed told nothing records none (a guessed licence
+    /// would be a right nobody granted). Mutation: delete the
+    /// `pending_manifests.push_back` — the first assertion fails.
+    #[test]
+    fn a_feed_with_an_entitlement_records_a_version_two_manifest_for_each_accepted_fetch() {
+        let opened = instant("2026-08-27T00:00:00Z");
+        let table = r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}"#;
+        let store: Arc<dyn qip_core::kv::KeyValueStore> =
+            Arc::new(qip_storage::MemoryKeyValueStore::default());
+        let mut feed = journaled_frankfurter_serving(store.clone(), opened, table)
+            .with_document_manifests(
+                "ecb-reference-rates",
+                qip_contracts::governance::Usage::Research,
+            );
+        feed.poll_referencing(opened, &mut |_| Ok(()))
+            .expect("the poll delivers");
+        let manifests = feed.drain_document_manifests();
+        assert_eq!(manifests.len(), 1, "one accepted fetch, one manifest");
+        let manifest = &manifests[0];
+        assert_eq!(
+            manifest.sha256(),
+            qip_core::hash::sha256_hex(table.as_bytes())
+        );
+        assert_eq!(manifest.schema_version(), 2);
+        assert!(manifest.records_the_full_descriptor());
+        let v2 = manifest.v2().expect("version two");
+        assert!(!v2.parser().0.is_empty() && !v2.parser().1.is_empty());
+        assert!(v2.fresh_until() > manifest.retrieved_at());
+        assert_eq!(feed.manifest_failures(), 0);
+
+        let mut bare = journaled_frankfurter_serving(
+            Arc::new(qip_storage::MemoryKeyValueStore::default()),
+            opened,
+            table,
+        );
+        bare.poll_referencing(opened, &mut |_| Ok(()))
+            .expect("the poll delivers");
+        assert!(bare.drain_document_manifests().is_empty());
     }
 
     /// R12-EVID-1200. Each released record is paired with the id of the claim

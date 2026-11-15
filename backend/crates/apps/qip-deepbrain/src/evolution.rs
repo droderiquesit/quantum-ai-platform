@@ -419,6 +419,9 @@ pub struct EvolutionStats {
     pub discarded: u64,
 }
 
+/// Manifests the engine keeps for inspection.
+pub const DOCUMENT_MANIFESTS_KEPT: usize = 256;
+
 /// The crank. Owns the data adapter, the per-subject histories and foundries.
 pub struct EvolutionEngine {
     config: EvolutionConfig,
@@ -475,6 +478,9 @@ pub struct EvolutionEngine {
     /// Scores each connector against the own stream (R12-DATA-2022, 2025,
     /// 1105). `None`, the default, observes and scores nothing.
     source_alpha: Option<crate::source_alpha::SourceAlphaDesk>,
+    /// The latest version-2 manifests of accepted connector fetches
+    /// (R12-DATA-8013), oldest first, bounded.
+    document_manifests: std::collections::VecDeque<qip_financial::manifest::SourceManifest>,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -522,6 +528,7 @@ impl EvolutionEngine {
             connectors: Vec::new(),
             refetch_every: 0,
             source_alpha: None,
+            document_manifests: std::collections::VecDeque::new(),
         })
     }
 
@@ -591,6 +598,13 @@ impl EvolutionEngine {
     }
 
     /// The source-alpha desk, when one is attached.
+    /// The manifests of the connector fetches accepted most recently.
+    pub fn document_manifests(
+        &self,
+    ) -> impl Iterator<Item = &qip_financial::manifest::SourceManifest> {
+        self.document_manifests.iter()
+    }
+
     pub fn source_alpha(&self) -> Option<&crate::source_alpha::SourceAlphaDesk> {
         self.source_alpha.as_ref()
     }
@@ -967,6 +981,12 @@ impl EvolutionEngine {
         let mut absorbed = Self::absorb(&mut self.history, self.config.history_cap, platform, own);
         for arm in &mut self.connectors {
             let records = arm.poll(platform, until)?;
+            for manifest in arm.drain_document_manifests() {
+                if self.document_manifests.len() == DOCUMENT_MANIFESTS_KEPT {
+                    self.document_manifests.pop_front();
+                }
+                self.document_manifests.push_back(manifest);
+            }
             if let Some(desk) = self.source_alpha.as_mut() {
                 desk.observe_source(arm.source_id(), &records);
             }
