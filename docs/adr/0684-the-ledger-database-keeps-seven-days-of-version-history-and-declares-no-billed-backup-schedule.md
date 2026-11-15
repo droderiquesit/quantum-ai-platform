@@ -25,3 +25,14 @@ folded `version_retention_period` into the single DDL statement that
 
 PITR becomes plannable. The requirement is not met until a schedule exists.
 Paper boundary untouched. Nothing here was planned or applied.
+
+## Cost, stated because the title could be read as saying there is none
+
+Seven days of version history is not free. Spanner bills retained versions as
+storage, so this setting raises the storage bill of the ledger database from the
+day a database exists. No environment enables Spanner today (`enable_spanner` is
+false in all four), so nothing is billed by this record, and the figure is not
+priced here: it is named, with the rest of Spanner's cost, before any environment
+turns the database on. "No billed backup schedule" in the title means only that
+no backup schedule is declared. Added by the wave's orchestrator on 2026-11-15
+after an independent reader found the prose silent on this.
