@@ -1914,3 +1914,75 @@ fn an_export_verifies_against_the_replayed_history_and_a_tampered_or_stale_one_i
     stale.chain_records_count -= 1;
     assert!(store.verify_export(&stale).is_err(), "stale count refused");
 }
+
+// --- R12-LEDGER-8139: a custody break's halt is outboxed and carried -------
+
+struct RecordingSink {
+    taken: std::sync::Mutex<Vec<qip_contracts::policy::HaltCommand>>,
+    refusing: bool,
+}
+
+impl qip_ledgerd::consumer::HaltSink for RecordingSink {
+    fn carry(&self, halt: &qip_contracts::policy::HaltCommand) -> qip_core::error::Result<()> {
+        if self.refusing {
+            return Err(qip_core::error::Error::io("carrier down (fixture)"));
+        }
+        self.taken.lock().unwrap().push(halt.clone());
+        Ok(())
+    }
+}
+
+/// An injected break leaves one whole-cell halt in a durable outbox, in the
+/// batch that journaled it; an agreeing statement leaves none. A carrier that
+/// refuses loses nothing, one that takes it clears it, and the outbox
+/// survives a reopen.
+///
+/// Mutation: in `LedgerStore::compare_custody`, skip the `put_as` of the
+/// `custody_halt/` row — the break is journaled and counted but the outbox
+/// is empty, and the premise assertion on the first pending halt fails.
+#[test]
+fn a_custody_break_queues_a_durable_halt_that_a_carrier_takes_and_an_agreeing_statement_queues_none()
+ {
+    use qip_ledgerd::consumer::carry_pending_halts;
+    let (store, _metrics, mut j, held, dir) = holding_ten("custody-halt-outbox");
+    let agreeing = j.outcome(custody(&[(OBJECT, &held.to_string())], true));
+    store.apply(&at(2, &agreeing)).expect("apply");
+    assert!(
+        store.pending_custody_halts().expect("outbox").is_empty(),
+        "an agreeing statement queued a halt"
+    );
+
+    let wrong = held.checked_sub(Decimal::from_int(3)).expect("arithmetic");
+    let broken = j.outcome(custody(&[(OBJECT, &wrong.to_string())], true));
+    assert_eq!(
+        store.apply(&at(3, &broken)).expect("apply"),
+        Disposition::CustodyCompared { breaks: 1 }
+    );
+    let pending = store.pending_custody_halts().expect("outbox");
+    assert_eq!(pending.len(), 1, "the break queued no halt: {pending:?}");
+    assert_eq!(pending[0].1.cell, "cell-a");
+    assert!(pending[0].1.signature.is_empty(), "signing is the centre's");
+
+    let down = RecordingSink {
+        taken: Default::default(),
+        refusing: true,
+    };
+    assert!(carry_pending_halts(&store, &down).is_err());
+    assert_eq!(
+        store.pending_custody_halts().expect("outbox").len(),
+        1,
+        "a refused carry dropped the halt"
+    );
+
+    drop(store);
+    let (reopened, _m) = open(&dir);
+    assert_eq!(reopened.pending_custody_halts().expect("outbox").len(), 1);
+    let up = RecordingSink {
+        taken: Default::default(),
+        refusing: false,
+    };
+    assert_eq!(carry_pending_halts(&reopened, &up).expect("carried"), 1);
+    assert_eq!(up.taken.lock().unwrap().len(), 1);
+    assert_eq!(up.taken.lock().unwrap()[0].cell, "cell-a");
+    assert!(reopened.pending_custody_halts().expect("outbox").is_empty());
+}

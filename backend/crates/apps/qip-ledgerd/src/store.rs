@@ -135,6 +135,11 @@ const PREFIX_LOT: &str = "lot/";
 /// statement compared for that cell at that venue, so a statement at or
 /// behind it is answered as stale and never journals its break twice.
 const PREFIX_CUSTODY: &str = "custody/";
+/// `custody_halt/<cell>/<venue>`: the unsigned whole-cell halt a custody
+/// break produced and no carrier has yet taken (R12-LEDGER-8139). Written in
+/// the batch that journals the break, so a break the ledger holds is never
+/// a halt nobody was told to send; deleted only once a carrier has taken it.
+const PREFIX_CUSTODY_HALT: &str = "custody_halt/";
 /// The fills of one order whose cash waits on the venue's `Settled`
 /// record, keyed `pending/<cell>/<order>` (ADR 0440). Bounded by the orders
 /// in settlement: a settlement deletes its order's row in the batch that
@@ -1704,6 +1709,30 @@ impl LedgerStore {
         })
     }
 
+    /// Halts a custody break produced that no carrier has taken yet, in key
+    /// order (cell, then venue). Survives a restart: the outbox is a row in
+    /// the batch that journaled the break.
+    pub fn pending_custody_halts(&self) -> Result<Vec<(String, HaltCommand)>> {
+        let mut halts = Vec::new();
+        for (key, value) in self.store.scan_prefix(PREFIX_CUSTODY_HALT)? {
+            halts.push((key, decode::<HaltCommand>(value)?));
+        }
+        Ok(halts)
+    }
+
+    /// Drop one halt from the outbox, once a carrier has taken it. `key` is
+    /// the key [`Self::pending_custody_halts`] returned. A halt not in the
+    /// outbox is not an error: two carriers may race to clear it.
+    pub fn custody_halt_carried(&self, key: &str) -> Result<()> {
+        if !key.starts_with(PREFIX_CUSTODY_HALT) {
+            return Err(Error::invalid(format!(
+                "{key:?} is not a custody halt key; nothing was cleared"
+            )));
+        }
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        self.store.commit(LedgerBatch::new().delete(key))
+    }
+
     /// The comparison itself, added to `batch` and not committed: the cell's
     /// booked fills at or before the statement's position, per unit, against
     /// the statement, with a `custody_break` note per disagreeing unit and the
@@ -1746,6 +1775,16 @@ impl LedgerStore {
         }
 
         let breaks = custody::compare(&ledger, statement);
+        let mut batch = batch;
+        if let Some(halt) = custody::halt_for(statement, &breaks) {
+            batch = batch.put_as(
+                format!(
+                    "{PREFIX_CUSTODY_HALT}{}/{}",
+                    statement.cell, statement.venue
+                ),
+                &halt,
+            )?;
+        }
         let mut batch = batch.put_as(
             mark_key,
             &CustodyMark {
