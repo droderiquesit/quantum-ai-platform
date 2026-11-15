@@ -555,6 +555,10 @@ pub struct TickDesk {
     /// The same fused state as beliefs REASON may be narrowed by, never
     /// raised (ADR 0151 decision 3, R12-TICK-1002).
     outside_priors: Vec<qip_kernel::fusion::OutsidePrior>,
+    /// What the latest `reflex.feature_digested` said about the tape (ADR 0428
+    /// decision 5). `None` until a digest has been noted: a desk nothing
+    /// routes digests to reads its lake as it always did.
+    tape: Option<qip_kernel::tape_attestation::TapeAttestation>,
 }
 
 impl TickDesk {
@@ -571,7 +575,21 @@ impl TickDesk {
             tree: None,
             posteriors: BTreeMap::new(),
             outside_priors: Vec::new(),
+            tape: None,
         }
+    }
+
+    /// Record the tape attestation of the newest pass digest. The next round's
+    /// fusion drops the traces it does not admit and can never gain one.
+    pub fn note_feature_digest(&mut self, digest: &qip_contracts::replay::FeatureDigest) {
+        self.tape = Some(qip_kernel::tape_attestation::TapeAttestation::of_digest(
+            digest,
+        ));
+    }
+
+    /// The attestation the next round will fuse under, if a digest was noted.
+    pub const fn tape_attestation(&self) -> Option<&qip_kernel::tape_attestation::TapeAttestation> {
+        self.tape.as_ref()
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
@@ -967,6 +985,10 @@ impl TickDesk {
                 points,
             })
             .collect();
+        let traces = match &self.tape {
+            Some(tape) => tape.admit(traces),
+            None => traces,
+        };
         let fusion_config = FusionConfig {
             max_hops: 2,
             reaction_threshold_bps: 5.0,
