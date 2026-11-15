@@ -4926,6 +4926,18 @@ impl Cell {
             self.quarantined.remove(&venue);
         }
         for (venue, until, reason) in entered {
+            // ADR 0612: the venue's own answers moved it out of rotation,
+            // which is a change in how it behaves and is recorded once, on
+            // entry, like the journal line below it.
+            self.record_episode(
+                EpisodeKind::VenueBehaviour,
+                format!(
+                    "{} left rotation: {reason}; quarantined until {until}",
+                    venue.as_str()
+                ),
+                None,
+                now,
+            );
             self.refuse(
                 report,
                 GATE_VENUE_QUARANTINE,
@@ -5259,6 +5271,15 @@ impl Cell {
             if let Some(state) = self.liquidity.get_mut(&venue, &object_id) {
                 state.reset(reason.clone());
             }
+            // ADR 0612: a book the venue left crossed outside an auction is
+            // the microstructure fact this cell can name without a figure of
+            // its own, so it is the one `Microstructure` episode recorded.
+            self.record_episode(
+                EpisodeKind::Microstructure,
+                format!("{} {}: {reason}", venue.as_str(), object_id.as_str()),
+                None,
+                now,
+            );
             self.mark_unreliable(&venue, &object_id, &reason, now);
         }
         Ok(())
@@ -5526,7 +5547,7 @@ impl Cell {
     /// The regional episodes this cell has recorded, oldest first, at most
     /// [`MAX_RETAINED_EPISODES`] of them.
     ///
-    /// Four of [`EpisodeKind`]'s six kinds are recorded, each at the seam
+    /// All six of [`EpisodeKind`]'s kinds are recorded, each at the seam
     /// where the fact becomes known, in [`Self::confirm_execution_reports`]
     /// and the break path:
     ///
@@ -5541,8 +5562,11 @@ impl Cell {
     /// - `FillSlippage` — a fill at a price other than the order's limit,
     ///   signed by side so price improvement is not filed as a cost.
     ///
-    /// `Microstructure` and `VenueBehaviour` are named but nothing records
-    /// them yet.
+    /// - `Microstructure` — a book the venue left crossed outside an
+    ///   auction, when the cell discards it (ADR 0612).
+    /// - `VenueBehaviour` — a venue entering quarantine on its reject rate
+    ///   (ADR 0612). Drift, queue behaviour and fee or latency-profile changes
+    ///   need a detector with a figure nobody has given, and are not recorded.
     pub fn episodes(&self) -> &[RegionalEpisode] {
         &self.episodes
     }
