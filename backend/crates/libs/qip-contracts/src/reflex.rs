@@ -287,6 +287,19 @@ pub enum Decision {
         withdrawn: String,
         reason: String,
     },
+    /// The venue refused an order the cell sent (R12-TICK-2044), or its
+    /// gateway could not take it. Distinct from [`Self::Refused`], which is
+    /// the cell's own gate: this is a venue fact. Before this entry a reject
+    /// was counted on the venue's health and propagated as an error, and the
+    /// chain held no record that an order id had been burned and refused, so
+    /// a quiet venue and a rejecting one read the same from the journal.
+    /// `reason` is the gateway's own text.
+    OrderRejected {
+        order_id: String,
+        venue: String,
+        object: String,
+        reason: String,
+    },
     /// Something was refused, with the gate that refused it.
     Refused { gate: String, reason: String },
     /// The venue and the cell's book disagree about a fill.
@@ -798,6 +811,7 @@ impl Decision {
             | Self::OrderExpired { order_id, .. }
             | Self::MassCancelled { order_id, .. }
             | Self::VenueWithdrawn { order_id, .. }
+            | Self::OrderRejected { order_id, .. }
             | Self::CycleRested { order_id, .. }
             | Self::RequoteWithdrawn { order_id, .. }
             | Self::OrderReplaced { order_id, .. }
@@ -827,6 +841,7 @@ impl Decision {
             Self::OrderExpired { .. } => "order_expired",
             Self::MassCancelled { .. } => "mass_cancelled",
             Self::VenueWithdrawn { .. } => "venue_withdrawn",
+            Self::OrderRejected { .. } => "order_rejected",
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",

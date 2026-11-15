@@ -7194,6 +7194,24 @@ impl Cell {
                 health.record_reject(venue, now);
             }
         }
+        // R12-TICK-2044: a venue's reject is a typed record, not only a
+        // health counter and an error that leaves the pass.
+        let rejection = match &placed {
+            Err(error) => Some(error.message().to_string()),
+            Ok(false) => Some("the gateway's queue was at capacity".to_string()),
+            Ok(true) => None,
+        };
+        if let Some(reason) = rejection {
+            self.journal.record(
+                Decision::OrderRejected {
+                    order_id: order_id.clone(),
+                    venue: venue.as_str().to_string(),
+                    object: object_id.to_string(),
+                    reason,
+                },
+                now,
+            );
+        }
         if matches!(placed, Ok(true)) {
             self.conduct.placed(venue, object_id, side, now);
         }

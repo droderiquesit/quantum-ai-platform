@@ -357,6 +357,10 @@ pub struct TickRound {
     /// the output rather than inferred from a count.
     pub reactions: Vec<qip_kernel::fusion::MeasuredReaction>,
     pub mismatches: usize,
+    /// Each fused reaction's order against its event once the capture
+    /// clocks' uncertainty is counted (R12-TICK-1177): `Unordered` where the
+    /// move sits inside it.
+    pub reaction_timing: Vec<crate::fusion_clock::ReactionTiming>,
     pub map: Option<OpportunityMap>,
     pub shipped_to: BTreeSet<String>,
     pub refused_regions: BTreeMap<String, String>,
@@ -370,6 +374,12 @@ pub struct TickRound {
     /// to `branches_live`, so a branch is never silently absent.
     pub world_branches: usize,
     pub world_branches_refused: usize,
+    /// Each live branch priced against the book the desk was offered
+    /// (R12-TICK-10121): the distribution a sizing decision reads. Empty when
+    /// no book was offered, or when it was refused, in which case
+    /// `portfolio_outcomes_refused` says why.
+    pub portfolio_outcomes: Vec<qip_twin::futures::PortfolioOutcome>,
+    pub portfolio_outcomes_refused: Option<String>,
     pub tree_log_score: Option<f64>,
     pub compression: Option<CompressionReport>,
     /// Present ticks whose lake line carried typed sync metadata and a
@@ -555,6 +565,11 @@ pub struct TickDesk {
     /// The same fused state as beliefs REASON may be narrowed by, never
     /// raised (ADR 0151 decision 3, R12-TICK-1002).
     outside_priors: Vec<qip_kernel::fusion::OutsidePrior>,
+    /// The platform's book as signed weights of equity, set by the caller
+    /// before a round (R12-TICK-10121). Empty means no book was offered.
+    book: BTreeMap<String, f64>,
+    /// Multi-leg plans for the next round's replay (R12-TICK-1176).
+    plans: Vec<qip_simulation_engine::tick_replay::MultiLegPlan>,
 }
 
 impl TickDesk {
@@ -571,7 +586,20 @@ impl TickDesk {
             tree: None,
             posteriors: BTreeMap::new(),
             outside_priors: Vec::new(),
+            book: BTreeMap::new(),
+            plans: Vec::new(),
         }
+    }
+
+    /// Offer the multi-leg plans the next round replays as sagas.
+    pub fn set_plans(&mut self, plans: Vec<qip_simulation_engine::tick_replay::MultiLegPlan>) {
+        self.plans = plans;
+    }
+
+    /// Offer the platform's book (see [`crate::tick_book::book_weights`]) for
+    /// the next round's portfolio outcome distribution.
+    pub fn set_book(&mut self, weights: BTreeMap<String, f64>) {
+        self.book = weights;
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
@@ -625,6 +653,7 @@ impl TickDesk {
         }
         let from = now.saturating_sub(Duration::from_days(self.config.lookback_days));
         let replayable = replay_orders_of(orders, from, now);
+        self.set_plans(replayable.plans);
         let mut round = self.round_with_fills(graph, now, replayable.decisions, fills)?;
         round.unreplayable_orders = replayable.unreplayable;
         round.order_rows = order_rows(round.replay.as_ref(), &replayable.actual);
@@ -775,8 +804,12 @@ impl TickDesk {
         round.ticks = ticks.len();
 
         // --- replay, and the observations every later step reads ----------
-        let mut session =
-            ReplaySession::new(self.config.execution, ticks.clone(), decisions, Vec::new())?;
+        let mut session = ReplaySession::new(
+            self.config.execution,
+            ticks.clone(),
+            decisions,
+            std::mem::take(&mut self.plans),
+        )?;
         let ordered = qip_simulation_engine::tick_replay::sequence_ticks(ticks);
         let mut observations = Vec::new();
         let mut trades = Vec::new();
@@ -854,7 +887,7 @@ impl TickDesk {
         // nothing below trains or promotes from it.
         let labelled = match plan
             .clock_precision()?
-            .admit(&round.manifest, precision_events)
+            .admit(&round.manifest, precision_events.clone())
         {
             Ok(_) => build_examples(&observations, &trades, &plan)?,
             Err(imprecise) => {
@@ -976,6 +1009,7 @@ impl TickDesk {
             max_events: 1_024,
         };
         let fused = fuse(graph, &traces, now, &fusion_config)?;
+        round.reaction_timing = crate::fusion_clock::order_reactions(&fused, &precision_events)?;
         self.posteriors = fused.posteriors();
         let mut priors = fused.outside_priors();
         // Strongest first: the smallest multiplier either way is the prior that
@@ -1101,6 +1135,29 @@ impl TickDesk {
                     serde_json::to_vec(&contracts)?,
                 )?;
             }
+            if !self.book.is_empty() {
+                match tree.portfolio_outcomes(&self.book) {
+                    Ok(outcomes) => {
+                        let record = crate::tick_book::PortfolioOutcomeRecord::new(
+                            &round.manifest,
+                            now,
+                            &self.book,
+                            outcomes.clone(),
+                        );
+                        self.outputs.put(
+                            &format!(
+                                "{OUTPUT_NAMESPACE}/portfolio-outcomes/{}.json",
+                                round.manifest
+                            ),
+                            serde_json::to_vec(&record)?,
+                        )?;
+                        round.portfolio_outcomes = outcomes;
+                    }
+                    Err(error) => {
+                        round.portfolio_outcomes_refused = Some(error.message().to_string());
+                    }
+                }
+            }
             self.tree = Some(tree);
         }
         Ok(round)
@@ -1150,6 +1207,9 @@ pub struct ReplayableOrders {
     /// Each replayed order's actual volume-weighted fill price, if filled.
     pub actual: BTreeMap<String, Decimal>,
     pub unreplayable: usize,
+    /// Proposals whose orders were several instruments sent as one thing,
+    /// replayed as sagas (R12-TICK-1176) instead of as independent orders.
+    pub plans: Vec<qip_simulation_engine::tick_replay::MultiLegPlan>,
 }
 
 /// The orders created in `[from, now]` as replay decisions, newest
@@ -1173,7 +1233,13 @@ pub fn replay_orders_of<'a>(
     });
     let skip = window.len().saturating_sub(MAX_REPLAY_ORDERS);
     let mut out = ReplayableOrders::default();
-    for order in window.into_iter().skip(skip) {
+    let window: Vec<&Order> = window.into_iter().skip(skip).collect();
+    let (plans, grouped) = plans_of(&window);
+    out.plans = plans;
+    for order in window
+        .into_iter()
+        .filter(|o| !grouped.contains(o.order_id.as_str()))
+    {
         let limit = match order.order_type {
             OrderType::Market => None,
             OrderType::Limit { price } => Some(price),
@@ -1239,4 +1305,86 @@ fn order_rows(
             }
         })
         .collect()
+}
+
+/// The proposals in `window` whose orders are one multi-leg plan, and the
+/// order ids they took (R12-TICK-1176).
+///
+/// The journal records orders, not plans, so the plan is read back from what
+/// the book itself says: orders that implement **one proposal** and touch
+/// **two or more instruments** are the legs of one thing the platform meant to
+/// do together, and replaying them as independent orders hides the one risk a
+/// multi-leg proposal has, that a later leg fails while an earlier one stands
+/// open. Orders of one proposal on a single instrument are slices, not legs,
+/// and stay single. A proposal with an order the replay cannot express (a
+/// scheduled algorithm), or with more legs than a plan carries, is left whole
+/// as singles rather than replayed as a plan missing a leg.
+///
+/// The leg interval is the mean gap between the legs' own creation instants,
+/// because the journal holds when each leg was decided and nobody states a
+/// window; no figure is chosen here. `max_path_decay_bps` stays `None` and no
+/// region is reserved, because nothing recorded says either.
+fn plans_of(
+    window: &[&Order],
+) -> (
+    Vec<qip_simulation_engine::tick_replay::MultiLegPlan>,
+    BTreeSet<String>,
+) {
+    use qip_simulation_engine::tick_replay::{LegPlan, MultiLegPlan};
+    let mut by_proposal: BTreeMap<&str, Vec<&Order>> = BTreeMap::new();
+    for order in window {
+        if !order.proposal_id.trim().is_empty() {
+            by_proposal
+                .entry(order.proposal_id.as_str())
+                .or_default()
+                .push(order);
+        }
+    }
+    let mut plans = Vec::new();
+    let mut taken = BTreeSet::new();
+    for (proposal, mut legs) in by_proposal {
+        let instruments: BTreeSet<&str> = legs.iter().map(|o| o.object_id.as_str()).collect();
+        let expressible = legs
+            .iter()
+            .all(|o| matches!(o.order_type, OrderType::Market | OrderType::Limit { .. }));
+        if instruments.len() < 2 || legs.len() > 20 || !expressible {
+            continue;
+        }
+        legs.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.order_id.as_str().cmp(b.order_id.as_str()))
+        });
+        let first = legs[0].created_at;
+        let span = legs[legs.len() - 1].created_at.as_nanos() - first.as_nanos();
+        let gaps = i64::try_from(legs.len() - 1).unwrap_or(i64::MAX);
+        taken.extend(legs.iter().map(|o| o.order_id.as_str().to_string()));
+        plans.push(MultiLegPlan {
+            id: proposal.to_string(),
+            decided_at: first,
+            legs: legs
+                .iter()
+                .map(|order| LegPlan {
+                    instrument: order.object_id.as_str().to_string(),
+                    side: match order.side {
+                        Side::Buy => OrderSide::Buy,
+                        Side::Sell => OrderSide::Sell,
+                    },
+                    quantity: order.quantity,
+                    limit: match order.order_type {
+                        OrderType::Limit { price } => Some(price),
+                        _ => None,
+                    },
+                    // The order carries no region; its kill-switch scope is
+                    // the nearest recorded grouping. With no reservation on
+                    // the plan the label constrains nothing.
+                    region: order.scope.clone(),
+                })
+                .collect(),
+            leg_interval: Duration::from_nanos(span / gaps),
+            max_path_decay_bps: None,
+            region_reservations: BTreeMap::new(),
+        });
+    }
+    (plans, taken)
 }
