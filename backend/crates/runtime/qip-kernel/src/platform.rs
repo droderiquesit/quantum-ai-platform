@@ -13631,6 +13631,36 @@ impl Platform {
         self.absorb_records(records)
     }
 
+    /// [`Self::observe`] for records that arrive under their admission
+    /// header (R12-TICK-2053, ADR 0132): a source hash and an entitlement
+    /// travel with each record, and `now` is when the platform takes it in.
+    ///
+    /// An entitlement that has lapsed between the admission and `now` is
+    /// refused here and reported as a capture problem, because a header is
+    /// checked once, at the instant it was built, and a licence does not stop
+    /// expiring after that. The record reaches no series.
+    pub fn observe_admitted(
+        &mut self,
+        batch: Vec<qip_contracts::admission::Admitted<SensedRecord>>,
+        now: Timestamp,
+    ) -> usize {
+        let mut records = Vec::with_capacity(batch.len());
+        for admitted in batch {
+            let entitlement = admitted.admission().entitlement();
+            if !entitlement.is_granted(now) {
+                self.capture_problems.push(format!(
+                    "a {} record was refused at absorption: its entitlement to {} is no longer \
+                     granted",
+                    admitted.record().topic(),
+                    entitlement.dataset()
+                ));
+                continue;
+            }
+            records.push(admitted.into_record());
+        }
+        self.observe(records)
+    }
+
     /// The body of [`Self::observe`], shared with the lineage path so a
     /// record is counted once, by whichever door it came in.
     fn absorb_records(&mut self, records: Vec<SensedRecord>) -> usize {
