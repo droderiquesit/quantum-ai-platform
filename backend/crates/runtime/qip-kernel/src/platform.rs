@@ -364,6 +364,12 @@ pub struct Platform {
     /// empty every short is refused: an instrument nobody has said is
     /// borrowable is not borrowable.
     borrow_availability: BTreeMap<String, BorrowReading>,
+    /// Whether an order on an instrument the market snapshot has never priced
+    /// is refused (R12-RISK-4096, ADR 0691). **Provisionally off**: the gate
+    /// was built default-on and refused 92 kernel tests whose fixtures submit
+    /// on instruments nothing priced, so it ships as an opt-in switch that
+    /// [`Platform::require_observed_quote`] turns on and nothing turns off.
+    require_observed_quote: bool,
     /// §38.3's tolerance formula per observed **venue-asset**: the class, the
     /// dust floor the statement stated, and one interval's rate. The wallet
     /// refuses to reconcile a venue-asset it has no basis for rather than
@@ -1812,6 +1818,11 @@ const WALLET_HALT_CONTROL: &str = "wallet-halt";
 
 /// The control name a short refused for want of a borrow is journaled under.
 const BORROW_CONTROL: &str = "borrow-availability";
+
+/// The control name an order on an instrument with no observed price is
+/// journaled under (R12-RISK-4096, ADR 0691). A source literal, so the
+/// `control` label gains exactly one value.
+const QUOTE_CONTROL: &str = "quote-availability";
 
 /// How old a borrow reading may be when a short is judged against it.
 /// Locate availability moves intraday; a day-old reading is the oldest one
@@ -7050,6 +7061,7 @@ impl Platform {
             fabric,
             holdings_observed: BTreeMap::new(),
             borrow_availability: BTreeMap::new(),
+            require_observed_quote: false,
             wallet_tolerances: ToleranceSchedule::new(),
             policy_rates: PolicyRateTable::new(),
             wallet_tolerance_reasons: BTreeMap::new(),
@@ -25389,6 +25401,43 @@ impl Platform {
         }
     }
 
+    /// Turn on the quote-availability gate (R12-RISK-4096, ADR 0691): from
+    /// here on an order on an instrument the market snapshot holds no quote,
+    /// trade or bar for is refused and journaled under `quote-availability`.
+    /// One-way by construction: there is no method that turns it off, because
+    /// a switch that can relax a safety default is the thing the platform's
+    /// fail-closed principle refuses.
+    pub fn require_observed_quote(&mut self) {
+        self.require_observed_quote = true;
+    }
+
+    /// Whether the quote-availability gate is on.
+    pub fn observed_quote_required(&self) -> bool {
+        self.require_observed_quote
+    }
+
+    /// Why an order is on an instrument nobody has priced, or `None` when the
+    /// gate is off or the snapshot holds a quote, a trade or a bar for it.
+    /// An instrument with no observation has no price to size, to mark or to
+    /// fill against, so the refusal names what to do: feed it a price first.
+    pub fn order_without_observed_quote(&self, order: &Order) -> Option<String> {
+        if !self.require_observed_quote {
+            return None;
+        }
+        let market = self.market.read();
+        let priced = market.snapshot.get(&order.object_id).is_some_and(|state| {
+            state.quote.is_some() || state.last_trade.is_some() || !state.bars.is_empty()
+        });
+        if priced {
+            None
+        } else {
+            Some(format!(
+                "{} has no quote, trade or bar in the market snapshot, so an order on it has                  no observed price; observe the instrument before trading it",
+                order.object_id.as_str()
+            ))
+        }
+    }
+
     /// Whether the twin's fills at `venue` have been persistently wrong
     /// (R12-RES-7104): at least [`TWIN_MISFIT_MIN_OBSERVATIONS`] observed and
     /// a calibrated bias of [`TWIN_MISFIT_BIAS_BPS`] or more either way. A
@@ -25788,6 +25837,9 @@ impl Platform {
         if let Some(reason) = self.short_without_borrow(&order, now) {
             return self.refuse_for_borrow(&order, reason, now);
         }
+        if let Some(reason) = self.order_without_observed_quote(&order) {
+            return self.refuse_for_quote(&order, reason, now);
+        }
         // R12-RISK-3022: the pre-trade check is routed through the cost router
         // as a decision that must be deterministic, and the order does not go
         // further without that routing. `Router::determine` returns a type that
@@ -26005,6 +26057,27 @@ impl Platform {
             Action::Rejected {
                 order_id: order.order_id.clone(),
                 gate: BORROW_CONTROL.to_string(),
+                reason: reason.clone(),
+            },
+            RealisedOutcome::nothing_happened(now),
+            reason.clone(),
+        );
+        Err(Error::denied(reason))
+    }
+
+    /// Put an order on an unpriced instrument on the record and refuse it.
+    fn refuse_for_quote(&mut self, order: &Order, reason: String, now: Timestamp) -> Result<()> {
+        let correlation = self.correlation_for(now);
+        self.telemetry
+            .metrics
+            .count(names::ORDERS_REFUSED, labels([("control", QUOTE_CONTROL)]));
+        let _ = self.capture(
+            now,
+            &correlation,
+            order.object_id.clone(),
+            Action::Rejected {
+                order_id: order.order_id.clone(),
+                gate: QUOTE_CONTROL.to_string(),
                 reason: reason.clone(),
             },
             RealisedOutcome::nothing_happened(now),

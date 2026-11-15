@@ -1,0 +1,84 @@
+{
+ "lane": "45",
+ "note": "Nothing in this lane was compiled: no cargo build, test or clippy ran (owner instruction 2026-11-15). Only rustfmt --check and check-secrets.sh ran (secret scan: nothing found). Every test is unrun and every mutation is 'mutation: not run'. Paper boundary untouched: Terraform refusal, AutonomyLevel::deployable, Cell constructor. ADRs 0690, 0691.",
+ "rows": [
+  {
+   "id": "R12-RES-7104",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "No code written. The route calling Platform::issue_capital exists but is refused for every standing credential (ADR 0065) until a per-person credential exists (ADR 0076), and Platform::issue documents that a cycle stage must not issue capital.",
+   "remains": "Per-person credential (ADR 0076) before the narrowed grant is reached on a shipped binary's default path.",
+   "tests": [],
+   "test_command": "not run",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "none (finding in ADR 0690)"
+  },
+  {
+   "id": "R12-RISK-3022",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "No code written. Making PreTradeChecker::check demand a DeterministicGate is a signature change across about thirty call sites in other lanes' files, which cannot be done safely without a compiler.",
+   "remains": "Witness on PreTradeChecker::check, MinLiquidity at submit, survival waterfall, sign-off and release gating, kill-switch path.",
+   "tests": [],
+   "test_command": "not run",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "none (finding in ADR 0690)"
+  },
+  {
+   "id": "R12-RISK-4095",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Added qip-risk market_exposure: book basis (sum of hedge_search's expression), gap (worst named stress world) and a Finding that is Unbounded when no bound is stated. Nothing was compiled.",
+   "remains": "No production caller journals the findings; no MaxBasisExposure/MaxGapExposure limit arm; no owner bound (provisional: none chosen).",
+   "tests": [
+    "backend/crates/libs/qip-risk/src/market_exposure.rs::tests::a_pair_is_priced_with_the_expression_the_hedge_search_uses",
+    "...::two_pairs_are_summed_and_never_netted",
+    "...::a_malformed_pair_refuses_the_whole_measurement",
+    "...::the_gap_figure_is_the_worst_named_world",
+    "...::no_stated_bound_is_recorded_as_unbounded_and_never_as_within"
+   ],
+   "test_command": "cd backend && cargo test -p qip-risk --lib market_exposure (not run)",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "5c7fe2d9"
+  },
+  {
+   "id": "R12-RISK-4096",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Added Platform::require_observed_quote (one-way) and a quote-availability refusal in submit_order, journaled and counted. Default is provisionally off. Nothing was compiled.",
+   "remains": "Seed prices in every order-submitting fixture, flip default on and remove the field; wire the switch at composition roots; borrow source still an owner vendor decision (ADR 0157).",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/learning.rs::an_order_on_an_instrument_with_no_live_quote_is_refused_once_the_gate_is_on"
+   ],
+   "test_command": "cd backend && cargo test -p qip-kernel --test learning an_order_on_an_instrument (not run)",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "fd90d42c"
+  },
+  {
+   "id": "R12-RISK-9049",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "No code written. Routing hedge selection through ComputeRouter needs the portfolio choice formulated as a PortfolioProblem with the classical answer always computed; the design is sketched in ADR 0691.",
+   "remains": "The formulation, the router call from kernel hedge::plan, and tests.",
+   "tests": [],
+   "test_command": "not run",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "none"
+  }
+ ]
+}

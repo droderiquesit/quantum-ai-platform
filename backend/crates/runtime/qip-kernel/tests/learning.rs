@@ -4030,3 +4030,55 @@ fn the_training_export_holds_the_declined_path_and_the_fill_one_cycle_priced() -
     );
     Ok(())
 }
+
+/// R12-RISK-4096 (ADR 0691): with the quote gate on, an order on an
+/// instrument the market snapshot has never priced is refused under control
+/// `quote-availability`, and the same order is admitted once a bar prices it.
+/// Premises first: the gate is off by default and the unpriced order fills,
+/// so the refusal below is the gate's and not the fixture's.
+///
+/// Mutation: make `order_without_observed_quote` return `None` — the refusal
+/// assertion fails. Not run: written without compiling (owner instruction of
+/// 2026-11-15).
+#[test]
+fn an_order_on_an_instrument_with_no_live_quote_is_refused_once_the_gate_is_on() -> Result<()> {
+    let mut platform = platform()?;
+    assert!(
+        !platform.observed_quote_required(),
+        "the gate is provisionally off by default (ADR 0691)"
+    );
+    fill_one(&mut platform, "prop-quote-off", start())?;
+
+    platform.require_observed_quote();
+    assert!(platform.observed_quote_required());
+    let order = platform.order_from(
+        object("BBB"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-quote-unpriced",
+        vec!["hyp-prop-quote-unpriced".to_string()],
+        start(),
+    );
+    let error = platform
+        .submit_order(order, start())
+        .expect_err("an order on an unpriced instrument was admitted with the gate on");
+    assert!(
+        error.message().contains("no quote, trade or bar"),
+        "{}",
+        error.message()
+    );
+
+    platform.observe(bars("BBB", 5));
+    let order = platform.order_from(
+        object("BBB"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-quote-priced",
+        vec!["hyp-prop-quote-priced".to_string()],
+        start(),
+    );
+    platform.submit_order(order, start())?;
+    Ok(())
+}
