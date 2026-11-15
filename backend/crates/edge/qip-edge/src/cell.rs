@@ -287,6 +287,15 @@ pub const GATE_BORROW: &str = "borrow";
 pub const DEFAULT_CROSS_SOURCE_TOLERANCE: Decimal =
     Decimal::from_raw(qip_core::decimal::SCALE / 20);
 
+/// The net-edge margin every composition root arms, in basis points of
+/// notional: 25 (decision 38 of wave b52, 2026-11-14). **Provisional and
+/// deliberately restrictive** — a stated edge must clear the cell's fixed cost
+/// by this much or the order is refused. It is a risk value a person
+/// set, not one a lane derived; loosening it is a risk decision, so it lives
+/// in one constant rather than in each root, where two roots could drift
+/// apart and a demonstration cell could run on a gate the node does not.
+pub const NET_EDGE_MARGIN_BP: Decimal = Decimal::from_raw(qip_core::decimal::SCALE * 25);
+
 /// The gate a cell refuses a cycle under when its legs' venues fill too far
 /// apart in time (§32.1). Refused through [`Cell::refuse`] like every other
 /// pass gate, so the label needs no second enumeration.
