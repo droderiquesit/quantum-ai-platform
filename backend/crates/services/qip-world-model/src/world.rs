@@ -232,6 +232,17 @@ impl WorldModel {
         self.evidence.admit(record, document_hash, now)
     }
 
+    /// Bind a belief to the admitted claims it rests on, so the provenance
+    /// graph can be walked from the belief to every source document hash
+    /// (R12-EVID-2033). Refuses a claim the fabric does not hold.
+    pub fn bind_belief(
+        &mut self,
+        belief: &str,
+        claims: &std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        self.evidence.bind_belief(belief, claims)
+    }
+
     pub fn graph(&self) -> &KnowledgeGraph {
         &self.graph
     }

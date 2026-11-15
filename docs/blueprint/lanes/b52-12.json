@@ -1,0 +1,76 @@
+{
+  "lane": "12",
+  "rows": [
+    {
+      "id": "R12-EVID-2033",
+      "outcome": "SLICE",
+      "claims_requirement_met": false,
+      "what": "ProvenanceGraph gains Belief nodes and a RestsOn edge; bind_belief refuses unknown claims and trace_belief walks a belief to every claim, document hash and source and fails if any link is gone. Platform::bind_now_beliefs runs after each NOW pass and binds a delta to claims its manifests resolve to.",
+      "remains": "Production NOW manifests name in-process sources (kernel/bar-history, cycle-N), so on the default path no belief binds to a claim; only connector-derived evidence (arm off in every committed tfvars, protected) can. Thesis and world-model-fact beliefs are not bound; sources_of/trace_belief still have no production reader beyond the binder.",
+      "tests": [
+        "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_now_belief_walks_to_every_source_document_hash_it_rests_on",
+        "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_manifest_naming_a_claim_under_the_wrong_source_is_not_an_edge",
+        "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::binding_a_belief_to_an_unadmitted_claim_is_refused"
+      ],
+      "test_command": "cargo test -p qip-kernel --test evidence_intake --no-fail-fast",
+      "mutations": [
+        "fabric.rs bind_belief linked only the first claim: a_now_belief_walks_... panicked at evidence_intake.rs:1089",
+        "evidence_intake.rs dropped the source_identity guard: left: (1, 0) right: (0, 1)",
+        "fabric.rs disabled the unadmitted-claim check: assertion failed: platform.bind_belief(\"thesis-1\", &claims).is_err()"
+      ],
+      "commit": "251a7577"
+    },
+    {
+      "id": "R12-EVID-3081",
+      "outcome": "SLICE",
+      "claims_requirement_met": false,
+      "what": "resolve_manifest resolves a NOW ManifestRef to the admitted claim, its source and the fetched document hash only when reference is a held claim id and source is that claim's identity; the binder uses the same resolver.",
+      "remains": "Threading connector FetchDigest and source id through the feature store into the production NowStage ManifestRefs is not done; no committed tfvars runs a connector arm (protected), so default-path NOW deltas still resolve nothing.",
+      "tests": [
+        "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_now_manifest_entry_from_connector_data_resolves_to_its_source_and_document_hash"
+      ],
+      "test_command": "cargo test -p qip-kernel --test evidence_intake --no-fail-fast",
+      "mutations": [
+        "resolve_manifest returned document_hash: None: assertion `left == right` failed, left: None, right: Some(\"aaaa...\") at evidence_intake.rs:1176"
+      ],
+      "commit": "650da6f9"
+    },
+    {
+      "id": "R12-EVID-8108",
+      "outcome": "SLICE",
+      "claims_requirement_met": false,
+      "what": "The deep brain rebuilds the source-alpha score history from journaled SourceAlphaScored rounds at start (SourceAlphaHistory::restore, SourceAlphaDesk::restore, EvolutionEngine::restore_source_alpha, called in main.rs); a second restore is refused.",
+      "remains": "(1) no default connector arm: tfvars are protected, so default rounds still score nothing; (2) the desk is not snapshotted to the archive and sample windows are not restored; (3) contradiction handling has no code or ruling.",
+      "tests": [
+        "backend/crates/apps/qip-deepbrain/src/evolution.rs::tests::a_restarted_deep_brain_rebuilds_the_source_scores_from_the_log"
+      ],
+      "test_command": "cargo test -p qip-data-finder -p qip-deepbrain --no-fail-fast",
+      "mutations": [
+        "SourceAlphaDesk::restore history.restore call replaced by a no-op: assertion `left == right` failed: log order, left: [] right: [0.5, 0.75] at evolution.rs:4499"
+      ],
+      "commit": "30cc9611"
+    },
+    {
+      "id": "R12-DATA-10081",
+      "outcome": "NEEDS_PERSON",
+      "claims_requirement_met": false,
+      "what": "Not built. A fabric consumer driving BigQueryWarehouse::insert would be a streaming row write, which ADR 0240 forbids and which qip-acceptance's derived_copies suite refuses by name (InsertRow in shipped source); weakening that guard is not a lane's call.",
+      "remains": "Owner ruling needed: either restate the requirement as ADR 0240's batch load (then a fabric consumer staging batches with a lag-isolation test is buildable) or admit a Storage Write API dependency via ADR. Also a running fabricd, QIP_BIGQUERY_* wiring in catalogue.tf (protected-adjacent) and a deploy.",
+      "tests": [],
+      "test_command": "",
+      "mutations": [],
+      "commit": ""
+    },
+    {
+      "id": "R12-DATA-1036",
+      "outcome": "NOT_BUILT",
+      "claims_requirement_met": false,
+      "what": "Not built. Embeddings, novelty, entities/relationships, summaries and episodes need new record types and a persisted shape across qip-evidence, qip-world-model and the kernel; no ADR records those shapes and inventing them here would choose figures and formats nobody gave.",
+      "remains": "Everything in the register gap beyond claims/contests/resolutions (already covered by evidence_intake.rs restart test): derived record types, journaling them under the event log instead of the blob store, and a restart test that bodies do not survive.",
+      "tests": [],
+      "test_command": "",
+      "mutations": [],
+      "commit": ""
+    }
+  ]
+}

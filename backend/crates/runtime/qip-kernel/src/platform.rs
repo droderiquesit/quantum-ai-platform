@@ -16131,6 +16131,14 @@ impl Platform {
             causal_parents: self.now_causal_parents(now),
         };
         let review = self.now_brain.run(inputs, now);
+        // Link each belief to the admitted claims its manifest names, so the
+        // provenance graph can be walked from it (R12-EVID-2033).
+        let binding = self.bind_now_beliefs(&review.deltas);
+        self.telemetry.metrics.increment(
+            crate::evidence_intake::NOW_BELIEFS_BOUND,
+            labels([]),
+            binding.bound as u64,
+        );
         let mut problems: Vec<String> = Vec::new();
         for surprise in &review.surprises {
             self.telemetry.metrics.count(

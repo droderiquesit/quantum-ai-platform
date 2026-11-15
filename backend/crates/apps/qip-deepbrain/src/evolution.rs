@@ -590,6 +590,15 @@ impl EvolutionEngine {
         self
     }
 
+    /// Rebuild the attached desk's score history from the log (R12-EVID-8108).
+    /// Zero when no desk is attached.
+    pub fn restore_source_alpha(&mut self, platform: &Platform) -> Result<usize> {
+        match self.source_alpha.as_mut() {
+            Some(desk) => desk.restore(&platform.source_alpha_rounds()?),
+            None => Ok(0),
+        }
+    }
+
     /// The source-alpha desk, when one is attached.
     pub fn source_alpha(&self) -> Option<&crate::source_alpha::SourceAlphaDesk> {
         self.source_alpha.as_ref()
@@ -4530,6 +4539,72 @@ mod tests {
             vec![round.record(due, now)],
             "the log does not hold the round the desk scored"
         );
+        Ok(())
+    }
+
+    /// A restarted deep brain reads the scores back off the log instead of
+    /// beginning with none (R12-EVID-8108): a source promoted or retired on
+    /// its score had nothing behind it after a restart. Computed scores come
+    /// back in order and a refused pair comes back as nothing; a second
+    /// restore is refused; a desk with no scores in the log restores zero.
+    /// Mutation: make `SourceAlphaDesk::restore` skip the
+    /// `if let Ok(alpha)` push — the history stays empty and the first
+    /// assertion fails.
+    #[test]
+    fn a_restarted_deep_brain_rebuilds_the_source_scores_from_the_log() -> Result<()> {
+        use crate::source_alpha::DEFAULT_SOURCE_ALPHA_EVERY;
+        use qip_data_finder::source_alpha::SourceAlpha;
+        use qip_kernel::source_alpha_record::{ScoredSource, SourceAlphaScored};
+        let mut platform = platform()?;
+        let at = start();
+        let scored = |gain: f64| ScoredSource {
+            source: "coinbase-spot-ticker".to_string(),
+            subject: "BTC-USD".to_string(),
+            samples: 16,
+            outcome: Ok(SourceAlpha {
+                at,
+                incremental_gain: gain,
+                realised_contribution: 0.25,
+            }),
+        };
+        let refused = ScoredSource {
+            source: "coinbase-spot-ticker".to_string(),
+            subject: "ETH-USD".to_string(),
+            samples: 2,
+            outcome: Err("2 aligned sample(s); a score needs 10".to_string()),
+        };
+        for (cycle, gain) in [(1_u64, 0.5), (2, 0.75)] {
+            let round = SourceAlphaScored {
+                cycle,
+                at: at.saturating_add(Duration::from_mins(cycle as i64)),
+                scores: vec![scored(gain), refused.clone()],
+            };
+            assert!(platform.journal_source_alpha_round(round)?);
+        }
+        let mut cold = engine(0).with_source_alpha(DEFAULT_SOURCE_ALPHA_EVERY);
+        assert_eq!(
+            cold.source_alpha()
+                .map_or(usize::MAX, |d| d.history("coinbase-spot-ticker").count()),
+            0,
+            "premise: a fresh desk holds no score"
+        );
+
+        let restored = cold.restore_source_alpha(&platform)?;
+
+        assert_eq!(restored, 2, "the refused pair carries no score");
+        let gains: Vec<f64> = cold
+            .source_alpha()
+            .ok_or_else(|| Error::not_found("desk attached"))?
+            .history("coinbase-spot-ticker")
+            .map(|alpha| alpha.incremental_gain)
+            .collect();
+        assert_eq!(gains, vec![0.5, 0.75], "log order");
+        assert!(
+            cold.restore_source_alpha(&platform).is_err(),
+            "restoring onto a desk that holds scores would count each twice"
+        );
+        let mut bare = engine(0);
+        assert_eq!(bare.restore_source_alpha(&platform)?, 0, "no desk attached");
         Ok(())
     }
 
