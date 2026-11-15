@@ -154,6 +154,7 @@ pub mod exploration;
 pub mod exposure;
 pub mod ledger;
 pub mod margin;
+pub mod placement;
 pub mod recall;
 pub mod reservation;
 pub mod shadow;

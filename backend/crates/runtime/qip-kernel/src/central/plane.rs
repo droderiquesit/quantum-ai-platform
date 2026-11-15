@@ -2012,6 +2012,15 @@ impl CentralPlane {
         // the plan acted on is chosen, and the plan acted on is the
         // allocator's narrowed to the per-line minimum, so no agent can
         // widen a line.
+        self.settle_through_society(plan)
+    }
+
+    /// Record every society agent's plan for `plan`, then return `plan` with
+    /// each line at the per-line minimum (ADR 0229, ADR 0686). One path for
+    /// every reader of the allocator: `allocate` and the horizon arming both
+    /// come through here, so the gate and the deployed plan cannot read two
+    /// different figures for one allocation.
+    fn settle_through_society(&self, plan: AllocationPlan) -> Result<AllocationPlan> {
         let plans = qip_capital::society::propose_all(&plan, &self.society_inputs)?;
         let settled = qip_capital::society::settle(&plan, &plans);
         let settled = qip_capital::society::narrow_for_disagreement(
@@ -2031,6 +2040,23 @@ impl CentralPlane {
                 }),
         });
         Ok(settled)
+    }
+
+    /// The survival waterfall's released budget for this cycle, handed to the
+    /// society's survival agent (ADR 0686). Called from DECIDE with the
+    /// figure the governor actually released, so the agent reads the fact
+    /// rather than a second measurement of it. A negative figure is refused:
+    /// the society would refuse it at the next allocation anyway, and a bad
+    /// figure must not replace a good one.
+    pub fn record_survival_budget(&mut self, released: Decimal) -> Result<()> {
+        if released.is_negative() {
+            return Err(Error::invalid(format!(
+                "the survival waterfall released {released}; a released budget is zero or \
+                 more, so it is not recorded"
+            )));
+        }
+        self.society_inputs.survival_budget = Some(released);
+        Ok(())
     }
 
     /// The figures on record the capital society reads from the next
@@ -2289,7 +2315,14 @@ impl CentralPlane {
         // `allocate` — which is why the numerator shrinks exactly rather than
         // to whatever an `f64` product rounded to.
         let proposals: Vec<StrategyProposal> = self.proposals.values().cloned().collect();
+        // Read the plan the deployed path reads: narrowed by the society's
+        // per-line minimum (ADR 0229, ADR 0686). Budgeting the pools with
+        // the allocator's unnarrowed figures made the gate and the deployed
+        // plan two claims about one allocation, and a promotion could pass a
+        // pool bound the deployed plan would not fill. Narrowing only lowers
+        // a budget, so the pool bounds can only tighten.
         let plan = self.allocator.allocate(&proposals, drawdown, now)?;
+        let plan = self.settle_through_society(plan)?;
         let mut budgeted = Decimal::ZERO;
         for allocation in &plan.allocations {
             reconciler.budget(&allocation.strategy, allocation.notional)?;
